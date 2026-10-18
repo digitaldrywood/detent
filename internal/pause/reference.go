@@ -35,6 +35,10 @@ func ResolveReference(pausedProjectID string, reference string, trackers []Track
 	}
 
 	repository, githubReference := githubIssueReferenceRepository(reference)
+	if strings.EqualFold(strings.TrimSpace(current.Kind), "hub_native") &&
+		strings.HasPrefix(repository, "prj_") && !strings.Contains(repository, "/") {
+		return resolvedReference(current, reference), nil
+	}
 	if !githubReference {
 		if githubTracker(current.Kind) {
 			return ReferenceResolution{}, fmt.Errorf("project %s tracker kind %s cannot resolve non-GitHub pause exit issue %s", pausedProjectID, current.Kind, reference)
@@ -117,6 +121,12 @@ func githubTracker(kind string) bool {
 }
 
 func resolvedReference(tracker Tracker, reference string) ReferenceResolution {
+	if strings.EqualFold(strings.TrimSpace(tracker.Kind), "hub_native") {
+		return ReferenceResolution{
+			ProjectID: strings.TrimSpace(tracker.ProjectID),
+			Reference: reference,
+		}
+	}
 	return ReferenceResolution{
 		ProjectID:  strings.TrimSpace(tracker.ProjectID),
 		Reference:  trackerIssueReference(reference, tracker.Repository),

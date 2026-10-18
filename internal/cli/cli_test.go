@@ -1163,12 +1163,10 @@ func TestPauseCommandExitConditionFlags(t *testing.T) {
 func TestPauseCommandValidatesIssueReference(t *testing.T) {
 	t.Parallel()
 
-	localWorkflow := `---
+	nativeWorkflow := `---
 tracker:
-  kind: local_sqlite
-  local_sqlite:
-    path: .detent/work-items.db
-    project_id: video
+  kind: hub_native
+  repository: example-org/example-project
 ---
 Prompt
 `
@@ -1181,17 +1179,30 @@ Prompt
 `
 	tests := []struct {
 		name       string
+		reference  string
 		withGitHub bool
 		wantError  string
 		wantPaused bool
 	}{
 		{
 			name:      "rejects cross repository issue without resolver",
+			reference: "example-org/video-project#155",
 			wantError: "no configured project tracker can resolve GitHub pause exit issue example-org/video-project#155",
 		},
 		{
 			name:       "accepts cross repository issue with configured resolver",
+			reference:  "example-org/video-project#155",
 			withGitHub: true,
+			wantPaused: true,
+		},
+		{
+			name:       "accepts native project number",
+			reference:  "prj_example#42",
+			wantPaused: true,
+		},
+		{
+			name:       "accepts native number",
+			reference:  "#42",
 			wantPaused: true,
 		},
 	}
@@ -1200,11 +1211,11 @@ Prompt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			local := createProjectFilesWithWorkflow(t, localWorkflow)
+			native := createProjectFilesWithWorkflow(t, nativeWorkflow)
 			projects := []globalconfig.Project{{
-				ID:       "video",
-				Workflow: local.workflowPath,
-				Workdir:  local.workdirPath,
+				ID:       "prj_example",
+				Workflow: native.workflowPath,
+				Workdir:  native.workdirPath,
 				Weight:   1,
 			}}
 			if tt.withGitHub {
@@ -1216,7 +1227,7 @@ Prompt
 					Weight:   1,
 				})
 			}
-			configPath := filepath.Join(local.root, "global.yaml")
+			configPath := filepath.Join(native.root, "global.yaml")
 			writeGlobalConfig(t, configPath, projects)
 
 			cmd := cli.NewRootCommand(context.Background())
@@ -1224,9 +1235,9 @@ Prompt
 			cmd.SetErr(&bytes.Buffer{})
 			cmd.SetArgs([]string{
 				"--config", configPath,
-				"pause", "video",
+				"pause", "prj_example",
 				"--reason", "release hold",
-				"--until-issue", "example-org/video-project#155",
+				"--until-issue", tt.reference,
 			})
 			err := cmd.Execute()
 			if tt.wantError != "" {
@@ -1237,7 +1248,7 @@ Prompt
 				t.Fatalf("Execute() error = %v", err)
 			}
 
-			assertProject(t, configPath, "video", func(project globalconfig.Project) {
+			assertProject(t, configPath, "prj_example", func(project globalconfig.Project) {
 				if project.Paused != tt.wantPaused {
 					t.Fatalf("Paused = %t, want %t", project.Paused, tt.wantPaused)
 				}
