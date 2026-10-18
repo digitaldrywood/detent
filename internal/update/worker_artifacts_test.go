@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,7 +28,7 @@ type workerReleaseFixture struct {
 
 func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{"startup", "startup critical", "startup incompatible", "automatic", "explicit", "enrolled", "pending", "download failure", "protocol incompatible", "critical", "windows"} {
+	for _, path := range []string{"startup", "authenticated startup", "startup critical", "startup incompatible", "automatic", "explicit", "enrolled", "pending", "download failure", "protocol incompatible", "critical", "windows"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			artifacts, fixture, publish := workerArtifactFixture(t)
@@ -43,6 +46,33 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 				}
 			})
 			published := publish("1.0.1")
+			if path == "authenticated startup" {
+				clientConfig := GitHubClientConfig{HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					recorder := httptest.NewRecorder()
+					if request.URL.Host == "api.github.com" {
+						if request.Header.Get("Authorization") != "Bearer configured-token" {
+							recorder.WriteHeader(http.StatusForbidden)
+						} else if err := json.NewEncoder(recorder).Encode(fixture.releases); err != nil {
+							return nil, err
+						}
+					} else {
+						data, err := fixture.Download(request.Context(), request.URL.String())
+						if err != nil {
+							return nil, err
+						}
+						if _, err := recorder.Write(data); err != nil {
+							return nil, err
+						}
+					}
+					return recorder.Result(), nil
+				})}}
+				artifacts.service.cfg.Client = NewGitHubClient(clientConfig)
+				if _, err := artifacts.PrepareLaunch(t.Context(), nil, nil); err == nil || !strings.Contains(err.Error(), "403 Forbidden") {
+					t.Fatalf("anonymous discovery = %v, want 403 Forbidden", err)
+				}
+				clientConfig.Token = "configured-token"
+				artifacts.service.cfg.Client = NewGitHubClient(clientConfig)
+			}
 			updater := &schedulerUpdaterStub{checkStatus: Status{UpdateAvailable: true, LatestVersion: "1.0.1", InstallSource: InstallSourceRelease}, applyStatus: Status{Action: ActionUpdated, LatestVersion: "1.0.1", Binary: "verified-controller"}}
 			var drains, restarts int
 			preflight := BinaryPreflight(nil)
@@ -67,7 +97,7 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 				t.Fatal(err)
 			}
 			switch path {
-			case "startup", "startup critical", "startup incompatible":
+			case "startup", "authenticated startup", "startup critical", "startup incompatible":
 				err = scheduler.PrepareWorkers(t.Context())
 			case "automatic":
 				_, err = scheduler.CheckNow(t.Context())
@@ -114,7 +144,7 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 				if drains != 1 || restarts != 1 || updater.applyCalls != 1 {
 					t.Fatalf("exceptional update did not use existing replacement: drains=%d restarts=%d applies=%d", drains, restarts, updater.applyCalls)
 				}
-			} else if drains != 0 || restarts != 0 || updater.applyCalls != 0 || path != "startup" && scheduler.Status().State != "applied" {
+			} else if drains != 0 || restarts != 0 || updater.applyCalls != 0 || path != "startup" && path != "authenticated startup" && scheduler.Status().State != "applied" {
 				t.Fatalf("routine update withheld capacity: drains=%d restarts=%d applies=%d status=%+v", drains, restarts, updater.applyCalls, scheduler.Status())
 			}
 			if path == "critical" || path == "protocol incompatible" || path == "startup critical" || path == "startup incompatible" {
