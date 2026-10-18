@@ -12,9 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func initializeLocalConfiguration(ctx context.Context, settings store.LocalConfigurationStore, cfg globalconfig.Config, logger *slog.Logger) (globalconfig.Config, error) {
@@ -199,35 +197,6 @@ func legacyLocalSettingsPresent(path string) bool {
 	}
 	_, present := agents["model_selection"]
 	return present
-}
-
-func writeLocalConfigurationRank(ctx context.Context, path string, cfg globalconfig.Config, id string, position int) (resultErr error) {
-	settings, err := store.Open(ctx, store.Config{Path: doctorRuntimeStorePath(path)})
-	if err != nil {
-		return err
-	}
-	defer func() { resultErr = errors.Join(resultErr, settings.Close()) }()
-	cfg.Path = path
-	if _, err := initializeLocalConfiguration(ctx, settings, cfg, slog.Default()); err != nil {
-		return err
-	}
-	rank, err := settings.LocalProjectRank(ctx, nil)
-	if err != nil {
-		return err
-	}
-	projectID := tracker.ProjectID(id)
-	index := slices.Index(rank.ProjectIDs, projectID)
-	if index < 0 {
-		return projectNotFoundError(id, cfg.Projects)
-	}
-	ids := slices.Delete(rank.ProjectIDs, index, index+1)
-	ids = slices.Insert(ids, min(position-1, len(ids)), projectID)
-	if _, err := settings.LocalProjectRank(ctx, &projectsettings.RankChange{ExpectedRevision: rank.Revision, ProjectIDs: ids}); err != nil {
-		return err
-	}
-	cfg.Projects = []globalconfig.Project{}
-	cfg.Global.Agents.ModelSelection = config.ModelSelection{}
-	return globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals())
 }
 
 func readRunnerRuntimeConfig(ctx context.Context, path string, opts ...globalconfig.Option) (globalconfig.Config, error) {

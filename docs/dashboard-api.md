@@ -8,7 +8,7 @@ listener; the board, issues, and Change Requests live in the Hub (see
 running issues, retry queue, blocked work, completed sessions, token totals,
 budget status, and provider rate-limit snapshots.
 
-Host memory, IO, and CPU PSI appear in `detent state`, `/api/v1/state`, and
+Host memory, IO, and CPU PSI appear in `/api/v1/state` and
 `/health` as `memory_pressure`, `io_pressure`, and `cpu_pressure`. Each entry
 includes the current governing average, configured threshold, support or
 read-error state, configured and effective pressure capacity, constraint
