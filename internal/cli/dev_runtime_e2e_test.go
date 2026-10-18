@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -366,22 +368,43 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	}
 }
 
+type startupTranscriptSnapshot struct {
+	store.Store
+	snapshot func(context.Context)
+}
+
+func (s startupTranscriptSnapshot) ProtectedCodexThreadIDs(ctx context.Context) ([]string, error) {
+	ids, err := s.Store.ProtectedCodexThreadIDs(ctx)
+	if err == nil {
+		s.snapshot(ctx)
+	}
+	return ids, err
+}
+
 func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live service, profiling, or filesystem watcher integration")
 	}
 
-	for _, outcome := range []string{"complete", "cancel", "required setup failure"} {
+	for _, outcome := range []string{"complete", "cancel", "required setup failure", "transcript cleanup"} {
 		t.Run(outcome, func(t *testing.T) {
+			complete := outcome == "complete" || outcome == "transcript cleanup"
 			runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0})
 			if err != nil {
 				t.Fatal(err)
 			}
 			home := t.TempDir()
+			t.Setenv("CODEX_HOME", home)
+			maintenanceWorkflow := filepath.Join(home, "WORKFLOW.md")
+			if err := os.WriteFile(maintenanceWorkflow, []byte("---\ncodex:\n  command: codex\n---\nMaintain artifacts.\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
 			now := time.Now()
-			var paths []string
+			var paths, retained, expired []string
 			for _, profile := range []string{workerCodexProfileDir, launchdCodexProfileDir} {
 				paths = append(paths, writeCodexLogFixture(t, home, profile, now))
+				retained = append(retained, writeRetentionRollout(t, filepath.Join(home, profile, "sessions"), profile+"-source", "", now.Add(-40*24*time.Hour)))
+				expired = append(expired, writeRetentionRollout(t, filepath.Join(home, profile, "sessions"), profile+"-expired", "", now.Add(-40*24*time.Hour)))
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			output := &lockedBuffer{}
@@ -391,6 +414,10 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 				cfg.Global.Client = globalconfig.HubClient{URL: "http://127.0.0.1:1", TokenEnvironment: "DETENT_TEST_STARTUP_TOKEN"}
 			}
 			registry := project.NewRegistry()
+			transcriptSnapshot := make(chan struct{})
+			transcriptRelease := make(chan struct{})
+			var transcriptOnce sync.Once
+			finishTranscripts := func() { transcriptOnce.Do(func() { close(transcriptRelease) }) }
 			entered := make(chan struct{})
 			release := make(chan struct{})
 			canceled := make(chan struct{})
@@ -404,27 +431,54 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 			go func() {
 				done <- startRunningWithDependencies(ctx, cfg, startRunningDependencies{
 					managerDependencies: project.ManagerDependencies{Registry: registry},
-					startupMaintenance: func(ctx context.Context, _ globalconfig.Config, _ store.Store) {
-						first := true
-						pruned <- pruneCodexLogs(ctx, home, now, codexLogSizeLimit, func(ctx context.Context) (bool, error) {
-							if first {
-								first = false
-								close(entered)
+					startupMaintenance: func(ctx context.Context, maintenanceConfig globalconfig.Config, db store.Store) func() {
+						for _, profile := range []string{workerCodexProfileDir, launchdCodexProfileDir} {
+							source, err := db.StartSession(ctx, store.SessionStart{ProjectID: "retention", IssueID: profile, AgentBackendKind: "codex", ProviderThreadID: profile + "-source", StartedAt: now.Add(-40 * 24 * time.Hour)})
+							if err == nil {
+								err = db.FinishSession(ctx, source, store.SessionFinish{CompletedAt: now.Add(-39 * 24 * time.Hour)})
+							}
+							if err == nil {
+								_, err = db.StartSession(ctx, store.SessionStart{ProjectID: "retention", IssueID: profile, AgentBackendKind: "codex", ProviderThreadID: profile + "-resumed", ResumedFromSessionID: source, StartedAt: now})
+							}
+							if err != nil {
+								pruned <- err
+								return nil
+							}
+						}
+						threads := startupTranscriptSnapshot{Store: db, snapshot: func(ctx context.Context) {
+							close(transcriptSnapshot)
+							if outcome == "transcript cleanup" {
 								select {
-								case <-release:
+								case <-transcriptRelease:
 								case <-ctx.Done():
-									close(canceled)
-									<-cleanupRelease
 								}
 							}
-							return false, ctx.Err()
-						})
+						}}
+						maintenanceConfig.Projects = []globalconfig.Project{{ID: "retention", Workdir: home, Workflow: maintenanceWorkflow}}
+						maintainStartupCodexArtifacts(ctx, maintenanceConfig, threads)
+						return func() {
+							first := true
+							pruned <- pruneCodexLogs(ctx, home, now, codexLogSizeLimit, func(ctx context.Context) (bool, error) {
+								if first {
+									first = false
+									close(entered)
+									select {
+									case <-release:
+									case <-ctx.Done():
+										close(canceled)
+										<-cleanupRelease
+									}
+								}
+								return false, ctx.Err()
+							})
+						}
 					},
 				})
 				close(exited)
 			}()
 			t.Cleanup(func() {
 				cancel()
+				finishTranscripts()
 				unblock()
 				finishCleanup()
 				select {
@@ -434,6 +488,44 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 				}
 			})
 			dashboardURL := waitForIsolatedRuntimeURL(t, output, done)
+			if outcome == "transcript cleanup" {
+				select {
+				case <-transcriptSnapshot:
+				case <-time.After(10 * time.Second):
+					t.Fatal("transcript protection snapshot did not start")
+				}
+				client := newRuntimeHTTPClient()
+				defer client.CloseIdleConnections()
+				observation, stopObservation := context.WithTimeout(ctx, 2*time.Second)
+				defer stopObservation()
+				ticks := time.NewTicker(10 * time.Millisecond)
+				defer ticks.Stop()
+				observed := false
+				for observation.Err() == nil {
+					request, err := http.NewRequestWithContext(observation, http.MethodGet, dashboardURL+"/health", nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					response, err := client.Do(request)
+					if err == nil {
+						observed = true
+						if err := response.Body.Close(); err != nil {
+							t.Fatal(err)
+						}
+						if response.StatusCode != http.StatusServiceUnavailable || len(registry.List()) != 0 {
+							t.Fatalf("projects became available during transcript protection snapshot: health=%d projects=%d", response.StatusCode, len(registry.List()))
+						}
+					}
+					select {
+					case <-ticks.C:
+					case <-observation.Done():
+					}
+				}
+				if !observed {
+					t.Fatal("health did not respond during transcript cleanup")
+				}
+				finishTranscripts()
+			}
 			select {
 			case <-entered:
 			case err := <-done:
@@ -452,7 +544,17 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 					return boardStateCountFromBody(t, body, "Merging") == 1
 				})
 			}
-			if outcome == "complete" {
+			for _, path := range retained {
+				if _, err := os.Stat(path); err != nil {
+					t.Fatalf("resume source was removed: %v", err)
+				}
+			}
+			for _, path := range expired {
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("transcript cleanup did not finish before project startup: %v", err)
+				}
+			}
+			if complete {
 				unblock()
 			} else {
 				if outcome == "cancel" {
@@ -472,7 +574,7 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 			}
 			select {
 			case err := <-pruned:
-				if outcome == "complete" && err != nil || outcome != "complete" && !errors.Is(err, context.Canceled) {
+				if complete && err != nil || !complete && !errors.Is(err, context.Canceled) {
 					t.Fatalf("retention result = %v", err)
 				}
 			case <-time.After(10 * time.Second):
@@ -489,7 +591,7 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 					t.Fatal(err)
 				}
 				want := 3
-				if outcome == "complete" {
+				if complete {
 					want = 2
 				}
 				if rows != want {

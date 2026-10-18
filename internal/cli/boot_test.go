@@ -126,12 +126,14 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 			done := make(chan error, 1)
 			go func() {
 				done <- startRunningWithDependencies(ctx, cfg, startRunningDependencies{
-					startupMaintenance: func(ctx context.Context, _ globalconfig.Config, _ store.Store) {
-						pruned <- pruneCodexLogs(ctx, home, time.Now(), codexLogSizeLimit, func(ctx context.Context) (bool, error) {
-							close(entered)
-							<-ctx.Done()
-							return false, ctx.Err()
-						})
+					startupMaintenance: func(ctx context.Context, _ globalconfig.Config, _ store.Store) func() {
+						return func() {
+							pruned <- pruneCodexLogs(ctx, home, time.Now(), codexLogSizeLimit, func(ctx context.Context) (bool, error) {
+								close(entered)
+								<-ctx.Done()
+								return false, ctx.Err()
+							})
+						}
 					},
 				})
 			}()

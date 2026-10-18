@@ -197,7 +197,7 @@ type startRunningDependencies struct {
 	readInstalledBuild    installedBuildReader
 	managerDependencies   project.ManagerDependencies
 	providerStatusManager *statuspage.Manager
-	startupMaintenance    func(context.Context, globalconfig.Config, store.Store)
+	startupMaintenance    func(context.Context, globalconfig.Config, store.Store) func()
 }
 
 func startRunning(ctx context.Context, cfg BootConfig) error {
@@ -566,9 +566,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		if maintenance == nil {
 			maintenance = maintainStartupCodexArtifacts
 		}
-		resourceWorkers.Go(func() {
-			maintenance(ctx, cfg.Global, runtimeStore)
-		})
+		if logs := maintenance(ctx, cfg.Global, runtimeStore); logs != nil {
+			resourceWorkers.Go(logs)
+		}
 		if cfg.Isolated != nil && cfg.Isolated.Demo == "screenshots" {
 			if err := demofixtures.SeedUsageEvents(ctx, runtimeStore); err != nil {
 				return err
@@ -834,9 +834,10 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	})
 }
 
-func maintainStartupCodexArtifacts(ctx context.Context, cfg globalconfig.Config, runtimeStore store.Store) {
+func maintainStartupCodexArtifacts(ctx context.Context, cfg globalconfig.Config, runtimeStore store.Store) func() {
 	logger := slog.Default()
 	retentionHomes := map[string]bool{}
+	var logHomes []string
 	for _, projectConfig := range cfg.Projects {
 		workflow, err := project.LoadWorkflowContext(ctx, projectConfig)
 		if err != nil {
@@ -855,6 +856,11 @@ func maintainStartupCodexArtifacts(ctx context.Context, cfg globalconfig.Config,
 			if err := pruneCodexTranscripts(ctx, home, time.Now(), runtimeStore); err != nil {
 				logger.Warn("Codex transcript retention failed", "home", home, "error", err)
 			}
+			logHomes = append(logHomes, home)
+		}
+	}
+	return func() {
+		for _, home := range logHomes {
 			if err := pruneCodexLogs(ctx, home, time.Now(), codexLogSizeLimit, codexAppServerAlive); err != nil {
 				logger.Warn("Codex log retention failed", "home", home, "error", err)
 			}
