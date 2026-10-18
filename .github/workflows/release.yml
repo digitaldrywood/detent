@@ -85,8 +85,9 @@ jobs:
             echo "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON must be configured as a JSON array; use [] when there are no release-only checks"
             exit 1
           fi
-          gh api -H "Accept: application/vnd.github+json" \
-            "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=all&per_page=100" > "$check_runs"
+          gh api --paginate --slurp -H "Accept: application/vnd.github+json" \
+            "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=all&per_page=100" |
+            jq '{total_count: .[0].total_count, check_runs: [.[].check_runs[]]}' > "$check_runs"
           gh api \
             "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status?per_page=100" > "$statuses"
           scripts/collect-release-rulesets.sh "$GITHUB_REPOSITORY" "$rulesets"
