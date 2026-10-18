@@ -75,7 +75,7 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 				if err := os.MkdirAll(workdir, 0700); err != nil {
 					t.Fatal(err)
 				}
-				body := "---\ntracker:\n  kind: memory\n  repository: acme/orders\n"
+				body := "---\ntracker:\n  kind: hub_native\n  repository: acme/orders\n"
 				if tt.runnerSetup {
 					body += "hooks:\n  runner_setup: setup.sh\n"
 				}

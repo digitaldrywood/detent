@@ -127,7 +127,7 @@ func TestCheckDoctorProjectPauseUsesOwningProjectConnector(t *testing.T) {
 		PausedUntilIssue: "digitaldrywood/video-studio#147",
 	}
 	currentWorkflow := workflowconfig.Default()
-	currentWorkflow.Tracker.Kind = workflowconfig.TrackerLocalSQLite
+	currentWorkflow.Tracker.Kind = "local_sqlite"
 	currentWorkflow.Tracker.LocalSQLite.Path = "video.db"
 	ownerWorkflow := workflowconfig.Default()
 	ownerWorkflow.Tracker.Kind = workflowconfig.TrackerGitHub

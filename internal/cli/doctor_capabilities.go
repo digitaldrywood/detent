@@ -168,11 +168,11 @@ func doctorRoutineCapability(cfg workflowconfig.Config) doctorCapability {
 			Detail: fmt.Sprintf("%d scheduled routine(s) run recurring agent prompts.", len(cfg.Routines)),
 		}
 	}
-	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub && cfg.Tracker.Kind != workflowconfig.TrackerMemory {
+	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub {
 		return doctorCapability{
 			Name:   "routines",
 			State:  doctorCapabilityUnavailable,
-			Detail: "tracker.kind " + cfg.Tracker.Kind + " does not support scheduled routine issue creation; routines require github or memory.",
+			Detail: "tracker.kind " + cfg.Tracker.Kind + " does not support scheduled routine issue creation; routines require github.",
 		}
 	}
 	return doctorCapability{Name: "routines", State: doctorCapabilityUnused, Detail: "Enable to run recurring agent prompts on a schedule."}
@@ -204,11 +204,11 @@ func doctorRetroCapability(cfg workflowconfig.Config) doctorCapability {
 			Detail: "enabled; recurring failure telemetry can become governed improvement issues.",
 		}
 	}
-	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub && cfg.Tracker.Kind != workflowconfig.TrackerMemory {
+	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub {
 		return doctorCapability{
 			Name:   "retro",
 			State:  doctorCapabilityUnavailable,
-			Detail: "tracker.kind " + cfg.Tracker.Kind + " cannot create retrospective issues; retro requires github or memory.",
+			Detail: "tracker.kind " + cfg.Tracker.Kind + " cannot create retrospective issues; retro requires github.",
 		}
 	}
 	return doctorCapability{Name: "retro", State: doctorCapabilityUnused, Detail: "Enable to turn recurring failure telemetry into governed improvement issues."}
@@ -222,11 +222,11 @@ func doctorReleaseCapability(cfg workflowconfig.Config) doctorCapability {
 			Detail: "enabled; Detent cuts releases after configured merge-count, age, and CI gates.",
 		}
 	}
-	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub && cfg.Tracker.Kind != workflowconfig.TrackerGitHubLocal {
+	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub {
 		return doctorCapability{
 			Name:   "release",
 			State:  doctorCapabilityUnavailable,
-			Detail: "tracker.kind " + cfg.Tracker.Kind + " cannot inspect and tag GitHub repositories; release requires github or github_local.",
+			Detail: "tracker.kind " + cfg.Tracker.Kind + " cannot inspect and tag GitHub repositories; release requires github.",
 		}
 	}
 	return doctorCapability{Name: "release", State: doctorCapabilityUnused, Detail: "Enable to cut releases automatically after merge-count, age, and CI gates."}

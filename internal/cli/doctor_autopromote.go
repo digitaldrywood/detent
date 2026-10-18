@@ -10,8 +10,6 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/factory"
-	"github.com/digitaldrywood/detent/internal/connector/local"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 )
@@ -753,16 +751,8 @@ func closeDoctorAutoPromoteConnector(projectConnector doctorAutoPromoteConnector
 
 func defaultDoctorAutoPromoteConnector(cfg workflowconfig.Config) (doctorAutoPromoteConnector, error) {
 	return factory.NewFromConfig(factory.Config{
-		Kind:   cfg.Tracker.Kind,
-		Memory: memory.Config{Issues: cfg.Tracker.Issues},
-		LocalSQLite: local.Config{
-			Path:           cfg.Tracker.LocalSQLite.Path,
-			ProjectID:      cfg.Tracker.LocalSQLite.ProjectID,
-			Issues:         cfg.Tracker.Issues,
-			ActiveStates:   cfg.Tracker.ActiveStates,
-			ObservedStates: cfg.Tracker.ObservedStates,
-			TerminalStates: cfg.Tracker.TerminalStates,
-		},
+		Kind: cfg.Tracker.Kind,
+
 		Endpoint:                    cfg.Tracker.Endpoint,
 		APIKey:                      cfg.Tracker.APIKey,
 		HTTPMaxIdleConns:            cfg.Tracker.HTTPMaxIdleConns,

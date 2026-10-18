@@ -1357,7 +1357,7 @@ func writeWorkflow(t *testing.T, path string, intervalMS int, prompt string) {
 
 	raw := []byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 polling:
   interval_ms: ` + strconv.Itoa(intervalMS) + `
 ---

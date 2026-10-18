@@ -164,12 +164,6 @@ func kanbanConversationCommentBackend(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "github":
 		return "GitHub"
-	case "github_local":
-		return "GitHub Local"
-	case "local_sqlite":
-		return "Local"
-	case "memory":
-		return "Memory"
 	default:
 		if value = strings.TrimSpace(value); value != "" {
 			return value

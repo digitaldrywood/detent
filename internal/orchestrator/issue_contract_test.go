@@ -8,9 +8,9 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -60,7 +60,7 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 			if test.confirmed {
 				issue.IssueContract.ConfirmedSections = workflowconfig.IssueContractSectionDigests(issue.Description)
 			}
-			backend := memory.New(memory.Config{Stateful: true, Issues: []connector.Issue{issue}, Now: func() time.Time { return now }})
+			backend := fakehub.New(fakehub.Config{Stateful: true, Issues: []connector.Issue{issue}, Now: func() time.Time { return now }})
 			cfg := laneMutationTestConfig()
 			cfg.IssueContract = &contract
 			cfg.StopRunTargetState = "Blocked"

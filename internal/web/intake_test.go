@@ -10,9 +10,10 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -112,7 +113,7 @@ func TestIntakeWebhookRejectsEventWithoutFingerprint(t *testing.T) {
 	}
 }
 
-func newIntakeWebhookServer(t *testing.T, match string) (*web.Server, *memory.Connector, *targetedRefreshProbe) {
+func newIntakeWebhookServer(t *testing.T, match string) (*web.Server, *fakehub.Connector, *targetedRefreshProbe) {
 	t.Helper()
 
 	workflow := workflowconfig.Default()
@@ -133,8 +134,8 @@ func newIntakeWebhookServer(t *testing.T, match string) (*web.Server, *memory.Co
 			Body:   "{details}",
 		},
 	}}}
-	connector := memory.New(memory.Config{Stateful: true})
-	trackedProject, err := project.New(project.Config{
+	connector := fakehub.New(fakehub.Config{Stateful: true})
+	trackedProject, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{ID: "example", Workdir: t.TempDir(), Weight: 1},
 		Workflow: workflowconfig.Workflow{
 			Config: workflow,
@@ -142,7 +143,7 @@ func newIntakeWebhookServer(t *testing.T, match string) (*web.Server, *memory.Co
 		},
 	}, project.Dependencies{Connector: connector})
 	if err != nil {
-		t.Fatalf("project.New() error = %v", err)
+		t.Fatalf("projectfixture.New() error = %v", err)
 	}
 
 	runCtx, cancel := context.WithCancel(t.Context())

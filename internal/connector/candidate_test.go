@@ -27,10 +27,6 @@ func TestCandidateCapabilitiesFor(t *testing.T) {
 		{name: "github label", backend: BackendGitHub, statusSource: "label", states: true, labels: true, untracked: true, authorAssociation: true},
 		{name: "github default", backend: BackendGitHub, states: true, authorAssociation: true},
 		{name: "github invalid source", backend: BackendGitHub, statusSource: "milestone"},
-		{name: "github local", backend: BackendGitHubLocal, states: true, labels: true, authorAssociation: true},
-		{name: "local sqlite", backend: BackendLocalSQLite, states: true, labels: true},
-		{name: "memory", backend: BackendMemory, states: true, labels: true},
-		{name: "linear", backend: BackendLinear},
 		{name: "gitlab", backend: BackendGitLab},
 		{name: "jira", backend: BackendJira},
 	}

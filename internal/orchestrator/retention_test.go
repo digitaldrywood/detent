@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -102,7 +102,7 @@ func TestRetentionUnremovableQuarantineWarnsOnce(t *testing.T) {
 	})
 	var logs bytes.Buffer
 	cfg := normalizeConfig(Config{WorkspaceCleanupSweepInterval: time.Hour})
-	o := &Orchestrator{cfg: cfg, connector: memory.New(memory.Config{}), reaper: &localRetentionReaper{LocalGit: backend}, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	o := &Orchestrator{cfg: cfg, connector: fakehub.New(fakehub.Config{}), reaper: &localRetentionReaper{LocalGit: backend}, logger: slog.New(slog.NewTextHandler(&logs, nil))}
 	state := newState(cfg)
 	for pass := range 3 {
 		o.startWorkspaceCleanup(t.Context(), &state, now.Add(time.Duration(pass)*time.Hour))

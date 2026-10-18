@@ -22,6 +22,7 @@ import (
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -588,7 +589,7 @@ func TestShutdownRunningSessionsIncludesActiveMergeWorker(t *testing.T) {
 		release: release,
 	}
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Tracker.ActiveStates = []string{"Merging"}
 	cfg.Tracker.Issues = []connector.Issue{{
 		ID:               "issue-1546-merge",
@@ -1429,7 +1430,7 @@ func newShutdownProject(t *testing.T, id string, drainTimeoutMS int) *projectpkg
 	t.Helper()
 
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Agent.Shutdown.DrainTimeoutMS = drainTimeoutMS
 	return newShutdownRuntimeProjectWithConfig(t, id, cfg, orchestrator.FakeRunner{})
 }
@@ -1438,7 +1439,7 @@ func newShutdownRuntimeProject(t *testing.T, id string, issues []connector.Issue
 	t.Helper()
 
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Tracker.Issues = issues
 	cfg.Polling.IntervalMS = 60000
 	cfg.Agent.MaxConcurrentAgents = 1
@@ -1448,7 +1449,7 @@ func newShutdownRuntimeProject(t *testing.T, id string, issues []connector.Issue
 func newShutdownRuntimeProjectWithConfig(t *testing.T, id string, cfg workflowconfig.Config, runner orchestrator.Runner) *projectpkg.Project {
 	t.Helper()
 
-	project, err := projectpkg.New(projectpkg.Config{
+	project, err := projectfixture.New(projectpkg.Config{
 		Project: globalconfig.Project{
 			ID:      id,
 			Workdir: t.TempDir(),
