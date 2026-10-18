@@ -80,6 +80,11 @@ func newRuntimeUpdateScheduler(
 			RecoveryStatePath: detentupdate.RecoveryStatePath(cfg.Global.Path),
 		},
 	}
+	if cfg.Isolated != nil {
+		schedulerConfig.Enabled = false
+		schedulerConfig.AutoApplyEnabled = false
+		return detentupdate.NewScheduler(schedulerConfig)
+	}
 	if cfg.Global.Client.IdentityFile != "" {
 		schedulerConfig.Enabled = false
 		schedulerConfig.AutoApplyEnabled = false
