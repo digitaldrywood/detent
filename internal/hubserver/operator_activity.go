@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -68,6 +69,7 @@ func (s *Service) hostedActivity(c echo.Context) error {
 }
 
 func (s *Service) readActivityReport(ctx context.Context, credential apiCredential, r operatortool.ActivityRequest, w operatortool.AnalyticsWindow) (operatortool.ActivityReport, error) {
+	ctx = reporterReadContext(ctx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential})
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	out := operatortool.ActivityReport{OrganizationID: s.config.Hosted.OrganizationID, ObservedAt: s.config.now().UTC(), Window: w, Running: []operatortool.ActivityAttempt{}, Finished: []operatortool.ActivityAttempt{}, TypicalDurations: []operatortool.ActivityTypicalDuration{}, PopulationLimit: maxAnalyticsPopulation}
@@ -164,6 +166,10 @@ func activityStageTiming(a *operatortool.ActivityAttempt, phases []tracker.Nativ
 
 func readActivityAttempts(ctx context.Context, q nativeQueryer, organization string, projects []string, r operatortool.ActivityRequest, w operatortool.AnalyticsWindow, now time.Time, running bool) ([]operatortool.ActivityAttempt, error) {
 	statement, args, err := activityAttemptsQuery(organization, projects, r, w, now, running)
+	if visibility, ok := reportsScopeFrom(ctx); ok && visibility.reporterPrincipal != "" {
+		statement = strings.ReplaceAll(statement, "n.organization_id=:org", "n.organization_id=:org AND n.work_item_id IN (SELECT ri.native_id FROM issues ri WHERE ri.organization_id=:org AND json_extract(ri.actor_json,'$.principal_id')=:reporter)")
+		args = append(args, sql.Named("reporter", visibility.reporterPrincipal))
+	}
 	if err != nil {
 		return nil, err
 	}

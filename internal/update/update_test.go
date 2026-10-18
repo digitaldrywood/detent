@@ -546,13 +546,13 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		{name: "selected release", current: "1.2.3"},
 		{name: "signed operator prerelease", current: "1.2.3", version: "1.2.4-op.abcdef123456", follow: true},
 		{name: "stable supersedes signed operator prerelease", current: "1.2.4-op.abcdef123456", follow: true},
-		{name: "target failure restores drain", current: "1.2.3", failureStage: "target", failureReason: "Update target resolution failed"},
-		{name: "urgent download failure restores drain", current: "1.2.3", urgent: true, failureStage: "download", failureReason: "Update download failed"},
-		{name: "signature failure restores drain", current: "1.2.3", failureStage: "signature", failureReason: "Update signature verification failed"},
-		{name: "provenance failure restores drain", current: "1.2.3", failureStage: "provenance", failureReason: "Update provenance verification failed"},
-		{name: "checksum failure restores drain", current: "1.2.3", failureStage: "checksum", failureReason: "Update checksum verification failed"},
-		{name: "install failure restores drain", current: "1.2.3", failureStage: "install", failureReason: "Update installation failed"},
-		{name: "urgent restart failure restores drain", current: "1.2.3", urgent: true, failureStage: "restart", failureReason: "Update restart request was declined"},
+		{name: "target failure releases idle reservation", current: "1.2.3", failureStage: "target", failureReason: "Update target resolution failed"},
+		{name: "urgent download failure releases idle reservation", current: "1.2.3", urgent: true, failureStage: "download", failureReason: "Update download failed"},
+		{name: "signature failure releases idle reservation", current: "1.2.3", failureStage: "signature", failureReason: "Update signature verification failed"},
+		{name: "provenance failure releases idle reservation", current: "1.2.3", failureStage: "provenance", failureReason: "Update provenance verification failed"},
+		{name: "checksum failure releases idle reservation", current: "1.2.3", failureStage: "checksum", failureReason: "Update checksum verification failed"},
+		{name: "install failure releases idle reservation", current: "1.2.3", failureStage: "install", failureReason: "Update installation failed"},
+		{name: "urgent restart failure releases idle reservation", current: "1.2.3", urgent: true, failureStage: "restart", failureReason: "Update restart request was declined"},
 		{name: "explicit release refuses wrong lock selector", current: "1.2.3", explicit: true, invalidSelector: "DETENT_INSTALL_LOCK"},
 		{name: "explicit release refuses wrong state selector", current: "1.2.3", explicit: true, invalidSelector: "DETENT_STATE_DIR"},
 		{name: "explicit release", current: "1.2.3", explicit: true},
@@ -731,12 +731,16 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			if test.failureStage != "" {
 				now := time.Now().UTC()
 				running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: testPreviousCommit, Source: "release", SHA256: strings.Repeat("a", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
-				draining, drains := false, 0
+				reserved, reservations := false, 0
 				config := SchedulerConfig{CheckInterval: time.Hour, Updater: service, RunningBuild: running, StatePath: filepath.Join(tmp, "scheduler.json"), ApplyOptions: applyOptions, Now: func() time.Time { return now },
+					ReserveIdle: func(context.Context) (func(), bool) {
+						reservations++
+						reserved = true
+						return func() { reserved = false }, true
+					},
 					ReserveDrain: func(context.Context) (func(), error) {
-						drains++
-						draining = true
-						return func() { draining = false }, nil
+						t.Fatal("routine failed update drained runner")
+						return nil, ErrRefused
 					},
 					RequestRestart: func(string) bool { return false },
 				}
@@ -775,8 +779,8 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					owner.cfg.ApplyOptions = config.ApplyOptions
 				}
 				observed := owner.EnrolledUpdate(t.Context(), running, &request)
-				if draining || drains != 1 || observed == nil || observed.Validate() != nil || observed.Receipt.FailureReason != test.failureReason {
-					t.Fatalf("failed update: draining=%t drains=%d observation=%+v receipt=%+v", draining, drains, observed, observed.Receipt)
+				if reserved || reservations != 1 || observed == nil || observed.Validate() != nil || observed.Receipt.FailureReason != test.failureReason {
+					t.Fatalf("failed update: reserved=%t reservations=%d observation=%+v receipt=%+v", reserved, reservations, observed, observed.Receipt)
 				}
 				if test.failureStage != "restart" {
 					raw, err := os.ReadFile(binary)
@@ -792,33 +796,37 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					t.Fatal(err)
 				}
 				observed = resumed.EnrolledUpdate(t.Context(), running, &request)
-				if observed.Receipt.FailureReason != test.failureReason || drains != 1 {
-					t.Fatalf("restart lost failure or retried early: %+v drains=%d", observed.Receipt, drains)
+				if observed.Receipt.FailureReason != test.failureReason || reservations != 1 {
+					t.Fatalf("restart lost failure or retried early: %+v reservations=%d", observed.Receipt, reservations)
 				}
 				now = now.Add(time.Hour - time.Nanosecond)
 				resumed.EnrolledUpdate(t.Context(), running, &request)
-				if drains != 1 {
+				if reservations != 1 {
 					t.Fatal("retried before normal update schedule")
 				}
 				now = now.Add(time.Nanosecond)
 				resumed.EnrolledUpdate(t.Context(), running, &request)
-				if draining || drains != 2 {
-					t.Fatalf("scheduled retry: draining=%t drains=%d", draining, drains)
+				if reserved || reservations != 2 {
+					t.Fatalf("scheduled retry: reserved=%t reservations=%d", reserved, reservations)
 				}
 				return
 			}
 			var status Status
 			if test.explicit {
-				drains, restarts, releases := 0, 0, 0
+				reservations, restarts, releases := 0, 0, 0
 				scheduler, schedulerErr := NewScheduler(SchedulerConfig{
 					CheckInterval: time.Hour, Updater: service, ApplyOptions: applyOptions,
+					ReserveIdle: func(context.Context) (func(), bool) {
+						reservations++
+						return func() { releases++ }, true
+					},
 					ReserveDrain: func(context.Context) (func(), error) {
-						drains++
-						return func() { releases++ }, nil
+						t.Fatal("routine explicit update drained runner")
+						return nil, ErrRefused
 					},
 					RequestRestart: func(path string) bool {
 						if path != binary || releases != 0 {
-							t.Errorf("restart path = %q, released drains = %d", path, releases)
+							t.Errorf("restart path = %q, released reservations = %d", path, releases)
 						}
 						restarts++
 						return true
@@ -828,11 +836,11 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					t.Fatal(schedulerErr)
 				}
 				status, err = scheduler.ApplyRelease(t.Context(), test.fromRelease)
-				if test.invalidSelector != "" && (drains != 1 || restarts != 0 || releases != 1) {
-					t.Fatalf("refused update drains/restarts/releases = %d/%d/%d", drains, restarts, releases)
+				if test.invalidSelector != "" && (reservations != 1 || restarts != 0 || releases != 1) {
+					t.Fatalf("refused update reservations/restarts/releases = %d/%d/%d", reservations, restarts, releases)
 				}
-				if err == nil && (drains != 1 || restarts != 1 || releases != 0) {
-					t.Fatalf("drains = %d, restarts = %d, releases = %d", drains, restarts, releases)
+				if err == nil && (reservations != 1 || restarts != 1 || releases != 0) {
+					t.Fatalf("reservations = %d, restarts = %d, releases = %d", reservations, restarts, releases)
 				}
 			} else {
 				status, err = service.Apply(t.Context(), applyOptions)
@@ -906,7 +914,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				t.Fatalf("other installation receipt = %q, error = %v", legacyRaw, legacyErr)
 			}
 			metadata, ok := readInstallLock(lockPath)
-			if !ok || metadata.commit != testUpdatedCommit {
+			if !ok || metadata.commit != testUpdatedCommit || metadata.sha256 != status.BinarySHA256 {
 				t.Fatalf("install lock = %#v, found = %t, want updated full commit", metadata, ok)
 			}
 		})

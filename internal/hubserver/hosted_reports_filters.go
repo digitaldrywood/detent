@@ -144,9 +144,10 @@ type reportsScopeKey struct{}
 // window reads add to their statements. A read without a scope keeps its
 // statement unchanged, so an unfiltered report reads exactly as before.
 type reportsScope struct {
-	issues    string
-	issueArgs []any
-	attempts  reportsFilter
+	reporterPrincipal string
+	issues            string
+	issueArgs         []any
+	attempts          reportsFilter
 }
 
 // withReportsScope narrows the window reads under ctx to the filter. The
@@ -155,10 +156,17 @@ type reportsScope struct {
 // issue list leaves the database.
 func withReportsScope(ctx context.Context, scope nativeScope, f reportsFilter, from, to time.Time) (context.Context, error) {
 	out := reportsScope{attempts: reportsFilter{Runners: f.Runners, Models: f.Models, Stages: f.Stages}}
+	if parent, ok := reportsScopeFrom(ctx); ok && parent.reporterPrincipal != "" {
+		out.issues, out.issueArgs, out.reporterPrincipal = parent.issues, parent.issueArgs, parent.reporterPrincipal
+	}
 	if f.issues() {
 		statement, args, err := reportsIssueSubquery(scope, f, from, to)
 		if err != nil {
 			return ctx, err
+		}
+		if out.issues != "" {
+			statement += " AND ri.native_id IN (" + out.issues + ")"
+			args = append(args, out.issueArgs...)
 		}
 		out.issues, out.issueArgs = statement, args
 	}
@@ -288,6 +296,24 @@ func (s *Service) readReportsFacets(ctx context.Context, projects []string, w op
 	organization := s.config.Hosted.OrganizationID
 	q := s.database.reader
 	read := func(statement string, scan func(values ...string), args ...any) error {
+		if ownership, ok := reportsScopeFrom(ctx); ok && ownership.reporterPrincipal != "" {
+			column := "a.work_item_id"
+			if strings.Contains(statement, "FROM issues i") {
+				column = "i.native_id"
+			}
+			visibility, visibilityArgs := reportsIssueClause(ctx, column)
+			split := strings.Index(statement, " ORDER BY")
+			if split < 0 {
+				split = strings.Index(statement, " LIMIT")
+			}
+			if column == "i.native_id" && strings.Contains(statement, ") f ORDER BY") {
+				split = strings.Index(statement, ") f ORDER BY")
+			}
+			statement = statement[:split] + visibility + statement[split:]
+			scopedArgs := append([]any{}, args[:len(args)-1]...)
+			scopedArgs = append(scopedArgs, visibilityArgs...)
+			args = append(scopedArgs, args[len(args)-1])
+		}
 		rows, err := q.QueryContext(ctx, statement, args...)
 		if err != nil {
 			return err

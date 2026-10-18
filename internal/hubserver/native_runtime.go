@@ -28,12 +28,21 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 	if r == nil {
 		return nil
 	}
+	if launch := r.WorkerLaunch; launch != nil {
+		digest, err := hex.DecodeString(launch.ExecutionSHA256)
+		if err != nil || len(digest) != 32 || !validCommitID(launch.ExecutionCommit) ||
+			len(launch.ExecutionVersion) == 0 || len(launch.ExecutionVersion) > 128 || len(launch.ControlVersion) == 0 || len(launch.ControlVersion) > 128 ||
+			len(launch.PolicyID) == 0 || len(launch.PolicyID) > 128 || len(launch.PolicyRevision) > 256 ||
+			launch.PID <= 0 || launch.GroupID < 0 || launch.Protocol <= 0 || launch.SelectedAt.IsZero() || launch.ProcessStart.IsZero() {
+			return nativeRejection(nativeInvalid("Invalid execution worker launch identity"), "runtime_validation", "data.runtime.worker_launch")
+		}
+	}
 	if len(r.Pipeline) > 1024 || r.PipelineDropped < 0 {
-		return nativeInvalid("Invalid pipeline timing population")
+		return nativeRejection(nativeInvalid("Invalid pipeline timing population"), "runtime_validation", "data.runtime.pipeline")
 	}
 	for _, timing := range r.Pipeline {
 		if !timing.Valid() {
-			return nativeInvalid("Invalid pipeline timing")
+			return nativeRejection(nativeInvalid("Invalid pipeline timing"), "runtime_validation", "data.runtime.pipeline")
 		}
 	}
 	r.Pipeline = gate.PublicPipeline(r.Pipeline)
@@ -48,30 +57,30 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 		headInvalid := (!validCommitID(g.HeadSHA)) || (!validCommitID(g.TreeSHA))
 		evidenceInvalid := !g.Evidence.Valid() || !g.ValidPipeline("finalization")
 		if (commandInvalid) || (failedOutputTooLarge || successfulOutputTooLarge) || (durationInvalid) || (exitCodeInvalid) || (failedStageInvalid || stageInvalid) || (headInvalid) || (evidenceInvalid) {
-			return nativeInvalid("Invalid source validation evidence")
+			return nativeRejection(nativeInvalid("Invalid source validation evidence"), "runtime_validation", "data.runtime.validation")
 		}
 	}
 	if r.Validation != nil && r.Validation.Pipeline != nil {
 		r.Validation.Pipeline.Timings = gate.PublicPipeline(r.Validation.Pipeline.Timings)
 	}
 	if r.Completion != nil && (r.Completion.ObservedAt.IsZero() || r.Phase != "completed") {
-		return nativeInvalid("Host completion observations require a completed phase and observation time")
+		return nativeRejection(nativeInvalid("Host completion observations require a completed phase and observation time"), "runtime_validation", "data.runtime.completion")
 	}
 	if r.Completion != nil {
 		r.Completion.Source = "host_native_completion"
 		r.Completion.Coverage = "recorded_host_completion_branch_only; independent_of_provider_disposition_and_claim_release"
 	}
 	if !slices.Contains([]string{"implementation", "rework", "planning", "merging", "validation", "completed", "waiting_cache_admission", "waiting_cache_consumers"}, r.Phase) || r.LocalAttemptID < 0 || len(r.Phases) > 128 || r.PhasesDropped < 0 {
-		return nativeInvalid("Runtime observations require bounded phase and attempt identity")
+		return nativeRejection(nativeInvalid("Runtime observations require bounded phase and attempt identity"), "runtime_validation", "data.runtime")
 	}
 	for _, p := range r.Phases {
 		if !slices.Contains([]string{"implementation", "rework", "planning", "merging", "validation", "completed", "waiting_cache_admission", "waiting_cache_consumers"}, p.Name) || p.StartedAt.IsZero() || !p.FinishedAt.IsZero() && p.FinishedAt.Before(p.StartedAt) {
-			return nativeInvalid("Invalid runtime phase interval")
+			return nativeRejection(nativeInvalid("Invalid runtime phase interval"), "runtime_validation", "data.runtime.phases")
 		}
 	}
 	for _, v := range []string{r.Identity.BackendID, r.Identity.BackendKind, r.Identity.Role, r.Identity.Provider.Value, r.Identity.RequestedModel.Value, r.Identity.ResolvedModel.Value, r.Identity.ReasoningEffort.Value, r.Identity.ServiceTier.Value} {
 		if v != "" && !validExecutionName(v) {
-			return nativeInvalid("Invalid runtime identity")
+			return nativeRejection(nativeInvalid("Invalid runtime identity"), "runtime_validation", "data.runtime.identity")
 		}
 	}
 	r.Identity = r.Identity.Normalize()
@@ -79,40 +88,40 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 	r.Identity.Selection = agentidentity.Selection{}
 	if r.Activity != nil {
 		if r.Activity.Schema != 1 || r.Activity.AttemptID != r.LocalAttemptID || r.Activity.Generation != r.Generation || len(r.Activity.Spans) > 1024 || len(r.Activity.Sources) > 64 {
-			return nativeInvalid("Activity profile does not match its runtime observation")
+			return nativeRejection(nativeInvalid("Activity profile does not match its runtime observation"), "runtime_validation", "data.runtime.activity")
 		}
 		profile := workflowmetrics.PublicActivityProfile(*r.Activity)
 		r.Activity = &profile
 	}
 	if l := r.Landing; l != nil {
 		if len(l.Pipeline) > 1024 || l.PipelineDropped < 0 {
-			return nativeInvalid("Invalid landing timing population")
+			return nativeRejection(nativeInvalid("Invalid landing timing population"), "runtime_validation", "data.runtime.landing")
 		}
 		for _, timing := range l.Pipeline {
 			if !timing.Valid() {
-				return nativeInvalid("Invalid landing timing")
+				return nativeRejection(nativeInvalid("Invalid landing timing"), "runtime_validation", "data.runtime.landing")
 			}
 		}
 		l.Pipeline = gate.PublicPipeline(l.Pipeline)
 		if l.Path != "" && !slices.Contains([]string{"clean_push", "batch_member", "rebase_short_validation", "rebase_push"}, l.Path) || len(l.Packages) > 1024 {
-			return nativeInvalid("Invalid landing validation scope")
+			return nativeRejection(nativeInvalid("Invalid landing validation scope"), "runtime_validation", "data.runtime.landing")
 		}
 		if l.Refusal != "" && l.Refusal != l.RefusalKind || l.FromState != "" || l.TargetState != "" {
-			return nativeInvalid("Landing state observations belong to the workflow owner")
+			return nativeRejection(nativeInvalid("Landing state observations belong to the workflow owner"), "runtime_validation", "data.runtime.landing")
 		}
 		l.Refusal = l.RefusalKind
 		if ci := l.CI; ci != nil {
 			if ci.HeadSHA != l.HeadSHA || !validCommitID(ci.HeadSHA) || ci.PullRequest <= 0 || !slices.Contains([]string{"pending", "failure", "success"}, ci.State) || len(ci.RequiredChecks) > 256 || len(ci.PendingChecks) > 256 || len(ci.MissingChecks) > 256 || len(ci.FailedChecks) > 256 || len(ci.TriggerLabel) > 256 || l.Landed && ci.State != "success" {
-				return nativeInvalid("Invalid landing CI evidence")
+				return nativeRejection(nativeInvalid("Invalid landing CI evidence"), "runtime_validation", "data.runtime.landing")
 			}
 		}
 		if g := l.Gate; g != nil {
 			if strings.TrimSpace(g.Command) == "" || len(g.Command) > 4096 || len(g.Output) > 64*1024 || g.DurationNS < 0 || g.ExitCode < -1 || !validCommitID(g.HeadSHA) || !validCommitID(g.TreeSHA) || !g.Evidence.Valid() || !g.ValidPipeline("landing_validation") || l.Landed && g.ExitCode != 0 || l.GateFailed && g.ExitCode == 0 {
-				return nativeInvalid("Invalid landing gate evidence")
+				return nativeRejection(nativeInvalid("Invalid landing gate evidence"), "runtime_validation", "data.runtime.landing")
 			}
 		}
 		if l.ChangeID != "" && !validNativeID(l.ChangeID, "change") || l.VersionID != "" && (l.ChangeID == "" || !validNativeID(l.VersionID, "version")) || l.HeadSHA != "" && !validCommitID(l.HeadSHA) {
-			return nativeInvalid("Invalid landing identity")
+			return nativeRejection(nativeInvalid("Invalid landing identity"), "runtime_validation", "data.runtime.landing")
 		}
 		if l.Gate != nil && l.Gate.Pipeline != nil {
 			l.Gate.Pipeline.Timings = gate.PublicPipeline(l.Gate.Pipeline.Timings)
@@ -120,32 +129,32 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 		waitingCI := (l.Waiting || l.CI != nil && l.CI.State == "pending") && !l.GateFailed && l.RefusalKind == ""
 		if l.Landed {
 			if !validNativeID(l.ChangeID, "change") || !validNativeID(l.VersionID, "version") || !validCommitID(l.HeadSHA) || l.RefusalKind != "" || l.GateFailed || l.Waiting || !validCommitID(l.MergeSHA) || !slices.Contains([]string{"squash", "merge", "rebase"}, l.Method) || !validExecutionName(l.BaseRef) {
-				return nativeInvalid("Invalid landing receipt")
+				return nativeRejection(nativeInvalid("Invalid landing receipt"), "runtime_validation", "data.runtime.landing")
 			}
 		} else if l.MergeSHA != "" || !waitingCI && (!l.GateFailed || l.RefusalKind != "") && !slices.Contains([]string{"head_moved", "missing_head", "conflict", "nothing_to_land", "base_protected", "base_moved"}, l.RefusalKind) {
-			return nativeInvalid("Invalid landing refusal")
+			return nativeRejection(nativeInvalid("Invalid landing refusal"), "runtime_validation", "data.runtime.landing")
 		}
 	}
 	if r.REST != nil {
 		if len(r.REST.Windows) > 64 || len(r.REST.Divergences) > 64 || r.REST.Requests < 0 || r.REST.WindowsDropped < 0 || r.REST.DivergencesDropped < 0 {
-			return nativeInvalid("REST evidence exceeds its bound")
+			return nativeRejection(nativeInvalid("REST evidence exceeds its bound"), "runtime_validation", "data.runtime.rest")
 		}
 		r.REST.Source = "ordinary_response_headers"
 		r.REST.Coverage = "selected_client_only; subprocesses_other_clients_hosts_and_account_consumer_attribution_unavailable"
 		for i := range r.REST.Windows {
 			w := &r.REST.Windows[i]
 			if !validNativeRESTCredential(w.CredentialIdentity) || !slices.Contains([]string{"core", "search", "graphql", "integration_manifest", "unknown", ""}, w.Resource) || !slices.Contains([]string{"search", "label issues", "repository issues", "issue comments", "issue field values", "issue dependencies", "issue reads", "pull requests", "reviews", "mutations", "workflow runs", "check run annotations", "check runs", "commit statuses", "other"}, w.EndpointFamily) || w.Requests < 0 {
-				return nativeInvalid("Invalid REST operation evidence")
+				return nativeRejection(nativeInvalid("Invalid REST operation evidence"), "runtime_validation", "data.runtime.rest")
 			}
 			w.BudgetScope = "native_landing"
 		}
 		for _, d := range r.REST.Divergences {
 			if !validNativeRESTCredential(d.CredentialIdentity) || !slices.Contains([]string{"core", "search", "graphql", "integration_manifest", "unknown", ""}, d.Resource) || !slices.Contains([]string{"expected_shared_credential", "unattributed"}, d.Attribution) || d.ObservedRequests < 0 || d.DetentRequests < 0 || d.AttributedRequests < 0 || d.UnattributedRequests < 0 {
-				return nativeInvalid("Invalid REST attribution evidence")
+				return nativeRejection(nativeInvalid("Invalid REST attribution evidence"), "runtime_validation", "data.runtime.rest")
 			}
 		}
 	}
-	return validateNativeGitHubScope(r.GitHub)
+	return nativeRejection(validateNativeGitHubScope(r.GitHub), "runtime_validation", "data.runtime.github")
 }
 
 func (s *Service) getNativeExplanation(c echo.Context) error {

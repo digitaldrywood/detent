@@ -48,6 +48,7 @@ const nativeChangeAdminToken = "native-change-admin"
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
 type nativeChangeHub struct {
+	leaseHolds      atomic.Int64
 	reopen          func(func(string) error)
 	sourceDirectory string
 	review          string
@@ -60,6 +61,11 @@ type nativeChangeHub struct {
 	scheduler       *Scheduler
 	failChanges     *changeFailingTransport
 	otherWorker     func(*testing.T) *NativeClient
+}
+
+func (h *nativeChangeHub) leaseHold(context.Context) (func(), error) {
+	h.leaseHolds.Add(1)
+	return func() {}, nil
 }
 
 // changeFailingTransport refuses Change Request creation when armed, which is
@@ -274,6 +280,7 @@ func newNativeChangeHubDependencies(t *testing.T, review string, states []tracke
 		OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project},
 		Machine:           Machine{ID: "machine-native-change", Hostname: "host", Capacity: 1, Version: "test"},
 		HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second,
+		LeaseHold: h.leaseHold,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1267,7 +1274,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 				saved := before.CompletionState()
 				stop()
-				h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: h.scheduler.machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+				h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: h.scheduler.machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1292,7 +1299,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 				saved := before.CompletionState()
 				machine := h.scheduler.machine
-				h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+				h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1539,7 +1546,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 						if test.restoreRefusal == "policy" {
 							h.repolicy(t)
 						}
-						h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+						h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -1824,6 +1831,165 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 	}
 }
 
+func TestNativeExecutionResumedVersionPublication(t *testing.T) {
+	for _, refusal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("refusal=%t", refusal), func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			var otherProject tracker.NativeProject
+			if err := h.admin.client.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", map[string]any{"name": "another-project", "idempotency_key": "another-project", "states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}, &otherProject); err != nil {
+				t.Fatal(err)
+			}
+			foreign, err := h.native.client.Native(h.organization, otherProject.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, title := range []string{"First repair", "Second repair"} {
+				issue := h.createInProgress(t, title)
+				candidate := h.claim(t, issue.ID)
+				item := tracker.NativeWorkItemID(issue.ID)
+				e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+				e.SetRepository(nativeChangeRepository)
+				e.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+					return nativeChangeSourceFixture(ctx, t, base, head), nil
+				})
+				if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+					t.Fatal(err)
+				}
+				checkpoint := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: nativeChangeFixtureHead("c"), ExternalEffect: "none", EffectState: "none"}
+				e.SetDiffSource(nativeChangeDiff(checkpoint.HeadSHA, "README.md"))
+				if err := e.Checkpoint(t.Context(), checkpoint); err != nil {
+					t.Fatal(err)
+				}
+				diff, _ := nativeChangeDiff(checkpoint.HeadSHA, "README.md")(t.Context())
+				changeID, err := e.openChange(t.Context(), diff)
+				if err != nil {
+					t.Fatal(err)
+				}
+				transport := h.native.client.httpClient.Transport
+				var requests []tracker.PublishChangeVersion
+				reject := false
+				h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/versions") {
+						body, err := io.ReadAll(request.Body)
+						if err != nil {
+							return nil, err
+						}
+						request.Body = io.NopCloser(bytes.NewReader(body))
+						var input tracker.PublishChangeVersion
+						if err := json.Unmarshal(body, &input); err != nil {
+							return nil, err
+						}
+						requests = append(requests, input)
+						if reject {
+							return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"idempotency_conflict","message":"different content"}`)), Request: request}, nil
+						}
+					}
+					return transport.RoundTrip(request)
+				})
+				h.failChanges.dropVersions.Store(true)
+				if _, _, err := e.publishChangeVersion(t.Context(), changeID, diff); err == nil {
+					t.Fatal("lost publication acknowledgment was reported as success")
+				}
+				first, err := h.native.PublishChangeVersion(t.Context(), item, changeID, requests[0])
+				if err != nil {
+					t.Fatalf("identical retry after acknowledgment loss: %v", err)
+				}
+				if id, _, err := e.publishChangeVersion(t.Context(), changeID, diff); err != nil || id != first.ID {
+					t.Fatalf("reconcile acknowledged version: %s, %v", id, err)
+				}
+				if _, err := e.RecoverChangeSource(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				saved, attempt := e.CompletionState(), e.data.AttemptID
+				h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: h.scheduler.machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.scheduler.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, Repository: nativeChangeRepository}, candidate, saved); err != nil {
+					t.Fatal(err)
+				}
+				e = h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+				if e.data.AttemptID != attempt || e.retainedSource == nil || e.retainedSource.Source.HeadSHA != first.HeadSHA {
+					t.Fatal("restoration lost the attempt or retained source")
+				}
+				for _, boundary := range []string{"expected version", "lease", "fence"} {
+					invalid := requests[0]
+					invalid.IdempotencyKey = title + boundary
+					invalid.ExpectedVersionID = first.ID
+					switch boundary {
+					case "expected version":
+						invalid.ExpectedVersionID = ""
+					case "lease":
+						invalid.LeaseID = "00000000-0000-4000-8000-000000000000"
+					case "fence":
+						invalid.FencingToken++
+					}
+					if _, err := h.native.PublishChangeVersion(t.Context(), item, changeID, invalid); err == nil || hubErrorCode(err) == "idempotency_conflict" {
+						t.Fatalf("%s did not refuse through its authority boundary: %v", boundary, err)
+					}
+				}
+				e.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+					return nativeChangeSourceFixture(ctx, t, base, head), nil
+				})
+				checkpoint.HeadSHA = nativeChangeFixtureHead("d")
+				e.SetDiffSource(nativeChangeDiff(checkpoint.HeadSHA, "README.md"))
+				if err := e.Checkpoint(t.Context(), checkpoint); err != nil {
+					t.Fatal(err)
+				}
+				reject = refusal
+				if err := e.PrepareFinish(t.Context(), "succeeded", "", nil); err != nil {
+					t.Fatal(err)
+				}
+				reject = false
+				if err := e.Finish(t.Context(), "succeeded"); err != nil {
+					t.Fatal(err)
+				}
+				detail, err := h.admin.Change(t.Context(), item, changeID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantVersions, wantStatus := 2, "succeeded"
+				if refusal {
+					wantVersions, wantStatus = 1, "failed"
+				}
+				recovery, err := h.admin.Recovery(t.Context(), item)
+				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != wantStatus || len(detail.Versions) != wantVersions {
+					t.Fatalf("resumed publication: versions=%+v attempts=%+v error=%v", detail.Versions, recovery.Attempts, err)
+				}
+				if refusal {
+					finalization := recovery.Attempts[0].Finalization
+					if finalization == nil || finalization.VersionCode != "idempotency_conflict" || finalization.VersionID != "" || finalization.Reviewed || e.retainedSource.Source.HeadSHA != checkpoint.HeadSHA {
+						t.Fatalf("refusal lost incomplete publication or recoverable source: %+v", finalization)
+					}
+					var retained nativeCompletionState
+					if err := json.Unmarshal(e.CompletionState(), &retained); err != nil || retained.RetainedSource == nil {
+						t.Fatalf("refusal lost recoverable completion source: %v", err)
+					}
+					if err := workspace.VerifyChangeSource(t.Context(), retained.RetainedSource.Source, retained.RetainedSource.Bundle); err != nil {
+						t.Fatalf("refused source cannot be recovered: %v", err)
+					}
+				} else {
+					if detail.Versions[1].HeadSHA != checkpoint.HeadSHA || detail.Versions[1].AttemptID != attempt || requests[0].IdempotencyKey == requests[len(requests)-1].IdempotencyKey {
+						t.Fatal("changed candidate reused earlier publication identity")
+					}
+					if _, err := h.native.PublishChangeVersion(t.Context(), item, changeID, requests[len(requests)-1]); err != nil {
+						t.Fatalf("identical changed-candidate retry: %v", err)
+					}
+				}
+				if _, err := foreign.PublishChangeVersion(t.Context(), item, changeID, requests[0]); err == nil {
+					t.Fatal("cross-project publication accepted")
+				}
+				bundle, err := h.admin.ChangeSource(t.Context(), item, changeID, first.ID)
+				if err != nil || !bytes.Equal(bundle, requests[0].SourceBundle) {
+					t.Fatalf("publication changed the earlier source bundle: %v", err)
+				}
+				h.native.client.httpClient.Transport = transport
+				h.complete(t, issue.ID, e.NativeChange())
+			}
+		})
+	}
+}
+
 // TestNativeExecutionSettlesBeforeFinishing checks the order a crash cannot
 // strand: the Change Request exists before run.finished is published, so a
 // finish that dies in between leaves the attempt running, where the lease's
@@ -1850,6 +2016,9 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 				h := newNativeChangeHub(t, true)
 				issue := h.createInProgress(t, "Native change")
 				candidate := h.claim(t, issue.ID)
+				if got := h.leaseHolds.Load(); got != 1 {
+					t.Fatalf("claim acquired %d fixture lease holds, want 1", got)
+				}
 				execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
 				originalTransport := h.native.client.httpClient.Transport
 				var offline atomic.Bool
@@ -1926,12 +2095,15 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 					h.native.client.httpClient.Transport = originalTransport
 					h.failChanges.failEvents.Store(false)
 					machine := h.scheduler.machine
-					h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+					h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 					if err != nil {
 						t.Fatal(err)
 					}
 					if _, err := h.scheduler.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, Repository: nativeChangeRepository}, candidate, saved); err != nil {
 						t.Fatal(err)
+					}
+					if got := h.leaseHolds.Load(); got != 2 {
+						t.Fatalf("completion restore acquired %d fixture lease holds, want 2", got)
 					}
 					execution = h.scheduler.RunExecution(issue.ID).(*nativeExecution)
 					restoredPending, err := json.Marshal(execution.pending)
@@ -2254,7 +2426,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if h.native, err = client.Native(h.organization, h.project); err != nil {
 					t.Fatal(err)
 				}
-				if h.scheduler, err = NewScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second}); err != nil {
+				if h.scheduler, err = NewScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold}); err != nil {
 					t.Fatal(err)
 				}
 				if h.scheduler.client.runner == nil {
@@ -2946,7 +3118,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						t.Fatalf("capture mixed prepared completion evidence into live run data: %+v finalization=%+v", decoded.Data, decoded.PreparedFinalization)
 					}
 					machine := h.scheduler.machine
-					h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+					h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -2998,7 +3170,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 							saved = owner.CompletionState()
 						}
 						machine := h.scheduler.machine
-						h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+						h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -3054,7 +3226,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						t.Fatal(err)
 					}
 					machine := h.scheduler.machine
-					h.scheduler, err = NewScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+					h.scheduler, err = NewScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -3446,7 +3618,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if test.publicationFault == "foreign_source" {
 					machineID = "foreign-machine"
 				}
-				h.scheduler, err = NewScheduler(h.scheduler.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: machineID, Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+				h.scheduler, err = NewScheduler(h.scheduler.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: machineID, Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 				if err != nil {
 					t.Fatal(err)
 				}

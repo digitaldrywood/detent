@@ -117,6 +117,7 @@ func TestOperatorGitHubWorkReads(t *testing.T) {
 		{"work_list", `{"project_id":"visible","updated_after":"2026-10-12T00:00:00Z"}`, 400, "invalid"},
 		{"work_list", `{"project_id":"visible","created_by":"me"}`, 400, "invalid"},
 		{"work_item", `{"project_id":"visible","reference":"#1"}`, 200, "Body"},
+		{"work_item", `{"project_id":"visible","reference":"#1","view":"recovery"}`, 400, "invalid"},
 		{"work_config", `{"project_id":"visible"}`, 200, "bug"},
 		{"work_comments", `{"project_id":"visible","reference":"#1","limit":1}`, 200, "First note"},
 		{"work_comments", `{"project_id":"visible","reference":"#1","offset":1,"limit":1}`, 200, "Edited note"},
@@ -209,6 +210,7 @@ func TestOperatorNativeClientReads(t *testing.T) {
 		want  string
 	}{
 		{"work_item", nil, "Full native body"},
+		{"work_item", map[string]any{"view": "recovery", "cursor": "retained-cursor"}, "retained-record"},
 		{"board_receipt", nil, "runtime_phase_heartbeat"},
 		{"board_session", nil, "historical_scheduler_decision"},
 		{"github_scope_timings", map[string]any{"native_attempt_id": "attempt_fixture", "runner_id": "runner_fixture"}, "github_scope_timings"},

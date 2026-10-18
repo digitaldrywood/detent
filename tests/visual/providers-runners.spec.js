@@ -83,14 +83,15 @@ for (const width of [1440, 390]) {
       expect(await dialog.innerHTML()).not.toContain("det_enroll_preview");
       if (sprite) {
         const instructions = dialog.getByRole("list", { name: "Sprite setup instructions" });
-        await expect(instructions.getByRole("listitem")).toHaveCount(8);
-        await expect(instructions).toContainText("sprite create build-sprite");
-        await expect(instructions).toContainText("sprite console -s build-sprite");
+        await instructions.getByRole("button", { name: "Copy the create command", exact: true }).click();
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('sprite list -o "${SPRITE_ORG:?Set SPRITE_ORG to your Fly organization}" && sprite create -o "${SPRITE_ORG:?Set SPRITE_ORG to your Fly organization}" build-sprite');
+        await instructions.getByRole("button", { name: "Copy the console command", exact: true }).click();
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('sprite console -o "${SPRITE_ORG:?Set SPRITE_ORG to your Fly organization}" -s build-sprite');
         await expect(instructions).toContainText("/v0.9.1/scripts/sprite-runner-bootstrap.sh");
         await expect(instructions).toContainText("bash sprite-runner-bootstrap.sh --version v0.9.1");
         await expect(instructions).toContainText("claude auth login");
         await expect(instructions).toContainText("codex login --device-auth");
-        await expect(instructions).toContainText("Approve the repository policy");
+        await expect(instructions).toContainText("approve policy only if offered");
         await expect(dialog.getByRole("button", { name: "Show token" })).toHaveCount(0);
       }
       await copy.click();
@@ -136,7 +137,7 @@ for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1100 });
     await openFleet(page);
     await page.getByText("Fleet capacity and providers", { exact: true }).click();
-    await expect(page.getByText("1 of 7 slots running work")).toBeVisible();
+    await expect(page.getByText("1 of 7 slots occupied", { exact: true })).toBeVisible();
     await expect(page.getByText("5 slots can't take work")).toBeVisible();
     const groups = page.getByTestId("runner-capacity");
     await expect(groups).toHaveCount(fleet.runners.length);
@@ -394,7 +395,10 @@ test("Sprite pool row saves its limits without exposing setup fields on the list
   await openFleet(page, fleet, "", false, { ...spritePool, min_runners: 0, max_runners: 0, members: [] });
   const row = page.getByTestId("sprite-pool-row");
   await expect(row).toContainText("Not set up. Sprites start runners for every project when work is queued.");
-  await expect(row.getByRole("link", { name: "Set up Sprites", exact: true })).toHaveAttribute("href", "/settings/integrations#sprites");
+  await row.getByRole("button", { name: "Set up Sprites", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Organization Sprite pool" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "Organization Sprite pool" })).toHaveCount(0);
   await expect(row.getByRole("link", { name: "Set a Sprites token" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Needs attention 1" })).toBeVisible();
   await page.getByRole("link", { name: "Needs attention 1" }).click();

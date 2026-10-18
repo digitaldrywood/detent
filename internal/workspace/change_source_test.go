@@ -97,6 +97,8 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		previous    bool
 		absent      bool
 		corrupt     bool
+		transferred bool
+		locked      bool
 	}{
 		{name: "additional advertised ref", edit: editBundle(bytes.Replace(capture.Bundle, []byte("\n\n"), []byte("\n"+head+" refs/heads/extra\n\n"), 1))},
 		{name: "wrong advertised head", edit: editBundle(bytes.Replace(capture.Bundle, []byte(head+" HEAD"), []byte(base+" HEAD"), 1))},
@@ -117,6 +119,12 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		{name: "superseded Hub-only source is preserved and restored", unpublished: true, previous: true},
 		{name: "superseded Hub-only branch without workspace is preserved and restored", unpublished: true, previous: true, absent: true},
 		{name: "unknown unpublished source survives restoration", unpublished: true},
+		{name: "transferred version refuses locked dirty custody", pending: "mixed", transferred: true, locked: true},
+		{name: "transferred version preserves mixed dirty custody", pending: "mixed", transferred: true},
+		{name: "transferred version preserves staged-only custody", pending: "index", transferred: true},
+		{name: "transferred version preserves untracked custody", pending: "untracked", transferred: true},
+		{name: "transferred version preserves unknown unpublished head", unpublished: true, transferred: true},
+		{name: "transferred version restores superseded head with custody", published: true, previous: true, transferred: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "second")
@@ -128,6 +136,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 			}
 			metadata := capture.Source
 			retained := &ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: base, HeadSHA: head, Repository: repository, Source: &metadata}}, Bundle: capture.Bundle}
+			retained.Version.ID, retained.Transferred = "version_selected", test.transferred
 			if test.edit != nil {
 				test.edit(retained)
 			}
@@ -165,7 +174,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 					runGit(t, dir, "worktree", "remove", info.Path)
 				}
 				restored, restoreErr := backend.Create(t.Context(), issue)
-				if test.previous && !test.corrupt {
+				if (test.previous || test.transferred) && !test.corrupt {
 					if restoreErr != nil {
 						t.Fatalf("restore superseded source: %v", restoreErr)
 					}
@@ -188,7 +197,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 					return
 				}
 				var refusal *LandRefusal
-				if test.unpublished && !test.corrupt {
+				if test.unpublished && !test.corrupt && !test.transferred {
 					if restoreErr != nil || restored.Created {
 						t.Fatalf("unpublished work must remain available unchanged: %+v, %v", restored, restoreErr)
 					}
@@ -284,7 +293,25 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 					runGit(t, info.Path, "add", "README.md")
 					writeFileDiffFile(t, info.Path, "README.md", wantFiles["README.md"])
 				}
-				_, restoreErr := backend.Create(t.Context(), issue)
+				if test.locked {
+					runGit(t, dir, "worktree", "lock", info.Path)
+				}
+				restored, restoreErr := backend.Create(t.Context(), issue)
+				if test.locked {
+					var refusal *LandRefusal
+					if !errors.As(restoreErr, &refusal) || refusal.Kind != LandRefusalHeadMoved || !strings.Contains(refusal.Reason, retained.Version.ID) || !strings.Contains(refusal.Reason, "source recovery") {
+						t.Fatalf("locked custody lacks an actionable refusal: %v", restoreErr)
+					}
+				} else if test.transferred {
+					if restoreErr != nil || !restored.Created || strings.TrimSpace(runGit(t, restored.Path, "rev-parse", "HEAD")) != head || runGit(t, restored.Path, "status", "--porcelain") != "" {
+						t.Fatalf("transfer did not restore clean selected source: %+v, %v", restored, restoreErr)
+					}
+					paths, err := filepath.Glob(filepath.Join(backend.(*LocalGit).root, ".detent", "quarantine", "*"))
+					if err != nil || len(paths) != 1 {
+						t.Fatalf("preserved workspaces=%v: %v", paths, err)
+					}
+					info.Path = paths[0]
+				}
 				if restoreErr != nil {
 					t.Logf("source restoration refused: %v", restoreErr)
 				}

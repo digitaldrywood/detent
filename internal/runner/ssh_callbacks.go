@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -20,14 +21,15 @@ import (
 )
 
 type SSHRunRequest struct {
-	BatchedLanding bool
-	ExecutionTools []AgentTool
-	Request        RunRequest
-	Callbacks      []string
-	Recovery       *tracker.NativeRecovery
-	Native         bool
-	Capacity       *providercapacity.Reservation
-	Sources        *SSHExecutionSources `json:"-"`
+	IsolationPolicy *isolation.Policy
+	BatchedLanding  bool
+	ExecutionTools  []AgentTool
+	Request         RunRequest
+	Callbacks       []string
+	Recovery        *tracker.NativeRecovery
+	Native          bool
+	Capacity        *providercapacity.Reservation
+	Sources         *SSHExecutionSources `json:"-"`
 }
 
 type SSHRunResponse struct {
@@ -46,7 +48,7 @@ func (r *Runner) SSHHosts() []string {
 }
 
 func NewSSHRunRequest(request RunRequest) SSHRunRequest {
-	wire := SSHRunRequest{Request: request, BatchedLanding: request.LandingBatch != nil}
+	wire := SSHRunRequest{IsolationPolicy: request.Issue.IsolationPolicy, Request: request, BatchedLanding: request.LandingBatch != nil}
 	callbacks := map[string]bool{
 		"usage": request.OnUsageUpdate != nil, "activity": request.OnActivityUpdate != nil,
 		"override": request.OnOverrideRejected != nil, "progress": request.ProgressProbe != nil,
@@ -74,6 +76,7 @@ func NewSSHRunRequest(request RunRequest) SSHRunRequest {
 
 func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 	request := wire.Request
+	request.Issue.IsolationPolicy = wire.IsolationPolicy
 	for _, name := range wire.Callbacks {
 		switch name {
 		case "usage":

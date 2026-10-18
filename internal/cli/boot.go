@@ -411,6 +411,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	if err != nil {
 		return err
 	}
+	if err := updateScheduler.PrepareWorkers(runCtx); err != nil {
+		return fmt.Errorf("prepare execution workers: %w", err)
+	}
 	kanbanWorkflow, err := bootKanbanWorkflow(runCtx, cfg)
 	if err != nil {
 		return err
@@ -642,7 +645,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			Runner:             cfg.Runner,
 		}, runtimeStore, nil, serviceConnection, workerCredentials.Token, runnerIsolationPolicy(cfg.Global.Client.IdentityFile), func(ctx context.Context, selected globalconfig.Project, workflow workflowconfig.Config) (string, error) {
 			return resolveRunnerProjectGitHubToken(ctx, globalConfigState.get(), selected, workflow, runtimeDeps{})
-		}, providerUsage)
+		}, updateScheduler.WorkerArtifacts(), providerUsage)
 		resourceWorkers.Go(func() {
 			runRuntimeBuildDriftMonitor(runCtx, cfg.Build, deps.buildDriftInterval, readInstalledBuild, logger)
 		})

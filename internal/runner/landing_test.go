@@ -769,6 +769,144 @@ func (e *landingRunExecution) Guard(ctx context.Context) (context.Context, func(
 	return ctx, func() { e.stopped = true }, nil
 }
 
+func TestNativeReviewThreadTools(t *testing.T) {
+	const head = "1111111111111111111111111111111111111111"
+	for _, test := range []struct {
+		name          string
+		mode          string
+		tracker       string
+		tool          string
+		arguments     string
+		unreviewed    bool
+		humanRoot     bool
+		unreviewable  bool
+		lostClaim     bool
+		movedAt       int
+		wantTools     bool
+		wantSuccess   bool
+		wantMutations int
+		wantContent   string
+	}{
+		{name: "reviewed source supports explicit bot disposition", wantTools: true, wantSuccess: true, wantMutations: 2},
+		{name: "read exposes the actual published source even before review", tool: "detent_read_review_threads", arguments: `{}`, unreviewed: true, wantTools: true, wantSuccess: true, wantContent: `"reviewed":false`},
+		{name: "unreviewed source cannot resolve feedback", unreviewed: true, wantTools: true, wantContent: `"reason_code":"host_publication_pending"`},
+		{name: "unpublished repair cannot resolve unreviewed feedback", unreviewed: true, arguments: `{"head_sha":"local-repair","thread_id":"T1","disposition":"fixed","evidence":"source.go:17 correction"}`, wantTools: true, wantContent: "current published head"},
+		{name: "human-rooted conversation remains human owned", humanRoot: true, wantTools: true, wantContent: "human"},
+		{name: "wrong item authority cannot be supplied", arguments: `{"work_item_id":"wi_other"}`, wantTools: true, wantContent: "invalid review disposition arguments"},
+		{name: "non-review landing refusal is not a host review wait", unreviewable: true, wantTools: true, wantContent: "not reviewed"},
+		{name: "lost claim cannot write to GitHub", lostClaim: true, wantTools: true, wantContent: "claim lost"},
+		{name: "changed native version cannot resolve feedback", movedAt: 3, wantTools: true, wantMutations: 1, wantContent: "source changed"},
+		{name: "a stale supplied head cannot resolve feedback", arguments: `{"head_sha":"old","thread_id":"T1","disposition":"fixed","evidence":"source.go:17 correction"}`, wantTools: true, wantContent: "current published head"},
+		{name: "missing disposition evidence cannot use host metadata as proof", arguments: `{"head_sha":"` + head + `","thread_id":"T1","disposition":"fixed","evidence":""}`, wantTools: true, wantContent: "explicit source or test evidence"},
+		{name: "unknown authority arguments are refused", arguments: `{"project_id":"another-project"}`, wantTools: true, wantContent: "invalid review disposition arguments"},
+		{name: "planning does not acquire forge mutation authority", mode: RunModePlan},
+		{name: "non-native workflows keep their configured ownership", tracker: config.TrackerGitHub},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			execution := &landingRunExecution{landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_current", VersionID: "version_current", Repository: "https://github.com/example/repo", HeadSHA: head, BaseRef: "develop", GitHubPullRequest: true, External: &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/example/repo/pull/7"}}}}
+			if test.unreviewed {
+				execution.targetErr = ErrLandingNotReviewed
+				execution.target.ReviewPending = true
+			}
+			if test.unreviewable {
+				execution.targetErr = ErrLandingNotReviewed
+			}
+			if test.lostClaim {
+				execution.validateErr = errors.New("claim lost")
+			}
+			validations := 0
+			execution.onValidate = func() {
+				validations++
+				if validations == test.movedAt {
+					execution.target.VersionID = "another-version"
+				}
+			}
+			kind := test.tracker
+			if kind == "" {
+				kind = config.TrackerHubNative
+			}
+			r := &Runner{workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: kind}, Worker: config.Worker{GitHubToken: "worker-test-token"}}}}
+			mode := test.mode
+			if mode == "" {
+				mode = RunModeImplement
+			}
+			tools, handle := r.nativeReviewThreadTools(RunRequest{Execution: execution, Mode: mode, Issue: connector.Issue{ID: "wi_current", State: "Rework"}})
+			if (len(tools) != 0) != test.wantTools {
+				t.Fatalf("tools=%v, available=%t", tools, test.wantTools)
+			}
+			if !test.wantTools {
+				return
+			}
+			mutations := 0
+			resolved := false
+			originalClient := http.DefaultClient
+			http.DefaultClient = &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Host != "api.github.com" || req.URL.Path != "/graphql" || req.Header.Get("Authorization") != "Bearer worker-test-token" {
+					t.Fatalf("unexpected host GitHub request %s", req.URL)
+				}
+				var input struct {
+					Query     string         `json:"query"`
+					Variables map[string]any `json:"variables"`
+				}
+				if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+					t.Fatal(err)
+				}
+				body := ""
+				switch {
+				case strings.Contains(input.Query, "query NativeLandingReviewThreads"):
+					if input.Variables["owner"] != "example" || input.Variables["name"] != "repo" || input.Variables["number"] != float64(7) {
+						t.Fatalf("unscoped thread query: %#v", input.Variables)
+					}
+					authorKind := "Bot"
+					if test.humanRoot {
+						authorKind = "User"
+					}
+					body = fmt.Sprintf(`{"repository":{"pullRequest":{"number":7,"headRefOid":%q,"baseRefName":"develop","headRepository":{"nameWithOwner":"example/repo"},"repository":{"nameWithOwner":"example/repo"},"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"T1","isResolved":%t,"comments":{"nodes":[{"body":"P2 finding","author":{"__typename":%q,"login":"example-bot"}}]}}]}}}}`, head, resolved, authorKind)
+				case strings.Contains(input.Query, "addPullRequestReviewThreadReply"):
+					mutations++
+					evidence, _ := input.Variables["body"].(string)
+					for _, value := range []string{head, "fixed", "source.go:17", "change_current", "version_current"} {
+						if !strings.Contains(evidence, value) {
+							t.Fatalf("disposition missing %q: %s", value, evidence)
+						}
+					}
+					body = `{"addPullRequestReviewThreadReply":{"comment":{"id":"reply"}}}`
+				case strings.Contains(input.Query, "resolveReviewThread"):
+					mutations++
+					resolved = true
+					if input.Variables["thread"] != "T1" {
+						t.Fatal("resolved an unrelated conversation")
+					}
+					body = `{"resolveReviewThread":{"thread":{"id":"T1","isResolved":true}}}`
+				default:
+					t.Fatalf("unexpected query: %s", input.Query)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"data":` + body + `}`))}, nil
+			})}
+			t.Cleanup(func() { http.DefaultClient = originalClient })
+			name := test.tool
+			if name == "" {
+				name = "detent_resolve_review_thread"
+			}
+			arguments := test.arguments
+			if arguments == "" {
+				arguments = `{"head_sha":"` + head + `","thread_id":"T1","disposition":"fixed","evidence":"Published source.go:17 preserves the immutable head; exact-source regression passed."}`
+			}
+			result, err := handle(t.Context(), AgentToolCall{Name: name, Arguments: json.RawMessage(arguments)})
+			if err != nil && !test.lostClaim {
+				t.Fatal(err)
+			}
+			content := result.Content
+			if err != nil {
+				content = err.Error()
+			}
+			if result.Success != test.wantSuccess || mutations != test.wantMutations || !strings.Contains(content, test.wantContent) {
+				t.Fatalf("result=%+v err=%v mutations=%d; want success=%t mutations=%d content=%q", result, err, mutations, test.wantSuccess, test.wantMutations, test.wantContent)
+			}
+		})
+	}
+}
+
 func TestNativeLandingAdmissionAndQuotaOutcomes(t *testing.T) {
 	originalClient := http.DefaultClient
 	http.DefaultClient = &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {

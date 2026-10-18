@@ -123,7 +123,11 @@ func (m *Managed) Maintain(ctx context.Context, policy Policy, now time.Time) (r
 	if capacityErr != nil {
 		capacity = 0
 	}
-	if report.RetainedBytes <= policy.NormalizedForCapacity(capacity).MaxBytes {
+	policy = policy.NormalizedForCapacity(capacity)
+	if policy.reclaimBytes > 0 {
+		policy.MaxBytes = min(policy.MaxBytes, max(1, report.RetainedBytes-policy.reclaimBytes))
+	}
+	if report.RetainedBytes <= policy.MaxBytes {
 		return report, nil
 	}
 	queue, err := m.tryLock(ctx, "admission", false)

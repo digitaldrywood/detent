@@ -2,7 +2,9 @@ package update
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -20,9 +22,29 @@ func TestStartupRecoveryUnexpectedRestartIdentity(t *testing.T) {
 		installedVersion string
 		installedCommit  string
 		rollback         bool
+		superseding      bool
+		receiptVersion   string
+		receiptCommit    string
+		otherReceiptPath bool
+		otherCopy        bool
+		missingDigest    bool
+		wrongDigest      bool
 		readErr          bool
 		wantErr          bool
 	}{
+		{name: "verified superseding installation", currentVersion: "1.2.0", currentCommit: testUpdatedCommit, installedVersion: "1.2.0", installedCommit: testUpdatedCommit, superseding: true, receiptVersion: "1.2.0", receiptCommit: testUpdatedCommit},
+		{name: "superseding install after rollback requested", currentVersion: "1.2.0", currentCommit: testUpdatedCommit, installedVersion: "1.2.0", installedCommit: testUpdatedCommit, superseding: true, receiptVersion: "1.2.0", receiptCommit: testUpdatedCommit, rollback: true},
+		{name: "newer version without install receipt", currentVersion: "1.2.0", currentCommit: testUpdatedCommit, installedVersion: "1.2.0", installedCommit: testUpdatedCommit, superseding: true, wantErr: true},
+		{name: "superseding receipt abbreviated commit", currentVersion: "1.2.0", currentCommit: testUpdatedCommit[:12], installedVersion: "1.2.0", installedCommit: testUpdatedCommit[:12], superseding: true, receiptVersion: "1.2.0", receiptCommit: testUpdatedCommit[:12], wantErr: true},
+		{name: "superseding receipt wrong commit", currentVersion: "1.2.0", currentCommit: testUpdatedCommit, superseding: true, receiptVersion: "1.2.0", receiptCommit: testPreviousCommit, wantErr: true},
+		{name: "superseding receipt wrong version", currentVersion: "1.2.0", currentCommit: testUpdatedCommit, superseding: true, receiptVersion: "1.1.0", receiptCommit: testUpdatedCommit, wantErr: true},
+		{name: "superseding receipt another installation", currentVersion: "1.2.0", currentCommit: testUpdatedCommit, superseding: true, receiptVersion: "1.2.0", receiptCommit: testUpdatedCommit, otherReceiptPath: true, wantErr: true},
+		{name: "newer process another copy", currentVersion: "1.2.0", currentCommit: testUpdatedCommit, superseding: true, receiptVersion: "1.2.0", receiptCommit: testUpdatedCommit, otherCopy: true, wantErr: true},
+		{name: "superseding legacy receipt without digest", currentVersion: "1.2.0", currentCommit: testUpdatedCommit, superseding: true, receiptVersion: "1.2.0", receiptCommit: testUpdatedCommit, missingDigest: true, wantErr: true},
+		{name: "superseding changed executable", currentVersion: "1.2.0", currentCommit: testUpdatedCommit, installedVersion: "1.2.0", installedCommit: testUpdatedCommit, superseding: true, receiptVersion: "1.2.0", receiptCommit: testUpdatedCommit, wrongDigest: true, wantErr: true},
+		{name: "superseding installed identity mismatch", currentVersion: "1.2.0", currentCommit: testUpdatedCommit, installedVersion: "1.2.0", installedCommit: testPreviousCommit, superseding: true, receiptVersion: "1.2.0", receiptCommit: testUpdatedCommit, wantErr: true},
+		{name: "superseding installed identity unavailable", currentVersion: "1.2.0", currentCommit: testUpdatedCommit, superseding: true, receiptVersion: "1.2.0", receiptCommit: testUpdatedCommit, readErr: true, wantErr: true},
+		{name: "older unrelated install receipt", currentVersion: "0.9.0", currentCommit: testUpdatedCommit, superseding: true, receiptVersion: "0.9.0", receiptCommit: testUpdatedCommit, wantErr: true},
 		{name: "previous copy while target installed", currentVersion: "1.0.0", currentCommit: testPreviousCommit, installedVersion: "1.1.0", installedCommit: testUpdatedCommit, wantErr: true},
 		{name: "rollback intent without completion", currentVersion: "1.0.0", currentCommit: testPreviousCommit, installedVersion: "1.1.0", installedCommit: testUpdatedCommit, rollback: true, wantErr: true},
 		{name: "unrelated restarted version", currentVersion: "0.9.0", currentCommit: testPreviousCommit, wantErr: true},
@@ -42,6 +64,31 @@ func TestStartupRecoveryUnexpectedRestartIdentity(t *testing.T) {
 			}
 			now := time.Date(2026, 9, 13, 0, 0, 0, 0, time.UTC)
 			pending := &PendingUpdate{FromVersion: "1.0.0", FromCommit: testPreviousCommit, ToVersion: "1.1.0", ToCommit: testUpdatedCommit, ExecutablePath: filepath.Join(dir, "detent"), PreviousBinaryPath: previous, AppliedAt: now}
+			executable := filepath.Join(dir, "another-copy")
+			if tt.superseding && !tt.otherCopy {
+				executable = pending.ExecutablePath
+			}
+			lockPath := filepath.Join(dir, "install.lock")
+			if tt.receiptVersion != "" {
+				payload := []byte("verified executable")
+				if err := os.WriteFile(pending.ExecutablePath, payload, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+				if tt.missingDigest {
+					digest = ""
+				}
+				if tt.wrongDigest {
+					digest = strings.Repeat("0", 64)
+				}
+				receiptBinary := pending.ExecutablePath
+				if tt.otherReceiptPath {
+					receiptBinary = filepath.Join(dir, "unrelated-installation")
+				}
+				if err := writeInstallLockContents(lockPath, fmt.Sprintf("binary=%s\nversion=%s\ncommit=%s\nsha256=%s\n", receiptBinary, tt.receiptVersion, tt.receiptCommit, digest)); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if tt.rollback {
 				pending.RollbackRequestedAt = &now
 			}
@@ -53,7 +100,8 @@ func TestStartupRecoveryUnexpectedRestartIdentity(t *testing.T) {
 			for range 2 {
 				recovery := newTestStartupRecovery(t, StartupRecoveryConfig{
 					StatePath: statePath, CurrentVersion: tt.currentVersion, CurrentCommit: tt.currentCommit,
-					ExecutablePath: filepath.Join(dir, "another-copy"),
+					ExecutablePath: executable,
+					Env:            map[string]string{"DETENT_INSTALL_LOCK": lockPath},
 					BinaryVerifier: func(_ context.Context, path string) (string, error) {
 						if path != pending.ExecutablePath {
 							t.Fatalf("verified path = %q, want installation %q", path, pending.ExecutablePath)
@@ -82,7 +130,7 @@ func TestStartupRecoveryUnexpectedRestartIdentity(t *testing.T) {
 				if after.PendingUpdate != nil || after.ActiveFailure != nil || after.LastHealthyAt == nil {
 					t.Fatalf("state did not resolve: %#v", after)
 				}
-				if (after.LastRollback != nil) != tt.rollback {
+				if (after.LastRollback != nil) != (tt.rollback && !tt.superseding) {
 					t.Fatalf("rollback = %#v, requested=%v", after.LastRollback, tt.rollback)
 				}
 				if after.LastCrashLoop == nil || after.LastRecoveryUpdateAttemptVersion != before.LastRecoveryUpdateAttemptVersion {

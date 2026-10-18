@@ -385,6 +385,7 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	drainTestNativeBoard(t, f.service)
 	windows := []tracker.NativeShippedWindow{{Window: "1h", Shipped: 3}, {Window: "24h", Shipped: 3, Cancelled: 1}, {Window: "7d", Shipped: 5, Cancelled: 2}}
 	for _, test := range []struct {
 		window, filter     string

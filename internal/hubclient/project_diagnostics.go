@@ -29,7 +29,7 @@ func (e *nativeExecution) HostOperation(operation string, at time.Time, err erro
 		e.diagnostic.OperationStartedAt = at.UTC()
 	}
 	if err != nil {
-		e.diagnostic.LatestError = runnerauth.DiagnosticError(err.Error())
+		e.diagnostic.LatestError = diagnosticError(err)
 		e.diagnostic.LatestErrorCode = diagnosticErrorCode(err)
 	}
 }
@@ -46,7 +46,7 @@ func (e *nativeExecution) diagnosticOperation(operation string) func(error) {
 		defer e.diagnosticMu.Unlock()
 		e.diagnostic.OperationObservedAt = e.scheduler.now().UTC()
 		if err != nil {
-			e.diagnostic.LatestError = runnerauth.DiagnosticError(err.Error())
+			e.diagnostic.LatestError = diagnosticError(err)
 			e.diagnostic.LatestErrorCode = diagnosticErrorCode(err)
 			return
 		}
@@ -189,6 +189,14 @@ func (s *Scheduler) enrichProjectDiagnostics(ctx context.Context, source *Native
 	}
 	d.Bound()
 	return nil
+}
+
+func diagnosticError(err error) string {
+	var failure *APIError
+	if errors.As(err, &failure) && failure.Code == "invalid_request" && failure.Rejection != nil && failure.Rejection.Valid() {
+		return failure.Rejection.DiagnosticError()
+	}
+	return runnerauth.DiagnosticError(err.Error())
 }
 
 func diagnosticErrorCode(err error) string {

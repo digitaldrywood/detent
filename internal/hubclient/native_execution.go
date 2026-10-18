@@ -24,6 +24,11 @@ import (
 )
 
 type nativeExecution struct {
+	workerMu          sync.Mutex
+	workerCloseMu     sync.Mutex
+	cancelMu          sync.Mutex
+	workers           []func(context.Context) error
+	workerLauncher    func(context.Context, runner.RunRequest) (runner.RunResult, error)
 	reasonGenerator   runner.DependencyReasonGenerator
 	diagnostic        runnerauth.DiagnosticAttempt
 	diagnosticMu      sync.Mutex
@@ -75,6 +80,54 @@ type nativeExecution struct {
 	retainedSource  *tracker.ChangeSourceCapture
 	sourceRequired  bool
 	recoveredSource *tracker.NativeChangeReference
+}
+
+func (e *nativeExecution) KeepWorker(closeWorker func(context.Context) error, launch func(context.Context, runner.RunRequest) (runner.RunResult, error)) error {
+	if closeWorker == nil {
+		return errors.New("execution worker cleanup is required")
+	}
+	e.workerMu.Lock()
+	defer e.workerMu.Unlock()
+	e.workers = append(e.workers, closeWorker)
+	if e.workerLauncher == nil {
+		e.workerLauncher = launch
+	}
+	return nil
+}
+
+func (e *nativeExecution) WorkerLauncher() func(context.Context, runner.RunRequest) (runner.RunResult, error) {
+	e.workerMu.Lock()
+	defer e.workerMu.Unlock()
+	return e.workerLauncher
+}
+
+func (e *nativeExecution) hasWorkers() bool {
+	e.workerMu.Lock()
+	defer e.workerMu.Unlock()
+	return len(e.workers) > 0
+}
+
+func (e *nativeExecution) closeWorkers(ctx context.Context) error {
+	e.workerCloseMu.Lock()
+	defer e.workerCloseMu.Unlock()
+	e.workerMu.Lock()
+	workers := append([]func(context.Context) error(nil), e.workers...)
+	e.workerMu.Unlock()
+	var pending []func(context.Context) error
+	var failures []error
+	for _, closeWorker := range workers {
+		if err := closeWorker(ctx); err != nil {
+			pending = append(pending, closeWorker)
+			failures = append(failures, err)
+		}
+	}
+	e.workerMu.Lock()
+	e.workers = append(pending, e.workers[len(workers):]...)
+	if len(e.workers) == 0 {
+		e.workerLauncher = nil
+	}
+	e.workerMu.Unlock()
+	return errors.Join(failures...)
 }
 
 type nativeMutationAuthorityKey struct{}
@@ -179,9 +232,9 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	}
 	bound := context.WithValue(ctx, nativeMutationAuthorityKey{}, nativeMutationAuthority{scope: e.claim.source.client.base(), lease: e.claim.lease, cancellation: func() error { return context.Cause(ctx) }})
 	guarded, cancel := context.WithCancelCause(bound)
-	e.mu.Lock()
+	e.cancelMu.Lock()
 	e.cancel = cancel
-	e.mu.Unlock()
+	e.cancelMu.Unlock()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -244,9 +297,9 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 
 func (e *nativeExecution) unavailable(err error) error {
 	cause := errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
-	e.mu.Lock()
+	e.cancelMu.Lock()
 	cancel := e.cancel
-	e.mu.Unlock()
+	e.cancelMu.Unlock()
 	if cancel != nil {
 		cancel(cause)
 	}
@@ -432,8 +485,12 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 		}
 	}
 	e.preparedDisposition = nil
-	if e.ownsIssueCompletion() {
+	planning := e.role == runner.RolePlan && !e.conversationContinuation
+	if e.ownsIssueCompletion() || planning {
 		e.preparedDisposition = runner.NativeDispositionFromMessage(finalMessage)
+	}
+	if outcome == "succeeded" && planning && e.preparedDisposition == nil {
+		e.preparedDisposition = &tracker.NativeDisposition{Status: "in_progress"}
 	}
 	if outcome == "succeeded" && e.data.Runtime != nil && e.data.Runtime.Landing != nil && e.data.Runtime.Landing.Waiting {
 		e.preparedDisposition = &tracker.NativeDisposition{Status: "in_progress"}
@@ -548,7 +605,7 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error
 	if outcome == "succeeded" && e.change != nil && e.change.Error != "" {
 		return fmt.Errorf("%w: %s", ErrUnavailable, e.change.Error)
 	}
-	if preparationErr != nil {
+	if preparationErr != nil || e.change != nil && e.change.VersionError != "" {
 		outcome = "failed"
 	}
 	if e.data.Outcome != "" {

@@ -556,6 +556,13 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if outcome == "sandbox access" {
+					if result.Success || !strings.Contains(result.Content, "Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support.") {
+						t.Fatalf("sandbox preview refusal = %+v", result)
+					}
+					assertCoordinatorEffect(t, f, id, tool, false)
+					return
+				}
 				if sharedEntry && outcome != "shared entry preview" {
 					if result.Success || !strings.Contains(result.Content, "error") {
 						t.Fatalf("MCP authority denial=%+v", result)
@@ -782,7 +789,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 				}
 				response = f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
-				changed := outcome == "sandbox access" || outcome == "full access" || outcome == "preserve access" || outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
+				changed := outcome == "full access" || outcome == "preserve access" || outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
 				if changed {
 					requireNativeStatus(t, response, http.StatusOK)
 				} else if outcome == "runner grant revoked" {
@@ -792,7 +799,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				f.service.spriteWakeWork.Wait()
 				assertCoordinatorEffect(t, f, id, tool, changed)
-				if outcome == "sandbox access" || outcome == "full access" || outcome == "preserve access" {
+				if outcome == "full access" || outcome == "preserve access" {
 					want := "sandbox"
 					if outcome == "full access" {
 						want = "native-trusted"

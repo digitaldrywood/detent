@@ -150,6 +150,38 @@ func TestRunnerSetupLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertRuns(7)
+			if ref {
+				if err := os.Remove(filepath.Join(root, ".git", "detent-runner-setup")); err != nil {
+					t.Fatal(err)
+				}
+				for range 2 {
+					if err := first.Prepare(t.Context(), cfg); err != nil {
+						t.Fatal(err)
+					}
+				}
+				assertRuns(8)
+				return
+			}
+			moved := t.TempDir()
+			for _, name := range []string{"WORKFLOW.md", "setup.sh"} {
+				content, err := os.ReadFile(filepath.Join(root, name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(moved, name), content, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			relocated := cfg
+			relocated.Workdir, relocated.Workflow = moved, filepath.Join(moved, "WORKFLOW.md")
+			for range 2 {
+				if err := first.Prepare(t.Context(), relocated); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if content, err := os.ReadFile(filepath.Join(moved, "trace")); err != nil || string(content) != "run\n" {
+				t.Fatalf("relocated checkout setup runs = %q, error = %v; want one", content, err)
+			}
 		})
 	}
 }

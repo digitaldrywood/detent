@@ -1183,9 +1183,11 @@ func TestNativeRecoveryPromptIncludesContext(t *testing.T) {
 	for _, test := range []struct {
 		name         string
 		runtimeBytes int
+		bounded      bool
 	}{
 		{name: "small recovery", runtimeBytes: 10},
 		{name: "oversized runtime evidence", runtimeBytes: 2 << 20},
+		{name: "bounded evidence requires host detail reads", runtimeBytes: 10, bounded: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			execution := &testExecution{recovery: tracker.NativeRecovery{
@@ -1203,9 +1205,15 @@ func TestNativeRecoveryPromptIncludesContext(t *testing.T) {
 					},
 				}},
 			}}
+			if test.bounded {
+				execution.recovery.Read = &tracker.NativeRecoveryRead{DetailPath: "scoped recovery evidence", Omitted: []string{"discussion", "change_detail.reviews"}}
+			}
 			prompt, err := nativeRecoveryPrompt(execution)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.bounded && (!strings.Contains(prompt, "Before acting on the omitted") || !strings.Contains(prompt, "following every returned section cursor") || !strings.Contains(prompt, "scoped recovery evidence") || !strings.Contains(prompt, "call work_item") || !strings.Contains(prompt, "view=recovery")) {
+				t.Fatal("bounded recovery was not wired to scoped detail consumers")
 			}
 			if len(prompt) > 16384 {
 				t.Fatalf("recovery prompt = %d bytes, runtime evidence was re-inlined", len(prompt))
@@ -2028,6 +2036,11 @@ func TestNativeDispositionFromMessageHostPublication(t *testing.T) {
 	}{
 		{name: "publication only is complete", message: report("status: blocked\nreason_code: publication_blocked\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
 		{name: "pending publish is complete", message: report("status: blocked\nreason_code: awaiting_host_publish\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
+		{name: "tool-directed host wait is complete", message: report("status: blocked\nreason_code: host_publication_pending\nblockers:\n  - ref: instance:tool\n    reason: Current published version needs host review\nhuman_action: null\n"), wantStatus: "complete"},
+		{name: "unclassified tool failure stays blocked", message: report("status: blocked\nreason_code: instance_limitation\nblockers:\n  - ref: instance:tool\n    reason: Current published version needs host review\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "instance_limitation"},
+		{name: "host wait cannot clear another instance failure", message: report("status: blocked\nreason_code: host_publication_pending\nblockers:\n  - ref: instance:network\n    reason: Network unavailable\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "host_publication_pending"},
+		{name: "host wait cannot clear mixed blockers", message: report("status: blocked\nreason_code: host_publication_pending\nblockers:\n  - ref: instance:tool\n    reason: Needs review\n  - ref: \"#42\"\n    reason: Product dependency\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "host_publication_pending"},
+		{name: "host wait cannot clear human action", message: report("status: blocked\nreason_code: host_publication_pending\nblockers:\n  - ref: instance:tool\n    reason: Needs review\nhuman_action: Approve the migration\n"), wantStatus: "blocked", wantReason: "host_publication_pending"},
 		{name: "post-publication acceptance stays blocked", message: report("status: blocked\nreason_code: post_publish_acceptance_pending\nblockers: []\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "post_publish_acceptance_pending"},
 		{name: "publication with a blocker stays blocked", message: report("status: blocked\nreason_code: publication_blocked\nblockers:\n  - ref: '#42'\n    reason: Await dependency\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "publication_blocked"},
 		{name: "publication with human action stays blocked", message: report("status: blocked\nreason_code: publication_blocked\nblockers: []\nhuman_action: Approve the release\n"), wantStatus: "blocked", wantReason: "publication_blocked"},
@@ -2036,7 +2049,7 @@ func TestNativeDispositionFromMessageHostPublication(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got := NativeDispositionFromMessage(tt.message)
-			if got == nil || got.Status != tt.wantStatus || got.ReasonCode != tt.wantReason {
+			if got == nil || got.Status != tt.wantStatus || got.ReasonCode != tt.wantReason || tt.wantStatus == "complete" && (got.Blockers || len(got.BlockerEvidence) != 0) {
 				t.Fatalf("disposition = %+v, want status %q reason %q", got, tt.wantStatus, tt.wantReason)
 			}
 		})

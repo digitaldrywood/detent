@@ -12,6 +12,7 @@ import (
 
 func TestOperatorRevisionSchemaContract(t *testing.T) {
 	targets := map[string]any{
+		operatortool.StopRun:                          &operatortool.NativeStopRunArguments{},
 		operatortool.MoveItem:                         &operatortool.MoveItemArguments{},
 		operatortool.SetPriority:                      &operatortool.SetPriorityArguments{},
 		operatortool.EditItem:                         &operatortool.WorkArguments{},

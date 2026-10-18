@@ -103,9 +103,6 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 	for _, m := range members {
 		stored, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, m.runner.binding.RunnerID, now)
 		wantState := m.state
-		if m.older && wantState == "active" {
-			wantState = "draining"
-		}
 		if err != nil || stored.State != wantState || (stored.UpdateRequest != nil) != m.older {
 			t.Fatalf("version %s state=%s desired=%+v error=%v", m.version, stored.State, stored.UpdateRequest, err)
 		}
@@ -114,10 +111,14 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 			t.Fatalf("heartbeat=%+v", snapshot)
 		}
 	}
-	newIssue := f.create(t, "must stay queued")
+	newIssue := f.create(t, "uses a free slot during routine update")
 	claim.WorkItemID = newIssue.WorkItemID
 	claim.SessionID = "urgent-new"
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", active.redemption.Credential, claim), http.StatusConflict)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", active.redemption.Credential, claim)
+	requireNativeStatus(t, response, http.StatusOK)
+	var concurrent tracker.NativeLease
+	decodeHubResponse(t, response, &concurrent)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(concurrent.ID)+"/release", active.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: concurrent.FencingToken, Reason: "completed"}), http.StatusNoContent)
 	leasePath := f.base + "/leases/" + string(lease.ID)
 	for _, operation := range []string{"renew", "validate"} {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, leasePath+"/"+operation, active.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 300}), http.StatusOK)
@@ -161,14 +162,15 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 			}
 		}
 		if m.runner.binding.RunnerID == active.binding.RunnerID {
+			claim.SessionID = "urgent-retry"
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", active.redemption.Credential, claim)
 			requireNativeStatus(t, response, http.StatusOK)
 			var resumed tracker.NativeLease
 			decodeHubResponse(t, response, &resumed)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(resumed.ID)+"/release", active.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: resumed.FencingToken, Reason: "completed"}), http.StatusNoContent)
 		}
-		if snapshot := heartbeat(t, f, m.runner, m.version, &runnerauth.UpdateReceipt{Request: *urgent.Request, Status: "draining", ObservedAt: now}); m.state == "active" && snapshot.Routing.State != "draining" {
-			t.Fatalf("retry did not drain: %+v", snapshot)
+		if snapshot := heartbeat(t, f, m.runner, m.version, &runnerauth.UpdateReceipt{Request: *urgent.Request, Status: "applying", ObservedAt: now}); snapshot.Routing.State != m.state {
+			t.Fatalf("update changed operator routing: %+v", snapshot)
 		}
 		applied := runnerauth.BuildEvidence{Version: "1.2.4", Commit: strings.Repeat("c", 40), Source: "release", SHA256: strings.Repeat("d", 64), OS: "linux", Architecture: "amd64", VerifiedRelease: true, ObservedAt: now}
 		receipt := &runnerauth.UpdateReceipt{Request: *urgent.Request, Status: "running", Applied: &applied, Running: &applied, ObservedAt: now}
@@ -177,10 +179,11 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 			t.Fatalf("did not restore operator routing: %+v", snapshot)
 		}
 	}
+	claim.SessionID = "urgent-completed"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", active.redemption.Credential, claim), http.StatusOK)
 	late := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	late.enroll(t)
-	if snapshot := heartbeat(t, f, late, "1.2.3", nil); snapshot.Routing.State != "draining" || snapshot.Routing.UpdateRequest == nil {
+	if snapshot := heartbeat(t, f, late, "1.2.3", nil); snapshot.Routing.State != "active" || snapshot.Routing.UpdateRequest == nil {
 		t.Fatalf("late runner escaped urgent release: %+v", snapshot)
 	}
 	now = f.service.config.now()
@@ -188,7 +191,7 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, late.binding.RunnerID, now)
-	if err != nil || stored.State != "draining" || stored.UpdateRequest == nil || stored.Health != "offline" {
+	if err != nil || stored.State != "active" || stored.UpdateRequest == nil || stored.Health != "offline" {
 		t.Fatalf("offline runner escaped urgent release: %+v error=%v", stored, err)
 	}
 	for _, version := range []string{"1.2.4", "1.2.5"} {
@@ -204,7 +207,7 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 	}
 	oldReceipt := &runnerauth.UpdateReceipt{Request: *urgent.Request, Status: "draining", ObservedAt: now}
 	snapshot := heartbeat(t, f, late, "1.2.3", oldReceipt)
-	if snapshot.Routing.State != "draining" || snapshot.Routing.UpdateRequest.Version != "1.2.5" {
+	if snapshot.Routing.State != "active" || snapshot.Routing.UpdateRequest.Version != "1.2.5" {
 		t.Fatalf("superseded delivery interrupted its session: %+v", snapshot)
 	}
 	const runningVersion = "0.121.4-op.r.325.gaaaaaaaaaaaa"
@@ -266,9 +269,6 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 				t.Fatalf("wrong delivered request: got=%+v want_version=%s state=%s", request, deliveredVersion, snapshot.Routing.State)
 			}
 			wantState := test.state
-			if wantState == "active" {
-				wantState = "draining"
-			}
 			if snapshot.Routing.State != wantState {
 				t.Fatalf("pending update lost effective drain: %+v", snapshot)
 			}
@@ -306,7 +306,11 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 				if test.state == "disabled" {
 					wantCode = "runner_disabled"
 				}
-				if admission.Outcome != "skipped" || admission.ReasonCode != wantCode {
+				if test.state == "active" {
+					if admission.Outcome == "skipped" && admission.ReasonCode == "runner_draining" {
+						t.Fatalf("routine update withheld a free slot: %+v", admission)
+					}
+				} else if admission.Outcome != "skipped" || admission.ReasonCode != wantCode {
 					t.Fatalf("admission ignored effective runner state with free slots: %+v", admission)
 				}
 			}
@@ -314,7 +318,15 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 				t.Fatal("admission omitted the updating runner")
 			}
 			claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: queued.WorkItemID, MachineID: r.binding.MachineID, SessionID: "follow-hub", TTLSeconds: 300, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
+			claimResponse := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+			if test.state == "active" {
+				requireNativeStatus(t, claimResponse, http.StatusOK)
+				var admitted tracker.NativeLease
+				decodeHubResponse(t, claimResponse, &admitted)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(admitted.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: admitted.FencingToken, Reason: "completed"}), http.StatusNoContent)
+			} else {
+				requireNativeStatus(t, claimResponse, http.StatusConflict)
+			}
 			applied.Version = deliveredVersion
 			applied.Commit = strings.Repeat("c", 40)
 			applied.SHA256 = strings.Repeat("d", 64)
@@ -328,6 +340,33 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 			}
 			if test.state == "active" {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusOK)
+			}
+		})
+	}
+}
+
+func TestApplyUrgentRunnerRoutingFollowHubReceipt(t *testing.T) {
+	request := runnerauth.UpdateRequest{ID: "follow-0.129.3", Service: "detent", RequestedAt: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC), Version: "0.129.3", Release: true, FollowHub: true}
+	earlier := request
+	earlier.ID = "follow-0.129.3-earlier"
+	tests := []struct {
+		name    string
+		receipt *runnerauth.UpdateReceipt
+		want    string
+	}{
+		{name: "no receipt stays active", want: "active"},
+		{name: "refused receipt stays active", receipt: &runnerauth.UpdateReceipt{Request: request, Status: "refused", FailureReason: "update is unavailable for unknown installs"}, want: "active"},
+		{name: "uncertain receipt with failure stays active", receipt: &runnerauth.UpdateReceipt{Request: request, Status: "uncertain", FailureReason: "download failed"}, want: "active"},
+		{name: "uncertain receipt without failure stays active", receipt: &runnerauth.UpdateReceipt{Request: request, Status: "uncertain"}, want: "active"},
+		{name: "applied receipt stays active", receipt: &runnerauth.UpdateReceipt{Request: request, Status: "applied"}, want: "active"},
+		{name: "refused receipt for an earlier request stays active", receipt: &runnerauth.UpdateReceipt{Request: earlier, Status: "refused", FailureReason: "update is unavailable for unknown installs"}, want: "active"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r := runnerauth.Runner{Routing: runnerauth.Routing{State: "active", UpdateRequest: &request}, Update: &runnerauth.UpdateObservation{Running: runnerauth.BuildEvidence{Version: "0.129.2"}, Receipt: test.receipt}}
+			applyUrgentRunnerRouting(&r, urgentRunnerUpdate{}, "0.129.2")
+			if r.State != test.want {
+				t.Fatalf("state = %q, want %q", r.State, test.want)
 			}
 		})
 	}

@@ -34,12 +34,24 @@ func (s *Service) nativeIssueResponse(issue tracker.NativeIssue) tracker.NativeI
 	return issue
 }
 
-func (s *Service) nativeIssueJSON(ctx context.Context, body json.RawMessage) (json.RawMessage, error) {
+func (s *Service) nativeIssueJSON(ctx context.Context, scope nativeScope, body json.RawMessage) (json.RawMessage, error) {
 	var challenge duplicateChallenge
 	if err := json.Unmarshal(body, &challenge); err != nil {
 		return nil, err
 	}
 	if challenge.ChallengeToken != "" {
+		if scope.credential.HostedRole == "reporter" {
+			visible := []possibleDuplicate{}
+			for _, match := range challenge.PossibleDuplicates {
+				if err := requireReporterItem(ctx, s.database.reader, scope, string(match.WorkItemID)); errors.Is(err, sql.ErrNoRows) || isNativeNotFound(err) {
+					continue
+				} else if err != nil {
+					return nil, err
+				}
+				visible = append(visible, match)
+			}
+			challenge.PossibleDuplicates = visible
+		}
 		for i := range challenge.PossibleDuplicates {
 			match := &challenge.PossibleDuplicates[i]
 			path, err := readIssueBrowserPath(ctx, s.database.reader, string(match.WorkItemID))
@@ -55,12 +67,15 @@ func (s *Service) nativeIssueJSON(ctx context.Context, body json.RawMessage) (js
 	if err := json.Unmarshal(body, &issue); err != nil {
 		return nil, err
 	}
+	if !scope.reporterOwns(issue.Actor) {
+		return nil, nativeNotFound()
+	}
 	path, err := readIssueBrowserPath(ctx, s.database.db, string(issue.WorkItemID))
 	if err != nil {
 		return nil, err
 	}
 	issue.WebURL = path
-	return json.Marshal(s.nativeIssueResponse(issue))
+	return json.Marshal(s.nativeIssueResponse(scope.reporterIssue(issue)))
 }
 
 func (s *Service) executeNativeIssueMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (json.RawMessage, error) {
@@ -68,7 +83,7 @@ func (s *Service) executeNativeIssueMutation(ctx context.Context, scope nativeSc
 	if err != nil {
 		return nil, err
 	}
-	return s.nativeIssueJSON(ctx, result)
+	return s.nativeIssueJSON(ctx, scope, result)
 }
 
 func nativeActorDisplayName(principal, organization string) string {
@@ -94,6 +109,8 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
 	if compact {
 		bodyColumn = "''"
 	}
+	visibility, args := scope.issueVisibilitySQL("i")
+	args = append([]any{scope.organization, scope.project, id}, args...)
 	err := query.QueryRowContext(ctx, `SELECT o.slug, p.slug, i.id, i.native_id, i.organization_id, i.project_id, i.number, i.revision, p.profile,
  i.issue_type, i.report_context_json, i.verification_state, i.verified_by_json, i.verified_at, i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
  i.actor_json, `+nativeActorDisplayName("json_extract(i.actor_json, '$.principal_id')", "i.organization_id")+`, i.issue_contract_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
@@ -118,7 +135,7 @@ FROM issues i JOIN organizations o ON o.id=i.organization_id JOIN projects p ON 
 LEFT JOIN repositories r ON r.id = i.repository_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN queue_entries q ON q.id = (SELECT id FROM queue_entries WHERE issue_id = i.id ORDER BY id LIMIT 1)
-WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.organization, scope.project, id).Scan(
+WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visibility+`)`, args...).Scan(
 		&organizationSlug, &projectSlug, &internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
 		&issueType, &reportContext, &verificationState, &verifiedBy, &verifiedAt, &issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &displayName, &contractJSON, &provenance, &created, &updated, &activity, &externalID,
 		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived,
@@ -171,6 +188,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 	if err := json.Unmarshal([]byte(actor), &issue.Actor); err != nil {
 		return issue, 0, err
 	}
+	issue = scope.reporterIssue(issue)
 	issue.Actor.DisplayName = displayName
 	if provenance.Valid {
 		if err := json.Unmarshal([]byte(provenance.String), &issue.Provenance); err != nil {
@@ -247,8 +265,30 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 	defer cancel()
 	scope := nativeRequestScope(c)
 	if view := c.QueryParam("view"); view != "" {
-		if view != "recovery" || len(c.QueryParams()) != 1 || len(c.QueryParams()["view"]) != 1 {
+		params, err := nativeReadQuery(c)
+		if err != nil || view != "recovery" || validateNativeQuery(params, "view", "projection") != nil {
 			return s.nativeAPIError(c, nativeInvalid("view supports recovery"))
+		}
+		if params.Has("projection") || c.Request().Header.Get("X-Detent-Recovery-Projection") != "" {
+			if params.Get("projection") != "bounded" && c.Request().Header.Get("X-Detent-Recovery-Projection") != "bounded" || params.Has("limit") || params.Has("cursor") {
+				return s.nativeAPIError(c, nativeInvalid("Recovery projection supports bounded"))
+			}
+			result, err := s.readNativeRecovery(ctx, scope, c.Param("item"), true)
+			if err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			result.Issue = s.nativeIssueResponse(result.Issue)
+			if err := s.fitNativeRecovery(ctx, scope, c.Request().URL.EscapedPath(), &result, c.Request().Header.Get("X-Detent-Recovery-Body") == "fragments"); err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			return c.JSON(http.StatusOK, result)
+		}
+		if params.Has("limit") || params.Has("cursor") {
+			result, err := s.readNativeRecoveryPage(ctx, scope, c.Param("item"), c.Request().URL.EscapedPath(), params)
+			if err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			return c.JSON(http.StatusOK, result)
 		}
 		result, err := s.readNativeRecovery(ctx, scope, c.Param("item"))
 		if err != nil {

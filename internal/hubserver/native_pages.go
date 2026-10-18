@@ -75,6 +75,9 @@ func (s *Service) readNativePageLimit(ctx context.Context, scope nativeScope, pa
 	params.Del("limit")
 
 	fingerprint := scope.credential.ID + " " + path + "?" + params.Encode()
+	if scope.credential.HostedRole != "" {
+		fingerprint += " " + scope.credential.HostedRole + " " + scope.actor().PrincipalID
+	}
 	if scope.credential.Hosted != nil {
 		fingerprint += " " + scope.credential.Hosted.SessionID
 	}
@@ -411,11 +414,24 @@ func (s *Service) readComments(ctx context.Context, scope nativeScope, item stri
 	if hasMore {
 		ids = ids[:limit]
 	}
+	size := 8192
 	for _, id := range ids {
 		comment, err := readNativeComment(ctx, s.database.reader, scope, item, id)
 		if err != nil {
 			return tracker.Page[tracker.NativeComment]{}, err
 		}
+		encoded, err := json.Marshal(comment)
+		if err != nil {
+			return tracker.Page[tracker.NativeComment]{}, err
+		}
+		if size+len(encoded)+1 > operatortool.MaxResultBytes {
+			if len(page.Items) == 0 {
+				return tracker.Page[tracker.NativeComment]{}, nativeInvalid("A single comment exceeds the 256 KiB page budget after JSON encoding; use work_bulk_export to read the complete stored comment")
+			}
+			hasMore = true
+			break
+		}
+		size += len(encoded) + 1
 		page.Items = append(page.Items, comment)
 		cursor.After = strconv.FormatInt(comment.Sequence, 10)
 	}
@@ -620,6 +636,9 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		}
 	}
 	query += dateClauses.String()
+	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
+	query += " AND (" + visibility + ")"
+	args = append(args, visibilityArgs...)
 	createdBy, err := nativeCreatedBy(scope, params)
 	if err != nil {
 		return "", nil, err

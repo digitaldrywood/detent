@@ -34,6 +34,10 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 		{"member cannot convert", "member", "convert_runner_scope", "", false, false, 0},
 		{"admin full access", "admin", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusOK},
 		{"owner sandbox", "owner", "set_runner_tier", isolation.Sandbox, true, true, http.StatusOK},
+		{"sprite sandbox requests a fresh probe", "owner", "set_runner_tier", isolation.Sandbox, true, true, http.StatusOK},
+		{"sprite sandbox after passing probe", "owner", "set_runner_tier", isolation.Sandbox, true, true, http.StatusOK},
+		{"sprite full access", "owner", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusOK},
+		{"sprite detected after preview", "owner", "set_runner_tier", isolation.Sandbox, true, true, http.StatusOK},
 		{"unapproved preview", "owner", "set_runner_tier", isolation.NativeTrusted, true, false, 0},
 		{"member cannot change", "member", "set_runner_tier", isolation.NativeTrusted, false, false, 0},
 		{"invalid tier", "owner", "set_runner_tier", "user", false, false, 0},
@@ -64,8 +68,14 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 			binding := runnerauth.NewBinding()
 			r := runnerFixture{nativeFixture: nativeFixture{service: f.service, project: tracker.NativeProject{ID: f.project, OrganizationID: "org_security"}}, base: "/api/v2/organizations/org_security", enrollment: enrollment, binding: binding, redemption: runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "customer-host", DisplayName: "Runner", Capacity: 2, Version: "test"}}
 			r.redemption.BackendIsolation = isolation.Report{"codex": {isolation.NativeTrusted}}
+			if test.name == "sprite sandbox after passing probe" {
+				r.redemption.BackendIsolation = isolation.Report{"codex": {isolation.NativeTrusted, isolation.Sandbox}}
+			}
 			if test.tier == isolation.Sandbox {
 				r.redemption.IsolationTier = isolation.NativeTrusted
+			}
+			if strings.HasPrefix(test.name, "sprite ") && test.name != "sprite detected after preview" {
+				r.redemption.SpriteName = r.redemption.Hostname
 			}
 			r.enroll(t)
 			heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation, "problems": []runnerauth.Problem{}}
@@ -153,6 +163,8 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 					t.Fatal("missing preview")
 				}
 				switch test.name {
+				case "sprite detected after preview":
+					operatorSQL(t, f, "UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_name',hostname) WHERE id=?", r.binding.MachineID)
 				case "stale preview":
 					operatorSQL(t, f, "UPDATE runner_identities SET revision=revision+1 WHERE id=?", r.binding.RunnerID)
 				case "role revoked after preview":

@@ -8,8 +8,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func changeOperatorContext(t *testing.T, s *Service, token, organization string) context.Context {
@@ -344,12 +348,14 @@ func TestOperatorChangeCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
-		name, want string
-		edit       func(*tracker.NativeLandingReceipt)
+		name, want  string
+		diagnostics []string
+		capture     bool
+		edit        func(*tracker.NativeLandingReceipt)
 	}{
 		{name: "missing local evidence", want: "missing_local_evidence", edit: func(r *tracker.NativeLandingReceipt) { r.Gate = nil }},
 		{name: "nonzero local result", want: "local_nonzero", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.ExitCode = 7 }},
-		{name: "long public timeout receipt", want: "local_nonzero", edit: func(r *tracker.NativeLandingReceipt) {
+		{name: "long public timeout receipt", want: "local_nonzero", diagnostics: []string{"panic: test timed out after 1m0s", "TestGateReceipt/世界", "internal/worker.TestGateReceipt", "FAIL\tgithub.com/example-org/example-project/internal/worker\t61.366s", "truncated"}, edit: func(r *tracker.NativeLandingReceipt) {
 			r.Gate.ReceiptID = "receipt_timeout"
 			r.Gate.ExitCode = 2
 			r.Gate.Output = strings.Repeat("ok example.org/other/package\n", 300) +
@@ -361,6 +367,22 @@ func TestOperatorChangeCommands(t *testing.T) {
 			public := tracker.PublicGateResult(*r.Gate)
 			r.Gate = &public
 		}},
+		{name: "captured migration failure before frontend success", want: "local_nonzero", capture: true,
+			diagnostics: []string{"./scripts/check-migration-order.sh dev", "MIGRATION ORDERING CONFLICT DETECTED!", "20261017090000_example.sql", "stage=repository exit_status=1", "[redacted]", "truncated"},
+			edit: func(r *tracker.NativeLandingReceipt) {
+				r.Gate.ExitCode = 2
+				r.Gate.Output = strings.Repeat("ok repository setup\n", 300) +
+					"./scripts/check-migration-order.sh dev\nMIGRATION ORDERING CONFLICT DETECTED!\nmigrations/20261017090000_example.sql is below dev migration 20261017100000_other.sql\ncheck-fast-stage stage=repository exit_status=1\n" +
+					"Authorization: Bearer private-bearer\nTOKEN=private-assignment\n/home/private/project/build.log\n" +
+					strings.Repeat(" PASS frontend suite 世界\n", 8000) + "make: *** [check-fast] Error 2\n"
+			}},
+		{name: "captured terminal make failure preserves preceding diagnostic", want: "local_nonzero", capture: true,
+			diagnostics: []string{"./scripts/check-repository.sh", "Repository schema mismatch 世界", "migrations/example.sql: missing delivery column", "expected column: delivery_id", "actual column: legacy_id", "make: *** [check-repository] Error 2", "[redacted]", "truncated"},
+			edit: func(r *tracker.NativeLandingReceipt) {
+				r.Gate.ExitCode = 2
+				r.Gate.Output = strings.Repeat(" PASS frontend suite 世界\n", 8000) +
+					"./scripts/check-repository.sh\nRepository schema mismatch 世界\nmigrations/example.sql: missing delivery column\nexpected column: delivery_id\nactual column: legacy_id\nTOKEN=private-assignment\n/home/private/project/build.log\nmake: *** [check-repository] Error 2\n"
+			}},
 		{name: "different checked content", want: "different_content", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.TreeSHA = strings.Repeat("a", 40) }},
 		{name: "scope differs", want: "different_check_scope", edit: func(r *tracker.NativeLandingReceipt) {
 			r.Gate.Evidence.Checks[0].Scope = "unit-short"
@@ -377,6 +399,45 @@ func TestOperatorChangeCommands(t *testing.T) {
 			if test.edit != nil {
 				test.edit(&receipt)
 			}
+			if test.capture {
+				if testing.Short() || runtime.GOOS == "windows" {
+					t.Skip("git and shell subprocess integration")
+				}
+				source := t.TempDir()
+				git := func(args ...string) string {
+					command := exec.CommandContext(ctx, "git", append([]string{"-c", "init.defaultBranch=main", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false"}, args...)...)
+					command.Dir = source
+					output, err := command.CombinedOutput()
+					if err != nil {
+						t.Fatalf("git %v: %v\n%s", args, err, output)
+					}
+					return strings.TrimSpace(string(output))
+				}
+				git("init", "-q", ".")
+				if err := os.WriteFile(filepath.Join(source, "output.txt"), []byte(receipt.Gate.Output), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				git("add", "output.txt")
+				git("commit", "-qm", "gate output fixture")
+				backend, err := workspace.NewLocalGitContext(ctx, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				issue := workspace.Issue{Identifier: "gate-output"}
+				info, err := backend.Create(ctx, issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				issue.PullRequestHeadSHA = git("rev-parse", "HEAD")
+				captured, err := backend.RunReviewCommand(ctx, info, issue, "cat output.txt; exit 2")
+				if err != nil || captured.ExitCode != 2 || !captured.OutputTruncated || len(captured.Output) > 64*1024 || captured.HeadSHA != issue.PullRequestHeadSHA || captured.TreeSHA == "" {
+					t.Fatalf("command capture lost failure status, bounds or source identity: %+v %v", captured, err)
+				}
+				receipt.Gate.Output = captured.Output
+				receipt.Gate.OutputTruncated = captured.OutputTruncated
+				public := tracker.PublicGateResult(*receipt.Gate)
+				receipt.Gate = &public
+			}
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 			if err != nil {
 				t.Fatal(err)
@@ -384,7 +445,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 			if err := persistAttemptLanding(t.Context(), tx, nativeAttempt, receipt); err != nil {
 				t.Fatal(err)
 			}
-			if test.name == "long public timeout receipt" {
+			if len(test.diagnostics) > 0 {
 				raw, err := json.Marshal(receipt.Gate)
 				if err != nil {
 					t.Fatal(err)
@@ -412,7 +473,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 					t.Fatalf("bounded landing read changed canonical output: %v", err)
 				}
 			}
-			if test.name == "long public timeout receipt" {
+			if len(test.diagnostics) > 0 {
 				if len(value.Detail.Versions) != 1 || value.Detail.Versions[0].Landing == nil {
 					t.Fatal("missing public landing receipt")
 				}
@@ -420,7 +481,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 				if !reflect.DeepEqual(got, receipt.Gate) || !got.OutputTruncated || len(got.Output) > 4096 || !utf8.ValidString(got.Output) || strings.Contains(got.Output, "private") {
 					t.Fatal("Change read lost bounded public failure evidence or receipt identity")
 				}
-				for _, diagnostic := range []string{"panic: test timed out after 1m0s", "TestGateReceipt/世界", "internal/worker.TestGateReceipt", "FAIL\tgithub.com/example-org/example-project/internal/worker\t61.366s", "truncated"} {
+				for _, diagnostic := range test.diagnostics {
 					if !strings.Contains(got.Output, diagnostic) {
 						t.Fatalf("Change failure excerpt missing %q", diagnostic)
 					}
@@ -463,7 +524,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 				if err != nil || json.Unmarshal(result.Content, &envelope) != nil || envelope.Data.Audit == nil || len(envelope.Data.Audit.Occurrences) != 1 || envelope.Data.Audit.Occurrences[0].Comparisons[0].Outcome != test.want {
 					t.Fatalf("%s projection=%s %v", read.name, result.Content, err)
 				}
-				if test.name == "long public timeout receipt" && read.name == operatortool.WorkAttemptReceipt {
+				if len(test.diagnostics) > 0 && read.name == operatortool.WorkAttemptReceipt {
 					attempt := envelope.Data.Attempt
 					if attempt == nil || attempt.AttemptID != nativeAttempt || attempt.Runtime == nil || attempt.Runtime.Landing == nil || !reflect.DeepEqual(attempt.Runtime.Landing.Gate, receipt.Gate) || !reflect.DeepEqual(attempt.Runtime.Validation, receipt.Gate) {
 						t.Fatal("MCP attempt projection lost original public failure evidence or identity")

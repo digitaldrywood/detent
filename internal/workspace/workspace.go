@@ -49,6 +49,8 @@ var (
 	ErrWorktreeInvariant  = errors.New("workspace worktree invariant failed")
 )
 
+var nativeIdentifierPattern = regexp.MustCompile(`^(prj_[a-z0-9]+)#[1-9][0-9]*$`)
+
 var unsafeKeyPattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
 // autoBranchPrefix is the namespace every branch this backend creates lives
@@ -657,7 +659,25 @@ func SafeKey(identifier string) string {
 	return key
 }
 
+func nativeProjectID(issue Issue) string {
+	if !strings.HasPrefix(issue.ID, "wi_") {
+		return ""
+	}
+	parts := nativeIdentifierPattern.FindStringSubmatch(issue.Identifier)
+	if len(parts) != 2 {
+		return ""
+	}
+	return parts[1]
+}
+
 func issueKey(issue Issue) string {
+	if project := nativeProjectID(issue); project != "" {
+		issue.ProjectID = project
+	}
+	return legacyIssueKey(issue)
+}
+
+func legacyIssueKey(issue Issue) string {
 	identifierKey := SafeKey(issue.Identifier)
 	projectKey := SafeKey(issue.ProjectID)
 	if strings.TrimSpace(issue.ProjectID) == "" {
@@ -698,8 +718,8 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		if err != nil {
 			return Info{}, err
 		}
-		if checkpoint.transaction != nil && (!issue.NativeRework || checkpoint.transaction.Branch != info.Branch) {
-			return Info{}, fmt.Errorf("%w: checkpoint belongs to another rework branch", ErrCheckpointUnsafe)
+		if err := l.bindCheckpointBranch(issue, info, &checkpoint); err != nil {
+			return Info{}, err
 		}
 		issue.Checkpoint, issue.FreshCheckout = &checkpoint, true
 		exists, isDir, err := pathExists(info.Path)
@@ -810,12 +830,12 @@ func (l *LocalGit) createWorktree(ctx context.Context, path string, branch strin
 	if len(sourceHead) > 0 {
 		baseRef = sourceHead[0]
 	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	if fresh {
-		release, err := l.acquireSourceOperation(ctx)
-		if err != nil {
-			return false, err
-		}
-		defer release()
 		if err := l.releaseBranchHolders(ctx, branch, path); err != nil {
 			return false, err
 		}
@@ -951,12 +971,7 @@ func (l *LocalGit) infoForIssue(issue Issue) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-
-	return Info{
-		Path:   path,
-		Key:    key,
-		Branch: l.branchName(issue, key),
-	}, nil
+	return Info{Path: path, Key: key, Branch: l.branchName(issue, key)}, nil
 }
 
 // Existing reports the worktree this backend keeps for issue without creating
@@ -1187,8 +1202,20 @@ func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch 
 			return err
 		}
 		if exists {
-			if err := l.releaseBranchHolders(ctx, branch, path); err != nil {
-				return err
+			if len(sourceHead) == 0 || sourceHead[0] == "HEAD" {
+				baseRef, err := l.newBranchBaseRef(ctx)
+				if err != nil {
+					return err
+				}
+				_, err = l.runGit(ctx, "merge-base", "--is-ancestor", branch, baseRef)
+				if err == nil {
+					_, err = l.runGit(ctx, "worktree", "add", "-B", branch, path, baseRef)
+					return err
+				}
+				var commandErr *CommandError
+				if !errors.As(err, &commandErr) || commandErr.ExitCode != 1 {
+					return err
+				}
 			}
 			_, err = l.runGit(ctx, "worktree", "add", path, branch)
 			return err
@@ -2142,6 +2169,23 @@ func workerScratchParent(workspacePath string, scratchPath string) (string, bool
 		}
 	}
 	return "", false
+}
+
+func WorkerArtifactCleanupRoot(workspacePath, cleanupPath string) (string, error) {
+	if strings.TrimSpace(workspacePath) == "" || strings.TrimSpace(cleanupPath) == "" {
+		return workspacePath, nil
+	}
+	root := bestEffortCanonicalPath(workspacePath)
+	if parent, ok := workerScratchParent(root, cleanupPath); ok {
+		if _, err := validateWorkspacePath(parent, cleanupPath); err != nil {
+			return "", err
+		}
+		return parent, nil
+	}
+	if _, err := validateWorkspacePath(root, cleanupPath); err != nil {
+		return "", err
+	}
+	return root, nil
 }
 
 func CleanupWorkerScratch(workspacePath string, scratchPath string) error {

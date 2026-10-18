@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -53,6 +54,11 @@ func (e nativeOperatorExecutor) workflowProposal(ctx context.Context, scope nati
 		return chat.Action{}, hubSafeChangeError(err)
 	}
 	if err := validateNativeWorkflowTransition(project.States, issue.State, request.TargetState, scope.credential.Scope); err != nil {
+		if issue.State == request.TargetState && slices.ContainsFunc(project.States, func(state tracker.NativeState) bool {
+			return state.Name == issue.State && state.Dispatchable && !state.Terminal
+		}) {
+			return chat.Action{}, &operatortool.RequestError{Code: "invalid_request", Message: "move_item cannot resume an item already in the requested state. Read explain_item and the linked issue conversation snapshot, then send its continue command at POST /api/v2/organizations/{organization}/projects/{project}/conversations/{conversation}/commands with the current expected.attempt_id. Resolve remaining blockers through their recorded owners; a comment does not resolve an external prerequisite. resume_local_project only resumes a paused project."}
+		}
 		return chat.Action{}, err
 	}
 	action := chat.Action{Kind: chat.ActionMoveItem, NativeWorkflow: true, ProjectID: request.ProjectID, IssueID: string(issue.WorkItemID), Identifier: request.Identifier, CurrentState: issue.State, TargetState: request.TargetState, Revision: request.ExpectedRevision, Title: issue.Title}
@@ -94,7 +100,7 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 	outcome := "failed"
 	defer func() { e.service.hubChangeAudit(ctx, action.Mutation, outcome) }()
 	mutationContext := mutation.WithContext(ctx, action.Mutation)
-	transition := tracker.Transition{Mutation: tracker.MutationForContext(mutationContext, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested"}
+	transition := tracker.Transition{Mutation: tracker.MutationForContext(mutationContext, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested", ReasonDetail: request.ReasonDetail}
 	replay, found, err := e.service.nativeCommandReplay(mutationContext, scope, nativeOperation(scope, "POST", "/work-items/"+request.Identifier+"/workflow"), transition.IdempotencyKey, transition)
 	if err != nil {
 		return operatortool.Result{}, hubSafeChangeError(err)
@@ -147,7 +153,7 @@ func (e nativeOperatorExecutor) executeWorkflowTransition(ctx context.Context, a
 		return workflowExecutionFailure(err)
 	}
 	ctx = mutation.WithContext(ctx, m)
-	raw, err := e.service.transitionNativeIssueCommand(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.MutationForContext(ctx, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested"})
+	raw, err := e.service.transitionNativeIssueCommand(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.MutationForContext(ctx, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested", ReasonDetail: request.ReasonDetail})
 	if err != nil {
 		return workflowExecutionFailure(err)
 	}
@@ -161,6 +167,10 @@ func (e nativeOperatorExecutor) executeWorkflowTransition(ctx context.Context, a
 func workflowExecutionFailure(err error) (chat.ActionExecution, error) {
 	safe := hubSafeChangeError(err)
 	message := safe.Error()
+	var refusal *operatortool.RequestError
+	if errors.As(safe, &refusal) {
+		message = refusal.Message
+	}
 	if errors.Is(safe, operatortool.ErrServiceUnavailable) {
 		message = operatortool.ErrServiceUnavailable.Error()
 	}

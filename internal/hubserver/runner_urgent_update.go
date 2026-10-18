@@ -41,12 +41,6 @@ func readUrgentRunnerUpdate(ctx context.Context, db nativeQueryer, organization 
 }
 
 func applyUrgentRunnerRouting(r *runnerauth.Runner, urgent urgentRunnerUpdate, version string) {
-	if request := r.UpdateRequest; request != nil && request.FollowHub && r.Update != nil {
-		comparison, err := update.CompareVersions(request.Version, r.Update.Running.Version)
-		if err == nil && comparison > 0 && r.State == "active" {
-			r.State = "draining"
-		}
-	}
 	if urgent.Request == nil {
 		return
 	}
@@ -66,14 +60,19 @@ func applyUrgentRunnerRouting(r *runnerauth.Runner, urgent urgentRunnerUpdate, v
 		}
 		return
 	}
-	if r.Update != nil && r.Update.Receipt != nil && r.Update.Receipt.Request == *urgent.Request && (r.Update.Receipt.Status == "refused" || r.Update.Receipt.Status == "uncertain" && r.Update.Receipt.FailureReason != "") {
+	if runnerUpdateRequestSettled(r, *urgent.Request) {
 		r.UpdateRequest = urgent.Request
 		return
 	}
-	if r.State == "active" {
-		r.State = "draining"
-	}
 	r.UpdateRequest = urgent.Request
+}
+
+func runnerUpdateRequestSettled(r *runnerauth.Runner, request runnerauth.UpdateRequest) bool {
+	if r.Update == nil || r.Update.Receipt == nil || r.Update.Receipt.Request != request {
+		return false
+	}
+	receipt := r.Update.Receipt
+	return receipt.Status == "refused" || receipt.Status == "uncertain" && receipt.FailureReason != ""
 }
 
 func runnerUpdateReceiptMatches(ctx context.Context, tx *sql.Tx, scope nativeScope, request runnerauth.UpdateRequest) (bool, error) {
@@ -149,7 +148,7 @@ func (s *Service) markUrgentRunnerUpdateCommand(ctx context.Context, scope nativ
 		return nil, nativeInvalid("A release version, expected revision and idempotency key are required")
 	}
 	if !request.Confirm {
-		return nil, &nativeError{Code: "confirmation_required", Message: "Confirm draining all runners below the selected release", status: http.StatusPreconditionRequired}
+		return nil, &nativeError{Code: "confirmation_required", Message: "Confirm updating all runners below the selected release", status: http.StatusPreconditionRequired}
 	}
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		const operation = "urgent_runner_update"

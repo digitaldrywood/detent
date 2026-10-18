@@ -2,13 +2,16 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
@@ -324,4 +327,103 @@ func (r *Runner) nativeLandingGitHubClient(ctx context.Context, req RunRequest, 
 	}
 	client, err := newNativeLandingGitHubClient(policy, token)
 	return client, policy, err
+}
+
+func (r *Runner) nativeReviewThreadTools(req RunRequest) ([]AgentTool, AgentToolHandler) {
+	landing, ok := req.Execution.(LandingExecution)
+	workflow, _, _, _ := r.runtimeSnapshot()
+	if workflow.Config.Tracker.Kind != config.TrackerHubNative || normalizeRunMode(req.Mode) != RunModeImplement || !ok || req.Execution == nil || runRole(req.Mode, req.Issue) != RoleRework && !nativeLandingRework(req.Execution.Recovery()) {
+		return nil, nil
+	}
+	tools := []AgentTool{
+		{Name: "detent_read_review_threads", Description: "Read unresolved review conversations on this native item's recorded GitHub PR and published head. Inspect the actual immutable Change source using native reads before judging feedback. Pending local edits are not evidence that published feedback is fixed. Human-rooted conversations remain human-owned.", InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
+		{Name: "detent_resolve_review_thread", Description: "Record an explicit fixed or dismissed disposition with concrete source/test evidence and resolve one bot conversation on this item's currently published, fully reviewed head. Read its full conversation first. Supply that published head, not an unpublished local repair. If a source fix is needed, stage it and return for normal host publication/review; resolve only once the actual published version contains the fix. Pending host publication or configured review/audit is a source handoff, not an instance failure: when source and worker-owned checks are complete, report complete and disclose the pending host work. Preserve genuine blockers and human actions. This does not approve or merge source and never resolves a human-rooted conversation.", InputSchema: json.RawMessage(`{"type":"object","properties":{"head_sha":{"type":"string"},"thread_id":{"type":"string"},"disposition":{"type":"string","enum":["fixed","dismissed"]},"evidence":{"type":"string","minLength":1,"maxLength":8192}},"required":["head_sha","thread_id","disposition","evidence"],"additionalProperties":false}`)},
+	}
+	return tools, func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
+		var input struct {
+			Head        string `json:"head_sha"`
+			Thread      string `json:"thread_id"`
+			Disposition string `json:"disposition"`
+			Evidence    string `json:"evidence"`
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(call.Arguments)))
+		decoder.DisallowUnknownFields()
+		var destination any = &input
+		if call.Name == "detent_read_review_threads" {
+			destination = &struct{}{}
+		}
+		if err := decoder.Decode(destination); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+			return AgentToolResult{Content: "invalid review disposition arguments"}, nil
+		}
+		if call.Name != "detent_read_review_threads" && call.Name != "detent_resolve_review_thread" {
+			return AgentToolResult{Content: "unsupported tool"}, nil
+		}
+		if err := req.Execution.Validate(ctx); err != nil {
+			return AgentToolResult{}, err
+		}
+		target, targetErr := landing.LandingTarget(ctx)
+		if targetErr != nil && (!errors.Is(targetErr, ErrLandingNotReviewed) || call.Name == "detent_resolve_review_thread" && !target.ReviewPending) {
+			return AgentToolResult{Content: targetErr.Error()}, nil
+		}
+		if !target.GitHubPullRequest || target.External == nil {
+			return AgentToolResult{Content: "this native version has no recorded GitHub pull request"}, nil
+		}
+		if call.Name == "detent_resolve_review_thread" {
+			if input.Head != target.HeadSHA {
+				return AgentToolResult{Content: "review disposition does not name the current published head"}, nil
+			}
+			if targetErr != nil {
+				data, err := json.Marshal(struct {
+					Status   string `json:"status"`
+					Reason   string `json:"reason_code"`
+					Change   string `json:"change_id"`
+					Version  string `json:"version_id"`
+					Head     string `json:"head_sha"`
+					Guidance string `json:"guidance"`
+				}{"pending", "host_publication_pending", target.ChangeID, target.VersionID, target.HeadSHA, "The published version is not reviewed. Disposition remains refused until host publication and configured review/audit finish. If the assigned source is staged and all worker-owned checks pass, report complete with no blockers for that host handoff. Preserve other blockers and human actions. Do not resolve against unpublished repairs."})
+				return AgentToolResult{Content: string(data)}, err
+			}
+		}
+
+		client, _, err := r.nativeLandingGitHubClient(ctx, req, workerGitHubPolicy{})
+		if err != nil {
+			return AgentToolResult{}, err
+		}
+		opts := workspace.LandOptions{Repository: target.Repository, External: target.External, HeadSHA: target.HeadSHA, TargetBranch: target.BaseRef}
+		if call.Name == "detent_read_review_threads" {
+			threads, err := workspace.ReadReviewConversations(ctx, client, opts)
+			if err != nil {
+				return AgentToolResult{Content: err.Error()}, nil
+			}
+			data, err := json.Marshal(struct {
+				Change   string                         `json:"change_id"`
+				Version  string                         `json:"version_id"`
+				Head     string                         `json:"head_sha"`
+				Reviewed bool                           `json:"reviewed"`
+				Threads  []workspace.ReviewConversation `json:"threads"`
+			}{target.ChangeID, target.VersionID, target.HeadSHA, targetErr == nil, threads})
+			return AgentToolResult{Content: string(data), Success: err == nil}, err
+		}
+		if strings.TrimSpace(input.Evidence) == "" {
+			return AgentToolResult{Content: "review disposition requires explicit source or test evidence"}, nil
+		}
+		opts.Authorize = func(ctx context.Context) error {
+			if err := req.Execution.Validate(ctx); err != nil {
+				return err
+			}
+			current, err := landing.LandingTarget(ctx)
+			if err != nil {
+				return err
+			}
+			if current.ChangeID != target.ChangeID || current.VersionID != target.VersionID || current.HeadSHA != target.HeadSHA || current.BaseSHA != target.BaseSHA || current.SecurityAudit != target.SecurityAudit || !current.GitHubPullRequest || current.Repository != target.Repository || current.External == nil || *current.External != *target.External || current.BaseRef != target.BaseRef {
+				return errors.New("review disposition source changed")
+			}
+			return nil
+		}
+		evidence := "Native Change " + target.ChangeID + ", version " + target.VersionID + ".\n\n" + input.Evidence
+		if err := workspace.ResolveReviewConversation(ctx, client, opts, input.Thread, input.Disposition, evidence); err != nil {
+			return AgentToolResult{Content: err.Error()}, nil
+		}
+		return AgentToolResult{Content: "Recorded disposition and resolved the bot conversation at published head " + target.HeadSHA, Success: true}, nil
+	}
 }

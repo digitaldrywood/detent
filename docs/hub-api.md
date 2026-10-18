@@ -151,6 +151,57 @@ The response includes current settings, every active member and the most recent
 20 deleted members, with lifecycle state, ordinary runner ID and last safe
 bootstrap progress log. The runner settings page exposes these reads.
 
+Native projects also expose `GET` and `PUT`
+`/api/v2/organizations/{organization}/projects/{project}/sprite-pool/allocation`.
+An owner/admin opts a project into managed members by writing `desired_count`,
+`expected_revision` (a decimal string, initially `"0"`) and `idempotency_key`.
+The organization pool must already be configured. Desired count is independent
+of runner job capacity and may exceed available capacity. Reads return
+`managed`, `desired_count`, `allocated_count`, `shortfall`,
+`provision_failures` and `revision`.
+Allocated count includes reserved and retiring members until deletion finishes.
+Replays return the original command response; reads return current allocation.
+Each failed paid provisioning attempt for the current revision increments
+`provision_failures`; after three, creation for that project pauses until the
+desired count is written again, which resets the count.
+
+The existing organization controller reserves members under the shared
+organization ceiling and reported provider limits. It retains existing members
+and assigns available slots to the oldest eligible unsatisfied project request, breaking
+ties by project ID, before satisfying new organization demand. Each member has
+one allocation owner. Managed projects accept work only on their own members;
+desired zero holds new claims, including workspace claims. Organization and
+manual runners remain available to projects that have not opted in. Manual
+adoption is not supported. Every new member is a fresh runner identity with one
+work slot. A managed member receives claims only after its runner's existing
+setup observation for the project passes, which includes the provider sign-in
+and repository checkout done once in the member's console. A Pi backend,
+which has no authentication-status contract, does not block readiness. A runner
+re-observes a project that is not ready at most every 30 seconds, so a console
+login is picked up without a restart. Before every paid
+provisioning step the controller re-reads the project's desired count; a
+reservation that no longer fits is cancelled before creation or retired before
+it can become eligible, so a completion after a decrement never dispatches.
+Decreasing desired count drains surplus members, preferring members that are not
+ready, then idle members, then busy ones: a draining member takes no new claims,
+keeps its credential so active work can finish and publish, and its Sprite is
+deleted only after the Hub holds no unreleased lease for it. An expired lease
+or offline heartbeat never proves deletion safe; the lease must be released by
+the runner, superseded through existing lease recovery, or released by an
+audited runner revocation. Organization members keep the existing idle and
+budget-retention checks, and downsizing never retires another allocation's
+members. Lowering the organization ceiling retires excess members across allocations,
+preserving desired counts and showing the resulting shortfalls. A project whose
+budget prevents creation does not block eligible requests or organization demand.
+
+Pool reads include each member's `status`: `provisioning`, `awaiting_login`,
+`awaiting_setup`, `ready`, `sleeping` (paused and wakeable through the existing
+Service restart), `unreachable` (credential revoked or expired, or the last wake
+failed), `draining` (retiring with unreleased work), `deleting` or `deleted`.
+A member awaiting login lists `waiting_for` steps, each with a `check`
+(`provider` or `github`) and the exact console `command`, such as
+`codex login --device-auth`, `gh auth login` and `gh auth setup-git`.
+
 Legacy per-project pools convert in place at schema upgrade: their floors and
 ceilings are summed, and their existing members retain Sprite names, runner IDs
 and project-token overrides. A forward migration restores totals captured before
@@ -1027,7 +1078,9 @@ negotiation fails without switching tracker or scheduler.
 
 A person-filed native issue that enters Done gets `verification: {"state": "pending"}`, and its filer's issue email asks them to verify it. Worker, service-key, imported and origin-stamped issues never enter `pending`. The filer, or a member and above, answers with `POST /work-items/{id}/verification` or MCP `verify_fix`; a Reporter may answer only on issues they filed, which is a Reporter's only path out of Done. `verified` records `verified_by` and `verified_at` and keeps the issue in Done. `not_fixed` adds the required comment and moves the issue from Done to Todo with reason `user_requested`, so quality analytics count the reopen exactly as a manual one. Leaving Done clears the state. `GET /work-items` accepts `verification=pending` or `verified`. Verification never dispatches, blocks or lands work.
 
-Native issue `type` is required when a Reporter files and optional for other roles, including workers and machine reports. Untyped issues omit the field in reads. Members may edit the type; Reporters cannot edit issue fields. Type edits appear in issue history, and labels remain independent of the type.
+Native issue `type` is required when a Reporter files and optional for other roles, including workers and machine reports. Untyped issues omit the field in reads. Members may edit the type. Reporters may edit only the title, body and attachment references on their own issues while in Triage; labels, priority, assignees, state and type remain refused. Once an issue leaves Triage, the response explains that it is already with the team and a comment can add details. Reporter edits do not confirm engineering issue-contract sections. Type edits appear in issue history, and labels remain independent of the type.
+
+Reporter REST, SSE and MCP reads are restricted to issues whose actor principal matches the caller's human principal, including personal keys and OAuth clients. Lists, search, exports, board counts and board deltas use the same ownership boundary. Other filers' issues return not found; dependencies, related links and attachment references to those issues are omitted. Reporter issue resources include `reporter_status`: Triage is `submitted`; Backlog and Todo are `planned`; In Progress, In Review, Rework, Merging and Blocked are `in_progress`; Done is `done`; Cancelled is `cancelled`. Cancelling an own issue still uses `move_item` to Cancelled. Filing, comments and `verify_fix` retain their reporter contracts.
 
 The following paths are relative to
 `/api/v2/organizations/{organization_id}/projects/{project_id}`. Worker and
@@ -1616,6 +1669,67 @@ omitted rather than replaced with zero. The read adds no stored state or polling
 clients refresh through the existing project event stream.
 
 ### Ordered attempts and recovery
+
+`GET /work-items/{item}?view=recovery` with
+`X-Detent-Recovery-Projection: bounded` reads candidate recovery in one bounded
+response. The complete encoded response, including JSON escaping and envelope,
+fits the existing 1 MiB SDK limit. Source version, frozen policy identity/gates, claim/checkpoint identities, latest
+implementation/acceptance criteria and hold summary retain their authority.
+Command outputs use the existing excerpts and `output_truncated`. Security audit
+summary and finding prose use bounded excerpts marked `text_truncated`, preserving
+audit identity, verdict and every retained finding's ID, status and severity.
+If mandatory review identities alone exceed the review budget, reviews are omitted
+as a group and the exact hold summary and `read.omitted` remain authoritative;
+consume the original records through continuation before acting on that evidence.
+Landing audits share a 64 KiB budget across version and attempt receipt copies.
+An audit that exceeds the remaining budget retains its identity and verdict but
+marks `run_omitted` and omits the run. That incomplete run
+cannot satisfy audit validity; the precomputed hold summary and receipt gate
+result remain authoritative. `read.omitted` names each affected landing path;
+continuation retains the complete original run, including all finding states.
+Discussion
+and ordinary Change evidence have row and byte budgets; `read.omitted` identifies
+context available through `work_comments`, `get_change`, attempt reads and the
+scoped `read.detail_path`. Recovery consumers must read omitted context needed
+for their decision through those owners and follow their cursors.
+
+If combined evidence exceeds the response budget, `read.omitted` identifies
+projected frozen policy details or further omitted evidence. Complete policy
+remains in its original version record; a projected descriptor is not a policy
+approval document. Clients advertising `X-Detent-Recovery-Body: fragments` may
+receive `read.issue_body` with an authenticated cursor, digest and encoded byte
+count instead of inline instructions. This addresses only the `issue_body`
+record through the existing continuation. Its cursor also pins the issue
+revision. The SDK verifies scope, revision, contiguous offsets, record length
+and digest, decodes at most 256 KiB of issue body, and restores it before returning
+successful recovery. Failure aborts candidate hydration. Older clients retain
+complete inline instructions or an explicit refusal, never a successful partial
+issue. Optional retained history is never automatically reconstructed.
+
+`GET /work-items/{item}?view=recovery&limit=1` explicitly reads retained evidence,
+one record fragment per response. `continuation` identifies the scoped item,
+`section`, `record_id`, original `version_id`, base64 `data` (at most 64 KiB
+decoded), `offset`, `total_bytes`, record `sha256` and `next_cursor`. The cursor
+traverses reviews, checks, Change discussion, issue discussion, attempts,
+versions and Change metadata. Each read retrieves one record, not the whole
+history; large records continue before advancing. `section: complete` ends the
+traversal. Cursors retain the existing credential/query binding, pin the current
+Change version and refuse an edited record during fragmentation. Clients consume
+individual records; candidate hydration never reassembles the complete history.
+The authenticated worker `work_item` tool exposes this continuation with
+`project_id`, canonical `reference` and `view: "recovery"`. Repeat with the
+returned `data.next_cursor` as `cursor` until `data.section` is `complete`.
+The full ordinary review, command output, frozen historical policy and retained
+discussion remain available through this selector when other reads return
+excerpts or refuse a record that exceeds their result bound.
+
+Plain recovery reads retain their original contract and response-size refusal.
+Older Hubs ignore the projection header: a new runner still reads small recovery
+and preserves the original size refusal for oversized recovery, without a retry.
+Deploy the Hub before runners to enable bounded hydration; Hub rollback restores
+that same explicit refusal for oversized work. Older runners retain their prior
+behavior against either Hub version. No runner identity or configuration changes
+are needed for either order.
 
 The `fenced_run_history` capability extends schema 1 with a positive decimal-string
 `data.sequence` and `identity: {role, backend, model}`. Identity components are
@@ -2488,11 +2602,26 @@ this delegation.
 
 The Hub requires the authenticated source author `github-actions[bot]`, a source
 repository equal to the configured checkout repository, and the existing
-importer's independent verification of `.github/workflows/ci.yml`. It verifies
-the run attempt, repository and head repository, `develop` or `release/v*`
-branch, scheduled/push/manual event, tested head SHA and completed failed or
-timed-out job. The approved policy and checkout binding are rechecked during
-creation, and Todo must be dispatchable, nonterminal and not operator-only.
+importer's independent verification of the repository's CI workflow and branch.
+The approved repair contract may instead select one exact workflow and branch
+with this authorization sentence before its five subsections:
+
+> New verified GitHub Actions CI repair reports from `.github/workflows/ci.yaml` on `dev` enter Todo with Urgent priority.
+
+This selection comes only from the operator-approved project workflow, never
+from the imported report, labels or webhook payload. Paths must name a single
+YAML file directly under `.github/workflows/`; wildcards are not supported.
+The original authorization sentence retains `.github/workflows/ci.yml` on
+`develop` or `release/v*`. An explicit selection replaces those defaults and
+requires both the named path and branch to match exactly. For example,
+`example-org/example-project` may select `ci.yaml` on `dev` through its approved
+`WORKFLOW.md`; the same run remains ineligible without that selection.
+The approved contract and configured checkout repository binding are always
+required. The importer verifies
+the run attempt, repository and head repository, scheduled/push/manual event,
+tested head SHA and completed failed or timed-out job. The approved policy and
+checkout binding are rechecked during creation, and Todo must be dispatchable,
+nonterminal and not operator-only.
 Only then does a new report receive Todo, native priority `0` (Urgent), and
 confirmation of the bounded approved sections. Source diagnostics remain quoted
 as untrusted evidence. Labels such as `detent:todo` and `hotfix` confer no

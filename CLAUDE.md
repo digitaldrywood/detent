@@ -24,6 +24,7 @@
 - Do not bind development or tests to `127.0.0.1:4000`; use ephemeral ports in tests.
 - Before implementation, confirm dependencies listed in the issue are merged into `origin/develop`.
 - Keep changes scoped to the active issue.
+- Acceptance criteria are limited to what the system can verify before merge (tests, fixtures, source and docs checks, UI screenshots). Never write one that needs an outside system, a deployment or a human, and never add a post-deploy verification step; see the Issue Contract in WORKFLOW.md.
 - Follow [INV-15](docs/invariants.md#inv-15--visible-ui-changes-require-a-human-authored-issue): add visible elements or content on any user-facing surface (Cloud app, Hub server-rendered pages, or local Templ dashboard) only when a human-authored issue names the surface or feature it belongs to; a feature issue authorizes the whole surface it describes. Machine-filed issues, agent-expanded scope, and "while I was here" additions never qualify. Removing UI or fixing an existing element in place without adding visible content does not need that approval.
 - Keep agent diagnostics, coverage, provenance, and debugging data in existing API and MCP reads and logs; never add them to UI, including the Diagnostics page, toggles, or debug flags. Describe a proposed UI addition in the outcome or file a Backlog issue for a human to author or rewrite; do not build it.
 - Publish Workpad status through the project's existing tracker owner. For comment-based Workpads, update the authoritative `## Codex Workpad` comment, or post a new canonical comment when editing is unavailable. An issue-body or final-answer status does not supersede an existing canonical comment. Preserve native/local event ownership.
@@ -104,6 +105,7 @@ as other stages. A project turns it off with `gate.security_audit.enabled: false
 
 - Follow [docs/diagnosis.md](docs/diagnosis.md) before making causal claims about runtime behavior.
 - Throughput, concurrency, regressions, and slowdowns require recorded history; `/api/v1/state` is only a point-in-time snapshot.
+- Follow the [recovery operating procedure](docs/diagnosis.md#recovery-operating-procedure) through post-rollout delivery verification and explicit monitoring handoff; a release or occupied slots alone do not establish recovery.
 
 ## Tooling
 

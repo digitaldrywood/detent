@@ -864,3 +864,52 @@ func TestRunnerClaimRevalidatesStaleAuthentication(t *testing.T) {
 		})
 	}
 }
+
+func TestSpriteRunnerAccessRouting(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, initial, report string
+		tier                  *string
+		sprite                bool
+		status                int
+	}{
+		{"machine sandbox", "native-trusted", "", new("sandbox"), false, http.StatusOK},
+		{"sprite sandbox requests a fresh probe", "native-trusted", `{"test":["native-trusted"]}`, new("sandbox"), true, http.StatusOK},
+		{"sprite sandbox selection with unavailable backend", "native-trusted", `{"p/codex":["native-trusted","sandbox"],"p/claude":["native-trusted"]}`, new("sandbox"), true, http.StatusOK},
+		{"sprite sandbox after passing probe", "native-trusted", `{"p/codex":["native-trusted","sandbox"]}`, new("sandbox"), true, http.StatusOK},
+		{"legacy sprite preserved", "sandbox", "", nil, true, http.StatusOK},
+		{"legacy sprite full access", "sandbox", "", new("native-trusted"), true, http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+			r.redemption.IsolationTier = test.initial
+			if test.sprite {
+				r.redemption.SpriteName = r.redemption.Hostname
+			}
+			r.enroll(t)
+			if test.report != "" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET backend_isolation_json=? WHERE id=?", test.report, r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var before runnerauth.Runner
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", r.redemption.Credential, nil), &before)
+			request := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: before.Routing}, IsolationTier: test.tier}
+			response := performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, request)
+			requireNativeStatus(t, response, test.status)
+			var after runnerauth.Runner
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", r.redemption.Credential, nil), &after)
+			want, revision := test.initial, before.Revision
+			if test.status == http.StatusOK {
+				revision++
+				if test.tier != nil {
+					want = *test.tier
+				}
+			}
+			if after.IsolationTier != want || after.Revision != revision {
+				t.Fatalf("routing tier=%s revision=%d, want %s revision=%d", after.IsolationTier, after.Revision, want, revision)
+			}
+		})
+	}
+}

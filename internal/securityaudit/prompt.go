@@ -50,6 +50,8 @@ type PreviousAudit struct {
 }
 
 type Snapshot struct {
+	Chunk            *ChunkIdentity
+	DiffComplete     bool
 	Previous         *PreviousAudit
 	FindingFiles     map[string]string
 	ProjectID        string
@@ -93,28 +95,24 @@ func BuildPrompt(snapshot Snapshot, maxDiffBytes int) (string, error) {
 	if strings.TrimSpace(snapshot.Repository) == "" || (snapshot.PRNumber <= 0 && strings.TrimSpace(snapshot.IssueID) == "") || strings.TrimSpace(snapshot.BaseSHA) == "" || strings.TrimSpace(snapshot.HeadSHA) == "" {
 		return "", errors.New("security audit snapshot requires repository, change identity, base SHA, and head SHA")
 	}
-	size := len(snapshot.Diff)
-	if snapshot.DiffBytes > size {
-		size = snapshot.DiffBytes
-	}
-	for path, content := range snapshot.FindingFiles {
-		size += len(path) + len(content)
-	}
-	if snapshot.Previous != nil {
-		raw, err := json.Marshal(snapshot.Previous)
-		if err != nil {
-			return "", err
-		}
-		size += len(raw)
+	size, err := sourceBytes(snapshot)
+	if err != nil {
+		return "", err
 	}
 	if snapshot.DiffTruncated || size > maxDiffBytes {
 		return "", &DiffTooLargeError{ActualBytes: size, LimitBytes: maxDiffBytes}
 	}
-	if strings.TrimSpace(snapshot.Diff) == "" && snapshot.Previous == nil {
+	if !utf8.ValidString(snapshot.Diff) || (snapshot.DiffBytes != 0 && snapshot.DiffBytes != len(snapshot.Diff)) {
+		return "", errors.New("security audit textual diff is incomplete or invalid UTF-8")
+	}
+	if strings.TrimSpace(snapshot.Diff) == "" && snapshot.Previous == nil && (!snapshot.DiffComplete || snapshot.Diff != "") && snapshot.Chunk == nil {
 		return "", errors.New("security audit textual diff is empty")
 	}
 
 	payload := struct {
+		Chunk        *ChunkIdentity    `json:"chunk,omitempty"`
+		ProjectID    string            `json:"project_id"`
+		IssueID      string            `json:"issue_id"`
 		Previous     *PreviousAudit    `json:"previous_audit,omitempty"`
 		FindingFiles map[string]string `json:"finding_files,omitempty"`
 		Repository   string            `json:"repository"`
@@ -125,6 +123,9 @@ func BuildPrompt(snapshot Snapshot, maxDiffBytes int) (string, error) {
 		PullRequest  any               `json:"pull_request"`
 		Diff         string            `json:"textual_diff"`
 	}{
+		Chunk:        snapshot.Chunk,
+		ProjectID:    snapshot.ProjectID,
+		IssueID:      snapshot.IssueID,
 		Previous:     snapshot.Previous,
 		FindingFiles: snapshot.FindingFiles,
 		Repository:   strings.TrimSpace(snapshot.Repository),
@@ -155,7 +156,11 @@ func BuildPrompt(snapshot Snapshot, maxDiffBytes int) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("encode security audit payload: %w", err)
 	}
-	return trustedReviewerInstructions + "\n\nAudit payload:\n" + string(raw), nil
+	instructions := trustedReviewerInstructions
+	if snapshot.Chunk != nil {
+		instructions += "\n\n" + chunkInstructions
+	}
+	return instructions + "\n\nAudit payload:\n" + string(raw), nil
 }
 
 func ToolInstructions() string {

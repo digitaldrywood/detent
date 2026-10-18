@@ -28,7 +28,7 @@ type urgentRuntimeUpdater struct {
 }
 
 func (u urgentRuntimeUpdater) Check(context.Context) (detentupdate.Status, error) {
-	return detentupdate.Status{}, nil
+	return detentupdate.Status{Critical: true, LatestVersion: "1.2.4"}, nil
 }
 
 func (u urgentRuntimeUpdater) Apply(ctx context.Context, opts detentupdate.ApplyOptions) (detentupdate.Status, error) {
@@ -41,9 +41,9 @@ func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
 		follow bool
 		active int
 	}{
-		{name: "urgent finishes active leases", active: 2},
-		{name: "heartbeat target finishes active leases", follow: true, active: 2},
-		{name: "heartbeat target updates idle runner", follow: true},
+		{name: "critical urgent finishes active leases", active: 2},
+		{name: "critical heartbeat target finishes active leases", follow: true, active: 2},
+		{name: "critical heartbeat target updates idle runner", follow: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			follow := test.follow
@@ -134,12 +134,14 @@ func TestHubRuntimeUpdateSchedule(t *testing.T) {
 		hours    int
 		interval time.Duration
 		enrolled bool
+		isolated bool
 	}{
 		{name: "Hub heartbeat default", client: globalconfig.HubClient{URL: "https://hub.example.test"}, interval: 6 * time.Hour},
 		{name: "Hub configured heartbeat", client: globalconfig.HubClient{URL: "https://hub.example.test", HeartbeatIntervalSeconds: 45}, interval: 6 * time.Hour},
 		{name: "Hub explicit check interval", client: globalconfig.HubClient{URL: "https://hub.example.test"}, hours: 2, interval: 2 * time.Hour},
 		{name: "enrolled follows Hub through heartbeat owner", client: globalconfig.HubClient{URL: "https://hub.example.test", IdentityFile: identityPath}, interval: 30 * time.Second, enrolled: true},
 		{name: "standalone default", interval: 6 * time.Hour},
+		{name: "isolated demo never prepares released workers", isolated: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -149,12 +151,24 @@ func TestHubRuntimeUpdateSchedule(t *testing.T) {
 				Client: test.client,
 				Update: globalconfig.Update{AutoCheckEnabled: true, AutoApplyEnabled: true, CheckIntervalHours: test.hours},
 			}}
+			if test.isolated {
+				cfg.Isolated = &IsolatedRuntimeInfo{}
+			}
 			scheduler, err := newRuntimeUpdateScheduler(cfg, nil,
 				func(context.Context) (func(), bool) { return func() {}, true },
 				func(context.Context) (func(), error) { return func() {}, nil },
 			)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.isolated {
+				if status := scheduler.Status(); status.Enabled || status.AutoApplyEnabled || scheduler.WorkerArtifacts() != nil {
+					t.Fatalf("isolated runtime has an update owner: %#v", status)
+				}
+				if err := scheduler.PrepareWorkers(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				return
 			}
 			if status := scheduler.Status(); status.Enabled == test.enrolled || status.AutoApplyEnabled == test.enrolled || status.CheckInterval != test.interval {
 				t.Fatalf("Status() = %#v, want automatic update interval %s", status, test.interval)

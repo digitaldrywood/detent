@@ -509,10 +509,13 @@ func assertPolicyInputSchema(t *testing.T, schema map[string]any, value any, pat
 }
 
 func TestWorkflowExecutionFailureProjection(t *testing.T) {
+	direction := &operatortool.RequestError{Code: "invalid_request", Message: "Use the linked issue conversation continuation owner"}
 	for _, test := range []struct {
 		name, message string
 		err, safe     error
 	}{
+		{"continuation direction", direction.Message, direction, operatortool.ErrInvalidArguments},
+		{"active claim", operatortool.ErrServiceUnavailable.Error(), tracker.ErrLeaseConflict, operatortool.ErrServiceUnavailable},
 		{"graph", "Workflow transition is not allowed", &nativeError{Code: "transition_not_allowed", Message: "credential-secret", Details: map[string]any{"private": "credential-secret"}, status: http.StatusUnprocessableEntity}, operatortool.ErrInvalidArguments},
 		{"revision", "Resource has changed", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 9, status: http.StatusConflict}, mutation.ErrConflict},
 		{"foreign graph", operatortool.ErrAccessDenied.Error(), &nativeError{Code: "transition_not_allowed", Message: "credential-secret", status: http.StatusForbidden}, operatortool.ErrAccessDenied},
@@ -531,7 +534,7 @@ func TestWorkflowExecutionFailureProjection(t *testing.T) {
 
 func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 	for _, test := range []struct {
-		name, tool, target             string
+		name, tool, target, reason     string
 		scope                          apikey.Scope
 		revoked, expired, idle, denied bool
 		pressure                       bool
@@ -541,6 +544,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 		{name: "write Done", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeWrite},
 		{name: "write terminal creation", tool: operatortool.FileIssue, target: "Done", scope: apikey.ScopeWrite},
 		{name: "write Cancelled", tool: operatortool.MoveItem, target: "Cancelled", scope: apikey.ScopeWrite},
+		{name: "write Cancelled with reason", tool: operatortool.MoveItem, target: "Cancelled", reason: "Needs Logan's Mac to verify emulators", scope: apikey.ScopeWrite},
 		{name: "idle write Done", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeWrite, idle: true},
 		{name: "restored connection under session pressure", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeWrite, pressure: true},
 		{name: "read write denied", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeRead, denied: true},
@@ -611,7 +615,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 					t.Fatalf("create=%s %v", result.Content, err)
 				}
 				issue = created.Data
-				raw, _ = json.Marshal(operatortool.MoveItemArguments{ProjectID: string(f.project), RequestID: "move", Identifier: string(issue.WorkItemID), TargetState: test.target, ExpectedRevision: int64(issue.Revision)})
+				raw, _ = json.Marshal(operatortool.MoveItemArguments{ProjectID: string(f.project), RequestID: "move", Identifier: string(issue.WorkItemID), TargetState: test.target, ReasonDetail: test.reason, ExpectedRevision: int64(issue.Revision)})
 				call = operatortool.Call{Name: test.tool, Arguments: raw}
 			case operatortool.FileIssue:
 				ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead})
@@ -696,6 +700,12 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 					}
 					if json.Unmarshal(result.Content, &receipt) != nil || receipt.Data.State != test.target || receipt.Data.Revision != issue.Revision+1 {
 						t.Fatalf("transition=%s", result.Content)
+					}
+					if test.tool == operatortool.MoveItem {
+						var detail string
+						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COALESCE(json_extract(data_json,'$.reason_detail'),'') FROM collaboration_events WHERE work_item_id=? AND type='workflow.transitioned' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&detail); err != nil || detail != test.reason {
+							t.Fatalf("reason_detail=%q want %q error=%v", detail, test.reason, err)
+						}
 					}
 				} else {
 					approval, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)

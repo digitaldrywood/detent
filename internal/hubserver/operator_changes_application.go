@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -206,7 +207,11 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 		if err := s.prepareChangeSource(ctx, scope, args.ItemID, args.ChangeID, method+" "+path, request); err != nil {
 			var failure *nativeError
 			if errors.As(err, &failure) && failure.Code == "invalid_request" {
-				return result, &operatortool.RequestError{Code: failure.Code, Message: failure.Message}
+				message := failure.Message
+				if rejection, ok := failure.Details["rejection"].(runnerauth.PublicationRejection); ok && rejection.Field == "source" && (rejection.Category == "version_validation" || rejection.Category == "source_verification") {
+					message = "Source bundle metadata or pack is invalid or exceeds the verification budget; split large changes or recreate it with git bundle create <path> HEAD ^<base>"
+				}
+				return result, &operatortool.RequestError{Code: failure.Code, Message: message}
 			}
 			return result, err
 		}

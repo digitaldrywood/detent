@@ -212,6 +212,9 @@ describe("the Enroll dialog", () => {
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
     await mountDialog(["project_build"], false, [], undefined, present, version);
     fireEvent.click(screen.getByLabelText("A Fly Sprite"));
+    expect(screen.getByRole("radio", { name: "Full access" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("radio", { name: "Sandbox" }).getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByText("Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support.")).toBeTruthy();
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toMatch(/^detent-[a-z0-9]+$/);
     expect(screen.getByText(/The Sprite gets the same name/)).toBeTruthy();
     await waitFor(() => expect(screen.queryByText("Checking Sprites tokens…")).toBeNull());
@@ -230,9 +233,9 @@ describe("the Enroll dialog", () => {
     expect(screen.queryByLabelText("Install it as a background service")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Create command" }));
     const instructions = await screen.findByRole("list", { name: "Sprite setup instructions" });
-    expect(within(instructions).getAllByRole("listitem")).toHaveLength(8);
-    expect(instructions.textContent).toContain("sprite create build-host");
-    expect(instructions.textContent).toContain("sprite console -s build-host");
+    const organization = present ? "preview" : '"${SPRITE_ORG:?Set SPRITE_ORG to your Fly organization}"';
+    expect(instructions.textContent).toContain(`sprite list -o ${organization} && sprite create -o ${organization} build-host`);
+    expect(instructions.textContent).toContain(`sprite console -o ${organization} -s build-host`);
     expect(instructions.textContent).toContain(`/${ref}/scripts/sprite-runner-bootstrap.sh`);
     if (version === "v1.2.3") {
       expect(instructions.textContent).toContain("bash sprite-runner-bootstrap.sh --version v1.2.3");
@@ -244,14 +247,35 @@ describe("the Enroll dialog", () => {
     }
     expect(instructions.textContent).toContain("claude auth login");
     expect(instructions.textContent).toContain("codex login --device-auth");
-    expect(instructions.textContent).toContain("Approve the repository policy");
+    expect(instructions.textContent).toContain("approve policy only if offered");
+    expect(instructions.textContent).toContain("gh auth login --hostname github.com --git-protocol https --web");
+    expect(instructions.textContent).toContain("hooks.runner_setup");
+    expect(instructions.textContent).toContain("installation checkpoint does not prove readiness");
     expect(document.body.innerHTML).not.toContain("det_enroll_secret");
     expect(screen.queryByRole("button", { name: "Show token" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Copy the register command" }));
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining("--token det_enroll_secret --name build-host"));
+    expect(writeText.mock.calls[0]![0]).toContain("--isolation-tier native-trusted");
     expect(writeText.mock.calls[0]![0]).not.toContain("--service");
     expect(document.body.innerHTML).not.toContain("det_enroll_secret");
   });
+  it.each([null, "Sandbox", "Full access"])("restores the machine access choice %s after choosing a Sprite", async (choice) => {
+    await mountDialog(undefined, false, [], undefined, true, "v1.2.3", false);
+    if (choice !== null) fireEvent.click(screen.getByRole("radio", { name: choice }));
+    fireEvent.click(screen.getByRole("radio", { name: "A Fly Sprite" }));
+    expect(screen.getByRole("radio", { name: "Full access" }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("radio", { name: "A machine I run" }));
+    for (const label of ["Sandbox", "Full access"]) {
+      expect(screen.getByRole("radio", { name: label }).getAttribute("aria-checked")).toBe(String(choice === label));
+    }
+    const sandbox = screen.getByRole("radio", { name: "Sandbox" }) as HTMLInputElement;
+    expect(sandbox.getAttribute("aria-disabled")).not.toBe("true");
+    expect(screen.getByRole("radio", { name: "Full access" }).getAttribute("aria-disabled")).not.toBe("true");
+    fireEvent.click(sandbox);
+    expect(sandbox.getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByText("Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support.")).toBeNull();
+  });
+
   it.each([["Sandbox", "sandbox"], ["Full access", "native-trusted"]] as const)("requires an explicit %s selection and carries it into the register command", async (label, tier) => {
     userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
@@ -259,6 +283,8 @@ describe("the Enroll dialog", () => {
     const create = await screen.findByRole("button", { name: "Create command" }) as HTMLButtonElement;
     expect(create.disabled).toBe(true);
     expect(screen.getByText("Choose Sandbox or Full access to create a command.")).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Sandbox" }).getAttribute("aria-disabled")).not.toBe("true");
+    expect(screen.getByRole("radio", { name: "Full access" }).getAttribute("aria-disabled")).not.toBe("true");
     expect(screen.getByRole("radio", { name: "Sandbox" }).getAttribute("aria-checked")).toBe("false");
     expect(screen.getByRole("radio", { name: "Full access" }).getAttribute("aria-checked")).toBe("false");
     fireEvent.click(create);
@@ -417,6 +443,23 @@ describe("the Enroll dialog", () => {
     expect((await screen.findByRole("alert")).textContent).toContain(`${code}: ${body.message}`);
     expect(onEnrolled).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Copy the register command" })).toBeNull();
+  });
+
+  it("falls back to SPRITE_ORG while the token check for a new selection is pending", async () => {
+    await mountDialog(["project_build"], false, [], undefined, true);
+    fireEvent.click(screen.getByLabelText("A Fly Sprite"));
+    await waitFor(() => expect(screen.queryByText("Checking Sprites tokens…")).toBeNull());
+    const respond = vi.mocked(globalThis.fetch).getMockImplementation()!;
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) =>
+      String(input).endsWith("/secrets/fly_sprites_token") ? new Promise<Response>(() => undefined) : respond(input, init));
+    fireEvent.click(projectBox("project_release"));
+    fireEvent.click(projectBox("project_build"));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "build-host" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create command" }));
+    const instructions = await screen.findByRole("list", { name: "Sprite setup instructions" });
+    const organization = '"${SPRITE_ORG:?Set SPRITE_ORG to your Fly organization}"';
+    expect(instructions.textContent).toContain(`sprite create -o ${organization} build-host`);
+    expect(instructions.textContent).not.toContain("-o preview");
   });
 
   it("shows the server reason when a Sprites token check fails", async () => {

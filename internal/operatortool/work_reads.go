@@ -67,6 +67,7 @@ const WorkHistoryPageBytes = MaxResultBytes / 4
 // WorkReadRequest contains application selectors only. Organization and principal
 // always come from the connection. Each operation permits only its own fields.
 type WorkReadRequest struct {
+	View            string   `json:"view,omitempty"`
 	ProjectID       string   `json:"project_id"`
 	Since           string   `json:"since,omitempty"`
 	Reference       string   `json:"reference,omitempty"`
@@ -125,8 +126,8 @@ func WorkReadCatalog() []Definition {
 		{WorkList, "List or search work items in one authorized project. Native projects support ranked stemmed/prefix OR search with matched snippets, RFC3339 created_after (inclusive), created_before (exclusive), updated_after (inclusive), type (bug or change_request), verification (pending lists Done issues awaiting the filer's verify_fix; verified lists confirmed fixes), created_by (principal ID or me for a human caller), archived selection, OR selections within each filter, and workspace/work projections. Combine created_by=me with verification=pending for the caller's issues to verify. GitHub snapshots refuse unsupported native selectors.", "query created_after created_before updated_after fingerprint open type verification state label states labels created_by assignee assignees priority priorities archived include cursor offset limit"},
 		{HealthFindings, "Read project-scoped health findings and the detector last tick, with bounded pagination.", "state since cursor limit"},
 		{WorkConfig, "Read configured project lanes, priorities, available labels and effective Reporter filing templates by issue type.", ""},
-		{WorkItem, "Read a work item's detail and source freshness.", "reference"},
-		{WorkComments, "Read a bounded page of work-item comments with edit revisions.", "reference cursor offset limit"},
+		{WorkItem, "Read a work item's detail and source freshness. For native retained evidence use view=recovery, then follow data.next_cursor with the same view and reference. Each response contains one base64 JSON record fragment with section, record_id, original version_id, byte offset, total_bytes and SHA-256; section=complete ends traversal. This includes full review text, command output, frozen historical policy and discussion omitted from bounded recovery or get_change. Decode fragments individually; do not assemble the whole history.", "reference view cursor"},
+		{WorkComments, "Read a bounded page of work-item comments with edit revisions. Native pages may return fewer than limit items to fit the byte budget; follow next_cursor until absent. Native projects require cursor paging; offset is supported only for GitHub snapshots. A single comment too large for a page requires work_bulk_export.", "reference cursor offset limit"},
 		{WorkPRComments, "Read a bounded page of the work item's linked PR discussion through the existing forge reader. The application selects the repository and PR; deployments without a PR discussion reader are unavailable.", "reference offset limit"},
 		{WorkHistory, "Read durable application history, identifying the tracker or workflow source; separate from recent_activity's live snapshot.", "reference cursor offset limit"},
 		{WorkVersion, "Read a saved native issue or comment revision.", "reference comment_id revision"},
@@ -164,6 +165,8 @@ func WorkReadCatalog() []Definition {
 				properties[field] = map[string]any{"type": "array", "maxItems": 32, "items": map[string]any{"type": "integer", "minimum": 0, "maximum": 3}}
 			case "archived":
 				properties[field] = map[string]any{"type": "string", "enum": []string{"true", "false", "all"}}
+			case "view":
+				properties[field] = map[string]any{"type": "string", "enum": []string{"recovery"}}
 			case "include":
 				properties[field] = map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "string", "enum": []string{"workspace", "work", "summary"}}}
 			case "revision", "attempt_id":
@@ -258,6 +261,9 @@ func DecodeWorkRead(name string, raw json.RawMessage) (WorkReadRequest, error) {
 		if _, ok := fields[field]; !ok {
 			return request, invalidWorkRead(field + " is required")
 		}
+	}
+	if name == WorkItem && request.Cursor != "" && request.View != "recovery" {
+		return request, invalidWorkRead("work_item cursor requires view=recovery")
 	}
 	maximum := MaxItemLimit
 	if name == WorkBulkExport {

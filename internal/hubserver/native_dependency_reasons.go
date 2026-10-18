@@ -55,6 +55,9 @@ func readNativeDependencyDetailsBatch(ctx context.Context, q nativeQueryer, scop
 	}
 	selection := string(rawIDs)
 	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
+	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
+	condition = "(" + condition + ") AND (" + visibility + ")"
+	grantArgs = append(grantArgs, visibilityArgs...)
 	args := append(grantArgs, selection, scope.organization, scope.project)
 	rows, err := q.QueryContext(ctx, `SELECT source.native_id, i.native_id, i.project_id, i.number, i.title, COALESCE(ws.detent_state,''), COALESCE(ws.terminal,0), o.slug, p.slug,
  d.dependent_issue_id = source.id, (`+condition+`), COALESCE(ws.dispatchable,0), CASE WHEN ws.terminal=1 THEN `+nativeTerminalEnteredAt+` ELSE NULL END,
@@ -107,6 +110,8 @@ func readNativeDependencyDetailsBatch(ctx context.Context, q nativeQueryer, scop
 			edge.privateUnblocks = edge.privateUnblocks || link.ProjectID != issue.ProjectID
 		}
 		if !visible {
+			edge.privateBlocked = edge.privateBlocked || isBlocker
+			edge.privateUnblocks = edge.privateUnblocks || !isBlocker
 			continue
 		}
 		if isBlocker {
@@ -192,7 +197,7 @@ func (s *Service) updateNativeDependencyReason(c echo.Context) error {
 		return invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
-	options := nativeCommandOptions{OperationID: "dependency-reason/" + c.Param("item"), Item: c.Param("item"), RequireLease: true, Feature: "collaboration", DeferBoardProjection: true}
+	options := nativeCommandOptions{OperationID: "dependency-reason/" + c.Param("item"), Item: c.Param("item"), RequireLease: true, Feature: "collaboration"}
 	result, err := s.executeNativeMutation(c.Request().Context(), scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) (any, error) {
 		if !validDependencyReason(request.Text) || (request.Kind != "blocked" && request.Kind != "unblocks") {
 			return nil, nativeInvalid("Reason must be plain text of at most 140 characters and kind blocked or unblocks")
@@ -228,6 +233,9 @@ func (s *Service) updateNativeDependencyReason(c echo.Context) error {
 
 func readNativeDependencyReference(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.NativeWorkItemID) (*tracker.NativeDependency, error) {
 	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
+	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
+	condition = "(" + condition + ") AND (" + visibility + ")"
+	grantArgs = append(grantArgs, visibilityArgs...)
 	args := append([]any{scope.organization, id}, grantArgs...)
 	var link tracker.NativeDependency
 	var organizationSlug, projectSlug string

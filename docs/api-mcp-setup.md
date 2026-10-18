@@ -16,6 +16,19 @@ project-scoped reads or `work_list` cursors to continue inventory reads.
 `eligibility_tool` (`explain_item`) for current native admission evidence,
 including human ownership, dependencies and registered-runner conditions.
 
+Native Hub operators can call `stop_run` directly with `project_id`, `request_id`,
+`identifier`, `expected_revision` (a decimal string), `lease_id`, `fencing_token`
+(an integer), and `destination` (`Blocked`, `Backlog`, `Cancelled`, or `Todo`).
+Use the current item revision and exact active lease/fence from the supported
+work-item and attempt reads. Optional `priority` uses ranks 1–4; `reason` accepts
+up to 280 bytes. The existing stop owner checks current write access,
+revision, workflow transition and lease fence atomically, preserves retained
+source, and releases only that attempt. The returned `action_id` is readable
+through `action_result`; its result records the released lease/fence and the
+item's resulting state and revision. Reuse the same `request_id` and arguments
+for a retry. This operation requires no conversation or coordinator turn and
+does not grant access to private conversations.
+
 On an enrolled runner host, discover the `local_projects` toolset on the
 runner's authenticated `/mcp` connection. `local_project_configuration` reads the actual
 local revision and redacted selected/effective policy. Its admin commands apply
@@ -679,6 +692,37 @@ command text is redacted. Correlation grants no workflow authority, introduces
 no merge requirement and does not change any project's check policy.
 
 ## Hosted application context reads
+
+Organization productivity is available through the hosted organization
+`GET /reports?scope=organization&project=all&range=30d` read and the existing `reports` MCP tool
+with `{"scope":"organization","range":"30d"}`. Presets are `24h`, `7d`,
+`30d` and `90d`; REST custom windows use inclusive UTC `from`/`to` dates,
+and MCP accepts explicit timestamps aligned to complete UTC hours. Presets use the same
+calendar window resolution as project Reports. Both return an equal-length
+previous window. Buckets are hourly for short windows and daily for the 7d, 30d and 90d
+presets, and custom windows at least six days long.
+
+The organization result contains `current` and `previous` productivity metrics,
+`projects` with the same metrics per project, `series` and `previous_series`
+with filed/completed counts and project splits, and `filed_by`/`completed_by`
+counts for both periods. Completion cost includes lifetime usage before each
+window's end for issues currently Done whose close falls inside that window.
+Rework uses the project Reports unique-worked-issue denominator and excludes
+infrastructure returns from its numerator. Missing cost or rework denominators
+and unobserved cycle times return null rates or durations.
+
+The `labels`, `priorities`, `types`, `filed_by`, `runners` and `projects`
+filters accept arrays in MCP and repeated query parameters in REST. Dimensions
+combine with AND; values within a dimension combine with OR. Project filters
+intersect current readable grants and cannot expand access. A single MCP
+`project_id` further narrows organization scope. Omitting REST `scope` retains
+the existing Reports client response, including for `project=all`. Project-scoped
+Reports retains its existing response. Organization reads use typed background-maintained
+summaries through the reader pool; they may lag writes and never parse attempt
+payloads or replay event history on the request path. Filer kinds are `people`,
+`agents`, `automation` and `unknown`; completion attribution uses the final
+attempt's enrolled runner or the human who recorded the Done transition, with
+`unknown` retained when identity is missing.
 
 Hosted dedicated and shared connections expose `app_bootstrap_payload`,
 `app_updates`, `release_notes`, and `hosted_events` through the same adapter on HTTP and stdio.

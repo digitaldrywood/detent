@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -14,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -68,6 +71,15 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 	reconnect := finish
 	reconnect.Type, reconnect.IdempotencyKey, reconnect.Data.Sequence, reconnect.Data.Outcome = "run.observed", "reconnect-terminal", 4, ""
 	reconnect.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: time.Now()}
+	invalid := reconnect
+	invalid.IdempotencyKey, invalid.Data.Sequence = "invalid-observation", 2
+	invalid.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", LocalAttemptID: 4, Generation: 9, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 99}, Identity: agentidentity.Identity{BackendID: "sentinel-private-value"}}
+	invalidCheckpoint := invalid
+	invalidCheckpoint.Type, invalidCheckpoint.IdempotencyKey, invalidCheckpoint.Data.Handoff = "run.checkpointed", "invalid-checkpoint", nativeTestCheckpoint()
+	invalidValidation := invalid
+	invalidValidation.IdempotencyKey = "invalid-validation"
+	invalidValidation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", Validation: &gate.CommandResult{Command: "sentinel-private-value", Output: "sentinel-private-output"}}
+
 	lifecycleTest := t
 	for _, test := range []struct {
 		name    string
@@ -76,6 +88,9 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 		restart bool
 	}{
 		{"evidence without upload", forged, http.StatusUnprocessableEntity, false},
+		{"invalid runtime observation", invalid, http.StatusUnprocessableEntity, false},
+		{"invalid checkpoint observation", invalidCheckpoint, http.StatusUnprocessableEntity, false},
+		{"invalid source validation", invalidValidation, http.StatusUnprocessableEntity, false},
 		{"checkpoint before start", checkpoint, http.StatusConflict, false},
 		{"start", start, http.StatusOK, false},
 		{"same command", start, http.StatusOK, false},
@@ -109,7 +124,26 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: lease.PolicyID, WorkItemID: issue.WorkItemID, MachineID: lease.MachineID, SessionID: "replacement", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
 				requireNativeStatus(t, response, http.StatusConflict)
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, test.event), test.status)
+			response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, test.event)
+			requireNativeStatus(t, response, test.status)
+			if strings.Contains(response.Body.String(), "sentinel-private") {
+				t.Fatal("public rejection disclosed private payload")
+			}
+			if test.name == "invalid runtime observation" || test.name == "invalid checkpoint observation" || test.name == "invalid source validation" {
+				var result struct {
+					Details struct {
+						Rejection struct{ Category, Field string }
+					}
+				}
+				decodeHubResponse(t, response, &result)
+				field := "data.runtime.activity"
+				if test.name == "invalid source validation" {
+					field = "data.runtime.validation"
+				}
+				if result.Details.Rejection.Category != "runtime_validation" || result.Details.Rejection.Field != field {
+					t.Fatalf("lost structural rejection: %+v", result)
+				}
+			}
 		})
 	}
 	for _, event := range []tracker.NativeRunEvent{start, checkpoint, finish} {
@@ -182,6 +216,25 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 	}
 	f.service = openTestService(t, config)
 	now = now.Add(90*time.Second + time.Nanosecond)
+	refuseEvidence := func(mutation tracker.Mutation) {
+		t.Helper()
+		credential, _, err := f.service.authenticateAPIToken(t.Context(), worker, "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+		err = recordAttachmentEvidence(t.Context(), tx, scope, attachment.EvidenceRequest{Mutation: mutation, WorkItemID: issue.WorkItemID, AttemptID: event.Data.AttemptID, Caption: "Expired evidence"}, attachment.Metadata{}, now)
+		var failure *nativeError
+		if !errors.As(err, &failure) || failure.Code != "stale_execution" {
+			t.Fatalf("stale evidence was not fenced: %v", err)
+		}
+	}
+	refuseEvidence(tracker.Mutation{LeaseID: lease.ID, FencingToken: lease.FencingToken})
 	other := worker
 	replacement := claimNativeAttempt(t, f, other, "first-machine", "other-session", issue.WorkItemID)
 	if replacement.FencingToken <= lease.FencingToken {
@@ -200,8 +253,10 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", worker, tracker.CreateComment{Mutation: test.mutation, Body: "stale mutation"}), http.StatusConflict)
+			refuseEvidence(test.mutation)
 		})
 	}
+	refuseEvidence(tracker.Mutation{LeaseID: replacement.ID, FencingToken: replacement.FencingToken})
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", other, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "new-owner", LeaseID: replacement.ID, FencingToken: replacement.FencingToken}, Body: "current owner"}), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "operator"}, Body: "operator collaboration"}), http.StatusOK)
 	for _, operation := range []string{"renew", "release", "events"} {

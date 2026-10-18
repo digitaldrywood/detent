@@ -25,7 +25,7 @@ import { AccountError } from "../account/api.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useMutation, useResource, type Resource } from "../account/useResource.ts";
 import { SettingsRow } from "../settings/settingsLayout.tsx";
-import { runnerAccessOptions, type RunnerAccessTier } from "./runnerAccess.ts";
+import { runnerAccessOptions, spriteSandboxUnavailableReason, type RunnerAccessTier } from "./runnerAccess.ts";
 
 /** The operations a runner needs to take issue runs and coordinator turns. */
 const ENROLLMENT_OPERATIONS = ["read", "collaborate", "claim", "heartbeat", "events"] as const;
@@ -228,7 +228,8 @@ export function EnrollRunnerDialog({
   const [location, setLocation] = React.useState<"machine" | "sprite">("machine");
   const [platform, setPlatform] = React.useState(runnerInstallPlatform);
   const [capacityText, setCapacityText] = React.useState("1");
-  const [isolationTier, setIsolationTier] = React.useState<RunnerAccessTier | null>(null);
+  const [machineIsolationTier, setMachineIsolationTier] = React.useState<RunnerAccessTier | null>(null);
+  const isolationTier = location === "sprite" ? "native-trusted" : machineIsolationTier;
   const capacity = parseCapacity(capacityText);
   // A response for a dialog the reader already closed must not come back as
   // the next opening's command.
@@ -246,15 +247,20 @@ export function EnrollRunnerDialog({
     if (!open || location !== "sprite") return [];
     return Promise.all((scope === "organization" ? [""] : selected).map(async (id) => {
       try {
-        const secret = await api.spritesSecret(id);
-        const present = secret.present || (id !== "" && (await api.spritesSecret("")).present);
-        return { id, present, error: null };
+        const projectSecret = await api.spritesSecret(id);
+        const secret = !projectSecret.present && id !== "" ? await api.spritesSecret("") : projectSecret;
+        return { id, present: secret.present, organization: secret.organization_slug, error: null };
       } catch (error) {
-        return { id, present: null, error: enrollmentError(error) };
+        return { id, present: null, organization: undefined, error: enrollmentError(error) };
       }
     }));
   }, [api, open, location, selectedKey, scope]);
   const canWake = sprites.value?.length === (scope === "organization" ? 1 : selected.length) && sprites.value.every((entry) => entry.present === true);
+  const spriteScope = scope === "organization" ? [""] : selected;
+  const currentSprites = !sprites.loading && sprites.error === null && sprites.value?.length === spriteScope.length && sprites.value.every((entry, index) => entry.id === spriteScope[index]) ? sprites.value : [];
+  const spriteOrganizations = [...new Set(currentSprites.filter((entry) => entry.present).map((entry) => entry.organization))];
+  const spriteOrganization = spriteOrganizations.length === 1 ? spriteOrganizations[0] : undefined;
+  const spriteOrganizationArgument = spriteOrganization ? shellArgument(spriteOrganization) : '"${SPRITE_ORG:?Set SPRITE_ORG to your Fly organization}"';
   const publishedVersion = fleet.value?.current ?? bootstrap?.version ?? "";
   const pin = spriteBootstrapPin(publishedVersion);
   const downloadRef = pin.ref === "latest" ? '${detent_release}' : pin.ref;
@@ -274,7 +280,7 @@ export function EnrollRunnerDialog({
     generation.current += 1;
     setName(initialName);
     setCapacityText("1");
-    setIsolationTier(null);
+    setMachineIsolationTier(null);
     setService(true);
     setLocation("machine");
     setPlatform(runnerInstallPlatform());
@@ -423,11 +429,11 @@ export function EnrollRunnerDialog({
             <fieldset disabled={enrollment !== null} className="flex flex-col gap-4">
               <fieldset className="flex flex-col gap-2 text-[13px]">
                 <legend id="enroll-agent-access" className="pb-1 font-medium">Agent access</legend>
-                <RadioGroup aria-labelledby="enroll-agent-access" value={isolationTier} onValueChange={(value) => setIsolationTier(value as RunnerAccessTier)}>
+                <RadioGroup aria-labelledby="enroll-agent-access" value={isolationTier} onValueChange={(value) => setMachineIsolationTier(value as RunnerAccessTier)}>
                   {runnerAccessOptions.map(({ tier, label, hint }) => (
                     <label key={tier} className="flex cursor-pointer items-start gap-2">
-                      <Radio value={tier} aria-labelledby={`enroll-access-${tier}`} aria-describedby={`enroll-access-${tier}-hint`} className="mt-1" />
-                      <span><span id={`enroll-access-${tier}`} className="block font-medium">{label}</span><span id={`enroll-access-${tier}-hint`} className="block text-xs text-muted-foreground">{hint}</span></span>
+                      <Radio value={tier} disabled={location === "sprite" && tier === "sandbox"} aria-labelledby={`enroll-access-${tier}`} aria-describedby={`enroll-access-${tier}-hint`} className="mt-1" />
+                      <span><span id={`enroll-access-${tier}`} className="block font-medium">{label}</span><span id={`enroll-access-${tier}-hint`} className="block text-xs text-muted-foreground">{location === "sprite" && tier === "sandbox" ? spriteSandboxUnavailableReason : hint}</span></span>
                     </label>
                   ))}
                 </RadioGroup>
@@ -572,25 +578,28 @@ export function EnrollRunnerDialog({
                 <>
                   <h3 id="enroll-run-command" className="text-[13px] font-medium">Set up {enrollment.name} on a Fly Sprite</h3>
                   <ol aria-label="Sprite setup instructions" className="list-decimal space-y-4 pl-5 text-[13px]">
-                    <li>Create the Sprite from your machine with the Sprite CLI.
-                      <CopyableCommand value={`sprite create ${enrollment.name}`} label="the create command" />
+                    <li>On your own machine, sign in with <code>sprite login</code>. Use the Fly organization whose token is configured for these projects{spriteOrganization ? `: ${spriteOrganization}` : '; set SPRITE_ORG to that organization first'}. Check access, then create the Sprite.
+                      <CopyableCommand value={`sprite list -o ${spriteOrganizationArgument} && sprite create -o ${spriteOrganizationArgument} ${shellArgument(enrollment.name)}`} label="the create command" />
                     </li>
-                    <li>Open its console.
-                      <CopyableCommand value={`sprite console -s ${enrollment.name}`} label="the console command" />
+                    <li>On your own machine, open its console.
+                      <CopyableCommand value={`sprite console -o ${spriteOrganizationArgument} -s ${shellArgument(enrollment.name)}`} label="the console command" />
                     </li>
-                    <li>Inside the Sprite, download the bootstrap script {pin.ref === "latest" ? "from the latest tagged release" : `pinned to ${pin.ref}`}.
+                    <li>Inside the Sprite, run <code>cd "$HOME"</code>, then download the bootstrap script {pin.ref === "latest" ? "from the latest tagged release" : `pinned to ${pin.ref}`}.
                       <CopyableCommand value={downloadCommand} label="the download command" />
                     </li>
                     <li>Run the bootstrap. It installs Detent and the toolchain, registers the runner, and starts the detent-runner Sprite Service.
                       <CopyableCommand value={bootstrapCommand} label="the bootstrap command" />
                       {pin.release === null ? <p className="text-xs text-warning">Upgrade the installed runner to {publishedVersion || "the Hub’s build"} afterwards.</p> : null}
                     </li>
-                    <li>Copy this enrollment command and paste it at the bootstrap’s hidden prompt.
+                    <li>Copy this complete enrollment command and paste it at the bootstrap’s hidden prompt, then press Enter. Paste is invisible. Empty input is only for an already registered runner; if the token expires before registration, create a fresh command and rerun the same bootstrap.
                       <CopyableCommand value={enrollment.command} displayValue={enrollment.maskedCommand} label="the register command" />
                     </li>
-                    <li>Sign in to your project’s provider inside the Sprite: <code>claude auth login</code> or <code>codex login --device-auth</code>.</li>
-                    <li>Set up the project’s git credentials, clone it into the directory printed by the script, and install its dependencies.</li>
-                    <li>Approve the repository policy in the Hub if pending. Re-run the bootstrap with empty input after cloning, then take a new checkpoint with <code>sprite-env checkpoints create</code>.</li>
+                    <li>Inside the Sprite, sign in to the providers your project uses: <code>claude auth login</code> or <code>codex login --device-auth</code>. Verify with <code>claude auth status</code> or <code>codex login status</code>.</li>
+                    <li>Inside the Sprite, authenticate GitHub, then check repository access with <code>git ls-remote REPOSITORY_URL HEAD</code> using your repository URL.
+                      <CopyableCommand value="gh auth login --hostname github.com --git-protocol https --web && gh auth setup-git && gh auth status --hostname github.com" label="the GitHub authentication command" />
+                      The runner clones allowed repositories and runs their <code>hooks.runner_setup</code>. For a fresh runner, each managed checkout is <code>~/detent-runner/PROJECT_ID</code>, using the project’s exact Hub ID. Use the bootstrap’s printed paths for project-scoped enrollment. Verify the checkout and its origin before running dependencies there with repository-pinned tools; keep <code>cd</code> and dependency commands joined with <code>&amp;&amp;</code>.
+                    </li>
+                    <li>Check the Hub’s runner connection, project setup and reported repository policy; approve policy only if offered. Re-run the same bootstrap with empty input after authentication, then inspect <code>sprite-env services get detent-runner</code>. Its installation checkpoint does not prove readiness. Confirm a small authorized Todo task publishes its real Change, then save a final checkpoint with <code>sprite-env checkpoints create</code>. If any step fails, use the bootstrap’s last completed step and resume command. See the <a className="underline" href="https://github.com/digitaldrywood/detent/blob/main/docs/sprite-runners.md">Sprite runner guide</a> for dependency and storage recovery.</li>
                   </ol>
                 </>
               ) : <>

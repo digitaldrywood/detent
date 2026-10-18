@@ -139,7 +139,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		o.releaseClaim(state, issueID)
 		return true
 	}
-	report, reported := workpad.SignalFromComment(event.Result.FinalMessage, "", "")
+	report, reported := runpkg.NativeCompletionSignalFromMessage(event.Result.FinalMessage)
 	humanReview = humanReview || reported && report != nil && report.Invalid == nil && report.HumanAction != ""
 	blocked := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusBlocked
 	clearedBlockers := false

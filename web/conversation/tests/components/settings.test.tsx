@@ -528,8 +528,10 @@ describe("personal keys and org controls", () => {
     for (const [label, expected] of [["Copy key", "private-new-key"], ["Copy as export DETENT_API_KEY=… line", "export DETENT_API_KEY='private-new-key'"]]) {
       const button = dialog.getByRole("button", { name: label });
       fireEvent.click(button);
-      await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(expected));
-      expect(button.textContent).toBe("Copied");
+      await waitFor(() => {
+        expect(writeText).toHaveBeenLastCalledWith(expected);
+        expect(button.textContent).toBe("Copied");
+      });
       expect(dialog.getByLabelText("Step 1 complete")).toBeTruthy();
       expect(dialog.getByText("You can close this. The key stays in your list.")).toBeTruthy();
     }
@@ -540,8 +542,10 @@ describe("personal keys and org controls", () => {
       const button = dialog.getByRole("button", { name: `Copy ${label} setup prompt` });
       const copies = writeText.mock.calls.length;
       fireEvent.click(button);
-      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(copies + 1));
-      expect(button.textContent).toBe("Copied");
+      await waitFor(() => {
+        expect(writeText).toHaveBeenCalledTimes(copies + 1);
+        expect(button.textContent).toBe("Copied");
+      });
       const copiedPrompt = writeText.mock.lastCall![0];
       expect(copiedPrompt).toContain(transport === "mcp" ? `Call connection_info and confirm key.kind is "${kind}", matching the key just created before reporting success` : "Use Authorization: Bearer with that private environment variable at https://cloud.example.test/api/v2");
       expect(copiedPrompt).toContain("DETENT_API_KEY");

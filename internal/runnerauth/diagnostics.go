@@ -50,6 +50,14 @@ func (c LocalChecks) Validate() error {
 	return nil
 }
 
+func (c LocalChecks) ProviderReady() bool {
+	return c.Provider == "passed" || c.Provider == "pending" && slices.Contains(c.ProviderKinds, "pi_agent")
+}
+
+func (c LocalChecks) WorkReady() bool {
+	return (c.Setup == "" || c.Setup == "passed") && c.Checkout == "passed" && (c.Doctor == "passed" || c.Doctor == "warning") && c.ProviderReady()
+}
+
 func (c LocalChecks) Passed() bool {
 	return (c.Setup == "" || c.Setup == "passed") && c.Checkout == "passed" && (c.Doctor == "passed" || c.Doctor == "warning") && c.Provider == "passed"
 }

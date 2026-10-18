@@ -110,7 +110,7 @@ describe("runner rows", () => {
     expect(card.getByText(problem.fix_hint)).toBeTruthy();
     if (updateWarning) {
       expect(card.getByText(/Needs human: reinstall/)).toBeTruthy();
-      expect(card.getByText("Update needs attention · 1.2.4")).toBeTruthy();
+      expect(card.getByText("Update to 1.2.4 · Update needs attention")).toBeTruthy();
     }
     rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [{ ...RUNNER, problems: [] }] }} now={NOW} />);
     expect(screen.queryByText(/Needs human:/)).toBeNull();
@@ -157,18 +157,62 @@ describe("runner rows", () => {
   });
 
   it.each([
-    ["draining", "Waiting for active work"],
-    ["refused", "Update failed"],
-    ["uncertain", "Update needs attention"],
-    ["restart_requested", "Restart requested"],
-    ["running", "Updated"],
-  ])("shows the enrolled update outcome %s", (status, label) => {
-    renderSection({ ...FLEET, runners: [{ ...FLEET.runners[0]!, update: { status, desired: { version: "1.2.4" } } }] });
-    expect(screen.getByText(`${label} · 1.2.4`)).toBeTruthy();
+    ["requested", "Update requested", 1],
+    ["draining", "Draining work or installing", 0],
+    ["draining", "Draining work or installing", 1],
+    ["draining", "Draining work or installing", 4],
+    ["refused", "Update failed", 1],
+    ["uncertain", "Update needs attention", 1],
+    ["applied", "Update installed", 1],
+    ["restart_requested", "Restart requested", 1],
+  ] as const)("shows the enrolled update outcome %s: %s", (status, label, count) => {
+    const leases = Array.from({ length: count }, (_, index) => ({ ...RUNNER.leases[0]!, lease_id: `lease_${index}` }));
+    renderSection({ ...FLEET, runners: [{ ...RUNNER, version: "1.2.3", host_used: 6, leases, update: { status, desired: { version: "1.2.4" } } }] });
+    expect(screen.getByText("Running 1.2.3")).toBeTruthy();
+    expect(screen.queryByText("Running 1.2.4")).toBeNull();
+    expect(screen.getByText(`Update to 1.2.4 · ${label}`)).toBeTruthy();
+    expect(screen.queryByText(/waiting for \d+ jobs? to finish/)).toBeNull();
     if (status === "refused" || status === "uncertain") {
       expect(screen.getByText(/Needs human: reinstall/)).toBeTruthy();
       expect(screen.getByText("curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh")).toBeTruthy();
     }
+  });
+  it("changes the running version only after the replacement reports it", () => {
+    const runner = { ...RUNNER, version: "1.2.3", update: { status: "applied", desired: { version: "1.2.4" } } };
+    const { rerender } = render(<RunnersSectionView fleet={{ ...FLEET, runners: [runner] }} now={NOW} />);
+    expect(screen.getByText("Running 1.2.3")).toBeTruthy();
+    expect(screen.getByText("Update to 1.2.4 · Update installed")).toBeTruthy();
+    rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [{ ...runner, version: "1.2.4", update: { ...runner.update, status: "running" } }] }} now={NOW} />);
+    expect(screen.getByText("Running 1.2.4")).toBeTruthy();
+    expect(screen.queryByText(/Update to/)).toBeNull();
+    expect(screen.queryByText("Running 1.2.3")).toBeNull();
+  });
+  it.each([undefined, { status: "unavailable", desired: null }])("shows the running version with no pending update (%s)", (update) => {
+    renderSection({ ...FLEET, runners: [{ ...RUNNER, version: "1.2.3", update }] });
+    expect(screen.getByText("Running 1.2.3")).toBeTruthy();
+    expect(screen.queryByText(/Update to/)).toBeNull();
+  });
+  it.each([
+    ["missing", undefined, true, "online", "healthy", "Version unknown"],
+    ["empty", "", true, "online", "healthy", "Version unknown"],
+    ["no heartbeat", "1.2.3", false, "online", "healthy", "Version unknown"],
+    ["offline unknown", undefined, false, "offline", "offline", "Version unknown"],
+    ["offline", "1.2.3", true, "offline", "needs_attention", "Last reported 1.2.3 · 5 minutes ago"],
+    ["revoked", "1.2.3", true, "revoked", "needs_attention", "Last reported 1.2.3 · 5 minutes ago"],
+    ["expired", "1.2.3", true, "expired", "expired", "Last reported 1.2.3 · 5 minutes ago"],
+    ["revoked unknown", undefined, false, "revoked", "revoked", "Version unknown"],
+    ["expired unknown", undefined, false, "expired", "expired", "Version unknown"],
+    ["legacy offline", "1.2.3", true, undefined, "offline", "Last reported 1.2.3 · 5 minutes ago"],
+    ["legacy stale", "1.2.3", true, undefined, "stale", "Last reported 1.2.3 · 5 minutes ago"],
+    ["legacy revoked", "1.2.3", true, undefined, "revoked", "Last reported 1.2.3 · 5 minutes ago"],
+    ["legacy expired", "1.2.3", true, undefined, "expired", "Last reported 1.2.3 · 5 minutes ago"],
+  ] as const)("keeps %s running-version evidence distinct from the target", (_name, version, has_heartbeat, connection_health, health, label) => {
+    renderSection({ ...FLEET, runners: [{ ...RUNNER, version, has_heartbeat, connection_health, health, update: { status: "draining", desired: { version: "1.2.4" } } }] });
+    const card = within(screen.getByTestId("host-card"));
+    expect(card.getByText(label.startsWith("Last reported") ? /^Last reported/ : label).textContent).toBe(label);
+    expect(card.queryByText(/^Running 1\.2\./)).toBeNull();
+    expect(card.getByText("Update to 1.2.4 · Draining work or installing")).toBeTruthy();
+    if (label.startsWith("Last reported")) expect(card.getByText("5 minutes ago").getAttribute("datetime")).toBe(RUNNER.last_heartbeat_at);
   });
   it.each(["0.117.47", "0.117.50"])("explains the one-time reinstall for %s", (version) => {
     renderSection({ ...FLEET, runners: [{ ...FLEET.runners[0]!, version, claim_refusal_reason: "Too old to take work, needs 0.117.51", update: { status: "unavailable", desired: null } }] });
@@ -312,6 +356,22 @@ describe("runner rows", () => {
     }
   });
 
+  it.each([
+    { tier: "sandbox", probe: ["native-trusted"], allowed: false },
+    { tier: "native-trusted", probe: ["native-trusted"], allowed: false },
+    { tier: "native-trusted", probe: ["sandbox", "native-trusted"], allowed: true },
+  ])("gates Sandbox for a Sprite with saved tier $tier on its isolation probe $probe", ({ tier, probe, allowed }) => {
+    const runner = { ...RUNNER, isolation_tier: tier, routing: { ...ROUTING, isolation_tier: tier }, backend_isolation: { codex: probe }, problems: [{ code: "tier_unavailable", message: "Access unavailable", fix_hint: "Choose supported access", first_seen: "2026-09-10T12:00:00Z" }], sprite: { name: "build-host", status: "warm", can_wake: true, wake_failed: false } };
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [runner] }} projects={PROJECTS} onSaveRouting={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    const sheet = within(screen.getByRole("dialog"));
+    expect(sheet.getByRole("radio", { name: "Sandbox" }).getAttribute("aria-disabled") === "true").toBe(!allowed);
+    expect(sheet.getByRole("radio", { name: tier === "sandbox" ? "Sandbox" : "Full access" }).getAttribute("aria-checked")).toBe("true");
+    expect(sheet.queryByText("Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support.") !== null).toBe(!allowed);
+    expect(sheet.queryByRole("button", { name: "Switch to Sandbox" }) !== null).toBe(allowed);
+    expect(sheet.getByRole("radio", { name: "Full access" }).getAttribute("aria-disabled")).not.toBe("true");
+  });
+
   it("shows contextual problems and filters through the segmented control", () => {
     const problem = { code: "tier_unavailable", message: "Sandbox tooling is unavailable", fix_hint: "Repair the sandbox tooling", first_seen: "2026-09-10T12:00:00Z" };
     renderSection({ ...FLEET, runners: FLEET.runners.map((runner, index) => index === 0 ? { ...runner, health: "needs_attention", problems: [problem] } : runner) });
@@ -337,7 +397,7 @@ describe("runner rows", () => {
     expect(rows[0]!.textContent).toContain("1 of 2 slots in use");
     expect(rows[1]!.textContent).toContain("0 of 2 slots in use");
     expect(rows[1]!.textContent).toContain("Can’t take work");
-    expect(screen.getByText("1 of 4 slots running work")).toBeTruthy();
+    expect(screen.getByText("1 of 4 slots occupied")).toBeTruthy();
     expect(screen.queryAllByRole("heading", { level: 1 })).toHaveLength(0);
   });
 });
@@ -354,7 +414,7 @@ describe("shared host capacity", () => {
         { ...lease, lease_id: "lease_third", work_item_id: "wi_third" },
       ] },
     ] });
-    expect(screen.getByText("3 of 8 slots running work")).toBeTruthy();
+    expect(screen.getByText("3 of 8 slots occupied")).toBeTruthy();
     const host = screen.getByTestId("runner-capacity");
     expect(host.querySelectorAll("[data-slot-state]")).toHaveLength(8);
     expect(host.querySelectorAll('[data-slot-state="running"]')).toHaveLength(3);
@@ -387,7 +447,7 @@ describe("shared host capacity", () => {
   ])("preserves running work and limits free slots for %s", (_name, values, free) => {
     renderSection(decodeFleet({ ...FLEET, runners: [{ ...active, ...values }] }));
     const host = screen.getByTestId("runner-capacity");
-    expect(screen.getByText("1 of 8 slots running work")).toBeTruthy();
+    expect(screen.getByText("1 of 8 slots occupied")).toBeTruthy();
     expect(host.querySelectorAll('[data-slot-state="running"]')).toHaveLength(1);
     expect(host.querySelectorAll('[data-slot-state="free"]')).toHaveLength(free);
     expect(host.querySelectorAll('[data-slot-state="unavailable"]')).toHaveLength(7 - free);
@@ -412,7 +472,7 @@ describe("shared host capacity", () => {
   it("keeps distinct machine identities separate despite identical names", () => {
     renderSection({ ...FLEET, runners: [active, { ...active, id: "runner_other", machine_id: "machine_other" }] });
     expect(screen.getAllByTestId("runner-capacity")).toHaveLength(2);
-    expect(screen.getByText("2 of 16 slots running work")).toBeTruthy();
+    expect(screen.getByText("2 of 16 slots occupied")).toBeTruthy();
   });
 });
 

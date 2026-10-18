@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -33,7 +32,10 @@ func (s *Service) maintainNativeBoard(ctx context.Context) {
 
 func (d *database) drainNativeBoardDirty(ctx context.Context, now time.Time) (bool, error) {
 	var id string
-	err := d.reader.QueryRowContext(ctx, "SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id LIMIT 1").Scan(&id)
+	err := d.reader.QueryRowContext(ctx, `SELECT work_item_id FROM (SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id LIMIT 1)
+UNION ALL SELECT work_item_id FROM (SELECT work_item_id FROM native_board_items
+WHERE expires_at<>'' AND expires_at<=? ORDER BY expires_at,work_item_id LIMIT 1)
+LIMIT 1`, now.UTC().Format("2006-01-02T15:04:05.000000000Z")).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -54,17 +56,7 @@ func (d *database) drainNativeBoardDirty(ctx context.Context, now time.Time) (bo
 	return true, tx.Commit()
 }
 
-func (d *database) commit(ctx context.Context, tx *sql.Tx) error {
-	readOnly, err := queryOnlyTx(ctx, tx)
-	if err != nil {
-		return err
-	}
-	if readOnly {
-		return tx.Commit()
-	}
-	if err := refreshNativeBoard(ctx, tx, d.now()); err != nil {
-		return err
-	}
+func (d *database) commit(_ context.Context, tx *sql.Tx) error {
 	return tx.Commit()
 }
 
@@ -82,35 +74,6 @@ RETURNING organization_id,project_id,sequence`, scope).Scan(&organization, &proj
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO native_board_sequences(organization_id,project_id,sequence,replay_floor) VALUES(?,?,?,?)
 ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=excluded.sequence,replay_floor=excluded.replay_floor`, organization, project, sequence, sequence)
-	return err
-}
-
-func queryOnlyTx(ctx context.Context, tx *sql.Tx) (bool, error) {
-	var readOnly bool
-	if err := tx.QueryRowContext(ctx, "PRAGMA query_only").Scan(&readOnly); err != nil {
-		return false, fmt.Errorf("read transaction mode: %w", err)
-	}
-	return readOnly, nil
-}
-
-func refreshNativeBoard(ctx context.Context, tx *sql.Tx, now time.Time) error {
-	if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO native_board_dirty SELECT work_item_id FROM native_board_items WHERE running=1 AND expires_at<=?", now.UTC().Format("2006-01-02T15:04:05.000000000Z")); err != nil {
-		return err
-	}
-	ids, err := nativePageIDs(ctx, tx, "SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id")
-	if err != nil {
-		return err
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	policies := map[string]changeSummaryPolicy{}
-	for _, id := range ids {
-		if err := refreshNativeBoardCard(ctx, tx, id, now, policies); err != nil {
-			return err
-		}
-	}
-	_, err = tx.ExecContext(ctx, "DELETE FROM native_board_dirty")
 	return err
 }
 
@@ -135,6 +98,7 @@ func refreshNativeBoardCard(ctx context.Context, tx *sql.Tx, id string, now time
 			return err
 		}
 		current = &tracker.NativeBoardCard{Issue: issue}
+		var latest *tracker.NativeAttempt
 		var attemptID string
 		var attemptCount int
 		err = tx.QueryRowContext(ctx, `SELECT id,(SELECT count(*) FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?)
@@ -146,7 +110,12 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 				return err
 			}
 			current.Attempt = &tracker.NativeBoardAttempt{Count: attemptCount, ID: attempt.AttemptID, Status: attempt.Status, RunnerID: attempt.RunnerID, MachineID: string(attempt.MachineID), Identity: nativeAttemptDisplayIdentity(attempt), StartedAt: attempt.StartedAt, ExpiresAt: attempt.LeaseExpiresAt}
+			latest = &attempt
 		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		current.Execution, err = readNativeBoardExecution(ctx, tx, scope, id, latest, now)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		change, found, err := readLatestNativeChangeRequest(ctx, tx, scope, id)
@@ -218,10 +187,10 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 			closed = issue.ClosedAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
 		}
 		expires := ""
-		if current.Attempt != nil {
-			expires = current.Attempt.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
+		if current.Execution != nil {
+			expires = current.Execution.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
 		}
-		running := !issue.Terminal && current.Attempt != nil && current.Attempt.Status == "running"
+		running := !issue.Terminal && current.Execution != nil && current.Execution.Running
 		if _, err := tx.ExecContext(ctx, `INSERT INTO native_board_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, issue.OrganizationID, issue.ProjectID, issue.State, issue.Archived, issue.Terminal, running, rank, priority, missing, activity, string(issue.ProjectID)+"#"+strconv.Itoa(issue.Number), closed, expires, string(raw)); err != nil {
 			return err
 		}
@@ -331,6 +300,27 @@ func readNativeBoardFrame(ctx context.Context, q nativeQueryer, scope nativeScop
 				return frame, err
 			}
 		}
+		if delta.Previous != nil && !scope.reporterOwns(delta.Previous.Issue.Actor) {
+			delta.Previous = nil
+		}
+		if delta.Current != nil && !scope.reporterOwns(delta.Current.Issue.Actor) {
+			delta.Current = nil
+		}
+		if delta.Previous == nil && delta.Current == nil {
+			continue
+		}
+		if scope.credential.HostedRole == "reporter" {
+			for _, card := range []*tracker.NativeBoardCard{delta.Previous, delta.Current} {
+				if card == nil || card.Change == nil {
+					continue
+				}
+				if _, err := readChange(ctx, q, scope, string(card.Issue.WorkItemID), card.Change.ID); isNativeNotFound(err) {
+					card.Change = nil
+				} else if err != nil {
+					return frame, err
+				}
+			}
+		}
 		if delta.Previous != nil {
 			if err := readNativeDependencyDetails(ctx, q, scope, &delta.Previous.Issue); errors.Is(err, sql.ErrNoRows) {
 				delta.Previous = nil
@@ -344,6 +334,12 @@ func readNativeBoardFrame(ctx context.Context, q nativeQueryer, scope nativeScop
 			} else if err != nil {
 				return frame, err
 			}
+		}
+		if delta.Previous != nil {
+			delta.Previous.Issue = scope.reporterIssue(delta.Previous.Issue)
+		}
+		if delta.Current != nil {
+			delta.Current.Issue = scope.reporterIssue(delta.Current.Issue)
 		}
 		redactNativeBoardCard(delta.Previous, grants)
 		redactNativeBoardCard(delta.Current, grants)
@@ -370,8 +366,16 @@ func nativeBoardStatusLine(card tracker.NativeBoardCard) string {
 		}
 		return "Waiting on " + strconv.Itoa(blockers)
 	}
-	if card.Attempt != nil && card.Attempt.Status == "running" {
-		return "Running"
+	if card.Execution != nil {
+		if label := nativeBoardExecutionLabel(card.Execution.Stage); label != "" {
+			return label
+		}
+		if card.Execution.Running {
+			return "Running"
+		}
+		if card.Attempt == nil || card.Attempt.ID != card.Execution.ID {
+			return ""
+		}
 	}
 	if card.Attempt != nil {
 		switch card.Attempt.Status {

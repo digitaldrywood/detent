@@ -109,8 +109,8 @@
       "TestMandatoryEvidence"
     ],
     "./internal/update": [
-      "TestSchedulerApplyPendingWaitsForBothAttempts",
-      "TestSchedulerExplicitReleaseDrainsWhenAutomaticUpdatesDisabled",
+      "TestSchedulerCriticalApplyWaitsForBothAttempts",
+      "TestSchedulerExplicitReleaseWithoutWorkerArtifacts",
       "TestStartupRecoveryPersistsCrashLoopAcrossProcesses",
       "TestStartupRecoveryAttemptsOneUpdatePerVersion",
       "TestReplaceBinaryRollsBackWhenVerificationFails",

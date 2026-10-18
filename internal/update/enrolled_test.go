@@ -1,9 +1,11 @@
 package update
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -30,8 +32,9 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		lastApplied string
 		nextVersion string
 		nextWant    string
+		logged      bool
 	}{
-		{name: "restart declined", want: "uncertain", calls: 1},
+		{name: "restart declined", want: "uncertain", calls: 1, logged: true},
 		{name: "detached replacement remains pending", pending: true, restart: true, want: "uncertain", calls: 1},
 		{name: "restart requested", restart: true, want: "restart_requested", calls: 1},
 		{name: "urgent release bypasses discovery and automatic opt outs", urgent: true, restart: true, want: "restart_requested", calls: 1},
@@ -48,7 +51,7 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		{name: "Hub follow refuses stale build", follow: true, stale: true, want: "refused"},
 		{name: "stale observed build", stale: true, want: "refused"},
 		{name: "missing restart owner", unavailable: true, want: "refused"},
-		{name: "private refusal redacted", applyError: errors.New("/private/credentials/token=secret"), want: "refused", calls: 1},
+		{name: "private refusal redacted", applyError: errors.New("/private/credentials/token=secret"), want: "refused", calls: 1, logged: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Now().UTC()
@@ -61,10 +64,15 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 			if test.applyError != nil {
 				updater.applyStatus.Action = ActionRefused
 			}
-			drains, restarts := 0, 0
-			config := SchedulerConfig{CheckInterval: time.Hour, StatePath: filepath.Join(t.TempDir(), "scheduler.json"), Updater: updater, RunningBuild: running,
+			reservations, restarts := 0, 0
+			var logs bytes.Buffer
+			config := SchedulerConfig{Logger: slog.New(slog.NewTextHandler(&logs, nil)), CheckInterval: time.Hour, StatePath: filepath.Join(t.TempDir(), "scheduler.json"), Updater: updater, RunningBuild: running,
 				LastAppliedVersion: test.lastApplied,
-				ReserveDrain:       func(context.Context) (func(), error) { drains++; return func() {}, nil }, RequestRestart: func(string) bool { restarts++; return test.restart }, Now: func() time.Time { return now }}
+				ReserveIdle:        func(context.Context) (func(), bool) { reservations++; return func() {}, true },
+				ReserveDrain: func(context.Context) (func(), error) {
+					t.Fatal("routine request drained runner")
+					return nil, ErrRefused
+				}, RequestRestart: func(string) bool { restarts++; return test.restart }, Now: func() time.Time { return now }}
 			if test.unavailable {
 				config.RequestRestart = nil
 			}
@@ -92,14 +100,20 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 				t.Fatalf("receipt=%+v", observed)
 			}
 			repeated := scheduler.EnrolledUpdate(t.Context(), running, &request)
-			if repeated.Receipt.Status != test.want || updater.applyCalls != test.calls || drains != test.calls {
-				t.Fatalf("repeat receipt=%+v calls/drains=%d/%d", repeated, updater.applyCalls, drains)
+			if repeated.Receipt.Status != test.want || updater.applyCalls != test.calls || reservations != test.calls {
+				t.Fatalf("repeat receipt=%+v calls/reservations=%d/%d", repeated, updater.applyCalls, reservations)
+			}
+			if got := strings.Count(logs.String(), "enrolled runner update not applied"); got != map[bool]int{true: 1}[test.logged] {
+				t.Fatalf("refusal logged %d times: %s", got, logs.String())
+			}
+			if test.logged && (!strings.Contains(logs.String(), "failure_reason=") || (test.applyError != nil) != strings.Contains(logs.String(), "error=")) {
+				t.Fatalf("refusal log lacks failure reason or error: %s", logs.String())
 			}
 			if test.calls == 0 {
 				now = now.Add(config.CheckInterval)
 				delayed := scheduler.EnrolledUpdate(t.Context(), running, &request)
-				if delayed.Receipt.Status != "refused" || delayed.Receipt.FailureReason == "" || updater.applyCalls != 0 || drains != 0 {
-					t.Fatalf("invalid target became retryable: %+v calls/drains=%d/%d", delayed.Receipt, updater.applyCalls, drains)
+				if delayed.Receipt.Status != "refused" || delayed.Receipt.FailureReason == "" || updater.applyCalls != 0 || reservations != 0 {
+					t.Fatalf("invalid target became retryable: %+v calls/reservations=%d/%d", delayed.Receipt, updater.applyCalls, reservations)
 				}
 			}
 			if test.calls == 1 && test.applyError == nil && restarts != 1 {
@@ -122,8 +136,8 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 				nextRequest = &runnerauth.UpdateRequest{RequestedAt: now, ID: "update-urgent", Service: "detent", Version: test.nextVersion, Release: true, Urgent: true}
 				for range 2 {
 					next := scheduler.EnrolledUpdate(t.Context(), running, nextRequest)
-					if next == nil || next.Validate() != nil || next.Receipt.Status != test.nextWant || updater.applyCalls != 1 || drains != 1 || restarts != 1 {
-						t.Fatalf("interleaved receipt=%+v calls/drains/restarts=%d/%d/%d", next, updater.applyCalls, drains, restarts)
+					if next == nil || next.Validate() != nil || next.Receipt.Status != test.nextWant || updater.applyCalls != 1 || reservations != 1 || restarts != 1 {
+						t.Fatalf("interleaved receipt=%+v calls/reservations/restarts=%d/%d/%d", next, updater.applyCalls, reservations, restarts)
 					}
 					if test.nextWant == "refused" {
 						if next.Receipt.Request != *nextRequest || next.Receipt.FailureReason == "" || next.Receipt.Applied != nil || next.Receipt.VerifiedTarget != nil {
@@ -250,10 +264,13 @@ func TestSchedulerDevelopmentBuildSkipsDiscovery(t *testing.T) {
 			running := runnerauth.BuildEvidence{Version: version, Commit: strings.Repeat("a", 40), Source: "unknown", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
 			updater := &schedulerUpdaterStub{checkErr: ErrRefused, applyStatus: Status{Action: ActionUpdated, LatestVersion: "1.2.4", LatestCommit: strings.Repeat("c", 40), BinarySHA256: strings.Repeat("d", 64), VerifiedRelease: true}}
 			statePath := filepath.Join(t.TempDir(), "scheduler.json")
-			drains, restarts, waits := 0, 0, 0
+			reservations, restarts, waits := 0, 0, 0
 			scheduler, err := NewScheduler(SchedulerConfig{Enabled: true, AutoApplyEnabled: true, CheckInterval: 15 * time.Second, RunningBuild: running, StatePath: statePath, Updater: updater,
-				ReserveIdle:    func(context.Context) (func(), bool) { return func() {}, true },
-				ReserveDrain:   func(context.Context) (func(), error) { drains++; return func() {}, nil },
+				ReserveIdle: func(context.Context) (func(), bool) { reservations++; return func() {}, true },
+				ReserveDrain: func(context.Context) (func(), error) {
+					t.Fatal("routine development update drained runner")
+					return nil, ErrRefused
+				},
 				RequestRestart: func(string) bool { restarts++; return true },
 				Wait:           func(context.Context, time.Duration) bool { waits++; return false },
 			})
@@ -282,8 +299,8 @@ func TestSchedulerDevelopmentBuildSkipsDiscovery(t *testing.T) {
 			if _, err := scheduler.ApplyRelease(t.Context(), true); err != nil {
 				t.Fatal(err)
 			}
-			if updater.applyCalls != 1 || drains != 1 || restarts != 1 || !updater.applyOptions[0].FromRelease {
-				t.Fatalf("explicit release owner changed: applies=%d drains=%d restarts=%d options=%+v", updater.applyCalls, drains, restarts, updater.applyOptions)
+			if updater.applyCalls != 1 || reservations != 1 || restarts != 1 || !updater.applyOptions[0].FromRelease {
+				t.Fatalf("explicit release owner changed: applies=%d reservations=%d restarts=%d options=%+v", updater.applyCalls, reservations, restarts, updater.applyOptions)
 			}
 		})
 	}
