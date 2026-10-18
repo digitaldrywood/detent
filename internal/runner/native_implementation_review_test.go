@@ -312,6 +312,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				}
 				t.Setenv("CHECK_LAND_BASE", "origin/develop")
 				t.Setenv("MAKEFLAGS", "")
+				t.Setenv("MFLAGS", "")
 				source := initRunnerSourceRepo(t)
 				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh"} {
 					content, err := os.ReadFile(filepath.Join("..", "..", name))
