@@ -784,6 +784,8 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		case strings.HasSuffix(r.URL.Path, "/validate"):
 			_ = json.NewEncoder(w).Encode(runnerauth.Runner{})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/work-items/wi_example"):
+			_ = json.NewEncoder(w).Encode(tracker.NativeIssue{})
 		case strings.HasSuffix(r.URL.Path, "/renew"):
 			var mutation tracker.NativeLeaseMutation
 			if err := json.NewDecoder(r.Body).Decode(&mutation); err != nil {
@@ -817,7 +819,7 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 	scheduler.nativeHeartbeats["prj_free"] = time.Now().Add(time.Hour)
 	free := scheduler.nativeProjects["free"]
 	install := func(id, policyID string, token tracker.FencingToken) nativeClaim {
-		claim := nativeClaim{source: free, lease: tracker.NativeLease{ID: "lease", PolicyID: policyID, FencingToken: token}}
+		claim := nativeClaim{source: free, lease: tracker.NativeLease{ID: "lease", WorkItemID: "wi_example", PolicyID: policyID, FencingToken: token}}
 		scheduler.mu.Lock()
 		defer scheduler.mu.Unlock()
 		scheduler.nativeClaims[id] = claim
