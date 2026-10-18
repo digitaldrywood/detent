@@ -3,19 +3,18 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/boardsnapshot"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/devruntime"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -378,6 +377,12 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			home := t.TempDir()
+			now := time.Now()
+			var paths []string
+			for _, profile := range []string{workerCodexProfileDir, launchdCodexProfileDir} {
+				paths = append(paths, writeCodexLogFixture(t, home, profile, now))
+			}
 			ctx, cancel := context.WithCancel(t.Context())
 			output := &lockedBuffer{}
 			cfg := devRuntimeBootConfig(t.Context(), runtime, "127.0.0.1", defaultOptions(), output)
@@ -386,18 +391,11 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 				cfg.Global.Client = globalconfig.HubClient{URL: "http://127.0.0.1:1", TokenEnvironment: "DETENT_TEST_STARTUP_TOKEN"}
 			}
 			registry := project.NewRegistry()
-			boardCache, err := boardsnapshot.New(boardsnapshot.Config{Path: filepath.Join(t.TempDir(), "board-snapshot.json"), MaxAge: time.Hour})
-			if err != nil {
-				t.Fatal(err)
-			}
-			cachedIssue := telemetry.Issue{ID: "cached-card", State: "Todo"}
-			if err := boardCache.Save(ctx, telemetry.Snapshot{GeneratedAt: time.Now().Add(-time.Minute), BoardIssues: []telemetry.Issue{cachedIssue}}); err != nil {
-				t.Fatal(err)
-			}
 			entered := make(chan struct{})
 			release := make(chan struct{})
 			canceled := make(chan struct{})
 			cleanupRelease := make(chan struct{})
+			pruned := make(chan error, 1)
 			var releaseOnce, cleanupOnce sync.Once
 			unblock := func() { releaseOnce.Do(func() { close(release) }) }
 			finishCleanup := func() { cleanupOnce.Do(func() { close(cleanupRelease) }) }
@@ -406,15 +404,21 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 			go func() {
 				done <- startRunningWithDependencies(ctx, cfg, startRunningDependencies{
 					managerDependencies: project.ManagerDependencies{Registry: registry},
-					boardSnapshotStore:  boardCache,
 					startupMaintenance: func(ctx context.Context, _ globalconfig.Config, _ store.Store) {
-						close(entered)
-						select {
-						case <-release:
-						case <-ctx.Done():
-							close(canceled)
-							<-cleanupRelease
-						}
+						first := true
+						pruned <- pruneCodexLogs(ctx, home, now, codexLogSizeLimit, func(ctx context.Context) (bool, error) {
+							if first {
+								first = false
+								close(entered)
+								select {
+								case <-release:
+								case <-ctx.Done():
+									close(canceled)
+									<-cleanupRelease
+								}
+							}
+							return false, ctx.Err()
+						})
 					},
 				})
 				close(exited)
@@ -437,58 +441,23 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 			case <-time.After(10 * time.Second):
 				t.Fatal("maintenance did not start")
 			}
-			client := &http.Client{Timeout: time.Second}
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet, dashboardURL+"/health", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			response, err := client.Do(request)
-			if err != nil {
-				t.Fatalf("health unavailable during blocked maintenance: %v", err)
-			}
-			var health struct {
-				Ready     bool   `json:"ready"`
-				Lifecycle string `json:"lifecycle"`
-			}
-			err = json.NewDecoder(response.Body).Decode(&health)
-			if closeErr := response.Body.Close(); closeErr != nil {
-				t.Fatal(closeErr)
-			}
-			if err != nil || response.StatusCode != http.StatusServiceUnavailable || health.Ready || health.Lifecycle != "starting" {
-				t.Fatalf("health during maintenance = %+v, status %d, error %v", health, response.StatusCode, err)
-			}
-			state := waitForDashboard(t, dashboardURL+"/api/v1/state", done)
-			var snapshot struct {
-				Refresh        telemetry.Refresh        `json:"refresh"`
-				LifetimeTotals telemetry.LifetimeTotals `json:"lifetime_totals"`
-				Board          struct {
-					Cards []struct {
-						IssueID string `json:"issue_id"`
-					} `json:"cards"`
-				} `json:"board"`
-			}
-			if err := json.Unmarshal([]byte(state), &snapshot); err != nil {
-				t.Fatal(err)
-			}
-			if snapshot.Refresh.ReadinessStatus() != telemetry.RefreshStatusInitializing || snapshot.Refresh.NextRefreshAt != nil || snapshot.LifetimeTotals.Available {
-				t.Fatalf("startup state manufactured observations: %s", state)
-			}
-			if len(snapshot.Board.Cards) != 1 || snapshot.Board.Cards[0].IssueID != cachedIssue.ID {
-				t.Fatalf("last-known board not served during maintenance: %s", state)
-			}
-			if got := registry.List(); len(got) != 0 {
-				t.Fatalf("projects started before setup completed: %v", got)
-			}
-			switch outcome {
-			case "complete":
-				unblock()
-				waitForDashboard(t, dashboardURL+"/health", done)
-				waitForDashboardConditionWithRefresh(t, dashboardURL, dashboardURL+"/api/v1/state", done, "authorized mock work advances", func(body string) bool {
+			if outcome != "required setup failure" {
+				healthCtx, stopHealth := context.WithTimeout(ctx, 5*time.Second)
+				defer stopHealth()
+				waitForDashboardContext(t, healthCtx, dashboardURL+"/health", done)
+				if len(registry.List()) == 0 {
+					t.Fatal("ready without starting projects")
+				}
+				waitForDashboardConditionWithRefresh(t, dashboardURL, dashboardURL+"/api/v1/state", done, "authorized mock work advances during blocked retention", func(body string) bool {
 					return boardStateCountFromBody(t, body, "Merging") == 1
 				})
-				cancel()
-			case "cancel":
-				cancel()
+			}
+			if outcome == "complete" {
+				unblock()
+			} else {
+				if outcome == "cancel" {
+					cancel()
+				}
 				select {
 				case <-canceled:
 				case <-time.After(10 * time.Second):
@@ -500,9 +469,34 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 				default:
 				}
 				finishCleanup()
-			case "required setup failure":
-				unblock()
 			}
+			select {
+			case err := <-pruned:
+				if outcome == "complete" && err != nil || outcome != "complete" && !errors.Is(err, context.Canceled) {
+					t.Fatalf("retention result = %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("retention did not finish")
+			}
+			for _, path := range paths {
+				db, err := sql.Open("sqlite", path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var rows int
+				err = db.QueryRowContext(t.Context(), "SELECT count(*) FROM logs").Scan(&rows)
+				if err := errors.Join(err, db.Close()); err != nil {
+					t.Fatal(err)
+				}
+				want := 3
+				if outcome == "complete" {
+					want = 2
+				}
+				if rows != want {
+					t.Fatalf("%s: rows = %d, want %d", path, rows, want)
+				}
+			}
+			cancel()
 			select {
 			case err := <-done:
 				if outcome == "required setup failure" {

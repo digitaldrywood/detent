@@ -566,7 +566,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		if maintenance == nil {
 			maintenance = maintainStartupCodexArtifacts
 		}
-		maintenance(ctx, cfg.Global, runtimeStore)
+		resourceWorkers.Go(func() {
+			maintenance(ctx, cfg.Global, runtimeStore)
+		})
 		if cfg.Isolated != nil && cfg.Isolated.Demo == "screenshots" {
 			if err := demofixtures.SeedUsageEvents(ctx, runtimeStore); err != nil {
 				return err

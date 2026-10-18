@@ -116,9 +116,25 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 			if err := globalconfig.Write(cfg.Global.Path, cfg.Global, globalconfig.WithMissingProjectPaths()); err != nil {
 				t.Fatal(err)
 			}
+			home := t.TempDir()
+			for _, profile := range []string{workerCodexProfileDir, launchdCodexProfileDir} {
+				writeCodexLogFixture(t, home, profile, time.Now())
+			}
 			ctx, cancel := context.WithCancel(t.Context())
+			entered := make(chan struct{})
+			pruned := make(chan error, 1)
 			done := make(chan error, 1)
-			go func() { done <- defaultBoot(ctx, cfg) }()
+			go func() {
+				done <- startRunningWithDependencies(ctx, cfg, startRunningDependencies{
+					startupMaintenance: func(ctx context.Context, _ globalconfig.Config, _ store.Store) {
+						pruned <- pruneCodexLogs(ctx, home, time.Now(), codexLogSizeLimit, func(ctx context.Context) (bool, error) {
+							close(entered)
+							<-ctx.Done()
+							return false, ctx.Err()
+						})
+					},
+				})
+			}()
 			t.Cleanup(func() {
 				cancel()
 				select {
@@ -129,7 +145,20 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 				case <-time.After(10 * time.Second):
 					t.Error("headless runtime did not stop")
 				}
+				select {
+				case err := <-pruned:
+					if !errors.Is(err, context.Canceled) {
+						t.Errorf("retention result = %v, want cancellation", err)
+					}
+				default:
+					t.Error("headless runtime did not join retention")
+				}
 			})
+			select {
+			case <-entered:
+			case <-time.After(10 * time.Second):
+				t.Fatal("owned log maintenance did not start")
+			}
 			select {
 			case observed := <-observations:
 				if observed == nil || !observed.Supported || observed.Validate() != nil {
