@@ -295,7 +295,13 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 			}
 		}
 	}()
-	return guarded, func() { cancel(context.Canceled); <-done }, nil
+	return guarded, func() {
+		cancel(context.Canceled)
+		<-done
+		e.cancelMu.Lock()
+		e.cancel = nil
+		e.cancelMu.Unlock()
+	}, nil
 }
 
 func (e *nativeExecution) unavailable(err error) error {

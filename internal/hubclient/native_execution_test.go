@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -385,6 +388,129 @@ func TestNativeLeaseReceiptDoesNotExtendReplayedClaim(t *testing.T) {
 			lease := tracker.NativeLease{ServerTime: test.server, RenewedAt: started.Add(time.Hour), ExpiresAt: started.Add(time.Hour + time.Minute)}
 			if got := nativeLeaseDeadline(started, lease); !got.Equal(started.Add(test.remaining)) {
 				t.Fatalf("local deadline = %v", got)
+			}
+		})
+	}
+}
+
+func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
+	identity, err := procgroup.Inspect(&exec.Cmd{Process: &os.Process{Pid: os.Getpid()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name         string
+		phase        string
+		age          time.Duration
+		terminal     bool
+		pending      bool
+		controller   bool
+		stopped      bool
+		prepared     bool
+		localWorker  bool
+		staleProcess bool
+		recovered    bool
+		wantRetained bool
+		wantRenewed  bool
+	}{
+		{name: "live worker", phase: "implementation", localWorker: true, wantRenewed: true},
+		{name: "fresh reported worker", phase: "implementation", wantRenewed: true},
+		{name: "quiet long running merge worker", phase: "merging", age: 6 * time.Hour, localWorker: true, wantRenewed: true},
+		{name: "local process identity no longer matches", phase: "implementation", localWorker: true, staleProcess: true, wantRetained: true},
+		{name: "controller finalizing completed worker", phase: "completed", age: 2 * time.Minute, controller: true, wantRenewed: true},
+		{name: "controller stopped without prepared outcome", phase: "completed", controller: true, stopped: true},
+		{name: "prepared outcome awaiting publication", phase: "completed", age: 2 * time.Minute, controller: true, stopped: true, prepared: true, wantRenewed: true},
+		{name: "completed worker retains controller cleanup", phase: "completed", age: 2 * time.Minute, localWorker: true, staleProcess: true, wantRenewed: true},
+		{name: "worker exited after completion", phase: "completed"},
+		{name: "worker heartbeat stale", phase: "implementation", age: 90 * time.Second},
+		{name: "terminal work item", phase: "implementation", terminal: true},
+		{name: "terminal work item retains running worker cleanup", phase: "implementation", terminal: true, localWorker: true, wantRetained: true},
+		{name: "recovered completed worker", phase: "completed", recovered: true},
+		{name: "recovered stale worker", phase: "implementation", age: 90 * time.Second, recovered: true},
+		{name: "host finalization retains ownership", phase: "completed", age: 2 * time.Minute, pending: true, wantRenewed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+				{Name: "Done", Terminal: true},
+			}, true)
+			issue := h.createInProgress(t, test.name)
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			now := time.Now().UTC()
+			h.scheduler.now = func() time.Time { return now }
+			observation := tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: test.phase, HeartbeatAt: now.Add(-test.age), WorkerLaunch: &tracker.NativeWorkerLaunch{PID: identity.PID, GroupID: identity.GroupID, ProcessStart: identity.StartedAt, PolicyID: h.descriptor.ID}}
+			if test.staleProcess {
+				observation.WorkerLaunch.ProcessStart = identity.StartedAt.Add(time.Second)
+			}
+			if err := execution.ObserveRuntime(t.Context(), observation); err != nil {
+				t.Fatal(err)
+			}
+			if test.localWorker {
+				if err := execution.KeepWorker(func(context.Context) error { return nil }, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.controller {
+				_, stop, err := execution.Guard(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if test.prepared {
+					if err := execution.PrepareFinish(t.Context(), "failed", "", nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.stopped {
+					stop()
+				} else {
+					t.Cleanup(stop)
+				}
+			}
+			if test.recovered {
+				claim := h.scheduler.nativeClaims[issue.ID]
+				claim.execution = nil
+				claim.recovery.Attempts = []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{LeaseID: claim.lease.ID, FencingToken: claim.lease.FencingToken, Runtime: &observation}, Status: "running"}}
+				h.scheduler.nativeClaims[issue.ID] = claim
+			}
+			if test.pending {
+				execution.HostOperation("workspace.finalize_native_work", now, nil, true)
+			}
+			if test.terminal {
+				if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Done"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := h.scheduler.nativeClaims[issue.ID].lease
+			transport := h.native.client.httpClient.Transport
+			var renewals, releases int
+			h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(request.URL.Path, "/renew") {
+					renewals++
+				}
+				if strings.HasSuffix(request.URL.Path, "/release") {
+					releases++
+				}
+				return transport.RoundTrip(request)
+			})
+			renewed, err := h.scheduler.RenewClaim(t.Context(), issue.ID, now)
+			if test.wantRenewed {
+				if err != nil || !renewed.LeaseRenewedAt.After(before.RenewedAt) {
+					t.Fatalf("lease was not renewed: %+v, %v", renewed, err)
+				}
+				if h.scheduler.nativeClaims[issue.ID].lease.FencingToken != before.FencingToken {
+					t.Fatal("renewal changed the fencing token")
+				}
+			} else {
+				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+					t.Fatalf("inactive renewal = %v, want claim lost", err)
+				}
+				if _, held := h.scheduler.nativeClaims[issue.ID]; held != test.wantRetained {
+					t.Fatalf("inactive lease retained = %v, want %v", held, test.wantRetained)
+				}
+				if renewals != 0 || releases != 0 {
+					t.Fatalf("inactive lease received %d renewals and %d forced releases", renewals, releases)
+				}
 			}
 		})
 	}

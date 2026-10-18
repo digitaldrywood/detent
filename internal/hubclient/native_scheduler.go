@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -584,6 +585,13 @@ func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request orchestra
 		if adopted {
 			continue
 		}
+		renewable, err := s.nativeClaimRenewable(ctx, nativeClaim{source: source, lease: tracker.NativeLease{ID: held.ID, WorkItemID: held.WorkItemID, FencingToken: held.FencingToken}, recovery: recovery})
+		if err != nil {
+			return nil, err
+		}
+		if !renewable {
+			continue
+		}
 		lease, err := source.client.Renew(ctx, tracker.NativeLease{ID: held.ID, FencingToken: held.FencingToken}, int64(s.leaseTTL/time.Second))
 		if nativeLeaseLost(err) {
 			continue
@@ -619,6 +627,13 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 	if err := s.ensureNativeMachine(ctx, claim.source); err != nil {
 		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
 	}
+	renewable, err := s.nativeClaimRenewable(ctx, claim)
+	if err != nil {
+		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
+	}
+	if !renewable {
+		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, orchestrator.ErrSchedulingClaimLost)
+	}
 	renewStarted := s.now()
 	lease, err := claim.source.client.renew(ctx, claim.lease, int64(s.leaseTTL/time.Second), landingCapacity)
 	if err != nil {
@@ -640,6 +655,65 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
 	}
 	return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(lease)), nil
+}
+
+func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim) (bool, error) {
+	var observation *tracker.NativeRuntimeObservation
+	localWorker := false
+	if execution := claim.execution; execution != nil {
+		execution.diagnosticMu.Lock()
+		pending := execution.diagnostic.OperationPending
+		execution.diagnosticMu.Unlock()
+		if pending || !execution.mu.TryLock() {
+			return true, nil
+		}
+		pending = execution.pending != nil || execution.preparedOutcome != "" || execution.data.Outcome != ""
+		if execution.data.Runtime != nil {
+			runtime := *execution.data.Runtime
+			observation = &runtime
+		}
+		execution.mu.Unlock()
+		if pending {
+			return true, nil
+		}
+		localWorker = execution.hasWorkers()
+		execution.cancelMu.Lock()
+		controller := execution.cancel != nil
+		execution.cancelMu.Unlock()
+		if observation != nil && observation.Phase == "completed" && (controller || localWorker) {
+			return true, nil
+		}
+	}
+	if observation == nil {
+		for _, attempt := range claim.recovery.Attempts {
+			if attempt.LeaseID == claim.lease.ID && attempt.FencingToken == claim.lease.FencingToken {
+				observation = attempt.Runtime
+				break
+			}
+		}
+	}
+	issue, err := claim.source.client.Issue(ctx, claim.lease.WorkItemID)
+	if err != nil {
+		return false, err
+	}
+	if issue.Terminal || issue.Archived {
+		return false, nil
+	}
+	if observation == nil || observation.LocalAttemptID == 0 || observation.Generation == 0 {
+		return true, nil
+	}
+	if observation.Phase == "completed" {
+		return false, nil
+	}
+	if localWorker && observation.WorkerLaunch != nil {
+		launch := observation.WorkerLaunch
+		alive, err := procgroup.Alive(procgroup.Identity{PID: launch.PID, GroupID: launch.GroupID, StartedAt: launch.ProcessStart})
+		if err != nil {
+			return false, errors.Join(ErrUnavailable, err)
+		}
+		return alive, nil
+	}
+	return !observation.HeartbeatAt.IsZero() && s.now().Sub(observation.HeartbeatAt) < s.leaseTTL, nil
 }
 
 func nativeLeaseDeadline(started time.Time, lease tracker.NativeLease) time.Time {
@@ -717,7 +791,7 @@ func nativeTransportUnavailable(err error) bool {
 
 func nativeAuthorityLost(err error) bool {
 	var apiErr *APIError
-	return nativeLeaseLost(err) || errors.As(err, &apiErr) && apiErr != nil &&
+	return errors.Is(err, orchestrator.ErrSchedulingClaimLost) || nativeLeaseLost(err) || errors.As(err, &apiErr) && apiErr != nil &&
 		(apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden || apiErr.Status == http.StatusNotFound)
 }
 
