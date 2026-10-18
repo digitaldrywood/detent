@@ -795,7 +795,10 @@ func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	if err := json.NewDecoder(body).Decode(&event); err != nil {
 		return response, err
 	}
-	if event.Type != "run.finished" {
+	// Cancellation acknowledges stopped work, including an already retired
+	// lease. It is not the planner handoff this transport observes, and must
+	// not retire that lease a second time or satisfy the fresh-run assertion.
+	if event.Type != "run.finished" || event.Data.Outcome == "cancelled" {
 		return response, nil
 	}
 	item := tracker.NativeWorkItemID(strings.Split(strings.TrimSuffix(req.URL.Path, "/events"), "/work-items/")[1])
