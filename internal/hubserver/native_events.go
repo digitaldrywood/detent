@@ -85,22 +85,16 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 		if !found || lease.issueID != id {
 			return nil, nativeNotFound()
 		}
-		termination := lease.session.ReleasedAt != nil && lease.session.FencingToken == request.Data.FencingToken &&
-			request.Type == "run.finished" && request.Data.Outcome == "cancelled" && request.Data.Sequence > 0
-		if !termination {
-			if err := requireCurrentLease(lease, request.Data.FencingToken, now); err != nil {
-				return nil, err
-			}
+		if err := requireCurrentLease(lease, request.Data.FencingToken, now); err != nil {
+			return nil, err
 		}
 		if request.Type == "run.started" {
 			if err := checkMonthlyLease(ctx, tx, lease, now); err != nil {
 				return nil, err
 			}
 		}
-		if !termination {
-			if err := requireLeaseRouting(ctx, tx, request.Data.LeaseID); err != nil {
-				return nil, err
-			}
+		if err := requireLeaseRouting(ctx, tx, request.Data.LeaseID); err != nil {
+			return nil, err
 		}
 		var pinned string
 		if err := tx.QueryRowContext(ctx, "SELECT policy_id FROM lease_policies WHERE lease_id = ?", request.Data.LeaseID).Scan(&pinned); err != nil || pinned != request.Data.PolicyID {
@@ -109,7 +103,7 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 		if err := requireLeaseRunner(ctx, tx, request.Data.LeaseID, scope); err != nil {
 			return nil, err
 		}
-		if f := request.Data.Finalization; !termination && f != nil && f.ChangeID != "" {
+		if f := request.Data.Finalization; f != nil && f.ChangeID != "" {
 			if _, err := readChange(ctx, tx, scope, string(issue.WorkItemID), f.ChangeID); err != nil {
 				return nil, err
 			}
@@ -135,7 +129,7 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 				}
 			}
 		}
-		if runtime := request.Data.Runtime; !termination && runtime != nil && runtime.Landing != nil && runtime.Landing.ChangeID != "" {
+		if runtime := request.Data.Runtime; runtime != nil && runtime.Landing != nil && runtime.Landing.ChangeID != "" {
 			l := runtime.Landing
 			change, err := readChange(ctx, tx, scope, string(issue.WorkItemID), l.ChangeID)
 			if err != nil {
@@ -167,7 +161,7 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 			request.Data.MachineID = lease.session.Machine.ID
 			request.Data.SessionID = lease.session.SessionID
 			request.Data.RunnerID = scope.credential.Runner.RunnerID
-			appended, history, err := recordNativeAttempt(ctx, tx, scope, issue.WorkItemID, &request, now, termination)
+			appended, history, err := recordNativeAttempt(ctx, tx, scope, issue.WorkItemID, request, now)
 			if err != nil {
 				return nil, err
 			}
@@ -193,10 +187,8 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 				return nil, nativeExecutionConflict("Ordered attempts cannot accept legacy events")
 			}
 		}
-		if !termination {
-			if err := recordAttemptUsage(ctx, tx, scope, request, s.usagePrices(), now); err != nil {
-				return nil, err
-			}
+		if err := recordAttemptUsage(ctx, tx, scope, request, s.usagePrices(), now); err != nil {
+			return nil, err
 		}
 		if publish {
 			if request.Type == "run.finished" && request.Data.Outcome == "succeeded" && request.Data.Sequence > 0 {

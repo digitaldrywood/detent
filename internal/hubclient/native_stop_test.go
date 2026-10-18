@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -192,26 +191,6 @@ func TestNativeStopEffectBoundary(t *testing.T) {
 			issue := h.createInProgress(t, "Stop an effect")
 			h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
-			writerStopped := false
-			cleanupStarted, cleanupResume := make(chan struct{}), make(chan struct{})
-			resumeCleanup := sync.OnceFunc(func() { close(cleanupResume) })
-			t.Cleanup(resumeCleanup)
-			if point == "PR committed" {
-				if err := execution.KeepWorker(func(ctx context.Context) error {
-					if !writerStopped {
-						return errors.New("fixture writer remains active")
-					}
-					close(cleanupStarted)
-					select {
-					case <-cleanupResume:
-						return nil
-					case <-ctx.Done():
-						return ctx.Err()
-					}
-				}, nil); err != nil {
-					t.Fatal(err)
-				}
-			}
 			ctx, cancel := context.WithCancelCause(t.Context())
 			defer cancel(context.Canceled)
 			guarded, stop, err := execution.Guard(ctx)
@@ -283,15 +262,7 @@ func TestNativeStopEffectBoundary(t *testing.T) {
 				if point == "PR ambiguous" {
 					return publication, errors.Join(runner.ErrOperatorStopped, opts.PublicationEffect(ctx, "pr_create", "ambiguous", publication))
 				}
-				if err := opts.PublicationEffect(ctx, "pr_create", "confirmed", publication); err != nil {
-					return publication, err
-				}
-				if point == "PR committed" {
-					if err := h.native.Release(t.Context(), execution.claim.lease, "cancelled"); err != nil {
-						t.Fatal(err)
-					}
-				}
-				return publication, nil
+				return publication, opts.PublicationEffect(ctx, "pr_create", "confirmed", publication)
 			})
 			if err := execution.PrepareFinish(finishCtx, "succeeded", "", nil); !errors.Is(err, runner.ErrOperatorStopped) {
 				t.Fatalf("stopped finalization = %v", err)
@@ -301,74 +272,6 @@ func TestNativeStopEffectBoundary(t *testing.T) {
 			}
 			if err := execution.PrepareFinish(finishCtx, "succeeded", "", nil); !errors.Is(err, runner.ErrOperatorStopped) {
 				t.Fatalf("stopped retry = %v", err)
-			}
-			if point == "PR committed" {
-				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "cancelled"); err == nil {
-					t.Fatal("unconfirmed worker cleanup accepted")
-				}
-				before, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
-				if err != nil || len(before.Attempts) != 1 || before.Attempts[0].Outcome != "" || before.Attempts[0].Checkpoint.EffectState != "confirmed" {
-					t.Fatalf("live stopped writer lost source or received terminal acknowledgment: %+v, %v", before.Attempts, err)
-				}
-				writerStopped = true
-				finished := make(chan error, 1)
-				go func() { finished <- h.scheduler.ReleaseClaim(t.Context(), issue.ID, "cancelled") }()
-				select {
-				case <-cleanupStarted:
-				case <-time.After(5 * time.Second):
-					t.Fatal("worker cleanup did not start")
-				}
-				replacement, err := h.native.Claim(t.Context(), tracker.NativeClaim{PolicyID: h.descriptor.ID, WorkItemID: tracker.NativeWorkItemID(issue.ID), MachineID: execution.claim.lease.MachineID, SessionID: "replacement", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
-				if err != nil || replacement.FencingToken <= execution.claim.lease.FencingToken {
-					t.Fatalf("replacement did not obtain distinct authority: %+v, %v", replacement, err)
-				}
-				transport := h.native.client.httpClient.Transport
-				acknowledgments := 0
-				h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
-					termination := false
-					if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events") {
-						content, err := io.ReadAll(request.Body)
-						if err != nil {
-							return nil, err
-						}
-						request.Body = io.NopCloser(strings.NewReader(string(content)))
-						var event tracker.NativeRunEvent
-						if err := json.Unmarshal(content, &event); err != nil {
-							return nil, err
-						}
-						termination = event.Type == "run.finished" && event.Data.Outcome == "cancelled"
-					}
-					response, err := transport.RoundTrip(request)
-					if termination && err == nil && response.StatusCode == http.StatusOK {
-						acknowledgments++
-						if err := response.Body.Close(); err != nil {
-							return nil, err
-						}
-						return nil, errors.New("termination acknowledgment reply lost")
-					}
-					return response, err
-				})
-				resumeCleanup()
-				if err := <-finished; err == nil {
-					t.Fatal("lost terminal acknowledgment response was not reported")
-				}
-				if h.scheduler.RunExecution(issue.ID) != execution {
-					t.Fatal("pending terminal acknowledgment lost its execution owner")
-				}
-				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "cancelled"); err != nil || acknowledgments != 1 {
-					t.Fatalf("terminal acknowledgment retry lost or duplicated completion: acknowledgments=%d error=%v", acknowledgments, err)
-				}
-				evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
-				if err != nil || evidence.CurrentLease == nil || evidence.CurrentLease.ID != replacement.ID {
-					t.Fatalf("late acknowledgment changed replacement ownership: %+v, %v", evidence.CurrentLease, err)
-				}
-				if err := h.native.Release(t.Context(), replacement, "released"); err != nil {
-					t.Fatal(err)
-				}
-				after, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
-				if err != nil || len(after.Attempts) != 1 || after.Attempts[0].Outcome != "cancelled" || after.Attempts[0].Checkpoint.EffectState != "confirmed" || after.Attempts[0].Checkpoint.Change.VersionID != before.Attempts[0].Checkpoint.Change.VersionID {
-					t.Fatalf("termination lost retained publication: %+v, %v", after.Attempts, err)
-				}
 			}
 			changes := h.changes(t, issue.ID)
 			if point == "before publication" {

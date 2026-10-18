@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -647,72 +646,17 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 	e.mu.Lock()
 	outcome := e.preparedOutcome
 	finished := e.data.Outcome != ""
-	interrupted := e.data.Outcome == "interrupted"
 	e.mu.Unlock()
-	var finishErr error
-	if outcome != "" && !finished {
-		if e.remaining() <= 0 {
-			finishErr = e.renew(ctx, 0)
-		}
-		if finishErr == nil {
-			finishErr = e.Finish(ctx, outcome)
-		}
-		if finishErr != nil {
-			if !claimLost(finishErr) && !errors.Is(finishErr, orchestrator.ErrSchedulingClaimLost) {
-				return finishErr
-			}
-			finishErr = errors.Join(runner.ErrExecutionAuthorityUnavailable, finishErr)
+	// An acknowledged Finish stays settled when lease release is retried.
+	if outcome == "" || finished {
+		return nil
+	}
+	if e.remaining() <= 0 {
+		if err := e.renew(ctx, 0); err != nil {
+			return err
 		}
 	}
-	if err := e.closeWorkers(ctx); err != nil {
-		return errors.Join(finishErr, err)
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.data.Identity != nil && (finishErr != nil || interrupted) {
-		path, err := nativeItemPath(e.claim.lease.WorkItemID)
-		if err != nil {
-			return errors.Join(finishErr, err)
-		}
-		var attempt tracker.NativeAttempt
-		if err := e.claim.source.client.client.request(ctx, http.MethodGet, e.claim.source.client.base()+path+"/attempts/"+e.data.AttemptID, nil, &attempt); err != nil {
-			return errors.Join(finishErr, err)
-		}
-		if attempt.LeaseID != e.claim.lease.ID || attempt.FencingToken != e.claim.lease.FencingToken || attempt.RunID != e.data.RunID || attempt.PolicyID != e.data.PolicyID || attempt.AttemptID != e.data.AttemptID || attempt.Identity == nil || attempt.Identity.Role != e.data.Identity.Role || attempt.Identity.Backend != e.data.Identity.Backend {
-			return errors.Join(finishErr, runner.ErrExecutionAuthorityUnavailable)
-		}
-		if attempt.ClaimReleasedAt != nil {
-			if attempt.Outcome == "" || attempt.Outcome == "interrupted" {
-				data := tracker.NativeRunData{AttemptID: attempt.AttemptID, RunID: attempt.RunID, LeaseID: attempt.LeaseID,
-					FencingToken: attempt.FencingToken, PolicyID: attempt.PolicyID, Identity: e.data.Identity,
-					Sequence: attempt.Sequence + 1, Outcome: "cancelled"}
-				event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: attempt.AttemptID + ":terminated:" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.finished", SchemaVersion: 1, Data: data}
-				if err := e.claim.source.client.AppendEvent(ctx, e.claim.lease.WorkItemID, event); err != nil {
-					return errors.Join(finishErr, err)
-				}
-				attempt.Sequence, attempt.Outcome = data.Sequence, data.Outcome
-			}
-			attempt.Identity = e.data.Identity
-			if attempt.Handoff == nil {
-				attempt.Handoff = attempt.Checkpoint
-			}
-			e.data, e.pending = attempt.NativeRunData, nil
-			e.preparedOutcome = attempt.Outcome
-			finishErr = nil
-		}
-	}
-	data := e.data
-	finalization := data.Finalization
-	completedSource := data.Disposition != nil && data.Disposition.Status == "complete" && finalization != nil &&
-		finalization.Settled && finalization.Changed && finalization.ChangeID != "" && finalization.VersionID != "" && finalization.HeadSHA != "" &&
-		finalization.VersionError == "" && finalization.Error == ""
-	retain := e.scheduler.client.runner != nil && (data.Outcome == "" || data.Outcome == "interrupted" && !completedSource)
-	if !retain {
-		if err := e.claim.source.client.Release(ctx, e.claim.lease, "released"); err != nil && !claimLost(err) {
-			return errors.Join(finishErr, err)
-		}
-	}
-	return finishErr
+	return e.Finish(ctx, outcome)
 }
 
 // NativeChange reports what the finished run left for review.

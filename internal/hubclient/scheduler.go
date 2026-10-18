@@ -341,32 +341,53 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 		}
 		return nil
 	}
-	var err error
+	var err, finishErr error
 	if isNative {
 		if native.execution != nil {
 			if err := native.execution.finishPrepared(ctx); err != nil {
-				return err
+				if !claimLost(err) && !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+					return err
+				}
+				// Retire the obsolete lease through the same release owner, but
+				// report that its terminal publication never settled.
+				finishErr = errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 			}
 		}
-		if native.execution == nil {
+		retain := false
+		if native.execution != nil {
+			native.execution.mu.Lock()
+			data := native.execution.data
+			finalization := data.Finalization
+			completedSource := data.Disposition != nil && data.Disposition.Status == "complete" && finalization != nil &&
+				finalization.Settled && finalization.Changed && finalization.ChangeID != "" && finalization.VersionID != "" && finalization.HeadSHA != "" &&
+				finalization.VersionError == "" && finalization.Error == ""
+			retain = s.client.runner != nil && (data.Outcome == "" || data.Outcome == "interrupted" && !completedSource)
+			native.execution.mu.Unlock()
+		}
+		if native.execution != nil {
+			if err := native.execution.closeWorkers(ctx); err != nil {
+				return errors.Join(finishErr, err)
+			}
+		}
+		if !retain {
 			err = native.source.client.Release(ctx, native.lease, "released")
 		}
 	} else {
 		err = s.client.Release(ctx, lease, reason)
 	}
 	if err != nil && !claimLost(err) {
-		return err
+		return errors.Join(finishErr, err)
 	}
 	s.mu.Lock()
 	if current, ok := s.claims[issueID]; ok && current.FencingToken != lease.FencingToken {
 		s.mu.Unlock()
-		return nil
+		return finishErr
 	}
 	delete(s.claims, issueID)
 	delete(s.nativeClaims, issueID)
 	delete(s.claimPolicies, issueID)
 	s.mu.Unlock()
-	return nil
+	return finishErr
 }
 
 func (s *Scheduler) ensureMachine(ctx context.Context) error {
