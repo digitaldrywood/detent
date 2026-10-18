@@ -17,9 +17,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -109,7 +109,7 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 		TerminalStates:         []string{"Done", "Cancelled"},
 		ContinuationRetryDelay: time.Hour,
 	}, Dependencies{
-		Connector: memory.New(memory.Config{Issues: []connector.Issue{issue}}),
+		Connector: fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}}),
 		Runner:    runnerBackend,
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})

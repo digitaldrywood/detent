@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestHandleWorkAttemptRecoveryAbandonsActiveAttemptAndAudits(t *testing.T) {
@@ -185,7 +185,7 @@ func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
 		t.Fatalf("audit event = %#v, want succeeded resume audit", event)
 	}
 	state = newState(orch.cfg)
-	orch.connector = memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	orch.connector = fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	orch.cfg.Claiming.Owner = "operator"
 	orch.refillProjectSlotsExcluding(t.Context(), &state, now, issue.ID)
 	if len(state.Retry) != 0 || len(state.Running) != 0 {

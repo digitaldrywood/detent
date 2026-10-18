@@ -8,25 +8,6 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 )
 
-func TestGitHubLocalWorkflowTemplateConfiguresLocalStore(t *testing.T) {
-	t.Parallel()
-
-	template := readRepositoryTextFile(t, "docs/templates/WORKFLOW.github_local.md")
-
-	for _, want := range []string{
-		"kind: github_local",
-		"repository: <repo-owner>/<repo-name>",
-		"local_sqlite:",
-		"path: .detent/github-local-work-items.db",
-		"do not add `tracker.github_status_source`",
-	} {
-		assertContainsWords(t, template, want)
-	}
-	if strings.Contains(template, "github_status_source:") {
-		t.Fatal("WORKFLOW.github_local.md must not set github_status_source")
-	}
-}
-
 func TestLabelWorkflowTemplateOmitsWriteProbeIssue(t *testing.T) {
 	t.Parallel()
 
@@ -142,7 +123,7 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 func TestWorkflowTemplatesUseSplitProjectDefinition(t *testing.T) {
 	t.Parallel()
 
-	for _, variant := range []string{"project_v2", "issue_field", "label", "github_local", "non_code_artifact"} {
+	for _, variant := range []string{"project_v2", "issue_field", "label"} {
 		t.Run(variant, func(t *testing.T) {
 			t.Parallel()
 			workflowPath := "docs/templates/WORKFLOW." + variant + ".md"
@@ -174,22 +155,9 @@ func TestWorkflowTemplatesUseSplitProjectDefinition(t *testing.T) {
 	}
 }
 
-func TestGitHubLocalWorkflowTemplateUsesAffordablePolling(t *testing.T) {
-	t.Parallel()
-
-	content := readRepositoryTextFile(t, "docs/templates/WORKFLOW.github_local.md")
-	workflow, err := workflowconfig.ParseWorkflow([]byte(content))
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
-	}
-	if workflow.Config.Polling.IntervalMS != workflowconfig.MinPollingIntervalMS || !workflow.Config.Polling.Conditional {
-		t.Fatalf("Polling = %#v, want one-minute conditional polling", workflow.Config.Polling)
-	}
-}
-
 func TestWorkflowTemplatesReferenceAppendedContract(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{"docs/templates/WORKFLOW.project_v2.md", "docs/templates/WORKFLOW.issue_field.md", "docs/templates/WORKFLOW.label.md", "docs/templates/WORKFLOW.github_local.md", "docs/templates/WORKFLOW.non_code_artifact.md"} {
+	for _, path := range []string{"docs/templates/WORKFLOW.project_v2.md", "docs/templates/WORKFLOW.issue_field.md", "docs/templates/WORKFLOW.label.md"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			content := readRepositoryTextFile(t, path)
@@ -212,7 +180,6 @@ func TestRenderedGitHubWorkflowTemplatesRequireReadyNonDraftPR(t *testing.T) {
 		"docs/templates/WORKFLOW.project_v2.md",
 		"docs/templates/WORKFLOW.issue_field.md",
 		"docs/templates/WORKFLOW.label.md",
-		"docs/templates/WORKFLOW.github_local.md",
 	} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
@@ -234,8 +201,6 @@ func TestWorkflowTemplatesDocumentWorkerModelAndSessionGuardChoices(t *testing.T
 		"docs/templates/WORKFLOW.project_v2.md",
 		"docs/templates/WORKFLOW.issue_field.md",
 		"docs/templates/WORKFLOW.label.md",
-		"docs/templates/WORKFLOW.github_local.md",
-		"docs/templates/WORKFLOW.non_code_artifact.md",
 	} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
@@ -298,7 +263,6 @@ func TestDocsDeclareProjectSpecificCIQualityGates(t *testing.T) {
 		"docs/templates/WORKFLOW.project_v2.md",
 		"docs/templates/WORKFLOW.issue_field.md",
 		"docs/templates/WORKFLOW.label.md",
-		"docs/templates/WORKFLOW.github_local.md",
 	} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()

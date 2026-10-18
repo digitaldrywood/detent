@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web"
 )
@@ -60,7 +61,7 @@ func TestOperatorGitHubWorkReads(t *testing.T) {
 	cfg.Tracker.Repository = "example/repo"
 	cfg.Tracker.APIKey = "fixture"
 	cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
-	tracked, err := project.New(project.Config{Project: globalconfig.Project{ID: "visible", Workdir: t.TempDir()}, Workflow: workflowconfig.Workflow{Config: cfg}}, project.Dependencies{Connector: source})
+	tracked, err := projectfixture.New(project.Config{Project: globalconfig.Project{ID: "visible", Workdir: t.TempDir()}, Workflow: workflowconfig.Workflow{Config: cfg}}, project.Dependencies{Connector: source})
 	if err != nil {
 		t.Fatal(err)
 	}

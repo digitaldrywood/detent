@@ -144,7 +144,7 @@ func TestSchedulersRequireScheduleOwnership(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := Default()
-			cfg.Tracker.Kind = TrackerMemory
+			cfg.Tracker.Kind = TrackerHubNative
 			tt.mutate(&cfg)
 
 			err := cfg.Validate()

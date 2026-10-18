@@ -11,10 +11,10 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/publication"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestHandleWorkflowUpdateDoesNotRaceWithPause(t *testing.T) {
@@ -42,7 +42,7 @@ func TestHandleWorkflowUpdateDoesNotRaceWithPause(t *testing.T) {
 				})
 				<-reloadRelease
 			}
-			return defaultConnectorFactory(cfg)
+			return fakehub.New(fakehub.Config{Issues: cfg.Tracker.Issues}), nil
 		},
 		Runner: projectRaceBlockingRunner{},
 	})
@@ -88,7 +88,7 @@ func TestHandleWorkflowUpdateRejectsIntakeBeforeRuntimeMutation(t *testing.T) {
 	t.Parallel()
 
 	initial := projectRaceWorkflowConfig()
-	projectConnector := memory.New(memory.Config{Stateful: true})
+	projectConnector := fakehub.New(fakehub.Config{Stateful: true})
 	got, err := New(Config{
 		Project: globalconfig.Project{ID: "detent", Weight: 1},
 		Workflow: workflowconfig.Workflow{
@@ -155,8 +155,8 @@ func TestBuildRetroIssueStoresRoutesProductRepository(t *testing.T) {
 	cfg.Workspace.Root = "/srv/project/worktrees"
 	cfg.Identity.GitHubLogin = "private-user"
 	cfg.Retro.Normalize()
-	projectConnector := memory.New(memory.Config{Stateful: true})
-	productConnector := memory.New(memory.Config{Stateful: true})
+	projectConnector := fakehub.New(fakehub.Config{Stateful: true})
+	productConnector := fakehub.New(fakehub.Config{Stateful: true})
 	var repositories []string
 	var productPolicy publication.Policy
 
@@ -191,7 +191,10 @@ func TestBuildRetroIssueStoresRoutesProductRepository(t *testing.T) {
 
 func projectRaceWorkflowConfig() workflowconfig.Config {
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = connector.BackendMemory.String()
+	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	cfg.Tracker.APIKey = "fixture-token"
+	cfg.Tracker.ProjectSlug = "fixture-project"
+	cfg.Tracker.Repository = "example-org/example-project"
 	cfg.Polling.IntervalMS = int(time.Hour / time.Millisecond)
 	return cfg
 }

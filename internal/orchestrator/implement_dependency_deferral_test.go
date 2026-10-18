@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/explain"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -203,7 +203,7 @@ func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
 			issue.BlockedBy = []connector.BlockedRef{{ID: blocker.ID, Identifier: blocker.Identifier, State: blocker.State}}
 			unrelated := dispatchTestIssue("unrelated", "Todo")
 			unrelated.Identifier = "digitaldrywood/detent#1"
-			tracker := memory.New(memory.Config{Stateful: true, Issues: []connector.Issue{issue, blocker, unrelated}})
+			tracker := fakehub.New(fakehub.Config{Stateful: true, Issues: []connector.Issue{issue, blocker, unrelated}})
 			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, MaxConcurrentAgents: 1, PrioritizeUnblockers: true, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}, DispatchPriorityByState: []string{"Merging", "Rework", "In Progress", "Todo"}})
 			path := filepath.Join(t.TempDir(), "detent.db")
 			backend, err := store.Open(ctx, store.Config{Path: path})
@@ -268,7 +268,7 @@ func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
 			if tt.nativeRemoved {
 				current[0].DependencySource = connector.BlockedRefSourceNative
 				current[0].BlockedBy = nil
-				tracker = memory.New(memory.Config{Stateful: true, Issues: []connector.Issue{current[0], blocker, unrelated}})
+				tracker = fakehub.New(fakehub.Config{Stateful: true, Issues: []connector.Issue{current[0], blocker, unrelated}})
 			}
 			runner := newWorkerHostRunner()
 			o = &Orchestrator{cfg: cfg, connector: tracker, workAttempts: backend.(store.WorkAttemptStore), globalDispatchGate: globalGate, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion, 1)}
@@ -389,8 +389,8 @@ func TestDependencyDeferralRefusalDetails(t *testing.T) {
 		want       []string
 	}{
 		{name: "ordinary blocker", tracker: hydratingDispatchConnector{blockers: []connector.Issue{{Identifier: ref, State: "Rework"}}}, ref: ref, want: []string{"waiting on dependency " + ref}},
-		{name: "missing resolver", tracker: struct{ connector.Connector }{memory.New(memory.Config{})}, ref: ref, want: []string{"dependency resolution unavailable", ref, "issue reference resolver unavailable"}},
-		{name: "failed lookup", tracker: dependencyFailureTracker{Connector: memory.New(memory.Config{}), resolveErr: errors.New("tracker unavailable")}, ref: ref, want: []string{"dependency resolution unavailable", ref, "tracker unavailable"}},
+		{name: "missing resolver", tracker: struct{ connector.Connector }{fakehub.New(fakehub.Config{})}, ref: ref, want: []string{"dependency resolution unavailable", ref, "issue reference resolver unavailable"}},
+		{name: "failed lookup", tracker: dependencyFailureTracker{Connector: fakehub.New(fakehub.Config{}), resolveErr: errors.New("tracker unavailable")}, ref: ref, want: []string{"dependency resolution unavailable", ref, "tracker unavailable"}},
 		{name: "missing result", tracker: hydratingDispatchConnector{}, ref: ref, want: []string{"missing blocker result for " + ref}},
 		{name: "missing identifier", tracker: hydratingDispatchConnector{}, want: []string{"no blocker identifiers"}},
 		{name: "history unavailable", historyErr: errors.New("history offline"), want: []string{"dependency deferral history unavailable: history offline"}},

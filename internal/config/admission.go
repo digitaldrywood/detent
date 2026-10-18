@@ -175,11 +175,7 @@ func (a BacklogAdmission) Validate(prefix string, states []string, tracker Track
 		if tracker.Kind == TrackerGitHub {
 			gap += " with github_status_source " + tracker.GitHubStatusSource
 		}
-		if tracker.Kind == TrackerLinear {
-			gap += " cannot serve it because FetchIssuesByStates is not implemented"
-		} else {
-			gap += " does not declare it"
-		}
+		gap += " does not declare it"
 		problems = append(problems, gap)
 	}
 	statusLabelPrefix := strings.TrimSpace(tracker.StatusLabelPrefix)
@@ -216,8 +212,6 @@ func (a BacklogAdmission) Validate(prefix string, states []string, tracker Track
 		case TrackerGitHub:
 			gap += " with github_status_source " + tracker.GitHubStatusSource +
 				" cannot serve it because untracked issues are only defined for github label status"
-		case TrackerGitHubLocal:
-			gap += " cannot serve it because github_local status drift does not populate UntrackedOpen"
 		default:
 			gap += " does not provide github label status drift"
 		}
@@ -262,15 +256,11 @@ func BacklogAdmissionWarnings(admission BacklogAdmission, tracker Tracker) []str
 	}
 	admission.Normalize()
 	warnings := []string{}
-	if len(admission.Authors.Allow) > 0 && (tracker.Kind == TrackerLocalSQLite || tracker.Kind == TrackerMemory) {
-		warnings = append(warnings, "backlog_admission.authors.allow uses AuthorID, but tracker.kind "+tracker.Kind+" does not discover authors")
-	}
+
 	if warning := BacklogAdmissionBotExclusionWarning(admission.Authors, admission.Sources.Untracked); warning != "" {
 		warnings = append(warnings, warning)
 	}
-	if tracker.Kind == TrackerMemory {
-		warnings = append(warnings, "backlog_admission with tracker.kind memory is evaluation-only across restarts because tracker comments and mutations are process-local")
-	}
+
 	return warnings
 }
 

@@ -20,12 +20,13 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/tui"
 	"github.com/digitaldrywood/detent/internal/web"
 )
@@ -49,7 +50,7 @@ func TestTelemetryPublicationSurvivesStalledSourceAfterRestart(t *testing.T) {
 					registry := project.NewRegistry()
 					var requests []orchestrator.RunRequest
 					for _, id := range []string{"beta", "gamma"} {
-						tracker := memory.New(memory.Config{Issues: []connector.Issue{{ID: id, Identifier: id + "#1", Title: id + " active worker", State: "In Progress", AssignedToWorker: true}}})
+						tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{{ID: id, Identifier: id + "#1", Title: id + " active worker", State: "In Progress", AssignedToWorker: true}}})
 						runner := newRestartRecoveryRunner()
 						tracked := newTelemetryProject(t, id, tracker, runner)
 						if err := tracked.Start(ctx); err != nil {
@@ -66,7 +67,7 @@ func TestTelemetryPublicationSurvivesStalledSourceAfterRestart(t *testing.T) {
 					}
 					var totals lifetimeTotalsSource
 					if source == "project_state" {
-						tracker := stalledTelemetryConnector{Connector: memory.New(memory.Config{})}
+						tracker := stalledTelemetryConnector{Connector: fakehub.New(fakehub.Config{})}
 						tracked := newTelemetryProject(t, "alpha", tracker, nil)
 						if err := tracked.Start(ctx); err != nil {
 							t.Fatal(err)
@@ -194,14 +195,14 @@ func TestTelemetryPublicationDuringCompletionFence(t *testing.T) {
 		registry := project.NewRegistry()
 		snapshots := hub.New[telemetry.Snapshot]()
 		tracker := &completionTelemetryConnector{
-			Connector: memory.New(memory.Config{Issues: []connector.Issue{{ID: "alpha", Identifier: "alpha#1", Title: "alpha active worker", State: "In Progress", AssignedToWorker: true}}}),
+			Connector: fakehub.New(fakehub.Config{Issues: []connector.Issue{{ID: "alpha", Identifier: "alpha#1", Title: "alpha active worker", State: "In Progress", AssignedToWorker: true}}}),
 			armed:     make(chan struct{}), started: make(chan struct{}), release: make(chan struct{}),
 		}
 		releaseWorker := make(chan struct{})
 		runner := &shutdownBlockingRunner{started: make(chan struct{}, 1), canceled: make(chan struct{}, 1), release: releaseWorker}
 		alpha := newTelemetryProject(t, "alpha", tracker, runner)
 		betaRunner := newRestartRecoveryRunner()
-		beta := newTelemetryProject(t, "beta", memory.New(memory.Config{Issues: []connector.Issue{{ID: "beta", Identifier: "beta#1", Title: "beta active worker", State: "In Progress", AssignedToWorker: true}}}), betaRunner)
+		beta := newTelemetryProject(t, "beta", fakehub.New(fakehub.Config{Issues: []connector.Issue{{ID: "beta", Identifier: "beta#1", Title: "beta active worker", State: "In Progress", AssignedToWorker: true}}}), betaRunner)
 		for _, tracked := range []*project.Project{alpha, beta} {
 			if err := tracked.Start(ctx); err != nil {
 				t.Fatal(err)
@@ -360,8 +361,8 @@ func TestReadTelemetrySource(t *testing.T) {
 func newTelemetryProject(t *testing.T, id string, tracker connector.Connector, runner orchestrator.Runner) *project.Project {
 	t.Helper()
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
-	tracked, err := project.New(project.Config{
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	tracked, err := projectfixture.New(project.Config{
 		Project:  globalconfig.Project{ID: id, Workdir: t.TempDir(), Weight: 1},
 		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Telemetry fixture"},
 	}, project.Dependencies{
@@ -429,7 +430,7 @@ func newTelemetryWebServer(t *testing.T, snapshots *hub.Hub[telemetry.Snapshot],
 		Logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 		LookupEnv:           func(string) string { return "" },
 		SSEFragmentInterval: time.Millisecond,
-	}, web.Dependencies{Hub: snapshots, Registry: registry, Store: db, Connector: memory.New(memory.Config{})})
+	}, web.Dependencies{Hub: snapshots, Registry: registry, Store: db, Connector: fakehub.New(fakehub.Config{})})
 	if err != nil {
 		t.Fatal(err)
 	}
