@@ -30,7 +30,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	workflowPath := filepath.Join(root, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n  repository: acme/orders\n---\nPRIVATE WORKFLOW\n"), 0o600); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n  api_key: fixture-token\n  github_status_source: label\n  repository: example-org/example-project\n---\nPRIVATE WORKFLOW\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(root, "global.yaml")
@@ -51,7 +51,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/repositories/acme/orders/policy" || r.Header.Get("Authorization") != "Bearer fixture-admin" {
+		if r.URL.Path != "/api/v1/repositories/example-org/example-project/policy" || r.Header.Get("Authorization") != "Bearer fixture-admin" {
 			t.Errorf("unexpected request %s", r.URL.Path)
 		}
 		if r.Method == http.MethodPut {
@@ -130,12 +130,18 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 	t.Run("enrolled runner credentials", func(t *testing.T) {
 		organization := "org_" + strings.Repeat("a", 32)
 		projectID := "prj_" + strings.Repeat("b", 32)
+		nativeWorkflow := workflow
+		nativeWorkflow.Config = project.MapNativeTracker(nativeWorkflow.Config, true)
+		nativeDescriptor, err := project.ResolvePolicy(managed, nativeWorkflow)
+		if err != nil {
+			t.Fatal(err)
+		}
 		var credential string
 		hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/api/v2/organizations/"+organization+"/projects/"+projectID+"/policy" || r.Header.Get("Authorization") != "Bearer "+credential {
 				t.Error("doctor did not use the enrolled policy credential and project scope")
 			}
-			if err := json.NewEncoder(w).Encode(policy.Approval{Policy: descriptor}); err != nil {
+			if err := json.NewEncoder(w).Encode(policy.Approval{Policy: nativeDescriptor}); err != nil {
 				t.Error(err)
 			}
 		}))
@@ -160,7 +166,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 			t.Fatalf("enrolled doctor policy = %#v", check)
 		}
 	})
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n  repository: acme/orders\ngate:\n  kind: artifact\n---\nChanged instructions\n"), 0o600); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n  api_key: fixture-token\n  github_status_source: label\n  repository: example-org/example-project\ngate:\n  kind: artifact\n---\nChanged instructions\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	check = checkDoctorHubPolicy(t.Context(), loaded, loaded.Projects[0], doctorDeps{lookupEnv: func(string) string { return "fixture-admin" }})

@@ -78,7 +78,7 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 				}
 			})
 			manager, err := projectfixture.NewManager(project.ManagerConfigFromGlobal(cfg), project.ManagerDependencies{ProjectFactory: func(selected globalconfig.Project) (*project.Project, error) {
-				return project.Load(selected, project.Dependencies{Runner: orchestrator.FakeRunner{}, WorkAttempts: attempts})
+				return projectfixture.New(project.Config{Project: selected}, project.Dependencies{Runner: orchestrator.FakeRunner{}, WorkAttempts: attempts})
 			}})
 			if err != nil {
 				t.Fatal(err)

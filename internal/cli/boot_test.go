@@ -36,6 +36,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -1518,6 +1519,9 @@ func TestStartRunningHotReloadsLocalConfigurationProjects(t *testing.T) {
 			Host:   "127.0.0.1",
 			Port:   &port,
 			Output: output,
+			ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
+				return fakehub.New(fakehub.Config{}), nil
+			},
 		})
 	}()
 
@@ -2189,7 +2193,10 @@ func createBootProjectFiles(t *testing.T) bootProjectFiles {
 	workflow := filepath.Join(workdir, "WORKFLOW.md")
 	if err := os.WriteFile(workflow, []byte(`---
 tracker:
-  kind: hub_native
+  kind: github
+  api_key: fixture-token
+  repository: example-org/example-project
+  github_status_source: label
 ---
 Test workflow prompt.
 `), 0o600); err != nil {

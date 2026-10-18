@@ -391,7 +391,7 @@ func TestDoctorWorkflowImprovementProposalsUsesCapturedLessonThreshold(t *testin
 	}
 }
 
-func TestDoctorWorkflowOptimizationCreatesProposalIssuesWithMemoryTracker(t *testing.T) {
+func TestDoctorWorkflowOptimizationCreatesProposalIssuesWithFakeConnector(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}
@@ -413,6 +413,9 @@ func TestDoctorWorkflowOptimizationCreatesProposalIssuesWithMemoryTracker(t *tes
 	global := doctorWorkflowOptimizationGlobal(paths)
 	deps := successfulDoctorDeps()
 	deps.loadWorkflow = workflowconfig.LoadWorkflow
+	deps.proposalConnector = func(workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
+		return fakehub.New(fakehub.Config{Stateful: true}), nil
+	}
 	report, err := doctorWorkflowOptimization(ctx, db, paths.db, global, deps, "", doctorWorkflowOptimizationOptions{
 		ProposalThreshold: 2,
 		ProposeIssues:     true,
@@ -1618,6 +1621,9 @@ func TestDoctorWorkflowOptimizationWriteRoundTripsWorkflow(t *testing.T) {
 
 	deps := successfulDoctorDeps()
 	deps.loadWorkflow = workflowconfig.LoadWorkflow
+	deps.autoPromoteConnector = func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+		return &fakeDoctorAutoPromoteConnector{}, nil
+	}
 	deps.openSQLiteReadOnly = openDoctorSQLiteReadOnly
 
 	configFlag := configPath
@@ -1675,6 +1681,9 @@ func TestDoctorWorkflowOptimizationStrictFailsOnAdvisoryFindings(t *testing.T) {
 
 	deps := successfulDoctorDeps()
 	deps.loadWorkflow = workflowconfig.LoadWorkflow
+	deps.autoPromoteConnector = func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+		return &fakeDoctorAutoPromoteConnector{}, nil
+	}
 	deps.openSQLiteReadOnly = openDoctorSQLiteReadOnly
 
 	configFlag := configPath
@@ -2041,10 +2050,9 @@ func TestDoctorWorkflowOptimizationUsesRuntimeGitHubToken(t *testing.T) {
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
 	if err := os.WriteFile(workflowPath, []byte(`---
 tracker:
-  kind: github_local
-  repository: digitaldrywood/detent
-  local_sqlite:
-    path: `+dbPath+`
+  kind: github
+  repository: example-org/example-project
+  github_status_source: label
 ---
 Prompt
 `), 0o600); err != nil {
@@ -2104,8 +2112,7 @@ tracker:
   api_key: fixture-token
   project_slug: fixture-project
   repository: example-org/example-project
-  local_sqlite:
-    project_id: detent-local
+  github_status_source: label
   lanes:
     - name: Backlog
       role: holding
