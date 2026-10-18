@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-func serviceLogPaths(cfg Config) (string, string) {
+func LogPaths(cfg Config) (string, string) {
 	root := filepath.Dir(cfg.ConfigPath)
 	if strings.TrimSpace(cfg.ConfigPath) == "" {
 		root = filepath.Join(cfg.HomeDir, ".config", "detent-runner")

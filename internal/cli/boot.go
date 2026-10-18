@@ -42,6 +42,7 @@ import (
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/statuspage"
@@ -172,6 +173,8 @@ func defaultBoot(ctx context.Context, cfg BootConfig) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	stopLogRetention := startServiceLogRetention(ctx, os.Getenv(service.ManagerEnvironment), cfg.Global.Path, runtimeLogRotation(cfg.Runtime), os.Stdout, os.Stderr)
+	defer stopLogRetention()
 	if cfg.Isolated == nil {
 		if err := validateHubStartup(ctx, cfg.Global, runtimeDeps{}); err != nil {
 			return err
@@ -1602,6 +1605,16 @@ func rotateLogFiles(path string, maxBackups int) error {
 		return nil
 	}
 
+	if err := rotateLogBackups(path, maxBackups); err != nil {
+		return err
+	}
+	if err := os.Rename(path, rotatedLogPath(path, 1)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func rotateLogBackups(path string, maxBackups int) error {
 	if err := os.Remove(rotatedLogPath(path, maxBackups)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -1611,9 +1624,6 @@ func rotateLogFiles(path string, maxBackups int) error {
 		if err := os.Rename(from, to); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-	}
-	if err := os.Rename(path, rotatedLogPath(path, 1)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
 	}
 	return nil
 }

@@ -134,6 +134,24 @@ beside the runner's global config. With the default runner config, these are
 Failed service starts are throttled to one restart per minute by the service
 manager.
 
+While the runner is running, it checks these two files at startup and once per
+second, independently of worker activity. Service retention shares the application
+logging settings: `log_max_size_bytes` defaults to 52428800 (50 MiB), and
+`log_max_backups` defaults to 5. Nonpositive values use these finite defaults for
+service files. Each file keeps up to five numbered snapshots (`.1` is newest),
+each containing at most the most recent 50 MiB at the default limit. An already
+oversized file is reduced on the first check. The active file can exceed the
+threshold by output written between checks; retained history is capped at
+250 MiB per stream with the defaults.
+
+Retention copies the bounded tail and truncates the active file in place, keeping
+the service's and inherited workers' append descriptors usable without a restart
+or a worker drain. Output concurrent with copy/truncate may be lost. Snapshots
+are private (0600); active file permissions and log redaction are unchanged.
+Only the installed service log files actually connected to stdout/stderr are
+retained. Services using the system journal keep OS-owned retention. These files
+are disposable diagnostics and are never used to recover jobs.
+
 Startup validation is project-specific. A project with unusable tracker
 credentials reports its error and repair command through runner problems while
 other projects continue serving work. Credential failures use the existing

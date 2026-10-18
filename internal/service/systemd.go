@@ -41,7 +41,7 @@ func (m *systemdManager) Info() ManagerInfo {
 }
 
 func (m *systemdManager) Definition() Definition {
-	stdout, stderr := serviceLogPaths(m.cfg)
+	stdout, stderr := LogPaths(m.cfg)
 	return Definition{Path: m.userPath, Content: systemdUnit(m.cfg), StandardOutPath: stdout, StandardErrorPath: stderr}
 }
 
@@ -167,7 +167,7 @@ func (m *systemdManager) systemctlArgs(args ...string) []string {
 }
 
 func systemdUnit(cfg Config) string {
-	stdout, stderr := serviceLogPaths(cfg)
+	stdout, stderr := LogPaths(cfg)
 	execStartParts := make([]string, 0, len(cfg.Arguments)+1)
 	execStartParts = append(execStartParts, systemdQuote(cfg.BinaryPath))
 	for _, argument := range cfg.Arguments {
