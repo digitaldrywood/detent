@@ -223,8 +223,6 @@ func parseTrackerChoice(choice string) (string, string) {
 		return config.TrackerGitHub, config.GitHubStatusSourceIssueField
 	case "github_label":
 		return config.TrackerGitHub, config.GitHubStatusSourceLabel
-	case config.TrackerMemory:
-		return config.TrackerMemory, ""
 	default:
 		return choice, ""
 	}
@@ -263,18 +261,12 @@ func validateTracker(form templates.OnboardingForm) []string {
 		default:
 			return []string{"github status source must be project_v2, issue_field, or label"}
 		}
-	case config.TrackerMemory:
-		return nil
 	default:
-		return []string{"tracker must be github or memory"}
+		return []string{"tracker must be github"}
 	}
 }
 
 func validateCredentials(form templates.OnboardingForm) []string {
-	if form.TrackerKind == config.TrackerMemory {
-		return nil
-	}
-
 	var problems []string
 	if strings.TrimSpace(form.Endpoint) == "" {
 		problems = append(problems, "endpoint is required")
@@ -289,10 +281,6 @@ func validateCredentials(form templates.OnboardingForm) []string {
 }
 
 func validateProject(form templates.OnboardingForm) []string {
-	if form.TrackerKind == config.TrackerMemory {
-		return nil
-	}
-
 	var problems []string
 	switch normalizedOnboardingGitHubStatusSource(form.GitHubStatusSource) {
 	case config.GitHubStatusSourceProjectV2:
@@ -406,9 +394,6 @@ func applyTrackerDefaults(form *templates.OnboardingForm) {
 		if form.StatusLabelPrefix == "" {
 			form.StatusLabelPrefix = defaultStatusLabelPrefix
 		}
-	case config.TrackerMemory:
-		form.Endpoint = ""
-		form.APIKey = ""
 	}
 }
 
@@ -482,17 +467,7 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 			writeScalar(&b, "  ", "repository", form.Repo)
 			writeQuotedScalar(&b, "  ", "status_label_prefix", form.StatusLabelPrefix)
 		}
-	case config.TrackerMemory:
-		b.WriteString("  issues:\n")
-		b.WriteString("    - id: memory-onboarding-1\n")
-		b.WriteString("      identifier: MEM-1\n")
-		b.WriteString("      title: Verify Detent onboarding\n")
-		b.WriteString("      description: Run the generated memory workflow through one local dispatch.\n")
-		b.WriteString("      priority: 3\n")
-		b.WriteString("      state: Todo\n")
-		b.WriteString("      labels:\n")
-		b.WriteString("        - onboarding\n")
-		b.WriteString("      assigned_to_worker: true\n")
+
 	}
 	b.WriteString("  lanes:\n")
 	for _, lane := range []config.Lane{
@@ -687,18 +662,13 @@ func workflowSourceRoot(workflowPath string) string {
 
 func renderWorkflowPrompt(form templates.OnboardingForm) string {
 	profilePrompt := deliveryProfileWorkflowPrompt(form)
-	switch form.TrackerKind {
-	case config.TrackerMemory:
-		return "You are working on a memory tracker issue `{{ issue.identifier }}`.\n\n" + commonWorkflowPrompt() + profilePrompt
+	switch normalizedOnboardingGitHubStatusSource(form.GitHubStatusSource) {
+	case config.GitHubStatusSourceIssueField:
+		return "You are working on GitHub issue `{{ issue.identifier }}` with issue-field status in `" + form.Repo + "`.\n\n" + commonWorkflowPrompt() + profilePrompt
+	case config.GitHubStatusSourceLabel:
+		return "You are working on GitHub issue `{{ issue.identifier }}` with status labels in `" + form.Repo + "`.\n\n" + commonWorkflowPrompt() + profilePrompt
 	default:
-		switch normalizedOnboardingGitHubStatusSource(form.GitHubStatusSource) {
-		case config.GitHubStatusSourceIssueField:
-			return "You are working on GitHub issue `{{ issue.identifier }}` with issue-field status in `" + form.Repo + "`.\n\n" + commonWorkflowPrompt() + profilePrompt
-		case config.GitHubStatusSourceLabel:
-			return "You are working on GitHub issue `{{ issue.identifier }}` with status labels in `" + form.Repo + "`.\n\n" + commonWorkflowPrompt() + profilePrompt
-		default:
-			return "You are working on GitHub issue `{{ issue.identifier }}` in ProjectV2 `" + form.ProjectSlug + "`.\n\n" + commonWorkflowPrompt() + profilePrompt
-		}
+		return "You are working on GitHub issue `{{ issue.identifier }}` in ProjectV2 `" + form.ProjectSlug + "`.\n\n" + commonWorkflowPrompt() + profilePrompt
 	}
 }
 

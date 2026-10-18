@@ -5,9 +5,9 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/scheduleowner"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestScheduledLaneStoresPreserveOccurrences(t *testing.T) {
@@ -15,7 +15,7 @@ func TestScheduledLaneStoresPreserveOccurrences(t *testing.T) {
 	for _, kind := range []string{"intake", "lesson", "routine", "coordinated intake", "coordinated routine"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
-			tracker := memory.New(memory.Config{Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Stateful: true})
 			issue, err := tracker.CreateIssue(t.Context(), connector.IssueDraft{Title: "Original", Body: "Original body"})
 			if err != nil {
 				t.Fatal(err)

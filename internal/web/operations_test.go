@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -416,7 +417,7 @@ func setOperationsTestProject(t *testing.T, registry *project.Registry, id strin
 	t.Helper()
 	workflowCfg := workflowconfig.Default()
 	workflowCfg.Review.Human = humanReview
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	workflowCfg.Agent.AutoPromote.Enabled = autoPromote
 	if optoutLabel != "" {
 		workflowCfg.Agent.AutoPromote.OptoutLabel = optoutLabel
@@ -437,12 +438,12 @@ func setOperationsTestProject(t *testing.T, registry *project.Registry, id strin
 	if approvalLabel != "" {
 		workflowCfg.Gate.ApprovalLabel = approvalLabel
 	}
-	trackedProject, err := project.New(project.Config{
+	trackedProject, err := projectfixture.New(project.Config{
 		Project:  global.Project{ID: id},
 		Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Work the issue."},
 	}, project.Dependencies{Connector: connectorProbe{name: "memory"}})
 	if err != nil {
-		t.Fatalf("project.New() error = %v", err)
+		t.Fatalf("projectfixture.New() error = %v", err)
 	}
 	if err := registry.Set(trackedProject); err != nil {
 		t.Fatalf("Registry.Set() error = %v", err)

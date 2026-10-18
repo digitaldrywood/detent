@@ -23,7 +23,7 @@ func TestStopRunTargetStateValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := Default()
-			cfg.Tracker.Kind = TrackerMemory
+			cfg.Tracker.Kind = TrackerHubNative
 			cfg.Tracker.ActiveStates = tt.active
 			cfg.Tracker.ObservedStates = tt.observed
 			cfg.Tracker.TerminalStates = tt.terminal

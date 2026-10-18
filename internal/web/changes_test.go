@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web"
 )
@@ -99,7 +100,7 @@ func newChangeTestServer(t *testing.T) *web.Server {
 	source := changeConnectorProbe{connectorProbe: connectorProbe{name: "hub_native"}, detail: changeWebFixture()}
 	workflow := workflowconfig.Default()
 	workflow.Tracker.Kind = workflowconfig.TrackerHubNative
-	tracked, err := project.New(project.Config{Project: globalconfig.Project{ID: "native"}, Workflow: workflowconfig.Workflow{Config: workflow, Prompt: "Work the native issue."}}, project.Dependencies{Scheduling: changeSchedulingProbe{source: source}})
+	tracked, err := projectfixture.New(project.Config{Project: globalconfig.Project{ID: "native"}, Workflow: workflowconfig.Workflow{Config: workflow, Prompt: "Work the native issue."}}, project.Dependencies{Scheduling: changeSchedulingProbe{source: source}})
 	if err != nil {
 		t.Fatal(err)
 	}

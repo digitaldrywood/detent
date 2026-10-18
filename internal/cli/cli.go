@@ -186,6 +186,7 @@ type BootConfig struct {
 	HardExit         func(int)
 	Runner           orchestrator.Runner
 	ConnectorFactory project.ConnectorFactory
+	Scheduling       orchestrator.SchedulingSource
 	StartupRecovery  StartupRecovery
 }
 
@@ -1030,7 +1031,7 @@ func validatePauseIssueReference(ctx context.Context, cfg globalconfig.Config, p
 
 func pauseTrackerSupportsIssueReferences(kind string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case workflowconfig.TrackerGitHub, workflowconfig.TrackerGitHubLocal, workflowconfig.TrackerLocalSQLite, workflowconfig.TrackerMemory:
+	case workflowconfig.TrackerGitHub, workflowconfig.TrackerHubNative:
 		return true
 	default:
 		return false

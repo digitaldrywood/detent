@@ -10,7 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestKanbanMoveValidationResponse(t *testing.T) {
@@ -193,7 +193,7 @@ func newKanbanValidationResponseTestServer() *Server {
 	workflow := workflowconfig.Default()
 	workflow.Server.Kanban = workflowconfig.Kanban{Mode: workflowconfig.KanbanModeIntegration}
 	return &Server{
-		connector:      memory.New(memory.Config{}),
+		connector:      fakehub.New(fakehub.Config{}),
 		kanban:         workflowconfig.Kanban{Mode: workflowconfig.KanbanModeIntegration},
 		kanbanWorkflow: workflow,
 	}

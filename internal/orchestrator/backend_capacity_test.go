@@ -16,12 +16,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/claudecode"
 	"github.com/digitaldrywood/detent/internal/codex"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -933,7 +933,7 @@ func TestRequestBackendCapacityClearLifecycle(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 
-			orch, err := New(Config{}, Dependencies{Connector: memory.New(memory.Config{}), Runner: FakeRunner{}})
+			orch, err := New(Config{}, Dependencies{Connector: fakehub.New(fakehub.Config{}), Runner: FakeRunner{}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -997,7 +997,7 @@ func (c *capacityClearBusyConnector) FetchCandidateIssues(ctx context.Context) (
 func TestRequestBackendCapacityClearWhileRefreshIsBusy(t *testing.T) {
 	t.Parallel()
 
-	tracker := &capacityClearBusyConnector{Connector: memory.New(memory.Config{}), entered: make(chan struct{}, 1), release: make(chan struct{})}
+	tracker := &capacityClearBusyConnector{Connector: fakehub.New(fakehub.Config{}), entered: make(chan struct{}, 1), release: make(chan struct{})}
 	orch, err := New(Config{PollInterval: time.Hour}, Dependencies{Connector: tracker, Runner: FakeRunner{}})
 	if err != nil {
 		t.Fatal(err)

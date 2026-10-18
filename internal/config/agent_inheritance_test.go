@@ -140,9 +140,9 @@ func TestInheritedPricingAndClearing(t *testing.T) {
 		{"explicit embedded", "pricing_path: ''", Default().Budget.PricingPath},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			raw := "---\ntracker:\n  kind: memory\nbudget:\n  " + tt.path + "\n---\n"
+			raw := "---\ntracker:\n  kind: hub_native\nbudget:\n  " + tt.path + "\n---\n"
 			if tt.path == "" {
-				raw = "---\ntracker:\n  kind: memory\n---\n"
+				raw = "---\ntracker:\n  kind: hub_native\n---\n"
 			}
 			workflow, err := ParseWorkflow([]byte(raw))
 			if err != nil {

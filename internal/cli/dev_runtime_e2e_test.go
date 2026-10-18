@@ -37,7 +37,7 @@ func TestStartIsolatedRuntimeAutoPromotesFixtureAndStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	output := &lockedBuffer{}
 	audits := make(chan isolatedAuditObservation, 1)
-	cfg := devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output)
+	cfg := devRuntimeBootConfig(t.Context(), runtime, "127.0.0.1", defaultOptions(), output)
 	cfg.Runner = observedDevRuntimeRunner{audits: audits}
 	done := make(chan error, 1)
 	runtimeDone := make(chan struct{})
@@ -129,7 +129,7 @@ func TestStartIsolatedRuntimePublishesBannerBeforeSnapshotLoad(t *testing.T) {
 			runtimeDone := make(chan struct{})
 			go func() {
 				done <- startRunningWithDependencies(ctx,
-					devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output),
+					devRuntimeBootConfig(t.Context(), runtime, "127.0.0.1", defaultOptions(), output),
 					startRunningDependencies{boardSnapshotStore: store})
 				close(runtimeDone)
 			}()
@@ -243,7 +243,7 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	done := make(chan error, 1)
 	runtimeDone := make(chan struct{})
 	go func() {
-		done <- startRunning(ctx, devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output))
+		done <- startRunning(ctx, devRuntimeBootConfig(t.Context(), runtime, "127.0.0.1", defaultOptions(), output))
 		close(runtimeDone)
 	}()
 	t.Cleanup(func() {
@@ -380,7 +380,7 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			output := &lockedBuffer{}
-			cfg := devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output)
+			cfg := devRuntimeBootConfig(t.Context(), runtime, "127.0.0.1", defaultOptions(), output)
 			if outcome == "required setup failure" {
 				t.Setenv("DETENT_TEST_STARTUP_TOKEN", "")
 				cfg.Global.Client = globalconfig.HubClient{URL: "http://127.0.0.1:1", TokenEnvironment: "DETENT_TEST_STARTUP_TOKEN"}
@@ -539,7 +539,7 @@ func TestStartRunningWaitsForBoardSnapshotPersistence(t *testing.T) {
 	go func() {
 		runErr = startRunningWithDependencies(
 			ctx,
-			devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output),
+			devRuntimeBootConfig(t.Context(), runtime, "127.0.0.1", defaultOptions(), output),
 			startRunningDependencies{
 				boardSnapshotStore:    store,
 				boardSnapshotInterval: time.Millisecond,
@@ -607,7 +607,7 @@ func TestStartScreenshotsDemoServesScenarioManifestAndUsage(t *testing.T) {
 	output := &lockedBuffer{}
 	done := make(chan error, 1)
 	go func() {
-		done <- startRunning(ctx, devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output))
+		done <- startRunning(ctx, devRuntimeBootConfig(t.Context(), runtime, "127.0.0.1", defaultOptions(), output))
 	}()
 	t.Cleanup(cancel)
 

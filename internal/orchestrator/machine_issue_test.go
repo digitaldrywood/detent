@@ -7,14 +7,14 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 type machineIssueTracker struct {
-	*memory.Connector
+	*fakehub.Connector
 	draft               intake.IssueDraft
 	reused              bool
 	state               string
@@ -83,7 +83,7 @@ func TestMachineIssueTool(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			tracker := &machineIssueTracker{Connector: memory.New(memory.Config{}), reused: tt.reused, state: tt.state}
+			tracker := &machineIssueTracker{Connector: fakehub.New(fakehub.Config{}), reused: tt.reused, state: tt.state}
 			if tt.createFail {
 				tracker.createErr = errors.New("create failed")
 			}
@@ -124,7 +124,7 @@ func TestMachineIssueToolDelegates(t *testing.T) {
 	if len(request.AgentTools) != 0 {
 		t.Fatal("tool attached without backend")
 	}
-	o.connector = &machineIssueTracker{Connector: memory.New(memory.Config{})}
+	o.connector = &machineIssueTracker{Connector: fakehub.New(fakehub.Config{})}
 	o.attachMachineIssueTool(&request)
 	var schema struct {
 		AdditionalProperties bool

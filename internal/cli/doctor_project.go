@@ -517,10 +517,7 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " blocked recovery")
 		checks = append(checks, checkDoctorBlockedRecovery(ctx, id, workflow.Config, storePath, deps))
 	}
-	if workflow.Config.Tracker.Kind == workflowconfig.TrackerLocalSQLite || workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
-		setDoctorCurrentCheck("Project " + id + " local SQLite tracker")
-		checks = append(checks, checkDoctorLocalSQLiteTracker(ctx, id, project, workflow.Config, deps))
-	}
+
 	setDoctorCurrentCheck("Project " + id + " legacy toolchain caches")
 	checks = append(checks, checkDoctorLegacyCaches(id, workflow.Config.Workspace.Root))
 	if workflow.Config.Workspace.Kind == workflowconfig.WorkspaceFilesystem {
