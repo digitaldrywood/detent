@@ -55,6 +55,7 @@ type localTransport struct {
 	done                 chan struct{}
 	sendLock             chan struct{}
 	waitErr              error
+	cleanupErr           error
 	waitMu               sync.Mutex
 	readStopOnce         sync.Once
 	closeOnce            sync.Once
@@ -70,6 +71,22 @@ type localTransport struct {
 type transportResult struct {
 	msg Message
 	err error
+}
+
+type reapedTransportTimeoutError struct {
+	Process backendcapacity.StartupProcessEvidence
+}
+
+func (*reapedTransportTimeoutError) Error() string {
+	return context.DeadlineExceeded.Error()
+}
+
+func (*reapedTransportTimeoutError) Unwrap() error {
+	return context.DeadlineExceeded
+}
+
+func (e *reapedTransportTimeoutError) cleanupEvidence() backendcapacity.StartupProcessEvidence {
+	return e.Process
 }
 
 type tailBuffer struct {
@@ -337,14 +354,26 @@ func (t *localTransport) Close(ctx context.Context) error {
 
 		select {
 		case <-t.done:
+			return t.closeAfterTermination(ctx.Err(), killErr, closeErr)
 		case <-time.After(time.Second):
 		}
 
 		if killErr != nil {
-			return transportContextError(ctx.Err(), "kill process", killErr)
+			return errors.Join(transportContextError(ctx.Err(), "kill process", killErr), closeErr)
 		}
-		return ctx.Err()
+		return errors.Join(ctx.Err(), closeErr)
 	}
+}
+
+func (t *localTransport) closeAfterTermination(cause, killErr, closeErr error) error {
+	waitErr := t.waitError()
+	process := t.StartupProcessEvidence()
+	var exitErr *exec.ExitError
+	processExited := waitErr == nil || errors.As(waitErr, &exitErr)
+	if errors.Is(cause, context.DeadlineExceeded) && killErr == nil && closeErr == nil && t.cleanupErr == nil && process.TerminationRequested && process.ExitObserved && process.CleanupComplete && processExited {
+		return &reapedTransportTimeoutError{Process: process}
+	}
+	return errors.Join(cause, killErr, closeErr, waitErr)
 }
 
 func (t *localTransport) ProcessIdentity() string {
@@ -491,21 +520,18 @@ func (t *localTransport) wait() {
 		t.exitStatus = t.cmd.ProcessState.String()
 	}
 	t.waitMu.Unlock()
-	if cleanupErr := procgroup.Cleanup(t.processGroupID); cleanupErr != nil {
-		err = errors.Join(err, cleanupErr)
-	}
+	cleanupErr := procgroup.Cleanup(t.processGroupID)
 	<-t.readDone
-	if t.readDrainErr != nil {
-		err = errors.Join(err, t.readDrainErr)
-	}
+	cleanupErr = errors.Join(cleanupErr, t.readDrainErr)
 	if stderrErr := <-t.stderrDone; stderrErr != nil {
-		err = errors.Join(err, fmt.Errorf("read codex stderr: %w", stderrErr))
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("read codex stderr: %w", stderrErr))
 	}
 	if closeErr := errors.Join(t.stdout.Close(), t.stderr.Close()); closeErr != nil {
-		err = errors.Join(err, closeErr)
+		cleanupErr = errors.Join(cleanupErr, closeErr)
 	}
 	t.waitMu.Lock()
-	t.waitErr = err
+	t.cleanupErr = cleanupErr
+	t.waitErr = errors.Join(err, cleanupErr)
 	t.cleanupComplete = true
 	t.waitMu.Unlock()
 	close(t.done)
