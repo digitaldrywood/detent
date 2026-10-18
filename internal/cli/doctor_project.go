@@ -726,7 +726,7 @@ func checkDoctorProjectPause(
 			Name:   name,
 			Status: doctorWarn,
 			Detail: "project " + id + " is paused even though " + result.Detail,
-			Hint:   "Keep Detent running for automatic unpause, or run detent unpause " + id + ".",
+			Hint:   "Keep Detent running for automatic unpause, or use Hub MCP resume_local_project for project " + id + ".",
 		}, true
 	}
 

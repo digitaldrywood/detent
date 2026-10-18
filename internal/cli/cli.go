@@ -30,10 +30,9 @@ var (
 )
 
 const (
-	configPathCommand     = "detent config path"
-	ghAuthLoginCommand    = `gh auth login --scopes "repo,read:org,project"`
-	portExampleCommand    = "detent --port 0"
-	promoteExampleCommand = "detent promote api --priority 10"
+	configPathCommand  = "detent config path"
+	ghAuthLoginCommand = `gh auth login --scopes "repo,read:org,project"`
+	portExampleCommand = "detent --port 0"
 )
 
 type HintedError struct {
@@ -79,7 +78,6 @@ const (
 	OperationPauseProject   Operation = "pause"
 	OperationUnpauseProject Operation = "unpause"
 	OperationResumeProject  Operation = "resume"
-	OperationPromoteProject Operation = "promote"
 	OperationRemoveProject  Operation = "remove-project"
 )
 
@@ -150,12 +148,6 @@ type projectResumedResult struct {
 	Status                   string `json:"status"`
 	Project                  string `json:"project"`
 	ActiveHoursOverrideUntil string `json:"active_hours_override_until"`
-}
-
-type projectPriorityResult struct {
-	Status   string `json:"status"`
-	Project  string `json:"project"`
-	Priority int    `json:"priority"`
 }
 
 type BootMode string
@@ -492,10 +484,6 @@ detent --format json config path`),
 		newArtifactCommand(opts.lookupEnv),
 		newAttachCommand(opts.lookupEnv, nil),
 		newPauseProjectCommand(&configPath, opts),
-		newEditProjectCommand(&configPath, opts, OperationUnpauseProject, "unpause", "Unpause a project", func(project *globalconfig.Project) error {
-			clearProjectPause(project)
-			return nil
-		}),
 		newResumeProjectCommand(&configPath, opts),
 		newBudgetCommand(&configPath, opts),
 		newAuditCommand(&configPath, &host, &port, opts),
@@ -503,9 +491,6 @@ detent --format json config path`),
 		newCapacityCommand(&configPath, &host, &port, opts),
 		newExposureCommand(&configPath, opts),
 		newIssueCommand(&configPath, &host, &port, opts),
-		newMCPCommand(&configPath, &host, &port, opts),
-		newStateCommand(&configPath, &host, &port, opts),
-		newPromoteCommand(&configPath, opts),
 		newReportCommand(&configPath, &host, &port, opts),
 	)
 	cmd.SetHelpCommand(newHelpCommand(cmd, opts))
@@ -801,7 +786,7 @@ func newResumeProjectCommand(configPath *string, opts options) *cobra.Command {
 			}
 			updated, err := updateProject(cmd.Context(), *configPath, opts, OperationResumeProject, args[0], func(project *globalconfig.Project) error {
 				if project.Paused {
-					return WrapValidation(errors.New("project is manually paused; run detent unpause before adding an active-hours override"))
+					return WrapValidation(errors.New("project is manually paused; use Hub MCP resume_local_project before adding an active-hours override"))
 				}
 				project.ActiveHoursOverrideUntil = overrideUntil.Format(time.RFC3339)
 				return nil
@@ -854,26 +839,6 @@ func clearProjectPause(project *globalconfig.Project) {
 	project.PausedUntil = ""
 }
 
-func newEditProjectCommand(configPath *string, opts options, operation Operation, use string, short string, edit projectEdit) *cobra.Command {
-	return &cobra.Command{
-		Use:     use + " PROJECT_ID",
-		Short:   short,
-		Example: "detent " + use + " api",
-		Args:    ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			out, err := OutputForCommand(cmd)
-			if err != nil {
-				return err
-			}
-			updated, err := updateProject(cmd.Context(), *configPath, opts, operation, args[0], edit)
-			if err != nil {
-				return err
-			}
-			return out.Write(nil, projectEditResult(operation, updated))
-		},
-	}
-}
-
 func newConfigCommand(configPath *string, opts options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "config",
@@ -910,39 +875,6 @@ func newConfigPathCommand(configPath *string, opts options) *cobra.Command {
 	}
 }
 
-func newPromoteCommand(configPath *string, opts options) *cobra.Command {
-	var priority int
-	cmd := &cobra.Command{
-		Use:     "promote PROJECT_ID",
-		Short:   "Promote a project priority",
-		Example: "detent promote api --priority 1",
-		Args:    ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if priority <= 0 {
-				return WrapValidation(hintedError(nil, "--priority must be positive", exampleHint(promoteExampleCommand), promoteExampleCommand))
-			}
-			out, err := OutputForCommand(cmd)
-			if err != nil {
-				return err
-			}
-			updated, err := updateProject(cmd.Context(), *configPath, opts, OperationPromoteProject, args[0], func(project *globalconfig.Project) error {
-				project.Priority = priority
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-			return out.Write(nil, projectPriorityResult{
-				Status:   "ok",
-				Project:  updated.ID,
-				Priority: updated.Priority,
-			})
-		},
-	}
-	cmd.Flags().IntVar(&priority, "priority", 1, "project priority rank")
-	return cmd
-}
-
 func updateProject(
 	ctx context.Context,
 	configPath string,
@@ -977,11 +909,7 @@ func updateProject(
 			return globalconfig.Project{}, err
 		}
 	}
-	if operation == OperationPromoteProject && !cfg.Client.Configured() {
-		err = writeLocalConfigurationRank(ctx, path, cfg, id, cfg.Projects[index].Priority)
-	} else {
-		err = opts.write(path, cfg)
-	}
+	err = opts.write(path, cfg)
 	if err != nil {
 		return globalconfig.Project{}, err
 	}
