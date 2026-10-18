@@ -2,6 +2,11 @@ package update
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,6 +21,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	}
 	if request == nil {
 		if s.operationMu.TryLock() {
+			s.refreshEnrolledState(ctx)
 			lastCheck := s.Status().LastCheckAt
 			refresh := s.cfg.WorkerArtifacts != nil && !s.cfg.Enabled && (lastCheck == nil || !s.cfg.Now().Before(lastCheck.Add(s.cfg.CheckInterval)))
 			if (s.enrolledDiscovery == "" || refresh) && s.cfg.Updater != nil {
@@ -63,7 +69,14 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 		return s.enrolledObservation(running)
 	}
 	defer s.operationMu.Unlock()
+	s.refreshEnrolledState(ctx)
 	observed := s.enrolledObservation(running)
+	s.mu.RLock()
+	stateValid := s.enrolledStateValid
+	s.mu.RUnlock()
+	if !stateValid {
+		return observed
+	}
 	retry := observed.Receipt != nil && observed.Receipt.Request == *request && observed.Receipt.FailureReason != "" && observed.Receipt.FailureReason != enrolledTargetRefusal && (observed.Receipt.Status == "refused" || observed.Receipt.Status == "uncertain")
 	if observed.Receipt != nil && observed.Receipt.Request.ID == request.ID {
 		if !retry || s.cfg.Now().Before(observed.Receipt.ObservedAt.Add(s.cfg.CheckInterval)) {
@@ -155,6 +168,9 @@ func (s *Scheduler) enrolledObservation(running runnerauth.BuildEvidence) *runne
 	s.mu.RUnlock()
 	now := s.cfg.Now().UTC()
 	running.ObservedAt = now
+	if !valid {
+		receipt = nil
+	}
 	if receipt != nil {
 		if receipt.Applied == nil && receipt.VerifiedTarget != nil && running.Matches(*receipt.VerifiedTarget) {
 			applied := *receipt.VerifiedTarget
@@ -243,6 +259,74 @@ func (s *Scheduler) recordEnrolledApplied(applied Status, executionArtifact bool
 		s.enrolledReceipt.Applied = nil
 		s.enrolledReceipt.Status = "uncertain"
 	}
+}
+
+func (s *Scheduler) enrolledApplyOptions(opts ApplyOptions) ApplyOptions {
+	receipt, _ := s.enrolledState()
+	if receipt != nil && (receipt.Status == "applying" || receipt.Status == "draining") {
+		opts.ExpectedVersion = receipt.Request.Version
+		opts.FromRelease = receipt.Request.FromRelease
+		opts.FollowHub = receipt.Request.FollowHub
+		opts.Urgent = receipt.Request.Urgent
+	}
+	return opts
+}
+
+func (s *Scheduler) refreshEnrolledState(ctx context.Context) {
+	s.mu.RLock()
+	valid := s.enrolledStateValid
+	receipt := cloneEnrolledReceipt(s.enrolledReceipt)
+	s.mu.RUnlock()
+	if valid || receipt == nil || !receipt.AdvancedFollowHubRelease() {
+		return
+	}
+	if verifyAdvancedEnrolledReceipt(ctx, s.cfg, receipt) == nil {
+		s.mu.Lock()
+		s.enrolledStateValid = true
+		s.mu.Unlock()
+	}
+}
+
+func verifyAdvancedEnrolledReceipt(ctx context.Context, cfg SchedulerConfig, receipt *runnerauth.UpdateReceipt) error {
+	if receipt == nil || !receipt.AdvancedFollowHubRelease() {
+		return nil
+	}
+	service, ok := cfg.Updater.(*Service)
+	if !ok || cfg.RunningBuild.Validate() != nil || !cfg.RunningBuild.Matches(*receipt.Applied) || receipt.Applied.OS != service.cfg.GOOS || receipt.Applied.Architecture != service.cfg.GOARCH {
+		return errors.New("advanced follow-Hub receipt requires matching signed release evidence")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, defaultHTTPClientTimeout)
+	defer cancel()
+	release, _, err := service.publishedRelease(ctx, "v"+displayVersion(receipt.Applied.Version))
+	if err != nil {
+		return err
+	}
+	status, binary, mode, err := service.prepareReleaseBinary(ctx, Status{LatestVersion: displayVersion(release.TagName), LatestTag: release.TagName}, release)
+	if err != nil {
+		return err
+	}
+	staging, err := os.MkdirTemp("", "detent-update-receipt-*")
+	if err != nil {
+		return err
+	}
+	defer removeWorkerStaging(staging)
+	path := filepath.Join(staging, projectName)
+	identity := binaryIdentityVerifier(service.cfg.BinaryVerifier, status.LatestVersion, status.LatestCommit)
+	if err := replaceBinaryNow(ctx, Replacement{Context: ctx, Target: path, Binary: binary, Mode: mode, GOOS: service.cfg.GOOS, Verify: identity, Sign: service.cfg.BinarySigner}); err != nil {
+		return err
+	}
+	installed, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(installed)
+	if status.LatestCommit != receipt.Applied.Commit || hex.EncodeToString(sum[:]) != receipt.Applied.SHA256 {
+		return errors.New("advanced follow-Hub receipt does not match its signed release")
+	}
+	return nil
 }
 
 func (s *Scheduler) enrolledState() (*runnerauth.UpdateReceipt, time.Time) {

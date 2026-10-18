@@ -761,6 +761,10 @@ func (s *Service) targetRelease(ctx context.Context, target string, exact bool) 
 	if !exact && cmp <= 0 || exact && err == nil && cmp == 0 {
 		return Release{TagName: tag}, true, nil
 	}
+	return s.publishedRelease(ctx, tag)
+}
+
+func (s *Service) publishedRelease(ctx context.Context, tag string) (Release, bool, error) {
 	release, err := s.cfg.Client.GetRelease(ctx, tag)
 	if err != nil {
 		return Release{}, false, err

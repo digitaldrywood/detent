@@ -117,10 +117,13 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 		cfg.MaxDeferral = defaultMaxDeferral
 	}
 	loadedState, stateFound, err := loadSchedulerState(cfg.StatePath)
+	if err == nil {
+		err = verifyAdvancedEnrolledReceipt(context.Background(), cfg, loadedState.EnrolledReceipt)
+	}
 	if err != nil {
 		cfg.Logger.Warn("load automatic update state failed", "path", cfg.StatePath, "error", err)
 	}
-	if receipt := loadedState.EnrolledReceipt; receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && receipt.Running == nil && !receipt.ExecutionReady() {
+	if receipt := loadedState.EnrolledReceipt; err == nil && receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && receipt.Running == nil && !receipt.ExecutionReady() {
 		switch {
 		case receipt.Status == "draining" || receipt.Status == "applying":
 			receipt.FailureReason = "Update was interrupted before completion"
@@ -360,6 +363,7 @@ func (s *Scheduler) ApplyRelease(ctx context.Context, fromRelease bool) (Status,
 }
 
 func (s *Scheduler) applyRequestedLocked(ctx context.Context, opts ApplyOptions) (Status, error) {
+	opts = s.enrolledApplyOptions(opts)
 	if s.cfg.WorkerArtifacts != nil {
 		return s.applyWorkerReleaseLocked(ctx, opts)
 	}
@@ -384,6 +388,7 @@ func (s *Scheduler) applyRequestedLocked(ctx context.Context, opts ApplyOptions)
 }
 
 func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOptions) (Status, error) {
+	opts = s.enrolledApplyOptions(opts)
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "applying"
 		status.LastError = ""
@@ -508,6 +513,7 @@ func (s *Scheduler) applyLocked(ctx context.Context, releaseIdle func()) (Status
 }
 
 func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func(), applyOptions ApplyOptions) (Status, error) {
+	applyOptions = s.enrolledApplyOptions(applyOptions)
 	keepIdleReserved := false
 	defer func() {
 		if !keepIdleReserved && releaseIdle != nil {
