@@ -1190,7 +1190,7 @@ func TestManagerAcceptanceTransitionsOrSupersedes(t *testing.T) {
 			}
 			metadata, ok := provenance.Parse(timeline.Events[0].MetadataJSON)
 			if !ok || metadata.Provenance.Actor == nil ||
-				metadata.Provenance.Actor.Login != "fakehub" ||
+				metadata.Provenance.Actor.Login != "memory" ||
 				metadata.Admission == nil ||
 				!metadata.Admission.Attributed ||
 				metadata.Admission.ProposalID != proposal.ID {
