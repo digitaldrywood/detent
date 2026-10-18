@@ -29,7 +29,6 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/healthnotify"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/instancelock"
@@ -342,7 +341,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		Jitter:             managerConfig.Startup.Jitter,
 		RampStarts:         startupDispatchRampStarts(globalDispatchGate),
 	})
-	var hubScheduling orchestrator.SchedulingSource
+	hubScheduling := cfg.Scheduling
 	var manager *project.Manager
 	serviceAddress, err := dashboardServiceAddress(listener.Addr())
 	if err != nil {
@@ -1948,7 +1947,7 @@ func firstConnector(manager *project.Manager) connector.Connector {
 			return projectConnector
 		}
 	}
-	return memory.New(memory.Config{})
+	return nil
 }
 
 func refresherForRegistry(registry *project.Registry) web.Refresher {

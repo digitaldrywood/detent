@@ -20,7 +20,6 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/coordination"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/intake"
@@ -32,6 +31,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 )
 
 func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
@@ -42,14 +43,14 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 	global := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 8}))
 	created := make(chan orchestrator.Config, 1)
 	createdDeps := make(chan orchestrator.Dependencies, 1)
-	workflowCfg := workflowConfigWithMemoryIssue("issue-1")
+	workflowCfg := workflowConfigWithHubIssue("issue-1")
 	workflowCfg.Identity.Name = "workflow-persona"
 	workflowCfg.Identity.GitHubLogin = "workflow-bot"
 	workflowCfg.Tracker.Authorization = selector.Selector{
 		AssigneeIn: []string{"@me"},
 	}
 
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
 			ID:       "detent",
 			Pool:     "code",
@@ -90,7 +91,7 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 	if got.Config().Workdir != "/workspace/detent" {
 		t.Fatalf("Config().Workdir = %q, want /workspace/detent", got.Config().Workdir)
 	}
-	if got.Connector().Name() != connector.BackendMemory.String() {
+	if got.Connector().Name() != "hub_native" {
 		t.Fatalf("Connector().Name() = %q, want memory", got.Connector().Name())
 	}
 	if got.Scheduler() != sched {
@@ -136,12 +137,12 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 
 func TestNewConfiguresScheduledRoutines(t *testing.T) {
 	t.Parallel()
-	workflowCfg := workflowConfig("memory")
+	workflowCfg := workflowConfig(workflowconfig.TrackerGitHub)
 	workflowCfg.Routines = []workflowconfig.Routine{{Name: "dependency-audit", Schedule: "0 3 * * 1", Prompt: "Inspect configured dependency criteria."}}
 	configureTestScheduleOwnership(&workflowCfg)
 	coordinationStore := &projectCoordinationStore{}
 	scheduleRuns := &projectScheduledRunStore{}
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project:  globalconfig.Project{ID: "detent", Workdir: "/workspace/detent"},
 		Workflow: workflowconfig.Workflow{Config: workflowCfg},
 	}, project.Dependencies{
@@ -177,7 +178,7 @@ func TestNewConfiguresBacklogAdmissionFromSharedWorkflow(t *testing.T) {
 		}
 	})
 
-	workflowCfg := workflowConfigWithMemoryIssue("issue-1535")
+	workflowCfg := workflowConfigWithHubIssue("issue-1535")
 	workflowCfg.Tracker.Issues[0].State = "Backlog"
 	workflowCfg.BacklogAdmission.Enabled = true
 	workflowCfg.BacklogAdmission.Sources.States = []string{"Backlog"}
@@ -186,7 +187,7 @@ func TestNewConfiguresBacklogAdmissionFromSharedWorkflow(t *testing.T) {
 	workflowCfg.BacklogAdmission.RequireEffort = true
 	workflowCfg.BacklogAdmission.EffortSection = "Issue effort selection"
 	configureTestScheduleOwnership(&workflowCfg)
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{ID: "detent", Workdir: "/workspace/detent"},
 		Workflow: workflowconfig.Workflow{
 			Config: workflowCfg,
@@ -220,10 +221,10 @@ func TestNewConfiguresBacklogAdmissionFromSharedWorkflow(t *testing.T) {
 func TestProjectWithDisabledSchedulersDoesNotAcquireOwnership(t *testing.T) {
 	t.Parallel()
 
-	workflowCfg := workflowConfig("memory")
+	workflowCfg := workflowConfig(workflowconfig.TrackerGitHub)
 	configureTestScheduleOwnership(&workflowCfg)
 	coordinationStore := &projectCoordinationStore{}
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project:  globalconfig.Project{ID: "detent", Workdir: "/workspace/detent"},
 		Workflow: workflowconfig.Workflow{Config: workflowCfg},
 	}, project.Dependencies{
@@ -247,10 +248,10 @@ func TestProjectAcquiresScheduleOwnershipAfterWorkflowReloadEnablesSchedulers(t 
 	t.Parallel()
 
 	updates := make(chan configwatcher.Update, 1)
-	workflowCfg := workflowConfig("memory")
+	workflowCfg := workflowConfig(workflowconfig.TrackerGitHub)
 	configureTestScheduleOwnership(&workflowCfg)
 	coordinationStore := &projectCoordinationStore{}
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project:  globalconfig.Project{ID: "detent", Workdir: "/workspace/detent", Workflow: "workflow.md"},
 		Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "disabled"},
 	}, project.Dependencies{
@@ -282,11 +283,11 @@ func TestProjectAcquiresScheduleOwnershipAfterWorkflowReloadEnablesSchedulers(t 
 func TestScheduleOwnershipAcquisitionFailureDegradesRunningProject(t *testing.T) {
 	t.Parallel()
 
-	workflowCfg := workflowConfig("memory")
+	workflowCfg := workflowConfig(workflowconfig.TrackerGitHub)
 	workflowCfg.Routines = []workflowconfig.Routine{{Name: "audit", Schedule: "* * * * *", Prompt: "Inspect."}}
 	configureTestScheduleOwnership(&workflowCfg)
 	coordinationStore := &failingProjectCoordinationStore{called: make(chan struct{})}
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project:  globalconfig.Project{ID: "detent", Workdir: "/workspace/detent"},
 		Workflow: workflowconfig.Workflow{Config: workflowCfg},
 	}, project.Dependencies{
@@ -315,9 +316,9 @@ func TestScheduleOwnershipAcquisitionFailureDegradesRunningProject(t *testing.T)
 func TestNewLeavesBacklogAdmissionDisabledByDefault(t *testing.T) {
 	t.Parallel()
 
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project:  globalconfig.Project{ID: "detent", Workdir: "/workspace/detent"},
-		Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
+		Workflow: workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerGitHub)},
 	}, project.Dependencies{Runner: orchestrator.FakeRunner{}})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -357,7 +358,7 @@ func TestProjectGitHubRuntimeTokenRefreshesAfterAuthFailure(t *testing.T) {
 	workflowCfg.Tracker.Endpoint = server.URL
 	workflowCfg.Tracker.ProjectSlug = "PVT_1"
 	var refreshes atomic.Int64
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
 			ID:     "detent",
 			Weight: 1,
@@ -409,13 +410,13 @@ func TestProjectStartStopPublishesLifecycleEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe() error = %v", err)
 	}
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
 			ID:     "detent",
 			Weight: 1,
 		},
 		Workflow: workflowconfig.Workflow{
-			Config: workflowConfigWithMemoryIssue("issue-1"),
+			Config: workflowConfigWithHubIssue("issue-1"),
 		},
 	}, project.Dependencies{
 		Events: events,
@@ -461,12 +462,12 @@ func TestProjectCloseStopsAndClosesConnector(t *testing.T) {
 		t.Fatalf("Subscribe() error = %v", err)
 	}
 	projectConnector := newCloseTrackingConnector()
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
 			ID:     "detent",
 			Weight: 1,
 		},
-		Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
+		Workflow: workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerGitHub)},
 	}, project.Dependencies{
 		Connector: projectConnector,
 		Events:    events,
@@ -501,11 +502,11 @@ func TestProjectAppliesWorkflowReloadsToRunningOrchestrator(t *testing.T) {
 
 	updates := make(chan configwatcher.Update, 1)
 	runner := newProjectBlockingRunner()
-	initial := workflowConfig("memory")
+	initial := workflowConfig(workflowconfig.TrackerGitHub)
 	initial.Polling.IntervalMS = int(time.Hour / time.Millisecond)
 	initial.Tracker.ActiveStates = []string{"Todo"}
 
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
 			ID:       "detent",
 			Workflow: "workflow.md",
@@ -588,9 +589,9 @@ func TestProjectReestablishesClosedWorkflowWatcher(t *testing.T) {
 	var watcherCreates atomic.Int32
 	var logs lockedBuffer
 
-	initial := workflowConfig("memory")
+	initial := workflowConfig(workflowconfig.TrackerGitHub)
 	initial.Polling.IntervalMS = int(time.Hour / time.Millisecond)
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project:  globalconfig.Project{ID: "detent", Workflow: "workflow.md", Weight: 1},
 		Workflow: workflowconfig.Workflow{Config: initial, Prompt: "initial"},
 	}, project.Dependencies{
@@ -653,7 +654,7 @@ func TestProjectReconcilesWorkflowWhenWatcherMissesEdit(t *testing.T) {
 	}
 
 	stalledUpdates := make(chan configwatcher.Update)
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project:  globalconfig.Project{ID: "detent", Workflow: workflowPath, Weight: 1},
 		Workflow: workflow,
 	}, project.Dependencies{
@@ -698,7 +699,7 @@ func TestProjectUnpauseReloadsWorkflowEditedWhilePaused(t *testing.T) {
 		t.Fatalf("LoadWorkflow() error = %v", err)
 	}
 
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project:  globalconfig.Project{ID: "detent", Workflow: workflowPath, Weight: 1, Paused: true},
 		Workflow: workflow,
 	}, project.Dependencies{
@@ -737,7 +738,7 @@ func TestProjectUnpauseKeepsProjectPausedWhenWorkflowReloadFails(t *testing.T) {
 		t.Fatalf("LoadWorkflow() error = %v", err)
 	}
 
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project:  globalconfig.Project{ID: "detent", Workflow: workflowPath, Weight: 1, Paused: true},
 		Workflow: workflow,
 	}, project.Dependencies{Runner: blockingRunner{}})
@@ -771,11 +772,11 @@ func TestProjectWorkflowReloadRefreshesRestartDependencies(t *testing.T) {
 	runner := newProjectBlockingRunner()
 	configs := make(chan orchestrator.Config, 2)
 	connectors := make(chan connector.Connector, 2)
-	initial := workflowConfig("memory")
+	initial := workflowConfig(workflowconfig.TrackerGitHub)
 	initial.Polling.IntervalMS = int(time.Hour / time.Millisecond)
 	initial.Tracker.ActiveStates = []string{"Todo"}
 
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
 			ID:       "detent",
 			Workflow: "workflow.md",
@@ -888,7 +889,7 @@ func TestProjectHotReloadsWorkflowFileWithoutRestart(t *testing.T) {
 	runner := newProjectBlockingRunner()
 	watcherReady := make(chan struct{})
 	var orchestratorCreates atomic.Int32
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
 			ID:       "detent",
 			Workflow: workflowPath,
@@ -984,7 +985,7 @@ func TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation(t *testing.T)
 
 	connectorConfigs := make(chan workflowconfig.Config, 2)
 	var logs lockedBuffer
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
 			ID:       "pyroapex",
 			Workflow: workflowPath,
@@ -1083,10 +1084,10 @@ func TestProjectStartRunsProvisionerWhenAutoProvisionEnabled(t *testing.T) {
 			return nil
 		},
 	}
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{ID: "detent", Weight: 1},
 		Workflow: workflowconfig.Workflow{
-			Config: workflowConfig("memory"),
+			Config: workflowConfig(workflowconfig.TrackerGitHub),
 		},
 	}, project.Dependencies{
 		Connector: c,
@@ -1116,9 +1117,9 @@ func TestProjectStartSkipsProvisionerWhenAutoProvisionDisabled(t *testing.T) {
 			return nil
 		},
 	}
-	cfg := workflowConfig("memory")
+	cfg := workflowConfig(workflowconfig.TrackerGitHub)
 	cfg.Tracker.AutoProvision = false
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{ID: "detent", Weight: 1},
 		Workflow: workflowconfig.Workflow{
 			Config: cfg,
@@ -1148,10 +1149,10 @@ func TestProjectStartReturnsProvisionerError(t *testing.T) {
 			return want
 		},
 	}
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{ID: "detent", Weight: 1},
 		Workflow: workflowconfig.Workflow{
-			Config: workflowConfig("memory"),
+			Config: workflowConfig(workflowconfig.TrackerGitHub),
 		},
 	}, project.Dependencies{
 		Connector: c,
@@ -1187,7 +1188,7 @@ func TestNewRejectsInvalidProjectConfig(t *testing.T) {
 			name: "missing connector",
 			cfg: project.Config{
 				Project:  globalconfig.Project{ID: "memory"},
-				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
+				Workflow: workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerGitHub)},
 			},
 			deps: project.Dependencies{
 				ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
@@ -1202,7 +1203,7 @@ func TestNewRejectsInvalidProjectConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := project.New(tt.cfg, tt.deps)
+			got, err := projectfixture.New(tt.cfg, tt.deps)
 			if got != nil {
 				t.Fatalf("New() project = %#v, want nil", got)
 			}
@@ -1216,13 +1217,13 @@ func TestNewRejectsInvalidProjectConfig(t *testing.T) {
 func TestProjectWaitersReceiveRunError(t *testing.T) {
 	t.Parallel()
 
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
 			ID:     "detent",
 			Weight: 1,
 		},
 		Workflow: workflowconfig.Workflow{
-			Config: workflowConfigWithMemoryIssue("issue-1"),
+			Config: workflowConfigWithHubIssue("issue-1"),
 		},
 	}, project.Dependencies{})
 	if err != nil {
@@ -1257,7 +1258,7 @@ func TestProjectWaitersReceiveRunError(t *testing.T) {
 func TestProjectStartRejectsPausedProject(t *testing.T) {
 	t.Parallel()
 
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
 			ID:     "paused",
 			Paused: true,
@@ -1276,12 +1277,12 @@ func TestProjectStartRejectsPausedProject(t *testing.T) {
 func TestProjectUnpauseRebuildsGlobalDispatchCandidate(t *testing.T) {
 	t.Parallel()
 
-	workflowCfg := workflowConfigWithMemoryIssue("issue-paused")
+	workflowCfg := workflowConfigWithHubIssue("issue-paused")
 	workflowCfg.Tracker.Issues[0].State = "Todo"
 	workflowCfg.Tracker.Issues[0].Title = "Run initially paused project"
 	workflowCfg.Tracker.Issues[0].AssignedToWorker = true
 	runner := newProjectBlockingRunner()
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
 			ID:     "paused",
 			Paused: true,
@@ -1324,7 +1325,7 @@ func TestProjectPauseUnpauseRestartsProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe() error = %v", err)
 	}
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
 			ID:     "detent",
 			Weight: 1,
@@ -1373,7 +1374,7 @@ func TestProjectPauseDoesNotMarkPausedWhenShutdownTimesOut(t *testing.T) {
 	t.Parallel()
 
 	blocker := newPauseBlockingConnector()
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
 			ID:     "detent",
 			Weight: 1,
@@ -1416,7 +1417,7 @@ func TestProjectUnpauseKeepsProjectPausedWhenRestartFails(t *testing.T) {
 	}
 
 	calls := 0
-	got, err := project.New(project.Config{
+	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
 			ID:     "detent",
 			Weight: 1,
@@ -1454,8 +1455,8 @@ func TestProjectUnpauseKeepsProjectPausedWhenRestartFails(t *testing.T) {
 	}
 }
 
-func workflowConfigWithMemoryIssue(id string) workflowconfig.Config {
-	cfg := workflowConfig("memory")
+func workflowConfigWithHubIssue(id string) workflowconfig.Config {
+	cfg := workflowConfig(workflowconfig.TrackerGitHub)
 	cfg.Agent.MaxConcurrentAgents = 4
 	cfg.Polling.IntervalMS = 60000
 	cfg.Tracker.Issues = []connector.Issue{{
@@ -1469,6 +1470,11 @@ func workflowConfigWithMemoryIssue(id string) workflowconfig.Config {
 func workflowConfig(kind string) workflowconfig.Config {
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = kind
+	if kind == workflowconfig.TrackerGitHub {
+		cfg.Tracker.APIKey = "fixture-token"
+		cfg.Tracker.ProjectSlug = "fixture-project"
+		cfg.Tracker.Repository = "example-org/example-project"
+	}
 	return cfg
 }
 
@@ -1924,7 +1930,10 @@ func writeProjectGateWorkflow(t *testing.T, path string, intervalMS int, issueID
 
 	raw := fmt.Sprintf(`---
 tracker:
-  kind: memory
+  kind: github
+  api_key: fixture-token
+  project_slug: fixture-project
+  repository: example-org/example-project
 %spolling:
   interval_ms: %d
 ---
@@ -2152,7 +2161,7 @@ func receiveEvent(t *testing.T, ch <-chan project.Event) project.Event {
 
 func TestProjectLaneWriterUsesRestartedOrchestrator(t *testing.T) {
 	t.Parallel()
-	cfg := workflowConfig("memory")
+	cfg := workflowConfig(workflowconfig.TrackerGitHub)
 	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
 	cfg.Tracker.APIKey = "test-token"
 	cfg.Tracker.Repository = "example/repo"
@@ -2161,8 +2170,8 @@ func TestProjectLaneWriterUsesRestartedOrchestrator(t *testing.T) {
 		Name: "alerts", Kind: intake.KindWebhook, Secret: "secret", DedupeBy: "fingerprint",
 		Creates: intake.Creates{Status: "Backlog", Title: "{summary}", Body: "{details}"},
 	}}}
-	tracker := memory.New(memory.Config{Stateful: true})
-	got, err := project.New(project.Config{
+	tracker := fakehub.New(fakehub.Config{Stateful: true})
+	got, err := projectfixture.New(project.Config{
 		Project:  globalconfig.Project{ID: "detent", Workdir: t.TempDir(), Weight: 1},
 		Workflow: workflowconfig.Workflow{Config: cfg},
 	}, project.Dependencies{Connector: tracker, Runner: blockingRunner{}})

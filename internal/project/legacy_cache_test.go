@@ -11,6 +11,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 )
 
 func TestNewRemovesLegacyCache(t *testing.T) {
@@ -25,7 +26,7 @@ func TestNewRemovesLegacyCache(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := workflowconfig.Default()
-			cfg.Tracker.Kind = workflowconfig.TrackerMemory
+			cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 			cfg.Workspace.Root = root
 			if tilde {
 				t.Setenv("HOME", filepath.Dir(root))
@@ -33,7 +34,7 @@ func TestNewRemovesLegacyCache(t *testing.T) {
 				cfg.Workspace.Root = "~/" + filepath.Base(root)
 			}
 			var logs bytes.Buffer
-			_, err := project.New(project.Config{
+			_, err := projectfixture.New(project.Config{
 				Project:  globalconfig.Project{ID: "cache-test", Workdir: t.TempDir(), Weight: 1},
 				Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
 			}, project.Dependencies{Logger: slog.New(slog.NewTextHandler(&logs, nil))})

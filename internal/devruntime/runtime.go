@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	TrackerMemory   = "memory"
-	DemoKanban      = "kanban"
-	DemoScreenshots = "screenshots"
+	TrackerHubNative = "hub_native"
+	DemoKanban       = "kanban"
+	DemoScreenshots  = "screenshots"
 
 	defaultProjectID    = "dogfood"
 	defaultInstanceName = "detent-dev-runtime"
@@ -79,9 +79,9 @@ func Build(cfg Config) (Runtime, error) {
 
 	trackerMode := strings.ToLower(strings.TrimSpace(cfg.TrackerMode))
 	if trackerMode == "" {
-		trackerMode = TrackerMemory
+		trackerMode = TrackerHubNative
 	}
-	if trackerMode != TrackerMemory {
+	if trackerMode != TrackerHubNative {
 		return Runtime{}, fmt.Errorf("%w: %s", ErrUnsupportedTracker, trackerMode)
 	}
 	demo, err := runtimeDemo(cfg.Demo)

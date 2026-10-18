@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -679,46 +680,6 @@ func TestOnboardingWriteWorkflowAppliesFullAutopilotProfile(t *testing.T) {
 	}
 }
 
-func TestOnboardingWriteMemoryWorkflowSeedsSampleIssue(t *testing.T) {
-	t.Parallel()
-
-	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
-	server, err := web.NewServer(web.Config{WorkflowPath: workflowPath}, testDeps(t))
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
-
-	rec := httptest.NewRecorder()
-	req := onboardingRequest(http.MethodPost, "/onboarding/write", validMemoryOnboardingForm())
-
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	raw, err := os.ReadFile(workflowPath)
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	content := string(raw)
-	for _, want := range []string{
-		"tracker:\n  kind: memory",
-		"issues:\n    - id: memory-onboarding-1",
-		"identifier: MEM-1",
-		"state: Todo",
-		"You are working on a memory tracker issue `{{ issue.identifier }}`",
-		"Current Detent status: {{ issue.state }}",
-		"## Project CI Quality Gates",
-		"<required-stage-category>: local command <project-command>; CI check\n  <project-check-name>",
-		"## Required Execution Flow",
-		"Confirm $go-workflow:ship is available in the Codex environment.",
-	} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("workflow missing %q:\n%s", want, content)
-		}
-	}
-}
-
 func TestOnboardingWriteRunsCloseoutVerifierAfterMutation(t *testing.T) {
 	t.Parallel()
 
@@ -1017,7 +978,7 @@ func TestOnboardingWriteValidatesInput(t *testing.T) {
 			edit: func(form url.Values) {
 				form.Set("tracker_kind", "linear")
 			},
-			want: "tracker must be github or memory",
+			want: "tracker must be github",
 		},
 		{
 			name: "invalid repo",
@@ -1100,16 +1061,6 @@ func validOnboardingForm() url.Values {
 	}
 }
 
-func validMemoryOnboardingForm() url.Values {
-	form := validOnboardingForm()
-	form.Set("tracker_kind", "memory")
-	form.Del("endpoint")
-	form.Del("api_key")
-	form.Del("project_slug")
-	form.Del("repo")
-	return form
-}
-
 func onboardingRequest(method string, path string, form url.Values) *http.Request {
 	var body io.Reader
 	if form != nil {
@@ -1127,8 +1078,8 @@ func mustSetOnboardingProject(t *testing.T, registry *project.Registry, id strin
 	t.Helper()
 
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
-	trackedProject, err := project.New(project.Config{
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	trackedProject, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
 			ID:       id,
 			Workflow: workflowPath,

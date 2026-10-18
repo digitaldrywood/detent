@@ -403,7 +403,7 @@ func trackerGitHubToken(ctx context.Context, cfg *globalconfig.Config, deps runt
 }
 
 func trackerUsesGitHubToken(kind string) bool {
-	return kind == workflowconfig.TrackerGitHub || kind == workflowconfig.TrackerGitHubLocal
+	return kind == workflowconfig.TrackerGitHub
 }
 
 func loadRuntimeProjectWorkflow(ctx context.Context, project globalconfig.Project, deps runtimeDeps) (workflowconfig.Workflow, error) {
