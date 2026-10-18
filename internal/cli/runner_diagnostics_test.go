@@ -61,6 +61,7 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.Path = path
+			cfg.Client.URL = "https://hub.example.test"
 			workdir := filepath.Join(root, "checkout")
 			workflowPath := filepath.Join(workdir, "WORKFLOW.md")
 			if tt.externalWorkflow {
