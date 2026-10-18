@@ -155,6 +155,17 @@ func pullRequestRefreshLimited() error {
 // nil connector for a project that has no repository bound or has the
 // repository disabled, which is 18.6's "projects without a GitHub connector".
 func projectConnector(ctx context.Context, query nativeQueryer, scope nativeScope) (*pullRequestConnector, int64, error) {
+	connector, repositoryID, enabled, err := projectRepositoryBinding(ctx, query, scope)
+	if err != nil || !enabled {
+		return nil, 0, err
+	}
+	return connector, repositoryID, nil
+}
+
+// projectRepositoryBinding reads the configured source repository independently
+// of whether its GitHub tracker integration is enabled. Explicit native release
+// delivery verifies this binding without enabling that integration.
+func projectRepositoryBinding(ctx context.Context, query nativeQueryer, scope nativeScope) (*pullRequestConnector, int64, bool, error) {
 	var enabled bool
 	var repositoryID sql.NullInt64
 	var owner, name sql.NullString
@@ -162,12 +173,12 @@ func projectConnector(ctx context.Context, query nativeQueryer, scope nativeScop
 FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id
 WHERE p.organization_id = ? AND p.id = ?`, scope.organization, scope.project).Scan(&enabled, &repositoryID, &owner, &name)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, false, err
 	}
-	if !enabled || !repositoryID.Valid || !owner.Valid || !name.Valid {
-		return nil, 0, nil
+	if !repositoryID.Valid || !owner.Valid || !name.Valid {
+		return nil, 0, enabled, nil
 	}
-	return &pullRequestConnector{Provider: "github", Repository: owner.String + "/" + name.String}, repositoryID.Int64, nil
+	return &pullRequestConnector{Provider: "github", Repository: owner.String + "/" + name.String}, repositoryID.Int64, enabled, nil
 }
 
 // readConnectorPullRequest reads the projection row for one external URL. The

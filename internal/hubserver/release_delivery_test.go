@@ -94,6 +94,15 @@ func TestNativeReleaseDeliveryAssociation(t *testing.T) {
 		github bool
 	}{
 		{name: "native audited source", status: http.StatusOK},
+		{name: "native repository without GitHub tracking", status: http.StatusOK, edit: func(t *testing.T, f *releaseDeliveryFixture) {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET github_repository_enabled = 0 WHERE id = ?", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			connector, _, err := projectConnector(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+			if err != nil || connector != nil {
+				t.Fatalf("disabled tracker connector changed: %v, %v", connector, err)
+			}
+		}},
 		{name: "GitHub source", status: http.StatusOK, github: true},
 		{name: "security audit supplies independent review", status: http.StatusOK, edit: func(t *testing.T, f *releaseDeliveryFixture) {
 			rules := f.rules
