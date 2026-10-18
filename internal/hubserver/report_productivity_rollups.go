@@ -142,7 +142,7 @@ func productivityHours(ctx context.Context, tx *sql.Tx, scope nativeScope, id st
 		}
 		return hours[h]
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT unixepoch(u.period)/3600*3600,sum(u.cost_estimate) FROM native_attempts a JOIN attempt_usage u ON u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? GROUP BY 1`, scope.organization, scope.project, id)
+	rows, err := tx.QueryContext(ctx, `SELECT unixepoch(u.period)/3600*3600,sum(u.cost_estimate) FROM native_attempts a CROSS JOIN attempt_usage u ON +u.organization_id=a.organization_id AND +u.project_id=a.project_id AND u.attempt_id=a.id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? GROUP BY 1`, scope.organization, scope.project, id)
 	if err != nil {
 		return nil, err
 	}
