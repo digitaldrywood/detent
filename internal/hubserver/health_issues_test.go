@@ -695,16 +695,18 @@ func TestHealthFindingIssueScope(t *testing.T) {
 func TestHealthFindingIssueWorkflow(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name  string
-		state tracker.NativeState
-		want  string
+		name   string
+		states []tracker.NativeState
+		want   string
 	}{
-		{name: "reserved triage", state: tracker.NativeState{Name: "Triage"}},
-		{name: "custom intake", state: tracker.NativeState{Name: "Intake"}, want: "Intake"},
+		{name: "reserved triage", states: []tracker.NativeState{{Name: "Triage"}}},
+		{name: "custom intake", states: []tracker.NativeState{{Name: "Intake"}}, want: "Intake"},
+		{name: "first eligible intake", states: []tracker.NativeState{{Name: "Intake"}, {Name: "Later"}}, want: "Intake"},
+		{name: "backlog preferred", states: []tracker.NativeState{{Name: "Intake"}, {Name: "Backlog"}, {Name: "Later"}}, want: "Backlog"},
 		{name: "no intake"},
-		{name: "dispatchable backlog", state: tracker.NativeState{Name: "Backlog", Dispatchable: true}},
-		{name: "terminal backlog", state: tracker.NativeState{Name: "Backlog", Terminal: true}},
-		{name: "operator backlog", state: tracker.NativeState{Name: "Backlog", OperatorOnly: true}},
+		{name: "dispatchable backlog", states: []tracker.NativeState{{Name: "Backlog", Dispatchable: true}}},
+		{name: "terminal backlog", states: []tracker.NativeState{{Name: "Backlog", Terminal: true}}},
+		{name: "operator backlog", states: []tracker.NativeState{{Name: "Backlog", OperatorOnly: true}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -712,11 +714,11 @@ func TestHealthFindingIssueWorkflow(t *testing.T) {
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "health-standard-workflow")
 			addHealthBacklog(t, other)
 			states := nativeFixtureStates()
-			if test.state.Name != "" {
-				if test.state.Name != "Triage" {
+			if len(test.states) > 0 {
+				if !slices.ContainsFunc(test.states, func(state tracker.NativeState) bool { return state.Name == "Triage" }) {
 					states = append(states, tracker.NativeState{Name: "Triage"})
 				}
-				states = append(states, test.state)
+				states = append(states, test.states...)
 			}
 			raw, err := json.Marshal(states)
 			if err != nil {
@@ -725,12 +727,16 @@ func TestHealthFindingIssueWorkflow(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", string(raw), f.project.ID); err != nil {
 				t.Fatal(err)
 			}
-			if test.state.Name == "" {
+			if len(test.states) == 0 {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id=? AND detent_state='Triage'", f.project.ID); err != nil {
 					t.Fatal(err)
 				}
-			} else if test.state.Name != "Triage" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", f.project.ID, test.state.Name, test.state.Name, test.state.Terminal, test.state.Dispatchable, formatHubTime(f.service.config.now()), formatHubTime(f.service.config.now())); err != nil {
+			}
+			for _, state := range test.states {
+				if state.Name == "Triage" {
+					continue
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", f.project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(f.service.config.now()), formatHubTime(f.service.config.now())); err != nil {
 					t.Fatal(err)
 				}
 			}
