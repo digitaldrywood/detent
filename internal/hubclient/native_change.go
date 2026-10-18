@@ -262,6 +262,11 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 		var previousNumber int64
 		if external == nil {
 			for _, previous := range detail.Versions {
+				if detail.Change.Landed != nil && previous.ID == detail.Change.Landed.VersionID && previous.Number < version.Number {
+					previousNumber = previous.Number
+				}
+			}
+			for _, previous := range detail.Versions {
 				if previous.Number < version.Number && previous.Number > previousNumber && previous.Repository == version.Repository && previous.External != nil && (previous.Landing == nil || !previous.Landing.Landed) {
 					external, externalHead, previousNumber = previous.External, previous.HeadSHA, previous.Number
 				}
