@@ -347,13 +347,14 @@ func TestCoordinatorProjectRunners(t *testing.T) {
 				}
 				var view struct {
 					Runners []struct {
-						ID        string    `json:"id"`
-						Connected bool      `json:"connected"`
-						Heartbeat time.Time `json:"last_heartbeat_at"`
-						Capacity  int       `json:"reported_capacity"`
-						Used      int       `json:"host_used"`
-						Sprite    any       `json:"sprite"`
-						Routing   struct {
+						ID                    string                   `json:"id"`
+						Connected             bool                     `json:"connected"`
+						Heartbeat             time.Time                `json:"last_heartbeat_at"`
+						Capacity              int                      `json:"reported_capacity"`
+						Used                  int                      `json:"host_used"`
+						Sprite                any                      `json:"sprite"`
+						CapacityConfiguration *runnerauth.CapacityView `json:"capacity_configuration"`
+						Routing               struct {
 							Projects []string       `json:"project_ids"`
 							Ranks    map[string]int `json:"project_ranks"`
 						} `json:"routing"`
@@ -370,6 +371,12 @@ func TestCoordinatorProjectRunners(t *testing.T) {
 					t.Fatalf("missing runner options: %s", result.Content)
 				}
 				for _, r := range view.Runners {
+					if r.CapacityConfiguration == nil {
+						t.Fatalf("missing capacity configuration: %s", result.Content)
+					}
+					if _, ok := r.CapacityConfiguration.Projects[f.project]; !ok {
+						t.Fatalf("missing current project capacity: %s", result.Content)
+					}
 					if r.Connected == test.disabled || !r.Heartbeat.Equal(f.service.config.now()) || r.Capacity != 1 || r.Used != 0 || r.Sprite != nil {
 						t.Fatalf("incorrect runner health/capacity: %s", result.Content)
 					}
