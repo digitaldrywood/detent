@@ -243,6 +243,9 @@ export const textarea: GalleryDoc = {
           <Cell label="disabled" className="w-60">
             <Textarea defaultValue="Locked while the run is active" disabled aria-label="Disabled" />
           </Cell>
+          <Cell label="fixed rows" className="w-60">
+            <Textarea autoGrow={false} rows={5} aria-label="Fixed rows" />
+          </Cell>
         </Row>
       ),
     },
