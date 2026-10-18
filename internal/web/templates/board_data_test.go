@@ -301,8 +301,8 @@ func TestBoardDetailSheetUsesTrackerSpecificIssueAction(t *testing.T) {
 		unwanted    []string
 	}{
 		{
-			name:        "native tracker",
-			trackerKind: "hub_native",
+			name:        "local tracker",
+			trackerKind: "local_sqlite",
 			url:         "/projects/video/issues/wi-123",
 			want:        []string{"Open issue", `href="/projects/video/issues/wi-123"`},
 			unwanted:    []string{"Open on GitHub"},
@@ -350,7 +350,7 @@ func TestBoardDetailSheetUsesTrackerSpecificIssueAction(t *testing.T) {
 	}
 }
 
-func TestProjectKanbanCardUsesInternalURLForNativeTracker(t *testing.T) {
+func TestProjectKanbanCardUsesInternalURLForLocalTracker(t *testing.T) {
 	t.Parallel()
 
 	data := DashboardData{
@@ -358,7 +358,7 @@ func TestProjectKanbanCardUsesInternalURLForNativeTracker(t *testing.T) {
 		ProjectID:    "video",
 		Kanban: KanbanData{
 			ProjectID:   "video",
-			TrackerKind: "hub_native",
+			TrackerKind: "local_sqlite",
 		},
 	}
 	card := projectKanbanCardForIssue(data, telemetry.Issue{

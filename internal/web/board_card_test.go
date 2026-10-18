@@ -19,7 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
-	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	web "github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -308,7 +307,7 @@ func TestAPIBoardSessionPagesFailedRolloutHistory(t *testing.T) {
 	workflow.Tracker.Repository = "example/repo"
 	workflow.Tracker.APIKey = "fixture"
 	workflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
-	tracked, err := projectfixture.New(project.Config{Project: globalconfig.Project{ID: "detent", Workdir: t.TempDir()}, Workflow: workflowconfig.Workflow{Config: workflow}}, project.Dependencies{Connector: deps.Connector})
+	tracked, err := project.New(project.Config{Project: globalconfig.Project{ID: "detent", Workdir: t.TempDir()}, Workflow: workflowconfig.Workflow{Config: workflow}}, project.Dependencies{Connector: deps.Connector})
 	if err != nil {
 		t.Fatal(err)
 	}

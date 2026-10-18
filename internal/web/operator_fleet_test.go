@@ -14,7 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/telemetry"
-	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -62,7 +61,7 @@ func TestMCPFleetReads(t *testing.T) {
 				cfg.Tracker.Repository = "example/repo"
 				cfg.Tracker.APIKey = "fixture"
 				cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
-				tracked, err := projectfixture.New(project.Config{Project: globalconfig.Project{ID: "detent", Workdir: t.TempDir()}, Workflow: workflowconfig.Workflow{Config: cfg}}, project.Dependencies{Connector: connectorProbe{name: "memory"}})
+				tracked, err := project.New(project.Config{Project: globalconfig.Project{ID: "detent", Workdir: t.TempDir()}, Workflow: workflowconfig.Workflow{Config: cfg}}, project.Dependencies{Connector: connectorProbe{name: "memory"}})
 				if err != nil {
 					t.Fatal(err)
 				}

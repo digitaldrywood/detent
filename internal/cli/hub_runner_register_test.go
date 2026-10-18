@@ -196,6 +196,7 @@ func TestRunnerGitHubAuthNextSteps(t *testing.T) {
 	}{
 		{name: "GitHub signed in", definition: "tracker:\n  kind: github\n", wantCheck: true},
 		{name: "GitHub signed out", definition: "tracker:\n  kind: github\n", authErr: errors.New("private auth output"), wantCheck: true, wantSteps: []string{"Project affected needs GitHub authentication: run gh auth login"}},
+		{name: "GitHub local signed out", definition: "tracker:\n  kind: github_local\n", authErr: errors.New("signed out"), wantCheck: true, wantSteps: []string{"Project affected needs GitHub authentication: run gh auth login"}},
 		{name: "native PR landing signed out", definition: "tracker:\n  kind: hub_native\ndeliverable:\n  github_pull_request: true\n", authErr: errors.New("signed out"), wantCheck: true, wantSteps: []string{"Project affected needs GitHub authentication: run gh auth login"}},
 		{name: "native Git landing", definition: "tracker:\n  kind: hub_native\n"},
 		{name: "checkout not cloned", missing: true},

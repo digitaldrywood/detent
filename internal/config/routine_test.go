@@ -11,10 +11,7 @@ func TestParseWorkflowRoutines(t *testing.T) {
 	t.Parallel()
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
 schedule_ownership:
   enabled: true
   key: example/routines
@@ -54,10 +51,7 @@ func TestParseWorkflowRoutineLimitDefaults(t *testing.T) {
 	t.Parallel()
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
 schedule_ownership:
   enabled: true
   key: example/routines
@@ -99,7 +93,7 @@ func TestValidateRoutinesRejectsNonPositiveLimits(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			raw := []byte("---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project\nroutines:\n  - name: audit\n    schedule: \"0 * * * *\"\n    prompt: Inspect.\n    " + tt.field + ": " + strconv.Itoa(tt.value) + "\n---\nPrompt\n")
+			raw := []byte("---\ntracker:\n  kind: memory\nroutines:\n  - name: audit\n    schedule: \"0 * * * *\"\n    prompt: Inspect.\n    " + tt.field + ": " + strconv.Itoa(tt.value) + "\n---\nPrompt\n")
 			workflow, err := ParseWorkflow(raw)
 			if err != nil {
 				t.Fatalf("ParseWorkflow() error = %v", err)
@@ -133,7 +127,7 @@ func TestValidateRoutinesRejectsMalformedBlocks(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := Default()
-			cfg.Tracker.Kind = TrackerHubNative
+			cfg.Tracker.Kind = TrackerMemory
 			cfg.Routines = tt.routines
 			cfg.normalize()
 			err := cfg.Validate()
@@ -152,7 +146,7 @@ func TestValidateRoutinesRequiresSupportedTracker(t *testing.T) {
 		repository string
 		wantDetail string
 	}{
-		{name: "unsupported tracker", kind: "local_sqlite", wantDetail: "routines requires tracker.kind github"},
+		{name: "unsupported tracker", kind: TrackerLocalSQLite, wantDetail: "routines requires tracker.kind github or memory"},
 		{name: "github repository", kind: TrackerGitHub, wantDetail: "tracker.repository is required for routines"},
 	}
 	for _, tt := range tests {

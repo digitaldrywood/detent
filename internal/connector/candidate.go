@@ -72,6 +72,10 @@ func CandidateCapabilitiesFor(backend Backend, statusSource string) CandidateCap
 		default:
 			return CandidateCapabilities{}
 		}
+	case BackendGitHubLocal:
+		return githubCandidateCapabilities(CandidateSelectorStates, CandidateSelectorLabels)
+	case BackendLocalSQLite, BackendMemory:
+		return statesAndLabelsCandidateCapabilities()
 	default:
 		return CandidateCapabilities{}
 	}
@@ -207,6 +211,10 @@ func SortCandidateIssues(issues []Issue) {
 		}
 		return strings.TrimSpace(left.Title) < strings.TrimSpace(right.Title)
 	})
+}
+
+func statesAndLabelsCandidateCapabilities() CandidateCapabilities {
+	return CandidateCapabilities{Selectors: []CandidateSelector{CandidateSelectorStates, CandidateSelectorLabels}}
 }
 
 func githubCandidateCapabilities(selectors ...CandidateSelector) CandidateCapabilities {

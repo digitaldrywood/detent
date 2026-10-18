@@ -1,4 +1,4 @@
-package fakehub
+package memory
 
 import (
 	"context"
@@ -15,16 +15,16 @@ import (
 )
 
 const (
-	EventKindComment            EventKind = "fakehub_tracker_comment"
-	EventKindBodyUpdate         EventKind = "fakehub_tracker_body_update"
-	EventKindIssueCreate        EventKind = "fakehub_tracker_issue_create"
-	EventKindPullRequestComment EventKind = "fakehub_tracker_pull_request_comment"
-	EventKindStateUpdate        EventKind = "fakehub_tracker_state_update"
-	EventKindAssigneeUpdate     EventKind = "fakehub_tracker_assignee_update"
-	EventKindFieldUpdate        EventKind = "fakehub_tracker_field_update"
-	EventKindProjectRemove      EventKind = "fakehub_tracker_project_remove"
-	EventKindClose              EventKind = "fakehub_tracker_close"
-	EventKindPullRequestMerge   EventKind = "fakehub_tracker_pull_request_merge"
+	EventKindComment            EventKind = "memory_tracker_comment"
+	EventKindBodyUpdate         EventKind = "memory_tracker_body_update"
+	EventKindIssueCreate        EventKind = "memory_tracker_issue_create"
+	EventKindPullRequestComment EventKind = "memory_tracker_pull_request_comment"
+	EventKindStateUpdate        EventKind = "memory_tracker_state_update"
+	EventKindAssigneeUpdate     EventKind = "memory_tracker_assignee_update"
+	EventKindFieldUpdate        EventKind = "memory_tracker_field_update"
+	EventKindProjectRemove      EventKind = "memory_tracker_project_remove"
+	EventKindClose              EventKind = "memory_tracker_close"
+	EventKindPullRequestMerge   EventKind = "memory_tracker_pull_request_merge"
 )
 
 type EventKind string
@@ -93,11 +93,11 @@ func New(cfg Config) *Connector {
 }
 
 func (c *Connector) Name() string {
-	return "hub_native"
+	return connector.BackendMemory.String()
 }
 
 func (*Connector) CandidateCapabilities() connector.CandidateCapabilities {
-	return connector.CandidateCapabilities{Selectors: []connector.CandidateSelector{connector.CandidateSelectorStates, connector.CandidateSelectorLabels}}
+	return connector.CandidateCapabilitiesFor(connector.BackendMemory, "")
 }
 
 func (c *Connector) ReadCandidates(_ context.Context, request connector.CandidateRequest) (connector.CandidateResult, error) {
@@ -263,7 +263,7 @@ func (c *Connector) FetchIssueParents(_ context.Context, issueID string) ([]conn
 		if !issueReferencesChild(issue, issueID, childIdentifier) {
 			continue
 		}
-		key := fakehubIssueKey(issue)
+		key := memoryIssueKey(issue)
 		if key == "" {
 			continue
 		}
@@ -293,10 +293,10 @@ func (c *Connector) CreateComment(_ context.Context, issueID string, body string
 	c.applyIssue(issueID, func(issue *connector.Issue, now time.Time) {
 		createdAt := now.UTC()
 		issue.Comments = append(issue.Comments, connector.IssueComment{
-			ID:               fakehubCommentID(*issue, len(issue.Comments)+1),
-			Backend:          "hub_native",
+			ID:               memoryCommentID(*issue, len(issue.Comments)+1),
+			Backend:          connector.BackendMemory.String(),
 			Body:             body,
-			AuthorLogin:      "fakehub",
+			AuthorLogin:      "memory",
 			AuthorAuthorized: true,
 			CreatedAt:        &createdAt,
 			Local:            true,
@@ -322,8 +322,8 @@ func (c *Connector) CreateIssue(_ context.Context, draft connector.IssueDraft) (
 			}
 			body := issueorigin.Occurrence(draft.Body)
 			existing.Comments = append(existing.Comments, connector.IssueComment{
-				ID: fakehubCommentID(*existing, len(existing.Comments)+1), Backend: "hub_native",
-				Body: body, AuthorLogin: "fakehub", AuthorAuthorized: true, CreatedAt: &now,
+				ID: memoryCommentID(*existing, len(existing.Comments)+1), Backend: connector.BackendMemory.String(),
+				Body: body, AuthorLogin: "memory", AuthorAuthorized: true, CreatedAt: &now,
 				Local: true, TargetType: connector.IssueCommentTargetIssue,
 			})
 			existing.UpdatedAt = &now
@@ -354,7 +354,7 @@ func (c *Connector) FindIntakeIssue(_ context.Context, marker string) (intake.Is
 	defer c.mu.RUnlock()
 	for _, issue := range c.issues {
 		if strings.Contains(issue.Description, marker) {
-			return fakehubIntakeIssue(issue), true, nil
+			return memoryIntakeIssue(issue), true, nil
 		}
 	}
 	return intake.Issue{}, false, nil
@@ -365,7 +365,7 @@ func (c *Connector) CreateIntakeIssue(ctx context.Context, draft intake.IssueDra
 	if err != nil {
 		return intake.Issue{}, err
 	}
-	return fakehubIntakeIssue(issue), nil
+	return memoryIntakeIssue(issue), nil
 }
 
 func (c *Connector) UpdateIntakeIssue(_ context.Context, issueID string, draft intake.IssueDraft) (intake.Issue, error) {
@@ -380,7 +380,7 @@ func (c *Connector) UpdateIntakeIssue(_ context.Context, issueID string, draft i
 		c.issues[index].Labels = appendUniqueLabels(c.issues[index].Labels, draft.Labels)
 		now := c.now().UTC()
 		c.issues[index].UpdatedAt = &now
-		return fakehubIntakeIssue(c.issues[index]), nil
+		return memoryIntakeIssue(c.issues[index]), nil
 	}
 	return intake.Issue{}, connector.ErrNotImplemented
 }
@@ -400,8 +400,8 @@ func (c *Connector) HydratePullRequest(_ context.Context, issue connector.Issue)
 
 	wantID := strings.TrimSpace(issue.ID)
 	wantIdentifier := normalizeState(issue.Identifier)
-	wantRepository := normalizeState(fakehubPullRequestRepository(issue))
-	wantNumber := fakehubPullRequestNumber(issue)
+	wantRepository := normalizeState(memoryPullRequestRepository(issue))
+	wantNumber := memoryPullRequestNumber(issue)
 	for _, candidate := range c.issues {
 		if wantID != "" && strings.TrimSpace(candidate.ID) == wantID {
 			return cloneIssue(candidate), nil
@@ -412,7 +412,7 @@ func (c *Connector) HydratePullRequest(_ context.Context, issue connector.Issue)
 		if wantNumber <= 0 || candidate.PullRequest == nil || candidate.PullRequest.Number != wantNumber {
 			continue
 		}
-		if wantRepository == "" || normalizeState(fakehubPullRequestRepository(candidate)) == wantRepository {
+		if wantRepository == "" || normalizeState(memoryPullRequestRepository(candidate)) == wantRepository {
 			return cloneIssue(candidate), nil
 		}
 	}
@@ -426,7 +426,7 @@ func (c *Connector) LookupPullRequestByHead(_ context.Context, repository string
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for _, issue := range c.issues {
-		if issue.PullRequest == nil || normalizeState(fakehubPullRequestRepository(issue)) != repository ||
+		if issue.PullRequest == nil || normalizeState(memoryPullRequestRepository(issue)) != repository ||
 			strings.TrimSpace(issue.PullRequest.BranchName) != branch || strings.TrimSpace(issue.PullRequest.HeadSHA) != headSHA {
 			continue
 		}
@@ -582,7 +582,7 @@ func (c *Connector) applyPullRequest(repository string, number int, update func(
 		if issue.PullRequest == nil || issue.PullRequest.Number != number {
 			continue
 		}
-		if repository != "" && !strings.EqualFold(fakehubPullRequestRepository(*issue), repository) {
+		if repository != "" && !strings.EqualFold(memoryPullRequestRepository(*issue), repository) {
 			continue
 		}
 		update(issue, now)
@@ -606,7 +606,7 @@ func normalizeState(state string) string {
 	return strings.ToLower(strings.TrimSpace(state))
 }
 
-func fakehubIntakeIssue(issue connector.Issue) intake.Issue {
+func memoryIntakeIssue(issue connector.Issue) intake.Issue {
 	return intake.Issue{
 		ID:         issue.ID,
 		Identifier: issue.Identifier,
@@ -663,7 +663,7 @@ func refReferencesIssue(ref connector.BlockedRef, issueID string, issueIdentifie
 	return false
 }
 
-func fakehubIssueKey(issue connector.Issue) string {
+func memoryIssueKey(issue connector.Issue) string {
 	if id := strings.TrimSpace(issue.ID); id != "" {
 		return "id:" + id
 	}
@@ -673,7 +673,7 @@ func fakehubIssueKey(issue connector.Issue) string {
 	return ""
 }
 
-func fakehubPullRequestRepository(issue connector.Issue) string {
+func memoryPullRequestRepository(issue connector.Issue) string {
 	if repository := strings.TrimSpace(issue.PRRepository); repository != "" {
 		return repository
 	}
@@ -685,7 +685,7 @@ func fakehubPullRequestRepository(issue connector.Issue) string {
 	return ""
 }
 
-func fakehubPullRequestNumber(issue connector.Issue) int {
+func memoryPullRequestNumber(issue connector.Issue) int {
 	if issue.PullRequest != nil && issue.PullRequest.Number > 0 {
 		return issue.PullRequest.Number
 	}
@@ -790,13 +790,13 @@ func cloneIssueComments(issue connector.Issue, comments []connector.IssueComment
 
 func normalizeIssueComment(issue connector.Issue, comment connector.IssueComment, index int) connector.IssueComment {
 	if strings.TrimSpace(comment.ID) == "" {
-		comment.ID = fakehubCommentID(issue, index)
+		comment.ID = memoryCommentID(issue, index)
 	}
 	if strings.TrimSpace(comment.Backend) == "" {
-		comment.Backend = "hub_native"
+		comment.Backend = connector.BackendMemory.String()
 	}
 	if strings.TrimSpace(comment.AuthorLogin) == "" {
-		comment.AuthorLogin = "fakehub"
+		comment.AuthorLogin = "memory"
 	}
 	if strings.TrimSpace(comment.TargetType) == "" {
 		comment.TargetType = connector.IssueCommentTargetIssue
@@ -807,12 +807,12 @@ func normalizeIssueComment(issue connector.Issue, comment connector.IssueComment
 	return comment
 }
 
-func fakehubCommentID(issue connector.Issue, index int) string {
-	key := fakehubIssueKey(issue)
+func memoryCommentID(issue connector.Issue, index int) string {
+	key := memoryIssueKey(issue)
 	if key == "" {
 		key = "issue"
 	}
-	return "fakehub:" + key + ":" + strconv.Itoa(index)
+	return "memory:" + key + ":" + strconv.Itoa(index)
 }
 
 func cloneStringSlice(values []string) []string {
@@ -836,40 +836,4 @@ func cloneTime(value *time.Time) *time.Time {
 
 func stringSliceContains(values []string, want string) bool {
 	return slices.Contains(values, want)
-}
-
-func (c *Connector) UpsertIssues(_ context.Context, issues []connector.Issue) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, issue := range issues {
-		index := slices.IndexFunc(c.issues, func(current connector.Issue) bool { return current.ID == issue.ID })
-		if index >= 0 {
-			c.issues[index] = cloneIssue(issue)
-			continue
-		}
-		if issue.Number == 0 {
-			issue.Number = len(c.issues) + 1
-		}
-		c.issues = append(c.issues, cloneIssue(issue))
-	}
-	return nil
-}
-
-func (c *Connector) UpdateIssueComment(_ context.Context, issueID, commentID, body string) error {
-	c.applyIssue(issueID, func(issue *connector.Issue, now time.Time) {
-		for i := range issue.Comments {
-			if issue.Comments[i].ID == commentID {
-				issue.Comments[i].Body = body
-				issue.Comments[i].UpdatedAt = &now
-			}
-		}
-	})
-	return nil
-}
-
-func (c *Connector) DeleteIssueComment(_ context.Context, issueID, commentID string) error {
-	c.applyIssue(issueID, func(issue *connector.Issue, _ time.Time) {
-		issue.Comments = slices.DeleteFunc(issue.Comments, func(comment connector.IssueComment) bool { return comment.ID == commentID })
-	})
-	return nil
 }

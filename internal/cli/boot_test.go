@@ -36,7 +36,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testenv"
-	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/tui"
@@ -2189,7 +2188,7 @@ func createBootProjectFiles(t *testing.T) bootProjectFiles {
 	workflow := filepath.Join(workdir, "WORKFLOW.md")
 	if err := os.WriteFile(workflow, []byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 ---
 Test workflow prompt.
 `), 0o600); err != nil {
@@ -2206,7 +2205,7 @@ func writeBootKanbanWorkflow(t *testing.T, path string, mode string) {
 
 	content := `---
 tracker:
-  kind: hub_native
+  kind: memory
   lanes: [{name: Backlog, role: holding}, {name: Blocked, role: holding}, {name: Ready, role: active}, {name: Doing, role: active}, {name: Done, role: terminal}]
 server:
   kanban:
@@ -2227,7 +2226,7 @@ func writeBootHostWorkflow(t *testing.T, path string, host string) {
 
 	content := `---
 tracker:
-  kind: hub_native
+  kind: memory
 server:
   host: ` + host + `
 ---
@@ -2349,8 +2348,8 @@ func newRefreshProject(t *testing.T, id string) *projectpkg.Project {
 	t.Helper()
 
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
-	project, err := projectfixture.New(projectpkg.Config{
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	project, err := projectpkg.New(projectpkg.Config{
 		Project: globalconfig.Project{
 			ID:      id,
 			Workdir: t.TempDir(),
@@ -2359,7 +2358,7 @@ func newRefreshProject(t *testing.T, id string) *projectpkg.Project {
 		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
 	}, projectpkg.Dependencies{})
 	if err != nil {
-		t.Fatalf("projectfixture.New() error = %v", err)
+		t.Fatalf("project.New() error = %v", err)
 	}
 	return project
 }

@@ -1,4 +1,4 @@
-package fakehub
+package memory
 
 import (
 	"context"
@@ -21,7 +21,7 @@ func TestConnectorFetchesConfiguredIssues(t *testing.T) {
 		{
 			ID:               "issue-1",
 			Identifier:       "MT-1",
-			Title:            "FakeHub adapter",
+			Title:            "Memory adapter",
 			Description:      "Load issues from config",
 			Priority:         &priority,
 			State:            "Todo",
@@ -138,7 +138,7 @@ func TestConnectorReturnsDefensiveIssueCopies(t *testing.T) {
 	}
 }
 
-func TestConnectorFetchIssuesByStatesMatchesElixirFakeHubAdapter(t *testing.T) {
+func TestConnectorFetchIssuesByStatesMatchesElixirMemoryAdapter(t *testing.T) {
 	t.Parallel()
 
 	c := New(Config{Issues: []connector.Issue{
@@ -174,7 +174,7 @@ func TestConnectorFetchIssuesByStatesMatchesElixirFakeHubAdapter(t *testing.T) {
 	}
 }
 
-func TestConnectorFetchIssueStatesByIDsMatchesElixirFakeHubAdapter(t *testing.T) {
+func TestConnectorFetchIssueStatesByIDsMatchesElixirMemoryAdapter(t *testing.T) {
 	t.Parallel()
 
 	c := New(Config{Issues: []connector.Issue{
@@ -250,7 +250,7 @@ func TestConnectorFetchIssueParents(t *testing.T) {
 	}
 }
 
-func TestConnectorMutationsMatchElixirFakeHubAdapter(t *testing.T) {
+func TestConnectorMutationsMatchElixirMemoryAdapter(t *testing.T) {
 	t.Parallel()
 
 	var events []Event
@@ -350,13 +350,13 @@ func TestConnectorStatefulCommentUsesSyntheticMetadata(t *testing.T) {
 		t.Fatalf("FetchIssueComments() len = %d, want 1", len(got))
 	}
 	comment := got[0]
-	if comment.ID != "fakehub:id:issue-1:1" ||
-		comment.Backend != "hub_native" ||
+	if comment.ID != "memory:id:issue-1:1" ||
+		comment.Backend != connector.BackendMemory.String() ||
 		comment.Body != "issue comment" ||
-		comment.AuthorLogin != "fakehub" ||
+		comment.AuthorLogin != "memory" ||
 		!comment.Local ||
 		comment.TargetType != connector.IssueCommentTargetIssue {
-		t.Fatalf("FetchIssueComments()[0] = %#v, want synthetic fakehub metadata", comment)
+		t.Fatalf("FetchIssueComments()[0] = %#v, want synthetic memory metadata", comment)
 	}
 	if comment.CreatedAt == nil || !comment.CreatedAt.Equal(now) {
 		t.Fatalf("CreatedAt = %v, want %v", comment.CreatedAt, now)
