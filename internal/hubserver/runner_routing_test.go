@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -875,8 +874,8 @@ func TestSpriteRunnerAccessRouting(t *testing.T) {
 		status                int
 	}{
 		{"machine sandbox", "native-trusted", "", new("sandbox"), false, http.StatusOK},
-		{"sprite sandbox refused without a passing probe", "native-trusted", `{"test":["native-trusted"]}`, new("sandbox"), true, http.StatusUnprocessableEntity},
-		{"sprite sandbox refused when one backend fails the probe", "native-trusted", `{"p/codex":["native-trusted","sandbox"],"p/claude":["native-trusted"]}`, new("sandbox"), true, http.StatusUnprocessableEntity},
+		{"sprite sandbox requests a fresh probe", "native-trusted", `{"test":["native-trusted"]}`, new("sandbox"), true, http.StatusOK},
+		{"sprite sandbox selection with unavailable backend", "native-trusted", `{"p/codex":["native-trusted","sandbox"],"p/claude":["native-trusted"]}`, new("sandbox"), true, http.StatusOK},
 		{"sprite sandbox after passing probe", "native-trusted", `{"p/codex":["native-trusted","sandbox"]}`, new("sandbox"), true, http.StatusOK},
 		{"legacy sprite preserved", "sandbox", "", nil, true, http.StatusOK},
 		{"legacy sprite full access", "sandbox", "", new("native-trusted"), true, http.StatusOK},
@@ -899,9 +898,6 @@ func TestSpriteRunnerAccessRouting(t *testing.T) {
 			request := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: before.Routing}, IsolationTier: test.tier}
 			response := performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, request)
 			requireNativeStatus(t, response, test.status)
-			if test.status != http.StatusOK && !strings.Contains(response.Body.String(), "Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support.") {
-				t.Fatalf("sandbox refusal=%s", response.Body.String())
-			}
 			var after runnerauth.Runner
 			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", r.redemption.Credential, nil), &after)
 			want, revision := test.initial, before.Revision

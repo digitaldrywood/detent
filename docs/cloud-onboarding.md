@@ -56,8 +56,9 @@ carries the answer into the enrollment `isolation_tier` field and the
 through the secure enrollment dialog, never through chat.
 
 Fly Sprites are dedicated VMs and new Sprite runners use Full access
-(`native-trusted`). A Sprite runner can switch to Sandbox once its isolation
-probe reports sandbox support. See [Sprite runners](sprite-runners.md).
+(`native-trusted`). An owner or admin can approve switching an individual Sprite
+runner to Sandbox to request its isolation probe. Sandbox work waits until that
+probe reports support. See [Sprite runners](sprite-runners.md).
 
 For an existing runner, Luna reads its selected tier, backend support and
 current problems. `tier_unavailable` means its agent backends do not support

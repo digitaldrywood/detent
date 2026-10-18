@@ -12,8 +12,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/isolation"
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -333,32 +331,6 @@ func (s *Service) updateRunnerRouting(c echo.Context) error {
 	return c.JSON(http.StatusOK, value)
 }
 
-func validateRunnerAccess(ctx context.Context, db nativeQueryer, r runnerauth.Runner, tier string) error {
-	if tier != "sandbox" || r.IsolationTier == "sandbox" || reportsSandbox(r.BackendIsolation) {
-		return nil
-	}
-	var sprite bool
-	if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM machines WHERE id=? AND organization_id=? AND json_extract(capabilities_json,'$.sprite_name')=hostname)`, r.MachineID, r.OrganizationID).Scan(&sprite); err != nil {
-		return err
-	}
-	if sprite {
-		return &operatortool.RequestError{Code: "invalid_request", Message: spriteSandboxUnavailableReason}
-	}
-	return nil
-}
-
-func reportsSandbox(report isolation.Report) bool {
-	if len(report) == 0 {
-		return false
-	}
-	for _, tiers := range report {
-		if !slices.Contains(tiers, isolation.Sandbox) {
-			return false
-		}
-	}
-	return true
-}
-
 func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeScope, resource string, request runnerRoutingRequest) (any, error) {
 	change := request.RoutingChange
 	scope.managedRunner = resource
@@ -374,9 +346,6 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 			return nil, nativeConflict(tracker.Revision(r.Revision))
 		}
 		change = request.effective(r.Routing)
-		if err := validateRunnerAccess(ctx, tx, r, change.IsolationTier); err != nil {
-			return nil, err
-		}
 		if change.Scope != r.Scope || !slices.Equal(change.ProjectIDs, r.ProjectIDs) {
 			owned, err := runnerOwnedBy(ctx, tx, organization, r.RunnerID, scope.credential)
 			if err != nil {
