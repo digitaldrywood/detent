@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -657,6 +658,45 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 		}
 	}
 	return e.Finish(ctx, outcome)
+}
+
+func (e *nativeExecution) acknowledgeTermination(ctx context.Context) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.data.Identity == nil {
+		return false, nil
+	}
+	path, err := nativeItemPath(e.claim.lease.WorkItemID)
+	if err != nil {
+		return false, err
+	}
+	var attempt tracker.NativeAttempt
+	if err := e.claim.source.client.client.request(ctx, http.MethodGet, e.claim.source.client.base()+path+"/attempts/"+e.data.AttemptID, nil, &attempt); err != nil {
+		return false, err
+	}
+	if attempt.LeaseID != e.claim.lease.ID || attempt.FencingToken != e.claim.lease.FencingToken || attempt.RunID != e.data.RunID || attempt.PolicyID != e.data.PolicyID || attempt.AttemptID != e.data.AttemptID || attempt.Identity == nil || attempt.Identity.Role != e.data.Identity.Role || attempt.Identity.Backend != e.data.Identity.Backend {
+		return false, runner.ErrExecutionAuthorityUnavailable
+	}
+	if attempt.ClaimReleasedAt == nil {
+		return false, nil
+	}
+	if attempt.Outcome == "" || attempt.Outcome == "interrupted" {
+		data := tracker.NativeRunData{AttemptID: attempt.AttemptID, RunID: attempt.RunID, LeaseID: attempt.LeaseID,
+			FencingToken: attempt.FencingToken, PolicyID: attempt.PolicyID, Identity: e.data.Identity,
+			Sequence: attempt.Sequence + 1, Outcome: "cancelled"}
+		event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: attempt.AttemptID + ":terminated:" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.finished", SchemaVersion: 1, Data: data}
+		if err := e.claim.source.client.AppendEvent(ctx, e.claim.lease.WorkItemID, event); err != nil {
+			return false, err
+		}
+		attempt.Sequence, attempt.Outcome = data.Sequence, data.Outcome
+	}
+	attempt.Identity = e.data.Identity
+	if attempt.Handoff == nil {
+		attempt.Handoff = attempt.Checkpoint
+	}
+	e.data, e.pending = attempt.NativeRunData, nil
+	e.preparedOutcome = attempt.Outcome
+	return true, nil
 }
 
 // NativeChange reports what the finished run left for review.
