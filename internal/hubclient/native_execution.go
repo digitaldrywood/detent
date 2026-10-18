@@ -253,9 +253,12 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 						cancel(errors.Join(runner.ErrExecutionAuthorityUnavailable, err))
 						return
 					}
-					e.mu.Lock()
-					e.claim.availabilityDeadline = deadline
-					e.mu.Unlock()
+					e.scheduler.mu.Lock()
+					if claim, ok := e.scheduler.nativeClaims[string(e.claim.lease.WorkItemID)]; ok && claim.lease.FencingToken == e.claim.lease.FencingToken {
+						claim.availabilityDeadline = deadline
+						e.scheduler.nativeClaims[string(e.claim.lease.WorkItemID)] = claim
+					}
+					e.scheduler.mu.Unlock()
 					routingChanged = changed
 				}
 			}
@@ -775,7 +778,11 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 }
 
 func (e *nativeExecution) AvailabilityDeadline() time.Time {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.claim.availabilityDeadline
+	e.scheduler.mu.Lock()
+	defer e.scheduler.mu.Unlock()
+	claim, ok := e.scheduler.nativeClaims[string(e.claim.lease.WorkItemID)]
+	if !ok || claim.lease.FencingToken != e.claim.lease.FencingToken {
+		return time.Time{}
+	}
+	return claim.availabilityDeadline
 }
