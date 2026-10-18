@@ -212,16 +212,16 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 	}
 }
 
-func TestCIRunsOnScheduleManualDispatchAndReleasePush(t *testing.T) {
+func TestCIRunsOnScheduleAndManualDispatch(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
 	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
-	for _, want := range []string{"schedule:", "cron: '17 * * * *'", "workflow_dispatch:", "fail_job:", "push:\n    branches: ['release/*']"} {
+	for _, want := range []string{"schedule:", "cron: '17 * * * *'", "workflow_dispatch:", "fail_job:"} {
 		if !strings.Contains(triggers, want) {
 			t.Errorf("CI triggers missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"pull_request:", "merge_group:"} {
+	for _, forbidden := range []string{"push:", "pull_request:", "merge_group:"} {
 		if strings.Contains(triggers, forbidden) {
 			t.Errorf("CI has forbidden trigger %q", forbidden)
 		}

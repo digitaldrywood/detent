@@ -233,7 +233,8 @@ before repeating the command; do not retry an unchanged unsupported fixture.
 Repeat diagnostics only to verify changed behavior or resolve a concrete remaining
 risk. Ordinary submission, completion, admission, and merge do not wait for a
 coverage percentage, fuzz duration, local status, or scheduled run. The scheduled
-full suite validates pinned `develop` commits and every release branch update.
+full suite validates pinned `develop` commits and each dispatched release branch
+head.
 Every release starts by cutting and freezing a `release/vX.Y` branch from
 `develop`. Fixes land on `develop` first, then reach the release branch through
 reviewed `git cherry-pick -x` PRs. Only the release branch's green full suite
