@@ -1,5 +1,6 @@
 {
   "organization_id": "org_example",
+  "prior_recorded": true,
   "window": {
     "from": "2026-10-08T00:00:00Z",
     "to": "2026-10-15T00:00:00Z"

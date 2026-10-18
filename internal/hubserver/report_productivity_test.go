@@ -302,6 +302,36 @@ func TestOrganizationProductivity(t *testing.T) {
 			}
 		})
 	}
+	for _, tt := range []struct {
+		name          string
+		createdHours  [2]int
+		selected      string
+		priorRecorded bool
+	}{
+		{"new projects", [2]int{-12, -12}, "", false},
+		{"prior end boundary", [2]int{-24, -24}, "", false},
+		{"project in prior window", [2]int{-25, -12}, "", true},
+		{"second project in prior window", [2]int{-12, -25}, "", true},
+		{"old project without activity", [2]int{-72, -72}, "", true},
+		{"selected new project", [2]int{-72, -12}, string(projects[1]), false},
+		{"unreadable old project", [2]int{-12, -12}, string(projects[2]), false},
+	} {
+		t.Run("prior availability/"+tt.name, func(t *testing.T) {
+			for i, project := range projects {
+				hours := -72
+				if i < len(tt.createdHours) {
+					hours = tt.createdHours[i]
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE projects SET created_at=? WHERE id=?`, formatHubTime(to.Add(time.Duration(hours)*time.Hour)), project); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out := read(url.Values{"range": {"24h"}, "labels": {"no-matching-activity"}, "projects": {tt.selected}})
+			if out.PriorRecorded != tt.priorRecorded || out.Previous.Filed != 0 || out.Previous.Completed != 0 {
+				t.Fatalf("prior_recorded=%t want=%t previous=%+v", out.PriorRecorded, tt.priorRecorded, out.Previous)
+			}
+		})
+	}
 }
 
 func TestProductivityRunnerIntervals(t *testing.T) {

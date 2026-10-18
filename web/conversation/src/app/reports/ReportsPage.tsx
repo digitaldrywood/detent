@@ -83,8 +83,9 @@ export function ReportsRoute(): React.ReactElement {
   const params = useParams({ strict: false }) as { tab?: string };
   const rawSearch = useSearch({ strict: false }) as Record<string, unknown>;
   const tab: ReportTab = isReportTab(params.tab) ? params.tab : "overview";
-  const search = parseReportsSearch(rawSearch);
-  const orgScope = search.project === ALL_PROJECTS || (sidebar !== null && sidebar.activeProjectId === null && search.project === null);
+  const parsedSearch = parseReportsSearch(rawSearch);
+  const orgScope = parsedSearch.project === ALL_PROJECTS || (sidebar !== null && sidebar.activeProjectId === null && parsedSearch.project === null);
+  const search = orgScope ? { ...parsedSearch, filters: { ...parsedSearch.filters, models: [], stages: [] } } : parsedSearch;
   const project = sidebar?.projects.find((p) => p.id === (search.project ?? sidebar.activeProjectId));
   const projectId = orgScope ? ALL_PROJECTS : (project?.id ?? null);
   const range = search.range === CUSTOM_RANGE.value && search.from !== null && search.to !== null ? { from: search.from, to: search.to } : search.range === CUSTOM_RANGE.value ? "7d" : search.range;
@@ -92,11 +93,12 @@ export function ReportsRoute(): React.ReactElement {
   const organization = useOrganizationReports(api, !orgScope || tab !== "overview" ? null : { projectId: ALL_PROJECTS, range, filters: reportsQueryFilters(search.filters), projects: search.projects, compare: search.compare });
   const options = useReportOptions(api, projectId, range);
   React.useEffect(() => {
-    if (!orgScope || rawSearch.project !== undefined) return;
+    const currentSearch = parseReportsSearch(rawSearch);
+    if (!orgScope || (rawSearch.project !== undefined && currentSearch.filters.models.length === 0 && currentSearch.filters.stages.length === 0)) return;
     void navigate({
       to: tab === "overview" ? "/reports" : "/reports/$tab",
       params: tab === "overview" ? {} : { tab },
-      search: reportsSearchParams({ ...parseReportsSearch(rawSearch), project: ALL_PROJECTS }),
+      search: reportsSearchParams({ ...currentSearch, project: ALL_PROJECTS, filters: { ...currentSearch.filters, models: [], stages: [] } }),
       replace: true,
     } as never);
   }, [navigate, orgScope, rawSearch, tab]);

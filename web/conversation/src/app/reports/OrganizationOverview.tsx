@@ -27,8 +27,9 @@ export function OrganizationOverview({ report, search, projects, options, onSear
   readonly onProjectChange?: ((id: string) => void) | undefined;
 }): React.ReactElement {
   const current = report.current;
-  const previous = report.previous;
+  const previous = report.prior_recorded ? report.previous : undefined;
   const compare = search.compare;
+  const compareChart = compare && report.prior_recorded;
   const prior = rangeOption(search.range).prior;
   const projectName = (id: string) => projects.find((project) => project.id === id)?.name ?? id;
   const daily = Date.parse(report.window.to) - Date.parse(report.window.from) >= 6 * 86_400_000;
@@ -44,22 +45,22 @@ export function OrganizationOverview({ report, search, projects, options, onSear
   return (
     <div className="flex min-w-0 flex-col gap-6">
       <MetricTileGroup aria-label="Headline metrics" className="lg:grid-cols-6">
-        <MetricTile label="Filed" value={formatCount(current.filed)} delta={compare ? countDelta(current.filed, previous.filed, true, ` vs ${prior}`) : undefined} detail="new issues, all projects" />
-        <MetricTile label="Completed" value={formatCount(current.completed)} delta={compare ? countDelta(current.completed, previous.completed, true, ` vs ${prior}`) : undefined} detail={`plus ${formatCount(current.cancelled)} cancelled`} />
-        <MetricTile label="Net backlog" value={signed(current.net_backlog)} delta={compare ? countDelta(current.net_backlog, previous.net_backlog, false, ` vs ${prior}`) : undefined} detail="filed minus closed" />
-        <MetricTile label="Changes landed" value={formatCount(current.changes_landed)} delta={compare ? countDelta(current.changes_landed, previous.changes_landed, true, ` vs ${prior}`) : undefined} detail="merged into the target branch" />
-        <MetricTile label="Cost per completed" value={current.cost_per_completed_usd === null ? null : formatUsd(current.cost_per_completed_usd)} delta={compare ? usdDelta(current.cost_per_completed_usd, previous.cost_per_completed_usd) : undefined} detail={current.cost_per_completed_usd === null ? undefined : `${formatUsd(current.completion_cost_usd)} lifetime, completed issues`} />
-        <MetricTile label="Rework" value={current.rework_percent === null ? null : percentText(current.rework_percent)} delta={compare ? pointsDelta(current.rework_percent, previous.rework_percent, false) : undefined} detail="worked issues sent back" />
+        <MetricTile label="Filed" value={formatCount(current.filed)} delta={compare ? countDelta(current.filed, previous?.filed, true, ` vs ${prior}`) : undefined} detail="new issues, all projects" />
+        <MetricTile label="Completed" value={formatCount(current.completed)} delta={compare ? countDelta(current.completed, previous?.completed, true, ` vs ${prior}`) : undefined} detail={`plus ${formatCount(current.cancelled)} cancelled`} />
+        <MetricTile label="Net backlog" value={signed(current.net_backlog)} delta={compare ? countDelta(current.net_backlog, previous?.net_backlog, false, ` vs ${prior}`) : undefined} detail="filed minus closed" />
+        <MetricTile label="Changes landed" value={formatCount(current.changes_landed)} delta={compare ? countDelta(current.changes_landed, previous?.changes_landed, true, ` vs ${prior}`) : undefined} detail="merged into the target branch" />
+        <MetricTile label="Cost per completed" value={current.cost_per_completed_usd === null ? null : formatUsd(current.cost_per_completed_usd)} delta={compare ? usdDelta(current.cost_per_completed_usd, previous?.cost_per_completed_usd) : undefined} detail={current.cost_per_completed_usd === null ? undefined : `${formatUsd(current.completion_cost_usd)} lifetime, completed issues`} />
+        <MetricTile label="Rework" value={current.rework_percent === null ? null : percentText(current.rework_percent)} delta={compare ? pointsDelta(current.rework_percent, previous?.rework_percent, false) : undefined} detail="worked issues sent back" />
       </MetricTileGroup>
       <ChartPanel title="Filed vs completed per day" actions={<ChartLegend items={[
         { label: "Filed", color: "var(--info)" },
         { label: "Completed", color: "var(--success)" },
-        ...(compare ? [{ label: `${prior.replace(/^p/, "P")} completed`, color: "var(--muted-foreground)", dashed: true }] : []),
+        ...(compareChart ? [{ label: `${prior.replace(/^p/, "P")} completed`, color: "var(--muted-foreground)", dashed: true }] : []),
       ]} />} footnote="Hover a day for counts by project. Bucket: day for 7d+, hour for 24h.">
         <Chart ariaLabel="Filed and completed issues per bucket" categories={categories} height={260} series={[
           { id: "filed", label: "Filed", color: "var(--info)", kind: "bar", values: report.series.map((bucket) => bucket.filed) },
           { id: "completed", label: "Completed", color: "var(--success)", kind: "bar", values: report.series.map((bucket) => bucket.completed) },
-          ...(compare ? [{ id: "prior", label: "Prior completed", color: "var(--muted-foreground)", kind: "line" as const, dashed: true, values: report.series.map((_, index) => report.previous_series[index]?.completed ?? null) }] : []),
+          ...(compareChart ? [{ id: "prior", label: "Prior completed", color: "var(--muted-foreground)", kind: "line" as const, dashed: true, values: report.series.map((_, index) => report.previous_series[index]?.completed ?? null) }] : []),
         ]} renderReadout={(index) => (
           <div className="mt-2 border-border border-t pt-1">
             {Object.entries(report.series[index]?.projects ?? {}).map(([id, counts]) => (

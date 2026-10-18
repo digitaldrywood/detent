@@ -277,6 +277,7 @@ const ProductivityActor = Schema.Struct({
 const ProductivityWindow = Schema.Struct({ from: Schema.String, to: Schema.String });
 export const OrganizationReports = Schema.Struct({
   organization_id: Schema.String,
+  prior_recorded: Schema.Boolean,
   window: ProductivityWindow,
   previous_window: ProductivityWindow,
   current: ProductivityMetrics,
