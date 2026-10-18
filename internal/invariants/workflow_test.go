@@ -25,8 +25,8 @@ func checkWorkflow(data []byte) error {
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		return err
 	}
-	if len(workflow.On) != 3 {
-		return errors.New("INV-5 CI must trigger only on a schedule, manual dispatch and release pushes")
+	if len(workflow.On) != 2 {
+		return errors.New("INV-5 CI must trigger only on a schedule and manual dispatch")
 	}
 	if _, ok := workflow.Permissions["actions"]; ok {
 		return errors.New("INV-5 Actions access must be scoped to preflight")
@@ -34,17 +34,10 @@ func checkWorkflow(data []byte) error {
 	if permissions := workflow.Jobs["preflight"].Permissions; len(permissions) != 2 || permissions["actions"] != "read" || permissions["contents"] != "read" {
 		return errors.New("INV-5 preflight must have read-only Actions and contents access")
 	}
-	for _, event := range []string{"schedule", "workflow_dispatch", "push"} {
+	for _, event := range []string{"schedule", "workflow_dispatch"} {
 		if _, ok := workflow.On[event]; !ok {
 			return fmt.Errorf("INV-5 %s trigger missing", event)
 		}
-	}
-	var push struct {
-		Branches []string `yaml:"branches"`
-	}
-	pushNode := workflow.On["push"]
-	if err := pushNode.Decode(&push); err != nil || len(push.Branches) != 1 || push.Branches[0] != "release/*" {
-		return errors.New("INV-5 full CI pushes must be scoped to release branches")
 	}
 	var schedule []struct {
 		Cron string `yaml:"cron"`
@@ -353,7 +346,7 @@ func TestWorkflowViolations(t *testing.T) {
 		{"actions read permission dropped", "  actions: read\n", ""},
 		{"finalizer survives operator cancellation", "if: always() && !cancelled() && (needs.preflight.result == 'success' || needs.preflight.result == 'failure')", "if: always() && (needs.preflight.result == 'success' || needs.preflight.result == 'failure')"},
 		{"finalizer drops skipped reporting", "if: always() && !cancelled() && (needs.preflight.result == 'success' || needs.preflight.result == 'failure')", "if: always() && (needs.preflight.outputs.should_run == 'true' || needs.preflight.result == 'failure')"},
-		{"develop push trigger", "branches: ['release/*']", "branches: [develop]"},
+		{"release push trigger", "on:\n", "on:\n  push:\n    branches: ['release/*']\n"},
 		{"pull request trigger", "  workflow_dispatch:\n", "  pull_request:\n  workflow_dispatch:\n"},
 		{"schedule dropped", "  schedule:\n    - cron: '17 * * * *'\n", ""},
 		{"slow schedule", "cron: '17 * * * *'", "cron: '17 0 * * *'"},

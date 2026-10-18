@@ -34,8 +34,8 @@ selecting a release snapshot; it does not publish a stable tag or deploy staging
 
 The scheduled release cut creates `release/vX.Y` from an eligible develop
 snapshot. Only fixes already landed on develop are cherry-picked onto that
-branch, with `-x` provenance. Every release-branch push or dispatch runs the full
-suite on its exact commit, independently of develop validation. The successful
+branch, with `-x` provenance. Pushes do not start CI; after merging a batch of
+picks, dispatch the full suite, which runs on the release head's exact commit, independently of develop validation. The successful
 finalizer verifies that commit is still the release head, posts authenticated
 `scheduled-full-ci` evidence and creates an annotated tag in that release series.
 An existing validated tag retains its original evidence. If release dispatch
