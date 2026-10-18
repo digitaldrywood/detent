@@ -94,6 +94,8 @@ printf 'forge %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
   *'/attempts/1 --jq .conclusion') printf '%s\n' "$FIXTURE_CONCLUSION" ;;
   *'/jobs?per_page=100'*) cat "$FIXTURE_JOBS" ;;
+  *'/runs/123/artifacts?per_page=100'*) printf '7\n' ;;
+  *'-X DELETE '*'/actions/artifacts/7') ;;
   *'/statuses/'*) printf '123\n' ;;
   *'/commits/'*'/status')
     if [ "$FIXTURE_NEWER_FAILURE" = true ]; then
@@ -168,6 +170,11 @@ test "$FIXTURE_UNAVAILABLE" = false
 				t.Fatal(err)
 			}
 			text := string(calls)
+			deleted := strings.Contains(text, "-X DELETE repos/"+tt.repository+"/actions/artifacts/7")
+			wantDeleted := !tt.develop && (skipped || tt.failed || tt.cancelledJob || tt.timedOutJob || tt.staleHead || tt.newerFailure)
+			if deleted != wantDeleted {
+				t.Fatalf("prebuilt artifacts deleted = %v, want %v: %s", deleted, wantDeleted, text)
+			}
 			if skipped {
 				if !strings.Contains(string(output), "cancelled; skipping reporting and release") || strings.Contains(text, "native ") || strings.Contains(text, "repository ") || strings.Contains(text, "/statuses/") || strings.Contains(text, "/dispatches") || strings.Contains(text, "forge issue") {
 					t.Fatalf("cancelled run produced reporting or release effects: %s: %s", text, output)

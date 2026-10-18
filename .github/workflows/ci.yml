@@ -494,10 +494,53 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  release-prebuild:
+    needs: preflight
+    if: needs.preflight.outputs.should_run == 'true'
+    name: Release prebuild (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [darwin, linux, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v5
+        if: needs.preflight.outputs.release_branch != ''
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/prepare-conversation
+        if: needs.preflight.outputs.release_branch != ''
+
+      - uses: ./.github/actions/setup-go-cached
+        if: needs.preflight.outputs.release_branch != ''
+        with:
+          key: release-prebuild-${{ matrix.goos }}-${{ matrix.goarch }}
+
+      - name: Build release binary
+        if: needs.preflight.outputs.release_branch != ''
+        env:
+          CI_RELEASE_BRANCH: ${{ needs.preflight.outputs.release_branch }}
+          CI_DEVELOP_SHA: ${{ needs.preflight.outputs.develop_sha }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: bash scripts/release-prebuild.sh
+
+      - uses: actions/upload-artifact@v7
+        if: needs.preflight.outputs.release_branch != ''
+        with:
+          name: release-prebuilt-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: tmp/prebuilt
+          if-no-files-found: error
+          retention-days: 1
+
   finalize:
     name: Finalize scheduled validation
     timeout-minutes: 5
-    needs: [preflight, invariants, lint, verify-fast, generated, app, verify-race, test-cover, security, browser-visual-shard, installer-smoke, goreleaser-snapshot]
+    needs: [preflight, invariants, lint, verify-fast, generated, app, verify-race, test-cover, security, browser-visual-shard, installer-smoke, goreleaser-snapshot, release-prebuild]
     if: always() && !cancelled() && (needs.preflight.result == 'success' || needs.preflight.result == 'failure')
     runs-on: ubuntu-latest
     permissions:

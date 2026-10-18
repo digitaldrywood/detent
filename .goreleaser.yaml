@@ -5,13 +5,14 @@ dist: tmp/goreleaser
 before:
   hooks:
     - go mod download
-    - make assets generate-docs
+    - make release-assets generate-docs
     - make source-metadata VERSION={{ .Version }} COMMIT={{ .FullCommit }} DATE={{ .Date }}
 
 builds:
   - id: detent
     main: ./cmd/detent
     binary: detent
+    gobinary: ./scripts/goreleaser-go.sh
     env:
       - CGO_ENABLED=0
     flags:
