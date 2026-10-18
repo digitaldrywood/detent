@@ -244,8 +244,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: 1/2, key: race-1, shard: 1/2}
-          - {name: 2/2, key: race-2, shard: 2/2}
+          - {name: 1/5, key: race-1, shard: 1/5}
+          - {name: 2/5, key: race-2, shard: 2/5}
+          - {name: 3/5, key: race-3, shard: 3/5}
+          - {name: 4/5, key: race-4, shard: 4/5}
+          - {name: 5/5, key: race-5, shard: 5/5}
           - {name: hub 1/4, key: race-hub-1, shard: hub-1}
           - {name: hub 2/4, key: race-hub-2, shard: hub-2}
           - {name: hub 3/4, key: race-hub-3, shard: hub-3}
@@ -277,9 +280,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: 1/3, key: 1, shard: 1/3}
-          - {name: 2/3, key: 2, shard: 2/3}
-          - {name: 3/3, key: 3, shard: 3/3}
+          - {name: 1/4, key: 1, shard: 1/4}
+          - {name: 2/4, key: 2, shard: 2/4}
+          - {name: 3/4, key: 3, shard: 3/4}
+          - {name: 4/4, key: 4, shard: 4/4}
           - {name: hub 1/4, key: hub-1, shard: hub-1}
           - {name: hub 2/4, key: hub-2, shard: hub-2}
           - {name: hub 3/4, key: hub-3, shard: hub-3}
@@ -337,13 +341,13 @@ jobs:
   browser-visual-shard:
     needs: preflight
     if: needs.preflight.outputs.should_run == 'true'
-    name: Browser Visual (${{ matrix.shard }}/2)
+    name: Browser Visual (${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -379,7 +383,7 @@ jobs:
           DETENT_HOSTED_PREVIEW_BINARY: ${{ github.workspace }}/tmp/hubserver-preview.test
           DETENT_STARTUP_PREVIEW_BINARY: ${{ github.workspace }}/tmp/startup-preview.test
           TMPDIR: ${{ runner.temp }}
-        run: npm run test:visual -- --shard=${{ matrix.shard }}/2
+        run: npm run test:visual -- --shard=${{ matrix.shard }}/3
 
       - name: Upload browser visual evidence
         if: always()
