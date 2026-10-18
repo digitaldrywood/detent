@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -242,17 +243,36 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			t.Fatal("REST content was truncated by MCP shaping")
 		}
 		if tool == operatortool.WorkItem {
-			response := performHubAPIRequest(t, f.service, http.MethodGet, item.ContentRead.FullURL+"/comments", f.token, nil)
-			requireNativeStatus(t, response, http.StatusOK)
-			var comments tracker.Page[tracker.NativeComment]
-			decodeHubResponse(t, response, &comments)
-			if len(comments.Items) != len(largeSnapshot.Comments) {
-				t.Fatal("imported comments were lost")
+			remaining := map[string]string{}
+			for _, comment := range largeSnapshot.Comments {
+				remaining[comment.Provenance.ExternalID] = comment.Body
 			}
-			for _, comment := range comments.Items {
-				if comment.Body != largeSnapshot.Comments[0].Body {
-					t.Fatal("REST comment content was truncated")
+			commentsURL := item.ContentRead.FullURL + "/comments"
+			for nextURL := commentsURL; ; {
+				response := performHubAPIRequest(t, f.service, http.MethodGet, nextURL, f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var comments tracker.Page[tracker.NativeComment]
+				decodeHubResponse(t, response, &comments)
+				if len(comments.Items) == 0 {
+					t.Fatal("imported comments page was empty")
 				}
+				for _, comment := range comments.Items {
+					body, ok := remaining[comment.Provenance.ExternalID]
+					if !ok {
+						t.Fatal("REST comment was unexpected or duplicated")
+					}
+					if comment.Body != body {
+						t.Fatal("REST comment content was truncated")
+					}
+					delete(remaining, comment.Provenance.ExternalID)
+				}
+				if comments.NextCursor == "" {
+					break
+				}
+				nextURL = commentsURL + "?cursor=" + url.QueryEscape(comments.NextCursor)
+			}
+			if len(remaining) != 0 {
+				t.Fatal("imported comments were lost")
 			}
 		}
 	}
