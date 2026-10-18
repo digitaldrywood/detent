@@ -1331,10 +1331,18 @@ one read for open findings and recent resolutions.
 The Hub evaluates static health rules every minute using current state and
 at most 24 hours of recorded events. Findings and their native issue reports
 share a transaction with the successful tick. The existing machine reporter
-files instance findings into dispatchable Todo at High with the infrastructure
-label and other classes into nondispatchable Backlog. Reports remain attributed
-to the detector instance, even when the subject is a work item. The detector
-does not claim work, change existing lanes, or make model calls.
+files diagnostic-only instance findings at Urgent with the infrastructure label
+into an existing nondispatchable, nonterminal state that is neither operator-only
+nor the reserved Triage state. Backlog is preferred; otherwise workflow order
+selects the first eligible state. If none exists, findings and the successful
+tick are retained without filing an issue.
+Other finding classes remain available through health reads without new issue
+reports. Reports remain attributed to the detector instance, even when the
+subject is a work item. Their bodies include `<!-- detent:no-dispatch -->` and
+diagnostic evidence, without generated repair acceptance criteria or human
+confirmation. Scheduled-CI repair reports follow their separate authorization
+contract. The detector does not claim work, change existing lanes, or make model
+calls.
 
 Finding reads include `filed_by: health_detector` and project-scoped `issues`
 links (`project_id`, `work_item_id`); issue bodies carry the finding ID, summary,

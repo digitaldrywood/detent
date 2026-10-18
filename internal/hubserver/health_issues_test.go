@@ -692,6 +692,87 @@ func TestHealthFindingIssueScope(t *testing.T) {
 	}
 }
 
+func TestHealthFindingIssueWorkflow(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		state tracker.NativeState
+		want  string
+	}{
+		{name: "reserved triage", state: tracker.NativeState{Name: "Triage"}},
+		{name: "custom intake", state: tracker.NativeState{Name: "Intake"}, want: "Intake"},
+		{name: "no intake"},
+		{name: "dispatchable backlog", state: tracker.NativeState{Name: "Backlog", Dispatchable: true}},
+		{name: "terminal backlog", state: tracker.NativeState{Name: "Backlog", Terminal: true}},
+		{name: "operator backlog", state: tracker.NativeState{Name: "Backlog", OperatorOnly: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newNativeFixture(t, nil, "", "health-custom-workflow")
+			other := newNativeFixture(t, f.service, f.project.OrganizationID, "health-standard-workflow")
+			addHealthBacklog(t, other)
+			states := nativeFixtureStates()
+			if test.state.Name != "" {
+				if test.state.Name != "Triage" {
+					states = append(states, tracker.NativeState{Name: "Triage"})
+				}
+				states = append(states, test.state)
+			}
+			raw, err := json.Marshal(states)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", string(raw), f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			if test.state.Name == "" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id=? AND detent_state='Triage'", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			} else if test.state.Name != "Triage" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", f.project.ID, test.state.Name, test.state.Name, test.state.Terminal, test.state.Dispatchable, formatHubTime(f.service.config.now()), formatHubTime(f.service.config.now())); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := time.Date(2026, 10, 6, 18, 30, 0, 0, time.UTC)
+			finding := newHealthFinding("runner_heartbeat_gap", "instance", "runner", "shared_runner", "Missing heartbeat.", "Inspect runner.", []string{string(f.project.ID), string(other.project.ID)}, healthEvidence{Counts: map[string]int{"leases": 1}})
+			for _, offset := range []time.Duration{0, time.Minute} {
+				applyTestHealth(t, f, now.Add(offset), []healthFinding{finding})
+				for _, project := range []struct {
+					fixture nativeFixture
+					want    string
+				}{{f, test.want}, {other, "Backlog"}} {
+					scope := nativeScope{organization: f.project.OrganizationID, project: project.fixture.project.ID}
+					page, err := f.service.readHealthFindings(t.Context(), scope, "open", "", "", 100)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(page.Items) != 1 || page.LastTickAt == nil || !page.LastTickAt.Equal(now.Add(offset)) || page.Items[0].Fingerprint != finding.Fingerprint {
+						t.Fatalf("health evaluation not retained: %+v", page)
+					}
+					var count int
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", scope.project).Scan(&count); err != nil {
+						t.Fatal(err)
+					}
+					if project.want == "" {
+						if count != 0 || len(page.Items[0].Issues) != 0 {
+							t.Fatalf("unsafe workflow received report: count=%d links=%+v", count, page.Items[0].Issues)
+						}
+						continue
+					}
+					if count != 1 || len(page.Items[0].Issues) != 1 || page.Items[0].Issues[0].ProjectID != scope.project {
+						t.Fatalf("report missing, duplicated or unscoped: count=%d links=%+v", count, page.Items[0].Issues)
+					}
+					issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(page.Items[0].Issues[0].WorkItemID))
+					if err != nil || issue.State != project.want || !strings.Contains(issue.Body, "<!-- detent:no-dispatch -->") {
+						t.Fatalf("report intake = %+v, %v", issue, err)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestHealthFindingIssueRollback(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

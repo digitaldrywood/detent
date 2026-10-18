@@ -24,7 +24,6 @@ func healthIssueRequest(f healthFinding) (tracker.CreateIssue, error) {
 	title := fmt.Sprintf("%s on %s %s", f.Signal, f.Subject.Kind, f.Subject.ID)
 	request := tracker.CreateIssue{
 		Title:    "intake(instance): " + title,
-		State:    "Backlog",
 		Priority: new(1),
 		Labels:   []string{"infrastructure"},
 	}
@@ -117,14 +116,13 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 			if err != nil {
 				return nil, err
 			}
-			valid := false
 			for _, state := range project.States {
-				if state.Name == request.State && !state.Terminal && !state.OperatorOnly && !state.Dispatchable {
-					valid = true
+				if state.Name != "Triage" && !state.Terminal && !state.OperatorOnly && !state.Dispatchable && (request.State == "" || state.Name == "Backlog") {
+					request.State = state.Name
 				}
 			}
-			if !valid {
-				return nil, nativeInvalid("Health reporting requires nondispatchable Backlog")
+			if request.State == "" {
+				continue
 			}
 			issue, err := reportNativeMachineIssueTx(ctx, tx, scope, request, now)
 			if err != nil {
