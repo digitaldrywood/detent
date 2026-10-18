@@ -220,13 +220,16 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		if loaded.WorkflowMarkdown != markdown || !reflect.DeepEqual(loaded.States, integration.States) {
 			t.Fatal("runner project read differs from Cloud Markdown")
 		}
-		for _, test := range []struct{ name, markdown string }{
-			{"prose is instructions", "# Workflow\n- Todo\n- Done\n"},
-			{"invalid supplied configuration", "---\ntracker:\n  kind: unknown\n---\nWork\n"},
-			{"competing tracker", "---\ntracker:\n  kind: github\n---\nWork\n"},
-			{"removed occupied state", "---\ntracker:\n  kind: hub_native\n  lanes: [{name: Repair, role: active}, {name: Blocked, role: holding}, {name: Done, role: terminal}]\n---\nWork\n"},
+		for _, test := range []struct{ name, markdown, wantError string }{
+			{"prose is instructions", "# Workflow\n- Todo\n- Done\n", ""},
+			{"invalid supplied configuration", "---\ntracker:\n  kind: unknown\n---\nWork\n", ""},
+			{"competing tracker", "---\ntracker:\n  kind: github\n---\nWork\n", "Cloud workflow must use tracker.kind hub_native"},
+			{"removed occupied state", "---\ntracker:\n  kind: hub_native\n  lanes: [{name: Repair, role: active}, {name: Blocked, role: holding}, {name: Done, role: terminal}]\n---\nWork\n", ""},
 		} {
-			api(t, "owner", http.MethodPut, base+"/onboarding/integration", map[string]any{"idempotency_key": test.name, "expected_revision": fmt.Sprint(integration.Revision), "intake": "disabled", "projection": "disabled", "workflow_markdown": test.markdown}, http.StatusUnprocessableEntity)
+			response := api(t, "owner", http.MethodPut, base+"/onboarding/integration", map[string]any{"idempotency_key": test.name, "expected_revision": fmt.Sprint(integration.Revision), "intake": "disabled", "projection": "disabled", "workflow_markdown": test.markdown}, http.StatusUnprocessableEntity)
+			if test.wantError != "" && !strings.Contains(response.Body.String(), test.wantError) {
+				t.Fatalf("%s response = %s, want %q", test.name, response.Body.String(), test.wantError)
+			}
 		}
 		for _, key := range []string{"observed_states", "active_states", "terminal_states"} {
 			for _, value := range []string{"[Todo]", "[]", "null"} {
