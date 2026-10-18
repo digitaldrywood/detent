@@ -18,6 +18,7 @@ import (
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -197,6 +198,7 @@ type sshError struct {
 	Kind     string
 	Data     json.RawMessage
 	Children []*sshError
+	Failure  *tracker.NativeTerminalFailure `json:",omitempty"`
 }
 
 func sshErrorTypes() []error {
@@ -221,6 +223,12 @@ func encodeSSHError(err error) *sshError {
 		return nil
 	}
 	wire := &sshError{Message: err.Error()}
+	if provider, ok := err.(interface {
+		NativeTerminalFailure() tracker.NativeTerminalFailure
+	}); ok {
+		failure := provider.NativeTerminalFailure().Public()
+		wire.Failure = &failure
+	}
 	for _, sentinel := range sshSentinels() {
 		if err == sentinel { //nolint:errorlint // Only exact sentinels use this encoding; wrappers retain their message and children below.
 			wire.Kind = "sentinel"
@@ -287,7 +295,20 @@ func (wire *sshError) err() error {
 			return decoded
 		}
 	}
-	return &sshWrappedError{message: wire.Message, children: children}
+	wrapped := &sshWrappedError{message: wire.Message, children: children}
+	if wire.Failure != nil {
+		return &sshTerminalError{sshWrappedError: wrapped, failure: wire.Failure.Public()}
+	}
+	return wrapped
+}
+
+type sshTerminalError struct {
+	*sshWrappedError
+	failure tracker.NativeTerminalFailure
+}
+
+func (e *sshTerminalError) NativeTerminalFailure() tracker.NativeTerminalFailure {
+	return e.failure
 }
 
 type sshWrappedError struct {
