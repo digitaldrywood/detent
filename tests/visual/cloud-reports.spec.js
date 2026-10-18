@@ -2,6 +2,7 @@ const { test, expect } = require("@playwright/test");
 const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 const fixture = require("../../web/conversation/src/contracts/fixtures/reports.json");
 const optionsFixture = require("../../web/conversation/src/contracts/fixtures/reportOptions.json");
+const organizationFixture = require("../../web/conversation/src/contracts/fixtures/organizationReports.json");
 
 let hub;
 test.beforeAll(async () => {
@@ -123,6 +124,11 @@ async function routeReportRequests(page, edit = () => {}) {
   await page.route("**/api/v2/organizations/*/reports?*", (route) => {
     const params = new URL(route.request().url()).searchParams;
     requests.push(params);
+    if (params.get("scope") === "organization") {
+      const report = structuredClone(organizationFixture);
+      edit(report, params);
+      return route.fulfill({ json: report });
+    }
     const report = structuredClone(fixture);
     report.analytics.project_id = params.get("project") === "all" ? "all" : hub.fixture.project_id;
     if (params.has("from")) {
@@ -148,7 +154,7 @@ for (const theme of ["light", "dark"]) {
     const errors = [];
     page.on("pageerror", (error) => errors.push(String(error)));
     const requests = await routeReportRequests(page, (report, params) => {
-      if (params.get("project") === "all") report.completion.done = 4321;
+      if (params.get("scope") === "organization") report.current.completed = 4321;
     });
     await page.goto(hub.fixture.accounts.owner);
     await page.goto(`${hub.fixture.url}/reports`);
@@ -292,6 +298,6 @@ test("Reports follows the project select and decodes the real read on every tab"
   await page.getByRole("combobox", { name: "Project", exact: true }).click();
   await page.getByRole("option", { name: next.name, exact: true }).click();
   await request;
-  await expect(page).toHaveURL(/\/reports\/quality\?range=90d$/);
+  await expect(page).toHaveURL(new RegExp(`/reports/quality\\?project=${next.id}&range=90d$`));
   await expect(page.getByRole("navigation", { name: "Reports breadcrumb" })).toContainText(next.name);
 });

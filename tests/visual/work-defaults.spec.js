@@ -158,7 +158,7 @@ for (const scope of ["all", "project"]) {
     expect(new URL(page.url()).searchParams.has("completed")).toBe(false);
     await counter.click();
     await page.getByRole("menuitem", { name: /Open in Reports/ }).click();
-    await expect(page).toHaveURL(/\/reports\?range=24h$/);
+    await expect(page).toHaveURL(scope === "all" ? /\/reports\?project=all&range=24h$/ : /\/reports\?range=24h$/);
     await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByRole("group", { name: "Report range" }).getByRole("button", { name: "24h", exact: true })).toHaveAttribute("aria-pressed", "true");
   });
