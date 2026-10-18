@@ -94,7 +94,6 @@ func newHubCommandWithRun(version string, lookupEnv func(string) string, run hub
 	cmd.AddCommand(newHubServeCommand(version, lookupEnv, run))
 	cmd.AddCommand(newHubRunnerCommand(version, lookupEnv))
 	cmd.AddCommand(newHubPolicyCommand(lookupEnv))
-	cmd.AddCommand(newHubIssueCommand(lookupEnv))
 	cmd.AddCommand(newHubRecoveryCommands(lookupEnv)...)
 	cmd.AddCommand(newHubSharedMigrationCommand(lookupEnv))
 	cmd.AddCommand(newHubSecretsCommand(lookupEnv))
