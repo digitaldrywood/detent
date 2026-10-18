@@ -945,18 +945,33 @@ func TestRunWithShutdownPublishesDrainStatusDuringBlockedConnectorRefresh(t *tes
 		name          string
 		releaseRead   bool
 		updateRestart bool
+		native        bool
 	}{
 		{name: "released read", releaseRead: true},
 		{name: "pending read"},
 		{name: "update restart with pending read", updateRestart: true},
+		{name: "released native preview", native: true, releaseRead: true},
+		{name: "pending native preview", native: true},
+		{name: "update restart with pending native preview", native: true, updateRestart: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			refreshStarted := make(chan struct{}, 1)
 			releaseRefresh := make(chan struct{})
-			project := newRefreshProjectWithConnector(t, "selected", shutdownBlockingConnector{
-				started: refreshStarted,
-				release: releaseRefresh,
-			})
+			backend := shutdownBlockingConnector{started: refreshStarted, release: releaseRefresh}
+			var project *projectpkg.Project
+			if tc.native {
+				cfg := workflowconfig.Default()
+				cfg.Tracker.Kind = workflowconfig.TrackerMemory
+				cfg.Polling.IntervalMS = 60000
+				var err error
+				project, err = projectpkg.New(projectpkg.Config{Project: globalconfig.Project{ID: "selected", Workdir: t.TempDir()}, Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."}}, projectpkg.Dependencies{Connector: backend, Scheduling: shutdownBlockingScheduling{backend: backend}, Runner: orchestrator.FakeRunner{}})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !tc.native {
+				project = newRefreshProjectWithConnector(t, "selected", backend)
+			}
 			if err := project.Start(context.Background()); err != nil {
 				t.Fatalf("Project.Start() error = %v", err)
 			}
@@ -1486,6 +1501,23 @@ type shutdownBlockingRunner struct {
 	started  chan struct{}
 	canceled chan struct{}
 	release  <-chan struct{}
+}
+
+type shutdownBlockingScheduling struct {
+	orchestrator.SchedulingSource
+	backend shutdownBlockingConnector
+}
+
+func (shutdownBlockingScheduling) HeartbeatInterval() time.Duration { return time.Hour }
+
+func (s shutdownBlockingScheduling) FetchCandidateIssues(ctx context.Context, request orchestrator.SchedulingRequest) ([]connector.Issue, error) {
+	discoveryCtx, finish := request.BeginDiscovery(ctx)
+	defer finish()
+	_, err := s.backend.FetchCandidateIssues(discoveryCtx)
+	if discoveryCtx.Err() != nil && ctx.Err() == nil {
+		return nil, nil
+	}
+	return nil, err
 }
 
 type shutdownBlockingConnector struct {

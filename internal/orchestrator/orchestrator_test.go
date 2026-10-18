@@ -695,8 +695,17 @@ func TestRunReportsRunningStateWhileRunnerIsInFlight(t *testing.T) {
 
 func TestDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T) {
 	t.Parallel()
+	for _, activeState := range []string{"In Progress", "Merging"} {
+		t.Run(activeState, func(t *testing.T) { testDrainStopsDispatchAndLetsRunningSessionFinish(t, activeState) })
+	}
+}
 
-	runningIssue := testIssue("issue-running", "owner/repository#11", "In Progress")
+func testDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T, activeState string) {
+	runningIssue := testIssue("issue-running", "owner/repository#11", activeState)
+	if activeState == "Merging" {
+		runningIssue.PullRequest = &connector.PullRequest{Number: 11, URL: "https://github.test/owner/repository/pull/11", State: "OPEN", MergeableState: "clean", CIStatus: "success"}
+		runningIssue.PRRepository = "owner/repository"
+	}
 	nextIssue := testIssue("issue-next", "owner/repository#12", "Todo")
 	tracker := &pendingDispatchConnector{
 		fakeConnector: newFakeConnector(runningIssue, nextIssue),
@@ -709,8 +718,8 @@ func TestDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T) {
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:            5 * time.Millisecond,
 		MaxConcurrentAgents:     1,
-		DispatchPriorityByState: []string{"In Progress", "Todo"},
-		ActiveStates:            []string{"Todo", "In Progress"},
+		DispatchPriorityByState: []string{activeState, "Todo"},
+		ActiveStates:            []string{"Todo", activeState},
 		TerminalStates:          []string{"Done", "Cancelled", "Canceled", "Closed"},
 		ContinuationRetryDelay:  time.Millisecond,
 	}, orchestrator.Dependencies{
@@ -787,6 +796,7 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 		blockStates bool
 		combined    bool
 		blockScan   bool
+		native      bool
 	}{
 		{name: "released candidate read", releaseRead: true},
 		{name: "pending candidate read"},
@@ -794,6 +804,8 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 		{name: "pending status read", blockStates: true},
 		{name: "pending combined read", combined: true},
 		{name: "pending serialized scan", blockScan: true},
+		{name: "released native preview", native: true, releaseRead: true},
+		{name: "pending native preview", native: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issue := testIssue("issue-pending-shutdown", "owner/repository#1546", "Merging")
@@ -818,6 +830,11 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 			var logs bytes.Buffer
 			global := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
 
+			var scheduling orchestrator.SchedulingSource
+			if tc.native {
+				scheduling = pendingDispatchScheduling{tracker: tracker}
+			}
+
 			orch, err := orchestrator.New(orchestrator.Config{
 				Project:              scheduler.ProjectCandidate{ID: "selected"},
 				PollInterval:         time.Hour,
@@ -832,6 +849,7 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 				ContinuationRetryDelay: time.Second,
 			}, orchestrator.Dependencies{
 				GlobalDispatchGate: global,
+				Scheduling:         scheduling,
 				Connector:          tracker,
 				Runner:             runner,
 				Logger:             slog.New(slog.NewTextHandler(&logs, nil)),
@@ -3164,6 +3182,23 @@ type pendingDispatchConnector struct {
 	started     chan struct{}
 	release     chan struct{}
 	once        sync.Once
+}
+
+type pendingDispatchScheduling struct {
+	orchestrator.SchedulingSource
+	tracker *pendingDispatchConnector
+}
+
+func (s pendingDispatchScheduling) HeartbeatInterval() time.Duration { return time.Hour }
+
+func (s pendingDispatchScheduling) FetchCandidateIssues(ctx context.Context, request orchestrator.SchedulingRequest) ([]connector.Issue, error) {
+	discoveryCtx, finish := request.BeginDiscovery(ctx)
+	defer finish()
+	_, err := s.tracker.waitForRead(discoveryCtx)
+	if discoveryCtx.Err() != nil && ctx.Err() == nil {
+		return nil, nil
+	}
+	return nil, err
 }
 
 type dispatchStartBlockingConnector struct {

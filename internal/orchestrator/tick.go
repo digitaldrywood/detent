@@ -500,21 +500,12 @@ func (o *Orchestrator) fetchTickIssues(
 	timing *refreshTiming,
 ) (tickFetchedIssues, bool) {
 	if o.scheduling == nil {
-		o.dispatchLifecycleMu.Lock()
-		if o.dispatchQuiesced() {
-			o.dispatchLifecycleMu.Unlock()
+		discoveryCtx, finish := o.beginDispatchDiscovery(ctx)
+		defer finish()
+		ctx = discoveryCtx
+		if ctx.Err() != nil {
 			return tickFetchedIssues{}, false
 		}
-		discoveryCtx, cancel := context.WithCancel(ctx)
-		ctx = discoveryCtx
-		o.dispatchDiscoveryCancel = cancel
-		o.dispatchLifecycleMu.Unlock()
-		defer func() {
-			cancel()
-			o.dispatchLifecycleMu.Lock()
-			o.dispatchDiscoveryCancel = nil
-			o.dispatchLifecycleMu.Unlock()
-		}()
 	}
 
 	if scanner, ok := o.connector.(connector.RefreshScanSerializer); ok {
@@ -729,6 +720,7 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 	}
 	if o.scheduling != nil {
 		request := SchedulingRequest{
+			BeginDiscovery:          o.beginDispatchDiscovery,
 			LandingCapacity:         o.cfg.NativeLandingCapacity,
 			DispatchPriorityByState: append([]string(nil), o.cfg.DispatchPriorityByState...),
 			DispatchPriorityByLabel: append([]string(nil), o.cfg.DispatchPriorityByLabel...),

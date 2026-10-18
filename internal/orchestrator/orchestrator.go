@@ -183,6 +183,7 @@ type ClaimingConfig struct {
 }
 
 type SchedulingRequest struct {
+	BeginDiscovery          func(context.Context) (context.Context, context.CancelFunc)
 	LandingCapacity         int
 	NativeLandingBatch      bool
 	DispatchPriorityByState []string
@@ -1477,6 +1478,22 @@ func (o *Orchestrator) BeginDrain() {
 	o.dispatchLifecycleMu.Unlock()
 	if o.globalDispatchGate != nil {
 		o.globalDispatchGate.MarkIdle(scheduler.ProjectCandidate{ID: o.projectID})
+	}
+}
+
+func (o *Orchestrator) beginDispatchDiscovery(ctx context.Context) (context.Context, context.CancelFunc) {
+	discoveryCtx, cancel := context.WithCancel(ctx)
+	o.dispatchLifecycleMu.Lock()
+	if o.dispatchQuiesced() {
+		cancel()
+	}
+	o.dispatchDiscoveryCancel = cancel
+	o.dispatchLifecycleMu.Unlock()
+	return discoveryCtx, func() {
+		cancel()
+		o.dispatchLifecycleMu.Lock()
+		o.dispatchDiscoveryCancel = nil
+		o.dispatchLifecycleMu.Unlock()
 	}
 }
 
