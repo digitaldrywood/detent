@@ -76,7 +76,7 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 			if request.NativeLandingBatch && candidate.State == "Merging" {
 				claim.SessionID = "landing/" + batchSession + "/" + claim.SessionID
 			}
-			lease, err, admitted := claimPreviewCandidate(ctx, request, source, claim, candidate)
+			lease, err, admitted := s.claimPreviewCandidate(ctx, request, source, claim, candidate)
 			if !admitted {
 				continue
 			}
@@ -114,7 +114,7 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 		}
 		if providerEnabled && len(page.Items) == 0 && page.Next == 0 && len(leases) == 0 {
 			claim.ProviderCandidates = nil
-			lease, err, admitted := claimPreviewCandidate(ctx, request, source, claim, connector.Issue{})
+			lease, err, admitted := s.claimPreviewCandidate(ctx, request, source, claim, connector.Issue{})
 			if !admitted {
 				return leases, ErrNoClaimableWork
 			}
@@ -176,7 +176,7 @@ func (e *nativeExecution) ProviderCapacity() *providercapacity.Reservation {
 	return e.claim.lease.ProviderReservation
 }
 
-func claimPreviewCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, claim tracker.NativeClaim, candidate connector.Issue) (tracker.NativeLease, error, bool) {
+func (s *Scheduler) claimPreviewCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, claim tracker.NativeClaim, candidate connector.Issue) (tracker.NativeLease, error, bool) {
 	if request.CandidateAdmission != nil {
 		release, allowed := request.CandidateAdmission(candidate)
 		if !allowed {
@@ -184,6 +184,5 @@ func claimPreviewCandidate(ctx context.Context, request orchestrator.SchedulingR
 		}
 		defer release()
 	}
-	lease, err := source.client.Claim(ctx, claim)
-	return lease, err, true
+	return s.claimNative(ctx, source, claim)
 }

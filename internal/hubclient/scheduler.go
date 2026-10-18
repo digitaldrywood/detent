@@ -66,6 +66,7 @@ type Scheduler struct {
 	projectConfiguration  func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration
 	prepareProject        func(context.Context, string) error
 	runnerSetupDeclared   func(context.Context, string) *bool
+	claimAdmission        func() (func(), bool)
 	updateOwner           func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation
 	capacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
 	localChecks           map[string]runnerauth.LocalChecks
@@ -563,6 +564,12 @@ func cloneTime(value *time.Time) *time.Time {
 
 func intPointer(value int) *int {
 	return &value
+}
+
+func (s *Scheduler) SetClaimAdmission(admission func() (func(), bool)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.claimAdmission = admission
 }
 
 func (s *Scheduler) SetUpdateOwner(owner func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation) {

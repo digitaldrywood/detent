@@ -604,6 +604,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 				return err
 			}
 		}
+		if admission, ok := hubScheduling.(interface{ SetClaimAdmission(func() (func(), bool)) }); ok {
+			admission.SetClaimAdmission(globalDispatchGate.ReserveDispatch)
+		}
 		if reporter, ok := hubScheduling.(interface {
 			SetUpdateOwner(func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation)
 		}); ok {

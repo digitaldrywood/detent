@@ -170,6 +170,18 @@ func (r *PoolRegistry) Reconfigure(pools []PoolConfig, projects []ProjectCandida
 	return nil
 }
 
+func (r *PoolRegistry) ReserveDispatch() (func(), bool) {
+	if r == nil {
+		return func() {}, true
+	}
+	r.mu.RLock()
+	if len(r.pauses) > 0 {
+		r.mu.RUnlock()
+		return nil, false
+	}
+	return r.mu.RUnlock, true
+}
+
 func (r *PoolRegistry) PauseDispatch() func() {
 	if r == nil {
 		return func() {}

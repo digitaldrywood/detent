@@ -51,8 +51,12 @@ func TestProviderSchedulerEndToEnd(t *testing.T) {
 
 func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 	t.Parallel()
-	for _, issueID := range []string{"", "wi_test"} {
-		t.Run("preview_"+issueID, func(t *testing.T) {
+	for _, mode := range []string{"empty", "candidate", "paused during admission", "stale draining receipt", "operator drain"} {
+		t.Run(mode, func(t *testing.T) {
+			issueID := "wi_test"
+			if mode == "empty" {
+				issueID = ""
+			}
 			claims := 0
 			observations := 0
 			requirement := providercapacity.Requirement{Role: runner.RoleCode, Backend: "codex", Model: "sol"}
@@ -89,6 +93,13 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 				t.Fatal(err)
 			}
 			scheduler := &Scheduler{providerReports: func() ([]providercapacity.Report, error) { return nil, nil }}
+			if mode == "stale draining receipt" || mode == "operator drain" {
+				scheduler.machine.Update = &runnerauth.UpdateObservation{Receipt: &runnerauth.UpdateReceipt{Status: "draining", DrainReason: "execution worker protocol is incompatible with the controller"}}
+				if mode == "operator drain" {
+					scheduler.client = &Client{runner: &runnerCredentialSource{routing: &runnerauth.RoutingSnapshot{Routing: runnerauth.Routing{State: "draining"}}}}
+					scheduler.SetClaimAdmission(func() (func(), bool) { return func() {}, true })
+				}
+			}
 			request := orchestrator.SchedulingRequest{ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
 				if issueID == "" {
 					t.Error("empty preview should not resolve a model")
@@ -100,7 +111,20 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 					t.Fatalf("claim observation: issue=%s allowed=%t predicate=%s requirement=%+v", candidate.ID, allowed, predicate, required)
 				}
 			}}
+			if mode == "paused during admission" {
+				request.CandidateAdmission = func(connector.Issue) (func(), bool) {
+					scheduler.SetClaimAdmission(func() (func(), bool) { return nil, false })
+					return func() {}, true
+				}
+			}
 			_, err = scheduler.claimPreviewCandidates(t.Context(), request, &NativeConnector{client: native}, tracker.NativeClaim{}, 1)
+			if mode == "paused during admission" || mode == "operator drain" {
+				if claims != 0 || observations != 0 || !errors.Is(err, ErrNoClaimableWork) {
+					t.Fatalf("paused candidate claimed: claims=%d observations=%d err=%v", claims, observations, err)
+				}
+				return
+			}
+
 			if claims != 1 || issueID == "" && (!errors.Is(err, ErrNoClaimableWork) || observations != 0) || issueID != "" && (hubErrorCode(err) != "provider_capacity" || observations != 1) {
 				t.Fatalf("preview: claims=%d observations=%d error=%v", claims, observations, err)
 			}

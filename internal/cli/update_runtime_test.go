@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -476,6 +478,185 @@ func TestDrainCeilingIncludesSelectedSessionLevels(t *testing.T) {
 			}
 			if got := shutdownDrainTimeout(registry); got != time.Duration(duration)*time.Millisecond {
 				t.Fatalf("ceiling = %s", got)
+			}
+		})
+	}
+}
+
+func TestExceptionalUpdateDrainStopsNativeClaims(t *testing.T) {
+	for _, outcome := range []string{"replacement", "preparation failure", "refused", "restart declined", "operator drain", "drain canceled"} {
+		t.Run(outcome, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			updateCtx, cancelUpdate := context.WithCancel(ctx)
+			defer cancelUpdate()
+			var claims atomic.Int64
+			native, _, connection, workflow, create, _ := localWorkerHub(t, func(r *http.Request) {
+				if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claims") {
+					claims.Add(1)
+				}
+			})
+			activeIssue := create("Preserve active source")
+			request := orchestrator.SchedulingRequest{ProjectID: "local", Policy: workflow.Config.Policy, WorkflowStates: []string{"Todo"}, CandidateLimit: 1}
+			issues, err := native.FetchCandidateIssues(ctx, request)
+			if err != nil || len(issues) != 1 || issues[0].ID != activeIssue.ID {
+				t.Fatalf("initial fenced claim: %+v %v", issues, err)
+			}
+			nextIssue := create("Next independent work")
+			candidates := []scheduler.ProjectCandidate{{ID: "local"}}
+			pools := []scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 2}}}
+			gate, err := scheduler.NewPoolRegistry(pools, candidates)
+			if err != nil {
+				t.Fatal(err)
+			}
+			native.SetClaimAdmission(gate.ReserveDispatch)
+			slot, acquired, err := gate.TryAcquire(ctx, candidates[0], scheduler.SlotRequest{State: "Todo"}, time.Now())
+			if err != nil || !acquired {
+				t.Fatalf("active slot: %t %v", acquired, err)
+			}
+			artifacts, publish, _ := localWorkerArtifacts(t)
+			publish("1.0.0")
+			active, err := artifacts.Acquire(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := active.Release(); err != nil {
+					t.Error(err)
+				}
+			}()
+			source := filepath.Join(t.TempDir(), "source.go")
+			if err := os.WriteFile(source, []byte("package example\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			publish("1.0.1")
+			waiting := make(chan func(), 1)
+			completed := make(chan struct{})
+			finished := make(chan *runnerauth.UpdateObservation, 1)
+			done := make(chan struct{})
+			var applies, restarts int
+			running := runnerauth.BuildEvidence{Version: "1.0.0", Commit: "none", Source: "unknown", OS: "linux", Architecture: "amd64", ObservedAt: time.Now()}
+			updater, err := detentupdate.NewScheduler(detentupdate.SchedulerConfig{
+				WorkerArtifacts: artifacts, WorkerPreflight: func(context.Context, string) error { return detentupdate.ErrWorkerProtocolIncompatible },
+				Enabled: true, CheckInterval: time.Hour, StatePath: filepath.Join(t.TempDir(), "update.json"), RunningBuild: running,
+				Updater: urgentRuntimeUpdater{apply: func(context.Context, detentupdate.ApplyOptions) (detentupdate.Status, error) {
+					applies++
+					if outcome == "preparation failure" || outcome == "operator drain" {
+						return detentupdate.Status{FailureReason: "preflight failed"}, errors.New("preflight failed")
+					}
+					if outcome == "refused" {
+						return detentupdate.Status{Action: detentupdate.ActionRefused}, detentupdate.ErrRefused
+					}
+					return detentupdate.Status{Action: detentupdate.ActionUpdated, LatestVersion: "1.0.1", Binary: "verified-controller"}, nil
+				}},
+				ReserveDrain: func(ctx context.Context) (func(), error) {
+					release := gate.PauseDispatch()
+					waiting <- release
+					select {
+					case <-completed:
+						return release, nil
+					case <-ctx.Done():
+						release()
+						return nil, ctx.Err()
+					}
+				},
+				RequestRestart: func(string) bool { restarts++; return outcome != "restart declined" },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			go func() {
+				defer close(done)
+				finished <- updater.EnrolledUpdate(updateCtx, running, &runnerauth.UpdateRequest{RequestedAt: time.Now(), ID: "incompatible", Service: "detent", Version: "1.0.1", Release: true, Urgent: true})
+			}()
+			defer func() { cancel(); <-done }()
+			releaseUpdate := <-waiting
+			defer releaseUpdate()
+			observation := updater.EnrolledUpdate(ctx, running, nil)
+			if observation.Receipt == nil || observation.Receipt.Status != "draining" || observation.Receipt.DrainReason != detentupdate.ErrWorkerProtocolIncompatible.Error() {
+				t.Fatalf("active drain receipt: %+v", observation)
+			}
+			before := claims.Load()
+			checkPaused := func() {
+				t.Helper()
+				issues, err := native.FetchCandidateIssues(ctx, request)
+				if err != nil || len(issues) != 0 || claims.Load() != before {
+					t.Fatalf("drain requested new fenced work: claims=%d want=%d issues=%+v err=%v", claims.Load(), before, issues, err)
+				}
+			}
+			checkPaused()
+			pools = append(pools, scheduler.PoolConfig{Name: "other", Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}})
+			candidates = append(candidates, scheduler.ProjectCandidate{ID: "other", Pool: "other"})
+			if err := gate.Reconfigure(pools, candidates); err != nil {
+				t.Fatal(err)
+			}
+			gate.SetProjects(candidates)
+			checkPaused()
+			if _, err := native.RenewClaim(ctx, activeIssue.ID, time.Now()); err != nil {
+				t.Fatalf("drain lost active lease: %v", err)
+			}
+			if _, err := os.Stat(active.Status.Binary); err != nil {
+				t.Fatalf("drain lost active artifact: %v", err)
+			}
+			if data, err := os.ReadFile(source); err != nil || string(data) != "package example\n" {
+				t.Fatalf("drain lost source: %q %v", data, err)
+			}
+			if outcome == "drain canceled" {
+				cancelUpdate()
+				observation = <-finished
+				if observation.Receipt.Status != "refused" || updater.Status().State != "pending_idle" || applies != 0 || restarts != 0 {
+					t.Fatalf("canceled drain did not release active work: %+v applies/restarts=%d/%d", observation, applies, restarts)
+				}
+				if _, err := native.RenewClaim(ctx, activeIssue.ID, time.Now()); err != nil {
+					t.Fatalf("failed drain lost active lease: %v", err)
+				}
+			}
+			if err := connection.UpdateIssueState(ctx, activeIssue.ID, "Done"); err != nil {
+				t.Fatal(err)
+			}
+			if err := native.ReleaseClaim(ctx, activeIssue.ID, "completed"); err != nil {
+				t.Fatal(err)
+			}
+			if err := gate.Release(slot); err != nil {
+				t.Fatal(err)
+			}
+			releaseOperator := func() {}
+			if outcome == "operator drain" {
+				releaseOperator = gate.PauseDispatch()
+			}
+			defer releaseOperator()
+			wantApplies := 0
+			if outcome != "drain canceled" {
+				close(completed)
+				observation = <-finished
+				wantApplies = 1
+			}
+			if applies != wantApplies {
+				t.Fatalf("apply calls=%d", applies)
+			}
+			if outcome == "replacement" {
+				if restarts != 1 || observation.Receipt.Status != "restart_requested" {
+					t.Fatalf("replacement: %+v restarts=%d", observation, restarts)
+				}
+				checkPaused()
+				replacementGate, err := scheduler.NewPoolRegistry(pools, candidates)
+				if err != nil {
+					t.Fatal(err)
+				}
+				native.SetClaimAdmission(replacementGate.ReserveDispatch)
+			} else if observation.Receipt.Status == "draining" || observation.Receipt.Status == "restart_requested" {
+				t.Fatalf("failed update retained drain receipt: %+v", observation)
+			}
+			if outcome == "operator drain" {
+				checkPaused()
+				releaseOperator()
+			}
+			issues, err = native.FetchCandidateIssues(ctx, request)
+			if err != nil || len(issues) != 1 || issues[0].ID != nextIssue.ID || claims.Load() != before+1 {
+				t.Fatalf("admission did not resume exactly once: %+v claims=%d %v", issues, claims.Load(), err)
+			}
+			if err := native.ReleaseClaim(ctx, issues[0].ID, "completed"); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
