@@ -43,7 +43,6 @@ import { ConnectAI } from "../../src/app/reporter/ConnectAI.tsx";
 import {
   keyInWorkspace,
   readConnections,
-  reporterInstructions,
 } from "../../src/app/reporter/connections.ts";
 import { workHttpFor } from "../../src/app/work/lib/useWork.ts";
 import { resetHubPaths, applyHubPaths } from "../../src/runtime/basePath.ts";
@@ -600,13 +599,11 @@ it("creates a workspace write key and copies the actual token only in reporter a
     }),
   );
   await user.click(screen.getByRole("button", { name: "Copy instructions" }));
-  expect(clipboard).toHaveBeenCalledWith(
-    reporterInstructions("detent_test_secret"),
-  );
-  expect(clipboard.mock.calls[0]?.[0]).toContain(
-    "https://cloud.detent.build/mcp",
-  );
-  expect(clipboard.mock.calls[0]?.[0]).toContain(
+  expect(clipboard).toHaveBeenCalledOnce();
+  const instructions = clipboard.mock.calls[0]?.[0];
+  expect(instructions).toContain("DETENT_API_KEY: detent_test_secret");
+  expect(instructions).toContain("https://cloud.detent.build/mcp");
+  expect(instructions).toContain(
     "Authorization: Bearer $DETENT_API_KEY",
   );
 });
