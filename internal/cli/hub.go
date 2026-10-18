@@ -53,6 +53,7 @@ func newHubCommand(opts options) *cobra.Command {
 		return hubserver.Run(ctx, cfg)
 	}
 	cmd := newHubCommandWithRun(opts.version, opts.lookupEnv, run)
+	cmd.AddCommand(newCITriggerLabelCommand(opts))
 	for _, child := range cmd.Commands() {
 		if child.Name() == "runner" {
 			child.AddCommand(newHubRunnerRegisterCommand(opts.version, opts.lookupEnv, runnerServiceStarterFor(opts)))

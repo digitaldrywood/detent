@@ -985,7 +985,7 @@ func checkDoctorBuildDrift(runningBuild buildinfo.Info, installedBuild buildinfo
 	if drift.Detected {
 		check.Status = doctorWarn
 		check.Detail = fmt.Sprintf("running service build %s differs from installed executable build %s", running, installed)
-		check.Hint = "Run `detent start --restart` to load the installed build, then rerun detent doctor."
+		check.Hint = "Restart the runner service to load the installed build, then rerun detent doctor."
 	}
 	return check, true
 }

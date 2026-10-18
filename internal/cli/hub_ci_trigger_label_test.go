@@ -18,7 +18,7 @@ func TestRunCITriggerLabelRemovesAndAddsExistingLabel(t *testing.T) {
 	now := time.Date(2026, 7, 14, 22, 0, 0, 0, time.UTC)
 	var calls [][]string
 	result, err := runCITriggerLabel(context.Background(), ciTriggerLabelInput{
-		Repository:      "digitaldrywood/detent",
+		Repository:      "example-org/example-project",
 		PullRequest:     1313,
 		LabelBase64:     base64.RawURLEncoding.EncodeToString([]byte("ci:ready")),
 		HostnameBase64:  base64.RawURLEncoding.EncodeToString([]byte("github.example.com")),
@@ -37,18 +37,18 @@ func TestRunCITriggerLabelRemovesAndAddsExistingLabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runCITriggerLabel() error = %v", err)
 	}
-	if !result.Reapplied || result.Repository != "digitaldrywood/detent" || result.PullRequest != 1313 || result.Label != "ci:ready" {
+	if !result.Reapplied || result.Repository != "example-org/example-project" || result.PullRequest != 1313 || result.Label != "ci:ready" {
 		t.Fatalf("result = %#v", result)
 	}
 	want := [][]string{
-		{"gh", "api", "--hostname", "github.example.com", "--paginate", "repos/digitaldrywood/detent/issues/1313/labels", "--jq", ".[].name"},
-		{"gh", "api", "--hostname", "github.example.com", "--method", "DELETE", "repos/digitaldrywood/detent/issues/1313/labels/ci:ready", "--silent"},
-		{"gh", "api", "--hostname", "github.example.com", "--method", "POST", "repos/digitaldrywood/detent/issues/1313/labels", "-f", "labels[]=ci:ready", "--silent"},
+		{"gh", "api", "--hostname", "github.example.com", "--paginate", "repos/example-org/example-project/issues/1313/labels", "--jq", ".[].name"},
+		{"gh", "api", "--hostname", "github.example.com", "--method", "DELETE", "repos/example-org/example-project/issues/1313/labels/ci:ready", "--silent"},
+		{"gh", "api", "--hostname", "github.example.com", "--method", "POST", "repos/example-org/example-project/issues/1313/labels", "-f", "labels[]=ci:ready", "--silent"},
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %#v, want %#v", calls, want)
 	}
-	_, timestampPath := ciTriggerLabelCoordinationPaths(coordinationDir, "digitaldrywood/detent")
+	_, timestampPath := ciTriggerLabelCoordinationPaths(coordinationDir, "example-org/example-project")
 	raw, err := os.ReadFile(timestampPath)
 	if err != nil {
 		t.Fatalf("ReadFile(%s) error = %v", timestampPath, err)
@@ -63,7 +63,7 @@ func TestRunCITriggerLabelWaitsForRepositoryStagger(t *testing.T) {
 
 	coordinationDir := t.TempDir()
 	now := time.Date(2026, 7, 14, 22, 0, 5, 0, time.UTC)
-	_, timestampPath := ciTriggerLabelCoordinationPaths(coordinationDir, "digitaldrywood/detent")
+	_, timestampPath := ciTriggerLabelCoordinationPaths(coordinationDir, "example-org/example-project")
 	if err := os.MkdirAll(filepath.Dir(timestampPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
@@ -73,7 +73,7 @@ func TestRunCITriggerLabelWaitsForRepositoryStagger(t *testing.T) {
 	var waits []time.Duration
 	var calls [][]string
 	_, err := runCITriggerLabel(context.Background(), ciTriggerLabelInput{
-		Repository:      "digitaldrywood/detent",
+		Repository:      "example-org/example-project",
 		PullRequest:     1314,
 		Label:           "ci:ready",
 		StaggerSeconds:  15,
@@ -105,7 +105,7 @@ func TestRunCITriggerLabelRejectsZeroStagger(t *testing.T) {
 	t.Parallel()
 
 	_, err := runCITriggerLabel(context.Background(), ciTriggerLabelInput{
-		Repository:     "digitaldrywood/detent",
+		Repository:     "example-org/example-project",
 		PullRequest:    1314,
 		Label:          "ci:ready",
 		StaggerSeconds: 0,
@@ -119,7 +119,7 @@ func TestRunCITriggerLabelRejectsConflictingLabelRepresentations(t *testing.T) {
 	t.Parallel()
 
 	_, err := runCITriggerLabel(context.Background(), ciTriggerLabelInput{
-		Repository:     "digitaldrywood/detent",
+		Repository:     "example-org/example-project",
 		PullRequest:    1314,
 		Label:          "ci:ready",
 		LabelBase64:    base64.RawURLEncoding.EncodeToString([]byte("ci:ready")),

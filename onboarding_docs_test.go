@@ -227,13 +227,8 @@ func TestRenderedGitHubWorkflowTemplatesRequireReadyNonDraftPR(t *testing.T) {
 	}
 }
 
-func TestOnboardingDocumentsWorkerModelAndSessionGuardChoices(t *testing.T) {
+func TestWorkflowTemplatesDocumentWorkerModelAndSessionGuardChoices(t *testing.T) {
 	t.Parallel()
-
-	builder := readRepositoryTextFile(t, "internal/cli/onboarding_workflow_builder.go")
-	if strings.Contains(builder, "gpt-5.") {
-		t.Fatalf("onboarding workflow builder contains a hardcoded model generation:\n%s", builder)
-	}
 
 	for _, path := range []string{
 		"docs/templates/WORKFLOW.project_v2.md",

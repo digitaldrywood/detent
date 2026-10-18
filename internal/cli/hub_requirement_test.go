@@ -13,7 +13,6 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	servicepkg "github.com/digitaldrywood/detent/internal/service"
 )
 
 func TestHubStartupRequirement(t *testing.T) {
@@ -145,66 +144,5 @@ func TestDoctorReportsHubRequirement(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestStartCommandHubRequirement(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name, url, kind string
-		wantRefusal     bool
-	}{
-		{name: "standalone", kind: "memory", wantRefusal: true},
-		{name: "Hub native without Hub", kind: "hub_native"},
-		{name: "Hub native with Hub", url: "https://hub.example.test", kind: "hub_native"},
-		{name: "memory with Hub", url: "https://hub.example.test", kind: "memory"},
-		{name: "unreadable workflow", kind: "missing"},
-	} {
-		for _, restart := range []bool{false, true} {
-			name := test.name
-			if restart {
-				name += " restart"
-			}
-			t.Run(name, func(t *testing.T) {
-				t.Parallel()
-				root := t.TempDir()
-				workflow := filepath.Join(root, "WORKFLOW.md")
-				if test.kind != "missing" {
-					if err := os.WriteFile(workflow, []byte("---\ntracker:\n  kind: "+test.kind+"\n---\nWork the issue.\n"), 0o600); err != nil {
-						t.Fatal(err)
-					}
-				}
-				path := filepath.Join(root, "global.yaml")
-				cfg := globalconfig.Config{Path: path, Client: globalconfig.HubClient{URL: test.url}, Projects: []globalconfig.Project{{ID: "example", Workflow: workflow}}}
-				runner := &serviceRunnerStub{startResults: []servicepkg.StartResult{{Action: servicepkg.ActionStarted, State: servicepkg.StateRunning}}}
-				opts := defaultOptions()
-				opts.readOrDefault = func(string) (globalconfig.Config, error) { return cfg, nil }
-				opts.lookupEnv = func(string) string { return "" }
-				WithServiceFactory(func(servicepkg.Config) (ServiceRunner, error) {
-					if test.wantRefusal {
-						t.Fatal("standalone startup reached the service manager")
-					}
-					return runner, nil
-				})(&opts)
-				host, port := "", 0
-				cmd := newStartCommand(&path, &host, &port, opts)
-				args := []string{"--yes"}
-				if restart {
-					args = append(args, "--restart")
-				}
-				cmd.SetArgs(args)
-				cmd.SetOut(io.Discard)
-				cmd.SetErr(io.Discard)
-				err := cmd.ExecuteContext(t.Context())
-				if test.wantRefusal {
-					problem := ProblemForError(err)
-					if err == nil || problem.Code != "validation" || !strings.Contains(problem.SuggestedFix, "docs/hub-self-hosting.md") {
-						t.Fatalf("startup error = %v, problem = %#v", err, problem)
-					}
-				} else if err != nil || len(runner.startOptions) != 1 || runner.startOptions[0].Restart != restart {
-					t.Fatalf("startup error = %v, options = %#v", err, runner.startOptions)
-				}
-			})
-		}
 	}
 }

@@ -131,7 +131,7 @@ func TestHubRunnerRegisterStartsWithoutCheckouts(t *testing.T) {
 			if strings.Contains(output, "Clone the") || test.service && !test.startError && strings.Contains(output, "next_steps") {
 				t.Fatalf("manual setup steps: %s", output)
 			}
-			if !test.service && !strings.Contains(output, "detent start --config") {
+			if !test.service && !strings.Contains(output, "detent --config") {
 				t.Fatalf("missing start command: %s", output)
 			}
 			if _, err := os.Lstat(filepath.Join(root, "checkouts", "orders")); !errors.Is(err, os.ErrNotExist) {

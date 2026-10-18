@@ -266,7 +266,7 @@ describe("MCP setup", () => {
     ["/organizations/org_example", "https://app.example.org", "https://app.example.org/organizations/org_example/mcp"],
     ["/organizations/org_example", "https://app.example.org/organizations/org_example", "https://app.example.org/organizations/org_example/mcp"],
     ["/organizations/org_example", "https://app.example.org/organizations/org_secondary_example", null],
-  ])("routes a viewer to setup at %j and copies only a matching organization URL or placeholder examples using shared key metadata", async (mount, publicURL, expected) => {
+  ])("routes a viewer to setup at %j and copies only a matching organization URL using shared key metadata", async (mount, publicURL, expected) => {
     applyHubPaths({ base_path: mount });
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
@@ -309,10 +309,7 @@ describe("MCP setup", () => {
       expect(screen.getByText(/The organization HTTPS URL is unavailable/)).toBeTruthy();
       expect(writeText).not.toHaveBeenCalled();
     }
-    fireEvent.click(screen.getByText("Connect to your own Detent daemon"));
-    fireEvent.click(screen.getByRole("button", { name: "Copy Local stdio configuration" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(expected ? 4 : 1));
-    expect(JSON.parse(writeText.mock.lastCall![0]).mcpServers.detent.env.DETENT_API_TOKEN).toBe("YOUR_DETENT_API_TOKEN");
+    expect(screen.queryByRole("button", { name: "Copy Local stdio configuration" })).toBeNull();
     for (const [url, options] of fetch.mock.calls) {
       expect(String(url)).not.toMatch(/tokens|credentials/);
       expect(options?.method ?? "GET").toBe("GET");

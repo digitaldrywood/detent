@@ -4614,7 +4614,7 @@ func TestCheckDoctorDetentServiceReportsBuildDrift(t *testing.T) {
 			installed:  buildinfo.Info{Version: "v1.2.3", Commit: "abcdef123456"},
 			wantStatus: doctorWarn,
 			wantDetail: "differs from installed executable build",
-			wantHint:   "detent start --restart",
+			wantHint:   "Restart the runner service",
 		},
 	}
 

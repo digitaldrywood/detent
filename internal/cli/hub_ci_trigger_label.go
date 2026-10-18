@@ -47,7 +47,7 @@ func newCITriggerLabelCommand(opts options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "ci-trigger-label",
 		Short:        "Reapply a pull request CI trigger label with host-wide staggering",
-		Example:      "detent ci-trigger-label --repository owner/repo --pull-request 42 --label ci:ready --hostname github.com --stagger-seconds 15",
+		Example:      "detent hub ci-trigger-label --repository owner/repo --pull-request 42 --label ci:ready --hostname github.com --stagger-seconds 15",
 		Args:         NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
