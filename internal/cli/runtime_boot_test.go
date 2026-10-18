@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 )
 
 func TestRetryBootGitHubToken(t *testing.T) {
@@ -82,38 +86,71 @@ func TestWaitBootGitHubToken(t *testing.T) {
 	}
 }
 
-func TestBootRuntimeCredentialsCancellation(t *testing.T) {
+func TestBootRuntimeCredentials(t *testing.T) {
 	for _, tt := range []struct {
 		name           string
 		canceledBefore bool
+		cancelDuring   bool
+		deferred       bool
+		token          string
+		resolveErr     error
 	}{
 		{name: "before resolution", canceledBefore: true},
-		{name: "during resolution"},
+		{name: "during resolution", cancelDuring: true},
+		{name: "deferred before resolution", deferred: true, canceledBefore: true},
+		{name: "deferred during resolution", deferred: true, cancelDuring: true},
+		{name: "deferred missing gh", deferred: true, resolveErr: errors.New("gh was not found on PATH")},
+		{name: "deferred failed gh login", deferred: true, resolveErr: errors.New("not logged in")},
+		{name: "deferred empty token", deferred: true, token: "  "},
+		{name: "deferred configured token", deferred: true, token: "configured-token"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			calls := 0
-			opts := defaultOptions()
-			opts.ghAuthToken = func(context.Context) (string, error) {
-				calls++
-				cancel()
-				return "", errors.New("keyring unavailable")
-			}
-			if tt.canceledBefore {
-				cancel()
-			}
-			_, err := resolveConfiguredGitHubToken(ctx, "gh", bootRuntimeDeps(opts))
-			if !errors.Is(err, context.Canceled) || errors.Is(err, ErrGitHubAuth) {
-				t.Fatalf("error=%v", err)
-			}
-			want := 1
-			if tt.canceledBefore {
-				want = 0
-			}
-			if calls != want {
-				t.Fatalf("calls=%d want %d", calls, want)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				calls := 0
+				opts := defaultOptions()
+				opts.lookupEnv = mapLookup(nil)
+				opts.ghAuthToken = func(context.Context) (string, error) {
+					calls++
+					if calls > 1 {
+						t.Fatal("deferred startup retried optional GitHub authentication")
+					}
+					if tt.cancelDuring {
+						cancel()
+					}
+					return tt.token, tt.resolveErr
+				}
+				if tt.canceledBefore {
+					cancel()
+				}
+				deps := bootRuntimeDeps(opts)
+				deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
+					if tt.deferred {
+						t.Fatal("deferred startup requested project authentication")
+					}
+					return workflowconfig.Workflow{Config: githubWorkflow("")}, nil
+				}
+				cfg := githubRuntimeConfig("gh")
+				got, err := resolveRuntimeSettings(ctx, runtimeInput{
+					Config: &cfg, DeferProjectValidation: tt.deferred,
+					Flags: runtimeFlags{Port: runtimeIntFlag{Set: true}},
+				}, deps)
+				if tt.canceledBefore || tt.cancelDuring {
+					if !errors.Is(err, context.Canceled) || errors.Is(err, ErrGitHubAuth) {
+						t.Fatalf("error=%v", err)
+					}
+				} else if err != nil || got.GitHubToken.Value != strings.TrimSpace(tt.token) {
+					t.Fatalf("credential resolution failed: error=%v, token present=%v", err, got.GitHubToken.Value != "")
+				}
+				want := 1
+				if tt.canceledBefore {
+					want = 0
+				}
+				if calls != want {
+					t.Fatalf("calls=%d want %d", calls, want)
+				}
+			})
 		})
 	}
 }
