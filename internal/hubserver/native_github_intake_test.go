@@ -351,4 +351,5 @@ func (f *browserHostedFixture) seedGitHubTriage(t *testing.T) {
 	snapshot.Title = "Public GitHub report awaiting triage"
 	scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: tracker.ProjectID(f.project)}
 	applyLinkedWebhook(t, nativeFixture{service: f.service, project: tracker.NativeProject{ID: scope.project, OrganizationID: scope.organization}}, "opened", "issues", snapshot, nil)
+	drainTestNativeBoard(t, f.service)
 }
