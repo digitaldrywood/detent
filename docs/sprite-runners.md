@@ -139,15 +139,17 @@ select **A Fly Sprite**. New Sprite runners use **Full access**
 network. The enrollment access choice is passed to
 `detent hub runner register --isolation-tier`.
 
-Sandbox becomes available on a Sprite runner once its isolation probe reports
-sandbox support for every configured agent backend. Sprite processes inherit an
-ambient Linux capability set that makes the Codex sandbox refuse to start, so
+An owner or admin can approve switching an individual Sprite runner to Sandbox
+to request its isolation probe. Sandbox work remains unavailable until the probe
+reports sandbox support for every configured agent backend. Full access Sprites
+skip this optional sandbox probe. Sprite processes inherit an ambient Linux
+capability set that makes the Codex sandbox refuse to start, so
 Detent v0.117.42 and later start sandboxed agent processes with inheritable
-and ambient capabilities dropped. Older runners fail the probe and stay on Full
-access; update the runner, wait for its next heartbeat, then switch it to
-Sandbox. Sandbox limits agent writes to the workspace and outbound network to
-the sandbox domain allowlist; it does not hide files elsewhere on the VM from
-agent reads.
+and ambient capabilities dropped. Older runners fail the probe and cannot run
+Sandbox work; update the runner and wait for its next heartbeat, or approve
+switching it to Full access. Sandbox limits agent writes to the workspace and
+outbound network to the sandbox domain allowlist; it does not hide files
+elsewhere on the VM from agent reads.
 
 For **Add runner > AI assisted**, Luna explains Full access and includes
 `isolation_tier: native-trusted` in new approved Sprite pool settings. The saved
