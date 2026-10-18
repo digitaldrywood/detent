@@ -140,8 +140,8 @@ gh workflow run release-cut.yml --ref develop -f version=v1.2 -f sha=<develop-sh
 
 The cut owner creates the branch and explicitly dispatches `ci.yml` on it,
 because GitHub's workflow token does not trigger push workflows when it creates
-a ref. Human pushes and merged cherry-pick PRs trigger full CI through
-`push: release/*`. Cutting and fixing a release do not freeze develop.
+a ref. Pushes and merged cherry-pick PRs do not start CI; after merging a
+batch of picks, dispatch the full suite on the release branch. Cutting and fixing a release do not freeze develop.
 
 ### Stabilize
 
@@ -169,7 +169,7 @@ preflight skips completed non-cancelled runs regardless of conclusion. Set
 is published as `develop-full-ci`, helps select the next cut and does not
 publish a stable release.
 
-Every release push or dispatch runs the same full suite on the event's exact
+Every release dispatch runs the same full suite on the event's exact
 SHA, with a separate concurrency group from develop and other release branches.
 A release run never reuses develop evidence or skips because that SHA ran
 elsewhere. Only its successful full-suite finalizer publishes
