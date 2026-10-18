@@ -143,6 +143,11 @@ func TestRunnerEligibility(t *testing.T) {
 		{"wrong runner", func(*Runner) {}, policy.Requirements{RunnerID: "runner_b"}, false, "selector_no_match"},
 		{"host full", func(r *Runner) { r.HostUsed = 2 }, policy.Requirements{}, false, "host_capacity"},
 		{"runner full", func(r *Runner) { r.Used = 2 }, policy.Requirements{}, false, "runner_capacity"},
+		{"total and project share one capacity refusal", func(r *Runner) {
+			r.Used = 2
+			r.ProjectUsed = map[tracker.ProjectID]int{"prj_a": 2}
+			r.ProjectCapacityLimits = map[tracker.ProjectID]int{"prj_a": 1}
+		}, policy.Requirements{}, false, "runner_capacity"},
 		{"reported pause", func(r *Runner) { r.ReportedCapacity = 0 }, policy.Requirements{}, false, "runner_capacity"},
 		{"active lease survives reported pause", func(r *Runner) { r.ReportedCapacity = 0 }, policy.Requirements{}, true, ""},
 		{"active retains slot", func(r *Runner) { r.Used = 2; r.HostUsed = 2 }, policy.Requirements{}, true, ""},

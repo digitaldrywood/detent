@@ -45,18 +45,22 @@ ORDER BY CASE WHEN r.id = ? THEN 0 ELSE 1 END, r.id LIMIT 101`, scope.organizati
 	if len(runners) == 0 {
 		return runners, truncated, nil
 	}
-	rows, err = query.QueryContext(ctx, `SELECT l.machine_id, coalesce(lr.runner_id, ''), l.expires_at
-FROM leases l JOIN issues i ON i.id = l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id
+	rows, err = query.QueryContext(ctx, `SELECT l.machine_id, coalesce(lr.runner_id, ''), l.expires_at, l.session_id, l.lease_id, coalesce(i.project_id, ''), `+nativeLandingCapacityProject+`
+FROM leases l JOIN issues i ON i.id = l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id `+nativeLandingCapacityJoins+`
 WHERE l.machine_id IN (`+placeholders(len(machines))+`) AND l.released_at IS NULL`, machines...)
 	if err != nil {
 		return nil, false, err
 	}
 	defer rows.Close()
 	used := make(map[tracker.MachineID]map[string]int)
+	projects := make(map[string]map[tracker.ProjectID]int)
+	hostSlots := make(map[string]bool)
+	runnerSlots := make(map[string]bool)
 	for rows.Next() {
 		var machine tracker.MachineID
-		var runner, expiry string
-		if err := rows.Scan(&machine, &runner, &expiry); err != nil {
+		var runner, expiry, session, lease, batchProject string
+		var project tracker.ProjectID
+		if err := rows.Scan(&machine, &runner, &expiry, &session, &lease, &project, &batchProject); err != nil {
 			return nil, false, err
 		}
 		end, err := parseTimeValue(expiry)
@@ -64,11 +68,25 @@ WHERE l.machine_id IN (`+placeholders(len(machines))+`) AND l.released_at IS NUL
 			return nil, false, err
 		}
 		if end.After(now) {
-			hosts[machine]++
+			key := landingCapacityKey(machine, batchProject, session)
+			if key == "" {
+				key = lease
+			}
+			if !hostSlots[key] {
+				hosts[machine]++
+				hostSlots[key] = true
+			}
 			if used[machine] == nil {
 				used[machine] = make(map[string]int)
 			}
-			used[machine][runner]++
+			if !runnerSlots[runner+"/"+key] {
+				used[machine][runner]++
+				if projects[runner] == nil {
+					projects[runner] = make(map[tracker.ProjectID]int)
+				}
+				projects[runner][project]++
+				runnerSlots[runner+"/"+key] = true
+			}
 		}
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
@@ -87,6 +105,7 @@ WHERE l.machine_id IN (`+placeholders(len(machines))+`) AND l.released_at IS NUL
 	for i := range runners {
 		r := &runners[i]
 		r.HostUsed, r.Used = hosts[r.MachineID], used[r.MachineID][r.RunnerID]
+		r.ProjectUsed = projects[r.RunnerID]
 		for _, report := range reports[r.RunnerID] {
 			r.ProviderCapacity = append(r.ProviderCapacity, provider.view(r.RunnerID, report, now))
 		}

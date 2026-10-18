@@ -31,6 +31,7 @@ type Routing struct {
 	Tags                        []string                     `json:"tags"`
 	State                       string                       `json:"state"`
 	CapacityLimit               int                          `json:"capacity_limit"`
+	ProjectCapacityLimits       map[tracker.ProjectID]int    `json:"project_capacity_limits"`
 	ProjectRanks                map[tracker.ProjectID]int    `json:"project_ranks,omitempty"`
 	ProjectIDs                  []tracker.ProjectID          `json:"project_ids"`
 	IsolationTier               string                       `json:"isolation_tier"`
@@ -96,11 +97,12 @@ type HostChange struct {
 }
 
 type Runner struct {
-	BackendIsolation map[string][]string     `json:"backend_isolation,omitempty"`
-	Update           *UpdateObservation      `json:"update,omitempty"`
-	CapacityConfig   *CapacityConfig         `json:"capacity_configuration,omitempty"`
-	Problems         []Problem               `json:"problems"`
-	ProviderCapacity []providercapacity.View `json:"provider_capacity,omitempty"`
+	BackendIsolation map[string][]string       `json:"backend_isolation,omitempty"`
+	Update           *UpdateObservation        `json:"update,omitempty"`
+	CapacityConfig   *CapacityConfig           `json:"capacity_configuration,omitempty"`
+	ProjectUsed      map[tracker.ProjectID]int `json:"project_used,omitempty"`
+	Problems         []Problem                 `json:"problems"`
+	ProviderCapacity []providercapacity.View   `json:"provider_capacity,omitempty"`
 	Binding
 	Routing
 	OrganizationID   tracker.OrganizationID `json:"organization_id"`
@@ -166,6 +168,7 @@ func (r Routing) Normalized() Routing {
 	if r.Tags == nil {
 		r.Tags = []string{}
 	}
+	r.ProjectCapacityLimits = maps.Clone(r.ProjectCapacityLimits)
 	r.ProjectIDs = slices.Clone(r.ProjectIDs)
 	slices.Sort(r.ProjectIDs)
 	if r.IsolationTier == "" {
@@ -218,6 +221,14 @@ func (r Routing) Validate() error {
 	for i, id := range r.ProjectIDs {
 		if id == "" || slices.Contains(r.ProjectIDs[:i], id) {
 			return errors.New("runner project access must contain unique project IDs")
+		}
+	}
+	if len(r.ProjectCapacityLimits) > 100 {
+		return errors.New("runner project capacity limits are limited to 100 projects")
+	}
+	for id, capacity := range r.ProjectCapacityLimits {
+		if id == "" || capacity < 0 || capacity > 10000 {
+			return errors.New("runner project capacity limits require project IDs and counts between 0 and 10000")
 		}
 	}
 	for id, rank := range r.ProjectRanks {
@@ -306,7 +317,7 @@ func (r Runner) Exclusions(project tracker.ProjectID, requirements policy.Requir
 	if !activeLease && r.HostUsed >= r.HostCapacity {
 		add("host_capacity", "Shared host capacity is full or paused")
 	}
-	if !activeLease && r.Used >= min(r.CapacityLimit, r.ReportedCapacity) {
+	if !activeLease && r.RemainingCapacity(project) <= 0 {
 		add("runner_capacity", "Runner capacity is full or paused")
 	}
 	if !activeLease && len(r.ProviderCapacity) > 0 {
@@ -318,6 +329,14 @@ func (r Runner) Exclusions(project tracker.ProjectID, requirements policy.Requir
 		}
 	}
 	return result
+}
+
+func (r Runner) RemainingCapacity(project tracker.ProjectID) int {
+	remaining := min(r.CapacityLimit, r.ReportedCapacity) - r.Used
+	if limit, configured := r.ProjectCapacityLimits[project]; configured {
+		remaining = min(remaining, limit-r.ProjectUsed[project])
+	}
+	return remaining
 }
 
 func (a Availability) Evaluate(now time.Time) (activehours.Status, error) {
