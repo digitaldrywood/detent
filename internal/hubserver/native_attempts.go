@@ -205,7 +205,7 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 	return nil
 }
 
-func recordNativeAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID, event tracker.NativeRunEvent, now time.Time, termination bool) (recorded, history bool, resultErr error) {
+func recordNativeAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID, event *tracker.NativeRunEvent, now time.Time, termination bool) (recorded, history bool, resultErr error) {
 	data := event.Data
 	publish := true
 	encoded, err := marshalNative(data)
@@ -312,6 +312,23 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organi
 		var previous tracker.NativeRunData
 		if err := json.Unmarshal([]byte(previousJSON), &previous); err != nil {
 			return false, false, err
+		}
+		if termination {
+			identity := tracker.NativeRunData{AttemptID: data.AttemptID, RunID: data.RunID, LeaseID: data.LeaseID,
+				FencingToken: data.FencingToken, PolicyID: data.PolicyID, Identity: data.Identity,
+				MachineID: data.MachineID, SessionID: data.SessionID, RunnerID: data.RunnerID,
+				Sequence: data.Sequence, Outcome: "cancelled"}
+			if !reflect.DeepEqual(data, identity) {
+				return false, false, nativeExecutionConflict("Released execution may acknowledge termination only; source and completion evidence require current authority")
+			}
+			if previous.LeaseID != data.LeaseID || previous.FencingToken != data.FencingToken || previous.RunID != data.RunID || previous.PolicyID != data.PolicyID || previous.Identity == nil || data.Identity == nil || *previous.Identity != *data.Identity {
+				return false, false, nativeExecutionConflict("Termination acknowledgment must match the recorded execution owner")
+			}
+			next := data.Sequence
+			data = previous
+			data.Sequence, data.Outcome = next, "cancelled"
+			data.Handoff, data.ArtifactIDs = nil, nil
+			event.Data = data
 		}
 		data.Evidence = previous.Evidence
 		encoded, err = marshalNative(data)
