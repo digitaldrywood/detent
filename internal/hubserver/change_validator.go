@@ -177,7 +177,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 			implementationReviewed = review.Decision == "approved" && review.ImplementationReview.Verdict == gate.ValidatorVerdictPass
 		}
 		if review.SecurityAudit != nil && review.SessionMachineID == current.MachineID && review.SecurityAudit.SessionID == result.SessionID {
-			return "", nativeInvalid("security audit requires a separate session")
+			return "", invalid("security audit requires a separate session", "validator.session_id")
 		}
 
 		other := review.ImplementationReview
