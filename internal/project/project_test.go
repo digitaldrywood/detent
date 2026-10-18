@@ -357,11 +357,13 @@ func TestProjectGitHubRuntimeTokenRefreshesAfterAuthFailure(t *testing.T) {
 	workflowCfg := workflowConfig("github")
 	workflowCfg.Tracker.Endpoint = server.URL
 	workflowCfg.Tracker.ProjectSlug = "PVT_1"
+	workflowCfg.Tracker.GitHubStatusSource = "project_v2"
 	var refreshes atomic.Int64
-	got, err := projectfixture.New(project.Config{
+	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
 			ID:     "detent",
 			Weight: 1,
+			Paused: true,
 		},
 		Workflow: workflowconfig.Workflow{Config: workflowCfg},
 	}, project.Dependencies{
@@ -375,6 +377,8 @@ func TestProjectGitHubRuntimeTokenRefreshesAfterAuthFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+
+	t.Cleanup(func() { _ = got.Close() })
 
 	authenticator, ok := got.Connector().(connector.Authenticator)
 	if !ok {
