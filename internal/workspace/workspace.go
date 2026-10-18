@@ -2159,6 +2159,23 @@ func workerScratchParent(workspacePath string, scratchPath string) (string, bool
 	return "", false
 }
 
+func WorkerArtifactCleanupRoot(workspacePath, cleanupPath string) (string, error) {
+	if strings.TrimSpace(workspacePath) == "" || strings.TrimSpace(cleanupPath) == "" {
+		return workspacePath, nil
+	}
+	root := bestEffortCanonicalPath(workspacePath)
+	if parent, ok := workerScratchParent(root, cleanupPath); ok {
+		if _, err := validateWorkspacePath(parent, cleanupPath); err != nil {
+			return "", err
+		}
+		return parent, nil
+	}
+	if _, err := validateWorkspacePath(root, cleanupPath); err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
 func CleanupWorkerScratch(workspacePath string, scratchPath string) error {
 	if strings.TrimSpace(scratchPath) == "" {
 		return nil
