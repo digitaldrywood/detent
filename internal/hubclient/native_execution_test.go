@@ -170,7 +170,7 @@ func (f executionRoundTrip) RoundTrip(request *http.Request) (*http.Response, er
 }
 
 func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
-	for _, name := range []string{"expire", "renew", "renewal outage", "renew during native finish"} {
+	for _, name := range []string{"expire", "renew", "renewal outage", "renew during native finish", "guard during native finish"} {
 		renew := name == "renew"
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -212,7 +212,7 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 				scheduler.claimPolicies[id] = claimPolicy{project: "project", descriptor: descriptor}
 				execution := scheduler.RunExecution(id)
 				guarded := t.Context()
-				if name != "renew during native finish" {
+				if name != "renew during native finish" && name != "guard during native finish" {
 					var stop func()
 					guarded, stop, err = execution.Guard(t.Context())
 					if err != nil {
@@ -220,13 +220,19 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 					}
 					defer stop()
 				}
-				if name == "renew during native finish" {
+				if name == "renew during native finish" || name == "guard during native finish" {
 					claim := scheduler.nativeClaims[id]
 					scheduler.claims[id] = nativeTrackerLease(claim.lease)
 					scheduler.nativeHeartbeats[native.project] = time.Now()
 					nativeExecution := execution.(*nativeExecution)
 					nativeExecution.data.Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
 					nativeExecution.preparedOutcome = "failed"
+					var stopGuard func()
+					defer func() {
+						if stopGuard != nil {
+							stopGuard()
+						}
+					}()
 					started, allowFinish := make(chan struct{}), make(chan struct{})
 					defer func() {
 						select {
@@ -261,11 +267,25 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 						}
 						return original.RoundTrip(request)
 					})
+					if name == "guard during native finish" {
+						guarded, stopGuard, err = execution.Guard(t.Context())
+						if err != nil {
+							t.Fatal(err)
+						}
+						synctest.Wait()
+					}
 					finished := make(chan error, 1)
 					go func() { finished <- scheduler.ReleaseClaim(guarded, id, "released") }()
 					<-started
 					for range 7 {
 						time.Sleep(20 * time.Second)
+						if name == "guard during native finish" {
+							synctest.Wait()
+							if scheduler.nativeClaims[id].deadline.Before(time.Now()) {
+								t.Fatal("completion publication blocked the worker lease guard")
+							}
+							continue
+						}
 						renewed := make(chan error, 1)
 						go func() {
 							_, err := scheduler.RenewClaim(guarded, id, time.Now())
