@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type LocalSessionStore struct {
@@ -13,6 +14,11 @@ type LocalSessionStore struct {
 }
 
 func (s LocalSessionStore) UpdateSessionWorkerProcess(ctx context.Context, id int64, process store.WorkerProcessRegistration) error {
+	root, err := workspace.WorkerArtifactCleanupRoot(process.CleanupRoot, process.CleanupPath)
+	if err != nil {
+		return err
+	}
+	process.CleanupRoot = root
 	return s.Peer.Call(ctx, "local.register", nil, id, process)
 }
 
