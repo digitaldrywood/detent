@@ -650,32 +650,55 @@ func TestNativeChangeOversizedReviewRecovery(t *testing.T) {
 	}
 	h := newNativeChangeHub(t, true)
 	type evidence struct {
+		name    string
 		item    tracker.NativeWorkItemID
 		change  tracker.ChangeRequest
 		version tracker.ChangeVersion
 		reviews []tracker.ChangeReview
 	}
 	var fixtures []evidence
-	for i, field := range []string{"criterion", "security finding"} {
+	for i, field := range []string{"criterion", "security finding", "implementation commands", "second implementation commands"} {
 		issue := h.createInProgress(t, "Oversized retained "+field)
 		item := tracker.NativeWorkItemID(issue.ID)
 		change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Retained review"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		version := h.publish(t, item, change.ID, nativeChangeFixtureHead([]string{"b", "c"}[i]))
+		version := h.publish(t, item, change.ID, nativeChangeFixtureHead([]string{"b", "c", "d", "e"}[i]))
 		reviews := []tracker.ChangeReview{
 			{ID: fmt.Sprintf("review_small_%d", i), VersionID: version.ID, Decision: "approved", Body: "Initial review"},
 			{ID: fmt.Sprintf("review_large_%d", i), VersionID: version.ID, Decision: "changes_requested"},
 		}
 		large := &reviews[1]
 		text := strings.Repeat("<\\\"\n世界", 40000)
-		if i == 0 {
+		switch i {
+		case 0:
 			large.Validator = &gate.ValidatorResult{VersionID: version.ID, HeadSHA: version.HeadSHA, Verdict: "rework", Submitted: true, Findings: []gate.Finding{{Severity: "p1", Body: "Failed criterion"}}, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Retained criterion", Kind: gate.EvidenceNotVerified, Behavior: text, ReceiptIDs: []string{"receipt_failed"}, HeadSHA: version.HeadSHA}}, Commands: []gate.CommandResult{{ReceiptID: "receipt_failed", HeadSHA: version.HeadSHA, ExitCode: 1, Output: "Failed"}}}
-		} else {
+		case 1:
 			large.SecurityAudit = &tracker.SecurityAuditReview{VersionID: version.ID, Verdict: "rework", Run: securityaudit.Run{Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Verdict: "fail", Findings: []securityaudit.Finding{{ID: "finding_blocking", Severity: "p2", Body: text}}}}
+		default:
+			result := &gate.ValidatorResult{VersionID: version.ID, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Verdict: "rework", Submitted: true, Findings: []gate.Finding{{Severity: "p2", Body: "Command evidence requires rework"}}}
+			for command := range 76 {
+				receipt := fmt.Sprintf("receipt_%d_%02d", i, command)
+				result.Commands = append(result.Commands, gate.CommandResult{ReceiptID: receipt, Execution: "executed", Command: fmt.Sprintf("go test -timeout=60s ./internal/example%d -run TestCase%d", i, command), HeadSHA: version.HeadSHA, TreeSHA: strings.Repeat("f", 40), ExitCode: command % 2, Output: fmt.Sprintf("Command %d result\n", command) + strings.Repeat("output <\\\"\n世界", 500)})
+				result.CriteriaEvidence = append(result.CriteriaEvidence, gate.CriterionEvidence{Criterion: fmt.Sprintf("Command criterion %d", command), Kind: gate.EvidenceNotVerified, Behavior: "Command evidence retained", ReceiptIDs: []string{receipt}, HeadSHA: version.HeadSHA})
+			}
+			large.ImplementationReview = result
+			bounded := *result
+			bounded.Commands = slices.Clone(result.Commands)
+			for command := range bounded.Commands {
+				bounded.Commands[command] = tracker.PublicGateResult(bounded.Commands[command])
+				if !bounded.Commands[command].OutputTruncated {
+					t.Fatal("many-command fixture did not exercise normal output bounding")
+				}
+			}
+			raw, err := json.Marshal(bounded)
+			if err != nil || len(raw) <= operatortool.MaxResultBytes {
+				t.Fatalf("many-command review must overflow after normal output bounding: bytes=%d error=%v", len(raw), err)
+			}
+			t.Logf("%s: commands=%d bounded_review_bytes=%d", field, len(result.Commands), len(raw))
 		}
-		fixtures = append(fixtures, evidence{item: item, change: change, version: version, reviews: reviews})
+		fixtures = append(fixtures, evidence{name: field, item: item, change: change, version: version, reviews: reviews})
 	}
 	h.reopen(func(path string) error {
 		db, err := sql.Open("sqlite", path)
@@ -715,7 +738,7 @@ func TestNativeChangeOversizedReviewRecovery(t *testing.T) {
 	})
 	t.Cleanup(func() { h.native.client.httpClient.Transport = nativeTransport })
 	for _, fixture := range fixtures {
-		t.Run(string(fixture.item), func(t *testing.T) {
+		t.Run(fixture.name, func(t *testing.T) {
 			path, err := changePath(fixture.item, fixture.change.ID, "")
 			if err != nil {
 				t.Fatal(err)
