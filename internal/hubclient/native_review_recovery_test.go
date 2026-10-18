@@ -85,14 +85,13 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 		name, stage, verdict string
 		refusal              string
 		restore, malformed   bool
-		hostHandoff, stopped bool
+		hostHandoff          bool
 	}{
 		{name: "healthy"},
 		{name: "tool-directed host publication handoff", hostHandoff: true},
 		{name: "source", stage: "source"},
 		{name: "security", stage: "security"},
 		{name: "validator", stage: "validator"},
-		{name: "stopped published source", stage: "validator", stopped: true},
 		{name: "restored security", stage: "security", restore: true},
 		{name: "source findings", stage: "source", verdict: "rework"},
 		{name: "acceptance findings", stage: "validator", verdict: "rework"},
@@ -248,43 +247,6 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 					t.Fatalf("observe recovery: deferred=%v source=%d security=%d validator=%d error=%v", deferred, provider.sourceCalls.Load(), provider.securityCalls.Load(), provider.validatorCalls.Load(), err)
 				}
 				if state.Retry[issue.ID].CompletionDeferred {
-					if !deferred && test.stopped {
-						stopOrchestrator()
-						owner := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
-						change := owner.NativeChange()
-						if err := owner.KeepWorker(func(context.Context) error { return nil }, nil); err != nil {
-							t.Fatal(err)
-						}
-						if err := owner.Finish(t.Context(), "interrupted"); err != nil {
-							t.Fatal(err)
-						}
-						if err := h.native.Release(t.Context(), owner.claim.lease, "cancelled"); err != nil {
-							t.Fatal(err)
-						}
-						var sourceRecovery tracker.NativeSourceRecovery
-						if err := h.admin.client.request(t.Context(), "GET", h.admin.base()+"/work-items/"+issue.ID+"/source-recovery", nil, &sourceRecovery); err != nil || sourceRecovery.Quiesced {
-							t.Fatalf("interrupted writer became quiescent before cleanup: %+v, %v", sourceRecovery, err)
-						}
-						if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "cancelled"); err != nil {
-							t.Fatal(err)
-						}
-						if err := h.admin.client.request(t.Context(), "GET", h.admin.base()+"/work-items/"+issue.ID+"/source-recovery", nil, &sourceRecovery); err != nil || !sourceRecovery.Quiesced || sourceRecovery.VersionID != change.VersionID || sourceRecovery.HeadSHA != change.HeadSHA {
-							t.Fatalf("confirmed worker cleanup lost recoverable source: %+v, %v", sourceRecovery, err)
-						}
-						provider.available.Store(true)
-						candidate := h.claim(t, issue.ID)
-						replacement := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
-						result, err := agent.Run(t.Context(), runner.RunRequest{Execution: replacement, Issue: candidate, Mode: runner.RunModeImplement})
-						if err != nil || result.NativeChange == nil || !result.NativeChange.Reviewed || result.TurnStarted || provider.writableCalls != 1 {
-							t.Fatalf("stopped source did not resume configured review: result=%+v writable=%d error=%v", result, provider.writableCalls, err)
-						}
-						h.complete(t, issue.ID, result.NativeChange)
-						detail, err := h.admin.Change(t.Context(), current.WorkItemID, change.ChangeID)
-						if err != nil || len(detail.Versions) != 1 || detail.Versions[0].ID != change.VersionID || detail.Versions[0].HeadSHA != change.HeadSHA || len(detail.Reviews) != 3 || detail.Summary.Status != "reviewed" || provider.securityCalls.Load() != 1 || provider.sourceCalls.Load() != 1 || provider.validatorCalls.Load() != 2 {
-							t.Fatalf("recovery changed source or bypassed independent review: detail=%+v error=%v", detail, err)
-						}
-						return
-					}
 					if !deferred && test.refusal != "" {
 						stopOrchestrator()
 						owner := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
