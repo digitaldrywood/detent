@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	gatepkg "github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -152,7 +153,9 @@ func sshTestProvider(ctx context.Context) error {
 			ID     json.RawMessage
 			Method string
 			Params struct {
-				Cwd string `json:"cwd"`
+				Cwd         string `json:"cwd"`
+				Sandbox     string `json:"sandbox"`
+				Permissions string `json:"permissions"`
 			}
 		}
 		if err := decoder.Decode(&message); err != nil {
@@ -174,6 +177,15 @@ func sshTestProvider(ctx context.Context) error {
 		case "account/read":
 			result = map[string]any{"account": map[string]any{"type": "chatgpt", "planType": "plus"}, "requiresOpenaiAuth": false}
 		case "thread/start", "thread/resume":
+			if expected := os.Getenv("DETENT_SSH_TEST_SANDBOX"); expected != "" {
+				if expected == "sandbox" {
+					if message.Params.Permissions != "detent-runner" || message.Params.Sandbox != "" {
+						return fmt.Errorf("claim sandbox lost: sandbox=%q permissions=%q", message.Params.Sandbox, message.Params.Permissions)
+					}
+				} else if message.Params.Sandbox != expected && message.Params.Sandbox != "read-only" {
+					return fmt.Errorf("claim sandbox = %q, want %q", message.Params.Sandbox, expected)
+				}
+			}
 			result = map[string]any{"thread": map[string]any{"id": "remote-thread"}}
 		case "turn/start":
 			if err := encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": message.ID, "result": map[string]any{"turn": map[string]any{"id": "remote-turn"}}}); err != nil {
@@ -282,11 +294,14 @@ func TestSSHWorkerLifecycle(t *testing.T) {
 		}
 	})
 	for _, native := range []bool{false, true} {
-		t.Run(fmt.Sprintf("native=%t", native), func(t *testing.T) { testSSHWorkerLifecycle(t, false, native) })
+		t.Run(fmt.Sprintf("native=%t", native), func(t *testing.T) { testSSHWorkerLifecycle(t, false, native, isolation.NativeTrusted) })
 	}
-	t.Run("native source producer parse failure", func(t *testing.T) { testSSHWorkerLifecycle(t, false, true, true) })
+	if isolation.SandboxAvailable() {
+		t.Run("sandbox claim", func(t *testing.T) { testSSHWorkerLifecycle(t, false, false, isolation.Sandbox) })
+	}
+	t.Run("native source producer parse failure", func(t *testing.T) { testSSHWorkerLifecycle(t, false, true, isolation.NativeTrusted, true) })
 	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
-		t.Run("local ephemeral execution", func(t *testing.T) { testSSHWorkerLifecycle(t, false, true, false, true) })
+		t.Run("local ephemeral execution", func(t *testing.T) { testSSHWorkerLifecycle(t, false, true, isolation.NativeTrusted, false, true) })
 	}
 }
 
@@ -297,10 +312,10 @@ func TestSSHLocalTargetIntegration(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("local SSH daemon fixture requires POSIX sshd configuration; TestSSHWorkerLifecycle covers the worker protocol")
 	}
-	testSSHWorkerLifecycle(t, true, true)
+	testSSHWorkerLifecycle(t, true, true, isolation.NativeTrusted)
 }
 
-func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, producerFailure ...bool) {
+func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, producerFailure ...bool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
@@ -399,7 +414,11 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, producerFailure .
 	cfg.Codex.Shell = "sh"
 	cfg.Hooks.Shell = "sh"
 	gate := "test -f \"$HOME/before-run\" && test -f \"$GH_CONFIG_DIR/hosts.yml\" && printf passed > \"$HOME/gate\""
-	cfg.Codex.Command = "env DETENT_SSH_TEST_HELPER=provider DETENT_SSH_TEST_GATE=" + sshQuote(gate) + " " + sshQuote(filepath.ToSlash(executable)) + " -test.run=^TestSSHHelperProcess$"
+	expectedSandbox := "danger-full-access"
+	if tier == isolation.Sandbox {
+		expectedSandbox = "sandbox"
+	}
+	cfg.Codex.Command = "env DETENT_SSH_TEST_SANDBOX=" + expectedSandbox + " DETENT_SSH_TEST_HELPER=provider DETENT_SSH_TEST_GATE=" + sshQuote(gate) + " " + sshQuote(filepath.ToSlash(executable)) + " -test.run=^TestSSHHelperProcess$"
 	failingReview := len(producerFailure) != 0 && producerFailure[0]
 	if failingReview {
 		cfg.Codex.Command = "env DETENT_SSH_TEST_REVIEW_FAILURE=1 " + cfg.Codex.Command
@@ -451,7 +470,7 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, producerFailure .
 	}
 	var updatesMu sync.Mutex
 	var updates []runnerpkg.UsageUpdate
-	request := runnerpkg.RunRequest{ProjectID: "ssh-fixture", Issue: connector.Issue{ID: "first", Identifier: "fixture#1", Title: "SSH fixture", State: "In Progress"}, WorkerHost: "fixture-remote", Mode: runnerpkg.RunModeRoutine, Routine: &runnerpkg.RoutineRequest{Name: "ssh", Prompt: "Create and push feature.txt; run the gate."}, OnUsageUpdate: func(update runnerpkg.UsageUpdate) error {
+	request := runnerpkg.RunRequest{ProjectID: "ssh-fixture", Issue: connector.Issue{ID: "first", Identifier: "fixture#1", Title: "SSH fixture", State: "In Progress", IsolationPolicy: &isolation.Policy{Tier: tier}}, WorkerHost: "fixture-remote", Mode: runnerpkg.RunModeRoutine, Routine: &runnerpkg.RoutineRequest{Name: "ssh", Prompt: "Create and push feature.txt; run the gate."}, OnUsageUpdate: func(update runnerpkg.UsageUpdate) error {
 		updatesMu.Lock()
 		updates = append(updates, update)
 		updatesMu.Unlock()

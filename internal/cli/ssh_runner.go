@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
@@ -384,7 +385,13 @@ func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBoots
 	if boot.Local {
 		sessions = runnerpkg.LocalSessionStore{SSHSessionStore: runnerpkg.SSHSessionStore{Peer: peer}}
 	}
-	deps, err := buildRunnerDependenciesWithIdentity(ctx, boot.Workflow, boot.ProjectID, boot.Workdir, boot.Memory, sessions, logger, connection, boot.CommitIdentity)
+	var isolationPolicies []func() (isolation.Policy, error)
+	if claimPolicy := boot.Run.IsolationPolicy; claimPolicy != nil {
+		isolationPolicies = append(isolationPolicies, func() (isolation.Policy, error) {
+			return *claimPolicy, nil
+		})
+	}
+	deps, err := buildRunnerDependenciesWithIdentity(ctx, boot.Workflow, boot.ProjectID, boot.Workdir, boot.Memory, sessions, logger, connection, boot.CommitIdentity, isolationPolicies...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", runnerpkg.ErrWorkspacePreparation, err)
 	}

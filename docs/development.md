@@ -210,8 +210,11 @@ keep their original workflow. Isolation-changing local binding operations still
 use their existing settled-work contract. Refused reloads record their complete
 error chain through the existing workflow reload diagnostics.
 
-The existing private worker protocol is version 4. It includes typed session
-process registration and cleanup scoped to one channel. A controller can launch
+The existing private worker protocol is version 5. It carries the captured claim
+isolation policy explicitly across the worker process boundary, alongside typed
+session process registration and cleanup scoped to one channel. Controllers and
+workers must both support this version; older peers cannot silently discard the
+claim policy and substitute backend defaults. A controller can launch
 any newer verified execution release advertising this protocol on its platform;
 its own build number is not a compatibility ceiling. Children never open the
 controller's SQLite store, run migrations, claim work, renew leases or publish a
