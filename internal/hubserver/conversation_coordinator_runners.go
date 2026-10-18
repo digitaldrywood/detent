@@ -90,9 +90,6 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 		if err != nil {
 			return nil, err
 		}
-		if err := validateRunnerAccess(ctx, s.database.reader, r, args.IsolationTier); err != nil {
-			return nil, err
-		}
 		change := coordinatorRunnerChange{RunnerID: r.RunnerID, IsolationTier: args.IsolationTier, ExpectedRevision: r.Revision}
 		if convert {
 			change.Scope = "organization"
