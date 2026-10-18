@@ -1175,7 +1175,7 @@ func nativeReviewResumeAttempt(recovery tracker.NativeRecovery, command string) 
 		attempt := &recovery.Attempts[i]
 		if finalization := attempt.Finalization; !finalizationObserved && finalization != nil && attempt.PolicyID == current.PolicyID && finalization.ChangeID == current.ChangeID && finalization.VersionID == current.ID && finalization.HeadSHA == current.HeadSHA {
 			finalizationObserved = true
-			finalizationPending = finalization.Changed && !finalization.Reviewed && finalization.Error == "" && finalization.VersionError == "" && (attempt.Status == "interrupted" || attempt.Status == "failed")
+			finalizationPending = finalization.Changed && !finalization.Reviewed && finalization.Error == "" && finalization.VersionError == "" && (attempt.Status == "interrupted" || attempt.Status == "failed" || attempt.Status == "cancelled")
 		}
 		if attempt.Checkpoint != nil && (attempt.Checkpoint.UncertainForgeEffect() || attempt.Checkpoint.HeadSHA != "" && attempt.Checkpoint.HeadSHA != current.HeadSHA || attempt.Checkpoint.WorktreeState == "dirty") {
 			return nil
@@ -1189,7 +1189,7 @@ func nativeReviewResumeAttempt(recovery tracker.NativeRecovery, command string) 
 			break
 		}
 	}
-	if source == nil || source.PolicyID != current.PolicyID || source.Disposition == nil || source.CompletionBody == "" || source.Status != "succeeded" && source.Status != "failed" && source.Status != "interrupted" {
+	if source == nil || source.PolicyID != current.PolicyID || source.Disposition == nil || source.CompletionBody == "" || source.Status != "succeeded" && source.Status != "failed" && source.Status != "interrupted" && source.Status != "cancelled" {
 		return nil
 	}
 	parsed := NativeDispositionFromMessage(source.CompletionBody)
