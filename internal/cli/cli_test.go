@@ -37,11 +37,12 @@ func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 	if !strings.HasPrefix(output, "Examples:\n") {
 		t.Fatalf("help output does not lead with examples:\n%s", output)
 	}
-	for _, want := range []string{"detent", "agent orchestrator", "doctor", "dev-runtime", "hub", "cloud", "artifact", "pause", "unpause", "promote"} {
+	for _, want := range []string{"detent", "agent orchestrator", "doctor", "dev-runtime", "hub", "cloud", "artifact", "pause", "resume", "issue", "report", "logs"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}
 	}
+
 }
 
 func TestCommandHelpLeadsWithExample(t *testing.T) {
@@ -54,6 +55,7 @@ func TestCommandHelpLeadsWithExample(t *testing.T) {
 		flags   []string
 	}{
 		{name: "pause", args: []string{"pause"}, example: "detent pause api", flags: []string{"--config", "--reason"}},
+		{name: "migration local import", args: []string{"hub", "issue", "import-local"}, example: "detent hub issue import-local", flags: []string{"--source-project", "--kind", "--store-id", "--dry-run", "--lane-map", "--terminal-state"}},
 		{name: "migration Hub", args: []string{"hub", "serve"}, example: "detent hub serve", flags: []string{"--database", "--listen", "--github-disabled"}},
 		{name: "migration backup", args: []string{"hub", "backup"}, example: "detent hub backup", flags: []string{"--database", "--output"}},
 		{name: "migration verification", args: []string{"hub", "verify"}, example: "detent hub verify", flags: []string{"--database"}},
@@ -91,14 +93,15 @@ func TestCommandHelpLeadsWithExample(t *testing.T) {
 func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
+	type commandCase struct {
 		name       string
 		args       []string
 		want       []string
 		dontWant   []string
 		wantCount  map[string]int
 		wantNoBoot bool
-	}{
+	}
+	tests := []commandCase{
 		{
 			name:       "command typo",
 			args:       []string{"paues"},
@@ -139,6 +142,12 @@ func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
 		},
 	}
 
+	for _, name := range []string{"state", "mcp", "promote", "unpause"} {
+		tests = append(tests, commandCase{name: "removed " + name, args: []string{name}, want: []string{`unknown command "` + name + `"`}, wantNoBoot: true})
+	}
+	for _, name := range []string{"get", "create", "edit", "comment", "edit-comment", "transition", "dependency", "comments", "history", "changes", "create-change", "change", "publish-change", "review-change", "check-change", "discuss-change", "approve-review-policy"} {
+		tests = append(tests, commandCase{name: "removed hub issue " + name, args: []string{"hub", "issue", name}, want: []string{`unknown command "` + name + `"`}, wantNoBoot: true})
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -738,13 +747,6 @@ func TestCLIValidationErrorsCarryHints(t *testing.T) {
 			wantHint:     "e.g. detent --port 0",
 			wantCommands: []string{"detent --port 0"},
 		},
-		{
-			name:         "invalid promote priority",
-			args:         []string{"--config", configPath, "promote", "api", "--priority", "0"},
-			wantMessage:  "--priority must be positive",
-			wantHint:     "e.g. detent promote api --priority 10",
-			wantCommands: []string{"detent promote api --priority 10"},
-		},
 	}
 
 	for _, tt := range tests {
@@ -931,20 +933,9 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 	})
 	assertSignal(t, signals, cli.OperationPauseProject, "detent")
 
-	runCommand("unpause", "detent")
-	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
-		if project.Paused {
-			t.Fatal("Paused = true, want false")
-		}
-		if project.PausedReason != "" || project.PausedUntilIssue != "" || project.PausedUntil != "" || project.PausedAt != "" {
-			t.Fatalf("pause metadata not cleared: %#v", project)
-		}
-	})
-	assertSignal(t, signals, cli.OperationUnpauseProject, "detent")
-
 	resumeStarted := time.Now().UTC()
-	runCommand("resume", "detent", "--for", "2h")
-	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
+	runCommand("resume", "docs", "--for", "2h")
+	assertProject(t, configPath, "docs", func(project globalconfig.Project) {
 		until, err := time.Parse(time.RFC3339, project.ActiveHoursOverrideUntil)
 		if err != nil {
 			t.Fatalf("ActiveHoursOverrideUntil = %q: %v", project.ActiveHoursOverrideUntil, err)
@@ -953,20 +944,7 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 			t.Fatalf("ActiveHoursOverrideUntil = %v, want about two hours from now", until)
 		}
 	})
-	assertSignal(t, signals, cli.OperationResumeProject, "detent")
-
-	runCommand("promote", "docs", "--priority", "1")
-	assertProject(t, configPath, "docs", func(project globalconfig.Project) {
-		if project.Priority != 0 {
-			t.Fatalf("Priority = %d, want 0", project.Priority)
-		}
-	})
-	assertSignal(t, signals, cli.OperationPromoteProject, "docs")
-	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
-		if project.Priority != 1 {
-			t.Fatalf("detent rank = %d, want 1", project.Priority)
-		}
-	})
+	assertSignal(t, signals, cli.OperationResumeProject, "docs")
 
 }
 

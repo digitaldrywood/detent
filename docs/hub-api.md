@@ -2656,19 +2656,14 @@ the existing projected `PullRequestSummary`, labels it as a snapshot, and identi
 a mismatched external head. Existing protected-merge verification and the exact-head
 merge mutation remain authoritative; the native API has no auto-merge switch.
 
-`detent hub issue` exposes `changes`, `create-change`, `change`, `publish-change`,
-`review-change`, `check-change`, `discuss-change`, and `approve-review-policy`.
-The existing `--project`, `--organization`, `--hub-url`, `--identity-file`, and
-`--token-env` flags select the scope and credentials. Mutations read typed JSON
-from stdin. For example:
-
-```sh
-detent hub issue create-change wi_example --project prj_example <<'JSON'
-{"idempotency_key":"propose-work","title":"Proposed work","body":"Review context"}
-JSON
-detent hub issue changes wi_example --project prj_example
-detent hub issue change wi_example change_example --project prj_example
-```
+Operators use Hub MCP `list_changes`, `get_change`, `get_change_version`,
+`create_change`, `publish_change_version`, `review_change`, `discuss_change`,
+and `approve_change_review_policy`, or the scoped native Change and review-policy
+API routes above. Check submission uses
+`POST /work-items/{item}/changes/{change}/versions/{version}/checks` under the
+scoped native project base. Mutations retain their idempotency keys,
+expected version identities and current authority. The runner owns worker source
+publication; access to an operator tool does not grant a worker that authority.
 
 The Work board/list opens native issue detail, which links to Change Request
 detail. Detail provides version selection, stale/missing-evidence messages,
