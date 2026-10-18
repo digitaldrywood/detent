@@ -4,15 +4,224 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/instancelock"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestEnrolledReadCommandsDuringIdentityWrite(t *testing.T) {
+	for _, name := range []string{"runner_alpha", "runner_beta"} {
+		t.Run(name, func(t *testing.T) {
+			projectID := tracker.ProjectID("prj_" + name)
+			hub := newRegisterHub(t, map[tracker.ProjectID]string{projectID: "Example project"})
+			hub.repositories[projectID] = "owner/repository"
+			var projectStatus, projectReads atomic.Int32
+			readerHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("diagnostic attempted a Hub mutation: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusMethodNotAllowed)
+					return
+				}
+				if strings.HasSuffix(r.URL.Path, "/projects/"+string(projectID)) {
+					projectReads.Add(1)
+					if status := projectStatus.Load(); status != 0 {
+						w.WriteHeader(int(status))
+						return
+					}
+				}
+				hub.server.Config.Handler.ServeHTTP(w, r)
+			}))
+			t.Cleanup(readerHub.Close)
+			dir := t.TempDir()
+			if err := os.Chmod(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			identityPath := filepath.Join(dir, "identity.json")
+			file, err := runnerauth.Initialize(identityPath, readerHub.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			file.Identity.OrganizationID = "org_example"
+			file.Identity.ProjectIDs = []tracker.ProjectID{projectID}
+			file.Identity.Operations = []string{runnerauth.Read}
+			file.Identity.ExpiresAt = time.Now().Add(runnerauth.CredentialTTL)
+			if err := runnerauth.Save(identityPath, file); err != nil {
+				t.Fatal(err)
+			}
+			hub.identity.Store(file.Identity)
+			hub.credential.Store(file.Credential)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer fixture_service_token" {
+					t.Error("state request lost the configured service token")
+				}
+				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/state" {
+					t.Errorf("unexpected dashboard request: %s %s", r.Method, r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(stateFixture())
+			}))
+			t.Cleanup(server.Close)
+			address, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			configPath := filepath.Join(dir, "global.yaml")
+			config := fmt.Sprintf("apiVersion: detent/v1\nkind: GlobalConfig\nport: %s\napi_token: fixture_service_token\nworkspace_root: %s\nclient:\n  hub_url: %s\n  organization_id: org_example\n  identity_file: %s\n  capacity: 1\n", address.Port(), filepath.Join(dir, "work"), readerHub.URL, identityPath)
+			if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := globalconfig.Read(configPath); err != nil {
+				t.Fatal(err)
+			}
+			at := time.Date(2026, time.August, 7, 10, 0, 0, 0, time.UTC)
+			writeLogLines(t, filepath.Join(dir, "detent.log"), testLogRecord(at, "INFO", "owned fixture log", name, "1", "owner/repository#1", 0, 0, ""))
+			for _, test := range []struct {
+				name          string
+				held          bool
+				projectStatus int
+				revoked       bool
+				expired       bool
+				noProjects    bool
+				wantErr       string
+			}{
+				{name: "without writer"},
+				{name: "with writer", held: true},
+				{name: "current grants replace cached grants", held: true, noProjects: true},
+				{name: "missing project", held: true, projectStatus: http.StatusNotFound},
+				{name: "rejected project", held: true, projectStatus: http.StatusUnauthorized, wantErr: "read runner project"},
+				{name: "revoked project grant", held: true, projectStatus: http.StatusForbidden, wantErr: "read runner project"},
+				{name: "revoked credential", held: true, revoked: true, wantErr: "read runner's allowed projects"},
+				{name: "expired identity", held: true, expired: true, wantErr: "expired"},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					projectStatus.Store(int32(test.projectStatus))
+					identity := file.Identity
+					if test.noProjects {
+						identity.ProjectIDs = nil
+					}
+					identity.ExpiresAt = time.Now().Add(time.Minute)
+					if test.expired {
+						identity.ExpiresAt = time.Now().Add(-time.Minute)
+					}
+					hub.identity.Store(identity)
+					credential := file.Credential
+					if test.revoked {
+						credential = "revoked_fixture_credential"
+					}
+					hub.credential.Store(credential)
+					if test.held {
+						lock, err := instancelock.Acquire(identityPath + ".lock")
+						if err != nil {
+							t.Fatal(err)
+						}
+						t.Cleanup(func() {
+							if err := lock.Close(); err != nil {
+								t.Error(err)
+							}
+						})
+					}
+					before := map[string][]byte{}
+					beforeInfo := map[string]os.FileInfo{}
+					for _, path := range []string{configPath, identityPath, identityPath + ".lock"} {
+						data, err := os.ReadFile(path)
+						if err != nil && !errors.Is(err, os.ErrNotExist) {
+							t.Fatal(err)
+						}
+						before[path] = data
+						if err == nil {
+							info, err := os.Stat(path)
+							if err != nil {
+								t.Fatal(err)
+							}
+							beforeInfo[path] = info
+						}
+					}
+					for _, command := range []string{"logs", "state"} {
+						t.Run(command, func(t *testing.T) {
+							readsBefore := projectReads.Load()
+							cmd := NewRootCommand(t.Context())
+							var stdout, stderr bytes.Buffer
+							cmd.SetOut(&stdout)
+							cmd.SetErr(&stderr)
+							args := []string{"--config", configPath, "--format", "json", command}
+							if command == "logs" {
+								args = append(args, "--since", at.Format(time.RFC3339), "--until", at.Format(time.RFC3339), "--limit", "1", "--max-bytes", "1048576", "--output", "jsonl")
+							}
+							cmd.SetArgs(args)
+							err := cmd.Execute()
+							if test.wantErr != "" {
+								if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+									t.Fatalf("authority refusal = %v, want %s", err, test.wantErr)
+								}
+								if stdout.Len() != 0 {
+									t.Fatal("unauthorized diagnostic returned local data")
+								}
+							} else {
+								if err != nil {
+									t.Fatalf("read-only %s rejected: %v", command, err)
+								}
+								if test.noProjects {
+									if projectReads.Load() != readsBefore {
+										t.Fatal("diagnostic used a cached project grant")
+									}
+								} else if projectReads.Load() == readsBefore {
+									t.Fatal("diagnostic did not resolve the enrolled project")
+								}
+								if command == "logs" && !strings.Contains(stdout.String(), "owned fixture log") {
+									t.Fatal("log result omitted the fixture")
+								}
+								if command == "state" && !strings.Contains(stdout.String(), "generated_at") {
+									t.Fatal("state result omitted the snapshot")
+								}
+							}
+							for _, secret := range []string{file.Credential, "fixture_service_token"} {
+								if strings.Contains(stdout.String()+stderr.String()+fmt.Sprint(err), secret) {
+									t.Fatal("diagnostic exposed a credential")
+								}
+							}
+						})
+					}
+					for path, want := range before {
+						got, err := os.ReadFile(path)
+						if errors.Is(err, os.ErrNotExist) && want == nil {
+							continue
+						}
+						if err != nil || want == nil || !bytes.Equal(got, want) {
+							t.Errorf("diagnostic changed owned file %s: %v", filepath.Base(path), err)
+						}
+						info, err := os.Stat(path)
+						previous := beforeInfo[path]
+						if err != nil || previous == nil || !os.SameFile(previous, info) || info.Mode() != previous.Mode() || !info.ModTime().Equal(previous.ModTime()) {
+							t.Errorf("diagnostic rewrote owned file %s: %v", filepath.Base(path), err)
+						}
+					}
+					if test.held {
+						inspection, err := instancelock.Inspect(identityPath + ".lock")
+						if err != nil || inspection.Status != instancelock.StatusHeld {
+							t.Fatalf("diagnostic lost the identity writer lock: %v", err)
+						}
+					}
+					if _, err := os.Stat(filepath.Join(dir, "work")); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("diagnostic prepared a checkout: %v", err)
+					}
+				})
+			}
+		})
+	}
+}
 
 func TestParseLogsFilter(t *testing.T) {
 	t.Parallel()
