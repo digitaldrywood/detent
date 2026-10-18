@@ -834,7 +834,7 @@ func TestInstructionsDescribeCITriggerLabel(t *testing.T) {
 		"after any other CI lane labels",
 		"Detent records successful worker pushes",
 		"merging workers also reapply it immediately after deterministic head-changing pushes",
-		"detent ci-trigger-label",
+		"detent hub ci-trigger-label",
 		"removes the label if present, adds it again",
 		"REST issue-label endpoints",
 		"before waiting for current-head checks",

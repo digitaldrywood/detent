@@ -28,8 +28,6 @@ import (
 	"testing"
 	"time"
 
-	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
@@ -692,7 +690,7 @@ chmod 755 "$5"
 	}
 }
 
-func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
+func TestFreshInstallBootsOnboardingWizardAndExposesRunnerEnrollment(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
@@ -745,7 +743,7 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 	}
 	stop()
 
-	runInstalledSubcommands(t, binary, tmp, serverEnv)
+	assertInstalledEnrollmentCommand(t, binary, tmp, serverEnv)
 }
 
 func isolatedInstallCheckout(t *testing.T, source string, checkout string) string {
@@ -1558,73 +1556,17 @@ func tryReadURL(url string) (string, error) {
 	return string(raw), nil
 }
 
-func runInstalledSubcommands(t *testing.T, binary string, root string, env []string) {
+func assertInstalledEnrollmentCommand(t *testing.T, binary string, root string, env []string) {
 	t.Helper()
 
-	workdir := filepath.Join(root, "subcommands")
-	projectDir := filepath.Join(workdir, "project")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll(projectDir) error = %v", err)
-	}
-	workflowPath := filepath.Join(projectDir, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte(gateWorkflowContent()), 0o600); err != nil {
-		t.Fatalf("WriteFile(workflow) error = %v", err)
-	}
-	configPath := filepath.Join(workdir, "global.yaml")
-
-	runDetentCommand(t, binary, workdir, env, "--config", configPath, "init")
-	runDetentCommand(t, binary, workdir, env,
-		"--config", configPath,
-		"add-project",
-		"--id", "detent",
-		"--workflow", workflowPath,
-		"--workdir", projectDir,
-		"--weight", "2",
-		"--priority", "4",
-	)
-	assertInstalledProject(t, configPath, func(project globalconfig.Project) {
-		if project.ID != "detent" || project.Workflow != workflowPath || project.Workdir != projectDir {
-			t.Fatalf("project = %#v, want installed detent project", project)
-		}
-		if project.Weight != 1 || project.Priority != 0 {
-			t.Fatalf("project scheduling = weight %d priority %d, want 1/0", project.Weight, project.Priority)
-		}
-	})
-
-	runDetentCommand(t, binary, workdir, env, "--config", configPath, "pause", "detent", "--reason", "integration test")
-	assertInstalledProject(t, configPath, func(project globalconfig.Project) {
-		if !project.Paused {
-			t.Fatal("project Paused = false, want true")
-		}
-	})
-
-	runDetentCommand(t, binary, workdir, env, "--config", configPath, "unpause", "detent")
-	assertInstalledProject(t, configPath, func(project globalconfig.Project) {
-		if project.Paused {
-			t.Fatal("project Paused = true, want false")
-		}
-	})
-
-	runDetentCommand(t, binary, workdir, env, "--config", configPath, "promote", "detent", "--priority", "1")
-	assertInstalledProject(t, configPath, func(project globalconfig.Project) {
-		if project.Priority != 0 {
-			t.Fatalf("project Priority = %d, want 0", project.Priority)
-		}
-	})
-
-	runDetentCommand(t, binary, workdir, env, "--config", configPath, "remove-project", "detent")
-	cfg := readInstalledConfiguration(t, configPath)
-	if len(cfg.Projects) != 0 {
-		t.Fatalf("Projects = %#v, want none", cfg.Projects)
-	}
-}
-
-func runDetentCommand(t *testing.T, binary string, workdir string, env []string, args ...string) {
-	t.Helper()
-
-	stdout, stderr, err := runDetentCommandOutput(t, binary, workdir, env, args...)
+	stdout, stderr, err := runDetentCommandOutput(t, binary, root, env, "hub", "runner", "register", "--help")
 	if err != nil {
-		t.Fatalf("detent %v error = %v\nstdout:\n%s\nstderr:\n%s", args, err, stdout, stderr)
+		t.Fatalf("installed runner enrollment help: %v\nstderr:\n%s", err, stderr)
+	}
+	for _, want := range []string{"--url", "--token", "--config", "--workspace-root", "--service"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("installed runner enrollment help missing %q:\n%s", want, stdout)
+		}
 	}
 }
 
@@ -1703,46 +1645,4 @@ func gitOutput(t *testing.T, root string, args ...string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(string(out)), true
-}
-
-func assertInstalledProject(t *testing.T, configPath string, check func(globalconfig.Project)) {
-	t.Helper()
-
-	cfg := readInstalledConfiguration(t, configPath)
-	if len(cfg.Projects) != 1 {
-		t.Fatalf("Projects length = %d, want 1", len(cfg.Projects))
-	}
-	check(cfg.Projects[0])
-}
-
-func readInstalledConfiguration(t *testing.T, configPath string) globalconfig.Config {
-	t.Helper()
-
-	cfg, err := globalconfig.Read(configPath)
-	if err != nil {
-		t.Fatalf("Read() error = %v", err)
-	}
-	settings, err := store.Open(t.Context(), store.Config{Path: filepath.Join(filepath.Dir(configPath), "detent.db")})
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
-	}
-	defer func() {
-		if err := settings.Close(); err != nil {
-			t.Errorf("Close() error = %v", err)
-		}
-	}()
-	cfg, err = settings.LocalConfiguration(t.Context(), cfg)
-	if err != nil {
-		t.Fatalf("LocalConfiguration() error = %v", err)
-	}
-	return cfg
-}
-
-func gateWorkflowContent() string {
-	return `---
-tracker:
-  kind: memory
----
-Gate prompt.
-`
 }

@@ -93,19 +93,20 @@ func TestRootCommandHelpCatalogJSON(t *testing.T) {
 	}
 
 	wantCommands := map[string]bool{
-		"detent":              false,
-		"config path":         false,
-		"config migrate":      false,
-		"fix workflow-layout": false,
-		"hub serve":           false,
-		"hub runner register": false,
-		"cloud":               false,
-		"artifacts":           false,
-		"dev-runtime":         false,
-		"doctor":              false,
-		"logs":                false,
-		"update":              false,
-		"version":             false,
+		"detent":               false,
+		"config path":          false,
+		"config migrate":       false,
+		"fix workflow-layout":  false,
+		"hub serve":            false,
+		"hub ci-trigger-label": false,
+		"hub runner register":  false,
+		"cloud":                false,
+		"artifacts":            false,
+		"dev-runtime":          false,
+		"doctor":               false,
+		"logs":                 false,
+		"update":               false,
+		"version":              false,
 	}
 	for _, command := range got.Commands {
 		for _, removed := range []string{"init", "add-project", "remove-project", "refresh-project", "onboarding", "work-item", "github-local", "start", "status", "auth", "key", "ci-trigger-label", "shadow-run"} {

@@ -343,3 +343,9 @@ request. Other holds may still prevent dispatch after immediate recovery.
 Immediate mode requires a server that supports this option. If an older server
 accepts the clear but ignores the mode, the CLI reports that immediate recovery
 was not acknowledged; that older server may still apply its default ramp.
+
+### Worker CI trigger labels
+
+`detent hub ci-trigger-label` reapplies the configured pull-request CI label for
+Hub project workers, preserving host-wide staggering. The retired top-level
+`ci-trigger-label` command is no longer available.

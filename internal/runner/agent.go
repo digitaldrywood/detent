@@ -5502,7 +5502,7 @@ func deliverableInvocationOperation(invocation deliverableToolInvocation) string
 		return tool
 	}
 	lowerCommand := strings.ToLower(invocation.command)
-	for _, operation := range []string{"gh pr create", "gh pr edit", "gh pr ready", "git push", "detent ci-trigger-label"} {
+	for _, operation := range []string{"gh pr create", "gh pr edit", "gh pr ready", "git push", "detent hub ci-trigger-label"} {
 		if strings.Contains(lowerCommand, operation) {
 			return operation
 		}
@@ -5584,16 +5584,17 @@ func ciTriggerLabelCommandFields(command string) ([]string, bool) {
 	if index < 0 {
 		return nil, false
 	}
-	return fields[index+2:], true
+	return fields[index+3:], true
 }
 
 func ciTriggerLabelCommandIndex(fields []string) int {
 	index := -1
-	for fieldIndex := 1; fieldIndex < len(fields); fieldIndex++ {
-		executable := strings.ToLower(strings.Trim(fields[fieldIndex-1], "'\";()"))
+	for fieldIndex := 2; fieldIndex < len(fields); fieldIndex++ {
+		executable := strings.ToLower(strings.Trim(fields[fieldIndex-2], "'\";()"))
+		parent := strings.ToLower(strings.Trim(fields[fieldIndex-1], "'\";()"))
 		subcommand := strings.ToLower(strings.Trim(fields[fieldIndex], "'\";()"))
-		if (executable == "detent" || strings.HasSuffix(executable, "/detent")) && subcommand == "ci-trigger-label" {
-			index = fieldIndex - 1
+		if (executable == "detent" || strings.HasSuffix(executable, "/detent")) && parent == "hub" && subcommand == "ci-trigger-label" {
+			index = fieldIndex - 2
 		}
 	}
 	return index

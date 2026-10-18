@@ -691,7 +691,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 		{
 			name: "streamed no-op combined push does not change head",
 			updates: []AgentUpdate{
-				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push origin HEAD && detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolOutput, ItemID: "push", Tool: "commandExecution", Delta: "Everything up-to-date"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
@@ -702,7 +702,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			updates: []AgentUpdate{
 				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
-				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label-base64 Y2k6cmVhZHk"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label-base64 Y2k6cmVhZHk"},
 				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -714,7 +714,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			updates: []AgentUpdate{
 				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
-				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 9999 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 9999 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -725,7 +725,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			updates: []AgentUpdate{
 				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
-				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/another --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent hub ci-trigger-label --repository digitaldrywood/another --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -734,7 +734,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 		{
 			name: "combined push and CI trigger label records both deliveries",
 			updates: []AgentUpdate{
-				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel", Tool: "commandExecution", Status: "completed", Delta: "branch pushed and label reapplied"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -744,7 +744,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 		{
 			name: "repository push substring does not invalidate combined delivery order",
 			updates: []AgentUpdate{
-				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository acme/push-service --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent hub ci-trigger-label --repository acme/push-service --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel", Tool: "commandExecution", Status: "completed", Delta: "branch pushed and label reapplied"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -755,7 +755,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 		{
 			name: "push after label in combined command requires fresh reapplication",
 			updates: []AgentUpdate{
-				{Type: AgentUpdateToolStarted, ItemID: "push-relabel-push", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready && git push origin HEAD"},
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel-push", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready && git push origin HEAD"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel-push", Tool: "commandExecution", Status: "completed", Delta: "first branch updated; label reapplied; Everything up-to-date"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -772,7 +772,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 		{
 			name: "combined push and CI trigger failure remains deliverable error",
 			updates: []AgentUpdate{
-				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel", Tool: "commandExecution", Status: "failed", Delta: "remote: push rejected"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -781,7 +781,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 		{
 			name: "combined label failure requires target ref evidence",
 			updates: []AgentUpdate{
-				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel", Tool: "commandExecution", Status: "failed", Delta: "branch pushed; ci-trigger-label: HTTP 500"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -792,9 +792,9 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			updates: []AgentUpdate{
 				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
-				{Type: AgentUpdateToolStarted, ItemID: "ready", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "ready", Tool: "commandExecution", Delta: "detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "ready", Tool: "commandExecution", Status: "completed", Delta: "ready label reapplied"},
-				{Type: AgentUpdateToolStarted, ItemID: "race", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:race"},
+				{Type: AgentUpdateToolStarted, ItemID: "race", Tool: "commandExecution", Delta: "detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:race"},
 				{Type: AgentUpdateToolCompleted, ItemID: "race", Tool: "commandExecution", Status: "completed", Delta: "race label reapplied"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -805,7 +805,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			updates: []AgentUpdate{
 				{Type: AgentUpdateToolStarted, ItemID: "push-1", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push-1", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
-				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
 				{Type: AgentUpdateToolStarted, ItemID: "push-2", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push-2", Tool: "commandExecution", Status: "completed", Delta: "branch pushed again"},
