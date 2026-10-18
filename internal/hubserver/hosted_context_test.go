@@ -227,6 +227,12 @@ func TestHostedContextMCP(t *testing.T) {
 							t.Fatalf("discovery %s=%t", name, found)
 						}
 					}
+					if scenario == "content" {
+						exposed := slices.ContainsFunc(catalog.Tools, func(d operatortool.Definition) bool { return d.Name == operatortool.PublishReleasePick })
+						if !exposed {
+							t.Fatal("hosted MCP does not expose publish_release_pick")
+						}
+					}
 					if scenario == "move revision contract" {
 						var schema struct {
 							Properties map[string]struct {
