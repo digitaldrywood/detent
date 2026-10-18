@@ -851,7 +851,7 @@ func TestRunnerProjectsNewRepositoryBinding(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 			t.Cleanup(func() { slog.SetDefault(previousLogger) })
 			for _, prepare := range []bool{true, false, false} {
-				cfg, err = runnerProjectsForIdentity(t.Context(), cfg, client, identity, prepare)
+				cfg, err = runnerProjectsForIdentity(t.Context(), cfg, client, identity, prepare, false)
 				if err != nil || len(cfg.Projects) != 0 {
 					t.Fatalf("waiting project starts (prepare=%v): %+v: %v", prepare, cfg.Projects, err)
 				}
@@ -869,7 +869,7 @@ func TestRunnerProjectsNewRepositoryBinding(t *testing.T) {
 			}
 			hub.repositories["prj_new"] = test.repository
 			hub.cloneURLs = map[tracker.ProjectID]string{"prj_new": "https://github.com/" + test.repository + ".git"}
-			cfg, err = runnerProjectsForIdentity(t.Context(), cfg, client, identity, true)
+			cfg, err = runnerProjectsForIdentity(t.Context(), cfg, client, identity, true, false)
 			if err != nil || (len(cfg.Projects) == 1) != test.wantCheckout {
 				t.Fatalf("bound project checkouts = %+v: %v", cfg.Projects, err)
 			}

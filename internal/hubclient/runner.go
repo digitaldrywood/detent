@@ -183,26 +183,37 @@ func (c *Client) readRunnerCredential(ctx context.Context) (runnerauth.File, err
 	if file.HubURL != strings.TrimRight(c.baseURL.String(), "/") {
 		return runnerauth.File{}, errors.New("runner identity belongs to a different Hub")
 	}
-	identity, err := c.readRunnerIdentity(ctx, file, file.Credential)
+	validated, err := c.validateRunnerReadCredential(ctx, file)
 	var apiErr *APIError
-	if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
-		latest, loadErr := runnerauth.Load(c.runner.path)
-		if loadErr != nil {
-			return runnerauth.File{}, loadErr
-		}
-		if latest.Identity.Binding != file.Identity.Binding || latest.HubURL != file.HubURL {
-			return runnerauth.File{}, errors.New("runner identity binding cannot be replaced")
-		}
-		token := latest.Credential
-		if latest.PendingCredential != "" {
-			token = latest.PendingCredential
-		}
-		if token != file.Credential {
-			file = latest
-			identity, err = c.readRunnerIdentity(ctx, file, token)
-			file.Credential = token
-		}
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnauthorized {
+		return validated, err
 	}
+	latest, loadErr := c.rotatedRunnerCredential(file)
+	if loadErr != nil {
+		return runnerauth.File{}, loadErr
+	}
+	if latest.Credential == file.Credential {
+		return runnerauth.File{}, err
+	}
+	return c.validateRunnerReadCredential(ctx, latest)
+}
+
+func (c *Client) rotatedRunnerCredential(file runnerauth.File) (runnerauth.File, error) {
+	latest, err := runnerauth.Load(c.runner.path)
+	if err != nil {
+		return runnerauth.File{}, err
+	}
+	if latest.Identity.Binding != file.Identity.Binding || latest.Identity.OrganizationID != file.Identity.OrganizationID || latest.HubURL != file.HubURL {
+		return runnerauth.File{}, errors.New("runner identity binding cannot be replaced")
+	}
+	if latest.PendingCredential != "" {
+		latest.Credential = latest.PendingCredential
+	}
+	return latest, nil
+}
+
+func (c *Client) validateRunnerReadCredential(ctx context.Context, file runnerauth.File) (runnerauth.File, error) {
+	identity, err := c.readRunnerIdentity(ctx, file, file.Credential)
 	if err != nil {
 		return runnerauth.File{}, err
 	}
@@ -211,6 +222,30 @@ func (c *Client) readRunnerCredential(ctx context.Context) (runnerauth.File, err
 	}
 	file.Identity = identity
 	return file, nil
+}
+
+func (c *Client) runnerRead(ctx context.Context, request func(string) error) error {
+	file, err := c.readRunnerCredential(ctx)
+	if err != nil {
+		return err
+	}
+	err = request(file.Credential)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnauthorized {
+		return err
+	}
+	latest, loadErr := c.rotatedRunnerCredential(file)
+	if loadErr != nil {
+		return loadErr
+	}
+	if latest.Credential == file.Credential {
+		return err
+	}
+	latest, loadErr = c.validateRunnerReadCredential(ctx, latest)
+	if loadErr != nil {
+		return loadErr
+	}
+	return request(latest.Credential)
 }
 
 func (c *Client) readRunnerIdentity(ctx context.Context, file runnerauth.File, token string) (runnerauth.Identity, error) {

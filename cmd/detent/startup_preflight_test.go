@@ -23,9 +23,10 @@ import (
 )
 
 type candidateAuthority struct {
-	Identity   runnerauth.Identity
-	Credential string
-	Revoked    bool
+	Identity      runnerauth.Identity
+	Credential    string
+	Revoked       bool
+	ProjectStatus int
 }
 
 type candidateTransport func(*http.Request) (*http.Response, error)
@@ -59,6 +60,19 @@ func TestCandidateStartupDuringIdentityTransaction(t *testing.T) {
 			if r.Header.Get("Authorization") != "Bearer "+authority.Credential || authority.Revoked || !time.Now().Before(authority.Identity.ExpiresAt) {
 				status = http.StatusUnauthorized
 			}
+			if strings.Contains(r.URL.Path, "/projects/prj_one") && authority.ProjectStatus != 0 {
+				status = authority.ProjectStatus
+				if status == http.StatusUnauthorized {
+					authority.Revoked = true
+					raw, err = json.Marshal(authority)
+					if err != nil {
+						return nil, err
+					}
+					if err := os.WriteFile(filepath.Join(root, "authority.json"), raw, 0600); err != nil {
+						return nil, err
+					}
+				}
+			}
 			var body []byte
 			if status != http.StatusOK {
 				body = []byte(`{"code":"unauthorized","message":"unauthorized"}`)
@@ -81,11 +95,16 @@ func TestCandidateStartupDuringIdentityTransaction(t *testing.T) {
 	for _, tt := range []struct {
 		name, refusal                                                   string
 		rotate, accepted, revoked, expired, invalidConfig, removedGrant bool
+		projectStatus                                                   int
 	}{
 		{name: "renewal"},
 		{name: "removed project grant", removedGrant: true},
 		{name: "rotation before Hub commit", rotate: true},
 		{name: "rotation after Hub commit", rotate: true, accepted: true},
+		{name: "revoked authority during project read", projectStatus: http.StatusUnauthorized, refusal: "unauthorized"},
+		{name: "forbidden project read", projectStatus: http.StatusForbidden, refusal: "403"},
+		{name: "unavailable project remains isolated", projectStatus: http.StatusServiceUnavailable},
+		{name: "missing project remains isolated", projectStatus: http.StatusNotFound},
 		{name: "revoked authority", revoked: true, refusal: "unauthorized"},
 		{name: "expired authority", expired: true, refusal: "unauthorized"},
 		{name: "unsupported config", invalidConfig: true, refusal: "apiVersion"},
@@ -107,7 +126,7 @@ func TestCandidateStartupDuringIdentityTransaction(t *testing.T) {
 			if err := runnerauth.Save(path, file); err != nil {
 				t.Fatal(err)
 			}
-			authority := candidateAuthority{Identity: file.Identity, Credential: file.Credential, Revoked: tt.revoked}
+			authority := candidateAuthority{Identity: file.Identity, Credential: file.Credential, Revoked: tt.revoked, ProjectStatus: tt.projectStatus}
 			if tt.removedGrant {
 				authority.Identity.ProjectIDs = []tracker.ProjectID{"prj_one"}
 			}
