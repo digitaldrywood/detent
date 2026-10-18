@@ -730,9 +730,18 @@ func (s *Scheduler) nativeClaimError(issueID string, token tracker.FencingToken,
 	if nativeAuthorityLost(err) || lostAuthority {
 		s.mu.Lock()
 		if current, ok := s.nativeClaims[issueID]; ok && current.lease.FencingToken == token {
-			if current.execution != nil && current.execution.hasWorkers() {
-				s.mu.Unlock()
-				return errors.Join(orchestrator.ErrSchedulingClaimLost, current.execution.unavailable(err))
+			if execution := current.execution; execution != nil {
+				pending := execution.hasWorkers()
+				if !execution.mu.TryLock() {
+					pending = true
+				} else {
+					pending = pending || execution.pending != nil || execution.preparedOutcome != "" || execution.data.Outcome != ""
+					execution.mu.Unlock()
+				}
+				if pending {
+					s.mu.Unlock()
+					return errors.Join(orchestrator.ErrSchedulingClaimLost, execution.unavailable(err))
+				}
 			}
 			current.source.client.slotFreed()
 			delete(s.claims, issueID)

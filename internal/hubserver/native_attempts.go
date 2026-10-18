@@ -205,7 +205,7 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 	return nil
 }
 
-func recordNativeAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID, event tracker.NativeRunEvent, now time.Time) (recorded, history bool, resultErr error) {
+func recordNativeAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID, event *tracker.NativeRunEvent, now time.Time, termination bool) (recorded, history bool, resultErr error) {
 	data := event.Data
 	publish := true
 	encoded, err := marshalNative(data)
@@ -225,7 +225,7 @@ func recordNativeAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, ite
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, false, err
 	}
-	if f := data.Finalization; f != nil && f.Publication != nil {
+	if f := data.Finalization; !termination && f != nil && f.Publication != nil {
 		if err := requireNativeMutationLease(ctx, tx, scope, string(item), tracker.Mutation{LeaseID: data.LeaseID, FencingToken: data.FencingToken}, now); err != nil {
 			return false, false, err
 		}
@@ -313,6 +313,23 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organi
 		if err := json.Unmarshal([]byte(previousJSON), &previous); err != nil {
 			return false, false, err
 		}
+		if termination {
+			identity := tracker.NativeRunData{AttemptID: data.AttemptID, RunID: data.RunID, LeaseID: data.LeaseID,
+				FencingToken: data.FencingToken, PolicyID: data.PolicyID, Identity: data.Identity,
+				MachineID: data.MachineID, SessionID: data.SessionID, RunnerID: data.RunnerID,
+				Sequence: data.Sequence, Outcome: "cancelled"}
+			if !reflect.DeepEqual(data, identity) {
+				return false, false, nativeExecutionConflict("Released execution may acknowledge termination only; source and completion evidence require current authority")
+			}
+			if previous.LeaseID != data.LeaseID || previous.FencingToken != data.FencingToken || previous.RunID != data.RunID || previous.PolicyID != data.PolicyID || previous.Identity == nil || data.Identity == nil || *previous.Identity != *data.Identity {
+				return false, false, nativeExecutionConflict("Termination acknowledgment must match the recorded execution owner")
+			}
+			next := data.Sequence
+			data = previous
+			data.Sequence, data.Outcome = next, "cancelled"
+			data.Handoff, data.ArtifactIDs = nil, nil
+			event.Data = data
+		}
 		data.Evidence = previous.Evidence
 		encoded, err = marshalNative(data)
 		if err != nil {
@@ -320,7 +337,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organi
 		}
 		reconnecting := (status == "running" || status == "interrupted") && event.Type == "run.observed" && data.Runtime != nil && data.Runtime.LocalAttemptID == 0 && data.Runtime.Generation == 0 && data.Outcome == ""
 		usageCorrection := status != "running" && event.Type == "run.finished" && nativeUsageCorrection(previous, data)
-		if previous.LeaseID != data.LeaseID || previous.RunID != data.RunID || previous.PolicyID != data.PolicyID || previous.Identity == nil || data.Identity == nil || *previous.Identity != *data.Identity || status != "running" && !usageCorrection && !reconnecting || data.Sequence != sequence+1 || event.Type == "run.started" {
+		terminating := termination && status == "interrupted"
+		if previous.LeaseID != data.LeaseID || previous.RunID != data.RunID || previous.PolicyID != data.PolicyID || previous.Identity == nil || data.Identity == nil || *previous.Identity != *data.Identity || status != "running" && !usageCorrection && !reconnecting && !terminating || data.Sequence != sequence+1 || event.Type == "run.started" {
 			return false, false, nativeExecutionConflict("Attempt identity, lifecycle or next sequence does not match")
 		}
 		if previous.Runtime != nil && !reconnecting {
@@ -345,8 +363,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organi
 			status = "running"
 		}
 		if event.Type == "run.finished" && !usageCorrection {
-			if err := publishAttemptEvidence(ctx, tx, scope, item, data, now); err != nil {
-				return false, false, err
+			if !termination {
+				if err := publishAttemptEvidence(ctx, tx, scope, item, data, now); err != nil {
+					return false, false, err
+				}
 			}
 			status = data.Outcome
 		}
@@ -359,7 +379,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organi
 			return false, false, err
 		}
 	}
-	if data.Runtime != nil && data.Runtime.Landing != nil {
+	if !termination && data.Runtime != nil && data.Runtime.Landing != nil {
 		if err := recordAttemptLanding(ctx, tx, scope, item, data.AttemptID, *data.Runtime.Landing); err != nil {
 			return false, false, err
 		}
