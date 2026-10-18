@@ -113,102 +113,156 @@ func enrolledSignedReleaseFixture(t *testing.T) (SchedulerConfig, *workerRelease
 
 func TestSchedulerEnrolledLegacyReleaseAdvance(t *testing.T) {
 	t.Parallel()
-	for _, failure := range []string{"", "signature", "checksum", "provenance", "platform", "digest", "commit", "binary identity", "private source", "unverified", "pinned request", "older applied release", "conflicting target", "invalid receipt", "missing verifier", "running drift"} {
-		t.Run(failure, func(t *testing.T) {
-			t.Parallel()
-			config, fixture, publish := enrolledSignedReleaseFixture(t)
-			service := config.Updater.(*Service)
-			publish("1.0.1")
-			release := publish("1.0.2")
-			applied, err := service.Apply(t.Context(), ApplyOptions{AssumeYes: true, FollowHub: true, ExpectedVersion: "1.0.2"})
-			if err != nil || applied.Action != ActionUpdated || !applied.VerifiedRelease {
-				t.Fatalf("legacy signed install: %+v %v", applied, err)
+	for _, automatic := range []bool{false, true} {
+		for _, failure := range []string{"", "signature", "source outage", "checksum", "provenance", "platform", "digest", "commit", "binary identity", "private source", "unverified", "pinned request", "older applied release", "conflicting target", "invalid receipt", "missing verifier", "running drift"} {
+			if automatic && failure != "" && failure != "signature" && failure != "source outage" {
+				continue
 			}
-			now := config.RunningBuild.ObservedAt
-			request := runnerauth.UpdateRequest{ID: "legacy-follow", Service: "detent", Release: true, FollowHub: true, Version: "1.0.1", ExpectedBuildRevision: strings.Repeat("b", 64), RequestedAt: now}
-			evidence := runnerauth.BuildEvidence{Version: "1.0.2", Commit: applied.LatestCommit, Source: "release", SHA256: applied.BinarySHA256, OS: "linux", Architecture: "amd64", VerifiedRelease: true, ObservedAt: now}
-			receipt := runnerauth.UpdateReceipt{Request: request, Status: "applied", Applied: &evidence, ObservedAt: now}
-			config.RunningBuild = evidence
-			config.RunningBuild.Source, config.RunningBuild.VerifiedRelease = "unknown", false
-			signature := fixture.downloads[release.Assets[2].BrowserDownloadURL]
-			switch failure {
-			case "signature":
-				fixture.downloads[release.Assets[2].BrowserDownloadURL] = []byte("invalid signature")
-			case "checksum":
-				fixture.downloads[release.Assets[0].BrowserDownloadURL] = []byte("corrupt archive")
-			case "provenance":
-				fixture.downloads[release.Assets[3].BrowserDownloadURL] = testReleaseProvenance(t, "v2.0.0", testUpdatedCommit)
-			case "platform":
-				evidence.Architecture = "arm64"
-				config.RunningBuild.Architecture = evidence.Architecture
-			case "digest":
-				evidence.SHA256 = strings.Repeat("c", 64)
-				config.RunningBuild.SHA256 = evidence.SHA256
-			case "commit":
-				evidence.Commit = strings.Repeat("c", 40)
-				config.RunningBuild.Commit = evidence.Commit
-			case "binary identity":
-				service.cfg.BinaryVerifier = func(context.Context, string) (string, error) {
-					return "version: v1.0.1\ncommit: " + testUpdatedCommit + "\n", nil
+			name := "enrolled/" + failure
+			if automatic {
+				name = "automatic/" + failure
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				config, fixture, publish := enrolledSignedReleaseFixture(t)
+				service := config.Updater.(*Service)
+				publish("1.0.1")
+				release := publish("1.0.2")
+				applied, err := service.Apply(t.Context(), ApplyOptions{AssumeYes: true, FollowHub: true, ExpectedVersion: "1.0.2"})
+				if err != nil || applied.Action != ActionUpdated || !applied.VerifiedRelease {
+					t.Fatalf("legacy signed install: %+v %v", applied, err)
 				}
-			case "private source":
-				config.RunningBuild.Source = "private_patched_source"
-			case "unverified":
-				evidence.VerifiedRelease = false
-			case "pinned request":
-				receipt.Request.FollowHub = false
-			case "older applied release":
-				receipt.Request.Version = "1.0.3"
-			case "conflicting target":
-				target := evidence
-				target.Version = "1.0.1"
-				receipt.VerifiedTarget = &target
-			case "invalid receipt":
-				receipt.Request.ExpectedBuildRevision = "invalid"
-			case "missing verifier":
-				config.Updater = &schedulerUpdaterStub{}
-			case "running drift":
-				config.RunningBuild.SHA256 = strings.Repeat("c", 64)
-			}
-			raw, err := json.Marshal(schedulerState{Schema: schedulerStateSchema, LastCheckAt: now, EnrolledReceipt: &receipt})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(config.StatePath, raw, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			scheduler, err := NewScheduler(config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			observed := scheduler.EnrolledUpdate(t.Context(), config.RunningBuild, nil)
-			if failure != "" {
-				if observed == nil || observed.Supported || observed.Receipt != nil || observed.Running.VerifiedRelease {
-					t.Fatalf("untrusted legacy receipt accepted: %+v", observed)
+				now := config.RunningBuild.ObservedAt
+				config.Now = func() time.Time { return now }
+				config.Enabled = automatic
+				request := runnerauth.UpdateRequest{ID: "legacy-follow", Service: "detent", Release: true, FollowHub: true, Version: "1.0.1", ExpectedBuildRevision: strings.Repeat("b", 64), RequestedAt: now}
+				evidence := runnerauth.BuildEvidence{Version: "1.0.2", Commit: applied.LatestCommit, Source: "release", SHA256: applied.BinarySHA256, OS: "linux", Architecture: "amd64", VerifiedRelease: true, ObservedAt: now}
+				receipt := runnerauth.UpdateReceipt{Request: request, Status: "applied", Applied: &evidence, ObservedAt: now}
+				config.RunningBuild = evidence
+				config.RunningBuild.Source, config.RunningBuild.VerifiedRelease = "unknown", false
+				signature := fixture.downloads[release.Assets[2].BrowserDownloadURL]
+				switch failure {
+				case "source outage":
+					fixture.listErr = errors.New("release source unavailable")
+				case "signature":
+					fixture.downloads[release.Assets[2].BrowserDownloadURL] = []byte("invalid signature")
+				case "checksum":
+					fixture.downloads[release.Assets[0].BrowserDownloadURL] = []byte("corrupt archive")
+				case "provenance":
+					fixture.downloads[release.Assets[3].BrowserDownloadURL] = testReleaseProvenance(t, "v2.0.0", testUpdatedCommit)
+				case "platform":
+					evidence.Architecture = "arm64"
+					config.RunningBuild.Architecture = evidence.Architecture
+				case "digest":
+					evidence.SHA256 = strings.Repeat("c", 64)
+					config.RunningBuild.SHA256 = evidence.SHA256
+				case "commit":
+					evidence.Commit = strings.Repeat("c", 40)
+					config.RunningBuild.Commit = evidence.Commit
+				case "binary identity":
+					service.cfg.BinaryVerifier = func(context.Context, string) (string, error) {
+						return "version: v1.0.1\ncommit: " + testUpdatedCommit + "\n", nil
+					}
+				case "private source":
+					config.RunningBuild.Source = "private_patched_source"
+				case "unverified":
+					evidence.VerifiedRelease = false
+				case "pinned request":
+					receipt.Request.FollowHub = false
+				case "older applied release":
+					receipt.Request.Version = "1.0.3"
+				case "conflicting target":
+					target := evidence
+					target.Version = "1.0.1"
+					receipt.VerifiedTarget = &target
+				case "invalid receipt":
+					receipt.Request.ExpectedBuildRevision = "invalid"
+				case "missing verifier":
+					config.Updater = &schedulerUpdaterStub{}
+				case "running drift":
+					config.RunningBuild.SHA256 = strings.Repeat("c", 64)
 				}
-				scheduler.EnrolledUpdate(t.Context(), config.RunningBuild, &request)
-				unchanged, err := os.ReadFile(config.StatePath)
-				if err != nil || !bytes.Equal(unchanged, raw) {
-					t.Fatalf("untrusted history changed: %s %v", unchanged, err)
+				raw, err := json.Marshal(schedulerState{Schema: schedulerStateSchema, LastCheckAt: now, EnrolledReceipt: &receipt})
+				if err != nil {
+					t.Fatal(err)
 				}
-				if failure != "signature" {
-					return
+				if err := os.WriteFile(config.StatePath, raw, 0o600); err != nil {
+					t.Fatal(err)
 				}
-				fixture.downloads[release.Assets[2].BrowserDownloadURL] = signature
-				observed = scheduler.EnrolledUpdate(t.Context(), config.RunningBuild, nil)
-			}
-			if observed == nil || !observed.Supported || observed.Validate() != nil || !observed.Running.VerifiedRelease || observed.Receipt == nil || observed.Receipt.Status != "running" || observed.Receipt.Request != request || !reflect.DeepEqual(observed.Receipt.Applied, &evidence) {
-				t.Fatalf("legacy recovery lost original request or actual artifact: %+v", observed)
-			}
-			persisted, found, err := loadSchedulerState(config.StatePath)
-			if err != nil || !found || persisted.EnrolledReceipt.Request != request || !reflect.DeepEqual(persisted.EnrolledReceipt.Applied, &evidence) {
-				t.Fatalf("legacy recovery did not persist truthful history: %+v %v", persisted, err)
-			}
-			installed, err := os.ReadFile(service.cfg.ExecutablePath)
-			if err != nil || string(installed) != "version: v1.0.2\ncommit: "+testUpdatedCommit+"\n" {
-				t.Fatalf("recovery changed installed artifact: %q %v", installed, err)
-			}
-		})
+				downloadsBeforeStartup := make(map[string]int)
+				for url, count := range fixture.downloadsByURL {
+					downloadsBeforeStartup[url] = count
+				}
+				fixture.list = func() { t.Error("scheduler construction accessed release source") }
+				scheduler, err := NewScheduler(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(fixture.downloadsByURL, downloadsBeforeStartup) {
+					t.Fatal("scheduler construction downloaded legacy release evidence")
+				}
+				fixture.list = nil
+				observed := scheduler.EnrolledUpdate(t.Context(), config.RunningBuild, nil)
+				if automatic {
+					if observed.Supported || observed.Receipt != nil {
+						t.Fatalf("legacy evidence trusted before a release check: %+v", observed)
+					}
+					_, checkErr := scheduler.CheckNow(t.Context())
+					if (checkErr != nil) != (failure != "") {
+						t.Fatalf("legacy release check: %v", checkErr)
+					}
+					observed = scheduler.EnrolledUpdate(t.Context(), config.RunningBuild, nil)
+				}
+				if failure != "" {
+					if observed == nil || observed.Supported || observed.Receipt != nil || observed.Running.VerifiedRelease {
+						t.Fatalf("untrusted legacy receipt accepted: %+v", observed)
+					}
+					scheduler.EnrolledUpdate(t.Context(), config.RunningBuild, &request)
+					unchanged, err := os.ReadFile(config.StatePath)
+					if err != nil || !bytes.Equal(unchanged, raw) {
+						t.Fatalf("untrusted history changed: %s %v", unchanged, err)
+					}
+					if failure != "signature" && failure != "source outage" {
+						return
+					}
+					downloadsAfterFailure := fixture.downloadsByURL[release.Assets[1].BrowserDownloadURL]
+					fixture.downloads[release.Assets[2].BrowserDownloadURL] = signature
+					fixture.listErr = nil
+					for range 2 {
+						if report := scheduler.EnrolledUpdate(t.Context(), config.RunningBuild, nil); report.Supported {
+							t.Fatal("receipt retried outside the release check cadence")
+						}
+						scheduler.EnrolledUpdate(t.Context(), config.RunningBuild, &request)
+					}
+					if fixture.downloadsByURL[release.Assets[1].BrowserDownloadURL] != downloadsAfterFailure {
+						t.Fatal("enrolled observation repeated legacy downloads before the next check")
+					}
+					now = now.Add(config.CheckInterval)
+					if automatic {
+						if _, err := scheduler.CheckNow(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+					}
+					observed = scheduler.EnrolledUpdate(t.Context(), config.RunningBuild, nil)
+				}
+				if observed == nil || !observed.Supported || observed.Validate() != nil || !observed.Running.VerifiedRelease || observed.Receipt == nil || observed.Receipt.Status != "running" || observed.Receipt.Request != request || !reflect.DeepEqual(observed.Receipt.Applied, &evidence) {
+					t.Fatalf("legacy recovery lost original request or actual artifact: %+v", observed)
+				}
+				persisted, found, err := loadSchedulerState(config.StatePath)
+				if err != nil || !found || persisted.EnrolledReceipt.Request != request || !reflect.DeepEqual(persisted.EnrolledReceipt.Applied, &evidence) {
+					t.Fatalf("legacy recovery did not persist truthful history: %+v %v", persisted, err)
+				}
+				installed, err := os.ReadFile(service.cfg.ExecutablePath)
+				if err != nil || string(installed) != "version: v1.0.2\ncommit: "+testUpdatedCommit+"\n" {
+					t.Fatalf("recovery changed installed artifact: %q %v", installed, err)
+				}
+				fixture.list = func() { t.Error("verified legacy receipt scheduled another recovery check") }
+				now = now.Add(config.CheckInterval)
+				if report := scheduler.EnrolledUpdate(t.Context(), config.RunningBuild, nil); !report.Supported || report.Receipt.Status != "running" {
+					t.Fatalf("verified legacy receipt was not retained: %+v", report)
+				}
+			})
+		}
 	}
 }
 

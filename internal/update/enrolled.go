@@ -21,15 +21,17 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	}
 	if request == nil {
 		if s.operationMu.TryLock() {
-			s.refreshEnrolledState(ctx)
 			lastCheck := s.Status().LastCheckAt
-			refresh := s.cfg.WorkerArtifacts != nil && !s.cfg.Enabled && (lastCheck == nil || !s.cfg.Now().Before(lastCheck.Add(s.cfg.CheckInterval)))
+			s.mu.RLock()
+			pendingVerification := !s.enrolledStateValid && s.enrolledReceipt != nil && s.enrolledReceipt.AdvancedFollowHubRelease()
+			s.mu.RUnlock()
+			refresh := (s.cfg.WorkerArtifacts != nil || pendingVerification) && !s.cfg.Enabled && (lastCheck == nil || !s.cfg.Now().Before(lastCheck.Add(s.cfg.CheckInterval)))
 			if (s.enrolledDiscovery == "" || refresh) && s.cfg.Updater != nil {
 				s.updateStatus(func(*AutoStatus) { s.enrolledDiscovery = "unknown" })
 				if !s.cfg.Enabled {
 					checkedAt := s.cfg.Now().UTC()
 					s.updateStatus(func(status *AutoStatus) { status.LastCheckAt = &checkedAt })
-					checked, err := s.cfg.Updater.Check(ctx)
+					checked, err := s.checkLocked(ctx)
 					if err == nil {
 						s.updateStatus(func(status *AutoStatus) {
 							status.LastError = ""
@@ -69,7 +71,6 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 		return s.enrolledObservation(running)
 	}
 	defer s.operationMu.Unlock()
-	s.refreshEnrolledState(ctx)
 	observed := s.enrolledObservation(running)
 	s.mu.RLock()
 	stateValid := s.enrolledStateValid
@@ -270,21 +271,6 @@ func (s *Scheduler) enrolledApplyOptions(opts ApplyOptions) ApplyOptions {
 		opts.Urgent = receipt.Request.Urgent
 	}
 	return opts
-}
-
-func (s *Scheduler) refreshEnrolledState(ctx context.Context) {
-	s.mu.RLock()
-	valid := s.enrolledStateValid
-	receipt := cloneEnrolledReceipt(s.enrolledReceipt)
-	s.mu.RUnlock()
-	if valid || receipt == nil || !receipt.AdvancedFollowHubRelease() {
-		return
-	}
-	if verifyAdvancedEnrolledReceipt(ctx, s.cfg, receipt) == nil {
-		s.mu.Lock()
-		s.enrolledStateValid = true
-		s.mu.Unlock()
-	}
 }
 
 func verifyAdvancedEnrolledReceipt(ctx context.Context, cfg SchedulerConfig, receipt *runnerauth.UpdateReceipt) error {
