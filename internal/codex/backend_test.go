@@ -111,7 +111,7 @@ func TestAgentBackendAppliesProcessContextToPreflightTransports(t *testing.T) {
 			messages: func(t *testing.T) []Message {
 				return []Message{
 					responseMessage(t, 1, `{"userAgent":"codex-cli/test"}`),
-					responseMessage(t, 6, `{"data":[]}`),
+					responseMessage(t, 6, `{"data":[{"id":"example-model","model":"example-model"}]}`),
 				}
 			},
 			operation: func(ctx context.Context, backend *AgentBackend, process runner.AgentProcessRequest) error {
