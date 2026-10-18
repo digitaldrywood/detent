@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -190,7 +192,10 @@ func TestValidatorReadsPublishedAttachments(t *testing.T) {
 
 type attachmentValidatorBackend struct {
 	fakeCodexClient
-	t *testing.T
+	t       *testing.T
+	text    bool
+	unread  bool
+	corrupt bool
 }
 
 func (b *attachmentValidatorBackend) RunTurnWithTools(ctx context.Context, req AgentTurnRequest, tools []AgentTool, handle AgentToolHandler, update AgentUpdateHandler) (AgentTurnResult, error) {
@@ -208,6 +213,42 @@ func (b *attachmentValidatorBackend) RunTurnWithTools(ctx context.Context, req A
 	if err != nil || !result.Success || result.Content != "ordinary published evidence" {
 		b.t.Fatalf("validator evidence read failed: %v %+v", err, result)
 	}
+	if b.text {
+		if !slices.ContainsFunc(tools, func(tool AgentTool) bool { return tool.Name == operatortool.ReadAttachment }) {
+			b.t.Fatal("validator lost execution attachment tools across worker transport")
+		}
+		var read gate.AttachmentRead
+		if !b.unread {
+			result, err = handle(ctx, AgentToolCall{Name: operatortool.ReadAttachment, Arguments: json.RawMessage(`{"project_id":"prj_example","attachment_id":"att_0123456789abcdef0123456789abcdef","offset":0,"length":32768}`)})
+			if b.corrupt {
+				if err == nil || result.Success {
+					b.t.Fatal("digest mismatch accepted through worker transport")
+				}
+			} else {
+				var observed struct {
+					ReadReceipt gate.AttachmentRead `json:"read_receipt"`
+					Content     string              `json:"content"`
+				}
+				if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &observed) != nil || observed.Content != validatorHistoricalLog || result.ImageURL != "" {
+					b.t.Fatalf("text log not displayed through worker transport: %v %+v", err, result)
+				}
+				read = observed.ReadReceipt
+				if read.ReceiptID == "" || read.HeadSHA != "head" || read.TreeSHA != "tree" {
+					b.t.Fatalf("text log missing review-bound receipt: %+v", read)
+				}
+			}
+		}
+		verdict := gate.ValidatorResult{Verdict: gate.ValidatorVerdictPass, Score: 1, Summary: "Inspected historical reproduction"}
+		if read.ReceiptID == "" {
+			read = gate.AttachmentRead{ReceiptID: "attachment:invented", HeadSHA: "head", TreeSHA: "tree"}
+		}
+		verdict.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: "Historical failure is reproduced", Kind: gate.EvidenceAttachment, Reference: "baseline.log sha256=" + read.SHA256, ReceiptIDs: []string{read.ReceiptID}, HeadSHA: read.HeadSHA, TreeSHA: read.TreeSHA, Behavior: "The log records the baseline command failing with host_capacity at source baseline-head. The reviewed fix changes the implicated accounting; historical diagnosis remains applicable, without claiming execution at this review head."}}
+		data, err := json.Marshal(verdict)
+		if err != nil {
+			return AgentTurnResult{}, err
+		}
+		return AgentTurnResult{}, update(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: string(data)})
+	}
 	err = update(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"rework","score":0.5,"summary":"Reviewed ordinary comment; image still required","criteria_evidence":[{"criterion":"Page is visible","kind":"not_verified","reference":"Image needed"}]}`})
 	return AgentTurnResult{}, err
 }
@@ -218,7 +259,10 @@ func (*attachmentValidatorWorkspace) RunReviewCommand(_ context.Context, _ works
 	return gate.CommandResult{Command: command, HeadSHA: issue.PullRequestHeadSHA, TreeSHA: "tree"}, nil
 }
 
+const validatorHistoricalLog = "source=baseline-head\ngo test -run TestBatchClaim\nphysical host slots=1\nclaim failed: 409 host_capacity\n"
+
 type attachmentValidatorExecution struct {
+	corrupt bool
 	testExecution
 	result gate.ValidatorResult
 }
@@ -236,8 +280,18 @@ func (e *attachmentValidatorExecution) RecordValidator(_ context.Context, result
 	return nil
 }
 
-func (*attachmentValidatorExecution) AgentTools() ([]AgentTool, AgentToolHandler) {
-	return []AgentTool{{Name: operatortool.WorkComments, InputSchema: json.RawMessage(`{"type":"object"}`)}, {Name: "attach_evidence", InputSchema: json.RawMessage(`{"type":"object"}`)}}, func(_ context.Context, call AgentToolCall) (AgentToolResult, error) {
+func (e *attachmentValidatorExecution) AgentTools() ([]AgentTool, AgentToolHandler) {
+	return []AgentTool{{Name: operatortool.ReadAttachment, InputSchema: json.RawMessage(`{"type":"object"}`)}, {Name: operatortool.WorkComments, InputSchema: json.RawMessage(`{"type":"object"}`)}, {Name: "attach_evidence", InputSchema: json.RawMessage(`{"type":"object"}`)}}, func(_ context.Context, call AgentToolCall) (AgentToolResult, error) {
+		if call.Name == operatortool.ReadAttachment {
+			content := []byte(validatorHistoricalLog)
+			digest := sha256.Sum256(content)
+			metadata := attachment.Metadata{ID: "att_0123456789abcdef0123456789abcdef", ProjectID: "prj_example", WorkItemID: "wi_example", CommentID: "cmt_example", Name: "baseline.log", ContentType: "text/plain", Size: int64(len(content)), SHA256: hex.EncodeToString(digest[:])}
+			if e.corrupt {
+				content[0] = 'x'
+			}
+			data, err := json.Marshal(operatortool.AttachmentContentResult{Metadata: metadata, ContentBase64: base64.StdEncoding.EncodeToString(content), ReturnedBytes: len(content), EOF: true, MaxContentBytes: operatortool.AttachmentContentBytes})
+			return AgentToolResult{Success: err == nil, Content: string(data)}, err
+		}
 		if call.Name != operatortool.WorkComments {
 			return AgentToolResult{}, errors.New("unexpected tool")
 		}
@@ -247,21 +301,66 @@ func (*attachmentValidatorExecution) AgentTools() ([]AgentTool, AgentToolHandler
 
 func TestNativeValidatorReceivesScopedEvidenceReads(t *testing.T) {
 	t.Parallel()
-	backend := &attachmentValidatorBackend{t: t}
-	runner, err := NewRunner(Dependencies{
-		Workflow:  config.Workflow{Config: config.Config{Gate: gate.Config{Validator: gate.ValidatorConfig{Enabled: true}}, Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{{Name: "validator", Role: RoleValidator, Backend: "codex", Model: "example-model"}}}}, Prompt: "Review"},
-		Workspace: &attachmentValidatorWorkspace{reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: []string{"head"}}}, AgentBackend: backend,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	execution := &attachmentValidatorExecution{}
-	err = runner.validateNativeChange(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", Metadata: map[string]string{"hub_project_id": "prj_example"}, Description: "## Acceptance Criteria\n- Page is visible"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if execution.result.Verdict != gate.ValidatorVerdictRework || len(execution.result.NotVerified) != 1 {
-		t.Fatalf("unseen image incorrectly approved: %+v", execution.result)
+	for _, worker := range []bool{false, true} {
+		for _, test := range []struct {
+			name                  string
+			text, unread, corrupt bool
+		}{
+			{name: "unseen image"},
+			{name: "complete historical log", text: true},
+			{name: "unread log", text: true, unread: true},
+			{name: "mismatched digest", text: true, corrupt: true},
+		} {
+			t.Run(test.name+"/worker="+strconv.FormatBool(worker), func(t *testing.T) {
+				t.Parallel()
+				backend := &attachmentValidatorBackend{t: t, text: test.text, unread: test.unread, corrupt: test.corrupt}
+				runner, err := NewRunner(Dependencies{
+					Workflow:  config.Workflow{Config: config.Config{Gate: gate.Config{Validator: gate.ValidatorConfig{Enabled: true}}, Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{{Name: "validator", Role: RoleValidator, Backend: "codex", Model: "example-model"}}}}, Prompt: "Review"},
+					Workspace: &attachmentValidatorWorkspace{reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: []string{"head"}}}, AgentBackend: backend,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				execution := &attachmentValidatorExecution{corrupt: test.corrupt}
+				var reviewExecution Execution = execution
+				if worker {
+					left, right := net.Pipe()
+					t.Cleanup(func() { left.Close(); right.Close() })
+					central := NewSSHPeer(t.Context(), left, left, NewSSHCallbackHandler(RunRequest{Execution: execution}, nil, nil, nil))
+					remote := NewSSHPeer(t.Context(), right, right, nil)
+					t.Cleanup(central.Close)
+					t.Cleanup(remote.Close)
+					wire := NewSSHRunRequest(RunRequest{Execution: execution})
+					wire.Native = true
+					data, err := json.Marshal(wire)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := json.Unmarshal(data, &wire); err != nil {
+						t.Fatal(err)
+					}
+					reviewExecution = wire.Bind(t.Context(), remote).Execution
+				}
+				criterion := "Page is visible"
+				if test.text {
+					criterion = "Historical failure is reproduced"
+				}
+				err = runner.validateNativeChange(t.Context(), RunRequest{Execution: reviewExecution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", Metadata: map[string]string{"hub_project_id": "prj_example"}, Description: "## Acceptance Criteria\n- " + criterion}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := gate.ValidatorVerdictRework
+				if test.text && !test.unread && !test.corrupt {
+					want = gate.ValidatorVerdictPass
+				}
+				if execution.result.Verdict != want || (len(execution.result.NotVerified) == 0) != (want == gate.ValidatorVerdictPass) {
+					t.Fatalf("attachment acceptance=%+v, want %s", execution.result, want)
+				}
+				if (len(execution.result.AttachmentReads) == 1) != (want == gate.ValidatorVerdictPass) {
+					t.Fatalf("host observation receipts=%+v, want %s", execution.result.AttachmentReads, want)
+				}
+			})
+		}
 	}
 }
 

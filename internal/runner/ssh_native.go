@@ -243,8 +243,20 @@ type sshNativeExecution struct {
 	*sshExecution
 	sources  *SSHExecutionSources
 	capacity *providercapacity.Reservation
+	tools    []AgentTool
 	mu       sync.Mutex
 	setupErr error
+}
+
+func (e *sshNativeExecution) AgentTools() ([]AgentTool, AgentToolHandler) {
+	if len(e.tools) == 0 {
+		return nil, nil
+	}
+	return e.tools, func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
+		var result AgentToolResult
+		err := e.peer.Call(ctx, "execution.tools", &result, call)
+		return result, err
+	}
 }
 
 func (e *sshNativeExecution) SetEvidenceSource(source func(context.Context, string) (ValidationEvidence, error)) {
