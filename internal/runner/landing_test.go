@@ -699,7 +699,7 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 			}
 			var logs bytes.Buffer
 			r := &Runner{workflow: config.Workflow{Config: config.Config{Gate: gate.Config{Run: "git status --porcelain"}}}, logger: slog.New(slog.NewTextHandler(&logs, nil))}
-			result, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, backend, info, issue, workerGitHubPolicy{}, nil)
+			result, err := r.landNativeChange(t.Context(), RunRequest{Execution: &testExecution{}}, &stub, backend, info, issue, workerGitHubPolicy{}, nil)
 			if cleanupErr := backend.CleanupLanding(t.Context(), info, issue); cleanupErr != nil {
 				t.Fatal(cleanupErr)
 			}
@@ -723,7 +723,7 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 					t.Fatal(err)
 				}
 				previousRequests := requests
-				result, err = r.landNativeChange(t.Context(), RunRequest{}, &stub, backend, info, issue, workerGitHubPolicy{}, nil)
+				result, err = r.landNativeChange(t.Context(), RunRequest{Execution: &testExecution{}}, &stub, backend, info, issue, workerGitHubPolicy{}, nil)
 				if requests != previousRequests {
 					t.Fatalf("second landing called the forge: requests=%d want=%d", requests, previousRequests)
 				}
