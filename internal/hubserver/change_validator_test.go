@@ -172,6 +172,8 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"separate session pass with human review", func(_ *tracker.ReviewChange) {}, http.StatusOK, "needs_evidence", nil},
 		{"implementing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"same machine audit session cannot validate acceptance", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"audit from another machine does not collide", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
 		{"oversized acceptance body", func(r *tracker.ReviewChange) { r.Body = strings.Repeat("private-payload", 6000) }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"missing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 0 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"another head", func(r *tracker.ReviewChange) { r.Validator.HeadSHA = r.Validator.BaseSHA }, http.StatusUnprocessableEntity, "needs_evidence", nil},
@@ -233,6 +235,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			descriptor.Gates.SecurityAudit = audit
 			implementation := strings.HasPrefix(test.name, "implementation review")
 			counterCollision := test.name == "source review from another machine does not collide" || test.name == "same machine source session cannot validate acceptance"
+			auditCollision := test.name == "same machine audit session cannot validate acceptance" || test.name == "audit from another machine does not collide"
 			if implementation || counterCollision {
 				descriptor.Gates.AutomatedReview = gate.AutomatedReviewRequired
 			}
@@ -300,10 +303,16 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			request := tracker.ReviewChange{Mutation: mutation, ExpectedVersionID: version.ID, Decision: "approved", Validator: &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Submitted: true, Verdict: "pass", Score: .95, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, DiffDigest: policy.Digest([]byte("diff"))}}
 			request.Validator.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: "test", Reference: "change_validator_test.go:TestChangeValidatorSessionAuthority", Behavior: "A separate validator session reviews the immutable version"}}
 			acceptanceRequest := request
-			if audit {
+			var recordedAudit *tracker.SecurityAuditReview
+			if audit || auditCollision {
 				now := f.service.config.now()
 				request.SecurityAudit = &tracker.SecurityAuditReview{SessionID: 42, DiffDigest: policy.Digest([]byte("diff")), Verdict: "pass", Run: securityaudit.Run{ID: 42, InvocationID: "audit-invocation", ProjectID: string(f.project.ID), IssueID: string(issue.WorkItemID), Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), AuthenticationMode: "api_key", ExitStatus: securityaudit.ExitStatusSuccess, WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now.Add(-time.Second), CompletedAt: now, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}
-				request.Validator = nil
+				recordedAudit = request.SecurityAudit
+				if audit {
+					request.Validator = nil
+				} else {
+					request.SecurityAudit = nil
+				}
 			}
 			landing := strings.HasPrefix(test.name, "security audit landing")
 			if landing {
@@ -362,12 +371,16 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					stageReviews++
 				}
 			}
-			if counterCollision {
+			if counterCollision || auditCollision {
 				machine := tracker.MachineID("machine")
-				if test.name == "source review from another machine does not collide" {
+				if test.name == "source review from another machine does not collide" || test.name == "audit from another machine does not collide" {
 					machine = "other-machine"
 				}
 				sourceReview := tracker.ChangeReview{SessionMachineID: machine, ID: "review_previous_source", VersionID: version.ID, Decision: "approved", ImplementationReview: &gate.ValidatorResult{VersionID: version.ID, Repository: version.Repository, HeadSHA: version.HeadSHA, BaseSHA: version.BaseSHA, SessionID: 42, Submitted: true, Verdict: "pass", Score: 1}, Actor: tracker.Actor{Kind: "runner", PrincipalID: "previous-worker"}, CreatedAt: f.service.config.now()}
+				if auditCollision {
+					sourceReview.ImplementationReview = nil
+					sourceReview.SecurityAudit = recordedAudit
+				}
 				raw, err := marshalNative(sourceReview)
 				if err != nil {
 					t.Fatal(err)
@@ -397,6 +410,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				"failed selected receipt cannot pass":                    "validator.criteria_evidence",
 				"required acceptance before source":                      "implementation_review",
 				"same machine source session cannot validate acceptance": "validator.session_id",
+				"same machine audit session cannot validate acceptance":  "validator.session_id",
 			}[test.name]
 			if rejectionField != "" {
 				var failure hubclient.APIError
@@ -508,6 +522,9 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			if detail.Summary.Status != test.status || detail.Summary.NativeReview != review {
 				t.Fatalf("validator summary = %+v, want %s", detail.Summary, test.status)
 			}
+			if auditCollision && test.want != http.StatusOK && (len(detail.Reviews) != 1 || detail.Reviews[0].Validator != nil) {
+				t.Fatalf("rejected acceptance was persisted: %+v", detail.Reviews)
+			}
 			if largeAudit {
 				server := httptest.NewServer(f.service.Handler())
 				t.Cleanup(server.Close)
@@ -590,7 +607,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			if test.want == http.StatusOK {
 				wantReviews := 1 + stageReviews
-				if counterCollision || landing {
+				if counterCollision || auditCollision || landing {
 					wantReviews++
 				}
 				if len(detail.Reviews) != wantReviews {
