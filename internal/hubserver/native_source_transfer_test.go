@@ -28,7 +28,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 		dirty, running, expired, released, denied, stale, cancel, concurrent bool
 		uncertain, prestart, cleanEffect, held, staleVersion, historical     bool
 		status                                                               int
-		replacement                                                          bool
+		hosted, replacement                                                  bool
 	}{
 		{name: "transfer retains a nondispatchable lane and human label", held: true, released: true, status: http.StatusOK},
 		{name: "transfer and duplicate request", released: true, status: http.StatusOK},
