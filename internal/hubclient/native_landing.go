@@ -45,7 +45,7 @@ func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandi
 		}
 	}
 	if d := e.claim.recovery.Issue.ReleaseDelivery; d != nil {
-		if d.ChangeID != target.ChangeID || d.VersionID != target.VersionID || d.HeadSHA != target.HeadSHA || d.Repository != target.Repository {
+		if d.ChangeID != target.ChangeID || d.VersionID != target.VersionID || d.HeadSHA != target.HeadSHA || d.BaseSHA != target.BaseSHA || d.Repository != target.Repository {
 			return target, fmt.Errorf("%w: release association differs from current version", runner.ErrLandingNotReviewed)
 		}
 		target.BaseRef, target.SourceMergeSHA = d.BaseRef, d.SourceMergeSHA

@@ -435,7 +435,7 @@ func TestLandNativeChange(t *testing.T) {
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true, wantMessage: wantMessage + "\n\nCloses acme/orders#12\nCloses digitaldrywood/detent#3410"},
 		{name: "opted-in project uses GitHub PR landing", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Rebased: true}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true, wantMessage: "Land " + head + "\n\nChange Request change_1, round 0, head " + head + "."},
-		{name: "release PR retains its recorded base", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example-org/example-project", GitHubPullRequest: true, BaseRef: "release/v1.2", SourceMergeSHA: strings.Repeat("a", 40)}}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Rebased: true}}, wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true},
+		{name: "release PR retains its recorded base", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example-org/example-project", GitHubPullRequest: true, BaseRef: "release/v1.2", BaseSHA: strings.Repeat("e", 40), SourceMergeSHA: strings.Repeat("a", 40)}}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Rebased: true}}, wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true},
 		{name: "quota retains reviewed identity and actual metrics", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{githubRequest: true}, wantErr: "github rate limited", quota: true},
 		{name: "an unreceipted reviewed head is validated before it lands", stub: landingStub{target: target}, backend: landingBackend{headReceipt: &headGate, result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Path: "clean_push"}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1},
@@ -547,6 +547,13 @@ func TestLandNativeChange(t *testing.T) {
 			}
 			if backend.received.HeadSHA != "" && stub.target.SourceMergeSHA != "" && !strings.Contains(backend.received.Message, "(cherry picked from commit "+stub.target.SourceMergeSHA+")") {
 				t.Fatalf("release squash lost source provenance: %q", backend.received.Message)
+			}
+			expectedBase := ""
+			if stub.target.SourceMergeSHA != "" {
+				expectedBase = stub.target.BaseSHA
+			}
+			if backend.received.HeadSHA != "" && backend.received.ExpectedBaseSHA != expectedBase {
+				t.Fatalf("landing lost reviewed release base: %+v", backend.received)
 			}
 			if backend.received.HeadSHA != "" && backend.received.TargetBranch != stub.target.BaseRef {
 				t.Fatalf("landing lost target branch: %+v", backend.received)

@@ -250,6 +250,23 @@ func TestNativeReleaseDeliveryReviewAndLanding(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/landing", f.token, land), http.StatusUnprocessableEntity)
+			land.Receipt = &tracker.NativeLandingReceipt{BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, MergeSHA: land.MergeSHA}
+			for _, mismatch := range []string{"base", "head", "merge"} {
+				wrong := land
+				receipt := *land.Receipt
+				wrong.Receipt = &receipt
+				wrong.IdempotencyKey = "wrong-release-" + mismatch
+				switch mismatch {
+				case "base":
+					receipt.BaseSHA = strings.Repeat("4", 40)
+				case "head":
+					receipt.HeadSHA = strings.Repeat("4", 40)
+				case "merge":
+					receipt.MergeSHA = strings.Repeat("4", 40)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/landing", f.token, wrong), http.StatusUnprocessableEntity)
+			}
 			wrong := land
 			wrong.IdempotencyKey = "wrong-landing-base"
 			wrong.BaseRef = "develop"

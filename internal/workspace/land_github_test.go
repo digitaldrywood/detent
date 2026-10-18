@@ -245,6 +245,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {
+		mergedRelease       string
+		pinnedBase          bool
 		name                string
 		method              string
 		pausedValidation    string
@@ -310,6 +312,12 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		lostPushReceipt     bool
 		review              string
 	}{
+		{name: "pinned release accepts an equivalent merge commit", method: "squash", external: true, pinnedBase: true, mergedRelease: "equivalent"},
+		{name: "pinned release refuses a raced merge base", method: "squash", external: true, pinnedBase: true, mergedRelease: "base"},
+		{name: "pinned release refuses a different merged tree", method: "squash", external: true, pinnedBase: true, mergedRelease: "tree"},
+		{name: "pinned release lands the reviewed tree", method: "squash", external: true, pinnedBase: true},
+		{name: "pinned release refuses an advanced base", method: "squash", external: true, pinnedBase: true, projection: "base", wantRefusal: LandRefusalBaseMoved},
+		{name: "pinned release never refreshes onto a newer base", method: "squash", external: true, pinnedBase: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, wantRefusal: LandRefusalBaseMoved},
 		{name: "paused validation permits source import", method: "squash", pausedValidation: "success"},
 		{name: "paused validation bootstrap permits source import", method: "squash", pausedValidation: "bootstrap"},
 		{name: "paused validation refresh permits source import", method: "squash", pausedValidation: "refresh", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retrySuccess: true, wantRetry: true},
@@ -461,6 +469,11 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 			fixture := newLandingFixture(t)
 			originalBase := fixture.remoteMain(t)
+			if test.pinnedBase {
+				runGit(t, fixture.info.Path, "reset", "--soft", originalBase)
+				runGit(t, fixture.info.Path, "commit", "-m", "release pick")
+				fixture.head = strings.TrimSpace(runGit(t, fixture.info.Path, "rev-parse", "HEAD"))
+			}
 			if test.sourceConflict && !test.advanceOnMerge {
 				fixture.advanceMain(t, "feature.txt", "base conflict\n")
 			} else if test.projection == "base" && !test.advanceParallel {
@@ -797,8 +810,22 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 									status = http.StatusConflict
 									response = `{"message":"Head branch was modified. Review and try the merge again."}`
 								} else {
-									runGit(t, fixture.remote, "update-ref", "refs/heads/main", body["sha"])
-									response = fmt.Sprintf(`{"merged":true,"sha":"%s"}`, body["sha"])
+									merged := body["sha"]
+									if test.mergedRelease != "" {
+										parent, tree := originalBase, fixture.head
+										if test.mergedRelease == "base" {
+											parent = fixture.head
+										}
+										if test.mergedRelease == "tree" {
+											tree = originalBase
+										}
+										tree = strings.TrimSpace(runGit(t, fixture.source, "rev-parse", tree+"^{tree}"))
+										merged = strings.TrimSpace(runGit(t, fixture.source, "commit-tree", tree, "-p", parent, "-m", "release merge"))
+										runGit(t, fixture.source, "push", "origin", merged+":refs/heads/main")
+									} else {
+										runGit(t, fixture.remote, "update-ref", "refs/heads/main", merged)
+									}
+									response = fmt.Sprintf(`{"merged":true,"sha":"%s"}`, merged)
 								}
 							}
 						}
@@ -817,6 +844,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			client := newClient(false)
 			opts := LandOptions{HeadSHA: fixture.head, Method: test.method, Repository: repository, Message: "Native Change Request", GitHubClient: client, ValidationCommand: "test -f feature.txt"}
 			opts.TargetBranch = test.targetBranch
+			if test.pinnedBase {
+				opts.ExpectedBaseSHA = originalBase
+			}
 			if test.rolling {
 				opts.LandingMode = gate.LandingRollingBarrier
 				opts.ValidationCommand = "exit 19"
@@ -1110,6 +1140,31 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					}
 					return
 				}
+			}
+			if test.mergedRelease != "" {
+				if test.mergedRelease == "equivalent" {
+					if err != nil || result.MergeSHA != fixture.remoteMain(t) || result.BaseBefore != originalBase {
+						t.Fatalf("equivalent release merge was refused: %+v, %v", result, err)
+					}
+				} else {
+					want := LandRefusalBaseMoved
+					if test.mergedRelease == "tree" {
+						want = LandRefusalHeadMoved
+					}
+					var refusal *LandRefusal
+					_, kept := keptLanding(t.Context(), landingInfo.Path, fixture.head, "refs/remotes/origin/main")
+					if !errors.As(err, &refusal) || refusal.Kind != want || result.MergeSHA != "" || kept {
+						t.Fatalf("unreviewed release merge was accepted: %+v, %v, kept=%t", result, err, kept)
+					}
+				}
+				return
+			}
+			if test.pinnedBase && test.wantRefusal != "" {
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != test.wantRefusal || result.MergeSHA != "" || mergeCalls > 1 || strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch)) != fixture.head {
+					t.Fatalf("pinned release changed source or landed: result=%+v error=%v merges=%d", result, err, mergeCalls)
+				}
+				return
 			}
 			verifyPreparation()
 			if test.preparationFailure != "" {

@@ -417,6 +417,9 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	}
 	baseBefore = strings.TrimSpace(baseBefore)
 	prepare := func(validatedBase string) (string, gate.CommandResult, error) {
+		if opts.ExpectedBaseSHA != "" && validatedBase != opts.ExpectedBaseSHA {
+			return "", gate.CommandResult{}, &LandRefusal{Kind: LandRefusalBaseMoved, BaseSHA: validatedBase, Reason: "the release base differs from the reviewed version"}
+		}
 		release()
 		release = nil
 		integrated, checked, err := l.prepareGitHubLanding(ctx, normalized, issue, opts, validatedBase)
@@ -455,6 +458,12 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		return integrated, checked, nil
 	}
 	if kept, found := keptLanding(ctx, normalized.Path, head, baseRef); found {
+		if opts.ExpectedBaseSHA != "" {
+			if err := verifyReviewedGitHubLanding(ctx, normalized.Path, head, kept.MergeSHA, opts.ExpectedBaseSHA); err != nil {
+				return LandResult{}, err
+			}
+			kept.BaseBefore = opts.ExpectedBaseSHA
+		}
 		return kept, nil
 	}
 	var pull githubLandingPull
@@ -474,7 +483,10 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 			}
 		}
 	}
-	if strings.TrimSpace(opts.ValidationCommand) != "" {
+	if opts.ExpectedBaseSHA != "" && baseBefore != opts.ExpectedBaseSHA && !pull.Merged && pull.MergedAt == "" {
+		return result, &LandRefusal{Kind: LandRefusalBaseMoved, BaseSHA: baseBefore, Reason: "the release base differs from the reviewed version"}
+	}
+	if strings.TrimSpace(opts.ValidationCommand) != "" && (opts.ExpectedBaseSHA == "" || !pull.Merged && pull.MergedAt == "") {
 		_, validation, err = prepare(baseBefore)
 		if err != nil {
 			return LandResult{}, err
@@ -596,10 +608,19 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		return LandResult{}, errors.New("GitHub reported a merged pull request without a merge commit")
 	}
 	result = LandResult{CI: result.CI, Gate: validation, MergeSHA: mergeSHA, BaseRef: base, BaseBefore: baseBefore, Method: opts.Method, AttemptBranchPushed: opts.External == nil, Rebased: rebased}
+	if opts.ExpectedBaseSHA != "" {
+		if err := verifyGitHubLandingMerge(ctx, normalized.Path, remote, base, baseRef, mergeSHA); err != nil {
+			return LandResult{}, err
+		}
+		if err := verifyReviewedGitHubLanding(ctx, normalized.Path, head, mergeSHA, opts.ExpectedBaseSHA); err != nil {
+			return LandResult{}, err
+		}
+		result.BaseBefore = opts.ExpectedBaseSHA
+	}
 	if err := RecordLanding(ctx, normalized, head, result); err != nil {
 		return result, fmt.Errorf("keep merged landing: %w", err)
 	}
-	if !alreadyMerged {
+	if !alreadyMerged && opts.ExpectedBaseSHA == "" {
 		if err := verifyGitHubLandingMerge(ctx, normalized.Path, remote, base, baseRef, mergeSHA); err != nil {
 			return result, err
 		}
@@ -631,6 +652,20 @@ func mergeGitHubLanding(ctx context.Context, opts LandOptions, repository string
 		return merged, resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, number, head, err)
 	}
 	return merged, nil
+}
+
+func verifyReviewedGitHubLanding(ctx context.Context, path, head, mergeSHA, base string) error {
+	parent, err := runGitAt(ctx, path, "rev-parse", mergeSHA+"^1")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(parent) != base {
+		return &LandRefusal{Kind: LandRefusalBaseMoved, BaseSHA: strings.TrimSpace(parent), Reason: "the merged release base differs from the reviewed version"}
+	}
+	if _, err := runGitAt(ctx, path, "diff", "--quiet", head, mergeSHA, "--"); err != nil {
+		return refuse(LandRefusalHeadMoved, "the merged release tree differs from the reviewed version")
+	}
+	return nil
 }
 
 func verifyGitHubLandingMerge(ctx context.Context, path, remote, base, baseRef, mergeSHA string) error {

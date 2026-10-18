@@ -246,6 +246,9 @@ func (s *Service) landChange(c echo.Context) error {
 		if detail.Summary.Status != "reviewed" {
 			return nil, &nativeError{Code: "not_reviewed", Message: "Only a reviewed current version lands: " + strings.Join(detail.Summary.Messages, " "), status: 409}
 		}
+		if associated && (request.Receipt == nil || request.Receipt.BaseSHA != delivery.BaseSHA || request.Receipt.HeadSHA != version.HeadSHA || request.Receipt.MergeSHA != request.MergeSHA) {
+			return nil, nativeInvalid("Release landing must retain the reviewed base and head")
+		}
 		if version.Policy.Gates.SecurityAudit && !version.Policy.Gates.GitHubPullRequest && !associated {
 			if request.Receipt == nil || request.Receipt.SecurityAudit == nil || request.Receipt.BaseSHA == "" || request.Receipt.MergeSHA != request.MergeSHA {
 				return nil, nativeInvalid("landing requires security audit evidence for its exact base and head")

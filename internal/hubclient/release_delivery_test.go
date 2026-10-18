@@ -14,7 +14,7 @@ import (
 )
 
 func TestReleaseDeliveryLandingTarget(t *testing.T) {
-	for _, name := range []string{"ordinary source", "release delivery", "stale association", "unreviewed delivery"} {
+	for _, name := range []string{"ordinary source", "release delivery", "stale association", "stale base", "unreviewed delivery"} {
 		t.Run(name, func(t *testing.T) {
 			version := tracker.ChangeVersion{ID: "version_release", ChangeID: "change_release", ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), Repository: "https://github.com/example-org/example-project", External: &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/example-org/example-project/pull/7"}}}
 			version.Policy.Gates.SecurityAudit = true
@@ -54,6 +54,9 @@ func TestReleaseDeliveryLandingTarget(t *testing.T) {
 			if name == "stale association" {
 				issue.ReleaseDelivery.HeadSHA = strings.Repeat("c", 40)
 			}
+			if name == "stale base" {
+				issue.ReleaseDelivery.BaseSHA = strings.Repeat("c", 40)
+			}
 			converted := issueFromNative(issue)
 			if name == "release delivery" && (converted.PullRequest == nil || converted.PullRequest.BaseRef != "release/v1.2" || converted.PullRequest.HeadSHA != version.HeadSHA || converted.BranchName != "pick/fix" || converted.PRRepository != version.Repository) {
 				t.Fatalf("runner issue lost release identity: %+v", converted)
@@ -63,7 +66,7 @@ func TestReleaseDeliveryLandingTarget(t *testing.T) {
 			}
 			execution := &nativeExecution{claim: nativeClaim{source: &NativeConnector{client: native}, lease: tracker.NativeLease{WorkItemID: issue.WorkItemID}, recovery: tracker.NativeRecovery{Issue: issue}}}
 			target, err := execution.LandingTarget(t.Context())
-			if name == "stale association" || name == "unreviewed delivery" {
+			if name == "stale association" || name == "stale base" || name == "unreviewed delivery" {
 				if !errors.Is(err, runner.ErrLandingNotReviewed) {
 					t.Fatalf("unsafe landing target=%+v error=%v", target, err)
 				}
