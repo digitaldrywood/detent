@@ -1822,6 +1822,9 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 				}
 				assertUnchangedDecision := func() {
 					t.Helper()
+					if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+						t.Fatal(err)
+					}
 					// Finish credential bookkeeping before measuring decision writes.
 					f.service.tokenUseWork.Wait()
 					var before, after int64
