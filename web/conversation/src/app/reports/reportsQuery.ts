@@ -1,6 +1,6 @@
 import type { AccountApi } from "../account/api.ts";
 import { prefetchQuery, scopeOf, useQuery } from "../lib/queryCache.ts";
-import type { ReportsCustomRange, ReportsFacets, ReportsFilters, ReportsRange, ReportsReport } from "../../contracts/reports.ts";
+import type { OrganizationReports, ReportsCustomRange, ReportsFacets, ReportsFilters, ReportsRange, ReportsReport } from "../../contracts/reports.ts";
 
 export const REPORTS_STALE_MS = 60_000;
 export const DEFAULT_REPORTS_RANGE: ReportsRange = "7d";
@@ -67,4 +67,18 @@ export function useReportOptions(api: AccountApi, projectId: string | null, rang
     { staleTime: REPORTS_STALE_MS, keepPreviousIn: JSON.stringify([scopeOf(api), projectId]) },
   );
   return query.data ?? undefined;
+}
+
+export function useOrganizationReports(api: AccountApi, view: ReportsView & { readonly filters: ReportsFilters; readonly projects: readonly string[]; readonly compare: boolean } | null) {
+  const query = useQuery<OrganizationReports>(
+    view === null ? null : ["organization-reports", scopeOf(api), typeof view.range === "string" ? view.range : `${view.range.from}..${view.range.to}`, filtersKey(view.filters), JSON.stringify(view.projects), String(view.compare)],
+    () => api.organizationReports(view!.range, view!.filters, view!.projects, view!.compare),
+    { staleTime: REPORTS_STALE_MS, keepPreviousIn: JSON.stringify([scopeOf(api), view === null]) },
+  );
+  return {
+    report: query.data ?? null,
+    pending: query.pending,
+    error: query.error !== null && query.data === undefined ? "Reports are temporarily unavailable." : null,
+    refresh: query.refresh,
+  };
 }

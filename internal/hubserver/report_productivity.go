@@ -57,6 +57,7 @@ type organizationProductivity struct {
 	OrganizationID string                       `json:"organization_id"`
 	Window         operatortool.AnalyticsWindow `json:"window"`
 	PreviousWindow operatortool.AnalyticsWindow `json:"previous_window"`
+	PriorRecorded  bool                         `json:"prior_recorded"`
 	Current        productivityMetrics          `json:"current"`
 	Previous       productivityMetrics          `json:"previous"`
 	Projects       []productivityProject        `json:"projects"`
@@ -116,6 +117,9 @@ func (s *Service) readOrganizationProductivity(ctx context.Context, projects []s
 	clause, args, err := productivityFilter(projects, filter)
 	if err != nil {
 		return out, err
+	}
+	if err := s.database.reader.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE organization_id=? AND id IN (SELECT value FROM json_each(?)) AND julianday(created_at)<julianday(?))`, out.OrganizationID, args[0], formatHubTime(prior.To)).Scan(&out.PriorRecorded); err != nil {
+		return out, fmt.Errorf("read organization prior availability: %w", err)
 	}
 	args = append([]any{out.OrganizationID}, args...)
 	if len(filter.Runners) > 0 {
