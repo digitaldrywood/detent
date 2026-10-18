@@ -341,17 +341,15 @@ func newWorkerGitHubPolicy(ctx context.Context, cfg config.Config, projectID str
 	if err != nil {
 		return workerGitHubPolicy{}, err
 	}
-	graphQLEndpoint := ""
 	orchestratorCredential := ""
 	if cfg.Tracker.Kind == config.TrackerGitHub || cfg.Tracker.Kind == config.TrackerGitHubLocal {
-		graphQLEndpoint = cfg.Tracker.Endpoint
 		orchestratorCredential = cfg.Tracker.APIKey
 	}
 	orchestratorToken, err := resolveWorkerGitHubSecretReference(strings.TrimSpace(orchestratorCredential), lookupEnv)
 	if err != nil {
 		return workerGitHubPolicy{}, fmt.Errorf("resolve orchestrator github credential for worker isolation: %w", err)
 	}
-	rateLimitURL, graphQLURL, endpointIdentity, err := workerGitHubEndpoints(graphQLEndpoint)
+	rateLimitURL, graphQLURL, endpointIdentity, err := workerGitHubEndpoints(cfg)
 	if err != nil {
 		return workerGitHubPolicy{}, err
 	}
@@ -506,8 +504,11 @@ func defaultWorkerGitHubToken(ctx context.Context) (string, error) {
 	return token, nil
 }
 
-func workerGitHubEndpoints(graphQLEndpoint string) (string, string, string, error) {
-	graphQLEndpoint = strings.TrimSpace(graphQLEndpoint)
+func workerGitHubEndpoints(cfg config.Config) (string, string, string, error) {
+	graphQLEndpoint := ""
+	if cfg.Tracker.Kind == config.TrackerGitHub || cfg.Tracker.Kind == config.TrackerGitHubLocal {
+		graphQLEndpoint = strings.TrimSpace(cfg.Tracker.Endpoint)
+	}
 	if graphQLEndpoint == "" {
 		graphQLEndpoint = "https://api.github.com/graphql"
 	}
