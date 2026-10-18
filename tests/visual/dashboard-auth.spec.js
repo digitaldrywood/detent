@@ -48,7 +48,10 @@ for (const mode of authModes) {
       await expect(sheet).toBeVisible();
       await expect(sheet.getByText("Kanban demo backlog intake")).toBeVisible();
       await expect(sheet.getByText("example-org/example-project#9511")).toBeVisible();
-      await expect(sheet.getByRole("link", { name: /Open on GitHub/ })).toHaveAttribute("href", /9511/);
+      await expect(sheet.getByRole("link", { name: "Open issue", exact: true })).toHaveAttribute(
+        "href",
+        /\/projects\/demo-project\/issues\/kanban-demo-backlog$/,
+      );
 
       await sheet.getByRole("button", { name: /^Move$/ }).click();
       const moveDialog = actionDialog(page, "Move card");
