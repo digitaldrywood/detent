@@ -38,7 +38,9 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/efficiency"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/healthnotify"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -52,8 +54,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
 	"github.com/digitaldrywood/detent/internal/store/storetest"
 	"github.com/digitaldrywood/detent/internal/telemetry"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
-	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/web"
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -98,6 +98,15 @@ func TestNewServerValidatesDependencies(t *testing.T) {
 				return deps
 			}(),
 			want: web.ErrMissingRegistry,
+		},
+		{
+			name: "missing connector",
+			deps: func() web.Dependencies {
+				deps := testDeps(t)
+				deps.Connector = nil
+				return deps
+			}(),
+			want: web.ErrMissingConnector,
 		},
 	}
 
@@ -388,7 +397,7 @@ func TestFailureBreakerCanaryEndpointRejectsUnknownProject(t *testing.T) {
 	}
 }
 
-func TestLibraryPageListsPullRequestRecords(t *testing.T) {
+func TestLibraryPageListsLocalArtifactsAndPullRequestRecords(t *testing.T) {
 	t.Parallel()
 
 	server := newLibraryTestServer(t)
@@ -403,6 +412,10 @@ func TestLibraryPageListsPullRequestRecords(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		`id="library-table"`,
+		"outputs/ad-1/manifest.json",
+		"outputs/ad-unsafe/manifest.json",
+		"pending_review",
+		"review/ad-1",
 		"PR #934",
 		"https://github.com/example-org/example-project/pull/934",
 		"validator clean",
@@ -420,7 +433,7 @@ func TestLibraryPageListsPullRequestRecords(t *testing.T) {
 	for _, test := range []struct {
 		project string
 		want    int
-	}{{"detent", 1}} {
+	}{{"video", 2}, {"detent", 1}} {
 		t.Run("operator library/"+test.project, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/api/v1/operator-tools/artifact_library", strings.NewReader(`{"project_id":"`+test.project+`","limit":1}`))
 			request.Header.Set("Content-Type", "application/json")
@@ -455,6 +468,18 @@ func TestLibraryPageFiltersRows(t *testing.T) {
 			path:      "/library?kind=pull_request",
 			want:      "PR #934",
 			forbidden: "outputs/ad-1/manifest.json",
+		},
+		{
+			name:      "artifact status",
+			path:      "/library?status=pending_review",
+			want:      "outputs/ad-1/manifest.json",
+			forbidden: "PR #934",
+		},
+		{
+			name:      "project",
+			path:      "/library?project=video",
+			want:      "outputs/ad-1/manifest.json",
+			forbidden: "PR #934",
 		},
 	}
 	for _, tt := range tests {
@@ -4091,7 +4116,7 @@ func TestKanbanCommentEditAndDeleteLocalComments(t *testing.T) {
 		issueComments: map[string][]connector.IssueComment{
 			"I_kw1": {{
 				ID:          "1",
-				Backend:     "hub_native",
+				Backend:     connector.BackendLocalSQLite.String(),
 				Body:        "Original local note",
 				AuthorLogin: "detent",
 				CreatedAt:   &createdAt,
@@ -4117,7 +4142,7 @@ func TestKanbanCommentEditAndDeleteLocalComments(t *testing.T) {
 			State:      "Todo",
 			Comments: []telemetry.IssueComment{{
 				ID:          "1",
-				Backend:     "hub_native",
+				Backend:     connector.BackendLocalSQLite.String(),
 				Body:        "Original local note",
 				AuthorLogin: "detent",
 				CreatedAt:   &createdAt,
@@ -4330,7 +4355,7 @@ func TestBoardCardSheetShowsLocalCommentControlsOnly(t *testing.T) {
 		},
 		{
 			ID:          "local-1",
-			Backend:     "hub_native",
+			Backend:     connector.BackendLocalSQLite.String(),
 			Body:        "Local note",
 			AuthorLogin: "detent",
 			CreatedAt:   &createdAt,
@@ -4354,7 +4379,7 @@ func TestBoardCardSheetShowsLocalCommentControlsOnly(t *testing.T) {
 				},
 				{
 					ID:          "local-1",
-					Backend:     "hub_native",
+					Backend:     connector.BackendLocalSQLite.String(),
 					Body:        "Local note",
 					AuthorLogin: "detent",
 					CreatedAt:   &createdAt,
@@ -7948,8 +7973,8 @@ func TestHealthDistinguishesProcessHealthFromProjectConnectorDegradation(t *test
 func TestHealthReportsProjectPinnedToLastGoodWorkflow(t *testing.T) {
 	updates := make(chan configwatcher.Update, 1)
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
-	trackedProject, err := projectfixture.New(project.Config{
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
+	trackedProject, err := project.New(project.Config{
 		Project: globalconfig.Project{ID: "detent", Workflow: "WORKFLOW.md"},
 		Workflow: workflowconfig.Workflow{
 			Config:     workflowCfg,
@@ -7964,7 +7989,7 @@ func TestHealthReportsProjectPinnedToLastGoodWorkflow(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("projectfixture.New() error = %v", err)
+		t.Fatalf("project.New() error = %v", err)
 	}
 	if err := trackedProject.Start(context.Background()); err != nil {
 		t.Fatalf("Project.Start() error = %v", err)
@@ -8018,8 +8043,8 @@ func TestHealthRespondsDuringDrainWithoutSupplementalProjectReads(t *testing.T) 
 	blocked := make(chan struct{}, 1)
 	release := make(chan struct{})
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
-	trackedProject, err := projectfixture.New(project.Config{
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
+	trackedProject, err := project.New(project.Config{
 		Project:  globalconfig.Project{ID: "detent"},
 		Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Work the issue."},
 	}, project.Dependencies{
@@ -8180,8 +8205,8 @@ func TestHealthReportsEnforcedProjectBudgets(t *testing.T) {
 
 	deps := testDeps(t)
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
-	trackedProject, err := projectfixture.New(project.Config{
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
+	trackedProject, err := project.New(project.Config{
 		Project: globalconfig.Project{ID: "detent"},
 		Workflow: workflowconfig.Workflow{
 			Config:     workflowCfg,
@@ -8303,10 +8328,10 @@ func TestAPIStateRespondsDuringDrainWithoutStoreEnrichment(t *testing.T) {
 		},
 	}
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
 	workflowCfg.Budget.Enabled = true
 	workflowCfg.Budget.PerDayMaxUSD = 100
-	trackedProject, err := projectfixture.New(project.Config{
+	trackedProject, err := project.New(project.Config{
 		Project:  globalconfig.Project{ID: "detent"},
 		Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Work the issue."},
 	}, project.Dependencies{
@@ -12298,6 +12323,72 @@ func newLibraryTestServer(t *testing.T) *web.Server {
 	backend := openWebTestStore(t)
 	registry := project.NewRegistry()
 
+	localPath := filepath.Join(t.TempDir(), "work-items.db")
+	createdAt := time.Date(2026, 7, 2, 9, 0, 0, 0, time.UTC)
+	updatedAt := time.Date(2026, 7, 2, 10, 30, 0, 0, time.UTC)
+	issue := connector.NewIssue()
+	issue.ID = "ad-1"
+	issue.Identifier = "video/ad-1"
+	issue.Title = "Produce summer sale ad"
+	issue.State = "Review"
+	issue.Fields = map[string]string{"render_status": "pending_review"}
+	issue.CreatedAt = &createdAt
+	issue.UpdatedAt = &updatedAt
+	issue.StageUpdatedAt = &updatedAt
+	issue.Deliverable = &connector.Deliverable{
+		Kind:      "video_ad",
+		Path:      "outputs/ad-1/manifest.json",
+		ReviewURL: "http://127.0.0.1:8080/review/ad-1",
+		Metadata:  map[string]string{"format": "mp4", "aspect": "9:16"},
+	}
+	unsafeIssue := connector.NewIssue()
+	unsafeIssue.ID = "ad-unsafe"
+	unsafeIssue.Identifier = "video/ad-unsafe"
+	unsafeIssue.Title = "Unsafe review URL"
+	unsafeIssue.State = "Review"
+	unsafeIssue.Fields = map[string]string{"render_status": "pending_review"}
+	unsafeIssue.CreatedAt = &createdAt
+	unsafeIssue.UpdatedAt = &updatedAt
+	unsafeIssue.StageUpdatedAt = &updatedAt
+	unsafeIssue.Deliverable = &connector.Deliverable{
+		Kind:      "video_ad",
+		Path:      "outputs/ad-unsafe/manifest.json",
+		ReviewURL: "javascript:alert(1)",
+	}
+	conn, err := local.New(local.Config{
+		Path:      localPath,
+		ProjectID: "video-local",
+		Issues:    []connector.Issue{issue, unsafeIssue},
+	})
+	if err != nil {
+		t.Fatalf("local.New() error = %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	workflowCfg := workflowconfig.Default()
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerLocalSQLite
+	workflowCfg.Tracker.LocalSQLite.Path = localPath
+	workflowCfg.Tracker.LocalSQLite.ProjectID = "video-local"
+	workflowCfg.Deliverable.Kind = workflowconfig.DeliverableArtifact
+	workflowCfg.Gate.Kind = gate.KindArtifact
+	workflowCfg.Gate.Artifact.StatusField = "render_status"
+	trackedProject, err := project.New(project.Config{
+		Project: globalconfig.Project{ID: "video", Workdir: t.TempDir()},
+		Workflow: workflowconfig.Workflow{
+			Config: workflowCfg,
+			Prompt: "Work the issue.",
+		},
+	}, project.Dependencies{
+		Connector: connectorProbe{name: "local_sqlite"},
+	})
+	if err != nil {
+		t.Fatalf("project.New(video) error = %v", err)
+	}
+	if err := registry.Set(trackedProject); err != nil {
+		t.Fatalf("Registry.Set(video) error = %v", err)
+	}
 	mustSetWebGitHubLabelProject(t, registry, "detent", "example-org/example-project")
 
 	prUpdatedAt := time.Date(2026, 7, 3, 15, 0, 0, 0, time.UTC)
@@ -12329,23 +12420,35 @@ func newLibraryTestServer(t *testing.T) *web.Server {
 	return server
 }
 
-func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *fakehub.Connector, *refreshProbe) {
+func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *local.Connector, *refreshProbe) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("durable local SQLite integration")
 	}
 
-	conn := fakehub.New(fakehub.Config{
-		Stateful: true,
+	conn, err := local.New(local.Config{
+		Path:           filepath.Join(t.TempDir(), "work-items.db"),
+		ProjectID:      "video",
+		ActiveStates:   []string{"Todo", "In Progress"},
+		ObservedStates: []string{"Backlog", "Blocked"},
+		TerminalStates: []string{"Done"},
+	})
+	if err != nil {
+		t.Fatalf("local.New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
 	})
 
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerLocalSQLite
 	workflowCfg.Tracker.LocalSQLite.Path = filepath.Join(t.TempDir(), "unused.db")
 	workflowCfg.Tracker.ActiveStates = []string{"Todo", "In Progress"}
 	workflowCfg.Tracker.ObservedStates = []string{"Backlog", "Blocked"}
 	workflowCfg.Tracker.TerminalStates = []string{"Done"}
-	trackedProject, err := projectfixture.New(project.Config{
+	trackedProject, err := project.New(project.Config{
 		Project: globalconfig.Project{ID: "video"},
 		Workflow: workflowconfig.Workflow{
 			Config: workflowCfg,
@@ -12355,7 +12458,7 @@ func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *fake
 		Connector: conn,
 	})
 	if err != nil {
-		t.Fatalf("projectfixture.New() error = %v", err)
+		t.Fatalf("project.New() error = %v", err)
 	}
 
 	refresher := &refreshProbe{}
@@ -12377,21 +12480,33 @@ func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *fake
 	return server, conn, refresher
 }
 
-func newAPIKeyWorkItemTestServer(t *testing.T) (*web.Server, store.Store, *fakehub.Connector, *refreshProbe) {
+func newAPIKeyWorkItemTestServer(t *testing.T) (*web.Server, store.Store, *local.Connector, *refreshProbe) {
 	t.Helper()
 
 	backend := openWebTestStore(t)
-	conn := fakehub.New(fakehub.Config{
-		Stateful: true,
+	conn, err := local.New(local.Config{
+		Path:           filepath.Join(t.TempDir(), "work-items.db"),
+		ProjectID:      "example-org-video",
+		ActiveStates:   []string{"Todo", "In Progress"},
+		ObservedStates: []string{"Backlog", "Blocked"},
+		TerminalStates: []string{"Done"},
+	})
+	if err != nil {
+		t.Fatalf("local.New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
 	})
 
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerLocalSQLite
 	workflowCfg.Tracker.LocalSQLite.Path = filepath.Join(t.TempDir(), "unused.db")
 	workflowCfg.Tracker.ActiveStates = []string{"Todo", "In Progress"}
 	workflowCfg.Tracker.ObservedStates = []string{"Backlog", "Blocked"}
 	workflowCfg.Tracker.TerminalStates = []string{"Done"}
-	trackedProject, err := projectfixture.New(project.Config{
+	trackedProject, err := project.New(project.Config{
 		Project: globalconfig.Project{ID: "example-org-video"},
 		Workflow: workflowconfig.Workflow{
 			Config: workflowCfg,
@@ -12401,7 +12516,7 @@ func newAPIKeyWorkItemTestServer(t *testing.T) (*web.Server, store.Store, *fakeh
 		Connector: conn,
 	})
 	if err != nil {
-		t.Fatalf("projectfixture.New() error = %v", err)
+		t.Fatalf("project.New() error = %v", err)
 	}
 
 	refresher := &refreshProbe{}
@@ -12570,7 +12685,7 @@ func mustSetWebGitHubLabelProject(t *testing.T, registry *project.Registry, id s
 	workflowCfg.Tracker.APIKey = "$GITHUB_TOKEN"
 	workflowCfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
 	workflowCfg.Tracker.Repository = repository
-	trackedProject, err := projectfixture.New(project.Config{
+	trackedProject, err := project.New(project.Config{
 		Project: globalconfig.Project{ID: id},
 		Workflow: workflowconfig.Workflow{
 			Config: workflowCfg,
@@ -12599,7 +12714,7 @@ func mustSetWebProjectWithWorkflowStates(
 	t.Helper()
 
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
 	if active != nil {
 		workflowCfg.Tracker.ActiveStates = append([]string(nil), active...)
 	}
@@ -12609,7 +12724,7 @@ func mustSetWebProjectWithWorkflowStates(
 	if terminal != nil {
 		workflowCfg.Tracker.TerminalStates = append([]string(nil), terminal...)
 	}
-	trackedProject, err := projectfixture.New(project.Config{
+	trackedProject, err := project.New(project.Config{
 		Project: globalconfig.Project{ID: id, Paused: paused},
 		Workflow: workflowconfig.Workflow{
 			Config: workflowCfg,
@@ -12642,7 +12757,7 @@ func newSettingsTestProject(t *testing.T, cfg globalconfig.Project, worktreeRoot
 	workflowCfg.Workspace.Root = worktreeRoot
 	workflowCfg.Workspace.SourceRoot = cfg.Workdir
 
-	trackedProject, err := projectfixture.New(project.Config{
+	trackedProject, err := project.New(project.Config{
 		Project: cfg,
 		Workflow: workflowconfig.Workflow{
 			Config: workflowCfg,
@@ -12672,7 +12787,7 @@ func newBudgetTestProject(t *testing.T, id string, perDayMaxUSD float64, perIssu
 	workflowCfg.Budget.PerDayMaxUSD = perDayMaxUSD
 	workflowCfg.Budget.PerIssueMaxUSD = perIssueMaxUSD
 
-	trackedProject, err := projectfixture.New(project.Config{
+	trackedProject, err := project.New(project.Config{
 		Project: globalconfig.Project{ID: id},
 		Workflow: workflowconfig.Workflow{
 			Config: workflowCfg,
@@ -13758,13 +13873,7 @@ func mustSetKanbanProject(t *testing.T, registry *project.Registry, id string, k
 	t.Helper()
 
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
-	if actionConnector.Name() == "github" {
-		workflowCfg.Tracker.Kind = workflowconfig.TrackerGitHub
-		workflowCfg.Tracker.APIKey = "fixture-token"
-		workflowCfg.Tracker.ProjectSlug = "fixture-project"
-		workflowCfg.Tracker.Repository = "example-org/example-project"
-	}
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
 	workflowCfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "Human Review", "Rework", "Merging"}
 	workflowCfg.Tracker.ObservedStates = []string{"Backlog", "Blocked"}
 	workflowCfg.Tracker.TerminalStates = []string{"Done", "Cancelled"}
@@ -13774,7 +13883,7 @@ func mustSetKanbanProject(t *testing.T, registry *project.Registry, id string, k
 	workflowCfg.Agent.DispatchPriorityByLabel = append([]string(nil), dispatchPriorityByLabel...)
 	workflowCfg.Server.Kanban = kanban
 
-	trackedProject, err := projectfixture.New(project.Config{
+	trackedProject, err := project.New(project.Config{
 		Project: globalconfig.Project{ID: id},
 		Workflow: workflowconfig.Workflow{
 			Config: workflowCfg,

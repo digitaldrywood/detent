@@ -33,7 +33,7 @@ func EffectivePolicyConfig(cfg globalconfig.Project, workflow workflowconfig.Con
 // MapNativeTracker applies the same tracker selection used at project startup.
 // A local tracker choice remains authoritative even for a mapped project.
 func MapNativeTracker(workflow workflowconfig.Config, mapped bool) workflowconfig.Config {
-	if mapped && workflow.Tracker.Kind == workflowconfig.TrackerGitHub {
+	if mapped && (workflow.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal) {
 		workflow = workflow.ForNativeTracker()
 	}
 	return workflow
@@ -50,7 +50,7 @@ func ValidateNativeTrackerFeatures(workflow workflowconfig.Config) error {
 		problems = append(problems, errors.New("intake.sources requires tracker.kind github; migrate intake to a separate GitHub-tracked project before using hub_native"))
 	}
 	if len(workflow.Routines) > 0 {
-		problems = append(problems, errors.New("routines requires tracker.kind github; migrate scheduled routines to a supported project before using hub_native"))
+		problems = append(problems, errors.New("routines requires tracker.kind github or memory; migrate scheduled routines to a supported project before using hub_native"))
 	}
 	return errors.Join(problems...)
 }

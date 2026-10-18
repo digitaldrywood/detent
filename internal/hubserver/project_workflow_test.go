@@ -223,7 +223,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		for _, test := range []struct{ name, markdown string }{
 			{"prose is instructions", "# Workflow\n- Todo\n- Done\n"},
 			{"invalid supplied configuration", "---\ntracker:\n  kind: unknown\n---\nWork\n"},
-			{"competing tracker", "---\ntracker:\n  kind: hub_native\n---\nWork\n"},
+			{"competing tracker", "---\ntracker:\n  kind: memory\n---\nWork\n"},
 			{"removed occupied state", "---\ntracker:\n  kind: hub_native\n  lanes: [{name: Repair, role: active}, {name: Blocked, role: holding}, {name: Done, role: terminal}]\n---\nWork\n"},
 		} {
 			api(t, "owner", http.MethodPut, base+"/onboarding/integration", map[string]any{"idempotency_key": test.name, "expected_revision": fmt.Sprint(integration.Revision), "intake": "disabled", "projection": "disabled", "workflow_markdown": test.markdown}, http.StatusUnprocessableEntity)

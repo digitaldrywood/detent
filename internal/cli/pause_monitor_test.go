@@ -12,9 +12,9 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/pause"
 	"github.com/digitaldrywood/detent/internal/scheduler"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestCheckPauseExitConditionsAutoUnpausesEligibleProjects(t *testing.T) {
@@ -28,7 +28,7 @@ func TestCheckPauseExitConditionsAutoUnpausesEligibleProjects(t *testing.T) {
 				Paused:           true,
 				PausedReason:     "wait for fix",
 				PausedAt:         now.Add(-24 * time.Hour).Format(time.RFC3339),
-				PausedUntilIssue: "example-org/example-project#1499",
+				PausedUntilIssue: "digitaldrywood/detent#1499",
 			},
 			{
 				ID:           "time-pause",
@@ -44,8 +44,8 @@ func TestCheckPauseExitConditionsAutoUnpausesEligibleProjects(t *testing.T) {
 			},
 		},
 	}
-	projectConnector := fakehub.New(fakehub.Config{Issues: []connector.Issue{{
-		Identifier: "example-org/example-project#1499",
+	projectConnector := memory.New(memory.Config{Issues: []connector.Issue{{
+		Identifier: "digitaldrywood/detent#1499",
 		Closed:     true,
 	}}})
 
@@ -108,10 +108,10 @@ func TestCheckPauseExitConditionsLeavesOpenIssuePaused(t *testing.T) {
 	cfg := globalconfig.Config{Projects: []globalconfig.Project{{
 		ID:               "issue-pause",
 		Paused:           true,
-		PausedUntilIssue: "example-org/example-project#1499",
+		PausedUntilIssue: "digitaldrywood/detent#1499",
 	}}}
-	projectConnector := fakehub.New(fakehub.Config{Issues: []connector.Issue{{
-		Identifier: "example-org/example-project#1499",
+	projectConnector := memory.New(memory.Config{Issues: []connector.Issue{{
+		Identifier: "digitaldrywood/detent#1499",
 	}}})
 	wrote := false
 
@@ -144,13 +144,13 @@ func TestCheckPauseExitConditionsUsesOwningProjectConnector(t *testing.T) {
 		{
 			ID:               "digitaldrywood-video",
 			Paused:           true,
-			PausedUntilIssue: "example-org/video-project#147",
+			PausedUntilIssue: "digitaldrywood/video-studio#147",
 		},
 		{ID: "video-studio"},
 	}}
-	localConnector := fakehub.New(fakehub.Config{})
-	githubConnector := fakehub.New(fakehub.Config{Issues: []connector.Issue{{
-		Identifier: "example-org/video-project#147",
+	localConnector := memory.New(memory.Config{})
+	githubConnector := memory.New(memory.Config{Issues: []connector.Issue{{
+		Identifier: "digitaldrywood/video-studio#147",
 		Closed:     true,
 	}}})
 	current := clonePauseMonitorConfig(cfg)
@@ -176,7 +176,7 @@ func TestCheckPauseExitConditionsUsesOwningProjectConnector(t *testing.T) {
 		},
 		repositoryFor: func(projectID string) string {
 			if projectID == "video-studio" {
-				return "example-org/video-project"
+				return "digitaldrywood/video-studio"
 			}
 			return ""
 		},
@@ -211,12 +211,12 @@ func TestCheckPauseExitConditionsRecordsEvaluationHealth(t *testing.T) {
 			wantPresent:   true,
 			wantFailures:  pause.DefaultEvaluationFailureThreshold,
 			wantAttention: true,
-			wantError:     "pause exit issue example-org/example-project#1499 was not found",
+			wantError:     "pause exit issue digitaldrywood/detent#1499 was not found",
 		},
 		{
 			name: "open issue remains healthy",
 			issues: []connector.Issue{{
-				Identifier: "example-org/example-project#1499",
+				Identifier: "digitaldrywood/detent#1499",
 			}},
 			ticks:         pause.DefaultEvaluationFailureThreshold + 1,
 			wantPresent:   true,
@@ -225,7 +225,7 @@ func TestCheckPauseExitConditionsRecordsEvaluationHealth(t *testing.T) {
 		{
 			name: "closed issue clears evaluation health on first tick",
 			issues: []connector.Issue{{
-				Identifier: "example-org/example-project#1499",
+				Identifier: "digitaldrywood/detent#1499",
 				Closed:     true,
 			}},
 			ticks: 1,
@@ -239,10 +239,10 @@ func TestCheckPauseExitConditionsRecordsEvaluationHealth(t *testing.T) {
 			cfg := globalconfig.Config{Projects: []globalconfig.Project{{
 				ID:               "detent",
 				Paused:           true,
-				PausedUntilIssue: "example-org/example-project#1499",
+				PausedUntilIssue: "digitaldrywood/detent#1499",
 			}}}
 			current := clonePauseMonitorConfig(cfg)
-			projectConnector := fakehub.New(fakehub.Config{Issues: tt.issues})
+			projectConnector := memory.New(memory.Config{Issues: tt.issues})
 			statuses := map[string]pause.ExitStatus{}
 			var logs bytes.Buffer
 			deps := pauseMonitorDeps{
@@ -257,8 +257,7 @@ func TestCheckPauseExitConditionsRecordsEvaluationHealth(t *testing.T) {
 				connectorFor: func(string) connector.Connector {
 					return projectConnector
 				},
-				trackerKindFor: func(string) string { return "github" },
-				repositoryFor:  func(string) string { return "example-org/example-project" },
+				trackerKindFor: func(string) string { return "memory" },
 				pauseStatus: func(projectID string) (pause.ExitStatus, bool) {
 					status, ok := statuses[projectID]
 					return status, ok
@@ -292,7 +291,7 @@ func TestCheckPauseExitConditionsRecordsEvaluationHealth(t *testing.T) {
 			if tt.wantError != "" {
 				for _, want := range []string{
 					"level=ERROR",
-					"pause_exit_issue=example-org/example-project#1499",
+					"pause_exit_issue=digitaldrywood/detent#1499",
 					tt.wantError,
 				} {
 					if !strings.Contains(logs.String(), want) {
@@ -322,8 +321,8 @@ func TestPauseExitEvaluationFailureKeepsDispatchPaused(t *testing.T) {
 		},
 		{
 			name:         "routed issue cannot be evaluated",
-			trackerKind:  "github",
-			wantLogError: "pause exit issue example-org/video-project#155 was not found",
+			trackerKind:  "memory",
+			wantLogError: "pause exit issue digitaldrywood/video-studio#155 was not found",
 		},
 	}
 
@@ -331,7 +330,7 @@ func TestPauseExitEvaluationFailureKeepsDispatchPaused(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			const reference = "example-org/video-project#155"
+			const reference = "digitaldrywood/video-studio#155"
 			cfg := globalconfig.Config{Projects: []globalconfig.Project{{
 				ID:               "video",
 				Paused:           true,
@@ -367,10 +366,9 @@ func TestPauseExitEvaluationFailureKeepsDispatchPaused(t *testing.T) {
 					return nil
 				},
 				connectorFor: func(string) connector.Connector {
-					return fakehub.New(fakehub.Config{})
+					return memory.New(memory.Config{})
 				},
 				trackerKindFor: func(string) string { return tt.trackerKind },
-				repositoryFor:  func(string) string { return "example-org/video-project" },
 				logger:         slog.New(slog.NewTextHandler(&logs, nil)),
 			})
 

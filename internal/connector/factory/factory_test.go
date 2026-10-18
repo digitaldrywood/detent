@@ -8,11 +8,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/connector/local"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 )
 
 func TestNewFromConfigSupportedBackends(t *testing.T) {
@@ -23,6 +26,9 @@ func TestNewFromConfigSupportedBackends(t *testing.T) {
 		kind string
 		want string
 	}{
+		{name: "empty defaults to memory", kind: "", want: "memory"},
+		{name: "memory", kind: "memory", want: "memory"},
+		{name: "linear", kind: "linear", want: "linear"},
 		{name: "github", kind: "github", want: "github"},
 		{name: "normalizes whitespace and case", kind: " GitHub ", want: "github"},
 	}
@@ -63,18 +69,47 @@ func TestNewFromConfigRejectsNotReadyBackends(t *testing.T) {
 func TestNewFromConfigRejectsUnknownBackend(t *testing.T) {
 	t.Parallel()
 
-	for _, kind := range []string{"", "memory", "linear", "local_sqlite", "github_local", "asana"} {
-		t.Run(kind, func(t *testing.T) {
-			got, err := NewFromConfig(Config{Kind: kind})
-			if got != nil {
-				t.Fatalf("connector = %T, want nil", got)
-			}
-			if !errors.Is(err, ErrUnsupportedBackend) {
-				t.Fatalf("error = %v, want ErrUnsupportedBackend", err)
-			}
-		})
+	got, err := NewFromConfig(Config{Kind: "asana"})
+	if got != nil {
+		t.Fatalf("connector = %T, want nil", got)
+	}
+	if !errors.Is(err, ErrUnsupportedBackend) {
+		t.Fatalf("error = %v, want ErrUnsupportedBackend", err)
+	}
+}
+
+func TestFactoryMemoryConnectorUsesConfiguredIssues(t *testing.T) {
+	t.Parallel()
+
+	issues := []connector.Issue{{ID: "issue-1", State: "Todo"}}
+	var events []memory.Event
+	c, err := NewFromConfig(Config{
+		Kind: "memory",
+		Memory: memory.Config{
+			Issues: issues,
+			EventSink: func(event memory.Event) {
+				events = append(events, event)
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewFromConfig() error = %v", err)
 	}
 
+	got, err := c.FetchCandidateIssues(context.Background())
+	if err != nil {
+		t.Fatalf("FetchCandidateIssues() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, issues) {
+		t.Fatalf("FetchCandidateIssues() = %#v, want %#v", got, issues)
+	}
+
+	if err := c.CreateComment(context.Background(), "issue-1", "body"); err != nil {
+		t.Fatalf("CreateComment() error = %v", err)
+	}
+	if !reflect.DeepEqual(events, []memory.Event{{Kind: memory.EventKindComment, IssueID: "issue-1", Body: "body"}}) {
+		t.Fatalf("events = %#v, want comment event", events)
+	}
 }
 
 func TestFactoryGitHubConnectorRequiresProjectForPolling(t *testing.T) {
@@ -131,6 +166,54 @@ func TestFactoryGitHubConnectorImplementsAuthenticator(t *testing.T) {
 	}
 	if _, ok := c.(connector.Authenticator); !ok {
 		t.Fatalf("connector = %T, want connector.Authenticator", c)
+	}
+}
+
+func TestFactoryLinearConnectorSupportsIssueCommentsOnly(t *testing.T) {
+	t.Parallel()
+
+	c, err := NewFromConfig(Config{Kind: "linear"})
+	if err != nil {
+		t.Fatalf("NewFromConfig() error = %v", err)
+	}
+	if _, ok := c.(connector.IssueCommentReader); !ok {
+		t.Fatalf("connector = %T, want connector.IssueCommentReader", c)
+	}
+	if _, ok := c.(connector.PullRequestCommenter); ok {
+		t.Fatalf("connector = %T, want no connector.PullRequestCommenter", c)
+	}
+}
+
+func TestFactoryGitHubLocalConnectorSelection(t *testing.T) {
+	t.Parallel()
+
+	c, err := NewFromConfig(Config{
+		Kind:       "github_local",
+		Repository: "digitaldrywood/detent",
+		LocalSQLite: local.Config{
+			Path: ":memory:",
+		},
+		ActiveStates:   []string{"Todo", "In Progress"},
+		TerminalStates: []string{"Done"},
+	})
+	if err != nil {
+		t.Fatalf("NewFromConfig() error = %v", err)
+	}
+	if closer, ok := c.(connector.Closer); ok {
+		t.Cleanup(func() {
+			if err := closer.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+		})
+	}
+	if c.Name() != "github_local" {
+		t.Fatalf("Name() = %q, want github_local", c.Name())
+	}
+	if _, ok := c.(connector.PullRequestCommenter); !ok {
+		t.Fatalf("connector = %T, want connector.PullRequestCommenter", c)
+	}
+	if _, ok := c.(connector.PullRequestMerger); !ok {
+		t.Fatalf("connector = %T, want connector.PullRequestMerger", c)
 	}
 }
 

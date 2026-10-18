@@ -20,7 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/telemetry"
-	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web"
 )
@@ -169,7 +168,7 @@ func nativeWebServerWithClient(t *testing.T, native *hubclient.NativeClient, fix
 	}
 	workflow := workflowconfig.Default()
 	workflow.Tracker.Kind = workflowconfig.TrackerHubNative
-	tracked, err := projectfixture.New(project.Config{Project: globalconfig.Project{ID: "native"}, Workflow: workflowconfig.Workflow{Config: workflow}}, project.Dependencies{Scheduling: nativeWebScheduling{source: source}})
+	tracked, err := project.New(project.Config{Project: globalconfig.Project{ID: "native"}, Workflow: workflowconfig.Workflow{Config: workflow}}, project.Dependencies{Scheduling: nativeWebScheduling{source: source}})
 	if err != nil {
 		t.Fatal(err)
 	}
