@@ -179,7 +179,16 @@ member leaves the clean batch and retries by rebasing; in `per_landing` mode the
 runs build, short Go tests for touched packages, and lint of touched files.
 The receipt records the landing path and tested packages. A moved base repeats
 the clean-squash decision on the new head. GitHub PR landing stays behind its
-project policy opt-in and retains its configured validation and native checks.
+project policy opt-in, except for an operator-associated, provenance-verified
+release PR delivery. That association keeps the project policy unchanged,
+requires independent review, and retains the exact reviewed release base and
+source tree through landing. An associated single-commit release pick lands
+with an atomic Git compare-and-swap against that reviewed base, after verifying
+the exact PR, reviews, checks and active authority. Repository push protections
+remain authoritative; a refused push never falls back to an unpinned PR merge.
+GitHub PR delivery retains its configured
+validation and native checks; security audits cover the immutable version
+base and head. Native direct landing also audits its integrated commit.
 This repository configures `make check-landing` for the combined GitHub landing
 tree: build, short tests for touched packages and dependents, and lint of changed
 Go files. Module changes widen validation. Source completion still runs the

@@ -71,6 +71,9 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	workflow, _, _, _ := r.runtimeSnapshot()
 	effectiveGate := gate.Effective(workflow.Config.Gate)
 	options := workspace.LandOptions{TargetBranch: target.BaseRef, LandingMode: effectiveGate.LandingMode, Native: !target.GitHubPullRequest, Validation: target.Validation, RebaseRequired: target.RebaseRequired, RequiredStatusChecks: effectiveGate.RequiredStatusChecks, CITriggerLabel: effectiveGate.CITriggerLabel, PreviousCI: target.CI, ValidationCommand: effectiveGate.Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
+	if target.SourceMergeSHA != "" {
+		options.ExpectedBaseSHA = target.BaseSHA
+	}
 	if effectiveGate.CITriggerLabelStaggerSeconds != nil {
 		options.CITriggerLabelStagger = time.Duration(*effectiveGate.CITriggerLabelStaggerSeconds) * time.Second
 	}
@@ -87,8 +90,8 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		}
 		return nil
 	}
+	options.Authorize = authorizeLanding
 	if target.SecurityAudit && !target.GitHubPullRequest {
-		options.Authorize = authorizeLanding
 		options.SecurityAuditRequired = true
 		options.SecurityAudit = func(ctx context.Context, diff workspace.FileDiffs) (*tracker.SecurityAuditReview, error) {
 			return r.auditNativeLanding(ctx, req, target, diff)

@@ -200,8 +200,8 @@ func (s *Service) associateReleasePickCommand(ctx context.Context, tx *sql.Tx, s
 		return nil, err
 	}
 	independentReview := rules.RequireReview || approved.Policy.Gates.Validator || approved.Policy.Gates.SecurityAudit || approved.Policy.Gates.AutomatedReview == gate.AutomatedReviewRequired
-	if !approved.Policy.Gates.GitHubPullRequest || !independentReview {
-		return nil, nativeInvalid("Release delivery requires the project's normal PR landing and independent review policy")
+	if !independentReview {
+		return nil, nativeInvalid("Release delivery requires the project's independent review policy")
 	}
 	created, err := s.createChangeCommand(ctx, tx, scope, item, tracker.CreateChange{Title: issue.Title}, now)
 	if err != nil {
