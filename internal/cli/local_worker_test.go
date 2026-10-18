@@ -379,6 +379,17 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 	workflow.Config.Workspace.Root = t.TempDir()
 	descriptor := workflow.Config.Policy
 	artifacts, publish, cacheRoot := localWorkerArtifacts(t)
+	publishRelease := publish
+	publish = func(version string) {
+		publishRelease(version)
+		artifact, err := artifacts.Acquire(ctx, workerProtocolPreflight)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := artifact.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	publish("1.0.0")
 	built, err := buildRunner(workflow, "local", t.TempDir(), globalconfig.Memory{}, gobudget.Budget{}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), serviceapi.Connection{})
 	if err != nil {

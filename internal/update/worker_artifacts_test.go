@@ -25,7 +25,7 @@ type workerReleaseFixture struct {
 
 func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{"automatic", "explicit", "enrolled", "pending", "download failure", "protocol incompatible", "critical", "windows"} {
+	for _, path := range []string{"startup", "startup critical", "startup incompatible", "automatic", "explicit", "enrolled", "pending", "download failure", "protocol incompatible", "critical", "windows"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			artifacts, fixture, publish := workerArtifactFixture(t)
@@ -49,10 +49,10 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 			if path == "download failure" {
 				delete(fixture.downloads, published.Assets[0].BrowserDownloadURL)
 			}
-			if path == "protocol incompatible" {
+			if path == "protocol incompatible" || path == "startup incompatible" {
 				preflight = func(context.Context, string) error { return ErrWorkerProtocolIncompatible }
 			}
-			if path == "critical" {
+			if path == "critical" || path == "startup critical" {
 				fixture.releases[len(fixture.releases)-1].Body = "[detent-critical]"
 			}
 			now := time.Now().UTC()
@@ -67,6 +67,8 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 				t.Fatal(err)
 			}
 			switch path {
+			case "startup", "startup critical", "startup incompatible":
+				err = scheduler.PrepareWorkers(t.Context())
 			case "automatic":
 				_, err = scheduler.CheckNow(t.Context())
 			case "pending":
@@ -108,12 +110,32 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 				}
 			} else if err != nil {
 				t.Fatal(err)
-			} else if path == "protocol incompatible" || path == "critical" {
+			} else if path == "protocol incompatible" || path == "critical" || path == "startup critical" || path == "startup incompatible" {
 				if drains != 1 || restarts != 1 || updater.applyCalls != 1 {
 					t.Fatalf("exceptional update did not use existing replacement: drains=%d restarts=%d applies=%d", drains, restarts, updater.applyCalls)
 				}
-			} else if drains != 0 || restarts != 0 || updater.applyCalls != 0 || scheduler.Status().State != "applied" {
+			} else if drains != 0 || restarts != 0 || updater.applyCalls != 0 || path != "startup" && scheduler.Status().State != "applied" {
 				t.Fatalf("routine update withheld capacity: drains=%d restarts=%d applies=%d status=%+v", drains, restarts, updater.applyCalls, scheduler.Status())
+			}
+			if path == "critical" || path == "protocol incompatible" || path == "startup critical" || path == "startup incompatible" {
+				fixture.listErr = errors.New("discovery unavailable")
+				if _, err := artifacts.Acquire(t.Context(), nil); err == nil {
+					t.Fatal("discovery unexpectedly succeeded")
+				}
+				if _, err := artifacts.AcquireLaunch(t.Context(), nil, nil); err == nil {
+					t.Fatal("known exceptional update allowed new launch")
+				}
+			} else if path != "download failure" {
+				launch, err := artifacts.AcquireLaunch(t.Context(), nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if launch.Status.LatestVersion != "1.0.1" && path != "enrolled" {
+					t.Fatal("prepared selection lost")
+				}
+				if err := launch.Release(); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if _, err := os.Stat(active.Status.Binary); err != nil {
 				t.Fatalf("update removed active worker artifact: %v", err)
@@ -191,6 +213,9 @@ func workerArtifactFixture(t *testing.T) (*WorkerArtifacts, *workerReleaseFixtur
 func TestWorkerArtifactsSelectionAndRetention(t *testing.T) {
 	t.Parallel()
 	a, f, publish := workerArtifactFixture(t)
+	if _, err := a.AcquireLaunch(t.Context(), nil, nil); err == nil {
+		t.Fatal("cold launch accepted an unprepared artifact")
+	}
 	first := publish("1.0.0")
 	a1, err := a.Acquire(t.Context(), nil)
 	if err != nil {
@@ -276,6 +301,18 @@ func TestWorkerArtifactsSelectionAndRetention(t *testing.T) {
 		t.Fatalf("latest archive unavailable or obsolete archives retained: %v %v", archives, err)
 	}
 	f.listErr = errors.New("release source unavailable")
+	f.list = func() { t.Error("launch performed release discovery") }
+	launch, err := a.AcquireLaunch(t.Context(), nil, nil)
+	if err != nil {
+		t.Fatalf("prepared launch during discovery outage: %v", err)
+	}
+	if launch.Status.Binary != c.Status.Binary {
+		t.Fatal("launch lost the latest prepared artifact")
+	}
+	if err := launch.Release(); err != nil {
+		t.Fatal(err)
+	}
+	f.list = nil
 	if _, err := a.Acquire(t.Context(), nil); err == nil {
 		t.Fatal("unavailable release selection silently reused an obsolete artifact")
 	}
@@ -389,14 +426,55 @@ func TestWorkerArtifactsConcurrentOwners(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	discovering, resume := make(chan struct{}), make(chan struct{})
+	f.list = func() { close(discovering); <-resume }
+	preparedResult := make(chan error, 1)
+	go func() {
+		prepared, err := a.Acquire(t.Context(), nil)
+		if err == nil {
+			err = prepared.Release()
+		}
+		preparedResult <- err
+	}()
+	<-discovering
+	launchResult := make(chan error, 1)
+	go func() {
+		launch, err := a.AcquireLaunch(t.Context(), nil, nil)
+		if err == nil {
+			err = launch.Release()
+		}
+		launchResult <- err
+	}()
+	select {
+	case err := <-launchResult:
+		if err != nil {
+			t.Error(err)
+		}
+	case <-t.Context().Done():
+		t.Error("prepared launch blocked on discovery")
+	}
+	close(resume)
+	if err := <-preparedResult; err != nil {
+		t.Fatal(err)
+	}
+	f.list = nil
 	release := publish("1.0.1")
+	prepared, err := a.Acquire(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Release(); err != nil {
+		t.Fatal(err)
+	}
+	f.listErr = errors.New("GitHub returned 403 Forbidden")
+	f.list = func() { t.Error("concurrent launch performed discovery") }
 	const count = 8
 	var owners [count]*WorkerArtifact
 	var failures [count]error
 	var workers sync.WaitGroup
 	for i := range count {
 		workers.Go(func() {
-			owners[i], failures[i] = a.Acquire(t.Context(), nil)
+			owners[i], failures[i] = a.AcquireLaunch(t.Context(), nil, nil)
 		})
 	}
 	workers.Wait()
@@ -419,6 +497,7 @@ func TestWorkerArtifactsConcurrentOwners(t *testing.T) {
 		})
 	}
 	workers.Wait()
+	f.listErr, f.list = nil, nil
 	publish("1.0.2")
 	latest, err := a.Acquire(t.Context(), nil)
 	if err != nil {
