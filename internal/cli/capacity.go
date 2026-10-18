@@ -181,6 +181,10 @@ func resolveDashboardBoot(
 	if err != nil {
 		return BootConfig{}, dashboardAddress{}, err
 	}
+	cfg, err = resolveRunnerProjectsReadOnly(ctx, cfg)
+	if err != nil {
+		return BootConfig{}, dashboardAddress{}, err
+	}
 	return resolveDashboardBootConfig(ctx, resolution, cfg, host, port, portSet, opts)
 }
 

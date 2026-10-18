@@ -505,7 +505,7 @@ func defaultOptions() options {
 			return readLocalConfigurationSource(path)
 		},
 		read: func(path string) (globalconfig.Config, error) {
-			return readLocalConfigurationFile(path)
+			return readLocalConfigurationSource(path)
 		},
 		readProject: func(path string, projectID string) (globalconfig.Config, []string, error) {
 			return readLocalConfigurationProjectFile(path, projectID)

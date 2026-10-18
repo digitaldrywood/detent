@@ -136,6 +136,10 @@ func planAgentPoolsFix(
 	if err != nil {
 		return agentPoolsFixPlan{}, err
 	}
+	cfg, err = resolveRunnerProjects(ctx, cfg)
+	if err != nil {
+		return agentPoolsFixPlan{}, err
+	}
 	plan := agentPoolsFixPlan{Path: resolution.Path}
 	if len(cfg.Global.AgentPools) > 0 {
 		plan.Noop = true
