@@ -6,7 +6,7 @@ This page describes how Detent decides that work is waiting on another issue, on
 
 ## Hub dependency relations
 
-Native Cloud projects record dependencies as Hub relations, created with `detent hub issue dependency`, the `set_dependency` MCP tool, `POST /api/v1/work-items/{id}/dependencies` or the v2 `POST /api/v2/organizations/{org}/projects/{project}/work-items/{item}/dependencies` route. The Hub offers a `Todo` item to runners only when every blocker it depends on is in a terminal workflow state. The item stays in `Todo` while it waits; it does not move to `Blocked`.
+Native Cloud projects record dependencies as Hub relations, created with the `set_dependency` MCP tool, `POST /api/v1/work-items/{id}/dependencies` or the v2 `POST /api/v2/organizations/{org}/projects/{project}/work-items/{item}/dependencies` route. The Hub offers a `Todo` item to runners only when every blocker it depends on is in a terminal workflow state. The item stays in `Todo` while it waits; it does not move to `Blocked`.
 
 Each project has a `require_dependencies` setting that defaults to true. Setting it false disables dependency gating for that project. For native projects the Hub relation is the only dependency source: `Depends on:` or `Blocked by:` lines in an issue body are not read.
 

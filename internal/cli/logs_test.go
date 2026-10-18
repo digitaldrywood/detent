@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -66,23 +65,8 @@ func TestEnrolledReadCommandsDuringIdentityWrite(t *testing.T) {
 			}
 			hub.identity.Store(file.Identity)
 			hub.credential.Store(file.Credential)
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get("Authorization") != "Bearer fixture_service_token" {
-					t.Error("state request lost the configured service token")
-				}
-				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/state" {
-					t.Errorf("unexpected dashboard request: %s %s", r.Method, r.URL.Path)
-				}
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(stateFixture())
-			}))
-			t.Cleanup(server.Close)
-			address, err := url.Parse(server.URL)
-			if err != nil {
-				t.Fatal(err)
-			}
 			configPath := filepath.Join(dir, "global.yaml")
-			config := fmt.Sprintf("apiVersion: detent/v1\nkind: GlobalConfig\nport: %s\napi_token: fixture_service_token\nworkspace_root: %s\nclient:\n  hub_url: %s\n  organization_id: org_example\n  identity_file: %s\n  capacity: 1\n", address.Port(), filepath.Join(dir, "work"), readerHub.URL, identityPath)
+			config := fmt.Sprintf("apiVersion: detent/v1\nkind: GlobalConfig\nworkspace_root: %s\nclient:\n  hub_url: %s\n  organization_id: org_example\n  identity_file: %s\n  capacity: 1\n", filepath.Join(dir, "work"), readerHub.URL, identityPath)
 			if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -152,7 +136,7 @@ func TestEnrolledReadCommandsDuringIdentityWrite(t *testing.T) {
 							beforeInfo[path] = info
 						}
 					}
-					for _, command := range []string{"logs", "state", "exposure", "exposure project"} {
+					for _, command := range []string{"logs", "exposure", "exposure project"} {
 						t.Run(command, func(t *testing.T) {
 							readsBefore := projectReads.Load()
 							scans := 0
@@ -221,9 +205,6 @@ func TestEnrolledReadCommandsDuringIdentityWrite(t *testing.T) {
 								}
 								if command == "logs" && !strings.Contains(stdout.String(), "owned fixture log") {
 									t.Fatal("log result omitted the fixture")
-								}
-								if command == "state" && !strings.Contains(stdout.String(), "generated_at") {
-									t.Fatal("state result omitted the snapshot")
 								}
 							}
 							if strings.HasPrefix(command, "exposure") {
