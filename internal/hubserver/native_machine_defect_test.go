@@ -91,6 +91,8 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 		{"incomplete legacy Todo", "internal/example/legacy.go:23:4: undefined: capacity", "internal/example/legacy.go:31:2: undefined: capacity", false, "Todo", false, false, "## Roadmap Summary\nRepair the failed build.", "Done", true},
 		{"held legacy Todo", "internal/example/held.go:23:4: undefined: capacity", "internal/example/held.go:31:2: undefined: capacity", false, "Todo", false, false, "## Roadmap Summary\nRepair the failed build.\n<!-- detent:no-dispatch -->", "Done", false},
 		{"other project scheduled owner", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", true, "Todo", true, false, "", "Done", true},
+		{"other project custom completion", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", true, "Todo", true, false, "", "Shipped", true},
+		{"other project held custom completion", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", true, "Todo", true, false, "Problem: `go-test:example/hub:TestJourney`\n## Roadmap Summary\nRepair the failed build.\n<!-- detent:no-dispatch -->", "Shipped", false},
 		{"other project cancelled", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", true, "Todo", true, false, "", "Cancelled", false},
 		{"other project held", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", true, "Todo", true, false, "Problem: `go-test:example/hub:TestJourney`\n## Roadmap Summary\nRepair the failed build.\n<!-- detent:no-dispatch -->", "Done", false},
 	} {
@@ -99,10 +101,10 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=? WHERE id=?", !test.disabled, f.project.ID); err != nil {
 				t.Fatal(err)
 			}
-			states := append(f.project.States, tracker.NativeState{Name: "Backlog"}, tracker.NativeState{Name: "Cancelled", Terminal: true})
+			states := append(f.project.States, tracker.NativeState{Name: "Backlog"}, tracker.NativeState{Name: "Cancelled", Terminal: true}, tracker.NativeState{Name: "Shipped", Terminal: true})
 			for i := range states {
 				if states[i].Name == "Todo" || states[i].Name == "Backlog" {
-					states[i].Transitions = []string{"Done", "Cancelled"}
+					states[i].Transitions = []string{"Done", "Cancelled", "Shipped"}
 				}
 			}
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)

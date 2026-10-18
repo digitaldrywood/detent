@@ -206,7 +206,7 @@ func reportNativeMachineOccurrenceTx(ctx context.Context, tx *sql.Tx, scope nati
 			return tracker.NativeIssue{}, err
 		}
 		if issue.Terminal {
-			if terminalRepair && issue.State == "Done" && !strings.Contains(strings.ToLower(issue.Body), "detent:no-dispatch") {
+			if terminalRepair && issue.State != "Cancelled" && !strings.Contains(strings.ToLower(issue.Body), "detent:no-dispatch") {
 				return createNativeIssue(ctx, tx, scope, request, now, true)
 			}
 			issue.PublicationReused = true
