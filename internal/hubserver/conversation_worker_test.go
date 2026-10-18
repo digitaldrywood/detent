@@ -751,6 +751,7 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 			t.Fatal("registered event did not persist authentic transcript")
 		}
 		f.advance(11 * time.Minute)
+		publishCapacity(t, f.nativeFixture, r, capacityReport(f.now))
 		before := f.load(t)
 		if err := f.chat.reconcileExecutions(t.Context()); err != nil {
 			t.Fatal(err)
