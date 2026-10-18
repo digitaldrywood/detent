@@ -3,8 +3,12 @@
 [Back to README](../README.md#documentation)
 
 Enrolled runners learn the target version on every heartbeat after its signed
-release assets are published. They stop taking new work, finish active leases,
-install that exact release and restart. A newer release replaces an update that
+release assets are published. Compatible releases prepare verified execution
+artifacts while active workers continue and new work remains eligible. Controller
+replacement waits for an idle reservation, then installs the release and requests
+a coordinated restart. Critical security releases, incompatible execution
+protocols and intentional operator maintenance use the existing drain owner.
+A newer release replaces an update that
 was refused or interrupted. Older runners keep taking work during the update: the
 Hub refuses claims only from runners below its minimum supported runner version,
 which changes only with a release that breaks runner and Hub compatibility.
@@ -13,8 +17,10 @@ missing signature evidence, run `detent update --check --json`: `repair_availabl
 identifies a same-version repair without claiming a newer version exists.
 Run `detent update --yes` to fetch and verify the signed checksums, provenance and
 platform archive with the pinned trust key, then atomically reinstall it. When
-a local service is running, the existing update owner drains active work and
-requests its coordinated restart. Capacity, routing, credentials and workspaces
+a local service is running, its existing update owner prepares compatible worker
+artifacts while busy and replaces the controller once idle. A same-version Hub
+repair remains actionable on subsequent heartbeats until that replacement and
+restart complete. Capacity, routing, credentials and workspaces
 are preserved. The install marker references a content-addressed cache of the
 release archive, signed checksums and provenance. Verification rechecks the pinned-key
 signature, checksums, platform, version, commit and extracted binary digest before
