@@ -995,7 +995,8 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 
 type landingCapacityFixture struct {
 	nativeFixture
-	descriptor policy.Descriptor
+	descriptor  policy.Descriptor
+	requirement providercapacity.Requirement
 }
 
 func newLandingCapacityFixture(t *testing.T, service *Service, name string, github bool) landingCapacityFixture {
@@ -1050,7 +1051,11 @@ func (f landingCapacityFixture) ready(t *testing.T, name string) tracker.NativeI
 
 func (f landingCapacityFixture) claim(t *testing.T, r runnerFixture, issue tracker.NativeIssue, session string, capacity int) *httptest.ResponseRecorder {
 	t.Helper()
-	return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, tracker.NativeClaim{LandingCapacity: capacity, PolicyID: f.descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: session, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
+	claim := tracker.NativeClaim{LandingCapacity: capacity, PolicyID: f.descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: session, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+	if f.requirement.Backend != "" {
+		claim.ProviderCandidates = []tracker.NativeCapacityCandidate{{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: f.requirement}}
+	}
+	return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 }
 
 func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
@@ -1060,6 +1065,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 		admission                                                                                                                       string
 		ownerCapacity, contenderCapacity, renewalCapacity, replayCapacity, expiredRenewalCapacity                                       int
 		boundary                                                                                                                        string
+		provider, sprite, overflow                                                                                                      bool
 		nativeOnly, sameBatch, otherProject, laneChanged, expired, concurrent, fallback, room, renewFree, renewRace, direct, directRace bool
 	}{
 		{name: "one project across hosts", ownerCapacity: 1, contenderCapacity: 1, admission: "skipped"},
@@ -1079,7 +1085,11 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 		{name: "negative capacity is invalid", ownerCapacity: -1},
 		{name: "separate project proceeds", ownerCapacity: 1, contenderCapacity: 1, otherProject: true, admission: "ready"},
 		{name: "native-only landing is unchanged", ownerCapacity: 1, contenderCapacity: 1, nativeOnly: true, admission: "ready"},
+		{name: "GitHub batch names retain independent occupancy", ownerCapacity: 1, contenderCapacity: 1, sameBatch: true},
 		{name: "native batch shares its host slot", ownerCapacity: 1, contenderCapacity: 1, nativeOnly: true, sameBatch: true},
+		{name: "native batch shares its provider reservation", ownerCapacity: 1, contenderCapacity: 1, nativeOnly: true, sameBatch: true, provider: true},
+		{name: "native batch shares its Sprite slot", ownerCapacity: 1, contenderCapacity: 1, nativeOnly: true, sameBatch: true, sprite: true},
+		{name: "native batch shares its Sprite overflow slot", ownerCapacity: 1, contenderCapacity: 1, nativeOnly: true, sameBatch: true, sprite: true, overflow: true},
 		{name: "concurrent claims acquire one slot", ownerCapacity: 1, contenderCapacity: 1, concurrent: true},
 		{name: "expired renewal races a new claim", ownerCapacity: 1, contenderCapacity: 1, concurrent: true, renewRace: true},
 		{name: "busy landing permits other ready work", ownerCapacity: 1, contenderCapacity: 1, fallback: true},
@@ -1117,9 +1127,35 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				}
 			}
 			owner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim)
+			if test.sprite {
+				owner.redemption.SpriteName = owner.redemption.Hostname
+				placement := policy.Placement{Mode: "blended", MaxSpriteSlots: 1}
+				if test.overflow {
+					placement = policy.Placement{Mode: "local_first", TodoThreshold: 1, OverflowSlots: 1}
+					f.createIndependent(t, "queued source")
+				}
+				setPlacementFixture(t, f.nativeFixture, placement, 1)
+			}
 			owner.enroll(t)
+			if test.provider {
+				f.requirement = providercapacity.Requirement{Role: "merge", Backend: "git", Model: "git"}
+				report := capacityReport(f.service.config.now())
+				report.Backend, report.Models = "git", []string{"git"}
+				raw, err := json.Marshal([]providercapacity.Report{report})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET provider_reports_json=? WHERE id=?", string(raw), owner.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			waiter := prepareRunner(t, secondFixture.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Events)
 			waiter.enroll(t)
+			if test.overflow {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET state='disabled' WHERE id=?", waiter.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			ownerSession, waiterSession := "first-landing", "waiting-landing"
 			if test.ownerCapacity < 0 {
 				requireNativeStatus(t, f.claim(t, owner, first, ownerSession, test.ownerCapacity), http.StatusUnprocessableEntity)
@@ -1129,6 +1165,12 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 			if test.sameBatch {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, owner.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 1, "display_name": "Batch runner", "state": "active", "capacity_limit": 1, "project_ids": []tracker.ProjectID{f.project.ID}, "project_capacity_limits": map[tracker.ProjectID]int{f.project.ID: 1}, "idempotency_key": "batch-project-limit"}), http.StatusOK)
 				waiter = owner
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET capacity_limit=1, reported_capacity=1 WHERE id=?", owner.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=1 WHERE id=?", owner.binding.MachineID); err != nil {
+					t.Fatal(err)
+				}
 				ownerSession, waiterSession = "landing/shared/owner", "landing/shared/waiter"
 			}
 			if test.concurrent {
@@ -1310,6 +1352,188 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 			if test.renewFree {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
 			}
+			if test.sameBatch {
+				if !test.nativeOnly {
+					requireNativeStatus(t, f.claim(t, owner, second, waiterSession, 1), http.StatusConflict)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+					requireNativeStatus(t, f.claim(t, owner, second, waiterSession, 1), http.StatusOK)
+					return
+				}
+				if test.provider || test.sprite {
+					response := f.claim(t, owner, second, waiterSession, 1)
+					requireNativeStatus(t, response, http.StatusOK)
+					var member tracker.NativeLease
+					decodeHubResponse(t, response, &member)
+					third := f.ready(t, "third batch member")
+					response = f.claim(t, owner, third, "landing/shared/third", 1)
+					requireNativeStatus(t, response, http.StatusOK)
+					var last tracker.NativeLease
+					decodeHubResponse(t, response, &last)
+					fourth := f.ready(t, "different batch")
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=4 WHERE id=?", owner.binding.MachineID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET capacity_limit=4, reported_capacity=4 WHERE id=?", owner.binding.RunnerID); err != nil {
+						t.Fatal(err)
+					}
+					other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim)
+					other.redemption.SpriteName = owner.redemption.SpriteName
+					other.enroll(t)
+					independent := newLandingCapacityFixture(t, f.service, "independent-slots", false)
+					independent.requirement = f.requirement
+					if test.overflow {
+						independent.createIndependent(t, "independent source")
+					}
+					otherItem := independent.ready(t, "independent landing")
+					projectRunner := prepareRunner(t, independent.nativeFixture, runnerauth.Read, runnerauth.Claim)
+					projectRunner.redemption.SpriteName = owner.redemption.SpriteName
+					projectRunner.enroll(t)
+					if test.provider {
+						var reports string
+						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT provider_reports_json FROM runner_identities WHERE id=?", owner.binding.RunnerID).Scan(&reports); err != nil {
+							t.Fatal(err)
+						}
+						for _, r := range []runnerFixture{other, projectRunner} {
+							if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET provider_reports_json=? WHERE id=?", reports, r.binding.RunnerID); err != nil {
+								t.Fatal(err)
+							}
+						}
+					}
+					for _, active := range []tracker.NativeLease{lease, member, last} {
+						requireNativeStatus(t, f.claim(t, other, fourth, "landing/shared/other", 1), http.StatusConflict)
+						requireNativeStatus(t, independent.claim(t, projectRunner, otherItem, "landing/shared/project", 1), http.StatusConflict)
+						requireNativeStatus(t, f.claim(t, owner, fourth, "landing/different/owner", 1), http.StatusConflict)
+						if test.sprite {
+							used, err := readPlacementSpriteUsage(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, f.service.config.now())
+							if err != nil || used != 1 {
+								t.Fatalf("Sprite usage=%d, err=%v, want 1", used, err)
+							}
+						}
+						if test.provider {
+							report := capacityReport(f.service.config.now())
+							report.Backend, report.Models = "git", []string{"git"}
+							view, err := providerView(t.Context(), f.service.database.reader, f.project.OrganizationID, owner.binding.RunnerID, report, f.service.config.now())
+							if err != nil || view.Used != 1 {
+								t.Fatalf("provider usage=%d, err=%v, want 1", view.Used, err)
+							}
+						}
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(active.ID)+"/renew", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: active.FencingToken, TTLSeconds: 90}), http.StatusOK)
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(active.ID)+"/release", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: active.FencingToken, Reason: "completed"}), http.StatusNoContent)
+					}
+					response = independent.claim(t, projectRunner, otherItem, "landing/shared/project", 1)
+					requireNativeStatus(t, response, http.StatusOK)
+					var independentLease tracker.NativeLease
+					decodeHubResponse(t, response, &independentLease)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, independent.base+"/leases/"+string(independentLease.ID)+"/release", projectRunner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: independentLease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+					requireNativeStatus(t, f.claim(t, other, fourth, "landing/different/owner", 1), http.StatusOK)
+					return
+				}
+				for _, exclusion := range []struct {
+					name, change, restore, code string
+					args                        []any
+				}{
+					{"draining", "UPDATE runner_identities SET state='draining' WHERE id=?", "UPDATE runner_identities SET state='active' WHERE id=?", "runner_draining", []any{owner.binding.RunnerID}},
+					{"disabled", "UPDATE runner_identities SET state='disabled' WHERE id=?", "UPDATE runner_identities SET state='active' WHERE id=?", "runner_disabled", []any{owner.binding.RunnerID}},
+					{"offline", "UPDATE runner_identities SET last_heartbeat_at='2000-01-01T00:00:00Z' WHERE id=?", "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", "runner_offline", []any{owner.binding.RunnerID}},
+					{"runner paused", "UPDATE runner_identities SET capacity_limit=0 WHERE id=?", "UPDATE runner_identities SET capacity_limit=1 WHERE id=?", "runner_capacity", []any{owner.binding.RunnerID}},
+					{"host paused", "UPDATE machines SET capacity=0 WHERE id=?", "UPDATE machines SET capacity=1 WHERE id=?", "host_capacity", []any{owner.binding.MachineID}},
+					{"provider exhausted", `UPDATE runner_identities SET provider_reports_json=? WHERE id=?`, `UPDATE runner_identities SET provider_reports_json='[]' WHERE id=?`, "provider_capacity", nil},
+				} {
+					t.Run(exclusion.name, func(t *testing.T) {
+						args := exclusion.args
+						if exclusion.name == "provider exhausted" {
+							report := capacityReport(f.service.config.now())
+							report.Availability = "exhausted"
+							raw, err := json.Marshal([]providercapacity.Report{report})
+							if err != nil {
+								t.Fatal(err)
+							}
+							args = []any{string(raw), owner.binding.RunnerID}
+						}
+						if _, err := f.service.database.db.ExecContext(t.Context(), exclusion.change, args...); err != nil {
+							t.Fatal(err)
+						}
+						response := f.claim(t, owner, second, waiterSession, test.contenderCapacity)
+						requireNativeStatus(t, response, http.StatusConflict)
+						var refusal nativeError
+						decodeHubResponse(t, response, &refusal)
+						if refusal.Code != exclusion.code {
+							t.Fatalf("refusal=%s, want %s", refusal.Code, exclusion.code)
+						}
+						if exclusion.name == "offline" {
+							args = []any{formatHubTime(f.service.config.now()), owner.binding.RunnerID}
+						}
+						if exclusion.name == "provider exhausted" {
+							args = []any{owner.binding.RunnerID}
+						}
+						if _, err := f.service.database.db.ExecContext(t.Context(), exclusion.restore, args...); err != nil {
+							t.Fatal(err)
+						}
+					})
+				}
+				response := f.claim(t, owner, second, waiterSession, test.contenderCapacity)
+				requireNativeStatus(t, response, http.StatusOK)
+				var member tracker.NativeLease
+				decodeHubResponse(t, response, &member)
+				if member.ID == lease.ID || member.FencingToken <= lease.FencingToken {
+					t.Fatal("batch member did not acquire its own fenced lease")
+				}
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				available, err := machineClaimCapacity(t.Context(), tx, owner.binding.MachineID, f.service.config.now(), "", "")
+				if rollbackErr := tx.Rollback(); err != nil || rollbackErr != nil {
+					t.Fatal(err, rollbackErr)
+				}
+				if available != 0 {
+					t.Fatalf("two native batch owners consumed more than one host slot: available=%d, want0", available)
+				}
+				runner, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, owner.binding.RunnerID, f.service.config.now())
+				if err != nil || runner.Used != 1 || runner.ProjectUsed[f.project.ID] != 1 || len(runner.Leases) != 2 {
+					t.Fatalf("native batch project accounting=%+v error=%v", runner, err)
+				}
+				third := f.ready(t, "different batch")
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=2 WHERE id=?", owner.binding.MachineID); err != nil {
+					t.Fatal(err)
+				}
+				response = f.claim(t, owner, third, "landing/different/owner", 1)
+				requireNativeStatus(t, response, http.StatusConflict)
+				var refusal nativeError
+				decodeHubResponse(t, response, &refusal)
+				if refusal.Code != "runner_capacity" {
+					t.Fatalf("different batch refusal=%s, want runner_capacity", refusal.Code)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=1 WHERE id=?", owner.binding.MachineID); err != nil {
+					t.Fatal(err)
+				}
+				requireNativeStatus(t, f.claim(t, owner, third, "landing/different/owner", 1), http.StatusConflict)
+				other := sharedRunner(t, owner)
+				other.redemption.BackendIsolation = owner.redemption.BackendIsolation
+				publishCapacity(t, f.nativeFixture, other)
+				requireNativeStatus(t, f.claim(t, other, third, "landing/shared/other", 1), http.StatusConflict)
+				independent := newLandingCapacityFixture(t, f.service, "independent-batch", false)
+				fourth := independent.ready(t, "independent change")
+				projectRunner := sharedRunner(t, runnerFixture{nativeFixture: independent.nativeFixture, binding: owner.binding, base: owner.base})
+				projectRunner.redemption.BackendIsolation = owner.redemption.BackendIsolation
+				publishCapacity(t, independent.nativeFixture, projectRunner)
+				requireNativeStatus(t, independent.claim(t, owner, fourth, "landing/shared/project", 1), http.StatusNotFound)
+				requireNativeStatus(t, independent.claim(t, projectRunner, fourth, "landing/shared/project", 1), http.StatusConflict)
+				for _, active := range []tracker.NativeLease{lease, member} {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(active.ID)+"/renew", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: active.FencingToken, TTLSeconds: 90}), http.StatusOK)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(active.ID)+"/release", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: active.FencingToken, Reason: "completed"}), http.StatusNoContent)
+					if active.ID == lease.ID {
+						requireNativeStatus(t, f.claim(t, other, third, "landing/shared/other", 1), http.StatusConflict)
+					}
+				}
+				response = independent.claim(t, projectRunner, fourth, "landing/shared/project", 1)
+				requireNativeStatus(t, response, http.StatusOK)
+				var independentLease tracker.NativeLease
+				decodeHubResponse(t, response, &independentLease)
+				requireNativeStatus(t, performHubAPIRequest(t, independent.service, http.MethodPost, independent.base+"/leases/"+string(independentLease.ID)+"/release", projectRunner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: independentLease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				requireNativeStatus(t, f.claim(t, other, third, "landing/shared/other", 1), http.StatusOK)
+				return
+			}
 			want := http.StatusConflict
 			if test.nativeOnly || test.otherProject || test.expired && !test.renewFree || test.room {
 				want = http.StatusOK
@@ -1371,25 +1595,6 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 						t.Fatalf("runtime admission disagrees with occupied project capacity: %#v", admission)
 					}
 				}
-			}
-			if test.sameBatch {
-				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				available, err := machineClaimCapacity(t.Context(), tx, owner.binding.MachineID, f.service.config.now())
-				if rollbackErr := tx.Rollback(); err != nil || rollbackErr != nil {
-					t.Fatal(err, rollbackErr)
-				}
-				if available != 1 {
-					t.Fatalf("two native batch owners consumed more than one host slot: available=%d, want1", available)
-				}
-				runner, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, owner.binding.RunnerID, f.service.config.now())
-				if err != nil || runner.Used != 1 || runner.ProjectUsed[f.project.ID] != 1 || len(runner.Leases) != 2 {
-					t.Fatalf("native batch project accounting=%+v error=%v", runner, err)
-				}
-				third := f.ready(t, "independent batch")
-				requireNativeStatus(t, f.claim(t, owner, third, "landing/other/third", test.contenderCapacity), http.StatusConflict)
 			}
 			if test.fallback {
 				todo := f.createIndependent(t, "source work")
