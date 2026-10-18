@@ -159,6 +159,10 @@ a request's write transaction writes only what that request owns and never
 rebuilds rollups or reprojects other rows; derived data is refreshed in the
 background one item per short transaction. New Hub columns are typed, never JSON.
 
+Follow [INV-19](docs/invariants.md#inv-19--no-flaky-tests): a test that passes
+and fails on the same commit is a High defect; fix its cause or delete it the
+day it is found, never retry, wait longer, skip or quarantine it.
+
 ## Validation
 
 Every change gets a per-change security audit before merge, bound to its exact

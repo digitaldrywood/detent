@@ -181,7 +181,10 @@ Before changing source, reproduce the failure with a focused diagnostic on the
 actual implementation-start base. Record that SHA, command and observed failure
 through the existing work-item owner, using the Hub-verified run, job and tested
 commit as the historical reference. If the failure cannot be reproduced, report
-the diagnosis and stop without speculative source changes.
+the diagnosis and stop without speculative source changes, except that an
+intermittent test failure is a flaky test under INV-19: diagnose it from the
+failing run's evidence or by repeating it under CI load, then fix the cause or
+delete the test; never add retries, waits, longer timeouts or skips.
 
 Preserve the original SHA, command, failure and available execution history.
 After a rebase, compare relevant implementation, fixture and validation inputs
@@ -206,9 +209,9 @@ confirmation; this contract enables no additional review mode.
 
 ### Invariants touched
 
-Preserve INV-3, INV-5, INV-7, INV-15, INV-16 and INV-17: no added protection
-mechanism, no weakened validation, stable machine provenance, no new visible UI,
-tracker-owned evidence and stateless workspaces. Identify additional affected
+Preserve INV-3, INV-5, INV-7, INV-15, INV-16, INV-17 and INV-19: no added
+protection mechanism, no weakened validation, stable machine provenance, no new
+visible UI, tracker-owned evidence, stateless workspaces and no flaky tests. Identify additional affected
 invariants in the existing outcome and review evidence without expanding scope.
 
 ### Safety regression

@@ -647,3 +647,20 @@ extend either.
 **Enforcement:** `TestINV18RequestCommitDoesNoDerivedWork` and
 `TestINV18HubMigrationsUseTypedColumns` in `internal/hubserver`. Review applies
 the history bound and reader rule to Hub persistence changes.
+
+## INV-19 — No flaky tests
+
+A test that both passes and fails on the same commit is a defect, reported at
+High. Its owner fixes the cause or deletes the test the day it is found. An
+intermittent failure is not "cannot reproduce": diagnose it from the failing
+run's evidence (logs, captured snapshots and artifacts) or by repeating it under
+CI load, then fix the product or test cause.
+
+A flake is never accommodated: no added retries, sleeps or fixed waits, longer
+timeouts, skips, `fixme` or expected-failure marks, or quarantine. CI keeps
+Playwright's `failOnFlakyTests` on with at most one retry, so a test that only
+passes on retry still fails the run and is reported.
+
+**Enforcement:** `TestINV19NoFlakeAccommodation` in `internal/invariants`
+checks the Playwright CI settings, that no browser spec skips, marks or retries
+a test, and that no Go test skips itself as flaky.
