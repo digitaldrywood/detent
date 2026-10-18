@@ -75,6 +75,23 @@ describe("the footer workspace picker", () => {
     return userEvent.setup();
   }
 
+  it.each(["owner", "admin", "member", "viewer", "reporter"])("shows workspace roles and reporter-only sign out for %s", async (role) => {
+    const account = decodeAccountBootstrap({
+      ...accountFixture,
+      actor: { ...accountFixture.actor, role },
+      organizations: [
+        { ...accountFixture.organizations[0], role, current: true },
+        { ...accountFixture.organizations[0], id: "org_other", name: "Another workspace", role: "admin", current: false },
+      ],
+    });
+    const user = mountAccount(account);
+    await user.click(await screen.findByRole("button", { name: /Switch workspace/ }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByRole("menuitem", { name: "Another workspace" }).getAttribute("aria-description")).toBe("admin");
+    expect(within(menu).getByRole("menuitem", { name: account.organization.name }).getAttribute("aria-description")).toBe(role);
+    expect(within(menu).queryByRole("menuitem", { name: "Sign out" }) !== null).toBe(role === "reporter");
+  });
+
   it.each(["admin", "support", "billing", "viewer", "", undefined])("offers the platform console only to platform staff (%s)", async (platform_role) => {
     const account = decodeAccountBootstrap({
       ...accountFixture,

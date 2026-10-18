@@ -47,7 +47,7 @@ func (s *Service) readableOrganizationRoot(c echo.Context, id string) error {
 	if _, _, err := s.browserClaims(c, organization, &claims); err != nil {
 		return readableNotFound(c)
 	}
-	target := s.organizationHome(organization)
+	target := s.organizationRoleHome(organization, claims.Role)
 	if query := c.Request().URL.RawQuery; query != "" {
 		target += "?" + query
 	}

@@ -90,7 +90,7 @@ Single-line text entry with an associated Label; `size="compact"` in toolbars an
 
 ### Textarea
 
-Multi-line form text such as descriptions and notes; it sizes to its content.
+Multi-line form text such as descriptions and notes; it sizes to its content. Set autoGrow=false when rows should control the reading area.
 
 - Kind: Primitive; status: available; id: `textarea`.
 - Import: `import { Textarea, TextareaProps } from "~/components/ui/textarea";`
@@ -516,7 +516,7 @@ Sections of one page that share a header, such as the Reports Overview, Flow, Qu
 - Kind: Primitive; status: available; id: `tabs`.
 - Import: `import { Tabs, TabsList, TabsTab, TabsPanel } from "~/components/ui/tabs";`
 - Source: [src/components/ui/tabs.tsx](../../web/conversation/src/components/ui/tabs.tsx).
-- Variants: none.
+- Variants: `variant`: `line`, `segmented`.
 - States: selected, hover, focus-visible, disabled.
 - Keyboard: Base UI tabs: Tab enters the list, arrow keys move between tabs and select them, Home and End jump to the ends; the panel follows the list in reading order.
 - Avoid: A small set of view options inside a section (use ToggleGroup), right-panel surfaces (use Right panel tabs) and settings sections (use the settings navigation).
@@ -1788,14 +1788,14 @@ The issue's comments, events and linked conversation in time order.
 
 ### Issue composer
 
-The issue page's composer: the shared Composer with issue-specific slash commands.
+The issue page's composer: rich uses the shared Composer with issue-specific slash commands; simple uses a text field and Comment action for the reporter view.
 
 - Kind: Composition; status: available; id: `issue-composer`.
 - Import: `import { IssueComposer, IssueComposerProps, issueComposerSlashCommands } from "~/app/work/components/IssueComposer";`
 - Source: [src/app/work/components/IssueComposer.tsx](../../web/conversation/src/app/work/components/IssueComposer.tsx).
-- Variants: none.
+- Variants: `variant`: `rich`, `simple`.
 - States: focus-visible, sending.
-- Keyboard: As Composer, with the issue page's slash commands.
+- Keyboard: Rich: as Composer, with the issue page's slash commands. Simple: Tab reaches the text field and Comment button; Enter adds a line.
 - Avoid: A separate editor for issue comments.
 - Related: [Composer](#composer), [Issue page](#issue-page).
 

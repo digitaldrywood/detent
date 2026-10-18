@@ -45,6 +45,7 @@ type fakeProvider struct {
 	users           map[string]string
 	sessions        map[string]auth.HostedIdentity
 	memberships     map[string]auth.Membership
+	invitationRoles map[string]string
 	invitations     map[string]auth.Invitation
 	revokeErr       error
 	revoked         []string
@@ -72,7 +73,7 @@ var hubDatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path st
 })
 
 func newFakeProvider() *fakeProvider {
-	return &fakeProvider{users: map[string]string{}, sessions: map[string]auth.HostedIdentity{}, memberships: map[string]auth.Membership{}, invitations: map[string]auth.Invitation{}, access: map[string]fakeAccess{}, refresh: map[string]string{}}
+	return &fakeProvider{users: map[string]string{}, sessions: map[string]auth.HostedIdentity{}, memberships: map[string]auth.Membership{}, invitations: map[string]auth.Invitation{}, invitationRoles: map[string]string{}, access: map[string]fakeAccess{}, refresh: map[string]string{}}
 }
 
 // providerCalls counts the provider API calls a request can make; local
@@ -264,11 +265,12 @@ func (p *fakeProvider) CreateMembership(_ context.Context, user, organization, r
 func (*fakeProvider) SetMembershipRole(context.Context, string, string) error { return nil }
 func (*fakeProvider) RevokeMembership(context.Context, string) error          { return nil }
 
-func (p *fakeProvider) Invite(_ context.Context, organization, email, _, _ string) (auth.Invitation, error) {
+func (p *fakeProvider) Invite(_ context.Context, organization, email, role, _ string) (auth.Invitation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	invitation := auth.Invitation{ID: "inv_" + strings.ReplaceAll(strings.Split(email, "@")[0], ".", "_"), Email: email, OrganizationID: organization, State: "pending", ExpiresAt: time.Now().Add(time.Hour)}
 	p.invitations[invitation.ID] = invitation
+	p.invitationRoles[invitation.ID] = role
 	return invitation, nil
 }
 
@@ -287,8 +289,12 @@ func (p *fakeProvider) AcceptInvitation(_ context.Context, token, user string) e
 	invitation := p.invitations[token]
 	invitation.State, invitation.AcceptedUserID = "accepted", user
 	p.invitations[token] = invitation
+	role := p.invitationRoles[token]
+	if role == "" {
+		role = "member"
+	}
 	p.mu.Unlock()
-	p.member(user, invitation.OrganizationID, "member")
+	p.member(user, invitation.OrganizationID, role)
 	return nil
 }
 
@@ -921,12 +927,15 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct {
-		name, query, selected, authorized, location string
-		status                                      int
-		fallback                                    bool
+		name, query, selected, authorized, location, role string
+		status                                            int
+		fallback                                          bool
 	}{
 		{name: "selected alpha", selected: "porg_alpha", authorized: "org_alpha", location: "/alpha/work", status: http.StatusSeeOther},
 		{name: "selected beta", selected: "porg_beta", authorized: "org_beta", location: "/beta/work", status: http.StatusSeeOther},
+		{name: "reporter selected", selected: "porg_alpha", authorized: "org_alpha", location: "/alpha/reporter", role: "reporter", status: http.StatusSeeOther},
+		{name: "reporter invitation return", query: "organization=org_alpha&return=/organizations/org_alpha/work", selected: "porg_alpha", authorized: "org_alpha", location: "/alpha/reporter", role: "reporter", status: http.StatusSeeOther},
+		{name: "reporter deep link", query: "organization=org_alpha&return=/organizations/org_alpha/work/i/wi_example", selected: "porg_alpha", authorized: "org_alpha", location: "/organizations/org_alpha/work/i/wi_example", role: "reporter", status: http.StatusSeeOther},
 		{name: "chooser return alpha", query: "return=/organizations", selected: "porg_alpha", authorized: "org_alpha", location: "/alpha/work", status: http.StatusSeeOther},
 		{name: "chooser return beta", query: "return=/organizations", selected: "porg_beta", authorized: "org_beta", location: "/beta/work", status: http.StatusSeeOther},
 		{name: "deep link", query: "organization=org_beta&return=/organizations/org_beta/organization", selected: "porg_beta", authorized: "org_beta", location: "/organizations/org_beta/organization", status: http.StatusSeeOther},
@@ -937,6 +946,10 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 		{name: "server rendered fallback", selected: "porg_beta", authorized: "org_beta", location: "/organizations/org_beta/organization", status: http.StatusSeeOther, fallback: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.role != "" {
+				f.provider.member("user_alice", tt.selected, tt.role)
+				t.Cleanup(func() { f.provider.member("user_alice", tt.selected, "owner") })
+			}
 			if tt.selected == "porg_unknown" || tt.selected == "porg_disabled" {
 				f.provider.member("user_alice", tt.selected, "owner")
 				t.Cleanup(func() { f.provider.removeMember("user_alice", tt.selected) })
@@ -1151,6 +1164,7 @@ func TestSharedEntryInvitation(t *testing.T) {
 	}{
 		{name: "new user sign-up", entryCode: 303, callbackCode: 303},
 		{name: "existing user sign-in", entryCode: 303, callbackCode: 303},
+		{name: "reporter sign-in", entryCode: 303, callbackCode: 303},
 		{name: "legacy token alias", entryCode: 303, callbackCode: 303},
 		{name: "repeated invitation starts", entryCode: 303, callbackCode: 303, starts: 3},
 		{name: "wrong account", entryCode: 303, callbackCode: 403, message: "different account at example.test"},
@@ -1165,9 +1179,16 @@ func TestSharedEntryInvitation(t *testing.T) {
 			alice := newBrowser(t, f.service.Handler())
 			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 			_, page := alice.get("/organizations/org_alpha/organization")
-			invite := alice.do(http.MethodPost, "/organizations/org_alpha/organization/invite", url.Values{"email": {"carol@example.test"}, "role": {"member"}, "csrf": {csrfFrom(t, page)}}, nil)
+			role := "member"
+			if tt.name == "reporter sign-in" {
+				role = "reporter"
+			}
+			invite := alice.do(http.MethodPost, "/organizations/org_alpha/organization/invite", url.Values{"email": {"carol@example.test"}, "role": {role}, "csrf": {csrfFrom(t, page)}}, nil)
 			if invite.StatusCode != http.StatusSeeOther {
 				t.Fatalf("invite = %d: %s", invite.StatusCode, invite.Body)
+			}
+			if role == "reporter" {
+				f.service.config.clientFS = fstest.MapFS{entryClientShell: {Data: []byte("<html><head></head><body></body></html>")}}
 			}
 			invitation := f.provider.invitations["inv_carol"]
 			switch tt.name {
@@ -1254,6 +1275,14 @@ func TestSharedEntryInvitation(t *testing.T) {
 			}
 			if !strings.HasPrefix(accepted.Header.Get("Location"), "/auth/oidc/start?organization=org_alpha") {
 				t.Fatalf("next = %s", accepted.Header.Get("Location"))
+			}
+			if role == "reporter" {
+				start, _ := browser.get(accepted.Header.Get("Location"))
+				response, _ := browser.get("/auth/oidc/callback?" + url.Values{"code": {"user_carol:porg_alpha"}, "state": {stateOf(t, start)}}.Encode())
+				if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != "/alpha/reporter" {
+					t.Fatalf("reporter invitation destination = %d %q", response.StatusCode, response.Header.Get("Location"))
+				}
+				return
 			}
 			browser.login(accepted.Header.Get("Location"), "user_carol:porg_alpha")
 			response, body := browser.get("/organizations/org_alpha/organization")

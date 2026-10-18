@@ -23,6 +23,7 @@ import {
 import LegacyThreadSidebar from "./LegacySidebar";
 import ThreadSidebar from "./Sidebar";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
+import { RoleSidebar } from "../app/reporter/ReporterShell";
 import { SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import {
   resolveSidebarStageFocusRingOffsetClass,
@@ -242,7 +243,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
             onResize: setSidebarWidth,
           }}
         >
-          {isOnSettings ? (
+          <RoleSidebar>{isOnSettings ? (
             <>
               <SidebarChromeHeader isElectron={isElectron} />
               <SettingsSidebarNav pathname={pathname} />
@@ -251,7 +252,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
             <LegacyThreadSidebar />
           ) : (
             <ThreadSidebar />
-          )}
+          )}</RoleSidebar>
           <SidebarRail onDoubleClick={resetSidebarWidth} />
         </Sidebar>
         {children}

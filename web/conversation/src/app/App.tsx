@@ -31,6 +31,7 @@ import {
 import { SidebarInset, useSidebar } from "../components/ui/sidebar.tsx";
 import { OrganizationMembersProvider } from "./account/OrganizationMembers.tsx";
 import { AppSidebarLayout } from "../components/AppSidebarLayout.tsx";
+import { ReporterShell } from "./reporter/ReporterShell.tsx";
 import {
   chipStamp,
   LIVE_TOOLTIP,
@@ -132,6 +133,7 @@ function useListState(client: ConversationClient) {
 export function Shell(): React.ReactElement {
   const client = useClient();
   const pathname = useRouterState({ select: (state) => withoutBasePath(state.location.pathname) });
+  if (client.account?.actor.role === "reporter") return <ToastProvider><ReporterShell /></ToastProvider>;
 
   return (
     <ToastProvider>

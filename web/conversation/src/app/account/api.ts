@@ -1,4 +1,4 @@
-import { AccessKeys, CreatedAccessKey, KeyContext, KeyPolicy, type CreateAccessKey, type PersonalKeyPolicy } from "../../contracts/accessKeys.ts";
+import { AccessKeys, CreatedAccessKey, KeyContext, KeyPolicy, OAuthGrants, type CreateAccessKey, type PersonalKeyPolicy } from "../../contracts/accessKeys.ts";
 import { CloudModelSelection, type CloudSelection } from "../../contracts/account.ts";
 import { IssueIntake, type IntakeCommand } from "../../contracts/githubIntake.ts";
 // The hosted account API client.
@@ -204,7 +204,9 @@ export function makeAccountApi(options: AccountApiOptions) {
     markReleaseNotesSeen: () => send(ReleaseNotesPage, "PUT", `${base}/release-notes/seen`, {}),
     issueNotificationPreference: () => send(Schema.Struct({ enabled: Schema.Boolean }), "GET", `${base}/issue-notification-preference`),
     saveIssueNotificationPreference: (enabled: boolean) => send(Schema.Struct({ enabled: Schema.Boolean }), "PUT", `${base}/issue-notification-preference`, { enabled }),
-    personalKeys: () => send(AccessKeys, "GET", "/api/cloud/account/api-keys"),
+    personalKeys: (cursor?: string) => send(AccessKeys, "GET", `/api/cloud/account/api-keys${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+    oauthGrants: (cursor?: string) => send(OAuthGrants, "GET", `/api/cloud/account/oauth-grants${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+    revokeOAuthGrant: (id: string) => send(null, "DELETE", `/api/cloud/account/oauth-grants/${encodeURIComponent(id)}`),
     keyContext: () => send(KeyContext, "GET", "/api/cloud/account/key-context"),
     createPersonalKey: (input: CreateAccessKey) => send(CreatedAccessKey, "POST", "/api/cloud/account/api-keys", input),
     rotatePersonalKey: (id: string) => send(CreatedAccessKey, "POST", `/api/cloud/account/api-keys/${encodeURIComponent(id)}/rotate`, {}),
