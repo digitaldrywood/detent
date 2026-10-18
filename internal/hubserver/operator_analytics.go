@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/url"
 	"slices"
 	"sort"
 	"time"
@@ -127,6 +128,28 @@ func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Ca
 	}
 	if s.database == nil || s.config.Hosted == nil {
 		return operatortool.Result{}, errHubOperatorUnavailable
+	}
+	if call.Name == operatortool.Reports && r.Scope == "organization" {
+		if r.Range != "" {
+			w, err = reportsWindow(url.Values{"range": {r.Range}}, s.config.now())
+			if err != nil {
+				return operatortool.Result{}, operatortool.ErrInvalidArguments
+			}
+		}
+		projects, _, err := s.reportsReadableProjects(ctx, credential, reportsAllProjects)
+		if err != nil {
+			return operatortool.Result{}, errHubOperatorUnavailable
+		}
+		if r.ProjectID != "" {
+			projects = filterProductivityProjects(projects, []string{r.ProjectID})
+		}
+		projects = filterProductivityProjects(projects, r.Projects)
+		filter := reportsFilter{Labels: r.Labels, Priorities: r.Priorities, Types: r.Types, FiledBy: r.FiledBy, Runners: r.Runners}
+		report, err := s.readOrganizationProductivity(ctx, projects, w, filter)
+		if err != nil {
+			return operatortool.Result{}, errHubOperatorUnavailable
+		}
+		return hubOperatorResult(report)
 	}
 	if _, _, cursorErr := analyticsPagingContext(ctx, r.PopulationCursor); cursorErr != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
