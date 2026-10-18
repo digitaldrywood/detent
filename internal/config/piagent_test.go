@@ -21,7 +21,7 @@ func TestPiAgentWorkflow(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			workflow, err := ParseWorkflow([]byte(fmt.Sprintf(`---
 tracker:
-  kind: hub_native
+  kind: memory
 agents:
   backends:
     - id: implementation

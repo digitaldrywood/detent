@@ -1751,7 +1751,7 @@ func TestConfiguredTerminalRetryAfterStoreRestart(t *testing.T) {
 			now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 			issue := terminalRetryTestIssue("configured-restart")
 			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
-			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n---\n"))
+			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: memory\n---\n"))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -19,12 +19,11 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
-	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 )
 
 func TestManagerStartsProjectsWithStartupLimits(t *testing.T) {
@@ -38,7 +37,7 @@ func TestManagerStartsProjectsWithStartupLimits(t *testing.T) {
 
 	var slept []time.Duration
 	var logs bytes.Buffer
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{
 			{ID: "alpha", Weight: 1},
 			{ID: "bravo", Weight: 1},
@@ -99,14 +98,14 @@ func TestManagerStartKeepsHealthyProjectRunningWhenProvisioningIsTransientlyUnav
 
 	var mu sync.Mutex
 	attempts := 0
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{
 			{ID: "alpha", Weight: 1},
 			{ID: "bravo", Weight: 1},
 		},
 	}, project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
-			workflowCfg := workflowConfig(workflowconfig.TrackerGitHub)
+			workflowCfg := workflowConfig("memory")
 			workflowCfg.Tracker.AutoProvision = true
 			projectConnector := provisioningConnector{}
 			if cfg.ID == "alpha" {
@@ -120,7 +119,7 @@ func TestManagerStartKeepsHealthyProjectRunningWhenProvisioningIsTransientlyUnav
 					return nil
 				}
 			}
-			return projectfixture.New(project.Config{
+			return project.New(project.Config{
 				Project:  cfg,
 				Workflow: workflowconfig.Workflow{Config: workflowCfg},
 			}, project.Dependencies{
@@ -171,13 +170,13 @@ func TestManagerRetriesTransientProvisioningWithBoundedExponentialBackoff(t *tes
 	var mu sync.Mutex
 	attempts := 0
 
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
-			workflowCfg := workflowConfig(workflowconfig.TrackerGitHub)
+			workflowCfg := workflowConfig("memory")
 			workflowCfg.Tracker.AutoProvision = true
-			return projectfixture.New(project.Config{
+			return project.New(project.Config{
 				Project:  cfg,
 				Workflow: workflowconfig.Workflow{Config: workflowCfg},
 			}, project.Dependencies{
@@ -272,12 +271,12 @@ func TestManagerRetriesTransientConnectorFactoryFailure(t *testing.T) {
 	var mu sync.Mutex
 	factoryCalls := 0
 
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
-			workflowCfg := workflowConfig(workflowconfig.TrackerGitHub)
-			return projectfixture.New(project.Config{
+			workflowCfg := workflowConfig("memory")
+			return project.New(project.Config{
 				Project:  cfg,
 				Workflow: workflowconfig.Workflow{Config: workflowCfg},
 			}, project.Dependencies{
@@ -356,7 +355,7 @@ func TestManagerRetriesPendingPolicyApproval(t *testing.T) {
 	retryStarted := make(chan struct{})
 	releaseRetry := make(chan struct{})
 	var calls int
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
@@ -397,12 +396,12 @@ func TestManagerKeepsPermanentConnectorFactoryFailureTerminal(t *testing.T) {
 	t.Parallel()
 
 	retryStarted := make(chan time.Duration, 1)
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
-			workflowCfg := workflowConfig(workflowconfig.TrackerGitHub)
-			return projectfixture.New(project.Config{
+			workflowCfg := workflowConfig("memory")
+			return project.New(project.Config{
 				Project:  cfg,
 				Workflow: workflowconfig.Workflow{Config: workflowCfg},
 			}, project.Dependencies{
@@ -465,11 +464,11 @@ func TestManagerStartIsolatesProjectDefinitionFailures(t *testing.T) {
 			name: "validation",
 			invalidProject: func(t *testing.T, cfg globalconfig.Project, deps project.Dependencies) (*project.Project, error) {
 				t.Helper()
-				workflowCfg := workflowConfig(workflowconfig.TrackerGitHub)
+				workflowCfg := workflowConfig("memory")
 				workflowCfg.Routines = []workflowconfig.Routine{{
 					Name: "audit", Schedule: "0 3 * * 1", Prompt: "Inspect.",
 				}}
-				return projectfixture.New(project.Config{
+				return project.New(project.Config{
 					Project:  cfg,
 					Workflow: workflowconfig.Workflow{Config: workflowCfg},
 				}, deps)
@@ -484,7 +483,7 @@ func TestManagerStartIsolatesProjectDefinitionFailures(t *testing.T) {
 
 			events := hub.New[project.Event](hub.WithBuffer(4))
 			coordinationStore := &projectCoordinationStore{}
-			manager, err := projectfixture.NewManager(project.ManagerConfig{
+			manager, err := project.NewManager(project.ManagerConfig{
 				Projects: []globalconfig.Project{
 					{ID: "invalid", Weight: 1},
 					{ID: "valid", Weight: 1},
@@ -539,7 +538,7 @@ func TestManagerStartRollsBackPendingProjectDefinitionFailure(t *testing.T) {
 	t.Parallel()
 
 	factoryErr := errors.New("fatal project factory failure")
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{
 			{ID: "invalid", Weight: 1},
 			{ID: "fatal", Weight: 1},
@@ -574,12 +573,12 @@ func TestManagerReconcileRemovesPendingConnectorRetry(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	retryStarted := make(chan struct{})
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
-			workflowCfg := workflowConfig(workflowconfig.TrackerGitHub)
-			return projectfixture.New(project.Config{
+			workflowCfg := workflowConfig("memory")
+			return project.New(project.Config{
 				Project:  cfg,
 				Workflow: workflowconfig.Workflow{Config: workflowCfg},
 			}, project.Dependencies{
@@ -633,7 +632,7 @@ func TestManagerRemoveDoesNotDeadlockWithActivatingConnectorRetry(t *testing.T) 
 	var mu sync.Mutex
 	factoryCalls := 0
 
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
@@ -646,9 +645,9 @@ func TestManagerRemoveDoesNotDeadlockWithActivatingConnectorRetry(t *testing.T) 
 			}
 			close(factoryEntered)
 			<-releaseFactory
-			return projectfixture.New(project.Config{
+			return project.New(project.Config{
 				Project:  cfg,
-				Workflow: workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerGitHub)},
+				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
 			}, project.Dependencies{
 				Connector: provisioningConnector{},
 				Runner:    blockingRunner{},
@@ -703,12 +702,12 @@ func TestManagerRemoveDoesNotDeadlockWithActivatingConnectorRetry(t *testing.T) 
 func TestManagerReconcileRecoversTerminalConnectorFactoryFailureAfterConfigChange(t *testing.T) {
 	t.Parallel()
 
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
-			workflowCfg := workflowConfig(workflowconfig.TrackerGitHub)
-			return projectfixture.New(project.Config{
+			workflowCfg := workflowConfig("memory")
+			return project.New(project.Config{
 				Project:  cfg,
 				Workflow: workflowconfig.Workflow{Config: workflowCfg},
 			}, project.Dependencies{
@@ -756,7 +755,7 @@ func TestManagerReconcileRecoversTerminalConnectorFactoryFailureAfterConfigChang
 func TestManagerStartRejectsNilProjectFactoryResult(t *testing.T) {
 	t.Parallel()
 
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		ProjectFactory: func(globalconfig.Project) (*project.Project, error) {
@@ -787,7 +786,7 @@ func TestManagerStartsProjectsWithBoundedConcurrency(t *testing.T) {
 	var maxActive int
 	var mu sync.Mutex
 
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{
 			{ID: "alpha", Weight: 1},
 			{ID: "bravo", Weight: 1},
@@ -822,9 +821,9 @@ func TestManagerStartsProjectsWithBoundedConcurrency(t *testing.T) {
 					return nil
 				},
 			}
-			return projectfixture.New(project.Config{
+			return project.New(project.Config{
 				Project:  cfg,
-				Workflow: workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerGitHub)},
+				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
 			}, project.Dependencies{
 				Connector: projectConnector,
 				Events:    events,
@@ -965,7 +964,7 @@ func TestManagerLiveAddRemovePauseUnpause(t *testing.T) {
 		t.Fatalf("Subscribe() error = %v", err)
 	}
 
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Startup: project.StartupConfig{MaxSpawnPerSecond: 10},
 	}, project.ManagerDependencies{
 		Events: events,
@@ -1046,14 +1045,14 @@ func TestManagerRemoveClosesProjectConnector(t *testing.T) {
 	}
 
 	projectConnector := newCloseTrackingConnector()
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		Events: events,
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
-			return projectfixture.New(project.Config{
+			return project.New(project.Config{
 				Project:  cfg,
-				Workflow: workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerGitHub)},
+				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
 			}, project.Dependencies{
 				Connector: projectConnector,
 				Events:    events,
@@ -1090,14 +1089,14 @@ func TestManagerRemoveKeepsProjectOpenWhenStopContextExpires(t *testing.T) {
 
 	release := make(chan struct{})
 	projectConnector := newCloseTrackingConnector()
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		Events: events,
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
-			return projectfixture.New(project.Config{
+			return project.New(project.Config{
 				Project:  cfg,
-				Workflow: workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerGitHub)},
+				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
 			}, project.Dependencies{
 				Connector: projectConnector,
 				Events:    events,
@@ -1225,7 +1224,7 @@ func TestManagerReconcileProjects(t *testing.T) {
 				t.Fatalf("Subscribe() error = %v", err)
 			}
 
-			manager, err := projectfixture.NewManager(project.ManagerConfig{
+			manager, err := project.NewManager(project.ManagerConfig{
 				Projects: tt.initial,
 			}, project.ManagerDependencies{
 				Events: events,
@@ -1270,20 +1269,20 @@ func TestManagerReconcileAddedProjectBeginsPolling(t *testing.T) {
 	alphaRunner := newProjectBlockingRunner()
 	bravoRunner := newProjectBlockingRunner()
 	workflowWithIssue := func(issueID string, title string) workflowconfig.Workflow {
-		workflowCfg := workflowConfigWithHubIssue(issueID)
+		workflowCfg := workflowConfigWithMemoryIssue(issueID)
 		workflowCfg.Tracker.Issues[0].State = "Todo"
 		workflowCfg.Tracker.Issues[0].Title = title
 		workflowCfg.Tracker.Issues[0].AssignedToWorker = true
 		return workflowconfig.Workflow{Config: workflowCfg, Prompt: title + "."}
 	}
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		Events: events,
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 			switch cfg.ID {
 			case "alpha":
-				return projectfixture.New(project.Config{
+				return project.New(project.Config{
 					Project:  cfg,
 					Workflow: workflowWithIssue("issue-alpha", "Run alpha"),
 				}, project.Dependencies{
@@ -1291,7 +1290,7 @@ func TestManagerReconcileAddedProjectBeginsPolling(t *testing.T) {
 					Runner: alphaRunner,
 				})
 			case "bravo":
-				return projectfixture.New(project.Config{
+				return project.New(project.Config{
 					Project:  cfg,
 					Workflow: workflowWithIssue("issue-bravo", "Run bravo"),
 				}, project.Dependencies{
@@ -1365,6 +1364,7 @@ func TestManagerReconcileHotAppliesGlobalPressureWithoutInterruptingActiveSessio
 		assert func(*testing.T, orchestrator.State)
 	}{
 		{
+			name: "memory",
 			mutate: func(cfg *globalconfig.Project) {
 				cfg.GlobalMemory.PressureSomeAvg60Threshold = 12
 			},
@@ -1417,14 +1417,14 @@ func TestManagerReconcileHotAppliesGlobalPressureWithoutInterruptingActiveSessio
 			tt.mutate(&next)
 			runner := newCancellationTrackingRunner()
 			created := 0
-			manager, err := projectfixture.NewManager(project.ManagerConfig{Projects: []globalconfig.Project{initial}}, project.ManagerDependencies{
+			manager, err := project.NewManager(project.ManagerConfig{Projects: []globalconfig.Project{initial}}, project.ManagerDependencies{
 				ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 					created++
-					workflowCfg := workflowConfigWithHubIssue(issueID)
+					workflowCfg := workflowConfigWithMemoryIssue(issueID)
 					workflowCfg.Tracker.Issues[0].State = "Todo"
 					workflowCfg.Tracker.Issues[0].Title = "Keep active session running"
 					workflowCfg.Tracker.Issues[0].AssignedToWorker = true
-					return projectfixture.New(project.Config{
+					return project.New(project.Config{
 						Project:  cfg,
 						Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Keep working."},
 					}, project.Dependencies{Runner: runner})
@@ -1530,17 +1530,17 @@ func TestManagerReconcileInventoriesOnlySessionsDrainedByProjectChanges(t *testi
 				"alpha": newCancellationTrackingRunner(),
 				"bravo": newCancellationTrackingRunner(),
 			}
-			manager, err := projectfixture.NewManager(project.ManagerConfig{Projects: []globalconfig.Project{
+			manager, err := project.NewManager(project.ManagerConfig{Projects: []globalconfig.Project{
 				{ID: "alpha", Weight: 1, Workdir: "/repo/alpha"},
 				{ID: "bravo", Weight: 1, Workdir: "/repo/bravo"},
 			}}, project.ManagerDependencies{
 				ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 					id := project.ID(cfg.ID)
-					workflowCfg := workflowConfigWithHubIssue("issue-" + cfg.ID)
+					workflowCfg := workflowConfigWithMemoryIssue("issue-" + cfg.ID)
 					workflowCfg.Tracker.Issues[0].State = "Todo"
 					workflowCfg.Tracker.Issues[0].Title = "Run " + cfg.ID
 					workflowCfg.Tracker.Issues[0].AssignedToWorker = true
-					return projectfixture.New(project.Config{
+					return project.New(project.Config{
 						Project:  cfg,
 						Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Keep working."},
 					}, project.Dependencies{Runner: runners[id]})
@@ -1612,16 +1612,16 @@ func TestManagerReconcileRecordsAddedProjectStartFailure(t *testing.T) {
 		t.Fatalf("Subscribe() error = %v", err)
 	}
 
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		Events: events,
 		Logger: logger,
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 			if cfg.ID == "bravo" {
-				workflowCfg := workflowConfig(workflowconfig.TrackerGitHub)
+				workflowCfg := workflowConfig("memory")
 				workflowCfg.Tracker.AutoProvision = true
-				return projectfixture.New(project.Config{
+				return project.New(project.Config{
 					Project:  cfg,
 					Workflow: workflowconfig.Workflow{Config: workflowCfg},
 				}, project.Dependencies{
@@ -1694,7 +1694,7 @@ func TestManagerReconcilePropagatesAddedProjectContextCancellation(t *testing.T)
 	t.Parallel()
 
 	events := hub.New[project.Event](hub.WithBuffer(4))
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 		Startup:  project.StartupConfig{MaxSpawnPerSecond: 1},
 	}, project.ManagerDependencies{
@@ -1738,14 +1738,14 @@ func TestManagerReconcileClosesPreparedProjectWhenLaterCreateFails(t *testing.T)
 
 	factoryErr := errors.New("invalid workflow")
 	preparedConnector := newCloseTrackingConnector()
-	manager, err := projectfixture.NewManager(project.ManagerConfig{}, project.ManagerDependencies{
+	manager, err := project.NewManager(project.ManagerConfig{}, project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 			if cfg.ID == "bravo" {
 				return nil, factoryErr
 			}
-			return projectfixture.New(project.Config{
+			return project.New(project.Config{
 				Project:  cfg,
-				Workflow: workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerGitHub)},
+				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
 			}, project.Dependencies{
 				Connector: preparedConnector,
 				Runner:    blockingRunner{},
@@ -1780,7 +1780,7 @@ func TestManagerReconcileChangesProjectsWhenRuntimeCredentialVersionChanges(t *t
 		t.Fatalf("Subscribe() error = %v", err)
 	}
 
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects:                 []globalconfig.Project{{ID: "alpha", Weight: 1}},
 		RuntimeCredentialVersion: "old",
 	}, project.ManagerDependencies{
@@ -1834,13 +1834,13 @@ func TestManagerReconcileUpdatesActiveHoursWithoutRestartingProjects(t *testing.
 		t.Fatalf("Subscribe() error = %v", err)
 	}
 	created := 0
-	manager, err := projectfixture.NewManager(project.ManagerConfig{Projects: initial}, project.ManagerDependencies{
+	manager, err := project.NewManager(project.ManagerConfig{Projects: initial}, project.ManagerDependencies{
 		Events: events,
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 			created++
-			workflowCfg := workflowConfig(workflowconfig.TrackerGitHub)
+			workflowCfg := workflowConfig("memory")
 			workflowCfg.ActiveHours = checkedIn
-			return projectfixture.New(project.Config{
+			return project.New(project.Config{
 				Project:  cfg,
 				Workflow: workflowconfig.Workflow{Config: workflowCfg},
 			}, project.Dependencies{
@@ -1905,7 +1905,7 @@ func TestManagerReconcileKeepsRegistryWhenNewProjectCannotBeCreated(t *testing.T
 		t.Fatalf("Subscribe() error = %v", err)
 	}
 
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		Events: events,
@@ -1951,7 +1951,7 @@ func TestManagerReconcileKeepsRegistryWhenNewProjectFactoryReturnsNil(t *testing
 		t.Fatalf("Subscribe() error = %v", err)
 	}
 
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		Events: events,
@@ -1998,7 +1998,7 @@ func TestManagerReconcileKeepsChangedProjectWhenReplacementCannotBeCreated(t *te
 		t.Fatalf("Subscribe() error = %v", err)
 	}
 
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		Events: events,
@@ -2051,15 +2051,15 @@ func TestManagerReconcileStopsChangedProjectBeforeStartingReplacement(t *testing
 	}
 
 	var manager *project.Manager
-	manager, err = projectfixture.NewManager(project.ManagerConfig{
+	manager, err = project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		Events: events,
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 			if cfg.ID == "alpha" && cfg.Weight == 2 {
-				return projectfixture.New(project.Config{
+				return project.New(project.Config{
 					Project:  cfg,
-					Workflow: workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerGitHub)},
+					Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
 				}, project.Dependencies{
 					Connector: provisioningConnector{provision: func(context.Context) error {
 						current, ok := manager.Registry().Get("alpha")
@@ -2123,7 +2123,7 @@ func TestManagerReconcileKeepsChangedProjectWhenReplacementProvisionFails(t *tes
 		t.Fatalf("Subscribe() error = %v", err)
 	}
 
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		Events: events,
@@ -2132,9 +2132,9 @@ func TestManagerReconcileKeepsChangedProjectWhenReplacementProvisionFails(t *tes
 			if cfg.ID == "alpha" && cfg.Weight == 2 {
 				projectConnector = replacementConnector
 			}
-			return projectfixture.New(project.Config{
+			return project.New(project.Config{
 				Project:  cfg,
-				Workflow: workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerGitHub)},
+				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
 			}, project.Dependencies{
 				Connector: projectConnector,
 				Events:    events,
@@ -2183,7 +2183,7 @@ func TestManagerReconcileKeepsChangedProjectWhenReplacementStartFails(t *testing
 		t.Fatalf("Subscribe() error = %v", err)
 	}
 
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		Events: events,
@@ -2234,7 +2234,7 @@ func TestManagerReconcileKeepsRegistryWhenAddedProjectStartFailsAfterRemoval(t *
 		t.Fatalf("Subscribe() error = %v", err)
 	}
 
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{
 			{ID: "alpha", Weight: 1},
 			{ID: "charlie", Weight: 1},
@@ -2285,7 +2285,7 @@ func TestManagerSharedGlobalSchedulerGate(t *testing.T) {
 	}
 
 	global := scheduler.NewStrictPriority(scheduler.Config{Capacity: 2})
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{
 			{ID: "alpha", Weight: 5},
 			{ID: "bravo", Weight: 3},
@@ -2294,7 +2294,7 @@ func TestManagerSharedGlobalSchedulerGate(t *testing.T) {
 	}, project.ManagerDependencies{
 		Events: events,
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
-			return projectfixture.New(project.Config{Project: cfg}, project.Dependencies{
+			return project.New(project.Config{Project: cfg}, project.Dependencies{
 				Events:    events,
 				Runner:    blockingRunner{},
 				Scheduler: global,
@@ -2362,7 +2362,7 @@ func TestManagerProjectsShareGlobalDispatchCap(t *testing.T) {
 		"alpha": newProjectBlockingRunner(),
 		"bravo": newProjectBlockingRunner(),
 	}
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{
 			{ID: "alpha", Weight: 1},
 			{ID: "bravo", Weight: 1},
@@ -2374,12 +2374,12 @@ func TestManagerProjectsShareGlobalDispatchCap(t *testing.T) {
 				t.Fatalf("runner for project %q = nil, want runner", cfg.ID)
 				return nil, project.ErrMissingProject
 			}
-			workflowCfg := workflowConfigWithHubIssue("issue-" + cfg.ID)
+			workflowCfg := workflowConfigWithMemoryIssue("issue-" + cfg.ID)
 			workflowCfg.Agent.MaxConcurrentAgents = 2
 			workflowCfg.Tracker.Issues[0].State = "Todo"
 			workflowCfg.Tracker.Issues[0].Title = "Run " + cfg.ID
 			workflowCfg.Tracker.Issues[0].AssignedToWorker = true
-			return projectfixture.New(project.Config{
+			return project.New(project.Config{
 				Project:  cfg,
 				Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Run test issue."},
 			}, project.Dependencies{
@@ -2499,7 +2499,7 @@ func TestManagerLeavesPauseExitEvaluationToMonitor(t *testing.T) {
 				PausedUntilIssue: "digitaldrywood/video-studio#147",
 			}},
 			trackers: map[string]workflowconfig.Tracker{
-				"video": {Kind: "local_sqlite", LocalSQLite: workflowconfig.LocalSQLite{Path: "work-items.db"}},
+				"video": {Kind: workflowconfig.TrackerLocalSQLite, LocalSQLite: workflowconfig.LocalSQLite{Path: "work-items.db"}},
 			},
 		},
 		{
@@ -2509,7 +2509,7 @@ func TestManagerLeavesPauseExitEvaluationToMonitor(t *testing.T) {
 				{ID: "video-studio", Paused: true},
 			},
 			trackers: map[string]workflowconfig.Tracker{
-				"video":        {Kind: "local_sqlite", LocalSQLite: workflowconfig.LocalSQLite{Path: "work-items.db"}},
+				"video":        {Kind: workflowconfig.TrackerLocalSQLite, LocalSQLite: workflowconfig.LocalSQLite{Path: "work-items.db"}},
 				"video-studio": {Kind: workflowconfig.TrackerGitHub, Repository: "digitaldrywood/video-studio"},
 			},
 		},
@@ -2519,7 +2519,7 @@ func TestManagerLeavesPauseExitEvaluationToMonitor(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			manager, err := projectfixture.NewManager(project.ManagerConfig{Projects: tt.projects}, project.ManagerDependencies{
+			manager, err := project.NewManager(project.ManagerConfig{Projects: tt.projects}, project.ManagerDependencies{
 				ProjectFactory: func(projectConfig globalconfig.Project) (*project.Project, error) {
 					workflowCfg := workflowconfig.Default()
 					tracker := tt.trackers[projectConfig.ID]
@@ -2531,11 +2531,11 @@ func TestManagerLeavesPauseExitEvaluationToMonitor(t *testing.T) {
 						workflowCfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
 						workflowCfg.Tracker.StatusLabelPrefix = "detent:"
 					}
-					return projectfixture.New(project.Config{
+					return project.New(project.Config{
 						Project:  projectConfig,
 						Workflow: workflowconfig.Workflow{Config: workflowCfg},
 					}, project.Dependencies{
-						Connector: fakehub.New(fakehub.Config{}),
+						Connector: memory.New(memory.Config{}),
 						Runner:    blockingRunner{},
 					})
 				},
@@ -2648,7 +2648,7 @@ func newBlockingStartupManager(t *testing.T, rollbackTimeout time.Duration) bloc
 		refreshStarted:        refreshStarted,
 		releaseRefresh:        releaseRefresh,
 	}
-	manager, err := projectfixture.NewManager(project.ManagerConfig{
+	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{
 			{ID: "alpha", Weight: 1},
 			{ID: "bravo", Weight: 1},
@@ -2658,7 +2658,7 @@ func newBlockingStartupManager(t *testing.T, rollbackTimeout time.Duration) bloc
 		Events:                 events,
 		StartupRollbackTimeout: rollbackTimeout,
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
-			workflowCfg := workflowConfig(workflowconfig.TrackerGitHub)
+			workflowCfg := workflowConfig("memory")
 			workflowCfg.Tracker.AutoProvision = true
 			var currentConnector connector.Connector = provisioningConnector{
 				provision: func(ctx context.Context) error {
@@ -2669,7 +2669,7 @@ func newBlockingStartupManager(t *testing.T, rollbackTimeout time.Duration) bloc
 			if cfg.ID == "alpha" {
 				currentConnector = alphaConnector
 			}
-			return projectfixture.New(project.Config{
+			return project.New(project.Config{
 				Project:  cfg,
 				Workflow: workflowconfig.Workflow{Config: workflowCfg},
 			}, project.Dependencies{
@@ -2700,7 +2700,7 @@ func newManagerTestProject(t *testing.T, cfg globalconfig.Project, events *hub.H
 	if cfg.Weight == 0 {
 		cfg.Weight = 1
 	}
-	return projectfixture.New(project.Config{
+	return project.New(project.Config{
 		Project: cfg,
 	}, project.Dependencies{
 		Events: events,
@@ -2714,9 +2714,9 @@ func newStoppedManagerTestProject(t *testing.T, cfg globalconfig.Project) (*proj
 	if cfg.Weight == 0 {
 		cfg.Weight = 1
 	}
-	got, err := projectfixture.New(project.Config{
+	got, err := project.New(project.Config{
 		Project:  cfg,
-		Workflow: workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerGitHub)},
+		Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
 	}, project.Dependencies{
 		Events: hub.New[project.Event](hub.WithBuffer(4)),
 		Runner: blockingRunner{},

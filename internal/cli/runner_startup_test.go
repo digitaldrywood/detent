@@ -15,12 +15,11 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
-	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 )
 
 func TestRunnerProjectCredentials(t *testing.T) {
@@ -81,7 +80,7 @@ func TestRunnerStartupProjectOutcomes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(githubPath, []byte(strings.Replace(string(raw), "kind: hub_native", "kind: github\n  repository: owner/site\n  github_status_source: label\n  status_label_prefix: 'detent:'", 1)), 0600); err != nil {
+			if err := os.WriteFile(githubPath, []byte(strings.Replace(string(raw), "kind: memory", "kind: github\n  repository: owner/site\n  github_status_source: label\n  status_label_prefix: 'detent:'", 1)), 0600); err != nil {
 				t.Fatal(err)
 			}
 			projects := []globalconfig.Project{{ID: "github", Workflow: githubPath, Workdir: filepath.Dir(githubPath), Weight: 1}}
@@ -91,7 +90,7 @@ func TestRunnerStartupProjectOutcomes(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(path, []byte(strings.Replace(string(nativeRaw), "kind: hub_native", "kind: hub_native", 1)), 0600); err != nil {
+				if err := os.WriteFile(path, []byte(strings.Replace(string(nativeRaw), "kind: memory", "kind: hub_native", 1)), 0600); err != nil {
 					t.Fatal(err)
 				}
 				projects = append(projects, globalconfig.Project{ID: "native", Workflow: path, Workdir: filepath.Dir(path), Weight: 1})
@@ -99,7 +98,7 @@ func TestRunnerStartupProjectOutcomes(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			var authenticated atomic.Bool
-			tracker := fakehub.New(fakehub.Config{})
+			tracker := memory.New(memory.Config{})
 			scheduling := &startupNativeScheduling{connector: tracker}
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 			retry := make(chan struct{})
@@ -132,7 +131,7 @@ func TestRunnerStartupProjectOutcomes(t *testing.T) {
 					return approvedFactory(cfg)
 				}
 			}
-			manager, err := projectfixture.NewManager(project.ManagerConfig{Projects: projects}, project.ManagerDependencies{ProjectFactory: factory, Logger: logger, RetrySleep: func(ctx context.Context, _ time.Duration) error {
+			manager, err := project.NewManager(project.ManagerConfig{Projects: projects}, project.ManagerDependencies{ProjectFactory: factory, Logger: logger, RetrySleep: func(ctx context.Context, _ time.Duration) error {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()

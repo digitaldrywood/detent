@@ -109,7 +109,20 @@ func doctorGitHubReadinessConfig(
 	githubToken RuntimeSecret,
 	sourceRoot string,
 ) ghconnector.ReadinessConfig {
-
+	if cfg.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
+		return ghconnector.ReadinessConfig{
+			AuthPath:                      doctorGitHubAuthPath(cfg, githubToken, deps.lookupEnv),
+			LocalStatusMode:               true,
+			Repositories:                  doctorGitHubRepositories(ctx, project, cfg, deps, sourceRoot),
+			RequireIssueCommentsRead:      true,
+			RequireDependencyMetadataRead: true,
+			RequireIssueChildrenRead:      doctorRequiresIssueChildrenRead(cfg),
+			RequireIssueParentsRead:       doctorRequiresIssueParentsRead(cfg),
+			RequirePullRequestRead:        true,
+			RequirePullRequestReviews:     true,
+			RequirePullRequestChecks:      true,
+		}
+	}
 	return ghconnector.ReadinessConfig{
 		AuthPath:                      doctorGitHubAuthPath(cfg, githubToken, deps.lookupEnv),
 		WriteProbeIssue:               cfg.Tracker.WriteProbeIssue,
@@ -397,7 +410,7 @@ func doctorWorkflowConfigWithRuntimeGitHubToken(cfg workflowconfig.Config, token
 }
 
 func doctorTrackerUsesGitHubReads(kind string) bool {
-	return kind == workflowconfig.TrackerGitHub
+	return kind == workflowconfig.TrackerGitHub || kind == workflowconfig.TrackerGitHubLocal
 }
 
 func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token RuntimeSecret, deps doctorDeps) (check doctorCheck) {
@@ -552,7 +565,10 @@ func doctorRequiredGitHubScopes(ctx context.Context, cfg *globalconfig.Config, d
 		if trackerHasGitHubAppCredentials(workflow.Config.Tracker, deps.lookupEnv) {
 			continue
 		}
-
+		if workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
+			add(requiredLabelGitHubScopes)
+			continue
+		}
 		switch workflow.Config.Tracker.GitHubStatusSource {
 		case workflowconfig.GitHubStatusSourceProjectV2:
 			add(requiredProjectV2GitHubScopes)

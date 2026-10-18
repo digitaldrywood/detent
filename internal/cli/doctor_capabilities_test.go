@@ -205,7 +205,7 @@ func TestCheckDoctorCapabilitiesUsesProjectIntakeOverride(t *testing.T) {
 		},
 		{
 			name:          "enabled override is unavailable for non github tracker",
-			trackerKind:   workflowconfig.TrackerHubNative,
+			trackerKind:   workflowconfig.TrackerMemory,
 			projectIntake: intake.Config{Sources: []intake.Source{{Name: "project-source"}}},
 			wantState:     doctorCapabilityUnavailable,
 			wantDetail:    "intake.sources requires github",
