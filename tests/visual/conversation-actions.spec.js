@@ -36,6 +36,32 @@ test("workflow chat previews approval and preserves pending runner adoption", as
   const workflowHub = await startHostedHub("conversation-workflow", {
     env: { DETENT_HOSTED_BROWSER_CHAT_WORKFLOW: "1" },
   });
+  const streamEvents = [];
+  let droppedStreamEvents = 0;
+  const network = await page.context().newCDPSession(page);
+  await network.send("Network.enable");
+  network.on("Network.eventSourceMessageReceived", (event) => {
+    let data;
+    try {
+      data = JSON.parse(event.data);
+    } catch {
+      data = {};
+    }
+    if (streamEvents.length === 128) {
+      streamEvents.shift();
+      droppedStreamEvents++;
+    }
+    streamEvents.push({
+      observed_at: new Date().toISOString(),
+      request_id: event.requestId,
+      event_id: event.eventId,
+      event_name: event.eventName,
+      message_id: typeof data.id === "string" ? data.id : undefined,
+      message_seq: typeof data.seq === "number" ? data.seq : undefined,
+      delivery: typeof data.delivery === "string" ? data.delivery : undefined,
+      pending_reply: typeof data.text === "string" && data.text.includes("Runner application pending: true"),
+    });
+  });
   try {
     const fixture = workflowHub.fixture;
     const read = (suffix) => projectRead(page, suffix, fixture);
@@ -88,6 +114,8 @@ test("workflow chat previews approval and preserves pending runner adoption", as
     const evidence = {
       capture_started_at: new Date().toISOString(),
       project_id: workflowHub.fixture.project_id,
+      stream_events: streamEvents.slice(),
+      dropped_stream_events: droppedStreamEvents,
     };
     try {
       evidence.conversation_id = new URL(page.url()).pathname.split("/").pop();
@@ -109,7 +137,15 @@ test("workflow chat previews approval and preserves pending runner adoption", as
     }
     throw error;
   } finally {
-    await workflowHub.stop();
+    try {
+      await testInfo.attach("workflow-stream-events", {
+        body: JSON.stringify({ events: streamEvents, dropped: droppedStreamEvents }),
+        contentType: "application/json",
+      });
+      await network.detach();
+    } finally {
+      await workflowHub.stop();
+    }
   }
 });
 
