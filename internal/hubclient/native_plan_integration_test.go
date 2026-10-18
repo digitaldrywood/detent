@@ -345,7 +345,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		t.Fatal(err)
 	}
 	finished := make(chan nativePlanFinish, 4)
-	transport := &nativePlanTransport{next: h.failChanges, native: h.native, finished: finished, blocked: make(chan struct{}, 1)}
+	transport := &nativePlanTransport{next: h.failChanges, native: h.native, finished: finished, terminated: make(chan tracker.NativeRunData, 1), blocked: make(chan struct{}, 1)}
 	transport.failWorkflow.Store(abandon)
 	h.native.client.httpClient.Transport = transport
 	if failure == "recovery" {
@@ -440,6 +440,22 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		response, err := orch.RecoverWorkAttempt(t.Context(), orchestrator.WorkAttemptRecoveryRequest{ProjectID: "local", AttemptID: attempts[0].ID, Action: orchestrator.WorkAttemptRecoveryAbandon, Confirm: true, Reason: "native planner succeeded but its lease ended", Operator: "ops"})
 		if err != nil || response.Attempt.TerminalState != string(store.WorkAttemptTerminalAbandoned) {
 			t.Fatalf("abandon = %v, %v", response.Status, err)
+		}
+		select {
+		case acknowledgment := <-transport.terminated:
+			if acknowledgment.LeaseID != lease.ID || acknowledgment.FencingToken != lease.FencingToken || acknowledgment.Identity == nil || acknowledgment.Identity.Role != runner.RolePlan {
+				t.Fatalf("termination acknowledgment lost planner authority: %+v", acknowledgment)
+			}
+			recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil || len(recovery.Attempts) != 1 {
+				t.Fatalf("abandoned planner receipt = %+v, %v", recovery.Attempts, err)
+			}
+			attempt := recovery.Attempts[0]
+			if attempt.AttemptID != acknowledgment.AttemptID || attempt.LeaseID != lease.ID || attempt.FencingToken != lease.FencingToken || attempt.Status != "cancelled" || attempt.ClaimReleasedAt == nil || attempt.Identity == nil || attempt.Identity.Role != runner.RolePlan {
+				t.Fatalf("abandoned planner lost acknowledged termination: %+v", attempt)
+			}
+		default:
+			t.Fatal("abandon completed without acknowledging planner termination")
 		}
 		current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
 		if err != nil {
@@ -770,6 +786,7 @@ type nativePlanTransport struct {
 	next         http.RoundTripper
 	native       *NativeClient
 	finished     chan<- nativePlanFinish
+	terminated   chan tracker.NativeRunData
 	blocked      chan struct{}
 	failWorkflow atomic.Bool
 }
@@ -796,6 +813,10 @@ func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		return response, err
 	}
 	if event.Type != "run.finished" || event.Data.Outcome == "cancelled" {
+		return response, nil
+	}
+	if event.Data.Outcome == "cancelled" {
+		t.terminated <- event.Data
 		return response, nil
 	}
 	item := tracker.NativeWorkItemID(strings.Split(strings.TrimSuffix(req.URL.Path, "/events"), "/work-items/")[1])
