@@ -1,0 +1,17 @@
+(✓) Post-generation event received, processing... [ needsRestart=true needsBrowserReload=true ]
+(✓) Complete [ updates=1367 duration=822.583667ms ]
+≈ tailwindcss v4.3.0
+
+Done in 99ms
+go build -ldflags "-X main.version=v0.108.0-10-g1040032d -X main.commit=1040032d -X main.date=2026-09-08T21:42:16Z" -o tmp/detent ./cmd/detent
+GOTOOLCHAIN="go1.26.6" GOBIN="/Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2347-fdfb873546f6/tmp/tools/golangci-lint/v2.9.0/go1.26.6" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
+GOTOOLCHAIN="go1.26.6" "/Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2347-fdfb873546f6/tmp/tools/golangci-lint/v2.9.0/go1.26.6/golangci-lint" run --timeout=5m
+tools/checklock/main.go:53:13: QF1011: could omit type io.Writer from declaration; it will be inferred from the right-hand side (staticcheck)
+	var events io.Writer = io.Discard
+	           ^
+1 issues:
+* staticcheck: 1
+make[1]: *** [lint] Error 1
+validation gate finished: result=failed waited=23m2.817s ran=1m33.107s
+exit status 2
+make: *** [check] Error 1

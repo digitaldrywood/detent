@@ -1,0 +1,106 @@
+package templates
+
+import "github.com/digitaldrywood/detent/internal/web/ui/primitives"
+
+// HealthPageV2 is quiet when healthy: one verdict line, one details table,
+// one footnote. The verdict is the only element allowed to get loud, and
+// only when something is actually degraded.
+templ HealthPageV2(data DashboardData) {
+	@AppShell(HealthShellDataFromDashboardV2(data), nil) {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden px-5 py-5"
+				sse-swap="snapshot"
+				hx-swap="morph:innerHTML"
+			>
+				@HealthSnapshotV2(data)
+			</div>
+		</main>
+	}
+}
+
+templ HealthSnapshotV2(data DashboardData) {
+	{{ view := healthViewFromDashboard(data) }}
+	{{ faults := healthFaultSnapshot(data.Snapshot) }}
+	@failureBreakerBanner(faults)
+	@dispatchRecoveryBanner(faults)
+	@backendCapacityBanner(faults)
+	<div class="flex flex-none flex-wrap items-center gap-2 rounded-card border border-warn/40 bg-warn/5 px-3 py-2">
+		@aiDebugCopyButton(aiDebugFleetPath(), "inline-flex min-h-9 items-center gap-1.5 rounded-card border border-line bg-surface px-2.5 text-xs font-medium text-text hover:border-accent hover:text-accent")
+	</div>
+	<p id="health-verdict" class="flex flex-none flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+		<span class={ healthVerdictGlyphClass(view.Kind) } aria-hidden="true">{ view.Kind.Glyph() }</span>
+		<span class="font-medium text-text">{ view.Verdict }</span>
+		<span class="basis-full break-words text-sec md:basis-auto">
+			{ view.Detail }
+			if !view.DetailAt.IsZero() {
+				{ " " }
+				@LocalTime(view.DetailAt, LocalTimeOptions{Relative: view.DetailRelative})
+			}
+			{ " " }
+			Checked <span class="font-mono tabular-nums">@LocalTime(view.CheckedAt, LocalTimeOptions{Style: LocalTimeWithSeconds, Fallback: "--:--:--"})</span>.
+		</span>
+	</p>
+	<section id="health-details" class="flex min-w-0 flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
+		<div class="overflow-x-auto" data-health-table-scroll>
+		<div class="min-w-[850px] md:min-w-full">
+		<div class="grid grid-cols-[180px_140px_minmax(0,1fr)_200px_90px] gap-3.5 border-b border-line px-4 py-2">
+			<span class="text-2xs font-semibold uppercase text-dim">Component</span>
+			<span class="text-2xs font-semibold uppercase text-dim">Status</span>
+			<span class="text-2xs font-semibold uppercase text-dim">Detail</span>
+			<span class="text-2xs font-semibold uppercase text-dim">Quota</span>
+			<span class="flex items-center justify-end gap-1 text-2xs font-semibold uppercase text-dim">
+				<span>Resets</span>
+				@copyTextButton(healthCopyPayload(view), "Copy", "Copy all health signals", copyTextButtonOptions{
+					ID: "health-copy-all",
+					Class: "inline-flex h-7 items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-1 text-2xs font-medium normal-case text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+					LabelClass: "",
+				})
+			</span>
+		</div>
+		if len(view.Rows) == 0 {
+			@primitives.EmptyLine("No health signals yet")
+		}
+		for i, row := range view.Rows {
+			<div id={ row.ID } class={ healthRowClass(i == len(view.Rows)-1) }>
+				<span class="text-sm font-medium text-text">{ row.Component }</span>
+				<span class={ "flex items-center gap-1.5 text-xs " + boardExtraTextClass(row.Kind) }>
+					<span class="text-2xs" aria-hidden="true">{ row.Kind.Glyph() }</span>
+					{ row.Status }
+				</span>
+				<span class="min-w-0 break-words text-xs text-sec">
+					if row.Link != "" {
+						<a class="font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ templ.SafeURL(row.Link) }>{ row.Detail }</a>
+					} else {
+						{ row.Detail }
+					}
+					if !row.DetailAt.IsZero() {
+						{ " " }
+						@LocalTime(row.DetailAt, LocalTimeOptions{Relative: true})
+					}
+				</span>
+				if row.Quota != "" {
+					<span class="flex items-center gap-2.5">
+						<span class="whitespace-nowrap font-mono text-xs text-sec tabular-nums">{ row.Quota }</span>
+						<span class="h-1 min-w-0 flex-1 overflow-hidden rounded-xs bg-line">
+							<span class={ "block " + healthQuotaBarKindClass(row.Kind, row.QuotaWarn) } style={ fleetProgressStyle(row.QuotaPct) }></span>
+						</span>
+					</span>
+				} else {
+					<span class="text-xs text-dim">—</span>
+				}
+				<span class="text-right font-mono text-xs text-sec tabular-nums">
+					if !row.ResetAt.IsZero() {
+						@LocalTime(row.ResetAt, LocalTimeOptions{})
+					} else {
+						{ row.Resets }
+					}
+				</span>
+			</div>
+		}
+		</div>
+		</div>
+	</section>
+	<p class="flex-none text-2xs text-dim">{ view.Footnote }</p>
+}
