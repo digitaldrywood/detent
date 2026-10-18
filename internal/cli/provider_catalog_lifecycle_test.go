@@ -18,13 +18,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
-	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 )
 
 func TestRunnerProviderCatalogStartupRecovery(t *testing.T) {
@@ -39,7 +38,9 @@ func TestRunnerProviderCatalogStartupRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(strings.Replace(string(raw), "codex:\n", "codex:\n  read_timeout_ms: 60000\n", 1)), 0600); err != nil {
+	workflow := strings.Replace(string(raw), "kind: memory", "kind: hub_native", 1)
+	workflow = strings.Replace(workflow, "codex:\n", "codex:\n  read_timeout_ms: 60000\n", 1)
+	if err := os.WriteFile(path, []byte(workflow), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := globalconfig.Config{Projects: []globalconfig.Project{{ID: "native", Workflow: path, Workdir: filepath.Dir(path), Weight: 1}}}
@@ -60,10 +61,11 @@ func TestRunnerProviderCatalogStartupRecovery(t *testing.T) {
 		}
 		return agent.ListModels(ctx, runner.AgentProcessRequest{})
 	}, nil)
-	scheduling := &catalogStartupScheduling{startupNativeScheduling: &startupNativeScheduling{connector: fakehub.New(fakehub.Config{})}, source: source}
-	factory := withRunnerFactoryWithProjectTokens(ctx, project.Dependencies{Runner: &workflowStartupRunner{started: make(chan struct{}, 1)}, Scheduling: scheduling, Logger: logger}, nil, nil, serviceapi.Connection{}, nil, nil, func(context.Context, globalconfig.Project, workflowconfig.Config) (string, error) { return "", nil }, nil)
+	tracker := memory.New(memory.Config{})
+	scheduling := &catalogStartupScheduling{startupNativeScheduling: &startupNativeScheduling{connector: tracker}, source: source}
+	factory := withRunnerFactoryWithProjectTokens(ctx, project.Dependencies{Runner: &workflowStartupRunner{started: make(chan struct{}, 1)}, Connector: tracker, Scheduling: scheduling, Logger: logger}, nil, nil, serviceapi.Connection{}, nil, nil, func(context.Context, globalconfig.Project, workflowconfig.Config) (string, error) { return "", nil }, nil)
 	retry := make(chan struct{})
-	manager, err := projectfixture.NewManager(project.ManagerConfig{Projects: cfg.Projects}, project.ManagerDependencies{ProjectFactory: factory, Logger: logger, RetrySleep: func(ctx context.Context, _ time.Duration) error {
+	manager, err := project.NewManager(project.ManagerConfig{Projects: cfg.Projects}, project.ManagerDependencies{ProjectFactory: factory, Logger: logger, RetrySleep: func(ctx context.Context, _ time.Duration) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
