@@ -96,7 +96,7 @@ func TestProbeRunnerIsolationNativeFailures(t *testing.T) {
 				t.Fatal(err)
 			}
 			workflow := filepath.Join(root, "WORKFLOW.md")
-			content = "---\ntracker:\n  kind: hub_native\ncodex:\n  command: " + strconv.Quote(strconv.Quote(script)+" app-server") + "\nworkspace:\n  root: " + filepath.Join(root, "workspaces") + "\n---\nTest prompt\n"
+			content = "---\ntracker:\n  kind: memory\ncodex:\n  command: " + strconv.Quote(strconv.Quote(script)+" app-server") + "\nworkspace:\n  root: " + filepath.Join(root, "workspaces") + "\n---\nTest prompt\n"
 			if err := os.WriteFile(workflow, []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}

@@ -232,7 +232,7 @@ func TestDevRuntimeCommandBuildsIsolatedBootConfig(t *testing.T) {
 	if got.RuntimeDBPath != filepath.Join(home, "fixture.db") {
 		t.Fatalf("RuntimeDBPath = %q, want fixture DB under home", got.RuntimeDBPath)
 	}
-	if got.Isolated.DBMode != "file" || got.Isolated.TrackerMode != "hub_native" {
+	if got.Isolated.DBMode != "file" || got.Isolated.TrackerMode != "memory" {
 		t.Fatalf("isolated metadata = %#v, want file DB and memory tracker", got.Isolated)
 	}
 }
@@ -981,12 +981,12 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 		}
 	}
 
-	runCommand("pause", "detent", "--reason", "release hold", "--until-issue", "example-org/example-project#1499")
+	runCommand("pause", "detent", "--reason", "release hold", "--until-issue", "digitaldrywood/detent#1499")
 	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
 		if !project.Paused {
 			t.Fatal("Paused = false, want true")
 		}
-		if project.PausedReason != "release hold" || project.PausedUntilIssue != "example-org/example-project#1499" || project.PausedAt == "" {
+		if project.PausedReason != "release hold" || project.PausedUntilIssue != "digitaldrywood/detent#1499" || project.PausedAt == "" {
 			t.Fatalf("pause metadata = %#v", project)
 		}
 	})
@@ -1110,8 +1110,8 @@ func TestPauseCommandExitConditionFlags(t *testing.T) {
 	}{
 		{
 			name:      "issue exit condition",
-			args:      []string{"--until-issue", "example-org/example-project#1499"},
-			wantIssue: "example-org/example-project#1499",
+			args:      []string{"--until-issue", "digitaldrywood/detent#1499"},
+			wantIssue: "digitaldrywood/detent#1499",
 		},
 		{
 			name:          "timestamp exit condition",
@@ -1163,46 +1163,35 @@ func TestPauseCommandExitConditionFlags(t *testing.T) {
 func TestPauseCommandValidatesIssueReference(t *testing.T) {
 	t.Parallel()
 
-	nativeWorkflow := `---
+	localWorkflow := `---
 tracker:
-  kind: hub_native
-  repository: example-org/example-project
+  kind: local_sqlite
+  local_sqlite:
+    path: .detent/work-items.db
+    project_id: video
 ---
 Prompt
 `
 	githubWorkflow := `---
 tracker:
   kind: github
-  repository: example-org/video-project
+  repository: digitaldrywood/video-studio
 ---
 Prompt
 `
 	tests := []struct {
 		name       string
-		reference  string
 		withGitHub bool
 		wantError  string
 		wantPaused bool
 	}{
 		{
 			name:      "rejects cross repository issue without resolver",
-			reference: "example-org/video-project#155",
-			wantError: "no configured project tracker can resolve GitHub pause exit issue example-org/video-project#155",
+			wantError: "no configured project tracker can resolve GitHub pause exit issue digitaldrywood/video-studio#155",
 		},
 		{
 			name:       "accepts cross repository issue with configured resolver",
-			reference:  "example-org/video-project#155",
 			withGitHub: true,
-			wantPaused: true,
-		},
-		{
-			name:       "accepts native project number",
-			reference:  "prj_example#42",
-			wantPaused: true,
-		},
-		{
-			name:       "accepts native number",
-			reference:  "#42",
 			wantPaused: true,
 		},
 	}
@@ -1211,11 +1200,11 @@ Prompt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			native := createProjectFilesWithWorkflow(t, nativeWorkflow)
+			local := createProjectFilesWithWorkflow(t, localWorkflow)
 			projects := []globalconfig.Project{{
-				ID:       "prj_example",
-				Workflow: native.workflowPath,
-				Workdir:  native.workdirPath,
+				ID:       "video",
+				Workflow: local.workflowPath,
+				Workdir:  local.workdirPath,
 				Weight:   1,
 			}}
 			if tt.withGitHub {
@@ -1227,7 +1216,7 @@ Prompt
 					Weight:   1,
 				})
 			}
-			configPath := filepath.Join(native.root, "global.yaml")
+			configPath := filepath.Join(local.root, "global.yaml")
 			writeGlobalConfig(t, configPath, projects)
 
 			cmd := cli.NewRootCommand(context.Background())
@@ -1235,9 +1224,9 @@ Prompt
 			cmd.SetErr(&bytes.Buffer{})
 			cmd.SetArgs([]string{
 				"--config", configPath,
-				"pause", "prj_example",
+				"pause", "video",
 				"--reason", "release hold",
-				"--until-issue", tt.reference,
+				"--until-issue", "digitaldrywood/video-studio#155",
 			})
 			err := cmd.Execute()
 			if tt.wantError != "" {
@@ -1248,7 +1237,7 @@ Prompt
 				t.Fatalf("Execute() error = %v", err)
 			}
 
-			assertProject(t, configPath, "prj_example", func(project globalconfig.Project) {
+			assertProject(t, configPath, "video", func(project globalconfig.Project) {
 				if project.Paused != tt.wantPaused {
 					t.Fatalf("Paused = %t, want %t", project.Paused, tt.wantPaused)
 				}
@@ -1281,7 +1270,7 @@ func TestPauseCommandRejectsInvalidFlags(t *testing.T) {
 		},
 		{
 			name: "mutually exclusive exits",
-			args: []string{"pause", "detent", "--reason", "hold", "--until-issue", "example-org/example-project#1499", "--until", "2026-08-01T12:00:00Z"},
+			args: []string{"pause", "detent", "--reason", "hold", "--until-issue", "digitaldrywood/detent#1499", "--until", "2026-08-01T12:00:00Z"},
 			want: "--until-issue and --until are mutually exclusive",
 		},
 		{
@@ -1427,10 +1416,7 @@ func writeWorkflow(t *testing.T, path string, content string) {
 func validWorkflowContent() string {
 	return `---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
 ---
 Test workflow prompt.
 `
@@ -1439,10 +1425,7 @@ Test workflow prompt.
 func workflowContentWithServer(host string, port int) string {
 	return fmt.Sprintf(`---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
 server:
   host: %s
   port: %d

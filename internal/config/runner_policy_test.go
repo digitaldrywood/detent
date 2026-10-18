@@ -46,7 +46,7 @@ func TestRunnerPolicyCanonicalInputs(t *testing.T) {
 	t.Parallel()
 	workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
 		WorkflowPath: "WORKFLOW.md",
-		Workflow:     []byte("---\ntracker:\n  kind: hub_native\nworkspace:\n  root: policy-upgrade-workspaces\nworker:\n  ssh_hosts: [local]\ngate:\n  kind: command\n  run: make check-fast\n---\nRun the work.\n"),
+		Workflow:     []byte("---\ntracker:\n  kind: memory\nworkspace:\n  root: policy-upgrade-workspaces\nworker:\n  ssh_hosts: [local]\ngate:\n  kind: command\n  run: make check-fast\n---\nRun the work.\n"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +120,7 @@ func TestRunnerPolicyCanonicalInputs(t *testing.T) {
 
 func TestRunnerPolicyAuthoredDefinition(t *testing.T) {
 	t.Parallel()
-	for _, tracker := range []string{"hub_native"} {
+	for _, tracker := range []string{"memory", "hub_native"} {
 		t.Run(tracker, func(t *testing.T) {
 			sources := ProjectDefinitionSources{Workflow: []byte("Run the work in {{ workspace.path }} from {{ workspace.source_root }}.\n"), Config: []byte("schema: 1\ntracker:\n  kind: " + tracker + "\ngate:\n  run: echo 1\n"), HasConfig: true}
 			load := func(sources ProjectDefinitionSources) policy.Descriptor {
@@ -265,7 +265,7 @@ func TestRunnerPolicyEquivalentOptoutRetainsSecurityAudit(t *testing.T) {
 
 func TestRunnerPolicyCompatibility(t *testing.T) {
 	t.Parallel()
-	shared := "tracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\nrunners:\n  profile: build\n  profiles:\n    build:\n      required_tags: [Linux, linux, gpu]\n      machine_id: machine_abc\ngate:\n  kind: human_review\nagent:\n  auto_promote:\n    enabled: false\ndeliverable:\n  merge_method: rebase\n  github_pull_request: true\n"
+	shared := "tracker:\n  kind: memory\nrunners:\n  profile: build\n  profiles:\n    build:\n      required_tags: [Linux, linux, gpu]\n      machine_id: machine_abc\ngate:\n  kind: human_review\nagent:\n  auto_promote:\n    enabled: false\ndeliverable:\n  merge_method: rebase\n  github_pull_request: true\n"
 	for _, test := range []struct {
 		name         string
 		split, local bool
@@ -348,7 +348,7 @@ func TestRunnerProfileValidation(t *testing.T) {
 		{"unused profile", "profiles: {build: {required_tags: [linux]}}", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\nrunners:\n  " + test.yaml + "\n---\nPrompt\n"))
+			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\nrunners:\n  " + test.yaml + "\n---\nPrompt\n"))
 			if err == nil {
 				err = workflow.Config.Validate()
 			}
@@ -369,10 +369,10 @@ func TestNativeGitHubCIReviewPolicy(t *testing.T) {
 	}{
 		{name: "native GitHub CI is a landing gate", tracker: "hub_native", github: true},
 		{name: "native local checks retain their review floor", tracker: "hub_native", floor: 1},
-		{name: "forge checks retain their review floor", tracker: "github", github: true, floor: 1},
+		{name: "forge checks retain their review floor", tracker: "memory", github: true, floor: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			source := "---\ntracker:\n  kind: " + test.tracker + "\n  api_key: fixture-token\n  project_slug: fixture-project\ngate:\n  run: true\n  required_status_checks: ['Full CI']\n  ci_trigger_label: run-full-ci\n  validator:\n    enabled: true\nreview:\n  human: true\ndeliverable:\n  github_pull_request: " + map[bool]string{true: "true", false: "false"}[test.github] + "\n---\nComplete the work.\n"
+			source := "---\ntracker:\n  kind: " + test.tracker + "\ngate:\n  run: true\n  required_status_checks: ['Full CI']\n  ci_trigger_label: run-full-ci\n  validator:\n    enabled: true\nreview:\n  human: true\ndeliverable:\n  github_pull_request: " + map[bool]string{true: "true", false: "false"}[test.github] + "\n---\nComplete the work.\n"
 			workflow, err := ParseProjectDefinition(ProjectDefinitionSources{WorkflowPath: "WORKFLOW.md", Workflow: []byte(source)})
 			if err != nil {
 				t.Fatal(err)

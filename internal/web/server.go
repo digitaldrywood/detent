@@ -46,9 +46,10 @@ import (
 )
 
 var (
-	ErrMissingHub      = errors.New("web server requires hub")
-	ErrMissingStore    = errors.New("web server requires store")
-	ErrMissingRegistry = errors.New("web server requires registry")
+	ErrMissingHub       = errors.New("web server requires hub")
+	ErrMissingStore     = errors.New("web server requires store")
+	ErrMissingRegistry  = errors.New("web server requires registry")
+	ErrMissingConnector = errors.New("web server requires connector")
 )
 
 type Dependencies struct {
@@ -257,6 +258,9 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		}
 		if deps.Registry == nil {
 			return nil, ErrMissingRegistry
+		}
+		if deps.Connector == nil {
+			return nil, ErrMissingConnector
 		}
 	}
 
@@ -907,7 +911,7 @@ func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot)
 		InstanceName:          instanceName,
 		Version:               s.version,
 		Build:                 s.build,
-		ConnectorName:         s.connectorName(),
+		ConnectorName:         s.connector.Name(),
 		DashboardURL:          s.dashboardURL,
 		Snapshot:              snapshot,
 		ConfiguredAgents:      agents,
@@ -942,7 +946,7 @@ func (s *Server) dashboardFirstPaintData(ctx context.Context, snapshot telemetry
 		InstanceName:          instanceName,
 		Version:               s.version,
 		Build:                 s.build,
-		ConnectorName:         s.connectorName(),
+		ConnectorName:         s.connector.Name(),
 		DashboardURL:          s.dashboardURL,
 		Snapshot:              snapshot,
 		ConfiguredAgents:      agents,
@@ -1033,7 +1037,7 @@ func (s *Server) projectDashboardDataFromProjects(
 		InstanceName:              instanceName,
 		Version:                   s.version,
 		Build:                     s.build,
-		ConnectorName:             s.connectorName(),
+		ConnectorName:             s.connector.Name(),
 		DashboardURL:              s.dashboardURL,
 		Snapshot:                  scopedSnapshot,
 		ConfiguredAgents:          agents,

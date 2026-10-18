@@ -6,7 +6,6 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/project"
-	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 )
 
 func TestRegistryStoresAndListsProjectsByID(t *testing.T) {
@@ -81,7 +80,7 @@ func TestRegistryRejectsInvalidProject(t *testing.T) {
 func newTestProject(t *testing.T, id string) *project.Project {
 	t.Helper()
 
-	got, err := projectfixture.New(project.Config{
+	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
 			ID:     id,
 			Weight: 1,

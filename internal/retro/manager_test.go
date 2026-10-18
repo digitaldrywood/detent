@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/intake"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
@@ -16,8 +16,8 @@ func TestManagerRoutesAndDeduplicatesRecurringFindings(t *testing.T) {
 
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 	telemetry := &recordingTelemetryStore{snapshot: routingSnapshot(now)}
-	projectIssues := fakehub.New(fakehub.Config{Stateful: true})
-	productIssues := fakehub.New(fakehub.Config{Stateful: true})
+	projectIssues := memory.New(memory.Config{Stateful: true})
+	productIssues := memory.New(memory.Config{Stateful: true})
 	metrics := &retroMetricsRecorder{}
 	manager, err := New(Settings{
 		ProjectID: "example",
@@ -71,8 +71,8 @@ func TestManagerPreservesReviewedOutcomeOnRecurrence(t *testing.T) {
 
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 	telemetry := &recordingTelemetryStore{snapshot: routingSnapshot(now)}
-	projectIssues := fakehub.New(fakehub.Config{Stateful: true})
-	productIssues := fakehub.New(fakehub.Config{Stateful: true})
+	projectIssues := memory.New(memory.Config{Stateful: true})
+	productIssues := memory.New(memory.Config{Stateful: true})
 	manager, err := New(Settings{
 		ProjectID: "example",
 		Config: Config{
@@ -127,8 +127,8 @@ func TestManagerEnforcesDailyCreationCap(t *testing.T) {
 	manager, err := New(Settings{
 		ProjectID:     "example",
 		Config:        Config{Enabled: true, DailyIssueCap: 1},
-		ProjectIssues: fakehub.New(fakehub.Config{Stateful: true}),
-		ProductIssues: fakehub.New(fakehub.Config{Stateful: true}),
+		ProjectIssues: memory.New(memory.Config{Stateful: true}),
+		ProductIssues: memory.New(memory.Config{Stateful: true}),
 	}, telemetry, nil, func() time.Time { return now })
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -173,7 +173,7 @@ func routingSnapshot(now time.Time) Snapshot {
 	}
 }
 
-func assertSingleRetroIssue(t *testing.T, issueStore *fakehub.Connector, pattern string, bodyContains string) {
+func assertSingleRetroIssue(t *testing.T, issueStore *memory.Connector, pattern string, bodyContains string) {
 	t.Helper()
 	issues, err := issueStore.FetchIssuesByStates(context.Background(), []string{"Backlog"})
 	if err != nil {

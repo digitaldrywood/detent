@@ -244,7 +244,7 @@ func TestCreateConnectorCapabilityGate(t *testing.T) {
 
 func localSQLiteWorkflow() workflowconfig.Config {
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = "local_sqlite"
+	cfg.Tracker.Kind = workflowconfig.TrackerLocalSQLite
 	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress"}
 	cfg.Tracker.ObservedStates = []string{"Backlog", "Blocked"}
 	cfg.Tracker.TerminalStates = []string{"Done"}
@@ -258,7 +258,7 @@ type creatorConnector struct {
 }
 
 func (c *creatorConnector) Name() string {
-	return "hub_native"
+	return connector.BackendLocalSQLite.String()
 }
 
 func (c *creatorConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
@@ -319,7 +319,7 @@ func (c *creatorConnector) UpsertIssues(_ context.Context, issues []connector.Is
 type readonlyConnector struct{}
 
 func (readonlyConnector) Name() string {
-	return "readonly"
+	return connector.BackendMemory.String()
 }
 
 func (readonlyConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
