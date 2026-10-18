@@ -170,7 +170,7 @@ func TestRefreshMergeQueuePolicyTracksRuleChanges(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	c, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel})
+	c, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestInspectMergeQueueScopesPolicyToPullRequestTarget(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	c, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/tracker", GitHubStatusSource: GitHubStatusSourceLabel})
+	c, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/tracker"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestBranchRulesPlanAvailability(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			c, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: t.Name(), Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+			c, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: t.Name(), Repository: "example/repo", Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}

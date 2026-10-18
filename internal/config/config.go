@@ -1768,8 +1768,8 @@ func (c *Config) Validate() error {
 	c.Server.validate(&problems)
 	c.Observability.validate(&problems)
 	c.Release.validate("release", &problems)
-	if c.Release.Enabled && c.Tracker.Kind != TrackerGitHub {
-		problems = append(problems, "release.enabled requires tracker.kind github")
+	if c.Release.Enabled && c.Tracker.Kind != TrackerHubNative {
+		problems = append(problems, "release.enabled requires tracker.kind hub_native")
 	}
 	if c.Release.Enabled && !validRepositoryName(c.Tracker.Repository) {
 		problems = append(problems, "tracker.repository must be owner/name when release.enabled is true")
@@ -1917,7 +1917,6 @@ func (c *Config) normalize() {
 	if c.Tracker.Kind == TrackerGitHub && c.Tracker.Endpoint == "" {
 		c.Tracker.Endpoint = defaultGitHubEndpoint
 	}
-	c.Tracker.GitHubStatusSource = normalizeGitHubStatusSource(c.Tracker.GitHubStatusSource)
 	c.Tracker.StatusPageURL = normalizeStatusPageURL(c.Tracker.Kind, c.Tracker.StatusPageURL)
 	c.Tracker.GitHubWebhookSecret = strings.TrimSpace(c.Tracker.GitHubWebhookSecret)
 	c.Tracker.Repository = strings.TrimSpace(c.Tracker.Repository)
@@ -2065,12 +2064,9 @@ func (c *Config) validateTracker(problems *[]string) {
 	switch c.Tracker.Kind {
 	case "":
 		*problems = append(*problems, "tracker.kind is required")
-	case TrackerGitHub:
-		c.Tracker.validateGitHubAuth(problems)
-		c.Tracker.validateGitHubStatusSource(problems)
 	case TrackerHubNative:
 	default:
-		*problems = append(*problems, "tracker.kind must be one of github, hub_native; migrate retired trackers to hub_native")
+		*problems = append(*problems, "tracker.kind must be hub_native; migrate retired trackers to hub_native")
 	}
 
 	if c.Tracker.Lanes != nil {
@@ -2184,74 +2180,6 @@ func (l LocalSQLite) Validate(prefix string) []string {
 		return []string{prefix + ".path is required for local_sqlite"}
 	}
 	return nil
-}
-
-func (t *Tracker) validateGitHubStatusSource(problems *[]string) {
-	switch t.GitHubStatusSource {
-	case GitHubStatusSourceProjectV2:
-		validateRequired("tracker.project_slug", t.ProjectSlug, " for github project_v2", problems)
-	case GitHubStatusSourceIssueField:
-		validateRequired("tracker.repository", t.Repository, " for github issue_field", problems)
-		if strings.TrimSpace(t.StatusField) == "" {
-			*problems = append(*problems, "tracker.status_field is required for github issue_field")
-		}
-		if strings.TrimSpace(t.Repository) != "" && !validRepositoryName(t.Repository) {
-			*problems = append(*problems, "tracker.repository must be owner/name")
-		}
-	case GitHubStatusSourceLabel:
-		validateRequired("tracker.repository", t.Repository, " for github label", problems)
-		if strings.TrimSpace(t.Repository) != "" && !validRepositoryName(t.Repository) {
-			*problems = append(*problems, "tracker.repository must be owner/name")
-		}
-		if strings.TrimSpace(t.StatusLabelPrefix) == "" {
-			*problems = append(*problems, "tracker.status_label_prefix is required for github label")
-		}
-	default:
-		*problems = append(*problems, "tracker.github_status_source must be one of project_v2, issue_field, label")
-	}
-}
-
-func (t *Tracker) validateGitHubAuth(problems *[]string) {
-	t.validateGitHubAuthFor("github", problems)
-}
-
-func (t *Tracker) validateGitHubAuthFor(kind string, problems *[]string) {
-	if strings.TrimSpace(t.APIKey) != "" || t.hasGitHubAppCredentials() {
-		return
-	}
-
-	if strings.TrimSpace(t.GitHubAppID) == "" &&
-		strings.TrimSpace(t.GitHubAppInstallationID) == "" &&
-		strings.TrimSpace(t.GitHubAppPrivateKey) == "" &&
-		strings.TrimSpace(t.GitHubAppPrivateKeyPath) == "" {
-		*problems = append(*problems, "tracker.api_key or GitHub App credentials are required for "+kind)
-		return
-	}
-
-	validateRequired("tracker.github_app_id", t.GitHubAppID, " for github app", problems)
-	validateRequired("tracker.github_app_installation_id", t.GitHubAppInstallationID, " for github app", problems)
-	if strings.TrimSpace(t.GitHubAppPrivateKey) == "" && strings.TrimSpace(t.GitHubAppPrivateKeyPath) == "" {
-		*problems = append(*problems, "tracker.github_app_private_key or tracker.github_app_private_key_path is required for github app")
-	}
-}
-
-func (t *Tracker) hasGitHubAppCredentials() bool {
-	return strings.TrimSpace(t.GitHubAppID) != "" &&
-		strings.TrimSpace(t.GitHubAppInstallationID) != "" &&
-		(strings.TrimSpace(t.GitHubAppPrivateKey) != "" || strings.TrimSpace(t.GitHubAppPrivateKeyPath) != "")
-}
-
-func normalizeGitHubStatusSource(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", GitHubStatusSourceProjectV2, "projectv2", "project":
-		return GitHubStatusSourceProjectV2
-	case GitHubStatusSourceIssueField, "issuefield", "issues":
-		return GitHubStatusSourceIssueField
-	case GitHubStatusSourceLabel, "labels", "issue_label", "issue_labels":
-		return GitHubStatusSourceLabel
-	default:
-		return strings.ToLower(strings.TrimSpace(value))
-	}
 }
 
 func validRepositoryName(value string) bool {
@@ -4012,7 +3940,7 @@ func (c Config) WithRuntimeGitHubToken(token string) Config {
 	if token == "" {
 		return c
 	}
-	if c.Tracker.Kind == TrackerGitHub || c.ScheduleOwnership.Enabled {
+	if c.Tracker.Kind == TrackerGitHub || c.ScheduleOwnership.Enabled || c.Release.Enabled {
 		c.Tracker.APIKey = token
 	}
 	if strings.TrimSpace(c.Worker.GitHubToken) == "" && c.Tracker.Kind != TrackerHubNative {

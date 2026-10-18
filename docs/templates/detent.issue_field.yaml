@@ -1,10 +1,8 @@
 schema: 1
 # Keep machine-specific config in detent.local.yaml and local agent direction in WORKFLOW.local.md.
 tracker:
-  kind: github
-  github_status_source: issue_field
+  kind: hub_native
   repository: <repo-owner>/<repo-name>
-  status_field: Status
   http_max_idle_conns: 100
   http_max_idle_conns_per_host: 32
   http_idle_conn_timeout_ms: 90000
@@ -14,7 +12,6 @@ tracker:
   github_rest_fanout_max_requests: 80
   github_rest_debug_logging: false
   # github_webhook_secret: $DETENT_GITHUB_WEBHOOK_SECRET
-  auto_provision: true
   lanes:
     - name: Backlog
       role: holding
