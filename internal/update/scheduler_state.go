@@ -71,6 +71,9 @@ func saveSchedulerState(path string, state schedulerState) (saveErr error) {
 	if state.LastCheckAt.IsZero() {
 		return errors.New("save scheduler state: last check timestamp is required")
 	}
+	if state.EnrolledReceipt != nil && state.EnrolledReceipt.Validate() != nil {
+		return errors.New("save scheduler state: invalid enrolled update receipt")
+	}
 	state.Schema = schedulerStateSchema
 	state.LastCheckAt = state.LastCheckAt.UTC()
 	state.AvailableVersion = strings.TrimSpace(state.AvailableVersion)

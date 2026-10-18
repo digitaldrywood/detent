@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"golang.org/x/mod/semver"
 )
 
 var updateCommit = regexp.MustCompile(`^[a-fA-F0-9]{7,64}$`)
@@ -86,13 +88,22 @@ func (r UpdateReceipt) Validate() error {
 	if r.VerifiedTarget != nil && (r.VerifiedTarget.Validate() != nil || !r.VerifiedTarget.VerifiedRelease || r.VerifiedTarget.Version != r.Request.Version) {
 		return errors.New("invalid verified update target")
 	}
-	if r.Applied != nil && (r.Applied.Validate() != nil || r.Applied.Version != r.Request.Version) || slices.Contains([]string{"applied", "restart_requested", "running"}, r.Status) && r.Applied == nil {
+	if r.Applied != nil && (r.Applied.Validate() != nil || strings.TrimPrefix(r.Applied.Version, "v") != strings.TrimPrefix(r.Request.Version, "v") && !r.AdvancedFollowHubRelease()) || slices.Contains([]string{"applied", "restart_requested", "running"}, r.Status) && r.Applied == nil {
 		return errors.New("update receipt requires applied build evidence")
 	}
 	if r.ExecutionArtifact && (r.Applied == nil || !r.Applied.VerifiedRelease || r.VerifiedTarget != nil) {
 		return errors.New("execution artifact receipt requires a verified applied release")
 	}
 	return nil
+}
+
+func (r UpdateReceipt) AdvancedFollowHubRelease() bool {
+	if !r.Request.FollowHub || r.Applied == nil || !r.Applied.VerifiedRelease || r.VerifiedTarget != nil {
+		return false
+	}
+	requested := "v" + strings.TrimPrefix(r.Request.Version, "v")
+	applied := "v" + strings.TrimPrefix(r.Applied.Version, "v")
+	return semver.IsValid(requested) && semver.IsValid(applied) && semver.Compare(applied, requested) > 0
 }
 
 func (r UpdateReceipt) ExecutionReady() bool {

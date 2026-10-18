@@ -120,7 +120,8 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	if err != nil {
 		cfg.Logger.Warn("load automatic update state failed", "path", cfg.StatePath, "error", err)
 	}
-	if receipt := loadedState.EnrolledReceipt; receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && receipt.Running == nil && !receipt.ExecutionReady() {
+	stateValid := err == nil && (loadedState.EnrolledReceipt == nil || !loadedState.EnrolledReceipt.AdvancedFollowHubRelease())
+	if receipt := loadedState.EnrolledReceipt; stateValid && receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && receipt.Running == nil && !receipt.ExecutionReady() {
 		switch {
 		case receipt.Status == "draining" || receipt.Status == "applying":
 			receipt.FailureReason = "Update was interrupted before completion"
@@ -154,7 +155,7 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	}
 	scheduler := &Scheduler{
 		cfg:             cfg,
-		enrolledReceipt: loadedState.EnrolledReceipt, enrolledStateValid: err == nil, enrolledDiscovery: discovery,
+		enrolledReceipt: loadedState.EnrolledReceipt, enrolledStateValid: stateValid, enrolledDiscovery: discovery,
 		status: AutoStatus{
 			Enabled:            cfg.Enabled,
 			AutoApplyEnabled:   cfg.AutoApplyEnabled,
@@ -170,7 +171,7 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	}
 	observation := scheduler.enrolledObservation(cfg.RunningBuild)
 	cfg.Logger.Info("enrolled runner update support", "supported", observation.Supported,
-		"state_valid", err == nil, "updater_available", cfg.Updater != nil,
+		"state_valid", stateValid, "updater_available", cfg.Updater != nil,
 		"drain_available", cfg.ReserveDrain != nil, "restart_available", cfg.RequestRestart != nil,
 		"state_path_configured", strings.TrimSpace(cfg.StatePath) != "", "running_version", cfg.RunningBuild.Version)
 	return scheduler, nil
@@ -240,6 +241,26 @@ func (s *Scheduler) Run(ctx context.Context) {
 	}
 }
 
+func (s *Scheduler) checkLocked(ctx context.Context) (Status, error) {
+	checked, err := s.cfg.Updater.Check(ctx)
+	if err != nil {
+		return checked, err
+	}
+	s.mu.RLock()
+	valid := s.enrolledStateValid
+	receipt := cloneEnrolledReceipt(s.enrolledReceipt)
+	s.mu.RUnlock()
+	if !valid && receipt != nil && receipt.AdvancedFollowHubRelease() {
+		if err := verifyAdvancedEnrolledReceipt(ctx, s.cfg, receipt); err != nil {
+			return checked, err
+		}
+		s.mu.Lock()
+		s.enrolledStateValid = true
+		s.mu.Unlock()
+	}
+	return checked, nil
+}
+
 func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 	if s == nil || !s.cfg.Enabled {
 		return Status{}, nil
@@ -256,7 +277,7 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 		status.LastError = ""
 	})
 
-	checked, err := s.cfg.Updater.Check(ctx)
+	checked, err := s.checkLocked(ctx)
 	checkedAt := s.cfg.Now()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -360,6 +381,7 @@ func (s *Scheduler) ApplyRelease(ctx context.Context, fromRelease bool) (Status,
 }
 
 func (s *Scheduler) applyRequestedLocked(ctx context.Context, opts ApplyOptions) (Status, error) {
+	opts = s.enrolledApplyOptions(opts)
 	if s.cfg.WorkerArtifacts != nil {
 		return s.applyWorkerReleaseLocked(ctx, opts)
 	}
@@ -372,7 +394,7 @@ func (s *Scheduler) applyRequestedLocked(ctx context.Context, opts ApplyOptions)
 			releaseIdle()
 		}
 	}
-	checked, err := s.cfg.Updater.Check(ctx)
+	checked, err := s.checkLocked(ctx)
 	if err != nil {
 		return Status{FailureReason: "Execution release preparation failed"}, errors.Join(err, s.recordFailure(s.cfg.Now(), err))
 	}
@@ -384,6 +406,7 @@ func (s *Scheduler) applyRequestedLocked(ctx context.Context, opts ApplyOptions)
 }
 
 func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOptions) (Status, error) {
+	opts = s.enrolledApplyOptions(opts)
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "applying"
 		status.LastError = ""
@@ -508,6 +531,7 @@ func (s *Scheduler) applyLocked(ctx context.Context, releaseIdle func()) (Status
 }
 
 func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func(), applyOptions ApplyOptions) (Status, error) {
+	applyOptions = s.enrolledApplyOptions(applyOptions)
 	keepIdleReserved := false
 	defer func() {
 		if !keepIdleReserved && releaseIdle != nil {

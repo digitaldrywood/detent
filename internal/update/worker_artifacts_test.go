@@ -28,7 +28,7 @@ type workerReleaseFixture struct {
 
 func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{"startup", "authenticated startup", "startup critical", "startup incompatible", "automatic", "explicit", "enrolled", "pending", "download failure", "protocol incompatible", "critical", "windows"} {
+	for _, path := range []string{"startup", "authenticated startup", "startup critical", "startup incompatible", "automatic", "explicit", "enrolled", "enrolled advanced target", "pending", "download failure", "protocol incompatible", "critical", "windows"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			artifacts, fixture, publish := workerArtifactFixture(t)
@@ -87,7 +87,7 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 			}
 			now := time.Now().UTC()
 			scheduler, err := NewScheduler(SchedulerConfig{WorkerArtifacts: artifacts, WorkerPreflight: preflight, Now: func() time.Time { return now },
-				Updater: updater, Enabled: path != "enrolled", AutoApplyEnabled: true, CheckInterval: time.Hour,
+				Updater: updater, Enabled: path != "enrolled" && path != "enrolled advanced target", AutoApplyEnabled: true, CheckInterval: time.Hour,
 				StatePath: filepath.Join(t.TempDir(), "update.json"), RunningBuild: runnerauth.BuildEvidence{Version: "1.0.0", Commit: testPreviousCommit, Source: "release", SHA256: strings.Repeat("a", 64), OS: "linux", Architecture: "amd64", ObservedAt: now},
 				ReserveIdle:    func(context.Context) (func(), bool) { return nil, false },
 				ReserveDrain:   func(context.Context) (func(), error) { drains++; return func() {}, nil },
@@ -104,9 +104,25 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 			case "pending":
 				scheduler.updateStatus(func(status *AutoStatus) { status.State, status.AvailableVersion = "pending_idle", "1.0.1" })
 				_, err = scheduler.ApplyPending(t.Context())
-			case "enrolled":
+			case "enrolled", "enrolled advanced target":
 				observed := scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), nil)
 				request := &runnerauth.UpdateRequest{ID: "update-1", Service: "detent", Release: true, FollowHub: true, Version: "1.0.1", ExpectedBuildRevision: observed.Revision, RequestedAt: time.Now().UTC()}
+				if path == "enrolled advanced target" {
+					publish("1.0.2")
+					observed = scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), request)
+					if observed == nil || observed.Validate() != nil || observed.Receipt == nil || observed.Receipt.Status != "refused" || observed.Receipt.Applied != nil {
+						t.Fatalf("stale target installed an unauthorized release: %+v", observed)
+					}
+					resumed, err := NewScheduler(scheduler.cfg)
+					if err != nil {
+						t.Fatal(err)
+					}
+					after := resumed.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), nil)
+					if !after.Supported || after.Validate() != nil || after.Receipt == nil || after.Receipt.Status != "refused" || after.Receipt.Request != *request {
+						t.Fatalf("stale target refusal did not survive restart: %+v", after)
+					}
+					break
+				}
 				observed = scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), request)
 				if observed.Receipt == nil || !observed.Receipt.ExecutionReady() || observed.Running.Version != "1.0.0" || observed.Receipt.Applied == nil || observed.Receipt.Applied.Version != "1.0.1" {
 					t.Fatalf("untruthful mixed-version update receipt: %+v", observed)
@@ -144,7 +160,7 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 				if drains != 1 || restarts != 1 || updater.applyCalls != 1 {
 					t.Fatalf("exceptional update did not use existing replacement: drains=%d restarts=%d applies=%d", drains, restarts, updater.applyCalls)
 				}
-			} else if drains != 0 || restarts != 0 || updater.applyCalls != 0 || path != "startup" && path != "authenticated startup" && scheduler.Status().State != "applied" {
+			} else if drains != 0 || restarts != 0 || updater.applyCalls != 0 || path != "startup" && path != "authenticated startup" && path != "enrolled advanced target" && scheduler.Status().State != "applied" {
 				t.Fatalf("routine update withheld capacity: drains=%d restarts=%d applies=%d status=%+v", drains, restarts, updater.applyCalls, scheduler.Status())
 			}
 			if path == "critical" || path == "protocol incompatible" || path == "startup critical" || path == "startup incompatible" {
@@ -160,7 +176,11 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if launch.Status.LatestVersion != "1.0.1" && path != "enrolled" {
+				wantVersion := "1.0.1"
+				if path == "enrolled advanced target" {
+					wantVersion = "1.0.0"
+				}
+				if launch.Status.LatestVersion != wantVersion && path != "enrolled" {
 					t.Fatal("prepared selection lost")
 				}
 				if err := launch.Release(); err != nil {
