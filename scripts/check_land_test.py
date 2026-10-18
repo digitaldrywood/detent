@@ -112,7 +112,7 @@ class LandingGateTest(unittest.TestCase):
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
         cases = [("check-land", budget, failure, "") for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "lint"), (4, "vet"), (4, "build"), (4, "unit-short"), (4, "docs"), (4, "sqlc"), (4, "invariant-manifest"), (4, "invariants"), (4, "migrations"))]
         cases += [(target, 4, "", "") for target in ("test", "test-fast", "test-race", "test-cover")]
-        cases += [("test-cover", 4, failure, shard) for failure, shard in (("", "2/3"), ("", "3/3"), ("hub-b", "2/3"))]
+        cases += [("test-cover", 4, failure, shard) for failure, shard in (("", "2/3"), ("", "3/3"), ("hub-2", "2/3"))]
         shared_ui = "web/conversation/src/app/App.tsx"
         cases += [("check-land", 4, "", path) for path in (shared_ui, "web/conversation/src/app/main.tsx", "web/conversation/src/app/router.tsx", "web/conversation/src/components/ui/button.tsx", "tests/visual/cloud-reports.spec.js")]
         cases += [("check-land", 4, failure, shared_ui) for failure in ("app", "lint", "unit-short")]
@@ -155,7 +155,7 @@ class LandingGateTest(unittest.TestCase):
                     if changed == "3/3":
                         self.assertEqual(hub, [])
                     else:
-                        selectors = [("-run", "^Test[A-GI-O]"), ("-run", "^Test[HW]"), ("-skip", "^Test[A-GI-O]|^Test[HW]")]
+                        selectors = [("-run", "^Test[BDEFILNQTUV]"), ("-run", "^Test[HMP]"), ("-run", "^Test[ACGS]"), ("-skip", "^Test[ABCDEFGHILMNPQSTUV]")]
                         if failure:
                             selectors = selectors[:2]
                         self.assertEqual(len(hub), len(selectors), hub)
