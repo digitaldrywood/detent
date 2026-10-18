@@ -329,9 +329,20 @@ func TestResolveRuntimeSettingsGitHubTokenPrecedence(t *testing.T) {
 		deferProjects bool
 	}{
 		{
-			name:          "runner startup defers gh authentication to projects",
+			name:          "runner startup resolves configured gh authentication",
 			cfg:           githubRuntimeConfig("gh"),
 			workflow:      workflowconfig.Config{Tracker: workflowconfig.Tracker{Kind: "github"}},
+			ghToken:       "gh-token",
+			wantToken:     "gh-token",
+			wantSource:    "github_token",
+			wantVia:       "gh",
+			wantGhCalls:   1,
+			deferProjects: true,
+		},
+		{
+			name:          "runner startup does not require project authentication",
+			cfg:           githubRuntimeConfig(""),
+			workflow:      githubWorkflow("$UNAVAILABLE_PROJECT_TOKEN"),
 			deferProjects: true,
 		},
 		{
@@ -385,6 +396,7 @@ func TestResolveRuntimeSettingsGitHubTokenPrecedence(t *testing.T) {
 			got, err := resolveRuntimeSettings(context.Background(), runtimeInput{
 				Config:                 &tt.cfg,
 				DeferProjectValidation: tt.deferProjects,
+				Flags:                  runtimeFlags{Port: runtimeIntFlag{Set: true}},
 			}, runtimeDeps{
 				lookupEnv: mapLookup(tt.env),
 				ghAuthToken: func(context.Context) (string, error) {
@@ -392,6 +404,9 @@ func TestResolveRuntimeSettingsGitHubTokenPrecedence(t *testing.T) {
 					return tt.ghToken, nil
 				},
 				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+					if tt.deferProjects {
+						t.Fatal("deferred startup loaded project workflow for authentication")
+					}
 					return workflowconfig.Workflow{Config: tt.workflow}, nil
 				},
 			})
