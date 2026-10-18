@@ -82,6 +82,11 @@ func readSourceRecoveryView(ctx context.Context, q nativeQueryer, scope nativeSc
 		view.Reason = reason
 	} else if !view.Quiesced {
 		view.Reason = "Finish or cancel work on the source runner and release its lease before transfer; expiry or an unreachable owner does not prove quiescence"
+		if claimed {
+			view.Reason = "Finish or cancel the current execution and release its claim before transfer; expiry alone does not prove the writer stopped"
+		} else if released.Valid {
+			view.Reason = "The source attempt has no acknowledged terminal outcome; finish or cancel work on the source runner before transfer; lease release alone does not prove quiescence"
+		}
 	} else {
 		view.Reason = "Verified retained source can be restored before continuing; workflow, human and delivery holds remain in force"
 	}
@@ -146,14 +151,14 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeS
 			return nil, nativeConflict(view.Revision)
 		}
 		if request.VersionID == "" || request.VersionID != view.VersionID {
-			return nil, nativeInvalid("Re-read the current source version before transfer")
+			return nil, sourceRecoveryRefusal("Re-read the current source version before transfer")
 		}
 		if !view.Quiesced {
-			return nil, nativeInvalid(view.Reason)
+			return nil, sourceRecoveryRefusal(view.Reason)
 		}
 		if request.DestinationRunnerID != "" {
 			if !view.Available {
-				return nil, nativeInvalid(view.Reason)
+				return nil, sourceRecoveryRefusal(view.Reason)
 			}
 			approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
 			if err != nil {
@@ -171,10 +176,10 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeS
 				}
 			}
 			if destination == nil || !placementRunnerCompatible(*destination, scope.project, approval.Policy.Requirements, now, false) {
-				return nil, nativeInvalid("Destination runner must be online, eligible and have available capacity")
+				return nil, sourceRecoveryRefusal("Destination runner must be online, eligible and have available capacity")
 			}
 			if err := validateReadRunnerIsolation(ctx, tx, scope, destination.Runner); err != nil {
-				return nil, nativeInvalid("Destination runner must support its configured isolation tier")
+				return nil, sourceRecoveryRefusal("Destination runner must support its configured isolation tier")
 			}
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE issues SET recovery_runner_id=?,recovery_version_id=?,revision=revision+1,native_updated_at=?,updated_at=? WHERE id=?`, request.DestinationRunnerID, view.VersionID, formatHubTime(now), formatHubTime(now), id)
@@ -198,4 +203,8 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeS
 		}
 		return view, nil
 	})
+}
+
+func sourceRecoveryRefusal(message string) error {
+	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
 }
