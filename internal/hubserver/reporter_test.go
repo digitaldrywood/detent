@@ -211,9 +211,13 @@ func TestReporterNativeCommands(t *testing.T) {
 				t.Fatalf("edited comment=%#v", comment)
 			}
 			for _, actor := range []hostedSecurityUser{member, owner} {
+				want := http.StatusForbidden
+				if test.transport == "key" && actor.identity.Subject == owner.identity.Subject {
+					want = http.StatusNotFound
+				}
 				for _, deleted := range []bool{false, true} {
 					r = request(actor, http.MethodPatch, commentPath+"/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("deny-%s-%t", actor.identity.Subject, deleted)}, ExpectedRevision: comment.Revision, Body: "Replacement", Deleted: deleted})
-					requireNativeStatus(t, r, http.StatusForbidden)
+					requireNativeStatus(t, r, want)
 				}
 			}
 			parent := comment
