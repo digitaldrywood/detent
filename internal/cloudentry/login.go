@@ -193,7 +193,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 		if callback.Reason != "" {
 			return s.loginDenied(c, http.StatusForbidden, "This account cannot open the selected organization", callback)
 		}
-	} else if identity.Hosted.OrganizationID != "" && transaction.InvitationToken == "" && !s.platformIdentity(ctx, identity.Email, *identity.Hosted) {
+	} else if identity.Hosted.OrganizationID != "" && transaction.InvitationToken == "" {
 		organization, err = s.registry.ByProvider(ctx, identity.Hosted.OrganizationID)
 		if err != nil && !errors.Is(err, ErrOrganizationNotFound) {
 			callback.Reason, callback.Err = "organization_unavailable", err

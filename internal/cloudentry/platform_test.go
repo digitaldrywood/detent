@@ -311,14 +311,15 @@ func TestPlatformStaffLanding(t *testing.T) {
 		chooserLocation                   string
 		platformRole                      string
 		canCreate                         bool
+		loginLocation                     string
 	}{
-		{"member with organizations", "/auth/oidc/start", "user_support:", "/organizations", "/organizations", http.StatusOK, "", "support", false},
-		{"member without organizations", "/auth/oidc/start", "user_staff:", "/platform", "/platform", http.StatusOK, "", "viewer", false},
-		{"customer default", "/auth/oidc/start", "user_alice:", "/organizations", "/organizations", http.StatusOK, "", "", false},
-		{"member organization session", "/auth/oidc/start", "user_support:porg_alpha", "/organizations", "/organizations", http.StatusOK, "", "support", false},
-		{"member without organizations may create", "/auth/oidc/start", "user_admin:", "/platform", "/platform", http.StatusOK, "", "admin", true},
-		{"member with one organization may create", "/auth/oidc/start", "user_support:", "/organizations", "/organizations", http.StatusOK, "", "support", true},
-		{"non-member may create", "/auth/oidc/start", "user_carol:", "/organizations", "/organizations", http.StatusOK, "", "", true},
+		{"member with organizations", "/auth/oidc/start", "user_support:", "/organizations", "/organizations", http.StatusOK, "", "support", false, ""},
+		{"member without organizations", "/auth/oidc/start", "user_staff:", "/platform", "/platform", http.StatusOK, "", "viewer", false, ""},
+		{"customer default", "/auth/oidc/start", "user_alice:", "/organizations", "/organizations", http.StatusOK, "", "", false, ""},
+		{"member organization session", "/auth/oidc/start", "user_support:porg_alpha", "/organizations", "/organizations", http.StatusOK, "", "support", false, "/organizations/org_alpha/organization"},
+		{"member without organizations may create", "/auth/oidc/start", "user_admin:", "/platform", "/platform", http.StatusOK, "", "admin", true, ""},
+		{"member with one organization may create", "/auth/oidc/start", "user_support:", "/organizations", "/organizations", http.StatusOK, "", "support", true, ""},
+		{"non-member may create", "/auth/oidc/start", "user_carol:", "/organizations", "/organizations", http.StatusOK, "", "", true, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f.service.config.Allocation = nil
@@ -334,9 +335,13 @@ func TestPlatformStaffLanding(t *testing.T) {
 			if err != nil || account.Destination != f.service.config.PublicURL+test.landing || account.CanCreate != test.canCreate {
 				t.Errorf("administration context = %+v (%v)", account, err)
 			}
+			loginLocation := test.landing
+			if test.loginLocation != "" {
+				loginLocation = test.loginLocation
+			}
 			b := newBrowser(t, f.service.Handler())
-			if location := b.login(test.target, test.code); location != test.landing {
-				t.Fatalf("post-login location = %q, want %q", location, test.landing)
+			if location := b.login(test.target, test.code); location != loginLocation {
+				t.Fatalf("post-login location = %q, want %q", location, loginLocation)
 			}
 			if home, _ := b.get("/"); home.StatusCode != http.StatusSeeOther || home.Header.Get("Location") != test.home {
 				t.Fatalf("home = %d %q", home.StatusCode, home.Header.Get("Location"))
