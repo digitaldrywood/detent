@@ -24,6 +24,52 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
+func TestLocalTransportReapedCloseTimeout(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(t.Context(), transportTestDeadlockTimeout)
+	defer cancel()
+	cmd := helperCommand(ctx, "exit-one")
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("helper error = %v, want exit code 1", err)
+	}
+	waitFailure := errors.New("wait failed")
+	for _, test := range []struct {
+		name    string
+		waitErr error
+		want    error
+	}{
+		{name: "nonzero exit after successful termination", waitErr: exitErr},
+		{name: "unexpected wait failure", waitErr: waitFailure, want: waitFailure},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transport := &localTransport{
+				cmd:                  cmd,
+				waitErr:              test.waitErr,
+				exitedAt:             time.Now().UTC(),
+				exitStatus:           cmd.ProcessState.String(),
+				terminationRequested: true,
+				cleanupComplete:      true,
+			}
+			err := transport.closeAfterTermination(context.DeadlineExceeded, nil, nil)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("close error = %v, want deadline evidence", err)
+			}
+			var reaped *reapedTransportTimeoutError
+			if test.want != nil {
+				if !errors.Is(err, test.want) || errors.As(err, &reaped) {
+					t.Fatalf("close error = %v, want unrecovered %v", err, test.want)
+				}
+				return
+			}
+			if !errors.As(err, &reaped) || !reaped.Process.ExitObserved || !reaped.Process.CleanupComplete || !reaped.Process.TerminationRequested || reaped.Process.ExitStatus != "exit status 1" {
+				t.Fatalf("close error = %#v, want verified cleanup with exit status 1", err)
+			}
+		})
+	}
+}
+
 func TestModelCatalogCloseTimeoutAfterReaping(t *testing.T) {
 	if testing.Short() {
 		t.Skip("process lifecycle integration")
@@ -1131,6 +1177,8 @@ func TestLocalTransportHelperProcess(t *testing.T) {
 		time.Sleep(time.Hour)
 	case "exit":
 		return
+	case "exit-one":
+		os.Exit(1)
 	case "exit-stderr":
 		fmt.Fprint(os.Stderr, "broken launch environment")
 		os.Exit(23)

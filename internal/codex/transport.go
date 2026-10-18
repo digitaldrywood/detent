@@ -354,14 +354,7 @@ func (t *localTransport) Close(ctx context.Context) error {
 
 		select {
 		case <-t.done:
-			waitErr := t.waitError()
-			process := t.StartupProcessEvidence()
-			var exitErr *exec.ExitError
-			forcedExit := errors.As(waitErr, &exitErr) && exitErr.ExitCode() == -1
-			if ctx.Err() == context.DeadlineExceeded && killErr == nil && closeErr == nil && t.cleanupErr == nil && process.ExitObserved && process.CleanupComplete && (waitErr == nil || forcedExit) {
-				return &reapedTransportTimeoutError{Process: process}
-			}
-			return errors.Join(ctx.Err(), killErr, closeErr, waitErr)
+			return t.closeAfterTermination(ctx.Err(), killErr, closeErr)
 		case <-time.After(time.Second):
 		}
 
@@ -370,6 +363,17 @@ func (t *localTransport) Close(ctx context.Context) error {
 		}
 		return errors.Join(ctx.Err(), closeErr)
 	}
+}
+
+func (t *localTransport) closeAfterTermination(cause, killErr, closeErr error) error {
+	waitErr := t.waitError()
+	process := t.StartupProcessEvidence()
+	var exitErr *exec.ExitError
+	processExited := waitErr == nil || errors.As(waitErr, &exitErr)
+	if errors.Is(cause, context.DeadlineExceeded) && killErr == nil && closeErr == nil && t.cleanupErr == nil && process.TerminationRequested && process.ExitObserved && process.CleanupComplete && processExited {
+		return &reapedTransportTimeoutError{Process: process}
+	}
+	return errors.Join(cause, killErr, closeErr, waitErr)
 }
 
 func (t *localTransport) ProcessIdentity() string {
