@@ -1401,7 +1401,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 				publish := true
 				if !test.legacy {
-					appended, history, err := recordNativeAttempt(t.Context(), tx, scope, runItem, event, now, false)
+					appended, history, err := recordNativeAttempt(t.Context(), tx, scope, runItem, &event, now, false)
 					if err != nil {
 						t.Fatal(err)
 					}
