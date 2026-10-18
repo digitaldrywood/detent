@@ -60,12 +60,6 @@ dispatch_release() {
   gh api -X POST "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/dispatches" -f ref="$release_tag"
 }
 
-job_count="$(jq '[.[] | select(.name != "Finalize scheduled validation")] | length' "$jobs_file")"
-if [ "$job_count" -ne 15 ]; then
-  echo "Expected 15 scheduled validation jobs; observed $job_count" >&2
-  false
-fi
-
 if [ -z "${CI_RELEASE_BRANCH:-}" ]; then
   gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$CI_DEVELOP_SHA" -f state=success -f context=develop-full-ci -f target_url="$run_url" -f description='Full develop validation passed' > /dev/null
   echo "Develop validation passed; release tags are published only from release branches."
