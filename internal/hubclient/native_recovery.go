@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -96,4 +97,49 @@ func (c *NativeClient) RecoveryEvidence(ctx context.Context, id tracker.NativeWo
 		return tracker.NativeRecoveryPage{}, errors.New("read recovery evidence: incomplete or mismatched record")
 	}
 	return *page, nil
+}
+
+func (c *NativeClient) retainedChangeReviews(ctx context.Context, item tracker.NativeWorkItemID, version string) ([]tracker.ChangeReview, error) {
+	var reviews []tracker.ChangeReview
+	var record []byte
+	var identity tracker.NativeRecoveryPage
+	seen := map[string]bool{}
+	for cursor := ""; ; {
+		page, err := c.RecoveryEvidence(ctx, item, cursor)
+		if err != nil {
+			return nil, err
+		}
+		if page.Section != "reviews" {
+			if len(record) != 0 || len(reviews) == 0 || !slices.Contains([]string{"checks", "change_discussion", "discussion", "attempts", "versions", "change", "issue_body", "complete"}, page.Section) {
+				return nil, fmt.Errorf("%w: retained Change reviews are incomplete", ErrUnavailable)
+			}
+			return reviews, nil
+		}
+		if page.Offset == 0 {
+			identity = page
+		}
+		if page.Offset != int64(len(record)) || len(page.Data) == 0 || len(page.Data) > 64<<10 || page.RecordID == "" || page.VersionID == "" || len(page.SHA256) != 64 || page.RecordID != identity.RecordID || page.VersionID != identity.VersionID || page.TotalBytes != identity.TotalBytes || page.SHA256 != identity.SHA256 {
+			return nil, fmt.Errorf("%w: retained Change review fragment is invalid", ErrUnavailable)
+		}
+		record = append(record, page.Data...)
+		if int64(len(record)) == page.TotalBytes {
+			digest := sha256.Sum256(record)
+			var review tracker.ChangeReview
+			if hex.EncodeToString(digest[:]) != page.SHA256 || json.Unmarshal(record, &review) != nil || review.ID == "" || review.VersionID != page.VersionID {
+				return nil, fmt.Errorf("%w: retained Change review digest or identity is invalid", ErrUnavailable)
+			}
+			if review.VersionID == version {
+				if slices.ContainsFunc(reviews, func(previous tracker.ChangeReview) bool { return previous.ID == review.ID }) {
+					return nil, fmt.Errorf("%w: retained Change review identity repeated", ErrUnavailable)
+				}
+				reviews = append(reviews, review)
+			}
+			record = nil
+		}
+		if page.NextCursor == "" || seen[page.NextCursor] {
+			return nil, fmt.Errorf("%w: retained Change review cursor did not advance", ErrUnavailable)
+		}
+		seen[page.NextCursor] = true
+		cursor = page.NextCursor
+	}
 }

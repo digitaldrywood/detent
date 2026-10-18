@@ -77,6 +77,7 @@ func (c *NativeClient) runtimeChange(ctx context.Context, item tracker.NativeWor
 		return tracker.ChangeDetail{}, err
 	}
 	detail := *first.Detail
+	retainedReviews := false
 	for _, section := range []string{"versions", "reviews", "checks", "discussion"} {
 		page, ok := first.Read.Sections[section]
 		seen := map[string]bool{}
@@ -93,6 +94,20 @@ func (c *NativeClient) runtimeChange(ctx context.Context, item tracker.NativeWor
 			seen[page.NextCursor] = true
 			next, err := read(url.Values{"view": {"bounded"}, "section": {section}, "cursor": {page.NextCursor}, "version_id": {first.Read.VersionID}})
 			if err != nil {
+				var refusal *APIError
+				if section == "reviews" && errors.As(err, &refusal) && refusal.Status == http.StatusUnprocessableEntity && refusal.Code == "change_record_too_large" {
+					reviews, err := c.retainedChangeReviews(ctx, item, first.Read.VersionID)
+					if err != nil {
+						return tracker.ChangeDetail{}, err
+					}
+					for _, previous := range detail.Reviews {
+						if !slices.ContainsFunc(reviews, func(review tracker.ChangeReview) bool { return review.ID == previous.ID }) {
+							return tracker.ChangeDetail{}, fmt.Errorf("%w: retained Change reviews changed during traversal", ErrUnavailable)
+						}
+					}
+					detail.Reviews, retainedReviews = reviews, true
+					break
+				}
 				return tracker.ChangeDetail{}, err
 			}
 			if next.Detail.Change.CurrentVersion != detail.Change.CurrentVersion {
@@ -110,6 +125,15 @@ func (c *NativeClient) runtimeChange(ctx context.Context, item tracker.NativeWor
 				detail.Discussion = append(detail.Discussion, next.Detail.Discussion...)
 			}
 			page, ok = next.Read.Sections[section]
+		}
+	}
+	if retainedReviews {
+		current, err := read(url.Values{"view": {"bounded"}, "section": {"versions"}, "version_id": {first.Read.VersionID}, "limit": {"1"}})
+		if err != nil {
+			return tracker.ChangeDetail{}, err
+		}
+		if current.Detail.Change.CurrentVersion != detail.Change.CurrentVersion {
+			return tracker.ChangeDetail{}, fmt.Errorf("%w: bounded Change head changed during traversal", ErrUnavailable)
 		}
 	}
 	slices.SortFunc(detail.Versions, func(a, b tracker.ChangeVersion) int { return cmp.Compare(a.Number, b.Number) })
