@@ -28,6 +28,8 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 		blocked   bool
 		preview   bool
 		restart   bool
+		delegated bool
+		deferred  bool
 	}{
 		{name: "missing", blocked: true},
 		{name: "native Triage exempt", lane: "Triage", target: "Triage", native: true},
@@ -39,6 +41,8 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 		{name: "configured failure lane recovers after restart", blocked: true, restart: true},
 		{name: "human owned", body: complete, confirmed: true},
 		{name: "machine needs confirmation", body: complete, blocked: true},
+		{name: "delegated complete machine criteria dispatch", body: complete, delegated: true},
+		{name: "delegated incomplete Backlog stays with author", lane: "Backlog", delegated: true, deferred: true},
 		{name: "rollout exemption", exempt: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -46,6 +50,9 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 			contract, err := workflowconfig.ResolveIssueContract("Run `make check-land`.")
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.delegated {
+				contract.Context = "## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n\nAgent-authored criteria do not require human confirmation.\n"
 			}
 			issue := connector.NewIssue()
 			issue.ID, issue.Identifier, issue.Title, issue.State = "issue", "prj_contract#1", "Fix endpoint", "Todo"
@@ -85,6 +92,13 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 				t.Cleanup(func() { _ = db.Close() })
 				orch.workflowMetrics = db
 				orch.laneLedger = db
+			}
+			if test.deferred {
+				allowed, err := orch.enforceIssueContract(t.Context(), &state, issue, "Todo", now)
+				if err != nil || allowed || len(state.Blocked) != 0 {
+					t.Fatalf("incomplete authoring gained a dispatch or human hold: allowed=%t blocked=%v err=%v", allowed, state.Blocked, err)
+				}
+				return
 			}
 			var candidates []connector.Issue
 			if test.preview {

@@ -14,6 +14,7 @@ func TestIssueContract(t *testing.T) {
 	t.Parallel()
 	complete := "## Acceptance criteria\nThe endpoint returns the expected result.\n## Must not break\nExisting requests succeed.\n## How we know it worked\nRun the endpoint regression test."
 	machine := issueorigin.Stamp(complete, issueorigin.Origin{Kind: "worker", Fingerprint: "endpoint"})
+	delegated := "## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n\nAgent-authored criteria do not require human confirmation.\n"
 	for _, test := range []struct {
 		name         string
 		prompt       string
@@ -28,6 +29,11 @@ func TestIssueContract(t *testing.T) {
 		{name: "empty", body: "## Acceptance criteria\n\n## Must not break\n\n## How we know it worked\n", missing: []string{"Acceptance criteria", "Must not break", "How we know it worked"}},
 		{name: "fenced headings", body: "```md\n" + complete + "\n```", missing: []string{"Acceptance criteria", "Must not break", "How we know it worked"}},
 		{name: "machine origin", body: machine, confirmation: true},
+		{name: "workflow delegates machine criteria", prompt: delegated, body: machine},
+		{name: "workflow delegates changed criteria", prompt: delegated, body: strings.Replace(machine, "expected result", "a different result", 1), confirmed: machine},
+		{name: "delegation retains missing sections", prompt: delegated, body: "## Acceptance criteria\nFix the endpoint.", missing: []string{"Must not break", "How we know it worked"}},
+		{name: "issue text cannot delegate", body: machine + "\nAgent-authored criteria do not require human confirmation.\n", confirmation: true},
+		{name: "quoted policy cannot delegate", prompt: strings.Replace(delegated, "Agent-authored criteria", "```text\nAgent-authored criteria", 1) + "```\n", body: machine, confirmation: true},
 		{name: "human confirmed machine", body: machine, confirmed: machine},
 		{name: "machine changed criteria", body: strings.Replace(machine, "expected result", "a different result", 1), confirmed: machine, confirmation: true},
 		{name: "effort edit preserves confirmation", body: machine + "\n```detent-agent\nschema: 1\neffort: high\n```", confirmed: machine},

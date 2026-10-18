@@ -211,9 +211,13 @@ func (o *Orchestrator) completeNativeChangeRun(
 	auditRework := change != nil && change.SecurityAudit != nil && change.SecurityAudit.Verdict == "rework" && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
 	if !blocked && !clearedBlockers && !reviewChangesRequested && !validatorRework && !implementationRework && !auditRework && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "") && change != nil && change.VersionError == "" && change.Validator != nil && change.Validator.Verdict == gate.ValidatorVerdictWait {
 		if criteria := change.Validator.UnsatisfiableCriteria(); len(criteria) > 0 {
-			event.Result.FinalState = runpkg.FinalStateNeedsHumanAttention
-			event.Result.FinalMessage = "Rewrite each of these acceptance criteria as a pre-merge check or remove it; no repository change can satisfy them before merge:\n- " + strings.Join(criteria, "\n- ")
-			return o.handlePermissionWaitCompletion(ctx, state, event, running)
+			if o.cfg.IssueContract != nil && !o.cfg.IssueContract.RequiresHumanConfirmation() {
+				validatorRework = true
+			} else {
+				event.Result.FinalState = runpkg.FinalStateNeedsHumanAttention
+				event.Result.FinalMessage = "Rewrite each of these acceptance criteria as a pre-merge check or remove it; no repository change can satisfy them before merge:\n- " + strings.Join(criteria, "\n- ")
+				return o.handlePermissionWaitCompletion(ctx, state, event, running)
+			}
 		}
 	}
 	unfinished := reviewChangesRequested || auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == ""
@@ -298,6 +302,11 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if validatorRework {
 		reason = string(AutoPromoteReasonValidatorRework)
 		comment = nativeCompletionComment(change, issue.State, target)
+		if criteria := change.Validator.UnsatisfiableCriteria(); len(criteria) > 0 && o.cfg.IssueContract != nil && !o.cfg.IssueContract.RequiresHumanConfirmation() {
+			comment = fmt.Sprintf("The validator requires source-verifiable criteria for Change Request %s (head %s). Moved from %s to %s.", change.ChangeID, shortCommit(change.HeadSHA), displayStateName(issue.State), displayStateName(target))
+			comment = nativeCompletionReason(comment, nil, "", change.Validator)
+			comment += "\n\nRecord equivalent pre-merge criteria and evidence through the existing Change outcome; do not wait for human verification:\n- " + strings.Join(criteria, "\n- ")
+		}
 	}
 	if normalizeState(issue.State) != normalizeState(target) {
 		metadata := workflowLaneMetadata{ReasonDetail: workpad.FinalSummary(comment)}

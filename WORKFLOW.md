@@ -121,6 +121,8 @@ reservation and capacity-cleanup changes identify the relevant seed in
 requirement, not a requirement to add a duplicate test or run a timed fuzz job.
 Follow `CLAUDE.md` and `AGENTS.md` for meaningful regression coverage.
 
+Agent-authored criteria do not require human confirmation.
+
 For this Detent project, agents may author and correct the required sections
 for a bounded defect repair within existing intended behavior. Machine authorship
 alone never requires human confirmation, Human Review or a Blocked hold. Preserve
@@ -133,8 +135,10 @@ Correct missing sections from the recorded problem and requested scope through
 the existing issue owner before admission. Replace external, deployed or human
 verification requirements with equivalent pre-merge fixtures and checks, or remove
 those verification steps when the source criteria already establish the requested
-behavior. Workers without issue-edit authority report the exact correction through
-the existing completion owner; this grants no additional tracker writes. Do not
+behavior. Workers without issue-edit authority record the equivalent pre-merge criteria
+and evidence in their existing Change outcome; this grants no additional tracker
+writes. Missing required issue sections stay in Backlog until the authorized issue
+owner supplies them. Do not
 invent product requirements, weaken expected behavior or claim unexecuted evidence.
 
 A genuine unresolved product decision, missing authorization or physical action
