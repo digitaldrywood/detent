@@ -18,7 +18,7 @@ import (
 // PrepareSSHSource uses the same private GitHub config as local agent turns.
 // The worker never writes a token to its persistent checkout or Git config.
 func PrepareSSHSource(ctx context.Context, cfg config.Config, workdir, repository, scratch string) error {
-	_, graphQL, _, err := workerGitHubEndpoints(cfg.Tracker.Endpoint)
+	_, graphQL, _, err := workerGitHubEndpoints(cfg)
 	if err != nil {
 		return err
 	}
