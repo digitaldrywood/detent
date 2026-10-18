@@ -1,0 +1,38 @@
+{
+  "id": "msg_6a20f1ca",
+  "conversation_id": "conv_9f2c41a0b7d84e6fa1c35d92e4780b16",
+  "seq": 13,
+  "role": "assistant",
+  "kind": "status",
+  "text": "Two issues are waiting on you.",
+  "data": {
+    "attention": [
+      {
+        "work_item_id": "wi_3363",
+        "title": "Checkout lock renewal waits on a healthy handoff",
+        "state": "waiting_input",
+        "reason": "The runner asked which renewal window to use.",
+        "url": "/chat/issues/wi_3363"
+      },
+      {
+        "work_item_id": "wi_3401",
+        "title": "Board lane shows scheduler dispatch waits",
+        "state": "failed",
+        "reason": "The last attempt failed while applying the migration.",
+        "url": "/chat/issues/wi_3401"
+      }
+    ]
+  },
+  "delivery": "completed",
+  "attempt_id": null,
+  "turn_id": null,
+  "provider_item_id": null,
+  "actor": {
+    "kind": "coordinator",
+    "principal_id": "tok_hub"
+  },
+  "command_key": null,
+  "references": [],
+  "created_at": "2026-09-09T10:05:00Z",
+  "updated_at": "2026-09-09T10:05:00Z"
+}

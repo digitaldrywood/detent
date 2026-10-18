@@ -1,0 +1,60 @@
+name: Portability Stress
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portability-stress:
+    name: Portability Stress (${{ matrix.os }}, ${{ matrix.suite.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.suite.minutes }}
+    env:
+      GOMAXPROCS: '4'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+        suite:
+          - {name: stress-cli, minutes: 150}
+          - {name: stress-runner, minutes: 60}
+          - {name: stress-checklock, minutes: 60}
+          - {name: hub-a, minutes: 60}
+          - {name: hub-b, minutes: 60}
+          - {name: hub-c, minutes: 60}
+          - {name: orchestrator, minutes: 60}
+          - {name: workspace, minutes: 30}
+          - {name: rest, minutes: 90}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/prepare-conversation
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.9'
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Stress suite
+        shell: bash
+        env:
+          SUITE: ${{ matrix.suite.name }}
+          TMPDIR: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: |
+          bash scripts/portability-stress.sh "$SUITE"
+
+      - name: Upload stress evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: portability-stress-evidence-${{ runner.os }}-${{ matrix.suite.name }}
+          path: ${{ runner.temp }}/portability-stress-evidence
+          if-no-files-found: error
+          retention-days: 14
