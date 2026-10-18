@@ -167,7 +167,7 @@ class LandingGateTest(unittest.TestCase):
                         unions = [event for event in merges if "-union" in event["args"]]
                         self.assertEqual(len(unions), int(not failure), merges)
                         if not failure:
-                            self.assertEqual(unions[0]["args"][-3:], [f"tmp/hub-{part}-cover.raw.out" for part in "abc"])
+                            self.assertEqual(unions[0]["args"][-4:], [f"tmp/hub-{part}-cover.raw.out" for part in "1234"])
                         else:
                             self.assertEqual(merges, [])
                     for event in tests:
