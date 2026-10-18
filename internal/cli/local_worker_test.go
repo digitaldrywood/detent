@@ -226,7 +226,7 @@ func (w localWorkerPolicyWatcher) Watch(context.Context) (<-chan configwatcher.U
 	return w.updates, nil
 }
 
-func localWorkerHub(t *testing.T) (*hubclient.Scheduler, *hubclient.NativeClient, *hubclient.NativeConnector, config.Workflow, func(string) connector.Issue, func()) {
+func localWorkerHub(t *testing.T, observe ...func(*http.Request)) (*hubclient.Scheduler, *hubclient.NativeClient, *hubclient.NativeConnector, config.Workflow, func(string) connector.Issue, func()) {
 	t.Helper()
 	const adminToken = "fixture-admin"
 	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(adminToken)})
@@ -239,6 +239,9 @@ func localWorkerHub(t *testing.T) (*hubclient.Scheduler, *hubclient.NativeClient
 		}
 	})
 	httpClient := &http.Client{Transport: workerHubTransport(func(request *http.Request) (*http.Response, error) {
+		for _, observer := range observe {
+			observer(request)
+		}
 		recorder := httptest.NewRecorder()
 		service.Handler().ServeHTTP(recorder, request)
 		return recorder.Result(), nil

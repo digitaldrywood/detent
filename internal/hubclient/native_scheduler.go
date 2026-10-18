@@ -350,6 +350,34 @@ func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []run
 	return report, problems
 }
 
+func (s *Scheduler) reserveNativeClaim() (func(), bool) {
+	if s.client != nil && s.client.runner != nil {
+		s.client.runner.routingMu.Lock()
+		draining := s.client.runner.routing != nil && s.client.runner.routing.Routing.State == "draining"
+		s.client.runner.routingMu.Unlock()
+		if draining {
+			return nil, false
+		}
+	}
+	s.mu.Lock()
+	admission := s.claimAdmission
+	s.mu.Unlock()
+	if admission != nil {
+		return admission()
+	}
+	return func() {}, true
+}
+
+func (s *Scheduler) claimNative(ctx context.Context, source *NativeConnector, request tracker.NativeClaim) (tracker.NativeLease, error, bool) {
+	release, allowed := s.reserveNativeClaim()
+	if !allowed {
+		return tracker.NativeLease{}, nil, false
+	}
+	defer release()
+	lease, err := source.client.Claim(ctx, request)
+	return lease, err, true
+}
+
 func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector) ([]connector.Issue, error) {
 	if err := s.PrepareProject(ctx, request.ProjectID); err != nil {
 		return nil, errors.Join(orchestrator.ErrSchedulingUnavailable, err)
@@ -367,14 +395,12 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 			return nil, schedulingError(err)
 		}
 	}
-	if s.client.runner != nil {
-		s.client.runner.routingMu.Lock()
-		draining := s.client.runner.routing != nil && s.client.runner.routing.Routing.State == "draining"
-		s.client.runner.routingMu.Unlock()
-		if draining {
-			return nil, nil
-		}
+	releaseAdmission, allowed := s.reserveNativeClaim()
+	if !allowed {
+		return nil, nil
 	}
+	releaseAdmission()
+
 	session, err := s.sessionID()
 	if err != nil {
 		return nil, err
@@ -438,8 +464,9 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 				}
 			}
 			var lease tracker.NativeLease
-			lease, err = source.client.Claim(ctx, claimRequest)
-			if err != nil {
+			var admitted bool
+			lease, err, admitted = s.claimNative(ctx, source, claimRequest)
+			if err != nil || !admitted {
 				break
 			}
 			leases = append(leases, lease)
