@@ -45,7 +45,8 @@ describe("Reports read", () => {
       [{ from: "2026-10-01" }, {}],
       [{ project: "all", labels: ["ui", "cloud", "ui"], priorities: ["high", "Nope"], filed_by: "p_1", runners: "r_1", models: "m", stages: "code" }, { project: "all", labels: ["cloud", "ui"], priorities: ["High"], filed_by: ["p_1"], runners: ["r_1"], models: ["m"], stages: ["code"] }],
       [{ labels: "a,b" }, { labels: ["a,b"] }],
-      [{ project: "prj_1", types: "bug" }, { types: ["bug"] }],
+      [{ project: "prj_1", types: "bug" }, { project: "prj_1", types: ["bug"] }],
+      [{ project: "all", projects: ["prj_2", "prj_1", "prj_2"] }, { project: "all", projects: ["prj_1", "prj_2"] }],
     ] as const) {
       expect(reportsSearchParams(parseReportsSearch(search))).toEqual(params);
     }

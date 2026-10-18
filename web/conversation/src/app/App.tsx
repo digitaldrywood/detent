@@ -267,6 +267,10 @@ function ShellBody(): React.ReactElement {
       setProjectId(id);
       if (activePath === "/reports" || activePath.startsWith("/reports/")) {
         writeLastProject(id);
+        void navigate({
+          to: activePath,
+          search: (previous: Record<string, unknown>) => ({ ...previous, project: id === "" ? "all" : id, projects: undefined }),
+        } as never);
       } else if (activePath.startsWith("/work")) {
         void navigate({ to: id === "" ? "/work" : `/work/p/${id}` });
       } else {

@@ -58,7 +58,9 @@ export function ReportFilterChip({
   options,
   selected,
   onChange,
+  triggerLabel,
 }: {
+  readonly triggerLabel?: string;
   readonly label: string;
   readonly options: readonly FilterOption[];
   readonly selected: readonly string[];
@@ -78,9 +80,9 @@ export function ReportFilterChip({
         isItemEqualToValue={(a, b) => a.value === b.value}
       >
         <ComboboxTrigger
-          render={<Toggle size="compact" variant="pill-outline" pressed={selected.length > 0} className="max-w-56" aria-label={`${summary}, filter`} />}
+          render={triggerLabel ? <Button size="compact" variant="ghost-muted" aria-label={triggerLabel} /> : <Toggle size="compact" variant="pill-outline" pressed={selected.length > 0} className="max-w-56" aria-label={`${summary}, filter`} />}
         >
-          <span className="truncate">{summary}</span>
+          <span className="truncate">{triggerLabel ?? summary}</span>
         </ComboboxTrigger>
         <ComboboxPopup anchor={anchor} align="start" className="w-64">
           <ComboboxSearchInput aria-label={`Search ${label.toLowerCase()} values`} placeholder={`Search ${label.toLowerCase()}…`} />
