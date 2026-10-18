@@ -27,6 +27,10 @@ import (
 
 func TestSSHErrorRoundTrip(t *testing.T) {
 	t.Parallel()
+	acceptanceFailure := func(err error) bool {
+		failure := nativeTerminalFailure(err, time.Now().UTC(), false)
+		return failure != nil && failure.Rejection != nil && failure.Rejection.Category == "acceptance_validation" && failure.Rejection.Field == "validator.session_id" && failure.Stage == "acceptance_publication" && failure.ErrorClass == "acceptance_publication" && failure.Attribution == "instance" && failure.Error == "publication rejected: category=acceptance_validation field=validator.session_id [private error text omitted]"
+	}
 	tests := []struct {
 		name     string
 		err      error
@@ -37,6 +41,8 @@ func TestSSHErrorRoundTrip(t *testing.T) {
 			return err.Error() == "setup: "+ErrWorkspacePreparation.Error()
 		}},
 		{"not found", store.ErrNotFound, store.ErrNotFound, nil},
+		{"acceptance rejection", acceptanceRejectionError{}, nil, acceptanceFailure},
+		{"wrapped acceptance rejection", fmt.Errorf("%w: acceptance publication: %w", ErrValidatorInfrastructure, acceptanceRejectionError{}), ErrValidatorInfrastructure, acceptanceFailure},
 		{"cancelled", context.Canceled, context.Canceled, nil},
 		{"artifact quota", artifact.ErrQuota, artifact.ErrQuota, nil},
 		{"artifact storage", artifact.ErrStorage, artifact.ErrStorage, nil},

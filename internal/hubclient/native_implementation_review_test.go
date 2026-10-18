@@ -273,6 +273,18 @@ func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 					if err := validator.RecordValidator(ctx, result); !errors.As(err, &rejection) || rejection.Rejection == nil || rejection.Rejection.Category != "acceptance_validation" || rejection.Rejection.Field != "validator.session_id" {
 						t.Fatalf("source-review session could also authorize acceptance: %v", err)
 					}
+					remote, _ := nativeSSHExecution(t, ctx, execution, t.TempDir())
+					err = remote.(runner.NativeValidatorExecution).RecordValidator(ctx, result)
+					var carrier interface {
+						NativeTerminalFailure() tracker.NativeTerminalFailure
+					}
+					if !errors.As(err, &carrier) {
+						t.Fatalf("worker transport lost acceptance rejection: %v", err)
+					}
+					failure := carrier.NativeTerminalFailure().Public()
+					if failure.Rejection == nil || failure.Rejection.Category != "acceptance_validation" || failure.Rejection.Field != "validator.session_id" || failure.Stage != "acceptance_publication" || failure.Attribution != "instance" {
+						t.Fatalf("worker acceptance failure = %+v", failure)
+					}
 					if test.unsatisfiable {
 						result.SessionID++
 						result.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable, Reference: "Requires production"}}
