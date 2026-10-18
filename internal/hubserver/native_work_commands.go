@@ -103,7 +103,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 		workerReport := machine && origin.Kind == "worker" && request.State == "Backlog" && scope.credential.Runner.RunnerID != "" && request.LeaseID != ""
 		scheduledReport := machine && origin.Kind == "doctor" && origin.Instance == "github-actions" && scope.credential.Scope != apiScopeWorker
 		if scope.credential.HostedRole != "reporter" && request.GitHubIssueURL == "" && (workerReport || scheduledReport) {
-			return createNativeMachineIntakeTx(ctx, tx, scope, request, now, scheduledReport && string(scope.project) == issueorigin.DetentCloudProjectID)
+			return createNativeMachineIntakeTx(ctx, tx, scope, request, now, scheduledReport)
 		}
 		var related []possibleDuplicate
 		if request.ChallengeToken != "" {
@@ -206,7 +206,7 @@ func reportNativeMachineOccurrenceTx(ctx context.Context, tx *sql.Tx, scope nati
 			return tracker.NativeIssue{}, err
 		}
 		if issue.Terminal {
-			if terminalRepair {
+			if terminalRepair && issue.State != "Cancelled" && !strings.Contains(strings.ToLower(issue.Body), "detent:no-dispatch") {
 				return createNativeIssue(ctx, tx, scope, request, now, true)
 			}
 			issue.PublicationReused = true
