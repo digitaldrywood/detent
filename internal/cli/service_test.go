@@ -477,6 +477,7 @@ func TestServiceCommandsLoadLegacyWorkflowPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultAt() error = %v", err)
 	}
+	cfg.Client.URL = "https://hub.example.test"
 	cfg.Projects = []globalconfig.Project{{
 		ID:       "legacy",
 		Workflow: workflowPath,
