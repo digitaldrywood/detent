@@ -3,9 +3,15 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"net"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type localProcessSessions struct {
@@ -20,7 +26,7 @@ func (s *localProcessSessions) StartSession(context.Context, store.SessionStart)
 }
 
 func (s *localProcessSessions) UpdateSessionWorkerProcess(_ context.Context, id int64, process store.WorkerProcessRegistration) error {
-	s.processes[id] = store.WorkerProcess{SessionID: id, WorkerProcessIdentity: process.WorkerProcessIdentity}
+	s.processes[id] = store.WorkerProcess{SessionID: id, WorkerProcessIdentity: process.WorkerProcessIdentity, CleanupRoot: process.CleanupRoot, CleanupPath: process.CleanupPath}
 	return nil
 }
 
@@ -38,7 +44,6 @@ func (s *localProcessSessions) MarkSessionWorkerProcessReaped(_ context.Context,
 }
 
 func TestLocalSessionProcessOwnership(t *testing.T) {
-	t.Parallel()
 	sessions := &localProcessSessions{processes: make(map[int64]store.WorkerProcess), reaped: make(map[int64]int)}
 	run := &Runner{store: sessions}
 	first, second := run.LocalRunCallbacks(RunRequest{}), run.LocalRunCallbacks(RunRequest{})
@@ -79,6 +84,56 @@ func TestLocalSessionProcessOwnership(t *testing.T) {
 		if _, err := call(channel, "local.reaped", own, store.WorkerProcessReap{}); err != nil || sessions.reaped[own] != 1 {
 			t.Fatalf("own process was unusable: %v", err)
 		}
+	}
+	childTemp, controllerTemp, workspacePath := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("TMPDIR", childTemp)
+	t.Setenv("TMP", childTemp)
+	t.Setenv("TEMP", childTemp)
+	scratch, err := workspace.PrepareWorkerScratch(t.Context(), workspacePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	central := NewSSHPeer(t.Context(), a, a, first.Handle)
+	defer central.Close()
+	child := NewSSHPeer(t.Context(), b, b, nil)
+	defer child.Close()
+	local := LocalSessionStore{SSHSessionStore: SSHSessionStore{Peer: child}}
+	if err := local.UpdateSessionWorkerProcess(t.Context(), 1, store.WorkerProcessRegistration{CleanupRoot: workspacePath, CleanupPath: scratch}); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := local.UpdateSessionWorkerProcess(t.Context(), 1, store.WorkerProcessRegistration{CleanupRoot: workspacePath, CleanupPath: outside}); err == nil {
+		t.Fatal("unrelated cleanup path accepted")
+	}
+	link := filepath.Join(filepath.Dir(scratch), "attempt-link")
+	if err := os.Symlink(outside, link); err != nil {
+		if runtime.GOOS != "windows" {
+			t.Fatal(err)
+		}
+	} else if err := local.UpdateSessionWorkerProcess(t.Context(), 1, store.WorkerProcessRegistration{CleanupRoot: workspacePath, CleanupPath: link}); err == nil {
+		t.Fatal("symlink cleanup path accepted")
+	}
+	t.Setenv("TMPDIR", controllerTemp)
+	t.Setenv("TMP", controllerTemp)
+	t.Setenv("TEMP", controllerTemp)
+	recorded := sessions.processes[1]
+	if _, err := workspace.ReapWorkerArtifactProcesses(t.Context(), recorded.CleanupRoot, recorded.CleanupPath, time.Millisecond); err != nil {
+		t.Fatalf("controller could not reap child scratch: %v", err)
+	}
+	if err := workspace.CleanupOwnedPath(recorded.CleanupRoot, recorded.CleanupPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
+		t.Fatal("registered scratch remains")
+	}
+	if _, err := os.Stat(workspacePath); err != nil {
+		t.Fatal("cleanup removed issue workspace")
+	}
+	if filepath.Clean(recorded.CleanupPath) != filepath.Clean(scratch) {
+		t.Fatal("scratch identity changed")
 	}
 	remote := run.SSHRunCallbacks(RunRequest{})
 	if _, err := call(remote, "local.processes"); err == nil {
