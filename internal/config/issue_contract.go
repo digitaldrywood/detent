@@ -247,6 +247,25 @@ func issueContractSectionKey(section string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(section), ":"))
 }
 
+func (c IssueContract) RequiresHumanConfirmation() bool {
+	_, text, err := resolveAdmissionSection(c.Context, "Issue Contract", "issue contract", BacklogAdmissionEffortFileWorkflow)
+	if err != nil {
+		return true
+	}
+	inFence := false
+	for line := range strings.SplitSeq(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if !inFence && line == "Agent-authored criteria do not require human confirmation." {
+			return false
+		}
+	}
+	return true
+}
+
 func (c IssueContract) Evaluate(issue connector.Issue) IssueContractEvaluation {
 	if len(c.Sections) == 0 {
 		c.Sections = DefaultIssueContract().Sections
@@ -256,10 +275,14 @@ func (c IssueContract) Evaluate(issue connector.Issue) IssueContractEvaluation {
 	_, machineOrigin := issueorigin.Parse(issue.Description)
 	machine := machineOrigin || strings.HasSuffix(strings.ToLower(issue.AuthorID), "[bot]")
 	result := IssueContractEvaluation{}
+	requiresConfirmation := c.RequiresHumanConfirmation()
 	for _, section := range c.Sections {
 		key := issueContractSectionKey(section)
 		if sections[key] == "" {
 			result.Missing = append(result.Missing, section)
+			continue
+		}
+		if !requiresConfirmation {
 			continue
 		}
 		if issue.IssueContract != nil {

@@ -52,7 +52,7 @@ Follow this operator's authoring preference: add no code comments or lint/securi
 
 Read the repository's AGENTS.md, CLAUDE.md and docs/invariants.md before changes. Use the assigned issue's scope and current acceptance evidence. This private native workflow owns tracker publication: repository instructions about filing GitHub issues, opening PRs, editing Workpads or merging through `gh` do not apply to this native project. Report findings through the provided Detent tools and final result; Detent is the only issue lane writer.
 
-Run `make check-land` before reporting source work complete and fix every failure in the same run; do not hand back a red gate. This project's configured GitHub pull-request landing runs the approved `make check-landing` target on the combined tree: build, short Go tests for changed packages and their dependents, and lint of changed Go files; module changes widen the checks. Command failures return the item to Rework with the failing output. Full integration tests run only in the scheduled suite. required_status_checks remains empty; no local status or additional CI producer is required. Focused diagnostics are available while fixing behavior. Preserve actual issue acceptance, human review and approved native version/check policy. Run the relevant generation command when templates, queries or CSS change and stage the issue-owned tracked output. The scheduled full suite validates integrated develop and release branches outside the work-item flow.
+Run `make check-land` before reporting source work complete and fix every failure in the same run; do not hand back a red gate. This project's configured GitHub pull-request landing runs the approved `make check-landing` target on the combined tree: build, short Go tests for changed packages and their dependents, and lint of changed Go files; module changes widen the checks. Command failures return the item to Rework with the failing output. Full integration tests run only in the scheduled suite. required_status_checks remains empty; no local status or additional CI producer is required. Focused diagnostics are available while fixing behavior. Preserve actual issue acceptance and approved native version/check policy. This project has no human review completion step; configured independent review and security audit remain required. Run the relevant generation command when templates, queries or CSS change and stage the issue-owned tracked output. The scheduled full suite validates integrated develop and release branches outside the work-item flow.
 
 Before the first Go diagnostic (such as `go test` or `go vet`) that imports the
 embedded conversation app, prepare the current worktree's ignored assets with
@@ -121,19 +121,39 @@ reservation and capacity-cleanup changes identify the relevant seed in
 requirement, not a requirement to add a duplicate test or run a timed fuzz job.
 Follow `CLAUDE.md` and `AGENTS.md` for meaningful regression coverage.
 
-Machine-filed criteria need human confirmation through the native issue owner,
-except for the exact bounded scheduled CI repair contract below when supplied
-by the Hub from this human-approved workflow after independent CI verification.
-This delegation applies only to Detent's selected native Cloud project when its
-effective checkout repository is digitaldrywood/detent. It does not change
-other projects' confirmation rules. The Hub must verify the CI run attempt and
-failed job, including a tested commit equal to the authenticated run head;
-missing proof leaves a durable unconfirmed report. Existing issues and human
-holds are never rewritten or reconfirmed by this delegation.
-An origin stamp remains authoritative even when an issue is imported or edited.
-Missing or unconfirmed sections use the existing Blocked human-action path and
-recovery owner. Preserve existing rollout exemptions and running work; this
-revision does not restart rollout, revoke exemptions or re-admit in-flight work.
+Agent-authored criteria do not require human confirmation.
+
+For this Detent project, agents may author and correct the required sections
+for a bounded defect repair within existing intended behavior. Machine authorship
+alone never requires human confirmation, Human Review or a Blocked hold. Preserve
+the origin stamp, stable fingerprint, recorded evidence and existing ownership;
+using a personal key does not turn machine-authored content into human authorship.
+The scheduled CI repair contract below retains its independently verified run,
+job and tested-source requirements. Other projects retain their own policies.
+
+Correct missing sections from the recorded problem and requested scope through
+the existing issue owner before admission. Replace external, deployed or human
+verification requirements with equivalent pre-merge fixtures and checks, or remove
+those verification steps when the source criteria already establish the requested
+behavior. Workers without issue-edit authority record the equivalent pre-merge criteria
+and evidence in their existing Change outcome; this grants no additional tracker
+writes. Missing required issue sections stay in Backlog until the authorized issue
+owner supplies them. Do not
+invent product requirements, weaken expected behavior or claim unexecuted evidence.
+
+A genuine unresolved product decision, missing authorization or physical action
+uses the existing Blocked human_action owner and names the concrete dependency.
+Preserve explicit human and operator ownership holds until their authorized owner
+clears them. INV-15 still requires human-authored scope for visible UI additions;
+this repair delegation grants no new UI, permission, release or safety-policy scope.
+Missing author confirmation alone is not such a dependency.
+
+Once the pre-merge criteria and configured review, security audit, validation and
+landing requirements pass, land the change and complete the issue through the
+existing owners. Do not add human sign-off, live acceptance, deployment or
+post-deployment verification to completion. If shipped behavior is unwanted, a
+human files a new issue. Preserve existing rollout exemptions and running work;
+this revision does not restart rollout or re-admit in-flight work.
 
 ## Scheduled CI repair contract
 
@@ -218,15 +238,16 @@ Historical diagnosis evidence retains its original source identity and is
 assessed separately from passing candidate evidence under the repair contract.
 An assumed, skipped or unrelated check remains not verified. A not-verified
 criterion that repository rework can satisfy requires Rework and is named in
-the summary. A criterion no rework can satisfy before merge because it depends
-on an outside system, a deployed environment, a deployment or human action sends
-the native item to Blocked on that validator run, never to Rework for that reason.
-Its human_action names each unsatisfiable criterion and asks the human to
-rewrite it as a pre-merge check or remove it; mixed criteria also go to Blocked.
-Existing prerequisite and human blockers retain their owner. Source rework,
-minimum score and blocked finding severities take precedence over synthesizing
-a criterion human_action. Non-native validators retain the configured unverified
-criteria policy. This setting
+the summary. An outside-system, deployed-environment, deployment or
+human-verification criterion is an issue-authoring defect. Apply the Issue Contract correction path
+through the existing owner, then assess the equivalent pre-merge evidence. Do not
+ask a human merely to rewrite a verification step or claim that the original check
+ran. If the corrected source criterion remains unverified, use Rework for the
+specific missing evidence. Only a genuine unresolved decision, missing authority
+or physical prerequisite uses Blocked with a concrete human_action. Existing
+prerequisite and explicit human or operator holds retain their owner. Source
+rework, minimum score and blocked finding severities remain authoritative.
+Non-native validators retain the configured unverified criteria policy. This setting
 does not enable the optional validator or replace the native completion contract,
 which owns permitted post-integration handoffs and pending acceptance disclosure.
 
@@ -290,8 +311,8 @@ Do not admit, regardless of how well argued:
 
 An agent must be able to tell when it is done.
 
-Apply the Issue Contract above, using the same required sections and human
-confirmation as Todo dispatch. A precise symptom plus expected behavior is
+Apply the Issue Contract above, using the same required sections and bounded
+repair delegation as Todo dispatch. A precise symptom plus expected behavior is
 enough content for Acceptance criteria, but does not waive that heading or the
 other required sections. Evidence, cause and file:line support the contract;
 a wish with no checkable end state does not satisfy it. Existing rollout
@@ -305,10 +326,13 @@ Admission recommends an effort using the Issue effort selection section and
 writes it before moving the issue to Todo. Existing effort overrides remain
 authoritative. Require a valid recommendation before admitting an issue.
 
-When the contract fails, the existing contract owner records the missing or
-unconfirmed sections in a Blocked human_action with a draft to confirm or edit;
-do not admit it on a separate readiness interpretation. Other readiness failures
-remain in Backlog with the missing dependency or effort recommendation named.
+When required sections are missing or contain impossible verification steps,
+the existing contract owner corrects them under the Issue Contract above before
+admission. Keep the item in Backlog while that authoring work remains; do not
+create a human-confirmation hold for a bounded repair. Genuine human decisions
+or missing authority use Blocked with the concrete action required. Other
+readiness failures remain in Backlog with the missing dependency or effort
+recommendation named.
 
 ### Size
 

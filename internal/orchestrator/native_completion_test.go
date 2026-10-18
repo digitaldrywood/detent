@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -163,6 +164,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		finalMessage  string
 		runErr        error
 		wantHuman     bool
+		delegated     bool
 		wantQuestion  string
 		noUsage       bool
 		change        *runpkg.NativeChange
@@ -322,6 +324,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "unsatisfiable criterion preserves reported human action", change: criterionReview("wait", 1), states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "human_action: null", "human_action: Approve the consumer rollout"), wantState: "Blocked", wantComment: "issue acceptance is not recorded"},
 		{name: "unsatisfiable criterion preserves prerequisite owner", change: criterionReview("wait", 1), states: unfinishedWorkflow, humanReview: &no, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "prerequisite must finish"},
 		{name: "fixable criterion keeps Rework", change: criterionChange(gate.CriterionEvidence{Criterion: "Missing screenshot", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionReworkFixable}), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes"},
+		{name: "delegated external verification returns to source rework", delegated: true, change: criterionChange(gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", laneReason: "validator_rework", wantComment: "Record equivalent pre-merge criteria", details: []string{chatGPTCriterion}},
+		{name: "delegated policy preserves actual human action", delegated: true, change: criterionReview("wait", 1), states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "human_action: null", "human_action: Approve the consumer rollout"), wantState: "Blocked", wantComment: "issue acceptance is not recorded"},
 		{name: "1245 production connectors block on first validator run", change: criterionChange(gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}, gate.CriterionEvidence{Criterion: claudeCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, wantState: "Blocked", wantHuman: true, wantQuestion: connectorAction, roundTrip: true},
 		{name: "mixed criteria block with only unsatisfiable actions", change: criterionChange(gate.CriterionEvidence{Criterion: "Missing regression test", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionReworkFixable}, gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}, gate.CriterionEvidence{Criterion: claudeCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, wantState: "Blocked", wantHuman: true, wantQuestion: connectorAction},
 		{name: "rewritten connector criterion reuses retained source and passes", change: criterionChange(gate.CriterionEvidence{Criterion: "Connector sign-in covered by local regression", Kind: gate.EvidenceTest, Reference: "connector_test.go:TestSignIn", Behavior: "The local client signs in successfully"}), states: rework, sourceState: "Rework", humanReview: &no, wantState: "Merging", wantComment: "runner lands it next"},
@@ -445,6 +449,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			}
 			if test.handoffState != "" {
 				cfg.ActiveStates = append(cfg.ActiveStates, test.handoffState)
+			}
+			if test.delegated {
+				cfg.IssueContract = &workflowconfig.IssueContract{Context: "## Issue Contract\n- Acceptance criteria\n\nAgent-authored criteria do not require human confirmation.\n"}
 			}
 			cfg.AutoPromote.SourceState = "In Review"
 			cfg.AutoPromote.HumanReview = test.humanReview
