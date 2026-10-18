@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: ['release/*']
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
