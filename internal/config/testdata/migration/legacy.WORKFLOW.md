@@ -1,6 +1,6 @@
 ---
 tracker:
-  kind: memory
+  kind: hub_native
 polling:
   interval_ms: 90000
 ---

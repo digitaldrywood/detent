@@ -11,10 +11,10 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 // A ready higher-priority project that never acquires must not strand real work.
@@ -39,7 +39,7 @@ func TestBootRegistryRebuildDispatchesStrandedActiveIssueDespiteReadyHigherPrior
 	issue.Identifier = "gopherguides/gopher-ai#294"
 	issue.Title = "stranded active work"
 	issue.State = "In Progress"
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}})
 
 	poisonedGate, err := buildGlobalDispatchPools(global)
 	if err != nil {

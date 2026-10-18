@@ -430,7 +430,7 @@ func (s *Server) demoDashboardData(ctx context.Context, scenario demoScenario) t
 		InstanceName:     instanceName,
 		Version:          s.version,
 		Build:            s.build,
-		ConnectorName:    s.connector.Name(),
+		ConnectorName:    s.connectorName(),
 		DashboardURL:     s.dashboardURL,
 		Snapshot:         snapshot,
 		ConfiguredAgents: demoConfiguredAgents(snapshot),
@@ -476,7 +476,7 @@ func (s *Server) demoProjectDashboardData(ctx context.Context, scenario demoScen
 		InstanceName:              instanceName,
 		Version:                   s.version,
 		Build:                     s.build,
-		ConnectorName:             s.connector.Name(),
+		ConnectorName:             s.connectorName(),
 		DashboardURL:              s.dashboardURL,
 		Snapshot:                  scoped,
 		ConfiguredAgents:          demoConfiguredAgents(scoped),
@@ -750,10 +750,10 @@ func demoSettingsProjects(variant string) []templates.SettingsProject {
 		return nil
 	}
 	projects := []templates.SettingsProject{
-		{ID: demoPrimaryProjectID, WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", WorkflowDetailsURL: "https://github.com/orgs/example-org/projects/4/workflows", Workdir: "/tmp/detent-screenshots/source/detent-core", WorktreeRoot: "/tmp/detent-screenshots/workspaces/detent-core", Weight: 120, Priority: 100, TrackerKind: "memory", TrackerProject: "example-org/detent-core", DependencyAutoUnblock: "enabled: Blocked -> Todo when terminal_or_merged"},
-		{ID: "docs-site", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/docs-site", WorktreeRoot: "/tmp/detent-screenshots/workspaces/docs-site", Weight: 90, Priority: 80, TrackerKind: "memory", TrackerProject: "example-org/docs-site", DependencyAutoUnblock: "disabled: n/a -> n/a when terminal_or_merged"},
-		{ID: "billing-api", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/billing-api", WorktreeRoot: "/tmp/detent-screenshots/workspaces/billing-api", Weight: 80, Priority: 95, TrackerKind: "memory", TrackerProject: "example-org/billing-api", DependencyAutoUnblock: "enabled: Blocked -> Rework when terminal_or_merged"},
-		{ID: "mobile-client", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/mobile-client", WorktreeRoot: "/tmp/detent-screenshots/workspaces/mobile-client", Weight: 40, Priority: 20, Paused: true, TrackerKind: "memory", TrackerProject: "example-org/mobile-client", DependencyAutoUnblock: "disabled: n/a -> n/a when terminal_or_merged"},
+		{ID: demoPrimaryProjectID, WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", WorkflowDetailsURL: "https://github.com/orgs/example-org/projects/4/workflows", Workdir: "/tmp/detent-screenshots/source/detent-core", WorktreeRoot: "/tmp/detent-screenshots/workspaces/detent-core", Weight: 120, Priority: 100, TrackerKind: "hub_native", TrackerProject: "example-org/detent-core", DependencyAutoUnblock: "enabled: Blocked -> Todo when terminal_or_merged"},
+		{ID: "docs-site", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/docs-site", WorktreeRoot: "/tmp/detent-screenshots/workspaces/docs-site", Weight: 90, Priority: 80, TrackerKind: "hub_native", TrackerProject: "example-org/docs-site", DependencyAutoUnblock: "disabled: n/a -> n/a when terminal_or_merged"},
+		{ID: "billing-api", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/billing-api", WorktreeRoot: "/tmp/detent-screenshots/workspaces/billing-api", Weight: 80, Priority: 95, TrackerKind: "hub_native", TrackerProject: "example-org/billing-api", DependencyAutoUnblock: "enabled: Blocked -> Rework when terminal_or_merged"},
+		{ID: "mobile-client", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/mobile-client", WorktreeRoot: "/tmp/detent-screenshots/workspaces/mobile-client", Weight: 40, Priority: 20, Paused: true, TrackerKind: "hub_native", TrackerProject: "example-org/mobile-client", DependencyAutoUnblock: "disabled: n/a -> n/a when terminal_or_merged"},
 	}
 	if variant == "settings-long-paths" {
 		for i := range projects {
@@ -781,7 +781,7 @@ func (s *Server) demoEmptyReportsData(ctx context.Context, scenario demoScenario
 		Title:           instancePageTitle(instanceName, "Detent reports"),
 		ApplicationName: applicationName(instanceName),
 		InstanceName:    instanceName,
-		ConnectorName:   s.connector.Name(),
+		ConnectorName:   s.connectorName(),
 		Snapshot:        demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant),
 		GeneratedAt:     demoBaseTime,
 		Day:             empty,

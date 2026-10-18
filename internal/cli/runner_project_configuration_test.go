@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -46,7 +47,7 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 			if err := os.WriteFile(workflow, []byte("Private instructions\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(root, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: memory\n"), 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(root, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: hub_native\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := globalconfig.DefaultAt(filepath.Join(root, "global.yaml"), globalconfig.WithProjectPathLiterals())
@@ -76,8 +77,8 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			manager, err := project.NewManager(project.ManagerConfigFromGlobal(cfg), project.ManagerDependencies{ProjectFactory: func(selected globalconfig.Project) (*project.Project, error) {
-				return project.Load(selected, project.Dependencies{Runner: orchestrator.FakeRunner{}, WorkAttempts: attempts})
+			manager, err := projectfixture.NewManager(project.ManagerConfigFromGlobal(cfg), project.ManagerDependencies{ProjectFactory: func(selected globalconfig.Project) (*project.Project, error) {
+				return projectfixture.New(project.Config{Project: selected}, project.Dependencies{Runner: orchestrator.FakeRunner{}, WorkAttempts: attempts})
 			}})
 			if err != nil {
 				t.Fatal(err)

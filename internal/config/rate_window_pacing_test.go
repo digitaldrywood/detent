@@ -43,7 +43,7 @@ func TestRateWindowPacingConfiguration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\n" + tt.yaml + "---\n"))
+			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n" + tt.yaml + "---\n"))
 			if err == nil {
 				err = workflow.Config.Validate()
 			}

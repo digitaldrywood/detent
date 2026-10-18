@@ -18,8 +18,6 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/factory"
-	"github.com/digitaldrywood/detent/internal/connector/local"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -490,7 +488,6 @@ func doctorWorkflowProposalIssueDeliverySupported(cfg workflowconfig.Config) err
 		if cfg.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceProjectV2 {
 			return errors.New("self-improvement proposal issue creation requires GitHub label or issue-field status mode; project_v2 cannot place new issues in Backlog")
 		}
-	case workflowconfig.TrackerMemory:
 	default:
 		return fmt.Errorf("self-improvement proposal issue creation is not supported for tracker kind %q", cfg.Tracker.Kind)
 	}
@@ -499,16 +496,8 @@ func doctorWorkflowProposalIssueDeliverySupported(cfg workflowconfig.Config) err
 
 func defaultDoctorProposalConnector(cfg workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
 	projectConnector, err := factory.NewFromConfig(factory.Config{
-		Kind:   cfg.Tracker.Kind,
-		Memory: memory.Config{Issues: cfg.Tracker.Issues, Stateful: true},
-		LocalSQLite: local.Config{
-			Path:           cfg.Tracker.LocalSQLite.Path,
-			ProjectID:      cfg.Tracker.LocalSQLite.ProjectID,
-			Issues:         cfg.Tracker.Issues,
-			ActiveStates:   cfg.Tracker.ActiveStates,
-			ObservedStates: cfg.Tracker.ObservedStates,
-			TerminalStates: cfg.Tracker.TerminalStates,
-		},
+		Kind: cfg.Tracker.Kind,
+
 		Endpoint:                    cfg.Tracker.Endpoint,
 		APIKey:                      cfg.Tracker.APIKey,
 		HTTPMaxIdleConns:            cfg.Tracker.HTTPMaxIdleConns,

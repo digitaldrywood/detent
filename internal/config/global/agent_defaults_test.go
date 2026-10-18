@@ -72,7 +72,7 @@ func TestWorkerLocalBindingDefaults(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker: {kind: memory}\n" + tt.project + "\n---\nDo work.\n"))
+			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker: {kind: hub_native}\n" + tt.project + "\n---\nDo work.\n"))
 			if err != nil {
 				t.Fatal(err)
 			}

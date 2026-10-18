@@ -10,7 +10,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 type mergeQueuePolicyConnector struct {
@@ -37,7 +37,7 @@ func TestBuildConnectorRefreshesMergeQueuePolicy(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			c := &mergeQueuePolicyConnector{Connector: memory.New(memory.Config{}), err: tt.err}
+			c := &mergeQueuePolicyConnector{Connector: fakehub.New(fakehub.Config{}), err: tt.err}
 			factory := func(workflowconfig.Config) (connector.Connector, error) { return c, nil }
 			for range 2 {
 				got, err := buildConnector(t.Context(), workflowconfig.Config{}, factory, tt.paused)
@@ -59,7 +59,7 @@ func TestBuildConnectorRefreshesMergeQueuePolicy(t *testing.T) {
 func TestUnchangedWorkflowReconciliationDoesNotRefreshMergePolicy(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
-	if err := os.WriteFile(path, []byte("---\ntracker:\n  kind: memory\n---\nWork.\n"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("---\ntracker:\n  kind: hub_native\n---\nWork.\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := globalconfig.Project{Workflow: path}
@@ -67,7 +67,7 @@ func TestUnchangedWorkflowReconciliationDoesNotRefreshMergePolicy(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &mergeQueuePolicyConnector{Connector: memory.New(memory.Config{})}
+	c := &mergeQueuePolicyConnector{Connector: fakehub.New(fakehub.Config{})}
 	p := &Project{cfg: cfg, connector: c, workflowSource: WorkflowSourceStatus{Hash: workflow.SourceHash}}
 	for range 2 {
 		if err := p.reconcileWorkflow(t.Context()); err != nil {

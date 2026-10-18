@@ -896,7 +896,7 @@ func appendNativeCompletionContract(prompt string) string {
 }
 
 func githubTrackerHostname(tracker config.Tracker) string {
-	if tracker.Kind != config.TrackerGitHub && tracker.Kind != config.TrackerGitHubLocal {
+	if tracker.Kind != config.TrackerGitHub {
 		return ""
 	}
 	endpoint := strings.TrimSpace(tracker.Endpoint)

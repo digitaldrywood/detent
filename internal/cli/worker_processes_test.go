@@ -18,10 +18,10 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -672,7 +672,7 @@ func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
 			issue.ID, issue.State = "stranded", "In Progress"
 			issue.Identifier, issue.Title = "project#2749", "Resume stranded work"
 			runner := newRestartRecoveryRunner()
-			orch, stop := runRestartRecoveryOrchestrator(t, memory.New(memory.Config{Issues: []connector.Issue{issue}}), runner, nil, scheduler.ProjectCandidate{ID: projectID}, backend)
+			orch, stop := runRestartRecoveryOrchestrator(t, fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}}), runner, nil, scheduler.ProjectCandidate{ID: projectID}, backend)
 			defer stop()
 			select {
 			case <-runner.started:

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -19,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -51,7 +51,7 @@ func TestStartupSessionsAppearInStateAndHealth(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}})
+			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}})
 			activeStates := []string{"Todo", "In Progress", "Rework", "Merging"}
 			if validator {
 				activeStates = []string{"Todo", "In Progress", "Merging"}

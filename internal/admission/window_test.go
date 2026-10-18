@@ -8,8 +8,8 @@ import (
 
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestManagerCandidateWindowOrdersByPersistedEvaluation(t *testing.T) {
@@ -34,7 +34,7 @@ func TestManagerCandidateWindowOrdersByPersistedEvaluation(t *testing.T) {
 				admissionIssueFixture("old", "DD-2", 1, now),
 				admissionIssueFixture("unseen", "DD-3", 1, now),
 			}
-			tracker := memory.New(memory.Config{Issues: issues, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: issues, Stateful: true})
 			agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 			settings := admissionTestSettings(tracker, agent)
 			backend := openManagerTestStore(t)
@@ -88,7 +88,7 @@ func TestManagerCandidateWindowCoverage(t *testing.T) {
 				issues[i] = admissionIssueFixture(fmt.Sprintf("issue-%02d", i), fmt.Sprintf("DD-%02d", i), 1, now.Add(time.Duration(i)*time.Minute))
 			}
 			issues[2].Title = "Epic: track the rollout"
-			tracker := &staleWindowIssueStore{Connector: memory.New(memory.Config{Issues: issues, Stateful: true})}
+			tracker := &staleWindowIssueStore{Connector: fakehub.New(fakehub.Config{Issues: issues, Stateful: true})}
 			backend := openManagerTestStore(t)
 			agent := &windowAdmissionRunner{seen: map[string]int{}}
 			settings := admissionTestSettings(tracker, agent)
@@ -207,7 +207,7 @@ func TestManagerCandidateWindowReconsidersRestoredSnapshot(t *testing.T) {
 			now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
 			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
 			tracker := &restoredWindowIssueStore{
-				Connector: memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true}),
+				Connector: fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true}),
 				change:    test.change,
 			}
 			backend := openManagerTestStore(t)
@@ -236,7 +236,7 @@ func TestManagerCandidateWindowReconsidersRestoredSnapshot(t *testing.T) {
 }
 
 type restoredWindowIssueStore struct {
-	*memory.Connector
+	*fakehub.Connector
 	change func([]connector.Issue) []connector.Issue
 }
 
@@ -250,7 +250,7 @@ func (s *restoredWindowIssueStore) FetchIssueStatesByIDs(ctx context.Context, id
 
 // The candidate reader retains an old snapshot while the point lookup returns
 // newer issue content, reproducing a repeated stale revalidation verdict.
-type staleWindowIssueStore struct{ *memory.Connector }
+type staleWindowIssueStore struct{ *fakehub.Connector }
 
 func (s *staleWindowIssueStore) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
 	issues, err := s.Connector.FetchIssueStatesByIDs(ctx, ids)

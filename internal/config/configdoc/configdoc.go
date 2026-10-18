@@ -454,11 +454,7 @@ func trackerStatusPageURLDefault() (string, string) {
 		}
 		return cfg.Tracker.StatusPageURL
 	}
-	return fmt.Sprintf(
-		"%s for linear; %s for github or github_local; unused otherwise",
-		strconv.Quote(statusURLFor(config.TrackerLinear)),
-		strconv.Quote(statusURLFor(config.TrackerGitHub)),
-	), "null"
+	return strconv.Quote(statusURLFor(config.TrackerGitHub)) + " for github; unused otherwise", "null"
 }
 
 func trackerEndpointDefault() (string, string) {
@@ -471,13 +467,8 @@ func trackerEndpointDefault() (string, string) {
 		}
 		return cfg.Tracker.Endpoint
 	}
-	linearEndpoint := endpointFor(config.TrackerLinear)
 	githubEndpoint := endpointFor(config.TrackerGitHub)
-	return fmt.Sprintf(
-		"%s for linear; %s for github or github_local; unused otherwise",
-		strconv.Quote(linearEndpoint),
-		strconv.Quote(githubEndpoint),
-	), "null"
+	return strconv.Quote(githubEndpoint) + " for github; unused otherwise", "null"
 }
 
 func optionDefault(path string) (string, string) {
@@ -738,7 +729,7 @@ func appendUnique(values []string, value string) []string {
 
 func probeBase() config.Config {
 	cfg := config.Default()
-	cfg.Tracker.Kind = config.TrackerMemory
+	cfg.Tracker.Kind = config.TrackerHubNative
 	normalizedConfig, err := normalized(cfg)
 	if err != nil {
 		return cfg
@@ -955,7 +946,7 @@ func candidates(typ reflect.Type) []reflect.Value {
 func backendOptionProblems() ([]string, error) {
 	documents := []string{
 		`tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: pi
@@ -968,7 +959,7 @@ agents:
         stall_timeout_ms: -1
 `,
 		`tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: codex
@@ -986,7 +977,7 @@ agents:
         stall_timeout_ms: -1
 `,
 		`tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: claude
@@ -1000,7 +991,7 @@ agents:
         stall_timeout_ms: -1
 `,
 		`tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: claude
