@@ -51,10 +51,10 @@ func TestProviderSchedulerEndToEnd(t *testing.T) {
 
 func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"empty", "candidate", "paused during admission", "stale draining receipt", "operator drain"} {
+	for _, mode := range []string{"empty", "candidate", "paused during admission", "empty paused during admission", "stale draining receipt", "operator drain"} {
 		t.Run(mode, func(t *testing.T) {
 			issueID := "wi_test"
-			if mode == "empty" {
+			if mode == "empty" || mode == "empty paused during admission" {
 				issueID = ""
 			}
 			claims := 0
@@ -92,7 +92,12 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scheduler := &Scheduler{providerReports: func() ([]providercapacity.Report, error) { return nil, nil }}
+			now := time.Now()
+			scheduler := &Scheduler{
+				client: client, now: func() time.Time { return now }, sessionID: func() (string, error) { return "test-session", nil },
+				heartbeatInterval: time.Minute, nativeHeartbeats: map[tracker.ProjectID]time.Time{"prj_test": now},
+				providerReports: func() ([]providercapacity.Report, error) { return nil, nil },
+			}
 			if mode == "stale draining receipt" || mode == "operator drain" {
 				scheduler.machine.Update = &runnerauth.UpdateObservation{Receipt: &runnerauth.UpdateReceipt{Status: "draining", DrainReason: "execution worker protocol is incompatible with the controller"}}
 				if mode == "operator drain" {
@@ -111,15 +116,34 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 					t.Fatalf("claim observation: issue=%s allowed=%t predicate=%s requirement=%+v", candidate.ID, allowed, predicate, required)
 				}
 			}}
-			if mode == "paused during admission" {
+			if mode == "paused during admission" || mode == "empty paused during admission" {
 				request.CandidateAdmission = func(connector.Issue) (func(), bool) {
 					scheduler.SetClaimAdmission(func() (func(), bool) { return nil, false })
 					return func() {}, true
 				}
+				native.heartbeatProject().changes = &runnerauth.HeartbeatChanges{Claimable: true}
+				source := &NativeConnector{client: native}
+				issues, err := scheduler.fetchNativeCandidate(t.Context(), request, source)
+				if err != nil || len(issues) != 0 || claims != 0 || observations != 0 {
+					t.Fatalf("paused candidate claimed: claims=%d observations=%d issues=%+v err=%v", claims, observations, issues, err)
+				}
+				if !native.claimHint() {
+					t.Fatal("local drain cleared the Hub claim hint")
+				}
+				scheduler.SetClaimAdmission(nil)
+				request.CandidateAdmission = nil
+				issues, err = scheduler.fetchNativeCandidate(t.Context(), request, source)
+				if err != nil || len(issues) != 0 || claims != 1 {
+					t.Fatalf("released drain did not resume claims: claims=%d issues=%+v err=%v", claims, issues, err)
+				}
+				if got, want := native.claimHint(), issueID != ""; got != want {
+					t.Fatalf("Hub exhaustion hint=%t want=%t", got, want)
+				}
+				return
 			}
 			_, err = scheduler.claimPreviewCandidates(t.Context(), request, &NativeConnector{client: native}, tracker.NativeClaim{}, 1)
-			if mode == "paused during admission" || mode == "operator drain" {
-				if claims != 0 || observations != 0 || !errors.Is(err, ErrNoClaimableWork) {
+			if mode == "operator drain" {
+				if claims != 0 || observations != 0 || err != nil {
 					t.Fatalf("paused candidate claimed: claims=%d observations=%d err=%v", claims, observations, err)
 				}
 				return

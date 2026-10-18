@@ -31,6 +31,7 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 		claim.Capabilities = append(claim.Capabilities, tracker.NativeProviderCapacityCapability)
 	}
 	evaluated := 0
+	admissionDeferred := false
 	var waiting error
 	for {
 		if boundedPreview && request.CandidateLimit > 0 {
@@ -78,6 +79,7 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 			}
 			lease, err, admitted := s.claimPreviewCandidate(ctx, request, source, claim, candidate)
 			if !admitted {
+				admissionDeferred = true
 				continue
 			}
 			if request.CandidateClaimObserved != nil {
@@ -116,7 +118,7 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 			claim.ProviderCandidates = nil
 			lease, err, admitted := s.claimPreviewCandidate(ctx, request, source, claim, connector.Issue{})
 			if !admitted {
-				return leases, ErrNoClaimableWork
+				return leases, nil
 			}
 			if err == nil {
 				return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("hub claimed work absent from its provider preview"), source.client.Release(context.WithoutCancel(ctx), lease, "failed"))
@@ -124,7 +126,7 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 			return leases, err
 		}
 		if page.Next == 0 || request.CandidateLimit > 0 && evaluated >= request.CandidateLimit {
-			if len(leases) > 0 {
+			if len(leases) > 0 || admissionDeferred {
 				return leases, nil
 			}
 			if page.Next != 0 && (waiting == nil || errors.Is(waiting, ErrNoClaimableWork)) {
