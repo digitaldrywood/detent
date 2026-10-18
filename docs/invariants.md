@@ -260,12 +260,22 @@ issues, including before the run conclusion settles; timeouts and cancelled
 jobs without workflow cancellation remain reportable and never authorize a tag. Plain checkouts compile and test without ignored assets; build owners
 prepare conversation bundles and configuration references before deployment.
 
-**Enforcement:** `TestRepositoryWorkflow`,
-`TestRepositoryHasNoPullRequestActions`, and `TestWorkflowViolations` in
-`internal/invariants`; `TestMakeCheckFastOverlapsWorktrees` in
-`tools/checklock`; `TestParseProblems`, `TestReport`, `TestCloudReport`,
-`TestCloudDestinationAuthority`, `TestReleaseStabilization`, and `TestScheduledFinalizer` in
-`tools/cifailure`. Review preserves project-specific policy and release authority.
+**Enforcement:** checks assert outcomes only: no workflow triggers on
+`pull_request`, `pull_request_target` or `merge_group` except the `cla.yml`
+exception; `ci.yml` triggers only on `schedule` and `workflow_dispatch` and its
+finalize job needs every other job in the parsed workflow and runs
+`scripts/scheduled-ci-finish.sh`; the finalizer fails the run when any job
+concluded other than success and creates stable tags only after a green
+release-branch suite; and `release.yml` verifies provenance of the exact tagged
+commit before building. Checks must not pin workflow shape such as job
+conditions, schedules, shard counts, timeouts or command text.
+`TestRepositoryWorkflow`, `TestRepositoryHasNoPullRequestActions`, and
+`TestWorkflowViolations` in `internal/invariants`;
+`TestReleaseWorkflowAuthenticatesExactCommitProvenance` in the repository root;
+`TestMakeCheckFastOverlapsWorktrees` in `tools/checklock`; `TestParseProblems`,
+`TestReport`, `TestCloudReport`, `TestCloudDestinationAuthority`,
+`TestReleaseStabilization`, and `TestScheduledFinalizer` in `tools/cifailure`.
+Review preserves project-specific policy and release authority.
 
 ## INV-6 — Isolated Codex home
 
@@ -647,3 +657,20 @@ extend either.
 **Enforcement:** `TestINV18RequestCommitDoesNoDerivedWork` and
 `TestINV18HubMigrationsUseTypedColumns` in `internal/hubserver`. Review applies
 the history bound and reader rule to Hub persistence changes.
+
+## INV-19 — No flaky tests
+
+A test that both passes and fails on the same commit is a defect, reported at
+High. Its owner fixes the cause or deletes the test the day it is found. An
+intermittent failure is not "cannot reproduce": diagnose it from the failing
+run's evidence (logs, captured snapshots and artifacts) or by repeating it under
+CI load, then fix the product or test cause.
+
+A flake is never accommodated: no added retries, sleeps or fixed waits, longer
+timeouts, skips, `fixme` or expected-failure marks, or quarantine. CI keeps
+Playwright's `failOnFlakyTests` on with at most one retry, so a test that only
+passes on retry still fails the run and is reported.
+
+**Enforcement:** `TestINV19NoFlakeAccommodation` in `internal/invariants`
+checks the Playwright CI settings, that no browser spec skips, marks or retries
+a test, and that no Go test skips itself as flaky.
