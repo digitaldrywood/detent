@@ -167,6 +167,9 @@ func (s *Server) applyLocalSettings(ctx context.Context, call operatortool.Call)
 			}
 			expected := current.Routing
 			expected.ProjectIDs = r.Change.ProjectIDs
+			if r.Change.ProjectCapacityLimits == nil {
+				r.Change.ProjectCapacityLimits = expected.ProjectCapacityLimits
+			}
 			left, err := json.Marshal(expected)
 			if err != nil {
 				return nil, err
