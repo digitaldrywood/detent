@@ -176,11 +176,22 @@ function speechSegments(text: string, complete: boolean): Array<{ text: string; 
       continue;
     }
     if (/^!?\[/.test(rest)) {
-      const link = /^(!?)\[([^\]]*)\]\([^)]*\)/.exec(rest);
+      const link = /^(!?)\[([^\]]*)\]\(/.exec(rest);
       if (link) {
-        if (!link[1]) spoken += link[2]!.replace(/(?:https?:\/\/|www\.)\S+/gi, "");
-        index += link[0].length;
-        continue;
+        let end = link[0].length;
+        let depth = 1;
+        while (end < rest.length && depth > 0) {
+          const char = rest[end]!;
+          end += 1;
+          if (char === "\\") end = Math.min(end + 1, rest.length);
+          else if (char === "(") depth += 1;
+          else if (char === ")") depth -= 1;
+        }
+        if (depth === 0) {
+          if (!link[1]) spoken += link[2]!.replace(/(?:https?:\/\/|www\.)\S+/gi, "");
+          index += end;
+          continue;
+        }
       }
       if (!complete) break;
     }

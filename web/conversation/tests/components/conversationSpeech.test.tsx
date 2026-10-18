@@ -88,6 +88,25 @@ describe("conversation speech", () => {
     expect(said()).toHaveLength(5);
     await act(async () => { view.rerender(<Harness data={reply("An [unfinished link](https://example.test). Ready. ", true, { seq: 21, id: "next" })} />); });
     expect(said().slice(-2)).toEqual(["An unfinished link.", "Ready."]);
+    const destinations = [
+      "https://example.test/foo(bar)/private",
+      "https://example.test/foo(bar(baz))/private",
+      "https://example.test/foo\\(bar/private",
+      "https://example.test/foo\\)bar/private",
+    ];
+    for (const [index, destination] of destinations.entries()) {
+      const before = said();
+      const overrides = { seq: 22 + index, id: `link-${index}` };
+      const opening = `Visit [guide](${destination}`;
+      await act(async () => { view.rerender(<Harness data={reply(opening, true, overrides)} />); });
+      expect(said()).toEqual(before);
+      await act(async () => { view.rerender(<Harness data={reply(`${opening}). Ready. `, true, overrides)} />); });
+      expect(said()).toEqual([...before, "Visit guide.", "Ready."]);
+      await act(async () => { view.rerender(<Harness data={reply(`${opening}). Ready.`, false, overrides)} />); });
+      expect(said()).toEqual([...before, "Visit guide.", "Ready."]);
+      await act(async () => { view.rerender(<Harness data={reply(`${opening}).`, false, { ...overrides, id: `complete-link-${index}` })} />); });
+      expect(said()).toEqual([...before, "Visit guide.", "Ready.", "Visit guide."]);
+    }
     const containers = [
       ["> ~~~js", "> console.log(123);", "> ~~~"],
       ["> ```js", "> console.log(123);", "> ```"],
@@ -99,7 +118,7 @@ describe("conversation speech", () => {
     ];
     for (const [index, lines] of containers.entries()) {
       const before = said();
-      const overrides = { seq: 22 + index, id: `block-${index}` };
+      const overrides = { seq: 30 + index, id: `block-${index}` };
       const opening = `Read this.\n${lines[0]}\n${lines[1]}`;
       await act(async () => { view.rerender(<Harness data={reply(opening, true, overrides)} />); });
       expect(said()).toEqual([...before, "Read this."]);
