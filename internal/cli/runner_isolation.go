@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
@@ -53,6 +54,7 @@ func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) (isolati
 			tier = snapshot.Routing.IsolationTier
 		}
 	}
+	sprite := runner.SpriteSocketPresent()
 	for _, configured := range cfg.Projects {
 		workflow, err := project.LoadWorkflowContext(ctx, configured)
 		if err != nil {
@@ -67,7 +69,7 @@ func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) (isolati
 		for _, backend := range workflow.Config.AgentBackendConfigs() {
 			key := configured.ID + "/" + backend.ID
 			var unavailable error
-			report[key], _ = probeBackendTiers(ctx, backend, isolation.Policy{WritableRoots: []string{configured.Workdir}, HostServices: services, AllowLocalBinding: workflow.Config.Worker.EffectiveAllowLocalBinding(), ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains}, func(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy) error {
+			report[key], _ = probeBackendTiers(ctx, backend, isolation.Policy{Tier: tier, WritableRoots: []string{configured.Workdir}, HostServices: services, AllowLocalBinding: workflow.Config.Worker.EffectiveAllowLocalBinding(), ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains}, sprite, func(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy) error {
 				if policy.Tier == isolation.Sandbox && unavailable != nil {
 					return unavailable
 				}
@@ -90,10 +92,14 @@ func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) (isolati
 	return report, runnerauth.MergeProblems(nil, problems, time.Now())
 }
 
-func probeBackendTiers(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy, probe func(context.Context, workflowconfig.AgentBackend, isolation.Policy) error) ([]string, map[string]string) {
+func probeBackendTiers(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy, sprite bool, probe func(context.Context, workflowconfig.AgentBackend, isolation.Policy) error) ([]string, map[string]string) {
 	tiers := []string{}
 	reasons := map[string]string{}
-	for _, tier := range []string{isolation.NativeTrusted, isolation.Sandbox} {
+	probeTiers := []string{isolation.NativeTrusted}
+	if !sprite || policy.Tier != isolation.NativeTrusted {
+		probeTiers = append(probeTiers, isolation.Sandbox)
+	}
+	for _, tier := range probeTiers {
 		policy.Tier = tier
 		if err := probe(ctx, backend, policy); err == nil {
 			tiers = append(tiers, tier)
