@@ -1,0 +1,26 @@
+{
+  "identifier": "api-demo-research-001",
+  "title": "API seed research brief",
+  "description": "Create a research brief from the launch notes and customer interview excerpts.",
+  "state": "Research",
+  "labels": ["content-demo", "api-seed", "research"],
+  "fields": {
+    "artifact_type": "research_brief",
+    "audience": "evaluator",
+    "channel": "launch-blog",
+    "render_status": "queued",
+    "owner": "research"
+  },
+  "priority": 1,
+  "deliverable": {
+    "kind": "artifact",
+    "path": "output/api-seed-research-brief/manifest.json",
+    "review_url": "http://127.0.0.1:4101/review/api-demo-research-001",
+    "external_id": "api-demo-research-001",
+    "metadata": {
+      "artifact_gate": "render_status",
+      "expected_format": "markdown",
+      "output_directory": "output/api-seed-research-brief"
+    }
+  }
+}

@@ -1,0 +1,362 @@
+package hubserver
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+const (
+	webhookRetryDelay = time.Minute
+	webhookTimeFormat = "2006-01-02T15:04:05.000000000Z"
+)
+
+type storedWebhook struct {
+	InboxID       int64
+	DeliveryID    string
+	EventType     string
+	Action        string
+	Payload       []byte
+	PayloadSHA256 string
+	Status        string
+}
+
+type webhookProcessResult struct {
+	Outcome      webhookOutcome
+	RepositoryID *int64
+}
+
+func (d *database) recordWebhook(ctx context.Context, receipt webhookReceipt) (webhookReceiptResult, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return webhookReceiptResult{}, fmt.Errorf("begin GitHub webhook receipt: %w", err)
+	}
+	defer tx.Rollback()
+
+	receivedAt := formatWebhookTime(receipt.ReceivedAt)
+	var inboxID int64
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO github_webhook_inbox (
+			delivery_id,
+			event_type,
+			action,
+			headers_json,
+			payload_sha256,
+			payload_bytes,
+			status,
+			signature_verified_at,
+			received_at,
+			last_received_at,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+		ON CONFLICT(delivery_id) DO NOTHING
+		RETURNING id
+	`,
+		receipt.DeliveryID,
+		receipt.EventType,
+		receipt.Action,
+		receipt.HeadersJSON,
+		receipt.PayloadSHA256,
+		len(receipt.Payload),
+		receivedAt,
+		receivedAt,
+		receivedAt,
+		receivedAt,
+		receivedAt,
+	).Scan(&inboxID)
+	inserted := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return webhookReceiptResult{}, fmt.Errorf("insert GitHub webhook receipt: %w", err)
+	}
+
+	if !inserted {
+		var eventType string
+		var payloadSHA256 string
+		var payloadBytes int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT id, event_type, payload_sha256, payload_bytes
+			FROM github_webhook_inbox
+			WHERE delivery_id = ?
+		`, receipt.DeliveryID).Scan(&inboxID, &eventType, &payloadSHA256, &payloadBytes); err != nil {
+			return webhookReceiptResult{}, fmt.Errorf("read duplicate GitHub webhook receipt: %w", err)
+		}
+		if eventType != receipt.EventType || payloadSHA256 != receipt.PayloadSHA256 || payloadBytes != len(receipt.Payload) {
+			return webhookReceiptResult{}, ErrWebhookDeliveryConflict
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE github_webhook_inbox
+			SET redelivery_count = redelivery_count + 1,
+				last_received_at = ?,
+				updated_at = ?
+			WHERE id = ?
+		`, receivedAt, receivedAt, inboxID); err != nil {
+			return webhookReceiptResult{}, fmt.Errorf("record GitHub webhook redelivery: %w", err)
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO github_webhook_payloads (inbox_id, body, expires_at, created_at)
+		SELECT id, ?, ?, ?
+		FROM github_webhook_inbox
+		WHERE id = ? AND status NOT IN ('processed', 'ignored')
+		ON CONFLICT(inbox_id) DO UPDATE SET
+			body = excluded.body,
+			expires_at = excluded.expires_at,
+			created_at = excluded.created_at
+	`, receipt.Payload, formatWebhookTime(receipt.PayloadExpiresAt), receivedAt, inboxID); err != nil {
+		return webhookReceiptResult{}, fmt.Errorf("store GitHub webhook payload: %w", err)
+	}
+	if err := d.commit(ctx, tx); err != nil {
+		return webhookReceiptResult{}, fmt.Errorf("commit GitHub webhook receipt: %w", err)
+	}
+	return webhookReceiptResult{InboxID: inboxID, Duplicate: !inserted}, nil
+}
+
+func (s *Service) processWebhook(ctx context.Context, inboxID int64, now time.Time) error {
+	d := s.database
+	var delivery storedWebhook
+	err := d.reader.QueryRowContext(ctx, `
+		SELECT i.id, i.delivery_id, i.event_type, COALESCE(i.action, ''), p.body, i.payload_sha256, i.status
+		FROM github_webhook_inbox i
+		LEFT JOIN github_webhook_payloads p ON p.inbox_id = i.id
+		WHERE i.id = ?
+	`, inboxID).Scan(
+		&delivery.InboxID,
+		&delivery.DeliveryID,
+		&delivery.EventType,
+		&delivery.Action,
+		&delivery.Payload,
+		&delivery.PayloadSHA256,
+		&delivery.Status,
+	)
+	if err != nil {
+		return fmt.Errorf("read GitHub webhook delivery: %w", err)
+	}
+	if delivery.Status == "processed" || delivery.Status == "ignored" {
+		return nil
+	}
+	if len(delivery.Payload) == 0 {
+		processingErr := errors.New("GitHub webhook payload is unavailable")
+		failureErr := d.markWebhookFailed(ctx, inboxID, now, processingErr)
+		return errors.Join(processingErr, failureErr)
+	}
+	ctx = s.observeScheduledWebhook(ctx, delivery)
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin GitHub webhook processing: %w", err)
+	}
+	var status string
+	if err := tx.QueryRowContext(ctx, "SELECT status FROM github_webhook_inbox WHERE id=?", inboxID).Scan(&status); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	if status == "processed" || status == "ignored" {
+		return tx.Rollback()
+	}
+
+	processedAt := formatWebhookTime(now)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE github_webhook_inbox
+		SET status = 'processing',
+			processing_started_at = ?,
+			last_error = NULL,
+			updated_at = ?
+		WHERE id = ?
+	`, processedAt, processedAt, inboxID); err != nil {
+		rollbackErr := tx.Rollback()
+		return errors.Join(fmt.Errorf("mark GitHub webhook processing: %w", err), rollbackErr)
+	}
+
+	result, err := applyWebhook(context.WithValue(ctx, linkedSourceURLKey{}, d.linkedSourceBase), tx, delivery, now)
+	if err != nil {
+		rollbackErr := tx.Rollback()
+		failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
+		return errors.Join(err, rollbackErr, failureErr)
+	}
+	status = "processed"
+	if result.Outcome == webhookOutcomeIgnored {
+		status = "ignored"
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE github_webhook_inbox
+		SET repository_id = COALESCE(?, repository_id),
+			status = ?,
+			outcome = ?,
+			attempts = attempts + 1,
+			next_retry_at = NULL,
+			processed_at = ?,
+			last_error = NULL,
+			updated_at = ?
+		WHERE id = ?
+	`, result.RepositoryID, status, result.Outcome, processedAt, processedAt, inboxID); err != nil {
+		rollbackErr := tx.Rollback()
+		failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
+		return errors.Join(fmt.Errorf("complete GitHub webhook processing: %w", err), rollbackErr, failureErr)
+	}
+	if result.Outcome == webhookOutcomeIgnored {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM github_webhook_payloads WHERE inbox_id = ?", inboxID); err != nil {
+			rollbackErr := tx.Rollback()
+			failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
+			return errors.Join(fmt.Errorf("delete ignored GitHub webhook payload: %w", err), rollbackErr, failureErr)
+		}
+	}
+	if result.RepositoryID != nil {
+		if err := recordCheckpointSuccessTx(ctx, tx, *result.RepositoryID, checkpointWebhook, now, now); err != nil {
+			rollbackErr := tx.Rollback()
+			failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
+			return errors.Join(err, rollbackErr, failureErr)
+		}
+	}
+	if err := d.commit(ctx, tx); err != nil {
+		failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
+		return errors.Join(fmt.Errorf("commit GitHub webhook processing: %w", err), failureErr)
+	}
+	return nil
+}
+
+func (d *database) markWebhookFailed(ctx context.Context, inboxID int64, now time.Time, processingErr error) error {
+	timestamp := formatWebhookTime(now)
+	_, err := d.db.ExecContext(ctx, `
+		UPDATE github_webhook_inbox
+		SET status = 'failed',
+			attempts = attempts + 1,
+			next_retry_at = ?,
+			processing_started_at = ?,
+			last_error = ?,
+			updated_at = ?
+		WHERE id = ? AND status NOT IN ('processed', 'ignored')
+	`, formatWebhookTime(now.Add(webhookRetryDelay)), timestamp, processingErr.Error(), timestamp, inboxID)
+	if err != nil {
+		return fmt.Errorf("record GitHub webhook failure: %w", err)
+	}
+	repositoryID, found, err := d.webhookFailureRepository(ctx, inboxID)
+	if err != nil || !found {
+		return err
+	}
+	return d.recordCheckpointFailure(ctx, repositoryID, checkpointWebhook, now, processingErr)
+}
+
+func (d *database) webhookFailureRepository(ctx context.Context, inboxID int64) (int64, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	var repositoryID sql.NullInt64
+	var payload []byte
+	if err := d.reader.QueryRowContext(ctx, `
+		SELECT i.repository_id, p.body
+		FROM github_webhook_inbox i
+		LEFT JOIN github_webhook_payloads p ON p.inbox_id = i.id
+		WHERE i.id = ?
+	`, inboxID).Scan(&repositoryID, &payload); err != nil {
+		return 0, false, fmt.Errorf("read failed GitHub webhook repository: %w", err)
+	}
+	if repositoryID.Valid {
+		return repositoryID.Int64, true, nil
+	}
+	var webhook githubWebhookPayload
+	if json.Unmarshal(payload, &webhook) != nil || webhook.Repository == nil {
+		return 0, false, nil
+	}
+	fullName := webhookRepositoryFullName(webhook.Repository)
+	owner, name, ok := splitRepositoryFullName(fullName)
+	if !ok {
+		return 0, false, nil
+	}
+	var resolved int64
+	nodeID := optionalWebhookNodeID(webhook.Repository.NodeID)
+	err := d.reader.QueryRowContext(ctx, `
+		SELECT id FROM repositories
+		WHERE (? IS NOT NULL AND github_node_id = ?)
+			OR (lower(github_owner) = lower(?) AND lower(github_name) = lower(?))
+		ORDER BY CASE WHEN ? IS NOT NULL AND github_node_id = ? THEN 0 ELSE 1 END
+		LIMIT 1
+	`, nodeID, nodeID, owner, name, nodeID, nodeID).Scan(&resolved)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("resolve failed GitHub webhook repository: %w", err)
+	}
+	return resolved, true, nil
+}
+
+func optionalWebhookNodeID(nodeID *string) any {
+	if nodeID == nil || strings.TrimSpace(*nodeID) == "" {
+		return nil
+	}
+	return strings.TrimSpace(*nodeID)
+}
+
+func (s *Service) processPendingWebhooks(ctx context.Context, now time.Time) error {
+	inboxIDs, err := s.database.pendingWebhookIDs(ctx, now)
+	if err != nil {
+		return err
+	}
+
+	var processErr error
+	for _, inboxID := range inboxIDs {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(processErr, err)
+		}
+		if err := s.processWebhook(ctx, inboxID, now); err != nil {
+			processErr = errors.Join(processErr, err)
+		}
+	}
+	return processErr
+}
+
+func (d *database) pendingWebhookIDs(ctx context.Context, now time.Time) ([]int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	rows, err := d.reader.QueryContext(ctx, `
+		SELECT id
+		FROM github_webhook_inbox
+		WHERE status IN ('pending', 'processing', 'failed')
+			AND (next_retry_at IS NULL OR next_retry_at <= ?)
+		ORDER BY received_at, id
+	`, formatWebhookTime(now))
+	if err != nil {
+		return nil, fmt.Errorf("list pending GitHub webhooks: %w", err)
+	}
+	defer rows.Close()
+	var inboxIDs []int64
+	for rows.Next() {
+		var inboxID int64
+		if err := rows.Scan(&inboxID); err != nil {
+			return nil, fmt.Errorf("scan pending GitHub webhook: %w", err)
+		}
+		inboxIDs = append(inboxIDs, inboxID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending GitHub webhooks: %w", err)
+	}
+	return inboxIDs, nil
+}
+
+func (d *database) purgeWebhookPayloads(ctx context.Context, now time.Time, retention time.Duration) (int64, error) {
+	result, err := d.db.ExecContext(ctx, `
+		DELETE FROM github_webhook_payloads
+		WHERE EXISTS (
+			SELECT 1
+			FROM github_webhook_inbox i
+			WHERE i.id = github_webhook_payloads.inbox_id
+				AND (i.status = 'ignored'
+					OR (i.status = 'processed' AND julianday(i.processed_at) <= julianday(?)))
+		)
+	`, formatWebhookTime(now.Add(-retention)))
+	if err != nil {
+		return 0, fmt.Errorf("purge GitHub webhook payloads: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count purged GitHub webhook payloads: %w", err)
+	}
+	return deleted, nil
+}
+
+func formatWebhookTime(value time.Time) string {
+	return value.UTC().Format(webhookTimeFormat)
+}
