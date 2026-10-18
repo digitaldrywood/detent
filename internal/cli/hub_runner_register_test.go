@@ -423,7 +423,7 @@ func TestHubRunnerRegisterServiceRuntime(t *testing.T) {
 				if err == nil {
 					t.Fatal("service failure returned success")
 				}
-				if !strings.Contains(ErrorDetail(err), "enrollment succeeded") || !strings.Contains(ErrorHint(err), "detent start --config '"+configPath+"' --yes") {
+				if !strings.Contains(ErrorDetail(err), "enrollment succeeded") || !strings.Contains(ErrorHint(err), "detent --config '"+configPath+"' --headless") {
 					t.Fatalf("service failure lacks enrollment recovery: %v", err)
 				}
 				if test.factoryErr != nil && !errors.Is(err, test.factoryErr) || test.startErr != nil && !errors.Is(err, test.startErr) {

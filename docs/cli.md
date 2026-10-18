@@ -2,6 +2,29 @@
 
 [Back to README](../README.md#documentation)
 
+## Commands
+
+Use `detent --help` for the top-level commands and `detent help --format json`
+for the full command catalog, including subcommands, flags and examples.
+
+| Area | Commands |
+| --- | --- |
+| Hub and runner | `hub`, `cloud`, `attach` |
+| Artifacts and installation | `artifacts`, `update`, `version`, `skill` |
+| Configuration and diagnostics | `config`, `doctor`, `fix`, `logs`, `help`, `completion` |
+| Project operations | `pause`, `unpause`, `resume`, `promote`, `budget`, `capacity`, `exposure` |
+| Application reads and tools | `audit`, `issue`, `mcp`, `state`, `report` |
+| Isolated browser fixtures | `dev-runtime` |
+
+Enroll a runner with `detent hub runner register --service` to install and start
+its background service. Run `detent --config /path/to/global.yaml --headless`
+to start an enrolled runner in the foreground. Hub API keys are managed in
+Settings > API & MCP.
+
+`config migrate` and `fix workflow-layout` remain available for repository
+workflow migrations. `dev-runtime` remains available for `tests/visual` and
+Browser Visual CI fixtures.
+
 ## CLI exit codes
 
 Detent uses stable process exit codes so scripts and agents can branch on the
@@ -133,7 +156,6 @@ Structured command objects:
 | `detent promote api --priority 1` | `{"status":"ok","project":"api","priority":1}` |
 | `detent config path` | `{"path":"/path/global.yaml","rule":"--config"}` |
 | `detent exposure [--project api]` | `{"findings":[{"source_project":"api","source_repository":"private/api","destination_repository":"public/detent","issue_number":42,"issue_url":"https://github.com/public/detent/issues/42","matched_identifier":"private/api"}],"warnings":[]}` |
-| `detent auth token enable` / `detent auth token rotate` | `{"url":"https://detent.example.com/?token=..."}` |
 | `detent issue '#1643' --explain --project detent` | The exact versioned issue explanation DTO returned by the running service, with no wrapper. |
 | `detent state [--project detent]` | A bounded projection of the public state response, plus `truncation`; internal `board_issues` are excluded. |
 | `detent skill install --target codex --dry-run` | The complete skill install result, including bundle/build stamps, target intent and status, every planned filesystem action, and any rollback actions. |

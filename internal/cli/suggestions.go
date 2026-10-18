@@ -23,8 +23,6 @@ func ConfigureCommandSuggestions(root *cobra.Command) {
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		return WrapValidation(flagSuggestionError(cmd, err))
 	})
-	setSuggestFor(root, "remove-project", "rm", "delete", "remove")
-	setSuggestFor(root, "add-project", "add", "new")
 	setSuggestFor(root, "unpause", "resume", "start")
 	setSuggestFor(root, "pause", "stop")
 	setSuggestFor(root, "promote", "prioritize")

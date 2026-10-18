@@ -93,18 +93,26 @@ func TestRootCommandHelpCatalogJSON(t *testing.T) {
 	}
 
 	wantCommands := map[string]bool{
-		"detent":      false,
-		"add-project": false,
-		"config path": false,
-		"doctor":      false,
-		"logs":        false,
-		"start":       false,
-		"status":      false,
-		"update":      false,
-		"version":     false,
-		"shadow-run":  false,
+		"detent":              false,
+		"config path":         false,
+		"config migrate":      false,
+		"fix workflow-layout": false,
+		"hub serve":           false,
+		"hub runner register": false,
+		"cloud":               false,
+		"artifacts":           false,
+		"dev-runtime":         false,
+		"doctor":              false,
+		"logs":                false,
+		"update":              false,
+		"version":             false,
 	}
 	for _, command := range got.Commands {
+		for _, removed := range []string{"init", "add-project", "remove-project", "refresh-project", "onboarding", "work-item", "github-local", "start", "status", "auth", "key", "ci-trigger-label", "shadow-run"} {
+			if command.Name == removed || strings.HasPrefix(command.Name, removed+" ") {
+				t.Fatalf("help catalog includes retired command %q", command.Name)
+			}
+		}
 		if _, ok := wantCommands[command.Name]; ok {
 			wantCommands[command.Name] = true
 			if strings.TrimSpace(command.Short) == "" {
@@ -132,45 +140,52 @@ func TestRegisteredCommandsHaveExamples(t *testing.T) {
 }
 
 func TestRunCLIWritesProblemJSONForUnknownCommand(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
+	for _, command := range []string{"paues", "init", "add-project", "remove-project", "refresh-project", "onboarding", "work-item", "github-local", "start", "status", "auth", "key", "ci-trigger-label", "shadow-run"} {
+		t.Run(command, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
 
-	code := runCLI(context.Background(), []string{"--format", "json", "paues"}, &stdout, &stderr)
-	if code != 3 {
-		t.Fatalf("exit code = %d, want 3\nstderr:\n%s", code, stderr.String())
-	}
-	if stdout.Len() != 0 {
-		t.Fatalf("stdout = %q, want empty", stdout.String())
-	}
+			code := runCLI(context.Background(), []string{"--format", "json", command}, &stdout, &stderr)
+			if code != 3 {
+				t.Fatalf("exit code = %d, want 3\nstderr:\n%s", code, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout = %q, want empty", stdout.String())
+			}
 
-	var got struct {
-		Type         string   `json:"type"`
-		Title        string   `json:"title"`
-		Detail       string   `json:"detail"`
-		ExitCode     int      `json:"exit_code"`
-		DidYouMean   []string `json:"did_you_mean"`
-		SuggestedFix string   `json:"suggested_fix"`
-	}
-	if err := json.Unmarshal(stderr.Bytes(), &got); err != nil {
-		t.Fatalf("stderr is not problem JSON: %v\n%s", err, stderr.String())
-	}
-	if got.Type != "https://detent.dev/errors/unknown_command" {
-		t.Fatalf("type = %q, want unknown_command", got.Type)
-	}
-	if got.Title != "Unknown command" {
-		t.Fatalf("title = %q, want Unknown command", got.Title)
-	}
-	if got.ExitCode != code {
-		t.Fatalf("exit_code = %d, want %d", got.ExitCode, code)
-	}
-	if !strings.Contains(got.Detail, "paues") {
-		t.Fatalf("detail = %q, want typo", got.Detail)
-	}
-	if len(got.DidYouMean) != 1 || got.DidYouMean[0] != "pause" {
-		t.Fatalf("did_you_mean = %#v, want pause", got.DidYouMean)
-	}
-	if !strings.Contains(got.SuggestedFix, "detent pause") {
-		t.Fatalf("suggested_fix = %q, want detent pause", got.SuggestedFix)
+			var got struct {
+				Type         string   `json:"type"`
+				Code         string   `json:"code"`
+				Title        string   `json:"title"`
+				Detail       string   `json:"detail"`
+				ExitCode     int      `json:"exit_code"`
+				DidYouMean   []string `json:"did_you_mean"`
+				SuggestedFix string   `json:"suggested_fix"`
+			}
+			if err := json.Unmarshal(stderr.Bytes(), &got); err != nil {
+				t.Fatalf("stderr is not problem JSON: %v\n%s", err, stderr.String())
+			}
+			if got.Type != "https://detent.dev/errors/unknown_command" || got.Code != "unknown_command" {
+				t.Fatalf("type = %q, want unknown_command", got.Type)
+			}
+			if got.Title != "Unknown command" {
+				t.Fatalf("title = %q, want Unknown command", got.Title)
+			}
+			if got.ExitCode != code {
+				t.Fatalf("exit_code = %d, want %d", got.ExitCode, code)
+			}
+			if !strings.Contains(got.Detail, command) {
+				t.Fatalf("detail = %q, want command", got.Detail)
+			}
+			if command == "paues" {
+				if len(got.DidYouMean) != 1 || got.DidYouMean[0] != "pause" {
+					t.Fatalf("did_you_mean = %#v, want pause", got.DidYouMean)
+				}
+				if !strings.Contains(got.SuggestedFix, "detent pause") {
+					t.Fatalf("suggested_fix = %q, want detent pause", got.SuggestedFix)
+				}
+			}
+		})
 	}
 }
 
@@ -338,7 +353,7 @@ func TestCommandErrorsUseSemanticExitCodes(t *testing.T) {
 		cmd := newRootCommand(context.Background())
 		cmd.SetOut(&bytes.Buffer{})
 		cmd.SetErr(&bytes.Buffer{})
-		cmd.SetArgs([]string{"shadow-run"})
+		cmd.SetArgs([]string{"pause"})
 
 		err := cmd.Execute()
 		if err == nil {
@@ -559,59 +574,5 @@ func collectCommandsWithoutExamples(cmd *cobra.Command, missing *[]string) {
 	}
 	for _, child := range cmd.Commands() {
 		collectCommandsWithoutExamples(child, missing)
-	}
-}
-
-func TestShadowRunCommandAllowsDiffAndWritesReport(t *testing.T) {
-	inputPath := filepath.Join(t.TempDir(), "shadow.json")
-	input := `{
-  "date": "2026-05-31",
-  "now": "2026-05-31T12:00:00Z",
-  "go": {
-    "dispatch": {"dispatch_order": ["issue-go"]},
-    "tokens": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
-  },
-  "elixir": {
-    "dispatch": {"dispatch_order": ["issue-elixir"]},
-    "tokens": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 4}
-  }
-}`
-	if err := os.WriteFile(inputPath, []byte(input), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	cmd := newRootCommand(context.Background())
-	var stdout bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"shadow-run", "--input", inputPath, "--allow-diff"})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if !strings.Contains(stdout.String(), `"has_differences": true`) {
-		t.Fatalf("shadow report missing difference flag:\n%s", stdout.String())
-	}
-}
-
-func TestShadowRunCommandFailsOnDiffByDefault(t *testing.T) {
-	inputPath := filepath.Join(t.TempDir(), "shadow.json")
-	input := `{
-  "date": "2026-05-31",
-  "go": {"dispatch": {"dispatch_order": ["issue-go"]}},
-  "elixir": {"dispatch": {"dispatch_order": ["issue-elixir"]}}
-}`
-	if err := os.WriteFile(inputPath, []byte(input), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	cmd := newRootCommand(context.Background())
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"shadow-run", "--input", inputPath})
-
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "shadow run differences found") {
-		t.Fatalf("Execute() error = %v, want shadow run differences found", err)
 	}
 }

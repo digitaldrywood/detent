@@ -171,11 +171,11 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 				}
 				result.NextSteps = append(result.NextSteps, steps...)
 			}
-			start := fmt.Sprintf("detent start --config %s --yes", shellQuote(paths.config))
+			start := fmt.Sprintf("detent --config %s --headless", shellQuote(paths.config))
 			switch {
 			case service:
 				if err := startService(cmd, paths.config); err != nil {
-					return NewClassifiedError(err, classifyError(err).Slug, "Runner enrollment succeeded; install and start service: "+ErrorDetail(err), "Finish runner setup: "+start, nil)
+					return NewClassifiedError(err, classifyError(err).Slug, "Runner enrollment succeeded; install and start service: "+ErrorDetail(err), "Check the runner service and logs; for foreground diagnostics after stopping the service: "+start, nil)
 				}
 				result.ServiceRun = true
 				result.Service = serviceNameForConfig(configuration)
@@ -183,7 +183,7 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 					result.Service = runnerServiceName
 				}
 			default:
-				result.NextSteps = append(result.NextSteps, "Start the runner: "+start+" (or run it in the foreground: detent --config "+shellQuote(paths.config)+" --headless)")
+				result.NextSteps = append(result.NextSteps, "Start the runner: "+start)
 			}
 			return writeRunnerRegistration(cmd, result)
 		},

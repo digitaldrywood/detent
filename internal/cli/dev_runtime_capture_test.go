@@ -188,8 +188,6 @@ func TestWriteDemoTerminalCaptureIsDeterministicAndIsolated(t *testing.T) {
 	cast := string(raw)
 	for _, want := range []string{
 		`{"version":2,"width":100,"height":28`,
-		"detent init --config ./terminal/v1/config/global.yaml",
-		"detent add-project --config ./terminal/v1/config/global.yaml",
 		"detent doctor --config ./terminal/v1/config/global.yaml --port 0",
 		"result: PASS",
 	} {

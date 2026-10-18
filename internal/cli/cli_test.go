@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -20,7 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/cli"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -41,7 +39,7 @@ func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 	if !strings.HasPrefix(output, "Examples:\n") {
 		t.Fatalf("help output does not lead with examples:\n%s", output)
 	}
-	for _, want := range []string{"detent", "agent orchestrator", "doctor", "dev-runtime", "init", "add-project", "pause", "unpause", "onboarding", "promote", "remove-project"} {
+	for _, want := range []string{"detent", "agent orchestrator", "doctor", "dev-runtime", "hub", "cloud", "artifact", "pause", "unpause", "promote"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}
@@ -55,18 +53,18 @@ func TestCommandHelpLeadsWithExample(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"add-project", "--help"})
+	cmd.SetArgs([]string{"pause", "--help"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
 
 	output := stdout.String()
-	if !strings.HasPrefix(output, "Examples:\ndetent add-project --id api") {
-		t.Fatalf("add-project help does not lead with its runnable example:\n%s", output)
+	if !strings.HasPrefix(output, "Examples:\ndetent pause api") {
+		t.Fatalf("pause help does not lead with its runnable example:\n%s", output)
 	}
 	if strings.Count(output, "Examples:") != 1 {
-		t.Fatalf("add-project help examples count = %d, want 1:\n%s", strings.Count(output, "Examples:"), output)
+		t.Fatalf("pause help examples count = %d, want 1:\n%s", strings.Count(output, "Examples:"), output)
 	}
 }
 
@@ -95,16 +93,16 @@ func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
 		},
 		{
 			name:       "semantic command suggestion",
-			args:       []string{"rm", "detent"},
-			want:       []string{`unknown command "rm"`, "Did you mean this?", "\tremove-project"},
+			args:       []string{"stop", "detent"},
+			want:       []string{`unknown command "stop"`, "Did you mean this?", "\tpause"},
 			wantNoBoot: true,
 		},
 		{
 			name:       "semantic command suggestion before intended local flags",
-			args:       []string{"add", "--id", "detent", "--workflow", "WORKFLOW.md", "--workdir", "."},
-			want:       []string{`unknown command "add"`, "Did you mean this?", "\tadd-project"},
+			args:       []string{"stop", "--reason", "maintenance"},
+			want:       []string{`unknown command "stop"`, "Did you mean this?", "\tpause"},
 			dontWant:   []string{"unknown flag"},
-			wantCount:  map[string]int{"\tadd-project": 1},
+			wantCount:  map[string]int{"\tpause": 1},
 			wantNoBoot: true,
 		},
 		{
@@ -115,8 +113,8 @@ func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
 		},
 		{
 			name:       "local flag typo",
-			args:       []string{"add-project", "--wokdir", "x"},
-			want:       []string{"unknown flag: --wokdir", "Did you mean this?", "\t--workdir"},
+			args:       []string{"pause", "--reasn", "x"},
+			want:       []string{"unknown flag: --reasn", "Did you mean this?", "\t--reason"},
 			wantNoBoot: true,
 		},
 	}
@@ -781,102 +779,6 @@ func TestRootCommandUsesOnboardingModeWithoutValidWorkflow(t *testing.T) {
 	}
 }
 
-func TestInitWritesDefaultGlobalConfig(t *testing.T) {
-	t.Parallel()
-
-	path := filepath.Join(t.TempDir(), ".detent", "global.yaml")
-	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }))
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--config", path, "init"})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	cfg, err := globalconfig.Read(path)
-	if err != nil {
-		t.Fatalf("Read() error = %v", err)
-	}
-	if cfg.APIVersion != globalconfig.APIVersion || cfg.Kind != globalconfig.Kind {
-		t.Fatalf("config identity = %s/%s", cfg.APIVersion, cfg.Kind)
-	}
-	if len(cfg.Projects) != 0 {
-		t.Fatalf("Projects = %#v, want empty", cfg.Projects)
-	}
-}
-
-func TestProjectCommandsWriteJSONResults(t *testing.T) {
-	t.Parallel()
-
-	paths := createProjectFiles(t)
-	configPath := filepath.Join(paths.root, "global.yaml")
-	tests := []struct {
-		name string
-		args []string
-		want string
-	}{
-		{
-			name: "init",
-			args: []string{"init"},
-			want: fmt.Sprintf(`{"status":"ok","path":%q,"rule":"--config"}`, configPath),
-		},
-		{
-			name: "add-project",
-			args: []string{
-				"add-project",
-				"--id", "detent",
-				"--workflow", paths.workflowPath,
-				"--workdir", paths.workdirPath,
-				"--weight", "5",
-				"--priority", "50",
-				"--paused",
-				"--reason", "maintenance",
-				"--credential-ref", "github-default",
-			},
-			want: fmt.Sprintf(`{"id":"detent","workflow":%q,"workdir":%q,"weight":1,"priority":0,"paused":true,"paused_reason":"maintenance","credential_ref":"github-default"}`, paths.workflowPath, paths.workdirPath),
-		},
-		{
-			name: "pause",
-			args: []string{"pause", "detent", "--reason", "release hold", "--until-issue", "digitaldrywood/detent#1499"},
-			want: `{"status":"ok","project":"detent","paused":true,"paused_reason":"release hold","paused_until_issue":"digitaldrywood/detent#1499"}`,
-		},
-		{
-			name: "unpause",
-			args: []string{"unpause", "detent"},
-			want: `{"status":"ok","project":"detent","paused":false}`,
-		},
-		{
-			name: "promote",
-			args: []string{"promote", "detent", "--priority", "1"},
-			want: `{"status":"ok","project":"detent","priority":0}`,
-		},
-		{
-			name: "remove-project",
-			args: []string{"remove-project", "detent"},
-			want: `{"status":"ok","project":"detent","removed":true}`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cmd := cli.NewRootCommand(context.Background(), cli.WithCommandRunner(func(context.Context, string, ...string) (string, error) {
-				return "", errors.New("not a git repository")
-			}))
-			var stdout bytes.Buffer
-			cmd.SetOut(&stdout)
-			cmd.SetErr(&bytes.Buffer{})
-			args := append([]string{"--config", configPath}, tt.args...)
-			cmd.SetArgs(args)
-
-			if err := cmd.Execute(); err != nil {
-				t.Fatalf("Execute() error = %v", err)
-			}
-			assertJSONEqual(t, stdout.Bytes(), tt.want)
-		})
-	}
-}
-
 func TestCLIValidationErrorsCarryHints(t *testing.T) {
 	t.Parallel()
 
@@ -896,41 +798,6 @@ func TestCLIValidationErrorsCarryHints(t *testing.T) {
 			wantMessage:  "--port must be greater than or equal to 0",
 			wantHint:     "e.g. detent --port 0",
 			wantCommands: []string{"detent --port 0"},
-		},
-		{
-			name:         "missing project id",
-			args:         []string{"--config", configPath, "add-project", "--workflow", "./WORKFLOW.md", "--workdir", "~/code/api"},
-			wantMessage:  "--id is required",
-			wantHint:     "e.g. detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api",
-			wantCommands: []string{"detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api"},
-		},
-		{
-			name:         "missing project workflow",
-			args:         []string{"--config", configPath, "add-project", "--id", "api", "--workdir", "~/code/api"},
-			wantMessage:  "--workflow is required",
-			wantHint:     "e.g. detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api",
-			wantCommands: []string{"detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api"},
-		},
-		{
-			name:         "missing project workdir",
-			args:         []string{"--config", configPath, "add-project", "--id", "api", "--workflow", "./WORKFLOW.md"},
-			wantMessage:  "--workdir is required",
-			wantHint:     "e.g. detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api",
-			wantCommands: []string{"detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api"},
-		},
-		{
-			name:         "invalid project weight",
-			args:         []string{"--config", configPath, "add-project", "--id", "api", "--workflow", "./WORKFLOW.md", "--workdir", "~/code/api", "--weight", "0"},
-			wantMessage:  "--weight must be positive",
-			wantHint:     "e.g. detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api --weight 1",
-			wantCommands: []string{"detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api --weight 1"},
-		},
-		{
-			name:         "paused project requires reason",
-			args:         []string{"--config", configPath, "add-project", "--id", "api", "--workflow", "./WORKFLOW.md", "--workdir", "~/code/api", "--paused"},
-			wantMessage:  "--reason is required with --paused",
-			wantHint:     `e.g. detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api --paused --reason "maintenance"`,
-			wantCommands: []string{`detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api --paused --reason "maintenance"`},
 		},
 		{
 			name:         "invalid promote priority",
@@ -969,302 +836,6 @@ func TestCLIValidationErrorsCarryHints(t *testing.T) {
 	}
 }
 
-func TestConfigAndProjectConflictErrorsCarryHints(t *testing.T) {
-	t.Parallel()
-
-	paths := createProjectFiles(t)
-	configPath := filepath.Join(paths.root, "global.yaml")
-	writeGlobalConfig(t, configPath, []globalconfig.Project{
-		{ID: "detent", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
-	})
-
-	tests := []struct {
-		name         string
-		args         []string
-		wantErr      error
-		wantMessage  string
-		wantHint     string
-		wantCommands []string
-	}{
-		{
-			name:         "config exists",
-			args:         []string{"--config", configPath, "init"},
-			wantErr:      cli.ErrConfigExists,
-			wantMessage:  "global config already exists: " + configPath,
-			wantHint:     "run detent init --force to overwrite it, or edit the file reported by detent config path",
-			wantCommands: []string{"detent init --force", "detent config path"},
-		},
-		{
-			name: "project exists",
-			args: []string{
-				"--config", configPath,
-				"add-project",
-				"--id", "detent",
-				"--workflow", paths.workflowPath,
-				"--workdir", paths.workdirPath,
-			},
-			wantErr:      cli.ErrProjectExists,
-			wantMessage:  `project "detent" already exists`,
-			wantHint:     `project id "detent" is already taken; run detent config path to inspect current projects before choosing a new --id`,
-			wantCommands: []string{"detent config path"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			var stderr bytes.Buffer
-			cmd := cli.NewRootCommand(context.Background())
-			cmd.SetOut(&bytes.Buffer{})
-			cmd.SetErr(&stderr)
-			cmd.SetArgs(tt.args)
-
-			err := cmd.Execute()
-			if err == nil {
-				t.Fatal("Execute() error = nil, want error")
-			}
-			assertHintedError(t, err, tt.wantErr, tt.wantMessage, tt.wantHint, tt.wantCommands)
-			if !strings.Contains(stderr.String(), "Hint: "+tt.wantHint) {
-				t.Fatalf("stderr missing hint %q:\n%s", tt.wantHint, stderr.String())
-			}
-		})
-	}
-}
-
-func TestAddProjectWritesConfigAndSignalsManager(t *testing.T) {
-	t.Parallel()
-
-	paths := createProjectFiles(t)
-	configPath := filepath.Join(paths.root, "global.yaml")
-	signals := make(chan cli.Signal, 1)
-
-	cmd := cli.NewRootCommand(
-		context.Background(),
-		cli.WithStdoutTTY(func() bool { return true }),
-		cli.WithSignalFunc(func(_ context.Context, signal cli.Signal) error {
-			signals <- signal
-			return nil
-		}),
-	)
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{
-		"--config", configPath,
-		"add-project",
-		"--id", " detent ",
-		"--workflow", paths.workflowPath,
-		"--workflow-ref", " origin/main ",
-		"--workdir", paths.workdirPath,
-		"--weight", "5",
-		"--priority", "50",
-		"--paused",
-		"--reason", "release hold",
-		"--credential-ref", " github-default ",
-	})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	cfg, err := readStoredCLIConfiguration(t, configPath)
-	if err != nil {
-		t.Fatalf("Read() error = %v", err)
-	}
-	if len(cfg.Projects) != 1 {
-		t.Fatalf("Projects length = %d, want 1", len(cfg.Projects))
-	}
-	got := cfg.Projects[0]
-	want := globalconfig.Project{
-		GlobalCache:    cfg.Global.Cache.Normalized(),
-		ModelSelection: got.ModelSelection,
-		ID:             "detent",
-		Workflow:       paths.workflowPath,
-		WorkflowRef:    "origin/main",
-		Workdir:        paths.workdirPath,
-		Weight:         1,
-		Priority:       0,
-		Paused:         true,
-		PausedReason:   "release hold",
-		PausedAt:       got.PausedAt,
-		CredentialRef:  "github-default",
-	}
-	if _, err := time.Parse(time.RFC3339, got.PausedAt); err != nil {
-		t.Fatalf("PausedAt = %q, want RFC 3339 timestamp", got.PausedAt)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("project = %#v, want %#v", got, want)
-	}
-
-	signal := <-signals
-	if signal.Operation != cli.OperationAddProject || !reflect.DeepEqual(signal.Project, want) {
-		t.Fatalf("signal = %#v, want add project %#v", signal, want)
-	}
-}
-
-func TestAddProjectCommandEmitsJSONResult(t *testing.T) {
-	t.Parallel()
-
-	paths := createProjectFiles(t)
-	configPath := filepath.Join(paths.root, "global.yaml")
-	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
-	var stdout bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{
-		"--config", configPath,
-		"add-project",
-		"--id", "detent",
-		"--workflow", paths.workflowPath,
-		"--workflow-ref", "origin/main",
-		"--workdir", paths.workdirPath,
-		"--weight", "5",
-		"--paused",
-		"--reason", "release hold",
-	})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	var got struct {
-		ID          string `json:"id"`
-		Workflow    string `json:"workflow"`
-		WorkflowRef string `json:"workflow_ref"`
-		Workdir     string `json:"workdir"`
-		Weight      int    `json:"weight"`
-		Paused      bool   `json:"paused"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
-		t.Fatalf("add-project output is not JSON: %v\n%s", err, stdout.String())
-	}
-	if got.ID != "detent" || got.Workflow != paths.workflowPath || got.Workdir != paths.workdirPath {
-		t.Fatalf("project = %#v, want detent project", got)
-	}
-	if got.WorkflowRef != "origin/main" {
-		t.Fatalf("workflow_ref = %q, want origin/main", got.WorkflowRef)
-	}
-	if got.Weight != 1 || !got.Paused {
-		t.Fatalf("project weight/paused = %d/%v, want 1/true", got.Weight, got.Paused)
-	}
-}
-
-func TestAddProjectReportsDirtyGlobalConfigRepository(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
-	tests := []struct {
-		name       string
-		formatArgs []string
-		stdoutTTY  bool
-		want       []string
-	}{
-		{
-			name:      "pretty",
-			stdoutTTY: true,
-			want:      []string{"global_config_repository:", "global_config_status: tracked", "not durably recorded", "git checkout", "git reset"},
-		},
-		{
-			name:       "json",
-			formatArgs: []string{"--format", "json"},
-			want:       []string{`"global_config_git"`, `"tracked": true`, `"dirty": true`, `"status": " M global.yaml"`},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			paths := createProjectFiles(t)
-			repo := paths.root
-			targetPath := filepath.Join(repo, "global.yaml")
-			writeGlobalConfig(t, targetPath, nil)
-			runCLITestGit(t, repo, "init")
-			repositoryRoot := runCLITestGit(t, repo, "rev-parse", "--show-toplevel")
-			repositoryRoot, err := filepath.Abs(repositoryRoot)
-			if err != nil {
-				t.Fatalf("Abs(%q) error = %v", repositoryRoot, err)
-			}
-			runCLITestGit(t, repo, "add", "global.yaml")
-			runCLITestGit(t, repo, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "commit", "-m", "initial")
-
-			linkPath := filepath.Join(t.TempDir(), "global.yaml")
-			if err := os.Symlink(targetPath, linkPath); err != nil {
-				t.Skipf("symlink unavailable: %v", err)
-			}
-
-			cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return tt.stdoutTTY }))
-			var stdout bytes.Buffer
-			cmd.SetOut(&stdout)
-			cmd.SetErr(&bytes.Buffer{})
-			args := append([]string{}, tt.formatArgs...)
-			args = append(args,
-				"--config", linkPath,
-				"add-project",
-				"--id", "detent",
-				"--workflow", paths.workflowPath,
-				"--workdir", paths.workdirPath,
-			)
-			cmd.SetArgs(args)
-
-			if err := cmd.Execute(); err != nil {
-				t.Fatalf("Execute() error = %v", err)
-			}
-			repositoryRootOutput := repositoryRoot
-			if len(tt.formatArgs) > 0 {
-				encodedRepositoryRoot, err := json.Marshal(repositoryRoot)
-				if err != nil {
-					t.Fatalf("Marshal(%q) error = %v", repositoryRoot, err)
-				}
-				repositoryRootOutput = `"repository_root": ` + string(encodedRepositoryRoot)
-			}
-			for _, want := range append([]string{repositoryRootOutput}, tt.want...) {
-				if !strings.Contains(stdout.String(), want) {
-					t.Fatalf("stdout missing %q:\n%s", want, stdout.String())
-				}
-			}
-		})
-	}
-}
-
-func TestAddProjectRejectsPlainRelativeWorkflowPath(t *testing.T) {
-	root := t.TempDir()
-	daemonDir := filepath.Join(root, "daemon")
-	projectDir := filepath.Join(root, "project")
-	writeWorkflow(t, filepath.Join(daemonDir, "WORKFLOW.md"), validWorkflowContent())
-	writeWorkflow(t, filepath.Join(projectDir, "WORKFLOW.md"), validWorkflowContent())
-	configPath := filepath.Join(root, "global.yaml")
-	writeGlobalConfig(t, configPath, nil)
-	t.Chdir(daemonDir)
-
-	cmd := cli.NewRootCommand(context.Background())
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{
-		"--config", configPath,
-		"add-project",
-		"--id", "detent",
-		"--workflow", "WORKFLOW.md",
-		"--workdir", projectDir,
-	})
-
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("Execute() error = nil, want relative workflow validation error")
-	}
-	want := "projects[0].workflow: must be absolute or home-relative when workflow_ref is empty"
-	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("Execute() error = %q, want substring %q", err, want)
-	}
-
-	cfg, err := globalconfig.Read(configPath)
-	if err != nil {
-		t.Fatalf("Read() error = %v", err)
-	}
-	if len(cfg.Projects) != 0 {
-		t.Fatalf("Projects length = %d, want 0", len(cfg.Projects))
-	}
-}
-
 func TestRootCommandClassifiesMistypedCommandSuggestion(t *testing.T) {
 	t.Parallel()
 
@@ -1274,7 +845,7 @@ func TestRootCommandClassifiesMistypedCommandSuggestion(t *testing.T) {
 		want string
 	}{
 		{name: "near miss", args: []string{"paues"}, want: "pause"},
-		{name: "semantic alias", args: []string{"rm", "api"}, want: "remove-project"},
+		{name: "semantic alias", args: []string{"stop", "api"}, want: "pause"},
 	}
 
 	for _, tt := range tests {
@@ -1312,7 +883,7 @@ func TestProblemForErrorBuildsStableEnvelope(t *testing.T) {
 		wantExit  int
 	}{
 		{name: "general", err: errors.New("disk is full"), wantCode: "general", wantTitle: "Command failed", wantExit: cli.ExitGeneral},
-		{name: "validation", err: cli.NewValidationError("--id is required", "Run detent add-project.", nil), wantCode: "validation", wantTitle: "Validation failed", wantExit: cli.ExitValidation},
+		{name: "validation", err: cli.NewValidationError("--id is required", "Run detent pause --help.", nil), wantCode: "validation", wantTitle: "Validation failed", wantExit: cli.ExitValidation},
 		{name: "unknown command", err: errors.New(`unknown command "paues" for "detent"`), wantCode: "unknown_command", wantTitle: "Unknown command", wantExit: cli.ExitValidation},
 		{name: "unknown flag", err: errors.New("unknown flag: --hedless"), wantCode: "unknown_flag", wantTitle: "Unknown flag", wantExit: cli.ExitValidation},
 		{name: "auth", err: fmt.Errorf("wrapped: %w", cli.ErrGitHubAuth), wantCode: "github_auth", wantTitle: "GitHub authentication required", wantExit: cli.ExitAuth},
@@ -1458,15 +1029,6 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 		}
 	})
 
-	runCommand("remove-project", "detent")
-	cfg, err := readStoredCLIConfiguration(t, configPath)
-	if err != nil {
-		t.Fatalf("Read() error = %v", err)
-	}
-	if len(cfg.Projects) != 1 || cfg.Projects[0].ID != "docs" {
-		t.Fatalf("Projects = %#v, want docs", cfg.Projects)
-	}
-	assertSignal(t, signals, cli.OperationRemoveProject, "detent")
 }
 
 func TestProjectAdminCommandsPreserveProjectPathLiterals(t *testing.T) {
@@ -1809,32 +1371,6 @@ func TestProjectAdminCommandsRejectMissingProject(t *testing.T) {
 	}
 }
 
-func TestWithProjectManagerSignalsLiveManager(t *testing.T) {
-	t.Parallel()
-
-	paths := createProjectFiles(t)
-	configPath := filepath.Join(paths.root, "global.yaml")
-	manager := &projectManagerProbe{}
-	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }), cli.WithProjectManager(manager))
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{
-		"--config", configPath,
-		"add-project",
-		"--id", "detent",
-		"--workflow", paths.workflowPath,
-		"--workdir", paths.workdirPath,
-	})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	if manager.added.ID != "detent" {
-		t.Fatalf("added project = %#v, want detent", manager.added)
-	}
-}
-
 type projectPaths struct {
 	root         string
 	workflowPath string
@@ -1935,18 +1471,6 @@ func writeGlobalConfig(t *testing.T, path string, projects []globalconfig.Projec
 	}
 }
 
-func runCLITestGit(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-
-	cmd := exec.CommandContext(t.Context(), "git", args...)
-	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s error = %v\n%s", strings.Join(args, " "), err, output)
-	}
-	return strings.TrimSpace(string(output))
-}
-
 func assertProject(t *testing.T, configPath string, id string, assert func(globalconfig.Project)) {
 	t.Helper()
 
@@ -1991,43 +1515,6 @@ func assertHintedError(t *testing.T, err error, wantErr error, wantMessage strin
 	if !reflect.DeepEqual(gotCommands, wantCommands) {
 		t.Fatalf("commands = %#v, want %#v", gotCommands, wantCommands)
 	}
-}
-
-func assertJSONEqual(t *testing.T, got []byte, want string) {
-	t.Helper()
-
-	var gotValue any
-	if err := json.Unmarshal(got, &gotValue); err != nil {
-		t.Fatalf("Unmarshal(got) error = %v\n%s", err, string(got))
-	}
-	var wantValue any
-	if err := json.Unmarshal([]byte(want), &wantValue); err != nil {
-		t.Fatalf("Unmarshal(want) error = %v\n%s", err, want)
-	}
-	if !reflect.DeepEqual(gotValue, wantValue) {
-		t.Fatalf("json output = %#v, want %#v\nraw: %s", gotValue, wantValue, string(got))
-	}
-}
-
-type projectManagerProbe struct {
-	added globalconfig.Project
-}
-
-func (p *projectManagerProbe) Add(_ context.Context, cfg globalconfig.Project) error {
-	p.added = cfg
-	return nil
-}
-
-func (p *projectManagerProbe) Remove(context.Context, project.ID) error {
-	return nil
-}
-
-func (p *projectManagerProbe) Pause(context.Context, project.ID) error {
-	return nil
-}
-
-func (p *projectManagerProbe) Unpause(context.Context, project.ID) error {
-	return nil
 }
 
 func readStoredCLIConfiguration(t *testing.T, path string) (globalconfig.Config, error) {

@@ -1115,7 +1115,7 @@ func checkDoctorConfig(ctx context.Context, configPath string, projectID string,
 			Name:   "Config resolution",
 			Status: doctorFail,
 			Detail: fmt.Sprintf("%s via %s; %v", resolution.Path, resolution.Rule, err),
-			Hint:   "Run detent init or fix the global config file.",
+			Hint:   "Fix the global config file.",
 		}
 	}
 

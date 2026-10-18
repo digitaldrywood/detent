@@ -38,7 +38,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 				Name:   "Project workflows",
 				Status: doctorWarn,
 				Detail: "no projects configured",
-				Hint:   "Run detent add-project to add a project.",
+				Hint:   "Select a Hub project with detent hub runner register.",
 			},
 		}
 	}
@@ -223,7 +223,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 						Name:   "Project workflows",
 						Status: doctorWarn,
 						Detail: "no projects configured",
-						Hint:   "Run detent add-project to add a project.",
+						Hint:   "Select a Hub project with detent hub runner register.",
 					},
 				}
 			},
