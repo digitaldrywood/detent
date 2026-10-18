@@ -6,7 +6,7 @@
 // decode the same files, so the directory is a stable cross-language contract
 // surface: add a fixture here and the Go test picks it up by name.
 import * as Schema from "effect/Schema";
-import { ReportsFacets, ReportsReport } from "./reports.ts";
+import { OrganizationReports, ReportsFacets, ReportsReport } from "./reports.ts";
 
 import {
   AccountBootstrap,
@@ -72,6 +72,7 @@ export type FixtureSchema = Schema.Codec<any, any, never, never>;
 export const FIXTURE_SCHEMAS: Readonly<Record<string, FixtureSchema>> = {
   "account-billing.json": BillingReport,
   "diagnostics.json": DiagnosticsReport,
+  "organizationReports.json": OrganizationReports,
   "reportOptions.json": ReportsFacets,
   "reports.json": ReportsReport,
   "health-findings.json": HealthFindingsRead,

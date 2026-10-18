@@ -167,6 +167,18 @@ describe("the conversation shell", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/work"));
   });
 
+  it("keeps a shared Reports view in sync with sidebar project changes", async () => {
+    const { router } = await mountApp({ path: "/reports/flow?project=proj_alpha&range=30d&compare=off", storedProject: "proj_alpha" });
+    fireEvent.click(await screen.findByLabelText("Filter threads by project"));
+    fireEvent.click(await screen.findByRole("option", { name: "beta" }));
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ project: "proj_beta", range: "30d", compare: "off" }));
+    expect(router.state.location.pathname).toBe("/reports/flow");
+    fireEvent.click(screen.getByLabelText("Filter threads by project"));
+    fireEvent.click(await screen.findByRole("option", { name: "All Mock organization projects" }));
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ project: "all", range: "30d", compare: "off" }));
+    expect(await screen.findByText("Choose a project in the sidebar to view its reports.")).toBeTruthy();
+  });
+
   it("copies an exact read-only conversation handoff without posting or dispatching", async () => {
     let conversationId = "";
     const writeText = vi.fn().mockResolvedValue(undefined);

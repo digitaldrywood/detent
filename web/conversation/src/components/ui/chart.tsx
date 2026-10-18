@@ -137,6 +137,7 @@ function Chart({
   formatValue = (value: number) => String(Math.round(value * 10) / 10),
   className,
   marker,
+  renderReadout,
 }: {
   readonly categories: readonly ChartCategory[];
   readonly series: readonly ChartSeries[];
@@ -145,6 +146,7 @@ function Chart({
   readonly formatValue?: (value: number) => string;
   readonly className?: string;
   readonly marker?: ChartMarker;
+  readonly renderReadout?: (index: number) => React.ReactNode;
 }) {
   const [ref, width] = useWidth(640);
   const [active, setActive] = React.useState<number | null>(null);
@@ -306,9 +308,11 @@ function Chart({
       {readout === undefined || readout === null || active === null ? null : (
         <div
           role="status"
-          className="pointer-events-none absolute top-0 z-10 min-w-36 rounded-md border border-border bg-popover px-2.5 py-1.5 text-popover-foreground text-xs shadow-md"
+          className={cn("pointer-events-none absolute top-0 z-10 min-w-36 rounded-md border border-border bg-popover px-2.5 py-1.5 text-popover-foreground text-xs shadow-md", renderReadout !== undefined && "w-full max-w-80")}
           style={{
-            left: Math.min(Math.max(0, center(active) - 72), Math.max(0, width - 160)),
+            left: renderReadout === undefined
+              ? Math.min(Math.max(0, center(active) - 72), Math.max(0, width - 160))
+              : Math.min(Math.max(0, center(active) - 160), Math.max(0, width - 320)),
           }}
         >
           <div className="mb-1 font-medium">{readout.label}</div>
@@ -334,6 +338,7 @@ function Chart({
               </div>
             );
           })}
+          {renderReadout?.(active)}
         </div>
       )}
     </div>
