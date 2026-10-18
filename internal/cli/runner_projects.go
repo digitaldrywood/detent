@@ -189,7 +189,7 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 	}
 	needsApply := p.syncRuntimeLocked()
 	before := p.cfg
-	p.cfg, err = runnerProjectsForIdentity(ctx, p.cfg, p.client, identity, false)
+	p.cfg, err = runnerProjectsForIdentity(ctx, p.cfg, p.client, identity, false, false)
 	if err != nil {
 		return err
 	}
@@ -336,6 +336,14 @@ func (p *runnerProjects) syncRuntimeLocked() bool {
 }
 
 func resolveRunnerProjects(ctx context.Context, cfg globalconfig.Config, previous ...globalconfig.Config) (globalconfig.Config, error) {
+	return resolveRunnerProjectsWithMode(ctx, cfg, false, previous...)
+}
+
+func resolveRunnerProjectsReadOnly(ctx context.Context, cfg globalconfig.Config) (globalconfig.Config, error) {
+	return resolveRunnerProjectsWithMode(ctx, cfg, true)
+}
+
+func resolveRunnerProjectsWithMode(ctx context.Context, cfg globalconfig.Config, readOnly bool, previous ...globalconfig.Config) (globalconfig.Config, error) {
 	if cfg.Client.IdentityFile == "" || cfg.WorkspaceRoot == "" {
 		return cfg, nil
 	}
@@ -348,7 +356,11 @@ func resolveRunnerProjects(ctx context.Context, cfg globalconfig.Config, previou
 		}
 	}
 	settings := cfg.Client.Normalized()
-	client, err := hubclient.New(hubclient.Config{URL: settings.URL, IdentityFile: settings.IdentityFile, HTTPClient: &http.Client{Timeout: settings.RequestTimeout()}})
+	newClient := hubclient.New
+	if readOnly {
+		newClient = hubclient.NewRunnerReader
+	}
+	client, err := newClient(hubclient.Config{URL: settings.URL, IdentityFile: settings.IdentityFile, HTTPClient: &http.Client{Timeout: settings.RequestTimeout()}})
 	if err != nil {
 		return cfg, err
 	}
@@ -356,7 +368,7 @@ func resolveRunnerProjects(ctx context.Context, cfg globalconfig.Config, previou
 	if err != nil {
 		return cfg, fmt.Errorf("read runner's allowed projects: %w", err)
 	}
-	resolved, err := runnerProjectsForIdentity(ctx, cfg, client, identity, len(previous) == 0)
+	resolved, err := runnerProjectsForIdentity(ctx, cfg, client, identity, !readOnly && len(previous) == 0, readOnly)
 	if len(previous) > 0 && err == nil {
 		resolved.Projects = slices.DeleteFunc(resolved.Projects, func(selected globalconfig.Project) bool {
 			return !slices.ContainsFunc(previous[0].Projects, func(current globalconfig.Project) bool { return current.ID == selected.ID }) && !runnerCheckoutReady(ctx, selected)
@@ -365,7 +377,7 @@ func resolveRunnerProjects(ctx context.Context, cfg globalconfig.Config, previou
 	return resolved, err
 }
 
-func runnerProjectsForIdentity(ctx context.Context, cfg globalconfig.Config, client *hubclient.Client, identity runnerauth.Identity, prepare bool) (globalconfig.Config, error) {
+func runnerProjectsForIdentity(ctx context.Context, cfg globalconfig.Config, client *hubclient.Client, identity runnerauth.Identity, prepare, readOnly bool) (globalconfig.Config, error) {
 	if string(identity.OrganizationID) != cfg.Client.OrganizationID {
 		return cfg, errors.New("runner organization does not match enrolled identity")
 	}
@@ -384,6 +396,16 @@ func runnerProjectsForIdentity(ctx context.Context, cfg globalconfig.Config, cli
 		}
 		remote, err := native.Project(ctx)
 		if err != nil {
+			if readOnly {
+				var apiErr *hubclient.APIError
+				authorityFailure := !errors.Is(err, hubclient.ErrUnavailable)
+				if errors.As(err, &apiErr) {
+					authorityFailure = apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden
+				}
+				if authorityFailure {
+					return cfg, fmt.Errorf("read runner project: %w", err)
+				}
+			}
 			slog.Error("runner project setup failed", "runner_id", identity.RunnerID, "project_id", id, "attribution", "instance", "error", err)
 			if kept, ok := retainedRunnerProject(previous, previousNative, id, err); ok {
 				delete(cfg.Client.NativeProjects, name)

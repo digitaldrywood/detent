@@ -275,6 +275,22 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 		defer cancel()
 		httpClient = clientWithTimeout(httpClient, timeout)
 	}
+	if c.runner != nil && c.runner.readOnly {
+		if method != http.MethodGet {
+			return errors.New("runner reader only permits GET requests")
+		}
+		return c.runnerRead(ctx, func(token string) error {
+			return c.requestWithToken(ctx, httpClient, method, path, headers, input, output, "Bearer "+token)
+		})
+	}
+	token, err := c.bearerToken(ctx)
+	if err != nil {
+		return err
+	}
+	return c.requestWithToken(ctx, httpClient, method, path, headers, input, output, token)
+}
+
+func (c *Client) requestWithToken(ctx context.Context, httpClient *http.Client, method, path string, headers http.Header, input, output any, token string) error {
 	var body io.Reader
 	stream, streaming := input.(io.Reader)
 	if streaming {
@@ -293,10 +309,6 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
 	if err != nil {
 		return fmt.Errorf("build Hub request: %w", err)
-	}
-	token, err := c.bearerToken(ctx)
-	if err != nil {
-		return err
 	}
 	for name, values := range headers {
 		for _, value := range values {

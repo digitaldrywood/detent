@@ -156,7 +156,7 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 			}
 			loaded, err := readRunnerSetupConfig(paths.config)
 			if err == nil {
-				loaded, err = runnerProjectsForIdentity(cmd.Context(), loaded, client, identity, false)
+				loaded, err = runnerProjectsForIdentity(cmd.Context(), loaded, client, identity, false, false)
 			}
 			if err == nil {
 				err = report(cmd.Context(), loaded, version)

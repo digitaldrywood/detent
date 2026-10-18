@@ -1,6 +1,7 @@
 package hubclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1022,5 +1023,140 @@ func TestLockIdentityFileRefusesHeldFile(t *testing.T) {
 	}
 	if err := release(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunnerReaderReconcilesAtomicRotation(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		pending   bool
+		protected bool
+		expired   bool
+		wrongHost bool
+		wantErr   string
+	}{
+		{name: "pending credential accepted", pending: true},
+		{name: "rotation persisted"},
+		{name: "pending rotation during protected read", pending: true, protected: true},
+		{name: "persisted rotation during protected read", protected: true},
+		{name: "expired rotation during protected read", protected: true, expired: true, wantErr: "expired"},
+		{name: "Hub binding changed during protected read", protected: true, wrongHost: true, wantErr: "binding cannot be replaced"},
+		{name: "expired Hub response", expired: true, wantErr: "expired"},
+		{name: "Hub binding changed", wrongHost: true, wantErr: "binding cannot be replaced"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "private", "identity.json")
+			file, err := runnerauth.Initialize(path, "https://hub.example.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			file.Identity.OrganizationID = "org_example"
+			file.Identity.Operations = []string{runnerauth.Read}
+			file.Identity.ExpiresAt = time.Now().Add(runnerauth.CredentialTTL)
+			if err := runnerauth.Save(path, file); err != nil {
+				t.Fatal(err)
+			}
+			replacement, err := runnerauth.Initialize(filepath.Join(t.TempDir(), "private", "replacement.json"), file.HubURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls, protectedCalls := 0, 0
+			var rotated []byte
+			transport := executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Method != http.MethodGet {
+					t.Fatalf("reader attempted %s", r.Method)
+				}
+				status := http.StatusOK
+				body := `{"code":"unauthorized"}`
+				protected := strings.Contains(r.URL.Path, "/projects/")
+				if protected {
+					protectedCalls++
+				}
+				if tt.protected && calls == 1 {
+					raw, err := json.Marshal(file.Identity)
+					return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(raw))}, err
+				}
+				if !tt.protected && calls == 1 || tt.protected && protectedCalls == 1 && protected {
+					release, err := lockIdentityFile(path)
+					if err != nil {
+						return nil, err
+					}
+					file.PendingCredential = replacement.Credential
+					if !tt.pending {
+						file.Credential, file.PendingCredential = replacement.Credential, ""
+					}
+					if err := errors.Join(runnerauth.Save(path, file), release()); err != nil {
+						return nil, err
+					}
+					rotated, err = os.ReadFile(path)
+					if err != nil {
+						return nil, err
+					}
+					if tt.wrongHost {
+						file.HubURL = "https://other.example.test"
+						rotated, err = json.Marshal(file)
+						if err != nil {
+							return nil, err
+						}
+						if err := os.WriteFile(path, rotated, 0600); err != nil {
+							return nil, err
+						}
+					}
+
+					status = http.StatusUnauthorized
+				} else {
+					if r.Header.Get("Authorization") != "Bearer "+replacement.Credential {
+						t.Fatal("reader did not use the rotated credential")
+					}
+					identity := file.Identity
+					if tt.expired {
+						identity.ExpiresAt = time.Now().Add(-time.Hour)
+					}
+					raw, err := json.Marshal(identity)
+					if protected {
+						raw, err = json.Marshal(tracker.NativeProject{ID: "prj_example", OrganizationID: "org_example"})
+					}
+					if err != nil {
+						return nil, err
+					}
+					body = string(raw)
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})
+			client, err := NewRunnerReader(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.protected {
+				native, nativeErr := client.Native("org_example", "prj_example")
+				if nativeErr != nil {
+					t.Fatal(nativeErr)
+				}
+				remote, readErr := native.Project(t.Context())
+				err = readErr
+				if tt.wantErr == "" && (err != nil || remote.ID != "prj_example" || remote.OrganizationID != "org_example") {
+					t.Fatalf("protected project = %+v, %v", remote, err)
+				}
+			} else {
+				var identity runnerauth.Identity
+				identity, err = client.RunnerIdentity(t.Context())
+				if tt.wantErr == "" && identity.Binding != file.Identity.Binding {
+					t.Fatalf("reader identity = %+v, want binding %+v", identity, file.Identity.Binding)
+				}
+			}
+			if tt.wantErr == "" && err != nil || tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("reader error = %v; want %q", err, tt.wantErr)
+			}
+			if !tt.protected && calls > 2 || calls > 4 || protectedCalls > 2 {
+				t.Fatalf("reader requests = %d, want at most two credential reads", calls)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(after) != string(rotated) {
+				t.Fatalf("reader overwrote rotation: %v", err)
+			}
+		})
 	}
 }
