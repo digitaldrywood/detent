@@ -1803,7 +1803,7 @@ func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connect
 	}
 	releaseBackend, ok := projectConnector.(releasepkg.Backend)
 	if !ok {
-		return releaseCoordinatorBuild{}, errors.New("create release coordinator: connector does not support releases")
+		releaseBackend = newGitHubReleaseBackend(cfg)
 	}
 	return releaseCoordinatorBuild{coordinator: releasepkg.New(releasepkg.Config{
 		Enabled:            cfg.Release.Enabled,

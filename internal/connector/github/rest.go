@@ -14,55 +14,12 @@ func restIssuePath(ref issueRef) string {
 	return "/repos/" + url.PathEscape(ref.Owner) + "/" + url.PathEscape(ref.Name) + "/issues/" + strconv.Itoa(ref.Number)
 }
 
-func restIssueSearchPath(ref issueRef, page int) string {
-	values := url.Values{}
-	values.Set("q", "user:"+ref.Owner+" is:issue is:open "+strconv.Itoa(ref.Number))
-	values.Set("per_page", strconv.Itoa(bodyParentSearchPageSize))
-	values.Set("page", strconv.Itoa(page))
-	return "/search/issues?" + values.Encode()
-}
-
 func restIssueCommentsPath(ref issueRef) string {
 	return restIssuePath(ref) + "/comments"
 }
 
-func restIssueBlockedByDependenciesPath(ref issueRef) string {
-	return restIssuePath(ref) + "/dependencies/blocked_by"
-}
-
-func restIssueBlockedByDependenciesListPath(ref issueRef) string {
-	return restIssueBlockedByDependenciesPath(ref) + "?per_page=100"
-}
-
-func restIssueBlockedByDependencyPath(ref issueRef, dependencyID int) string {
-	return restIssueBlockedByDependenciesPath(ref) + "/" + strconv.Itoa(dependencyID)
-}
-
 func restIssueCommentsListPath(ref issueRef) string {
 	return restIssueCommentsPath(ref) + "?per_page=100"
-}
-
-func restCollaboratorPermissionPath(ref issueRef, login string) string {
-	return "/repos/" + url.PathEscape(ref.Owner) + "/" + url.PathEscape(ref.Name) +
-		"/collaborators/" + url.PathEscape(login) + "/permission"
-}
-
-func restIssueTimelinePath(ref issueRef) string {
-	return restIssuePath(ref) + "/timeline?per_page=100"
-}
-
-func restIssueAssigneesPath(ref issueRef) string {
-	return restIssuePath(ref) + "/assignees"
-}
-
-func restPullRequestsPath(repo pullRequestRepo, page int) string {
-	values := url.Values{}
-	values.Set("state", "all")
-	values.Set("sort", "updated")
-	values.Set("direction", "desc")
-	values.Set("per_page", strconv.Itoa(pullRequestsPageSize))
-	values.Set("page", strconv.Itoa(page))
-	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/pulls?" + values.Encode()
 }
 
 func restPullRequestsCreatePath(repo pullRequestRepo) string {
@@ -229,38 +186,6 @@ func checkRunWorkflowRunID(checkRun restCheckRun) int64 {
 	return 0
 }
 
-func githubIssueNodeFromREST(ref issueRef, issue restIssue) githubIssueNode {
-	repo := ref.Owner + "/" + ref.Name
-	return githubIssueNode{
-		TypeName:          "Issue",
-		Comments:          nodeConnection[issueComment]{TotalCount: issue.Comments},
-		ID:                strings.TrimSpace(issue.NodeID),
-		Number:            issue.Number,
-		Title:             issue.Title,
-		Body:              restStringValue(issue.Body),
-		State:             issue.State,
-		StateReason:       issue.StateReason,
-		URL:               issue.HTMLURL,
-		CreatedAt:         restTimeString(issue.CreatedAt),
-		UpdatedAt:         restTimeString(issue.UpdatedAt),
-		ClosedAt:          restTimeString(issue.ClosedAt),
-		Author:            issue.User,
-		AuthorAssociation: issue.AuthorAssociation,
-		Assignees:         restAssigneesConnection(issue.Assignees),
-		Labels:            nodeConnection[label]{Nodes: issue.Labels},
-		Repository: repository{
-			NameWithOwner: repo,
-		},
-	}
-}
-
-func restStringValue(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
-}
-
 func restTimeString(value *time.Time) *string {
 	if value == nil {
 		return nil
@@ -279,13 +204,47 @@ func restCommentID(comment restComment) string {
 	return ""
 }
 
-func restAssigneesConnection(values []restAssignee) nodeConnection[assignee] {
-	out := make([]assignee, 0, len(values))
-	for _, value := range values {
-		out = append(out, assignee{
-			ID:    strings.TrimSpace(value.NodeID),
-			Login: strings.TrimSpace(value.Login),
-		})
+func actorType(value *actor) string {
+	if value == nil {
+		return ""
 	}
-	return nodeConnection[assignee]{Nodes: out}
+	if actorType := strings.TrimSpace(value.Type); actorType != "" {
+		return actorType
+	}
+	return strings.TrimSpace(value.TypeName)
+}
+
+func restIssueLabelPath(ref issueRef, label string) string {
+	return restIssueLabelsPath(ref) + "/" + url.PathEscape(label)
+}
+
+func restRepositoryPath(repo string) string {
+	owner, name, ok := splitRepositoryName(repo)
+	if !ok {
+		return "/repos/"
+	}
+	return "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(name)
+}
+
+func stringSliceContainsFold(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(want)) {
+			return true
+		}
+	}
+	return false
+}
+
+func restIssueLabelsPath(ref issueRef) string {
+	return restIssuePath(ref) + "/labels"
+}
+
+func restRepositoryLabelsListPath(repo pullRequestRepo) string {
+	values := url.Values{}
+	values.Set("per_page", "100")
+	return restRepositoryLabelsPath(repo) + "?" + values.Encode()
+}
+
+func restRepositoryLabelsPath(repo pullRequestRepo) string {
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/labels"
 }

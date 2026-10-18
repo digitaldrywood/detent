@@ -58,7 +58,7 @@ func TestMCPFleetReads(t *testing.T) {
 			deps.Store = openWebTestStore(t)
 			if name == operatortool.AIDebugPrompt {
 				cfg := workflowconfig.Default()
-				cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+				cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 				cfg.Tracker.Repository = "example/repo"
 				cfg.Tracker.APIKey = "fixture"
 				cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel

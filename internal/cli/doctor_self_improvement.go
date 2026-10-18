@@ -17,16 +17,17 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/factory"
+	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
 	doctorWorkflowProposalDefaultThreshold = 2
 	doctorWorkflowProposalBacklogState     = "Backlog"
-	doctorWorkflowProposalDeliveryIssue    = "github_issue"
+	doctorWorkflowProposalDeliveryIssue    = "native_issue"
 )
 
 type doctorWorkflowImprovementProposal struct {
@@ -414,6 +415,7 @@ func createDoctorWorkflowImprovementProposalIssues(
 	ctx context.Context,
 	projectID string,
 	cfg workflowconfig.Config,
+	global globalconfig.Config,
 	deps doctorDeps,
 	proposals []doctorWorkflowImprovementProposal,
 ) (created []doctorWorkflowCreatedProposalIssue, err error) {
@@ -428,7 +430,9 @@ func createDoctorWorkflowImprovementProposalIssues(
 	}
 
 	if deps.proposalConnector == nil {
-		deps.proposalConnector = defaultDoctorProposalConnector
+		deps.proposalConnector = func(workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
+			return defaultDoctorProposalConnector(global, projectID, deps.lookupEnv)
+		}
 	}
 	projectConnector, err := deps.proposalConnector(cfg)
 	if err != nil {
@@ -483,60 +487,30 @@ func createDoctorWorkflowImprovementProposalIssues(
 }
 
 func doctorWorkflowProposalIssueDeliverySupported(cfg workflowconfig.Config) error {
-	switch cfg.Tracker.Kind {
-	case workflowconfig.TrackerGitHub:
-		if cfg.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceProjectV2 {
-			return errors.New("self-improvement proposal issue creation requires GitHub label or issue-field status mode; project_v2 cannot place new issues in Backlog")
-		}
-	default:
+	if cfg.Tracker.Kind != workflowconfig.TrackerHubNative {
 		return fmt.Errorf("self-improvement proposal issue creation is not supported for tracker kind %q", cfg.Tracker.Kind)
 	}
 	return nil
 }
 
-func defaultDoctorProposalConnector(cfg workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
-	projectConnector, err := factory.NewFromConfig(factory.Config{
-		Kind: cfg.Tracker.Kind,
-
-		Endpoint:                    cfg.Tracker.Endpoint,
-		APIKey:                      cfg.Tracker.APIKey,
-		HTTPMaxIdleConns:            cfg.Tracker.HTTPMaxIdleConns,
-		HTTPMaxIdleConnsPerHost:     cfg.Tracker.HTTPMaxIdleConnsPerHost,
-		HTTPIdleConnTimeoutMS:       cfg.Tracker.HTTPIdleConnTimeoutMS,
-		GitHubRESTMinReserve:        cfg.Tracker.GitHubRESTMinReserve,
-		GitHubRESTFanoutMaxRequests: cfg.Tracker.GitHubRESTFanoutMaxRequests,
-		GitHubUnstartedSeconds:      cfg.Tracker.GitHubUnstartedSeconds,
-		GitHubRESTDebugLogging:      cfg.Tracker.GitHubRESTDebugLogging,
-		GitHubAppID:                 cfg.Tracker.GitHubAppID,
-		GitHubAppPrivateKey:         cfg.Tracker.GitHubAppPrivateKey,
-		GitHubAppPrivateKeyPath:     cfg.Tracker.GitHubAppPrivateKeyPath,
-		GitHubAppInstallationID:     cfg.Tracker.GitHubAppInstallationID,
-		GitHubStatusSource:          cfg.Tracker.GitHubStatusSource,
-		DependencySource:            cfg.Dependencies.Source,
-		ProjectSlug:                 cfg.Tracker.ProjectSlug,
-		Repository:                  cfg.Tracker.Repository,
-		StatusField:                 cfg.Tracker.StatusField,
-		StatusLabelPrefix:           cfg.Tracker.StatusLabelPrefix,
-		ActiveStates:                cfg.Tracker.ActiveStates,
-		ObservedStates:              cfg.Tracker.ObservedStates,
-		PlanStop:                    cfg.Plan.Stop,
-		TerminalStates:              cfg.Tracker.TerminalStates,
-		StateMap:                    doctorTrackerStateMap(cfg.Tracker.StateMap),
-		PriorityMap:                 doctorTrackerPriorityMap(cfg.Tracker.PriorityMap),
-		RequiredStatusChecks:        cfg.Gate.RequiredStatusChecks,
-		LocalStatus:                 cfg.Gate.LocalStatus,
-	})
+func defaultDoctorProposalConnector(cfg globalconfig.Config, projectID string, lookup func(string) string) (doctorWorkflowProposalConnector, error) {
+	nativeID := cfg.Client.NativeProjects[projectID]
+	if nativeID == "" {
+		return nil, errors.New("self-improvement proposals require a native project mapping")
+	}
+	if lookup == nil {
+		lookup = os.Getenv
+	}
+	settings := cfg.Client.Normalized()
+	client, err := hubclient.New(hubclient.Config{URL: settings.URL, IdentityFile: settings.IdentityFile, TokenSource: func() string { return lookup(settings.TokenEnvironment) }})
 	if err != nil {
 		return nil, err
 	}
-	proposalConnector, ok := projectConnector.(doctorWorkflowProposalConnector)
-	if !ok {
-		if err := closeDoctorAutoPromoteConnector(projectConnector); err != nil {
-			return nil, err
-		}
-		return nil, connector.ErrNotImplemented
+	native, err := client.Native(tracker.OrganizationID(settings.OrganizationID), tracker.ProjectID(nativeID))
+	if err != nil {
+		return nil, err
 	}
-	return proposalConnector, nil
+	return hubclient.NewNativeConnector(native)
 }
 
 func doctorWorkflowProposalIssueSearchStates(cfg workflowconfig.Config) []string {
@@ -643,27 +617,6 @@ func doctorWorkflowNormalizedProposalThreshold(threshold int) int {
 		return doctorWorkflowProposalDefaultThreshold
 	}
 	return threshold
-}
-
-func doctorTrackerPriorityMap(value workflowconfig.StringOrMap) map[string]*int {
-	if !value.IsMap {
-		return nil
-	}
-	out := make(map[string]*int, len(value.Map))
-	for name, rank := range value.Map {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		switch rank := rank.(type) {
-		case nil:
-			out[name] = nil
-		case int:
-			rankValue := rank
-			out[name] = &rankValue
-		}
-	}
-	return out
 }
 
 func cloneAnyMap(values map[string]any) map[string]any {

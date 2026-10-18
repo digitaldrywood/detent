@@ -142,7 +142,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					t.Fatal(err)
 				}
 				runWorkflowSourceGit(t, root, "add", "WORKFLOW.md")
-				raw := "schema: 1\ntracker:\n  kind: github\n  repository: example/project\n  github_status_source: label\n  api_key: fixture-token\nschedule_ownership:\n  enabled: false\n"
+				raw := "schema: 1\ntracker:\n  kind: hub_native\n  repository: example/project\n  github_status_source: label\n  api_key: fixture-token\nschedule_ownership:\n  enabled: false\n"
 				if err := os.WriteFile(filepath.Join(root, "detent.yaml"), []byte(raw), 0600); err != nil {
 					t.Fatal(err)
 				}

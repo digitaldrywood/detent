@@ -60,7 +60,7 @@ func TestConnectorInspectReleaseRepository(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 
-			conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel, RequiredStatusChecks: []string{"CI"}})
+			conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo", RequiredStatusChecks: []string{"CI"}})
 			if err != nil {
 				t.Fatalf("NewConnector() error = %v", err)
 			}
@@ -114,7 +114,7 @@ func TestConnectorCreateTagPublishesAnnotatedReference(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel})
+	conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo"})
 	if err != nil {
 		t.Fatalf("NewConnector() error = %v", err)
 	}
@@ -173,7 +173,7 @@ func TestReleaseReportsReconcileResponseLoss(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 			for range 2 {
-				conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel})
+				conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -225,7 +225,7 @@ func TestReleaseTagReconciliation(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 			for range 2 {
-				conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel})
+				conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -278,7 +278,7 @@ func TestReleaseCheckEvidenceCompleteness(t *testing.T) {
 				}
 			}))
 			t.Cleanup(server.Close)
-			conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel})
+			conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -327,7 +327,7 @@ func TestReleaseTagOriginRecovery(t *testing.T) {
 				}
 			}))
 			t.Cleanup(server.Close)
-			conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel})
+			conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -371,7 +371,7 @@ func TestReleaseRerunReconciliation(t *testing.T) {
 				w.WriteHeader(http.StatusCreated)
 			}))
 			t.Cleanup(server.Close)
-			conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel})
+			conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -393,7 +393,7 @@ func TestReleaseCrossRepositoryOrigins(t *testing.T) {
 		writeReleaseJSON(t, w, []map[string]any{{"number": 10, "body": "Fixes other/repo#9\nFixes #8"}})
 	}))
 	t.Cleanup(server.Close)
-	conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel})
+	conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +434,7 @@ func TestReleaseReportPublicationProtection(t *testing.T) {
 				writeReleaseJSON(t, w, map[string]string{"node_id": "comment"})
 			}))
 			t.Cleanup(server.Close)
-			conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel, Publication: publication.Policy{Sources: []publication.Source{{Repository: "private/source"}}}})
+			conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo", Publication: publication.Policy{Sources: []publication.Source{{Repository: "private/source"}}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -479,7 +479,7 @@ func TestReleaseTagPublicationProtection(t *testing.T) {
 				}
 			}))
 			t.Cleanup(server.Close)
-			conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo", GitHubStatusSource: GitHubStatusSourceLabel, Publication: publication.Policy{Sources: []publication.Source{{Repository: "private/source"}}}})
+			conn, err := NewConnector(Config{Endpoint: server.URL + "/graphql", APIKey: "token", Repository: "example/repo", Publication: publication.Policy{Sources: []publication.Source{{Repository: "private/source"}}}})
 			if err != nil {
 				t.Fatal(err)
 			}

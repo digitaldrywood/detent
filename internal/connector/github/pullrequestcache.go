@@ -28,8 +28,6 @@ type pullRequestStatusCacheKey struct {
 }
 
 type pullRequestStatusCacheEntry struct {
-	revision [32]byte
-	observed bool
 	status   pullRequestStatus
 	cachedAt time.Time
 }
@@ -290,26 +288,3 @@ func clonePullRequestReview(review pullRequestReview) pullRequestReview {
 
 // GetObserved requires fresh independent source evidence in addition to the
 // existing cache identity. REST-only cache entries cannot satisfy it.
-func (c *pullRequestStatusCache) GetObserved(repo pullRequestRepo, number int, head string, revision [32]byte) (pullRequestStatus, bool) {
-	key, ok := newPullRequestStatusCacheKey(repo, number, head)
-	if !ok {
-		return pullRequestStatus{}, false
-	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	entry, ok := c.entries[key]
-	if !ok || !entry.observed || entry.revision != revision {
-		return pullRequestStatus{}, false
-	}
-	return clonePullRequestStatus(entry.status), true
-}
-
-func (c *pullRequestStatusCache) SetObserved(repo pullRequestRepo, number int, head string, revision [32]byte, status pullRequestStatus) {
-	key, ok := newPullRequestStatusCacheKey(repo, number, head)
-	if !ok {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.entries[key] = pullRequestStatusCacheEntry{status: clonePullRequestStatus(status), cachedAt: c.now(), observed: true, revision: revision}
-}

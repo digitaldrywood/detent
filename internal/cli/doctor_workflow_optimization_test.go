@@ -7,11 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -391,6 +394,60 @@ func TestDoctorWorkflowImprovementProposalsUsesCapturedLessonThreshold(t *testin
 	}
 }
 
+func TestDoctorNativeProposalConnector(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, project, native string
+		valid                 bool
+	}{
+		{"first project", "first", "prj_first", true},
+		{"second project", "second", "prj_second", true},
+		{"missing mapping", "missing", "", false},
+		{"invalid mapping", "invalid", "other", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var created atomic.Bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				base := "/api/v2/organizations/org_example/projects/" + test.native
+				if r.Header.Get("Authorization") != "Bearer fixture-token" {
+					t.Error("missing project authentication")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == base:
+					_, _ = w.Write([]byte(`{"states":[{"name":"Backlog"}]}`))
+				case r.Method == http.MethodPost && r.URL.Path == base+"/work-items":
+					created.Store(true)
+					_, _ = w.Write([]byte(`{"work_item_id":"wi_proposal","title":"Proposal","state":"Backlog"}`))
+				default:
+					t.Errorf("unexpected native request: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(server.Close)
+			cfg := globalconfig.Config{}
+			cfg.Client.URL = server.URL
+			cfg.Client.OrganizationID = "org_example"
+			cfg.Client.NativeProjects = map[string]string{"first": "prj_first", "second": "prj_second", "invalid": "other"}
+			conn, err := defaultDoctorProposalConnector(cfg, test.project, func(string) string { return "fixture-token" })
+			if !test.valid {
+				if err == nil || conn != nil {
+					t.Fatalf("invalid scope accepted: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue, err := conn.CreateIssue(t.Context(), connector.IssueDraft{Title: "Proposal", Body: "Proposal body"})
+			if err != nil || issue.ID != "wi_proposal" || !created.Load() {
+				t.Fatalf("native proposal = %+v, created=%t, err=%v", issue, created.Load(), err)
+			}
+		})
+	}
+}
+
 func TestDoctorWorkflowOptimizationCreatesProposalIssuesWithFakeHub(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
@@ -414,7 +471,7 @@ func TestDoctorWorkflowOptimizationCreatesProposalIssuesWithFakeHub(t *testing.T
 	deps := successfulDoctorDeps()
 	deps.loadWorkflow = func(path string) (workflowconfig.Workflow, error) {
 		workflow, err := workflowconfig.LoadWorkflow(path)
-		workflow.Config.Tracker.Kind = workflowconfig.TrackerGitHub
+		workflow.Config.Tracker.Kind = workflowconfig.TrackerHubNative
 		workflow.Config.Tracker.APIKey = "fixture-token"
 		workflow.Config.Tracker.Repository = "example-org/example-project"
 		workflow.Config.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
@@ -448,7 +505,7 @@ func TestDoctorWorkflowOptimizationContinuesWhenProposalStateUpdateBlocked(t *te
 
 	ctx := context.Background()
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Tracker.APIKey = "fixture-token"
 	cfg.Tracker.ProjectSlug = "fixture-project"
 	cfg.Tracker.Repository = "example-org/example-project"
@@ -471,7 +528,7 @@ func TestDoctorWorkflowOptimizationContinuesWhenProposalStateUpdateBlocked(t *te
 		return projectConnector, nil
 	}
 
-	created, err := createDoctorWorkflowImprovementProposalIssues(ctx, "detent", cfg, deps, []doctorWorkflowImprovementProposal{proposal})
+	created, err := createDoctorWorkflowImprovementProposalIssues(ctx, "detent", cfg, globalconfig.Config{}, deps, []doctorWorkflowImprovementProposal{proposal})
 	if err != nil {
 		t.Fatalf("createDoctorWorkflowImprovementProposalIssues() error = %v", err)
 	}
@@ -488,7 +545,7 @@ func TestDoctorWorkflowOptimizationReusesProposalIssueOutsideBacklog(t *testing.
 
 	ctx := context.Background()
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Tracker.APIKey = "fixture-token"
 	cfg.Tracker.ProjectSlug = "fixture-project"
 	cfg.Tracker.Repository = "example-org/example-project"
@@ -517,7 +574,7 @@ func TestDoctorWorkflowOptimizationReusesProposalIssueOutsideBacklog(t *testing.
 		}), nil
 	}
 
-	created, err := createDoctorWorkflowImprovementProposalIssues(ctx, "detent", cfg, deps, []doctorWorkflowImprovementProposal{proposal})
+	created, err := createDoctorWorkflowImprovementProposalIssues(ctx, "detent", cfg, globalconfig.Config{}, deps, []doctorWorkflowImprovementProposal{proposal})
 	if err != nil {
 		t.Fatalf("createDoctorWorkflowImprovementProposalIssues() error = %v", err)
 	}
