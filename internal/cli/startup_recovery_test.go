@@ -197,21 +197,48 @@ func TestRuntimeUpdaterReleaseDiscoveryForEnrolledRunner(t *testing.T) {
 	t.Setenv("DETENT_HUB_TOKEN", "fixture-token")
 	previousTransport := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = previousTransport })
-	for _, enrolled := range []bool{false, true} {
-		t.Run(map[bool]string{false: "Hub without enrollment", true: "enrolled release discovery"}[enrolled], func(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		enrolled bool
+		deferred bool
+	}{
+		{name: "Hub without enrollment"},
+		{name: "enrolled release discovery", enrolled: true},
+		{name: "deferred startup authenticates release discovery", enrolled: true, deferred: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			releaseReads, hubReads := 0, 0
 			http.DefaultTransport = readinessRoundTripper(func(request *http.Request) (*http.Response, error) {
 				body := `{"version":"operator-landed-a69c4b1dd060"}`
+				statusCode := http.StatusOK
 				if request.URL.Host == "api.github.com" {
 					releaseReads++
 					body = `[{"tag_name":"v0.117.47"}]`
+					if tt.deferred && request.Header.Get("Authorization") != "Bearer configured-token" {
+						statusCode = http.StatusForbidden
+						body = `{"message":"API rate limit exceeded"}`
+					}
 				} else {
 					hubReads++
 				}
-				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+				return &http.Response{StatusCode: statusCode, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 			})
 			cfg := BootConfig{Global: globalconfig.Config{Client: globalconfig.HubClient{URL: "https://hub.example.test"}}}
-			if enrolled {
+			if tt.deferred {
+				cfg.Global.GitHubToken = "gh"
+				var err error
+				cfg.Runtime, err = resolveRuntimeSettings(t.Context(), runtimeInput{
+					Config: &cfg.Global, DeferProjectValidation: true,
+					Flags: runtimeFlags{Port: runtimeIntFlag{Set: true}},
+				}, runtimeDeps{
+					lookupEnv:   mapLookup(nil),
+					ghAuthToken: func(context.Context) (string, error) { return "configured-token", nil },
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.enrolled {
 				cfg.Global.Client.IdentityFile = filepath.Join(t.TempDir(), "private", "runner.json")
 				identity, err := runnerauth.Initialize(cfg.Global.Client.IdentityFile, cfg.Global.Client.URL)
 				if err != nil {

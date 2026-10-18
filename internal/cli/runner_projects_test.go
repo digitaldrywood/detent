@@ -266,7 +266,8 @@ func TestRunnerCloudProjects(t *testing.T) {
 	for _, test := range []struct {
 		name               string
 		externalWorkspaces bool
-	}{{name: "machine only"}, {name: "external retained checkpoint", externalWorkspaces: true}} {
+		noInstallationAuth bool
+	}{{name: "machine only"}, {name: "external retained checkpoint", externalWorkspaces: true}, {name: "unavailable project credentials", noInstallationAuth: true}} {
 		t.Run(test.name, func(t *testing.T) {
 			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_orders": "Orders", "prj_tools": "Tools", "prj_unconfigured": "Unconfigured"})
 			hub.repositories["prj_unconfigured"] = ""
@@ -339,10 +340,16 @@ func TestRunnerCloudProjects(t *testing.T) {
 					if err != nil {
 						return cfg, err
 					}
+					if test.noInstallationAuth {
+						cfg.GitHubToken = ""
+					}
 					return resolveRunnerProjects(t.Context(), cfg)
 				}
 				opts.ghAuthToken = func(context.Context) (string, error) {
-					return "", errors.New("gh auth status failed: exit status 1")
+					if test.noInstallationAuth {
+						t.Fatal("runner startup requested unrelated project credentials")
+					}
+					return "configured-token", nil
 				}
 				opts.lookupEnv = func(name string) string {
 					if name == "GITHUB_TOKEN" || name == "GH_TOKEN" {

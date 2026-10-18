@@ -182,9 +182,6 @@ func resolveRuntimeSettings(ctx context.Context, input runtimeInput, deps runtim
 	if input.DeferProjectValidation && tokenConfig != nil {
 		copy := *tokenConfig
 		copy.Projects = nil
-		if githubTokenSentinel(copy.GitHubToken) {
-			copy.GitHubToken = ""
-		}
 		tokenConfig = &copy
 	}
 	token, warnings, err := resolveRuntimeGitHubToken(ctx, tokenConfig, deps)
