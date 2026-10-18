@@ -73,7 +73,7 @@ generate: assets
 	fi
 	@$(MAKE) sqlc
 
-.PHONY: assets generate-docs release-assets release-notes
+.PHONY: assets generate-docs release-notes
 assets: app css release-notes
 
 generate-docs:
@@ -286,9 +286,6 @@ check-invariants:
 
 modernize-check:
 	go fix -diff $(MODERNIZE_FIX_FLAGS) ./...
-
-release-assets:
-	@if [ -n "$(DETENT_PREBUILT_DIR)" ]; then $(MAKE) release-notes; else $(MAKE) assets; fi
 
 release-notes:
 	go run ./tools/releasenotes -version "$(VERSION)" -commit "$(COMMIT)" -date "$(DATE)"

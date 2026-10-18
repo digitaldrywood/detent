@@ -3,6 +3,7 @@ set -euo pipefail
 
 tag="${1:?usage: release-use-prebuilt.sh <tag>}"
 version="${tag#v}"
+date="$(TZ=UTC git show -s --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd "$GITHUB_SHA")"
 dir="$PWD/tmp/prebuilt"
 
 target_url="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status" --jq '[.statuses[] | select(.context == "scheduled-full-ci" and .state == "success")][0].target_url // empty')"
@@ -27,7 +28,7 @@ rm -rf "$dir.download"
 for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64 windows_arm64; do
   binary=detent
   if [[ "$target" == windows_* ]]; then binary=detent.exe; fi
-  if [ ! -f "$dir/$target/$binary" ] || ! jq -e --arg version "$version" --arg commit "$GITHUB_SHA" '.version == $version and .commit == $commit' "$dir/$target/metadata.json" > /dev/null 2>&1; then
+  if [ ! -f "$dir/$target/$binary" ] || ! jq -e --arg version "$version" --arg commit "$GITHUB_SHA" --arg date "$date" '.version == $version and .commit == $commit and .date == $date' "$dir/$target/metadata.json" > /dev/null 2>&1; then
     echo "Prebuilt $target does not match $tag at $GITHUB_SHA; building binaries in this job."
     rm -rf "$dir"
     exit 0

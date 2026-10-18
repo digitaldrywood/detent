@@ -17,7 +17,7 @@ if [ -z "$tag" ]; then
   fi
 fi
 version="${tag#v}"
-date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+date="$(TZ=UTC git show -s --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd "$CI_DEVELOP_SHA")"
 
 env -u GOOS -u GOARCH make generate-docs
 env -u GOOS -u GOARCH make source-metadata VERSION="$version" COMMIT="$CI_DEVELOP_SHA" DATE="$date"
@@ -27,5 +27,5 @@ if [ "$GOOS" = windows ]; then binary=detent.exe; fi
 out="tmp/prebuilt/${GOOS}_${GOARCH}"
 mkdir -p "$out"
 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$version -X main.commit=$CI_DEVELOP_SHA -X main.date=$date" -o "$out/$binary" ./cmd/detent
-printf '{"version":"%s","commit":"%s"}\n' "$version" "$CI_DEVELOP_SHA" > "$out/metadata.json"
+printf '{"version":"%s","commit":"%s","date":"%s"}\n' "$version" "$CI_DEVELOP_SHA" "$date" > "$out/metadata.json"
 echo "Prebuilt $out/$binary for $tag at $CI_DEVELOP_SHA"

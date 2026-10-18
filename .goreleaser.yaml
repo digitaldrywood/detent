@@ -5,8 +5,8 @@ dist: tmp/goreleaser
 before:
   hooks:
     - go mod download
-    - make release-assets generate-docs
-    - make source-metadata VERSION={{ .Version }} COMMIT={{ .FullCommit }} DATE={{ .Date }}
+    - make assets generate-docs
+    - make source-metadata VERSION={{ .Version }} COMMIT={{ .FullCommit }} DATE={{ .CommitDate }}
 
 builds:
   - id: detent
@@ -18,7 +18,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X main.version={{ .Version }} -X main.commit={{ .FullCommit }} -X main.date={{ .Date }}
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .FullCommit }} -X main.date={{ .CommitDate }}
     goos:
       - darwin
       - linux
