@@ -49,12 +49,16 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	})
 	var dropRotation atomic.Bool
 	var pauseRotation atomic.Bool
+	var credentialRenewals atomic.Int32
 	var policyStatus atomic.Int64
 	rotationEntered, rotationResume := make(chan struct{}), make(chan struct{})
 	var resumeRotation sync.Once
 	transport := executionRoundTrip(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Host != "runner-hub.example.test" {
 			return nil, errors.New("unexpected runner Hub destination")
+		}
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/runners/") && strings.HasSuffix(r.URL.Path, "/renew") {
+			credentialRenewals.Add(1)
 		}
 		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/leases/") && strings.HasSuffix(r.URL.Path, "/renew") {
 			if status := policyStatus.Load(); status != 0 {
@@ -439,12 +443,61 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	file.Identity.ExpiresAt = time.Now().Add(time.Minute)
-	if err := runnerauth.Save(path, file); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := native.Project(t.Context()); err != nil {
-		t.Fatal(err)
+	for _, test := range []struct {
+		name      string
+		expiresIn time.Duration
+	}{
+		{name: "near expiry", expiresIn: time.Minute},
+		{name: "expired", expiresIn: -time.Minute},
+	} {
+		t.Run("concurrent credential renewal "+test.name, func(t *testing.T) {
+			file.Identity.ExpiresAt = time.Now().Add(test.expiresIn)
+			if err := runnerauth.Save(path, file); err != nil {
+				t.Fatal(err)
+			}
+			lockPath := path + ".lock"
+			old := time.Unix(946684800, 0)
+			if err := os.Chtimes(lockPath, old, old); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.Stat(lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			initialRenewals := credentialRenewals.Load()
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for range 8 {
+				concurrent, err := New(Config{URL: hubURL, IdentityFile: path, HTTPClient: httpClient})
+				if err != nil {
+					t.Fatal(err)
+				}
+				concurrentNative, err := concurrent.Native(organization, project.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wg.Go(func() {
+					<-start
+					got, err := concurrentNative.Project(t.Context())
+					if err != nil || got.ID != project.ID {
+						t.Errorf("concurrent renewed project read: %+v, %v", got, err)
+					}
+				})
+			}
+			close(start)
+			wg.Wait()
+			if got := credentialRenewals.Load() - initialRenewals; got != 1 {
+				t.Fatalf("concurrent credential renewals = %d, want 1", got)
+			}
+			after, err := os.Stat(lockPath)
+			if err != nil || after.ModTime().Equal(before.ModTime()) {
+				t.Fatalf("credential renewal did not persist lock ownership: %v", err)
+			}
+			persisted, err := runnerauth.Load(path)
+			if err != nil || !persisted.Identity.ExpiresAt.After(file.Identity.ExpiresAt.Add(time.Hour)) {
+				t.Fatalf("concurrent credential renewal not persisted: %v", err)
+			}
+		})
 	}
 	renewed, err := runnerauth.Load(path)
 	if err != nil || !renewed.Identity.ExpiresAt.After(file.Identity.ExpiresAt.Add(time.Hour)) {
@@ -961,6 +1014,96 @@ func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 	}
 }
 
+func TestUnchangedCredentialReadLeavesLockMetadataUnwritten(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		clients  int
+		lockFile bool
+	}{
+		{name: "repeated requests", clients: 1, lockFile: true},
+		{name: "concurrent clients", clients: 8, lockFile: true},
+		{name: "missing lock file", clients: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "private", "identity.json")
+			file, err := runnerauth.Initialize(path, "https://hub.example.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			file.Identity.OrganizationID = "org_example"
+			file.Identity.Operations = []string{runnerauth.Read}
+			file.Identity.ExpiresAt = time.Now().Add(runnerauth.CredentialTTL)
+			if err := runnerauth.Save(path, file); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lockPath := path + ".lock"
+			var lockInfo os.FileInfo
+			if test.lockFile {
+				if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				old := time.Unix(946684800, 0)
+				if err := os.Chtimes(lockPath, old, old); err != nil {
+					t.Fatal(err)
+				}
+				lockInfo, err = os.Stat(lockPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			var requests atomic.Int32
+			transport := executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodGet || r.URL.Path != "/api/v2/organizations/org_example/projects/prj_example" || r.Header.Get("Authorization") != "Bearer "+file.Credential {
+					t.Errorf("unexpected authenticated project request: %s %s", r.Method, r.URL.Path)
+				}
+				requests.Add(1)
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"project_id":"prj_example","organization_id":"org_example"}`))}, nil
+			})
+			var wg sync.WaitGroup
+			for range test.clients {
+				client, err := New(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_example", "prj_example")
+				if err != nil {
+					t.Fatal(err)
+				}
+				wg.Go(func() {
+					for range 3 {
+						project, err := native.Project(t.Context())
+						if err != nil || project.ID != "prj_example" || project.OrganizationID != "org_example" {
+							t.Errorf("authenticated project read: %+v, %v", project, err)
+						}
+					}
+				})
+			}
+			wg.Wait()
+			if got := requests.Load(); got != int32(test.clients*3) {
+				t.Fatalf("authenticated requests = %d, want %d", got, test.clients*3)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("unchanged credential read modified the identity: %v", err)
+			}
+			afterLock, err := os.Stat(lockPath)
+			if !test.lockFile {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unchanged credential read created a persistent lock file: %v", err)
+				}
+			} else if err != nil || !os.SameFile(lockInfo, afterLock) || !afterLock.ModTime().Equal(lockInfo.ModTime()) {
+				t.Fatalf("a GET using an unchanged valid credential rewrote persistent lock metadata: %v", err)
+			}
+		})
+	}
+}
+
 func TestLockIdentityFileSerializesCallersInOneProcess(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "identity.json")
 	for _, test := range []struct {
@@ -1008,7 +1151,15 @@ func TestLockIdentityFileSerializesCallersInOneProcess(t *testing.T) {
 }
 
 func TestLockIdentityFileRefusesHeldFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "identity.json")
+	path := filepath.Join(t.TempDir(), "private", "identity.json")
+	file, err := runnerauth.Initialize(path, "https://hub.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(Config{URL: file.HubURL, IdentityFile: path})
+	if err != nil {
+		t.Fatal(err)
+	}
 	held, err := instancelock.Acquire(path + ".lock")
 	if err != nil {
 		t.Fatal(err)
@@ -1016,6 +1167,39 @@ func TestLockIdentityFileRefusesHeldFile(t *testing.T) {
 	defer held.Close()
 	if _, err := lockIdentityFile(path); !errors.Is(err, instancelock.ErrHeld) {
 		t.Fatalf("lockIdentityFile() error = %v, want ErrHeld", err)
+	}
+	for _, test := range []struct {
+		name    string
+		expired bool
+		pending bool
+		refresh bool
+	}{
+		{name: "unchanged read"},
+		{name: "expired credential", expired: true},
+		{name: "pending rotation", pending: true},
+		{name: "identity refresh", refresh: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file.Identity.ExpiresAt = time.Now().Add(runnerauth.CredentialTTL)
+			if test.expired {
+				file.Identity.ExpiresAt = time.Now().Add(-time.Minute)
+			}
+			file.PendingCredential = ""
+			if test.pending {
+				file.PendingCredential = file.Credential
+			}
+			if err := runnerauth.Save(path, file); err != nil {
+				t.Fatal(err)
+			}
+			got, err := client.runnerCredential(t.Context(), test.refresh)
+			if test.expired || test.pending || test.refresh {
+				if !errors.Is(err, instancelock.ErrHeld) {
+					t.Fatalf("credential mutation bypassed the writer lock: %v", err)
+				}
+			} else if err != nil || got.Credential != file.Credential {
+				t.Fatalf("unchanged credential read required a writer lock: %v", err)
+			}
+		})
 	}
 	release, err := lockIdentityFile(filepath.Join(t.TempDir(), "other.json"))
 	if err != nil {

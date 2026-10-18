@@ -143,6 +143,15 @@ func (c *Client) runnerCredential(ctx context.Context, refreshIdentity bool) (re
 	if c.runner.readOnly {
 		return c.readRunnerCredential(ctx)
 	}
+	if !refreshIdentity {
+		file, err := c.loadRunnerCredential()
+		if err != nil {
+			return result, err
+		}
+		if file.PendingCredential == "" && time.Now().Add(runnerauth.CredentialTTL/2).Before(file.Identity.ExpiresAt) {
+			return file, nil
+		}
+	}
 	c.runner.mu.Lock()
 	defer c.runner.mu.Unlock()
 	release, err := lockIdentityFile(c.runner.path)
@@ -150,12 +159,9 @@ func (c *Client) runnerCredential(ctx context.Context, refreshIdentity bool) (re
 		return result, err
 	}
 	defer func() { resultErr = errors.Join(resultErr, release()) }()
-	file, err := runnerauth.Load(c.runner.path)
+	file, err := c.loadRunnerCredential()
 	if err != nil {
 		return result, err
-	}
-	if file.HubURL != strings.TrimRight(c.baseURL.String(), "/") {
-		return result, errors.New("runner identity belongs to a different Hub")
 	}
 	file, err = c.prepareRunnerCredential(ctx, c.runner.path, file, false)
 	if err != nil {
@@ -175,13 +181,21 @@ func (c *Client) runnerCredential(ctx context.Context, refreshIdentity bool) (re
 	return file, nil
 }
 
-func (c *Client) readRunnerCredential(ctx context.Context) (runnerauth.File, error) {
+func (c *Client) loadRunnerCredential() (runnerauth.File, error) {
 	file, err := runnerauth.Load(c.runner.path)
 	if err != nil {
 		return runnerauth.File{}, err
 	}
 	if file.HubURL != strings.TrimRight(c.baseURL.String(), "/") {
 		return runnerauth.File{}, errors.New("runner identity belongs to a different Hub")
+	}
+	return file, nil
+}
+
+func (c *Client) readRunnerCredential(ctx context.Context) (runnerauth.File, error) {
+	file, err := c.loadRunnerCredential()
+	if err != nil {
+		return runnerauth.File{}, err
 	}
 	validated, err := c.validateRunnerReadCredential(ctx, file)
 	var apiErr *APIError
