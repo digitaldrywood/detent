@@ -12,8 +12,8 @@ for the full command catalog, including subcommands, flags and examples.
 | Hub and runner | `hub`, `cloud`, `attach` |
 | Artifacts and installation | `artifacts`, `update`, `version`, `skill` |
 | Configuration and diagnostics | `config`, `doctor`, `fix`, `logs`, `help`, `completion` |
-| Project operations | `pause`, `unpause`, `resume`, `promote`, `budget`, `capacity`, `exposure` |
-| Application reads and tools | `audit`, `issue`, `mcp`, `state`, `report` |
+| Project operations | `pause`, `resume`, `budget`, `capacity`, `exposure` |
+| Application reads and tools | `audit`, `issue`, `report` |
 | Isolated browser fixtures | `dev-runtime` |
 
 Enroll a runner with `detent hub runner register --service` to install and start
@@ -26,6 +26,39 @@ Settings > API & MCP.
 `config migrate` and `fix workflow-layout` remain available for repository
 workflow migrations. `dev-runtime` remains available for `tests/visual` and
 Browser Visual CI fixtures.
+
+## Hub operator access
+
+Use the Hub's authenticated HTTP MCP endpoint or scoped APIs for operator work.
+The following operator commands are removed; `hub issue import-local` remains for local migration:
+
+| Removed command | Hub replacement |
+| --- | --- |
+| `hub issue` issue and Change operations | MCP `work_item`, `file_issue`, `edit_item`, `move_item`, `add_comment`, `edit_comment`, `set_dependency`, `work_comments`, and `work_history`; native Change and review-policy APIs under `/api/v2/organizations/{organization}/projects/{project}` |
+| `state` | MCP `board_state` and `dashboard` |
+| `promote` | MCP `organization_project_rank` and `organization_project_rank_update`, or `GET` and `PUT /api/v2/organizations/{organization}/project-rank` |
+| `unpause` | MCP `resume_local_project`, with the selected runner and current configuration, policy and runner revision preconditions |
+| `mcp` | HTTP MCP at `/api/v2/organizations/{organization}/mcp`; hosted shared entry also serves `/mcp` |
+
+See [API and MCP setup](api-mcp-setup.md) for credentials and client configuration,
+and [Hub API](hub-api.md) for native issue, Change and review-policy routes.
+Project rank changes require the existing organization administrator authority;
+runner routing and resume operations require runner administration.
+
+Commands with capabilities absent from the Hub remain available:
+
+| Retained command | Capability preserved |
+| --- | --- |
+| `issue` | `--credit-progress` resets local spend-since-progress counters. Hub `explain_item` covers inspection, but the Hub has no equivalent progress-credit operation. |
+| `pause` | Local pause reasons and automatic unpause at a timestamp or after a tracker issue closes. The Hub has no equivalent conditional project-dispatch pause. |
+| `resume` | Temporary dispatch outside active hours using `--for` or `--until`; this differs from `resume_local_project`, which clears a runner project's pause. |
+| `report` | Self-contained HTML operations export. Hub MCP `reports` supplies structured analytics, without this export. |
+| `hub issue import-local` | Reads a host-local SQLite copy, maps lanes and imports records with preflight and replay support. The Hub import API accepts converted records; it cannot read the host file. |
+| `logs` | Bounded filtering of host log files and rotated backups. Headless runner logs remain on the host's stdout/stderr or service log destination. |
+
+These retained local operations use the existing runtime or configuration.
+Use Hub MCP for native work management. `hub issue import-local` is the migration
+bridge described in [Local Hub migration](hub-local-migration.md).
 
 ## CLI exit codes
 
@@ -153,13 +186,11 @@ Structured command objects:
 | --- | --- |
 | `detent version` | `{"version":"v0.55.0","commit":"abc1234","build_date":"2026-08-01T00:00:00Z","go_version":"go1.26.4","os":"linux","arch":"amd64"}` |
 | `detent update` | The update status object, including `current_version`, `latest_version`, `latest_tag`, `update_available`, `install_source`, `action`, `message`, and `command` when present. |
-| `detent pause api --reason "maintenance"` / `detent unpause api` | `{"status":"ok","project":"api","paused":true,"paused_reason":"maintenance"}` |
+| `detent pause api --reason "maintenance"` | `{"status":"ok","project":"api","paused":true,"paused_reason":"maintenance"}` |
 | `detent resume api --for 2h` | `{"status":"ok","project":"api","active_hours_override_until":"2026-08-07T21:00:00Z"}` |
-| `detent promote api --priority 1` | `{"status":"ok","project":"api","priority":1}` |
 | `detent config path` | `{"path":"/path/global.yaml","rule":"--config"}` |
 | `detent exposure [--project api]` | `{"findings":[{"source_project":"api","source_repository":"example-org/private-api","destination_repository":"example-org/public-project","issue_number":42,"issue_url":"https://github.com/example-org/public-project/issues/42","matched_identifier":"example-org/private-api"}],"warnings":[]}` |
 | `detent issue '#42' --explain --project api` | The exact versioned issue explanation DTO returned by the running service, with no wrapper. |
-| `detent state [--project api]` | A bounded projection of the public state response, plus `truncation`; internal `board_issues` are excluded. |
 | `detent skill install --target codex --dry-run` | The complete skill install result, including bundle/build stamps, target intent and status, every planned filesystem action, and any rollback actions. |
 | `detent doctor` | `{"checks":[{"name":"Config resolution","status":"OK","detail":"...","hint":"..."}],"summary":{"ok":8,"warn":0,"fail":0},"result":"PASS"}` |
 | `detent fix worker-processes --dry-run` / `--yes` | The orphaned process groups reported by the live service, including session identity, PID, PGID, RSS, and the reap outcome when applied. |
@@ -187,40 +218,6 @@ Accounting uses usage finish times and attempt completion times (start time for
 unfinished attempts); window-crossing sessions can produce differences. Use
 `usage_events` as the reconciled reporting source. Unavailable database evidence
 warns; these diagnostics do not change policy, tracker lanes, or runtime state.
-
-### MCP stdio server
-
-`detent mcp` serves the shared typed operator catalog to any MCP client. Modern
-`2026-07-28` requests carry protocol version and client capabilities in `_meta`,
-without an initialization handshake. Clients can probe `server/discover` first.
-Older clients use `initialize` and `notifications/initialized` with
-`2025-11-25`, `2025-06-18`, `2025-03-26`, or `2024-11-05`; an unsupported
-initialization revision negotiates `2025-11-25`, never a modern handshake.
-
-The process reads newline-delimited JSON-RPC from stdin and reserves stdout for
-protocol frames. Diagnostics use stderr. Successful results include serialized
-JSON text; versions from `2025-06-18` also receive `structuredContent`, and modern
-results include `resultType: "complete"`. Arguments, results, frames and catalog
-responses are bounded. `tools/list` returns the complete current authorized
-catalog by default; each shared definition has `_meta["detent/toolset"]` for
-grouping. Request smaller groups with `params._meta["detent/toolsets"]`, an
-array such as `["board", "connection"]`. Discovery never authorizes a call.
-
-The MCP process uses the already-running daemon's authenticated application
-bridge, with the same config, host, port, wildcard-to-loopback mapping and
-API-token precedence as `detent issue --explain`. Set `DETENT_API_TOKEN` to an
-existing scoped credential when needed. Discovery and execution recheck current
-authority in the daemon; a legacy loopback read bridge does not gain write access.
-The bridge opens a default-confirmation application connection and forwards its
-server-issued handle on fixed typed-tool endpoints. Client metadata cannot
-select identity, organization or YOLO, and no arbitrary HTTP path is accepted.
-
-The five existing reads remain `board_state`, `fleet_health`, `telemetry_usage`,
-`recent_activity`, and `explain_item`. Available shared application commands and
-connection/approval reads are permission-filtered by the daemon. Snapshot results
-include `generated_at`, `freshness`, and `expires_at` for last-known results.
-See [generic MCP setup](mcp-capabilities.md#generic-client-setup) for authority,
-organization selection, approval URLs, explicit YOLO and trusted remote access.
 
 ### Operator skill installation
 
@@ -279,30 +276,6 @@ caller cancellation.
 JSON mode writes exactly one issue explanation DTO to stdout. Pretty mode is a
 human-readable projection of the same DTO. Diagnostics and JSON problem objects
 remain on stderr.
-
-### Fleet state reads
-
-`detent state` reads the public `/api/v1/state` model from the running service
-with `projection=cli`, bounding the response before the client reads it.
-`--project <project-id>` selects the existing project-scoped state route. The
-CLI projection does not expose the fuller internal snapshot's `board_issues`
-array. It preserves `generated_at`, refresh freshness and source degradation,
-and snapshot-unavailable degraded responses.
-
-Every state data array is limited to its first 100 entries in service order. The
-top-level `truncation` object always reports that limit and contains
-`truncated` plus a `collections` array of JSON Pointer paths, original `total`,
-`returned`, and `omitted` counts. The service limits compact JSON, including
-metadata, to 768 KiB (`max_bytes`), and individual encoded scalar values to
-16 KiB (`value_max_bytes`). The byte budget can return fewer than 100 entries.
-Oversized fields or subtrees appear in `omitted_fields` with a JSON Pointer
-`path` and `reason: byte_limit`; an omitted array also records its original
-`total`. Counts and freshness come from the complete scoped snapshot.
-The shared client's hard one-MiB transport limit remains unchanged. Older
-services remain compatible for small states, but large states require updating
-the service to support this projection.
-JSON is written to stdout, pretty output is only a human-readable projection,
-and diagnostics remain on stderr.
 
 ### Operations report export
 

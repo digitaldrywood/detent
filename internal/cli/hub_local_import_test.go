@@ -1,15 +1,118 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/localboard"
 )
+
+func TestLocalBoardImportCommand(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		dryRun bool
+	}{
+		{"preview", true},
+		{"publish", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			fixture, err := os.ReadFile(filepath.Join("..", "localboard", "testdata", "local_sqlite.sql"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "board.sqlite")
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			if _, err := db.ExecContext(t.Context(), string(fixture)); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var mu sync.Mutex
+			var calls []localboard.Request
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v2/organizations/org_example/projects/prj_example/local-board-import" || r.Header.Get("Authorization") != "Bearer scoped-token" {
+					t.Errorf("unexpected scoped import request: %s %s", r.Method, r.URL.Path)
+				}
+				var request localboard.Request
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+				}
+				mu.Lock()
+				calls = append(calls, request)
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(localboard.Result{SourceID: request.Record.SourceID, State: request.Record.State, Action: "created"}); err != nil {
+					t.Error(err)
+				}
+			}))
+			t.Cleanup(server.Close)
+			cmd := NewRootCommand(t.Context(), func(opts *options) {
+				opts.lookupEnv = func(name string) string {
+					if name == "DETENT_HUB_TOKEN" {
+						return "scoped-token"
+					}
+					return ""
+				}
+			})
+			args := []string{"hub", "issue", "import-local", path, "--hub-url", server.URL, "--organization", "org_example", "--project", "prj_example", "--store-id", "example-board", "--lane-map", "todo=Backlog,Retired lane=Backlog"}
+			if test.dryRun {
+				args = append(args, "--dry-run")
+			}
+			var output bytes.Buffer
+			cmd.SetOut(&output)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			var results []localboard.Result
+			if err := json.Unmarshal(output.Bytes(), &results); err != nil || len(results) != 2 || results[0].SourceID != "z-first" || results[1].SourceID != "a-second" {
+				t.Fatalf("import results = %s, error = %v", output.String(), err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			wantCalls := 4
+			if test.dryRun {
+				wantCalls = 2
+			}
+			if len(calls) != wantCalls {
+				t.Fatalf("import requests = %d, want %d", len(calls), wantCalls)
+			}
+			for i, call := range calls {
+				if call.DryRun != (i < 2) || call.Record.State != "Backlog" || call.Record.Kind != "local_sqlite" {
+					t.Fatalf("import request %d lost preflight or lane mapping: %+v", i, call)
+				}
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("source board changed: %v", err)
+			}
+		})
+	}
+}
 
 type localBoardTestImporter struct {
 	calls         []localboard.Request

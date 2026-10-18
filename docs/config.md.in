@@ -412,7 +412,7 @@ then constrains and restores admission as contention changes. On systems without
 or when a pressure file cannot be read, Detent fails open and reports the
 unsupported or unavailable signal rather than inventing a zero reading.
 
-`detent state`, `/api/v1/state`, and `/health` expose the current values,
+`/api/v1/state` and `/health` expose the current values,
 thresholds, read errors, configured degraded capacity, effective pressure
 capacity, constraint start time and duration, and whether each signal is
 holding dispatch under `memory_pressure`, `io_pressure`, and `cpu_pressure`.
