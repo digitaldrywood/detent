@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -12,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -25,6 +28,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 		dirty, running, expired, released, denied, stale, cancel, concurrent bool
 		uncertain, prestart, cleanEffect, held, staleVersion, historical     bool
 		status                                                               int
+		hosted, replacement                                                  bool
 	}{
 		{name: "transfer retains a nondispatchable lane and human label", held: true, released: true, status: http.StatusOK},
 		{name: "transfer and duplicate request", released: true, status: http.StatusOK},
@@ -33,6 +37,9 @@ func TestNativeSourceTransfer(t *testing.T) {
 		{name: "released historical running attempt", historical: true, released: true, status: http.StatusOK},
 		{name: "released selected running attempt", running: true, released: true, status: http.StatusUnprocessableEntity},
 		{name: "active execution", running: true, status: http.StatusUnprocessableEntity},
+		{name: "hosted recovery explains active execution", running: true, hosted: true, status: http.StatusUnprocessableEntity},
+		{name: "hosted recovery explains released interrupted source", running: true, released: true, hosted: true, status: http.StatusUnprocessableEntity},
+		{name: "interrupted owner and pre-provider replacement retain canonical source", running: true, released: true, hosted: true, replacement: true, status: http.StatusUnprocessableEntity},
 		{name: "partition and lease expiry do not prove quiescence", running: true, expired: true, status: http.StatusUnprocessableEntity},
 		{name: "terminal execution still owns lease", status: http.StatusUnprocessableEntity},
 		{name: "legacy dirty changes no longer pin the source", dirty: true, released: true, status: http.StatusOK},
@@ -105,16 +112,47 @@ func TestNativeSourceTransfer(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var version tracker.ChangeVersion
 			decodeHubResponse(t, response, &version)
+			if test.replacement {
+				event.IdempotencyKey, event.Data.Sequence = "published-checkpoint", 3
+				event.Data.Handoff.WorktreeState = "clean"
+				event.Data.Handoff.ExternalEffect, event.Data.Handoff.EffectState = "pr_create", "confirmed"
+				event.Data.Handoff.EffectID = "effect_" + strings.Repeat("e", 32)
+				event.Data.Handoff.Change = &tracker.NativeChangeReference{ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: input.HeadSHA}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, event), http.StatusOK)
+			}
 			if !test.running {
 				finish := event
 				finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome, finish.Data.Handoff = "run.finished", "finished", 3, "succeeded", nil
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, finish), http.StatusOK)
 			}
-			if test.released {
+			if test.released && !test.replacement {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", a.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 			}
 			if test.expired {
 				now = now.Add(91 * time.Second)
+			}
+			if test.replacement {
+				now = now.Add(91 * time.Second)
+				claim.SessionID = "replacement"
+				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", a.redemption.Credential, claim)
+				requireNativeStatus(t, response, http.StatusOK)
+				var replacement tracker.NativeLease
+				decodeHubResponse(t, response, &replacement)
+				if replacement.FencingToken <= lease.FencingToken {
+					t.Fatal("replacement reused interrupted writer authority")
+				}
+				staleFinish := event
+				staleFinish.Type, staleFinish.IdempotencyKey, staleFinish.Data.Sequence = "run.finished", "obsolete-finish", 4
+				staleFinish.Data.Outcome, staleFinish.Data.Handoff = "succeeded", nil
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, staleFinish), http.StatusConflict)
+				failure := nativeStartedEvent(replacement)
+				failure.Type, failure.IdempotencyKey = "run.finished", "replacement-failed"
+				failure.Data.Identity, failure.Data.Outcome = nil, "failed"
+				failure.Data.SessionID = ""
+				failure.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 2, Generation: 2, Phase: "completed", HeartbeatAt: now}
+				failure.Data.TerminalFailure = &tracker.NativeTerminalFailure{ObservedAt: now, Stage: "pre_provider", Attribution: "issue", ErrorClass: "source_recovery", Error: "native checkpoint requires recovery"}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, failure), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(replacement.ID)+"/release", a.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: replacement.FencingToken, Reason: "completed"}), http.StatusNoContent)
 			}
 			if test.held {
 				labels := []string{"human-owned"}
@@ -130,6 +168,9 @@ func TestNativeSourceTransfer(t *testing.T) {
 			requireNativeStatus(t, recoveryRead, http.StatusOK)
 			var observed sourceRecoveryView
 			decodeHubResponse(t, recoveryRead, &observed)
+			if test.replacement && (observed.AttemptID != event.Data.AttemptID || observed.VersionID != version.ID || observed.HeadSHA != input.HeadSHA || !observed.Available || observed.Quiesced) {
+				t.Fatalf("replacement erased source identity or treated interruption as completion: %+v", observed)
+			}
 			if test.historical && (!observed.Quiesced || observed.AttemptID != event.Data.AttemptID) {
 				t.Errorf("released historical attempt contradicts terminal released source: %#v", observed)
 			}
@@ -163,6 +204,28 @@ func TestNativeSourceTransfer(t *testing.T) {
 			}
 			requireNativeStatus(t, response, test.status)
 			if test.status != http.StatusOK {
+				if test.hosted {
+					credential, _, err := f.service.authenticateAPIToken(t.Context(), token, "", "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, refusal := f.service.transferNativeSourceCommand(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, string(f.issue.WorkItemID), request)
+					if refusal == nil {
+						t.Fatal("active or interrupted writer became transferable")
+					}
+					response = httptest.NewRecorder()
+					hosted := &Service{config: Config{Hosted: &HostedConfig{}}}
+					if err := hosted.nativeAPIError(echo.New().NewContext(httptest.NewRequest(http.MethodPost, itemPath+"/source-recovery", nil), response), refusal); err != nil {
+						t.Fatal(err)
+					}
+					failure := requireNativeCode(t, response, test.status, "invalid_request")
+					if failure.Message != observed.Reason {
+						t.Fatalf("recovery action lost its unmet precondition: got %q, read %q", failure.Message, observed.Reason)
+					}
+					if test.released && !strings.Contains(failure.Message, "no acknowledged terminal outcome") {
+						t.Fatalf("released interrupted source lacks terminal evidence: %q", failure.Message)
+					}
+				}
 				var destination string
 				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT recovery_runner_id FROM issues WHERE native_id=?", f.issue.WorkItemID).Scan(&destination); err != nil || destination != "" {
 					t.Fatalf("refusal changed owner: %q %v", destination, err)

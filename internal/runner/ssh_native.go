@@ -169,7 +169,7 @@ func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
 			}
 			c.publicationSequence++
 			invocation := c.publicationSequence
-			c.publicationAuthorize = func(id uint64, versionID string, target workspace.GitHubPublication) error {
+			authorize := func(id uint64, versionID string, target workspace.GitHubPublication) error {
 				if id != invocation || versionID != version.ID || target != identity {
 					return errors.New("SSH publication callback differs from the active invocation")
 				}
@@ -178,8 +178,9 @@ func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
 				}
 				return opts.Authorize(ctx)
 			}
+			c.publicationAuthorize = authorize
 			c.publicationEffect = func(id uint64, versionID string, target workspace.GitHubPublication, kind, state string, result workspace.GitHubPublication) error {
-				if err := c.publicationAuthorize(id, versionID, target); err != nil {
+				if err := authorize(id, versionID, target); err != nil {
 					return err
 				}
 				actual := result
@@ -190,7 +191,13 @@ func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
 				return opts.PublicationEffect(ctx, kind, state, result)
 			}
 			c.mu.Unlock()
-			defer func() { c.mu.Lock(); c.publicationAuthorize, c.publicationEffect = nil, nil; c.mu.Unlock() }()
+			defer func() {
+				c.publicationCallbackMu.Lock()
+				defer c.publicationCallbackMu.Unlock()
+				c.mu.Lock()
+				c.publicationAuthorize, c.publicationEffect = nil, nil
+				c.mu.Unlock()
+			}()
 			var result workspace.GitHubPublication
 			if err := peer.Call(ctx, "source.publication", &result, invocation, version, wire, &identity); err != nil {
 				return workspace.GitHubPublication{}, err
@@ -243,8 +250,20 @@ type sshNativeExecution struct {
 	*sshExecution
 	sources  *SSHExecutionSources
 	capacity *providercapacity.Reservation
+	tools    []AgentTool
 	mu       sync.Mutex
 	setupErr error
+}
+
+func (e *sshNativeExecution) AgentTools() ([]AgentTool, AgentToolHandler) {
+	if len(e.tools) == 0 {
+		return nil, nil
+	}
+	return e.tools, func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
+		var result AgentToolResult
+		err := e.peer.Call(ctx, "execution.tools", &result, call)
+		return result, err
+	}
 }
 
 func (e *sshNativeExecution) SetEvidenceSource(source func(context.Context, string) (ValidationEvidence, error)) {

@@ -605,6 +605,7 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
 	}
 	claim.execution = s.nativeClaims[issueID].execution
+	claim.availabilityDeadline = s.nativeClaims[issueID].availabilityDeadline
 	s.nativeClaims[issueID] = claim
 	s.claims[issueID] = nativeTrackerLease(lease)
 	s.mu.Unlock()
