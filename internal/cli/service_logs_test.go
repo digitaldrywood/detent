@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,27 +167,81 @@ func TestServiceLogRetentionFiniteDefaults(t *testing.T) {
 
 func TestServiceLogRetentionSnapshotFailurePreservesOutput(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "service.err.log")
-	stream := openServiceLogFixture(t, path)
-	defer stream.Close()
-	if _, err := stream.WriteString("diagnostic stderr"); err != nil {
-		t.Fatal(err)
+	for _, scenario := range []string{"backup path", "copy", "close"} {
+		t.Run(scenario, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "service.err.log")
+			stream := openServiceLogFixture(t, path)
+			defer stream.Close()
+			if _, err := stream.WriteString("diagnostic stderr"); err != nil {
+				t.Fatal(err)
+			}
+			rotation := logRotation{MaxSizeBytes: 4, MaxBackups: 2}
+			copySnapshot := io.Copy
+			if scenario == "backup path" {
+				rotation.MaxBackups = 1
+				if err := os.Mkdir(path+".1", 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(path+".1", "unrelated"), []byte("untouched"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				for index, text := range []string{"newer", "older"} {
+					if err := os.WriteFile(rotatedLogPath(path, index+1), []byte(text), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				copySnapshot = func(writer io.Writer, reader io.Reader) (int64, error) {
+					if scenario == "copy" {
+						written, err := io.Copy(writer, io.LimitReader(reader, 2))
+						if err != nil {
+							return written, err
+						}
+						return written, io.ErrShortWrite
+					}
+					written, err := io.Copy(writer, reader)
+					if err != nil {
+						return written, err
+					}
+					return written, writer.(io.Closer).Close()
+				}
+			}
+			log := serviceLog{path: path, stream: stream}
+			for range 3 {
+				if err := log.retainWithCopy(rotation, copySnapshot); err == nil {
+					t.Fatal("retention succeeded with a snapshot failure")
+				}
+				assertServiceLogText(t, path, "diagnostic stderr")
+				if scenario == "backup path" {
+					assertServiceLogText(t, filepath.Join(path+".1", "unrelated"), "untouched")
+				} else {
+					assertServiceLogText(t, path+".1", "newer")
+					assertServiceLogText(t, path+".2", "older")
+				}
+				entries, err := os.ReadDir(filepath.Dir(path))
+				wantEntries := rotation.MaxBackups + 1
+				if err != nil || len(entries) != wantEntries {
+					t.Fatalf("files after failed retention = %v, %v; want %d files", entries, err, wantEntries)
+				}
+			}
+			if _, err := stream.WriteString(" still writable"); err != nil {
+				t.Fatal(err)
+			}
+			assertServiceLogText(t, path, "diagnostic stderr still writable")
+			if scenario != "backup path" {
+				if err := log.retain(rotation); err != nil {
+					t.Fatal(err)
+				}
+				assertServiceLogText(t, path, "")
+				assertServiceLogText(t, path+".1", "able")
+				assertServiceLogText(t, path+".2", "newer")
+				if _, err := stream.WriteString("continued"); err != nil {
+					t.Fatal(err)
+				}
+				assertServiceLogText(t, path, "continued")
+			}
+		})
 	}
-	if err := os.Mkdir(path+".1", 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(path+".1", "unrelated"), []byte("untouched"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	log := serviceLog{path: path, stream: stream}
-	if err := log.retain(logRotation{MaxSizeBytes: 4, MaxBackups: 1}); err == nil {
-		t.Fatal("retention succeeded with a nonempty directory at the snapshot path")
-	}
-	if _, err := stream.WriteString(" still writable"); err != nil {
-		t.Fatal(err)
-	}
-	assertServiceLogText(t, path, "diagnostic stderr still writable")
-	assertServiceLogText(t, filepath.Join(path+".1", "unrelated"), "untouched")
 }
 
 func openServiceLogFixture(t *testing.T, path string) *os.File {

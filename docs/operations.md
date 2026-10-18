@@ -144,7 +144,10 @@ oversized file is reduced on the first check. The active file can exceed the
 threshold by output written between checks; retained history is capped at
 250 MiB per stream with the defaults.
 
-Retention copies the bounded tail and truncates the active file in place, keeping
+Retention copies the bounded tail to a private temporary file and closes it
+successfully before rotating existing snapshots and promoting the new snapshot.
+Failed snapshot writes leave existing history and active output intact and remove
+the incomplete temporary file. It then truncates the active file in place, keeping
 the service's and inherited workers' append descriptors usable without a restart
 or a worker drain. Output concurrent with copy/truncate may be lost. Snapshots
 are private (0600); active file permissions and log redaction are unchanged.

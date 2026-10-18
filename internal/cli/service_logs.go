@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/service"
@@ -60,7 +61,11 @@ func startServiceLogRetention(ctx context.Context, manager, configPath string, r
 	}
 }
 
-func (log serviceLog) retain(rotation logRotation) (retErr error) {
+func (log serviceLog) retain(rotation logRotation) error {
+	return log.retainWithCopy(rotation, io.Copy)
+}
+
+func (log serviceLog) retainWithCopy(rotation logRotation, copySnapshot func(io.Writer, io.Reader) (int64, error)) (retErr error) {
 	if log.stream == nil {
 		return nil
 	}
@@ -95,17 +100,25 @@ func (log serviceLog) retain(rotation logRotation) (retErr error) {
 	if !os.SameFile(sourceInfo, streamInfo) {
 		return nil
 	}
-	if err := rotateLogBackups(log.path, rotation.MaxBackups); err != nil {
-		return err
-	}
-	backup, err := os.OpenFile(rotatedLogPath(log.path, 1), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	backup, err := os.CreateTemp(filepath.Dir(log.path), filepath.Base(log.path)+".snapshot-*")
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err := os.Remove(backup.Name()); !errors.Is(err, os.ErrNotExist) {
+			retErr = errors.Join(retErr, err)
+		}
+	}()
 	tail := io.NewSectionReader(source, max(0, sourceInfo.Size()-rotation.MaxSizeBytes), rotation.MaxSizeBytes)
-	_, copyErr := io.Copy(backup, tail)
+	_, copyErr := copySnapshot(backup, tail)
 	if err := errors.Join(copyErr, backup.Close()); err != nil {
 		return fmt.Errorf("snapshot service log: %w", err)
+	}
+	if err := rotateLogBackups(log.path, rotation.MaxBackups); err != nil {
+		return err
+	}
+	if err := os.Rename(backup.Name(), rotatedLogPath(log.path, 1)); err != nil {
+		return err
 	}
 	return log.stream.Truncate(0)
 }
