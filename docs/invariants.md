@@ -597,9 +597,11 @@ the Hub when the job checkpoints or ends; the copy on the machine is only a
 cache. Any eligible runner can claim any item. No item is pinned to the machine
 that last ran it, and losing a machine loses no work.
 
-Verified execution artifacts are immutable versioned caches. New attempts
-resolve release discovery again and never fall back to an unchecked or obsolete
-binary when discovery or verification fails. A captured artifact remains owned
+Verified execution artifacts are immutable versioned caches. The existing startup and update owner
+resolves and verifies releases; new attempts acquire its latest prepared compatible
+artifact without release discovery. Discovery failures preserve that verified
+selection, never authorize an unchecked binary, and never clear an explicit
+critical or incompatible update refusal. A captured artifact remains owned
 until its workers and cleanup finish; only then may an obsolete artifact be
 removed. Execution processes access local session state through the controller's
 bounded typed protocol, never concurrent SQLite migrations or independent store

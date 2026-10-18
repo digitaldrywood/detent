@@ -411,6 +411,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	if err != nil {
 		return err
 	}
+	if err := updateScheduler.PrepareWorkers(runCtx); err != nil {
+		return fmt.Errorf("prepare execution workers: %w", err)
+	}
 	kanbanWorkflow, err := bootKanbanWorkflow(runCtx, cfg)
 	if err != nil {
 		return err
