@@ -95,10 +95,7 @@ func TestReporterNativeCommands(t *testing.T) {
 					r.kind = cloudassert.KindKey
 					r.mutate = func(c *cloudassert.Claims) {
 						c.Subject, c.ProviderOrganization = user.identity.Subject, "org_provider"
-						c.Role = "reporter"
-						if user.identity.Subject == member.identity.Subject {
-							c.Role = "member"
-						}
+						c.Role = f.accessRole(user.identity.Subject)
 						c.Key = &apikey.KeyAuthority{ID: "key_" + user.identity.Subject, Kind: "personal", Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{string(f.project)}}}
 					}
 				}
