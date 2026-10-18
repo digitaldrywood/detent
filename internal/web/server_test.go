@@ -2076,7 +2076,6 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 		"fleet-kanban-multiproject",
 		"kanban-full-integration",
 		"reports-normal-window",
-		"onboarding-write-success",
 		"api-state-full-snapshot",
 	})
 	assertManifestOmitsScenarios(t, manifest, []string{"events-frozen", "events-play"})

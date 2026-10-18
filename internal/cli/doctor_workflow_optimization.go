@@ -455,7 +455,7 @@ func doctorWorkflowOptimization(
 		}
 		report.Proposals = append(report.Proposals, proposals...)
 		if options.ProposeIssues {
-			created, err := createDoctorWorkflowImprovementProposalIssues(ctx, projectID, workflow.Config, cfg, deps, proposals)
+			created, err := createDoctorWorkflowImprovementProposalIssues(ctx, cfg, projectID, workflow.Config, deps, proposals)
 			if err != nil {
 				return doctorWorkflowOptimizationReport{}, err
 			}
@@ -472,7 +472,7 @@ func doctorWorkflowOptimization(
 			proposals := doctorWorkflowProposalsForFindings(project.projectID, []doctorWorkflowOptimizationFinding{finding}, options.ProposalThreshold)
 			report.Proposals = append(report.Proposals, proposals...)
 			if options.ProposeIssues {
-				created, err := createDoctorWorkflowImprovementProposalIssues(ctx, project.projectID, project.config, cfg, deps, proposals)
+				created, err := createDoctorWorkflowImprovementProposalIssues(ctx, cfg, project.projectID, project.config, deps, proposals)
 				if err != nil {
 					return doctorWorkflowOptimizationReport{}, err
 				}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -20,16 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
-
-const (
-	onboardingStepTracker     = "tracker"
-	onboardingStepCredentials = "credentials"
-	onboardingStepProject     = "project"
-	onboardingStepAgent       = "agent"
-	onboardingStepWrite       = "write"
-)
-
-var minPollingIntervalMS = strconv.Itoa(workflowconfig.MinPollingIntervalMS)
 
 const (
 	DemoScenarioHeader  = "X-Detent-Demo-Scenario"
@@ -219,14 +208,6 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "reports-model-heavy", Route: "/reports", WaitSelector: "main", Page: "reports", Variant: "model-heavy"},
 		{ID: "reports-filtered-project", Route: "/reports", WaitSelector: "main", Page: "reports", Variant: "filtered-project", ProjectID: demoPrimaryProjectID},
 		{ID: "reports-invalid-date-range", Route: "/reports", WaitSelector: "body", Page: "reports", Variant: "invalid-date-range", Status: http.StatusBadRequest},
-		{ID: "onboarding-tracker-choice", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "tracker"},
-		{ID: "onboarding-github-credentials", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "credentials"},
-		{ID: "onboarding-project-selection", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "project"},
-		{ID: "onboarding-agent-config", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "agent"},
-		{ID: "onboarding-write-summary", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "write"},
-		{ID: "onboarding-validation-errors", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "validation-errors"},
-		{ID: "onboarding-write-exists", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "write-exists"},
-		{ID: "onboarding-write-success", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "write-success"},
 		{ID: "api-kanban-move-dialog", Route: "/api/v1/kanban/move", Method: http.MethodGet, WaitSelector: "#kanban-dialog-content", Page: "api", Variant: "kanban-move-dialog", ProjectID: demoPrimaryProjectID},
 		{ID: "api-kanban-move-preselected-target", Route: "/api/v1/kanban/move", Method: http.MethodGet, WaitSelector: "#kanban-dialog-content", Page: "api", Variant: "kanban-move-dialog", ProjectID: demoPrimaryProjectID},
 		{ID: "api-kanban-move-missing-target", Route: "/api/v1/kanban/move", Method: http.MethodGet, WaitSelector: "#kanban-dialog-content", Page: "api", Variant: "kanban-move-missing-target", ProjectID: demoPrimaryProjectID},
@@ -277,8 +258,6 @@ func demoKeySelectors(def demoScenario) []string {
 		return []string{"main", "#reports-kpis"}
 	case "settings":
 		return []string{"main", "#settings-global"}
-	case "onboarding":
-		return []string{"#onboarding-step"}
 	default:
 		return []string{def.WaitSelector}
 	}
@@ -426,10 +405,6 @@ func (s *Server) demoSettings(c echo.Context, scenario demoScenario, selectedPro
 	data := s.demoSettingsData(c.Request().Context(), scenario, selectedProjectID)
 	applySettingsPreferences(c.Request(), &data)
 	return render(c, templates.Settings(data))
-}
-
-func (s *Server) demoOnboarding(c echo.Context, scenario demoScenario) error {
-	return render(c, templates.OnboardingPage(s.demoOnboardingData(scenario)))
 }
 
 func (s *Server) demoDashboardData(ctx context.Context, scenario demoScenario) templates.DashboardData {
@@ -803,63 +778,6 @@ func (s *Server) demoEmptyReportsData(ctx context.Context, scenario demoScenario
 		Assets:          s.assets.templatePaths(),
 		Projects:        demofixtures.ProjectsForVariant(scenario.Variant),
 		ActiveNav:       "reports",
-	}
-}
-
-func (s *Server) demoOnboardingData(scenario demoScenario) templates.OnboardingData {
-	form := templates.OnboardingForm{
-		Step:                         onboardingStepTracker,
-		TrackerKind:                  workflowconfig.TrackerGitHub,
-		Endpoint:                     "https://api.github.test",
-		APIKey:                       "$GITHUB_TOKEN",
-		ProjectSlug:                  "example-org/detent-core",
-		Repo:                         "example-org/detent-core",
-		WorkspaceRoot:                "/tmp/detent-screenshots/workspaces",
-		MaxConcurrentAgents:          "6",
-		MaxTurns:                     "24",
-		PollingIntervalMS:            "60000",
-		MergingConcurrency:           "1",
-		DispatchPriorityState:        "Merging\nRework\nTodo",
-		DispatchPriorityLabel:        "stage:s6\nobservability",
-		DependencyAutoUnblockEnabled: "true",
-	}
-	var errors []string
-	result := templates.OnboardingResult{}
-	switch scenario.Variant {
-	case "credentials":
-		form.Step = onboardingStepCredentials
-	case "project":
-		form.Step = onboardingStepProject
-	case "agent":
-		form.Step = onboardingStepAgent
-	case "write":
-		form.Step = onboardingStepWrite
-	case "validation-errors":
-		form.Step = onboardingStepProject
-		form.Endpoint = "not a url"
-		form.Repo = "example-org"
-		errors = []string{"endpoint must be an absolute HTTP URL", "repo must look like owner/name", "max agents must be a positive integer"}
-	case "write-exists":
-		form.Step = onboardingStepWrite
-		result = templates.OnboardingResult{Kind: "exists", Message: "WORKFLOW.md already exists."}
-	case "write-success":
-		form.Step = onboardingStepWrite
-		result = templates.OnboardingResult{Kind: "success", Message: "Wrote WORKFLOW.md."}
-	default:
-		form.Step = onboardingStepTracker
-	}
-	instanceName := s.instanceName()
-	return templates.OnboardingData{
-		Title:           instancePageTitle(instanceName, "Detent onboarding"),
-		ApplicationName: applicationName(instanceName),
-		InstanceName:    instanceName,
-		WorkflowPath:    "WORKFLOW.md",
-		Step:            form.Step,
-		Form:            form,
-		Errors:          errors,
-		Result:          result,
-		Assets:          s.assets.templatePaths(),
-		Polling:         templates.PollingData{MinIntervalMS: minPollingIntervalMS},
 	}
 }
 

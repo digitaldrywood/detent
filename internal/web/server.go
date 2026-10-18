@@ -476,7 +476,6 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/reports", s.reports)
 	s.echo.GET("/operations", s.operationsPage)
 	s.echo.GET("/events", s.events)
-	s.echo.GET("/onboarding", s.redirectToDashboard)
 	apiReadAuth := s.apiAuth(false)
 	mcpReadAuth := s.mcpAPIAuth()
 	apiMutateAuth := s.apiAuth(true)
@@ -1647,15 +1646,6 @@ func (s *Server) enforcedBudgets() []healthBudget {
 		})
 	}
 	return budgets
-}
-
-func (s *Server) redirectToDashboard(c echo.Context) error {
-	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
-		return err
-	} else if ok && scenario.Page == "onboarding" {
-		return s.demoOnboarding(c, scenario)
-	}
-	return c.Redirect(http.StatusFound, "/")
 }
 
 func render(c echo.Context, component templ.Component) error {
