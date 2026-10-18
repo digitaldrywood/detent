@@ -48,7 +48,7 @@ while read -r record; do :; done
 	}
 	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 workspace:
   root: ` + strconv.Quote(filepath.Join(dir, "workspaces")) + `
 agents:

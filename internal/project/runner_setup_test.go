@@ -45,7 +45,7 @@ func TestRunnerSetupLifecycle(t *testing.T) {
 				root = initWorkflowSourceRepo(t)
 			}
 			cfg := globalconfig.Project{ID: "project-one", Workdir: root, Workflow: filepath.Join(root, "WORKFLOW.md")}
-			if err := os.WriteFile(cfg.Workflow, []byte("---\ntracker:\n  kind: hub_native\nhooks:\n  runner_setup: setup.sh\n  shell: sh\n---\nRun work.\n"), 0o600); err != nil {
+			if err := os.WriteFile(cfg.Workflow, []byte("---\ntracker:\n  kind: memory\nhooks:\n  runner_setup: setup.sh\n  shell: sh\n---\nRun work.\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if ref {

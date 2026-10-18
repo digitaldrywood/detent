@@ -224,7 +224,7 @@ func PlanProjectDefinitionMigration(path string, optionFns ...ProjectDefinitionM
 
 func validateProjectDefinitionMigrationConfig(cfg Config, githubToken string) error {
 	githubToken = strings.TrimSpace(githubToken)
-	if githubToken != "" && (cfg.Tracker.Kind == TrackerGitHub) {
+	if githubToken != "" && (cfg.Tracker.Kind == TrackerGitHub || cfg.Tracker.Kind == TrackerGitHubLocal) {
 		cfg.Tracker.APIKey = githubToken
 	}
 	return cfg.Validate()

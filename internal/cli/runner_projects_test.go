@@ -25,6 +25,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -32,7 +33,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	schedulerpkg "github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	workspacepkg "github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -149,7 +149,7 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 					if err := runGit("config", "url."+selected.Workdir+".insteadOf", url); err != nil {
 						return err
 					}
-					workflow := "---\ntracker:\n  kind: hub_native\n  repository: acme/later\nhooks:\n  runner_setup: setup.sh\n  shell: sh\n---\nRun work.\n"
+					workflow := "---\ntracker:\n  kind: memory\n  repository: acme/later\nhooks:\n  runner_setup: setup.sh\n  shell: sh\n---\nRun work.\n"
 					if err := os.WriteFile(filepath.Join(target, "WORKFLOW.md"), []byte(workflow), 0600); err != nil {
 						return err
 					}
@@ -278,7 +278,7 @@ func TestRunnerCloudProjects(t *testing.T) {
 			sources := filepath.Join(root, "sources")
 			for _, id := range []string{"prj_orders", "prj_tools"} {
 				checkout(t, filepath.Join(sources, id+".git"))
-				definition := "schema: 1\ntracker:\n  kind: hub_native\n  repository: acme/" + id + "\npolling:\n  interval_ms: 3210\nworkspace:\n  root: .detent/workspaces\n  source_root: .\n"
+				definition := "schema: 1\ntracker:\n  kind: memory\n  repository: acme/" + id + "\npolling:\n  interval_ms: 3210\nworkspace:\n  root: .detent/workspaces\n  source_root: .\n"
 				if test.externalWorkspaces {
 					definition = strings.Split(definition, "workspace:")[0]
 				}
@@ -650,7 +650,7 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 					ticks := make(chan struct{}, 2)
 					orch, err := orchestrator.New(orchestrator.Config{
 						Project: schedulerpkg.ProjectCandidate{ID: "orders"}, PollInterval: 10 * time.Millisecond,
-					}, orchestrator.Dependencies{Connector: fakehub.New(fakehub.Config{}), Logger: logger,
+					}, orchestrator.Dependencies{Connector: memory.New(memory.Config{}), Logger: logger,
 						Scheduling: runnerProjectTickScheduling{SchedulingSource: scheduler, projects: p, ticks: ticks},
 					})
 					if err != nil {

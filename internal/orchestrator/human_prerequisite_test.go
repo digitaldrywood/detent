@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/dependencyline"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestHumanAndEpicDispatchExclusion(t *testing.T) {
@@ -58,7 +58,7 @@ func TestHumanDependencyChildrenAndPriorPhase(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			blocker := humanDependencyIssue(tt.evidence, tt.closed)
-			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{blocker}, Stateful: true})
+			tracker := memory.New(memory.Config{Issues: []connector.Issue{blocker}, Stateful: true})
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "Rework", "Merging"}, TerminalStates: []string{"Done"}, MaxConcurrentAgents: 2})
 			o := &Orchestrator{cfg: cfg, connector: tracker}
 			for _, lane := range []string{"Todo", "Rework", "Merging"} {
@@ -111,7 +111,7 @@ func TestDependencyWaitRestoresLaneAndKeepsDeliverable(t *testing.T) {
 			if tt.pr {
 				issue.PullRequest = &connector.PullRequest{Number: 40, State: "open", HeadSHA: "accepted-head"}
 			}
-			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
 			o := &Orchestrator{cfg: normalizeConfig(Config{}), connector: tracker}
 			state := newState(o.cfg)
 			o.finishImplementDependencyDeferral(t.Context(), &state, issue, time.Now())

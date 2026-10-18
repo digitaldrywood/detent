@@ -45,7 +45,7 @@ func TestDefaultDoctorWorkflowSourcePolicy(t *testing.T) {
 		{
 			name: "line ending difference is not drift",
 			mutate: func(t *testing.T, repo string, _ string, _ *globalconfig.Project) {
-				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\r\ntracker:\r\n  kind: hub_native\r\n")
+				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\r\ntracker:\r\n  kind: memory\r\n")
 			},
 			wantStatus: doctorWarn,
 			wantDetail: []string{"project alpha", "effective detent.yaml matches origin/main"},
@@ -163,7 +163,7 @@ func TestCheckDoctorWorkflowRefDrift(t *testing.T) {
 			name:        "config keys differ",
 			workflowRef: "origin/main",
 			mutate: func(t *testing.T, repo string) {
-				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\ntracker:\n  kind: hub_native\nagent:\n  max_turns: 99\n")
+				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\ntracker:\n  kind: memory\nagent:\n  max_turns: 99\n")
 			},
 			wantFinding: true,
 			wantStatus:  doctorWarn,
@@ -332,7 +332,7 @@ func TestCheckDoctorProjectRunsWorkflowSourcePolicyBeforeMutableKinds(t *testing
 		{
 			name: "tracker kind drifted",
 			mutate: func(cfg *workflowconfig.Config) {
-				cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+				cfg.Tracker.Kind = workflowconfig.TrackerMemory
 			},
 		},
 		{
@@ -394,7 +394,7 @@ func TestCheckDoctorWorkflowSourcePolicySkipsNonGitHubMutableProject(t *testing.
 		context.Background(),
 		"alpha",
 		globalconfig.Project{Workflow: "WORKFLOW.md", Workdir: "/repo"},
-		workflowconfig.Config{Tracker: workflowconfig.Tracker{Kind: workflowconfig.TrackerHubNative}},
+		workflowconfig.Config{Tracker: workflowconfig.Tracker{Kind: workflowconfig.TrackerMemory}},
 		"/repo",
 		doctorDeps{
 			gitRemoteURL: func(context.Context, string) (string, error) {
@@ -424,7 +424,7 @@ func initDoctorWorkflowSourceRepository(t *testing.T) (string, string) {
 	runDoctorWorkflowSourceGit(t, seed, "config", "user.name", "Detent Test")
 	runDoctorWorkflowSourceGit(t, seed, "config", "user.email", "detent@example.com")
 	writeDoctorWorkflowSourceFile(t, filepath.Join(seed, "WORKFLOW.md"), "Agent direction.\n")
-	writeDoctorWorkflowSourceFile(t, filepath.Join(seed, "detent.yaml"), "schema: 1\ntracker:\n  kind: hub_native\n")
+	writeDoctorWorkflowSourceFile(t, filepath.Join(seed, "detent.yaml"), "schema: 1\ntracker:\n  kind: memory\n")
 	runDoctorWorkflowSourceGit(t, seed, "add", "WORKFLOW.md", "detent.yaml")
 	runDoctorWorkflowSourceGit(t, seed, "commit", "-m", "initial workflow policy")
 	runDoctorWorkflowSourceGit(t, seed, "remote", "add", "origin", remote)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -15,8 +16,9 @@ import (
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/connector/local"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/runner"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestAdmissionClosedDependencyEvidence(t *testing.T) {
@@ -31,7 +33,7 @@ func TestAdmissionClosedDependencyEvidence(t *testing.T) {
 	blocker := admissionIssueFixture("blocker", "owner/repo#10", 1, now)
 	blocker.Closed = true
 	blocker.State = "Done"
-	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue, blocker}, Stateful: true})
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue, blocker}, Stateful: true})
 	agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
 		raw, err := json.Marshal(request.Admission.Candidates[0])
 		if err != nil {
@@ -139,7 +141,7 @@ func TestResolveAdmissionDependencies(t *testing.T) {
 			if tt.pr != "" {
 				dependency.PullRequest = &connector.PullRequest{State: tt.pr}
 			}
-			tracker := &dependencyAdmissionTracker{IssueStore: fakehub.New(fakehub.Config{}), issues: []connector.Issue{dependency}}
+			tracker := &dependencyAdmissionTracker{IssueStore: memory.New(memory.Config{}), issues: []connector.Issue{dependency}}
 			if tt.missing {
 				tracker.issues = nil
 			}
@@ -208,7 +210,7 @@ func TestAdmissionDependencyChangesInvalidateResults(t *testing.T) {
 			now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 			issue := admissionIssueFixture("dependent", "owner/repo#20", 1, now)
 			issue.Description = "Fix the reported crash.\nBlocked by: #10\nHuman must supply deployment credentials."
-			tracker := &dependencyAdmissionTracker{IssueStore: fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true}), issues: []connector.Issue{{Identifier: "owner/repo#10", State: "Todo"}}}
+			tracker := &dependencyAdmissionTracker{IssueStore: memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true}), issues: []connector.Issue{{Identifier: "owner/repo#10", State: "Todo"}}}
 			backend := openManagerTestStore(t)
 			agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
 				candidate := request.Admission.Candidates[0]
@@ -294,7 +296,7 @@ func TestAdmissionRevalidatesDependenciesDuringEvaluation(t *testing.T) {
 				issues[i] = admissionIssueFixture("dependent-"+strconv.Itoa(i), "owner/repo#"+strconv.Itoa(20+i), 1, now)
 				issues[i].Description += "\nDepends on: #10"
 			}
-			tracker := &dependencyAdmissionTracker{IssueStore: fakehub.New(fakehub.Config{Issues: issues, Stateful: true}), issues: []connector.Issue{{Identifier: "owner/repo#10", Closed: true}}}
+			tracker := &dependencyAdmissionTracker{IssueStore: memory.New(memory.Config{Issues: issues, Stateful: true}), issues: []connector.Issue{{Identifier: "owner/repo#10", Closed: true}}}
 			var initial *runner.AdmissionDependencies
 			evaluated := 0
 			agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
@@ -412,7 +414,7 @@ func TestAdmissionDependencyAcceptanceFailsClosed(t *testing.T) {
 			now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 			issue := admissionIssueFixture("dependent", "owner/repo#20", 1, now)
 			issue.Description += "\nBlocked by: #10"
-			tracker := &dependencyAdmissionTracker{IssueStore: fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true}), issues: []connector.Issue{{Identifier: "owner/repo#10", Closed: tt.closed}}}
+			tracker := &dependencyAdmissionTracker{IssueStore: memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true}), issues: []connector.Issue{{Identifier: "owner/repo#10", Closed: tt.closed}}}
 			if tt.unavailable {
 				tracker.issues = nil
 			}
@@ -466,7 +468,7 @@ func TestAdmissionDependencyResolutionBounds(t *testing.T) {
 	if !strings.Contains(admissionDependencySummary(evidence), "limit exceeded") {
 		t.Fatal("resolution error absent from explanation")
 	}
-	tracker.IssueStore = fakehub.New(fakehub.Config{})
+	tracker.IssueStore = memory.New(memory.Config{})
 	settings = admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate})
 	manager := newAdmissionTestManager(t, settings, openManagerTestStore(t), func() time.Time { return now })
 	candidates, _, truncated, err := manager.unproposedCandidates(t.Context(), settings, []connector.Issue{issue}, map[string]int{}, 1, now, 0)
@@ -495,7 +497,7 @@ func TestAdmissionUnchangedDependencyDeclineDoesNotStarveNextCandidate(t *testin
 	second := admissionIssueFixture("second", "owner/repo#21", 1, now.Add(time.Minute))
 	first.Description += "\nBlocked by: #10"
 	second.Description += "\nBlocked by: #10"
-	tracker := &dependencyAdmissionTracker{IssueStore: fakehub.New(fakehub.Config{Issues: []connector.Issue{first, second}, Stateful: true}), issues: []connector.Issue{{Identifier: "owner/repo#10", Closed: true}}}
+	tracker := &dependencyAdmissionTracker{IssueStore: memory.New(memory.Config{Issues: []connector.Issue{first, second}, Stateful: true}), issues: []connector.Issue{{Identifier: "owner/repo#10", Closed: true}}}
 	agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
 		evaluation := admissionProposalEvaluation(request.Admission.Candidates[0].ID)
 		if evaluation.IssueID == first.ID {
@@ -515,6 +517,41 @@ func TestAdmissionUnchangedDependencyDeclineDoesNotStarveNextCandidate(t *testin
 	now = now.Add(time.Hour)
 	result, err := manager.RunOnce(t.Context())
 	if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != second.ID {
+		t.Fatalf("result=%+v, %v", result, err)
+	}
+}
+
+func TestAdmissionLocalDependencyNumberAlias(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
+	t.Parallel()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("dependent", "wi-video-20", 1, now)
+	issue.Description += "\nBlocked by: #3"
+	dependency := connector.Issue{ID: "dependency", Identifier: "wi-video-3", Number: 3, State: "Done"}
+	tracker, err := local.New(local.Config{Path: filepath.Join(t.TempDir(), "tracker.db"), ProjectID: "video", Issues: []connector.Issue{dependency, issue}, ObservedStates: []string{"Backlog"}, TerminalStates: []string{"Done"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := tracker.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := tracker.CloseIssue(t.Context(), dependency.ID); err != nil {
+		t.Fatal(err)
+	}
+	settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate})
+	settings.TerminalStates = []string{"Done"}
+	evidence := resolveAdmissionDependencies(t.Context(), settings, issue, now)
+	if evidence == nil || !evidence.Ready {
+		t.Fatalf("local #3 evidence=%+v", evidence)
+	}
+	manager := newAdmissionTestManager(t, settings, openManagerTestStore(t), func() time.Time { return now })
+	result, err := manager.RunOnce(t.Context())
+	if err != nil || len(result.Proposals) != 1 || !result.Proposals[0].Findings[1].Matched {
 		t.Fatalf("result=%+v, %v", result, err)
 	}
 }
@@ -559,7 +596,7 @@ func TestAdmissionDependencyFencedExamples(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			issue := connector.Issue{Identifier: "owner/repo#20", State: "Backlog", Description: tt.body}
-			tracker := &dependencyAdmissionTracker{IssueStore: fakehub.New(fakehub.Config{}), issues: []connector.Issue{{Identifier: "owner/repo#10", State: "Todo"}}}
+			tracker := &dependencyAdmissionTracker{IssueStore: memory.New(memory.Config{}), issues: []connector.Issue{{Identifier: "owner/repo#10", State: "Todo"}}}
 			evidence := resolveAdmissionDependencies(t.Context(), Settings{Issues: tracker}, issue, time.Now())
 			evaluation := admissionDependencyFindings(AgentEvaluation{Findings: []admissionmodel.Finding{{Dimension: "Readiness", Matched: true}}}, evidence)
 			if got := evaluation.Findings[0].Matched; got != tt.ready {

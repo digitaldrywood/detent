@@ -605,8 +605,8 @@ func TestReadRejectsPlainRelativeWorkflowPath(t *testing.T) {
 	root := t.TempDir()
 	daemonDir := filepath.Join(root, "daemon")
 	projectDir := filepath.Join(root, "project")
-	writeFile(t, filepath.Join(daemonDir, "WORKFLOW.md"), "---\ntracker:\n  kind: hub_native\n---\ndaemon\n")
-	writeFile(t, filepath.Join(projectDir, "WORKFLOW.md"), "---\ntracker:\n  kind: hub_native\n---\nproject\n")
+	writeFile(t, filepath.Join(daemonDir, "WORKFLOW.md"), "---\ntracker:\n  kind: memory\n---\ndaemon\n")
+	writeFile(t, filepath.Join(projectDir, "WORKFLOW.md"), "---\ntracker:\n  kind: memory\n---\nproject\n")
 	configPath := filepath.Join(root, "global.yaml")
 	writeFile(t, configPath, `apiVersion: detent/v1
 kind: GlobalConfig

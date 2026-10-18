@@ -19,10 +19,10 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestDoctorWorkflowOptimizationReportsRetroStatus(t *testing.T) {
@@ -438,11 +438,7 @@ func TestDoctorWorkflowOptimizationContinuesWhenProposalStateUpdateBlocked(t *te
 
 	ctx := context.Background()
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
-	cfg.Tracker.APIKey = "fixture-token"
-	cfg.Tracker.ProjectSlug = "fixture-project"
-	cfg.Tracker.Repository = "example-org/example-project"
-	cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	proposal := doctorWorkflowFinalizeProposal(doctorWorkflowImprovementProposal{
 		ProjectID:       "detent",
 		SignalKind:      "doctor_finding",
@@ -454,7 +450,7 @@ func TestDoctorWorkflowOptimizationContinuesWhenProposalStateUpdateBlocked(t *te
 		SuggestedChange: "Review blocked update handling.",
 	})
 	projectConnector := &blockedDoctorProposalConnector{
-		Connector: fakehub.New(fakehub.Config{Stateful: true}),
+		Connector: memory.New(memory.Config{Stateful: true}),
 	}
 	deps := successfulDoctorDeps()
 	deps.proposalConnector = func(workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
@@ -478,11 +474,7 @@ func TestDoctorWorkflowOptimizationReusesProposalIssueOutsideBacklog(t *testing.
 
 	ctx := context.Background()
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
-	cfg.Tracker.APIKey = "fixture-token"
-	cfg.Tracker.ProjectSlug = "fixture-project"
-	cfg.Tracker.Repository = "example-org/example-project"
-	cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	proposal := doctorWorkflowImprovementProposal{
 		ID:          "detent-self-improve-existing",
 		ProjectID:   "detent",
@@ -497,13 +489,13 @@ func TestDoctorWorkflowOptimizationReusesProposalIssueOutsideBacklog(t *testing.
 		State:       "In Progress",
 		Description: proposal.IssueBody,
 	}
-	var events []fakehub.Event
+	var events []memory.Event
 	deps := successfulDoctorDeps()
 	deps.proposalConnector = func(workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
-		return fakehub.New(fakehub.Config{
+		return memory.New(memory.Config{
 			Issues:    []connector.Issue{existing},
 			Stateful:  true,
-			EventSink: func(event fakehub.Event) { events = append(events, event) },
+			EventSink: func(event memory.Event) { events = append(events, event) },
 		}), nil
 	}
 
@@ -518,7 +510,7 @@ func TestDoctorWorkflowOptimizationReusesProposalIssueOutsideBacklog(t *testing.
 		t.Fatalf("created proposal issue = %#v", created[0])
 	}
 	for _, event := range events {
-		if event.Kind == fakehub.EventKindIssueCreate {
+		if event.Kind == memory.EventKindIssueCreate {
 			t.Fatalf("created duplicate proposal issue event: %#v", event)
 		}
 	}
@@ -882,10 +874,7 @@ func TestDoctorWorkflowReviewFlowTelemetryRespectsCurrentWorkflowBoundary(t *tes
 			workflowPath := filepath.Join(dir, "WORKFLOW.md")
 			if err := os.WriteFile(workflowPath, []byte(`---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
 agent:
   auto_promote:
     enabled: true
@@ -1382,10 +1371,7 @@ func TestDoctorWorkflowOptimizationFlagsPinBehindObservedDefault(t *testing.T) {
 	defaultWorkflow := filepath.Join(dir, "DEFAULT_WORKFLOW.md")
 	if err := os.WriteFile(pinnedWorkflow, []byte(`---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
 agent:
   max_session_tokens: 2000000
 agents:
@@ -1401,10 +1387,7 @@ Prompt
 	}
 	if err := os.WriteFile(defaultWorkflow, []byte(`---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
 agent:
   max_session_tokens: 2000000
 ---
@@ -1705,10 +1688,7 @@ func TestDoctorWorkflowOptimizationEmptyModelTelemetryRespectsBackendCommandMode
 
 	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
 agents:
   backends:
     - id: codex-main
@@ -1749,10 +1729,7 @@ func TestDoctorWorkflowOptimizationEmptyModelTelemetryHasNoHardcodedModelPatch(t
 
 	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
 codex:
   command: codex app-server
 ---
@@ -1885,10 +1862,7 @@ func TestDoctorWorkflowDefaultRouteModelConfigSources(t *testing.T) {
 			name: "route model",
 			raw: `---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
 agents:
   backends:
     - id: codex-main
@@ -1910,10 +1884,7 @@ Prompt
 			name: "backend command config model",
 			raw: `---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
 agents:
   backends:
     - id: codex-main
@@ -1934,10 +1905,7 @@ Prompt
 			name: "backend command config model with issue field overrides",
 			raw: `---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
 agents:
   backends:
     - id: codex-main
@@ -1959,10 +1927,7 @@ Prompt
 			name: "route model field",
 			raw: `---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
 agents:
   backends:
     - id: codex-main
@@ -1983,10 +1948,7 @@ Prompt
 			name: "no model source",
 			raw: `---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
 codex:
   command: codex app-server
 ---
@@ -2100,10 +2062,7 @@ func seedDoctorWorkflowOptimizationFixture(t *testing.T) doctorWorkflowOptimizat
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
 	if err := os.WriteFile(workflowPath, []byte(`---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
   local_sqlite:
     project_id: detent-local
   lanes:
@@ -2456,7 +2415,7 @@ func doctorWorkflowProposalBySignal(t *testing.T, proposals []doctorWorkflowImpr
 }
 
 type blockedDoctorProposalConnector struct {
-	*fakehub.Connector
+	*memory.Connector
 	updateCalls int
 }
 

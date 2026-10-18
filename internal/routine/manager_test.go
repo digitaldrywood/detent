@@ -13,11 +13,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
@@ -404,7 +404,7 @@ func TestManagerRoutineOptoutLabelPreventsAutoPromote(t *testing.T) {
 	workflow.Agent.AutoPromote.Enabled = true
 	workflow.Agent.AutoPromote.OptoutLabel = "routine-review"
 	optoutLabel := workflow.Agent.AutoPromote.OptoutLabel
-	tracker := fakehub.New(fakehub.Config{Stateful: true, Now: func() time.Time { return now }})
+	tracker := memory.New(memory.Config{Stateful: true, Now: func() time.Time { return now }})
 	manager, err := New(Settings{
 		ProjectID: "detent",
 		Definitions: []config.Routine{{

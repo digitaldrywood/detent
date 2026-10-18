@@ -37,7 +37,6 @@ import (
 	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
-	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
@@ -407,7 +406,7 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 	if err := os.WriteFile(path, []byte(localWorkerWorkflow), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	selected, err := projectfixture.New(projectpkg.Config{Project: globalconfig.Project{ID: "local", Workdir: root, Workflow: path}, Workflow: workflow}, projectpkg.Dependencies{
+	selected, err := projectpkg.New(projectpkg.Config{Project: globalconfig.Project{ID: "local", Workdir: root, Workflow: path}, Workflow: workflow}, projectpkg.Dependencies{
 		Runner: run, Scheduling: localWorkerPolicyScheduling{scheduler}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), WorkflowReconcileInterval: time.Hour,
 		WorkflowWatcherFactory: func(string) (projectpkg.WorkflowWatcher, error) { return localWorkerPolicyWatcher{policyUpdates}, nil },
 	})

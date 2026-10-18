@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestMergeWorkerDurationCeilingCancelsProgressingRunAndReleasesSlot(t *testing.T) {
@@ -23,12 +23,12 @@ func TestMergeWorkerDurationCeilingCancelsProgressingRunAndReleasesSlot(t *testi
 	ceiling := 6 * time.Hour
 	completedAt := startedAt.Add(ceiling)
 	issue := mergeDurationTestIssue("issue-1547-timeout")
-	var events []fakehub.Event
-	tracker := fakehub.New(fakehub.Config{
+	var events []memory.Event
+	tracker := memory.New(memory.Config{
 		Issues:    []connector.Issue{issue},
 		Stateful:  true,
 		Now:       func() time.Time { return completedAt },
-		EventSink: func(event fakehub.Event) { events = append(events, event) },
+		EventSink: func(event memory.Event) { events = append(events, event) },
 	})
 	project := scheduler.ProjectCandidate{ID: "detent"}
 	dispatchGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
@@ -149,9 +149,9 @@ func TestMergeWorkerDurationCeilingCancelsProgressingRunAndReleasesSlot(t *testi
 	var comment string
 	for _, event := range events {
 		switch event.Kind {
-		case fakehub.EventKindStateUpdate:
+		case memory.EventKindStateUpdate:
 			stateUpdated = event.State == "Blocked"
-		case fakehub.EventKindComment:
+		case memory.EventKindComment:
 			comment = event.Body
 		}
 	}
@@ -191,7 +191,7 @@ func TestNormalDurationMergeIsUnaffected(t *testing.T) {
 	startedAt := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	completedAt := startedAt.Add(5 * time.Minute)
 	issue := mergeDurationTestIssue("issue-1547-normal")
-	tracker := fakehub.New(fakehub.Config{
+	tracker := memory.New(memory.Config{
 		Issues:   []connector.Issue{issue},
 		Stateful: true,
 		Now:      func() time.Time { return completedAt },
@@ -335,11 +335,11 @@ func TestMergeWorkerDurationCeilingHonorsLatestTerminalState(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		terminate func(*testing.T, *fakehub.Connector, connector.Issue)
+		terminate func(*testing.T, *memory.Connector, connector.Issue)
 	}{
 		{
 			name: "issue moved to terminal state",
-			terminate: func(t *testing.T, tracker *fakehub.Connector, issue connector.Issue) {
+			terminate: func(t *testing.T, tracker *memory.Connector, issue connector.Issue) {
 				t.Helper()
 				if err := tracker.UpdateIssueState(t.Context(), issue.ID, "Done"); err != nil {
 					t.Fatalf("UpdateIssueState() error = %v", err)
@@ -348,7 +348,7 @@ func TestMergeWorkerDurationCeilingHonorsLatestTerminalState(t *testing.T) {
 		},
 		{
 			name: "pull request merged",
-			terminate: func(t *testing.T, tracker *fakehub.Connector, issue connector.Issue) {
+			terminate: func(t *testing.T, tracker *memory.Connector, issue connector.Issue) {
 				t.Helper()
 				if err := tracker.MergePullRequest(
 					t.Context(),
@@ -377,7 +377,7 @@ func TestMergeWorkerDurationCeilingHonorsLatestTerminalState(t *testing.T) {
 				State:   "OPEN",
 				HeadSHA: "terminal-head",
 			}
-			tracker := fakehub.New(fakehub.Config{
+			tracker := memory.New(memory.Config{
 				Issues:   []connector.Issue{issue},
 				Stateful: true,
 				Now:      func() time.Time { return completedAt },
@@ -443,7 +443,7 @@ func TestMergeWorkerDurationTransitionFailureKeepsDispatchBlocked(t *testing.T) 
 	startedAt := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	completedAt := startedAt.Add(6 * time.Hour)
 	issue := mergeDurationTestIssue("issue-1547-transition-failure")
-	memoryTracker := fakehub.New(fakehub.Config{
+	memoryTracker := memory.New(memory.Config{
 		Issues:   []connector.Issue{issue},
 		Stateful: true,
 		Now:      func() time.Time { return completedAt },

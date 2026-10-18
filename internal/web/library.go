@@ -124,7 +124,7 @@ func (s *Server) libraryData(ctx context.Context, filters libraryFilters) (templ
 		InstanceName:     instanceName,
 		Version:          s.version,
 		Build:            s.build,
-		ConnectorName:    s.connectorName(),
+		ConnectorName:    s.connector.Name(),
 		Snapshot:         snapshot,
 		Assets:           s.assets.templatePaths(),
 		SidebarProjects:  sidebarProjects,
@@ -230,7 +230,14 @@ func (s *Server) libraryRows(ctx context.Context, filters libraryFilters, source
 	return rows, warnings, nil
 }
 
-func localSQLiteArtifactPath(workflowconfig.Config) string { return "" }
+func localSQLiteArtifactPath(cfg workflowconfig.Config) string {
+	switch cfg.Tracker.Kind {
+	case workflowconfig.TrackerLocalSQLite, workflowconfig.TrackerGitHubLocal:
+		return strings.TrimSpace(cfg.Tracker.LocalSQLite.Path)
+	default:
+		return ""
+	}
+}
 
 func readLocalArtifactRows(ctx context.Context, source libraryProjectSource) ([]templates.LibraryRow, string, error) {
 	db, ok, warning, err := openLibrarySQLiteReadOnly(ctx, source.LocalSQLitePath)
