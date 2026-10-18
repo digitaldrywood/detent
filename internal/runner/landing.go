@@ -90,8 +90,8 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		}
 		return nil
 	}
+	options.Authorize = authorizeLanding
 	if target.SecurityAudit && !target.GitHubPullRequest {
-		options.Authorize = authorizeLanding
 		options.SecurityAuditRequired = true
 		options.SecurityAudit = func(ctx context.Context, diff workspace.FileDiffs) (*tracker.SecurityAuditReview, error) {
 			return r.auditNativeLanding(ctx, req, target, diff)

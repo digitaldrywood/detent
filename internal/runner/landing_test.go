@@ -552,6 +552,9 @@ func TestLandNativeChange(t *testing.T) {
 			if stub.target.SourceMergeSHA != "" {
 				expectedBase = stub.target.BaseSHA
 			}
+			if backend.received.ExpectedBaseSHA != "" && backend.received.Authorize == nil {
+				t.Fatal("release landing lost active execution authority")
+			}
 			if backend.received.HeadSHA != "" && backend.received.ExpectedBaseSHA != expectedBase {
 				t.Fatalf("landing lost reviewed release base: %+v", backend.received)
 			}

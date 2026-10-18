@@ -340,6 +340,7 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Issue, opts LandOptions) (result LandResult, returnErr error) {
 	rebased := false
 	var validation gate.CommandResult
+	var integrated string
 	var baseBefore string
 	defer func() {
 		result.Rebased = result.Rebased || rebased
@@ -486,8 +487,8 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	if opts.ExpectedBaseSHA != "" && baseBefore != opts.ExpectedBaseSHA && !pull.Merged && pull.MergedAt == "" {
 		return result, &LandRefusal{Kind: LandRefusalBaseMoved, BaseSHA: baseBefore, Reason: "the release base differs from the reviewed version"}
 	}
-	if strings.TrimSpace(opts.ValidationCommand) != "" && (opts.ExpectedBaseSHA == "" || !pull.Merged && pull.MergedAt == "") {
-		_, validation, err = prepare(baseBefore)
+	if (strings.TrimSpace(opts.ValidationCommand) != "" || opts.ExpectedBaseSHA != "") && (opts.ExpectedBaseSHA == "" || !pull.Merged && pull.MergedAt == "") {
+		integrated, validation, err = prepare(baseBefore)
 		if err != nil {
 			return LandResult{}, err
 		}
@@ -550,7 +551,12 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 			}
 		}
 		mergePath := fmt.Sprintf("repos/%s/pulls/%d/merge", repository, pull.Number)
-		merged, err := mergeGitHubLanding(ctx, opts, repository, pull.Number, head)
+		var merged githubLandingMerge
+		if opts.ExpectedBaseSHA != "" {
+			merged, err = pushReviewedGitHubLanding(ctx, normalized, opts, remote, repository, base, pull.Number, head, integrated)
+		} else {
+			merged, err = mergeGitHubLanding(ctx, opts, repository, pull.Number, head)
+		}
 		if err != nil {
 			if githubLandingSourceRefusal(mergePath, err) {
 				verified := l.verifyGitHubLandingSource(ctx, normalized, issue, opts, remote, repository, base, pull.Number, head, baseBefore, err)
@@ -610,10 +616,10 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	result = LandResult{CI: result.CI, Gate: validation, MergeSHA: mergeSHA, BaseRef: base, BaseBefore: baseBefore, Method: opts.Method, AttemptBranchPushed: opts.External == nil, Rebased: rebased}
 	if opts.ExpectedBaseSHA != "" {
 		if err := verifyGitHubLandingMerge(ctx, normalized.Path, remote, base, baseRef, mergeSHA); err != nil {
-			return LandResult{}, err
+			return result, err
 		}
 		if err := verifyReviewedGitHubLanding(ctx, normalized.Path, head, mergeSHA, opts.ExpectedBaseSHA); err != nil {
-			return LandResult{}, err
+			return result, err
 		}
 		result.BaseBefore = opts.ExpectedBaseSHA
 	}
@@ -638,6 +644,52 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		}
 	}
 	return result, nil
+}
+
+func pushReviewedGitHubLanding(ctx context.Context, info Info, opts LandOptions, remote, repository, base string, number int, head, integrated string) (githubLandingMerge, error) {
+	var merged githubLandingMerge
+	if opts.External == nil || opts.Authorize == nil {
+		return merged, refuse(LandRefusalProtected, "release landing requires an associated PR and current execution authority")
+	}
+	parents, err := runGitAt(ctx, info.Path, "rev-list", "--parents", "-n", "1", head)
+	if err != nil {
+		return merged, err
+	}
+	if strings.Join(strings.Fields(parents), " ") != head+" "+opts.ExpectedBaseSHA {
+		return merged, refuse(LandRefusalHeadMoved, "the release pick must be one commit on its reviewed base")
+	}
+	pull, err := readExternalLandingPull(ctx, opts.GitHubClient, opts.Repository, opts.External, head, base)
+	if err != nil {
+		return merged, err
+	}
+	if pull.Number != number || pull.State != "open" || pull.Merged || pull.MergedAt != "" || pull.Head.Ref != githubLandingBranch(info, opts) || pull.Base.SHA != opts.ExpectedBaseSHA {
+		return merged, refuse(LandRefusalHeadMoved, "the associated release PR changed before landing")
+	}
+	if err := resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, number, head, nil); err != nil {
+		return merged, err
+	}
+	if err := verifyGitHubPublicationRemote(ctx, info.Path, remote, opts.Repository); err != nil {
+		return merged, err
+	}
+	commit := head
+	if opts.Method == "merge" {
+		commit = integrated
+	}
+	if err := verifyReviewedGitHubLanding(ctx, info.Path, head, commit, opts.ExpectedBaseSHA); err != nil {
+		return merged, err
+	}
+	if err := opts.Authorize(ctx); err != nil {
+		return merged, err
+	}
+	if _, err := runGitAt(ctx, info.Path, "push", "--force-with-lease=refs/heads/"+base+":"+opts.ExpectedBaseSHA, remote, commit+":refs/heads/"+base); err != nil {
+		classified := classifyLandingPush(err, base)
+		var refusal *LandRefusal
+		if errors.As(classified, &refusal) && refusal.Kind == LandRefusalProtected {
+			return merged, refuse(LandRefusalProtected, "repository protections refused the atomic release landing: "+strings.TrimSpace(commandErrorOutput(err)))
+		}
+		return merged, classified
+	}
+	return githubLandingMerge{Merged: true, SHA: commit}, nil
 }
 
 func mergeGitHubLanding(ctx context.Context, opts LandOptions, repository string, number int, head string) (githubLandingMerge, error) {
