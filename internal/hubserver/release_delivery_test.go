@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -38,7 +39,7 @@ type releaseDeliveryFixture struct {
 	itemPath string
 }
 
-func newReleaseDeliveryFixture(t *testing.T) *releaseDeliveryFixture {
+func newReleaseDeliveryFixture(t *testing.T, github bool) *releaseDeliveryFixture {
 	t.Helper()
 	f := &releaseDeliveryFixture{pullRequestFixture: newPullRequestFixture(t, true)}
 	connector, _, err := projectConnector(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
@@ -56,12 +57,15 @@ func newReleaseDeliveryFixture(t *testing.T) *releaseDeliveryFixture {
 	merge := strings.Repeat("c", 40)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.changeFixture.path+"/versions/"+sourceVersion.ID+"/landing", f.token, tracker.LandChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source-land"}, MergeSHA: merge, BaseRef: "develop", Method: "squash"}), http.StatusOK)
 	descriptor := hubTestPolicy()
-	descriptor.Gates.GitHubPullRequest = true
+	descriptor.Gates.GitHubPullRequest = github
+	descriptor.Gates.SecurityAudit = !github
 	descriptor = descriptor.WithID()
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), http.StatusOK)
 	rules := f.rules
 	rules.PolicyID = descriptor.ID
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "release-rules"}, ExpectedID: f.rules.ID, Policy: rules}), http.StatusOK)
+	rulesResponse := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "release-rules"}, ExpectedID: f.rules.ID, Policy: rules})
+	requireNativeStatus(t, rulesResponse, http.StatusOK)
+	decodeHubResponse(t, rulesResponse, &f.rules)
 	f.delivery = f.create(t, "release delivery")
 	f.itemPath = f.base + "/work-items/" + string(f.delivery.WorkItemID)
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.itemPath+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "release-dependency"}, ExpectedRevision: f.delivery.Revision, RelatedWorkItemID: f.issue.WorkItemID, Operation: "add"})
@@ -87,8 +91,33 @@ func TestNativeReleaseDeliveryAssociation(t *testing.T) {
 		name   string
 		edit   func(*testing.T, *releaseDeliveryFixture)
 		status int
+		github bool
 	}{
-		{name: "associate", status: http.StatusOK},
+		{name: "native audited source", status: http.StatusOK},
+		{name: "GitHub source", status: http.StatusOK, github: true},
+		{name: "security audit supplies independent review", status: http.StatusOK, edit: func(t *testing.T, f *releaseDeliveryFixture) {
+			rules := f.rules
+			rules.RequireReview = false
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "audit-review"}, ExpectedID: f.rules.ID, Policy: rules}), http.StatusOK)
+		}},
+		{name: "no independent review", status: http.StatusUnprocessableEntity, edit: func(t *testing.T, f *releaseDeliveryFixture) {
+			approval, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptor := approval.Policy
+			descriptor.Gates.SecurityAudit = false
+			descriptor = descriptor.WithID()
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: approval.Policy.ID, Policy: descriptor}), http.StatusOK)
+			rules := f.rules
+			rules.PolicyID, rules.RequireReview = descriptor.ID, false
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "no-review"}, ExpectedID: f.rules.ID, Policy: rules}), http.StatusOK)
+		}},
+		{name: "missing dependency", status: http.StatusUnprocessableEntity, edit: func(t *testing.T, f *releaseDeliveryFixture) {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM issue_dependencies WHERE dependent_issue_id = (SELECT id FROM issues WHERE native_id = ?)", f.delivery.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+		}},
 		{name: "held", status: http.StatusOK, edit: func(t *testing.T, f *releaseDeliveryFixture) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, created_at, updated_at) VALUES (?, 'Blocked', 'Blocked', ?, ?)", f.project.ID, formatHubTime(f.now), formatHubTime(f.now)); err != nil {
 				t.Fatal(err)
@@ -99,6 +128,8 @@ func TestNativeReleaseDeliveryAssociation(t *testing.T) {
 		}},
 		{name: "stale revision", status: http.StatusConflict, edit: func(_ *testing.T, f *releaseDeliveryFixture) { f.request.ExpectedRevision-- }},
 		{name: "stale head", status: http.StatusUnprocessableEntity, edit: func(_ *testing.T, f *releaseDeliveryFixture) { f.request.HeadSHA = strings.Repeat("1", 40) }},
+		{name: "wrong PR", status: http.StatusUnprocessableEntity, edit: func(_ *testing.T, f *releaseDeliveryFixture) { f.request.PRNumber = 8 }},
+		{name: "wrong frozen head", status: http.StatusUnprocessableEntity, edit: func(_ *testing.T, f *releaseDeliveryFixture) { f.request.FrozenSHA = strings.Repeat("3", 40) }},
 		{name: "wrong repository", status: http.StatusUnprocessableEntity, edit: func(_ *testing.T, f *releaseDeliveryFixture) { f.request.Repository = "https://github.com/owner/other" }},
 		{name: "wrong base", status: http.StatusUnprocessableEntity, edit: func(_ *testing.T, f *releaseDeliveryFixture) { f.request.BaseRef = "develop" }},
 		{name: "wrong source", status: http.StatusUnprocessableEntity, edit: func(_ *testing.T, f *releaseDeliveryFixture) {
@@ -129,7 +160,7 @@ func TestNativeReleaseDeliveryAssociation(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newReleaseDeliveryFixture(t)
+			f := newReleaseDeliveryFixture(t, test.github)
 			if test.edit != nil {
 				test.edit(t, f)
 			}
@@ -178,47 +209,66 @@ func TestNativeReleaseDeliveryAssociation(t *testing.T) {
 }
 
 func TestNativeReleaseDeliveryReviewAndLanding(t *testing.T) {
-	f := newReleaseDeliveryFixture(t)
-	input := changeTestInput()
-	bundle := changeTestSource(t, &input)
-	f.request.BaseSHA, f.request.HeadSHA = input.BaseSHA, input.HeadSHA
-	f.verifier.input = f.request.ReleasePickInput
-	d := f.associate(t, f.request)
-	path := f.itemPath + "/changes/" + d.ChangeID
-	descriptor, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
-	if err != nil {
-		t.Fatal(err)
+	for _, test := range []struct {
+		name   string
+		github bool
+	}{{name: "native audited source"}, {name: "GitHub source", github: true}} {
+		t.Run(test.name, func(t *testing.T) {
+			github := test.github
+			f := newReleaseDeliveryFixture(t, github)
+			input := changeTestInput()
+			bundle := changeTestSource(t, &input)
+			f.request.BaseSHA, f.request.HeadSHA = input.BaseSHA, input.HeadSHA
+			f.verifier.input = f.request.ReleasePickInput
+			d := f.associate(t, f.request)
+			path := f.itemPath + "/changes/" + d.ChangeID
+			descriptor, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			input.Repository, input.PolicyID = d.Repository, descriptor.Policy.ID
+			response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "release-version"}, ChangeVersionInput: input, SourceBundle: bundle})
+			requireNativeStatus(t, response, http.StatusOK)
+			var version tracker.ChangeVersion
+			decodeHubResponse(t, response, &version)
+			if version.Policy.Gates.GitHubPullRequest != github || version.Policy.Gates.SecurityAudit != !github || version.External == nil || version.External.ID != "7" {
+				t.Fatalf("version lost release PR: %+v", version)
+			}
+			land := tracker.LandChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "release-land"}, MergeSHA: strings.Repeat("9", 40), BaseRef: d.BaseRef, Method: "squash"}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/landing", f.token, land), http.StatusConflict)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "release-review"}, Decision: "approved"}), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/landing", f.token, land), http.StatusConflict)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/checks", f.token, changeTestResult(version)), http.StatusOK)
+			if !github {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/landing", f.token, land), http.StatusConflict)
+				audit := tracker.SecurityAuditReview{SessionID: 42, Verdict: "pass", Run: securityaudit.Run{ID: 42, InvocationID: "release-audit", ProjectID: string(f.project.ID), IssueID: string(f.delivery.WorkItemID), Repository: version.Repository, PRNumber: 7, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), AuthenticationMode: "api_key", ExitStatus: securityaudit.ExitStatusSuccess, WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: f.now, StartedAt: f.now, CompletedAt: f.now.Add(time.Second), OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}
+				raw, err := marshalNative(tracker.ChangeReview{VersionID: version.ID, Decision: "approved", SecurityAudit: &audit})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_evidence (change_id, version_id, kind, record_json) VALUES (?, ?, 'review', ?)", d.ChangeID, version.ID, raw); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wrong := land
+			wrong.IdempotencyKey = "wrong-landing-base"
+			wrong.BaseRef = "develop"
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/landing", f.token, wrong), http.StatusUnprocessableEntity)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/landing", f.token, land), http.StatusOK)
+			var detail tracker.ChangeDetail
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil), &detail)
+			if detail.Change.CurrentLanding() == nil || detail.Change.Landed.BaseRef != d.BaseRef || detail.Change.Landed.HeadSHA != d.HeadSHA {
+				t.Fatalf("landing=%+v", detail.Change.Landed)
+			}
+			input.HeadSHA = strings.Repeat("8", 40)
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "moved-release-version"}, ExpectedVersionID: version.ID, ChangeVersionInput: input, SourceBundle: bundle})
+			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+		})
 	}
-	input.Repository, input.PolicyID = d.Repository, descriptor.Policy.ID
-	response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "release-version"}, ChangeVersionInput: input, SourceBundle: bundle})
-	requireNativeStatus(t, response, http.StatusOK)
-	var version tracker.ChangeVersion
-	decodeHubResponse(t, response, &version)
-	if version.External == nil || version.External.ID != "7" {
-		t.Fatalf("version lost release PR: %+v", version)
-	}
-	land := tracker.LandChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "release-land"}, MergeSHA: strings.Repeat("9", 40), BaseRef: d.BaseRef, Method: "squash"}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/landing", f.token, land), http.StatusConflict)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "release-review"}, Decision: "approved"}), http.StatusOK)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/landing", f.token, land), http.StatusConflict)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/checks", f.token, changeTestResult(version)), http.StatusOK)
-	wrong := land
-	wrong.IdempotencyKey = "wrong-landing-base"
-	wrong.BaseRef = "develop"
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/landing", f.token, wrong), http.StatusUnprocessableEntity)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/landing", f.token, land), http.StatusOK)
-	var detail tracker.ChangeDetail
-	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil), &detail)
-	if detail.Change.CurrentLanding() == nil || detail.Change.Landed.BaseRef != d.BaseRef || detail.Change.Landed.HeadSHA != d.HeadSHA {
-		t.Fatalf("landing=%+v", detail.Change.Landed)
-	}
-	input.HeadSHA = strings.Repeat("8", 40)
-	response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "moved-release-version"}, ExpectedVersionID: version.ID, ChangeVersionInput: input, SourceBundle: bundle})
-	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 }
 
 func TestNativeReleaseDeliveryMCPAuthorityAndDistinctRows(t *testing.T) {
-	f := newReleaseDeliveryFixture(t)
+	f := newReleaseDeliveryFixture(t, true)
 	var scope nativeScope
 	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
 	if err != nil {

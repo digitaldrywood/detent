@@ -49,6 +49,7 @@ func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandi
 			return target, fmt.Errorf("%w: release association differs from current version", runner.ErrLandingNotReviewed)
 		}
 		target.BaseRef, target.SourceMergeSHA = d.BaseRef, d.SourceMergeSHA
+		target.GitHubPullRequest = true
 	}
 	if landed := detail.Change.CurrentLanding(); landed != nil {
 		return target, fmt.Errorf("%w: the Change Request already landed as %s", runner.ErrLandingNotReviewed, landed.MergeSHA)

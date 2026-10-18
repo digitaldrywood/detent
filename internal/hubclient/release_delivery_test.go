@@ -17,7 +17,7 @@ func TestReleaseDeliveryLandingTarget(t *testing.T) {
 	for _, name := range []string{"ordinary source", "release delivery", "stale association", "unreviewed delivery"} {
 		t.Run(name, func(t *testing.T) {
 			version := tracker.ChangeVersion{ID: "version_release", ChangeID: "change_release", ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), Repository: "https://github.com/example-org/example-project", External: &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/example-org/example-project/pull/7"}}}
-			version.Policy.Gates.GitHubPullRequest = true
+			version.Policy.Gates.SecurityAudit = true
 			change := tracker.ChangeRequest{ID: version.ChangeID, OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_delivery", CurrentVersion: version.ID}
 			detail := tracker.ChangeDetail{Change: change, Versions: []tracker.ChangeVersion{version}, Summary: tracker.ChangeSummary{Status: "reviewed"}}
 			if name == "unreviewed delivery" {
@@ -49,7 +49,7 @@ func TestReleaseDeliveryLandingTarget(t *testing.T) {
 			}
 			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_delivery"}}
 			if name != "ordinary source" {
-				issue.ReleaseDelivery = &tracker.ReleaseDelivery{ReleasePickInput: tracker.ReleasePickInput{Repository: version.Repository, PRNumber: 7, HeadRef: "pick/fix", HeadSHA: version.HeadSHA, BaseRef: "release/v1.2", BaseSHA: version.BaseSHA}, ChangeID: change.ID, VersionID: version.ID}
+				issue.ReleaseDelivery = &tracker.ReleaseDelivery{ReleasePickInput: tracker.ReleasePickInput{SourceMergeSHA: strings.Repeat("d", 40), Repository: version.Repository, PRNumber: 7, HeadRef: "pick/fix", HeadSHA: version.HeadSHA, BaseRef: "release/v1.2", BaseSHA: version.BaseSHA}, ChangeID: change.ID, VersionID: version.ID}
 			}
 			if name == "stale association" {
 				issue.ReleaseDelivery.HeadSHA = strings.Repeat("c", 40)
@@ -76,7 +76,10 @@ func TestReleaseDeliveryLandingTarget(t *testing.T) {
 			if name == "release delivery" {
 				expected = "release/v1.2"
 			}
-			if target.BaseRef != expected || target.HeadSHA != version.HeadSHA || target.External == nil || target.External.ID != "7" {
+			if name == "release delivery" && target.SourceMergeSHA != strings.Repeat("d", 40) {
+				t.Fatalf("landing lost source provenance: %+v", target)
+			}
+			if target.GitHubPullRequest != (name == "release delivery") || !target.SecurityAudit || target.BaseRef != expected || target.HeadSHA != version.HeadSHA || target.External == nil || target.External.ID != "7" {
 				t.Fatalf("landing target=%+v", target)
 			}
 		})
