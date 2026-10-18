@@ -1120,7 +1120,11 @@ func checkDoctorConfig(ctx context.Context, configPath string, projectID string,
 	}
 
 	if cfg.Client.IdentityFile != "" && cfg.WorkspaceRoot != "" {
-		cfg, err = resolveRunnerProjects(ctx, cfg)
+		if opts.resolveProjects != nil {
+			cfg, err = opts.resolveProjects(ctx, cfg)
+		} else {
+			cfg, err = resolveRunnerProjects(ctx, cfg)
+		}
 		if err != nil {
 			return resolution, nil, scope, nil, doctorCheck{Name: "Config resolution", Status: doctorFail, Detail: err.Error()}
 		}

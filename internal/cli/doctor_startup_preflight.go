@@ -15,7 +15,15 @@ func runDoctorStartupPreflight(ctx context.Context, cfg doctorConfig, opts optio
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if opts.readStartup != nil {
+		opts.read = opts.readStartup
+	} else if opts.read == nil {
+		opts.read = func(path string) (globalconfig.Config, error) {
+			return readLocalConfigurationSource(path)
+		}
+	}
 	opts = doctorOptions(opts)
+	opts.resolveProjects = resolveRunnerProjectsReadOnly
 	deps = deps.withDefaults()
 	report := doctorReport{}
 	selected := strings.TrimSpace(cfg.ProjectID)
