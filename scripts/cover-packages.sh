@@ -12,7 +12,7 @@ fi
 module=github.com/digitaldrywood/detent
 # Seconds observed under coverage with -p 4; unlisted packages weigh 5.
 # Shard 1 starts loaded because it also runs the workspace and web suites.
-go list ./... | awk -v wanted="$index" -v total="$total" -v module="$module" '
+go list ./... | awk -v wanted="$index" -v total="$total" -v module="$module" -v skiphub="${COVER_SKIP_HUB:-}" '
 BEGIN {
     weight[module "/internal/hubserver"] = 600
     weight[module "/internal/orchestrator"] = 209
@@ -29,7 +29,7 @@ BEGIN {
     weight[module "/internal/invariants"] = 20
     load[1] = 240
 }
-$0 != module "/internal/workspace" && $0 != module "/internal/web" {
+$0 != module "/internal/workspace" && $0 != module "/internal/web" && !(skiphub != "" && $0 == module "/internal/hubserver") {
     packages[++count] = $0
     cost[count] = ($0 in weight) ? weight[$0] : 5
 }

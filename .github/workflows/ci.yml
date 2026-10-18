@@ -237,9 +237,19 @@ jobs:
   verify-race:
     needs: preflight
     if: needs.preflight.outputs.should_run == 'true'
-    name: Verify race
+    name: Verify race (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: 1/2, key: race-1, shard: 1/2}
+          - {name: 2/2, key: race-2, shard: 2/2}
+          - {name: hub 1/4, key: race-hub-1, shard: hub-1}
+          - {name: hub 2/4, key: race-hub-2, shard: hub-2}
+          - {name: hub 3/4, key: race-hub-3, shard: hub-3}
+          - {name: hub 4/4, key: race-hub-4, shard: hub-4}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -248,24 +258,32 @@ jobs:
 
       - uses: ./.github/actions/setup-go-cached
         with:
-          key: verify-race
+          key: verify-${{ matrix.key }}
       - name: Race test the short unit suite
         run: |
           source scripts/check-evidence.sh
-          check_with_evidence race make test-race
+          check_with_evidence race make test-race RACE_SHARD=${{ matrix.shard }}
 
       - name: Repeat subprocess lifecycle readiness
+        if: matrix.key == 'race-1'
         run: go test -race ./internal/claudecode ./internal/codex -run '^(TestRunTurnCancellationKillsChildProcessGroup|TestRunTurnDetectsExitedParentWithInheritedStdout|TestLocalTransportCloseKillsChildProcessGroup|TestLocalTransportReapsChildAfterParentExits)$' -count=20 -timeout=5m
 
   test-cover:
     needs: preflight
     if: needs.preflight.outputs.should_run == 'true'
-    name: Test Coverage (${{ matrix.shard }}/3)
+    name: Test Coverage (${{ matrix.name }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        include:
+          - {name: 1/3, key: 1, shard: 1/3}
+          - {name: 2/3, key: 2, shard: 2/3}
+          - {name: 3/3, key: 3, shard: 3/3}
+          - {name: hub 1/4, key: hub-1, shard: hub-1}
+          - {name: hub 2/4, key: hub-2, shard: hub-2}
+          - {name: hub 3/4, key: hub-3, shard: hub-3}
+          - {name: hub 4/4, key: hub-4, shard: hub-4}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -275,19 +293,19 @@ jobs:
 
       - uses: ./.github/actions/setup-go-cached
         with:
-          key: test-cover-${{ matrix.shard }}
+          key: test-cover-${{ matrix.key }}
 
       - name: Check coverage
         shell: bash
         run: |
           source scripts/check-evidence.sh
-          check_with_evidence coverage make test-cover COVER_SHARD=${{ matrix.shard }}/3
+          check_with_evidence coverage make test-cover COVER_SHARD=${{ matrix.shard }} COVER_SKIP_HUB=1
 
       - name: Upload workspace test evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-cover-evidence-${{ matrix.shard }}
+          name: test-cover-evidence-${{ matrix.key }}
           path: |
             tmp/workspace-cover-evidence
             tmp/coverage.out
