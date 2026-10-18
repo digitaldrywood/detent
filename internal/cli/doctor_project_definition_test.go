@@ -32,7 +32,7 @@ func TestDoctorTerminalAttemptRecovery(t *testing.T) {
 			if tt.local != "" {
 				local = "---\nrecovery:\n  terminal_attempt_retry_limit: " + tt.local + "\n---\n"
 			}
-			workflow, err := workflowconfig.ParseWorkflowOverlay([]byte("---\ntracker:\n  kind: hub_native\n---\n"), []byte(local), "detent.local.yaml")
+			workflow, err := workflowconfig.ParseWorkflowOverlay([]byte("---\ntracker:\n  kind: memory\n---\n"), []byte(local), "detent.local.yaml")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -158,7 +158,7 @@ func TestDoctorSandboxPolicySource(t *testing.T) {
 				workflowPath := filepath.Join(dir, "WORKFLOW.md")
 				for name, body := range map[string]string{
 					"WORKFLOW.md": "Instructions.\n",
-					"detent.yaml": "schema: 1\ntracker:\n  kind: hub_native\n",
+					"detent.yaml": "schema: 1\ntracker:\n  kind: memory\n",
 				} {
 					if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
 						t.Fatal(err)

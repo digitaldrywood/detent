@@ -11,11 +11,10 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/telemetry"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
-	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -151,10 +150,22 @@ func newLocalIssueDetailTestServer(t *testing.T) *web.Server {
 	issue.UpdatedAt = &updatedAt
 	issue.StageUpdatedAt = &updatedAt
 
-	conn := fakehub.New(fakehub.Config{
-		Stateful: true,
-		Issues:   []connector.Issue{issue},
-		Now:      func() time.Time { return updatedAt },
+	conn, err := local.New(local.Config{
+		Path:           filepath.Join(t.TempDir(), "work-items.db"),
+		ProjectID:      "video",
+		Issues:         []connector.Issue{issue},
+		ActiveStates:   []string{"Todo", "In Progress"},
+		ObservedStates: []string{"Backlog", "Blocked"},
+		TerminalStates: []string{"Done"},
+		Now:            func() time.Time { return updatedAt },
+	})
+	if err != nil {
+		t.Fatalf("local.New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
 	})
 	if err := conn.CreateComment(ctx, issue.ID, "Operator requested a tighter final cut."); err != nil {
 		t.Fatalf("CreateComment() error = %v", err)
@@ -167,18 +178,18 @@ func newLocalIssueDetailTestServer(t *testing.T) *web.Server {
 	}
 
 	workflow := workflowconfig.Default()
-	workflow.Tracker.Kind = workflowconfig.TrackerHubNative
+	workflow.Tracker.Kind = workflowconfig.TrackerLocalSQLite
 	workflow.Tracker.LocalSQLite.Path = filepath.Join(t.TempDir(), "unused.db")
 	workflow.Tracker.LocalSQLite.ProjectID = "video"
 	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
 	workflow.Tracker.ObservedStates = []string{"Backlog", "Blocked"}
 	workflow.Tracker.TerminalStates = []string{"Done"}
-	trackedProject, err := projectfixture.New(project.Config{
+	trackedProject, err := project.New(project.Config{
 		Project:  globalconfig.Project{ID: "video"},
 		Workflow: workflowconfig.Workflow{Config: workflow, Prompt: "Work the issue."},
 	}, project.Dependencies{Connector: conn})
 	if err != nil {
-		t.Fatalf("projectfixture.New() error = %v", err)
+		t.Fatalf("project.New() error = %v", err)
 	}
 
 	registry := project.NewRegistry()

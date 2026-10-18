@@ -17,13 +17,11 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/devruntime"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/procgroup"
-	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehubscheduling"
 )
 
 const (
@@ -88,12 +86,12 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 				return devRuntimeError(err)
 			}
 
-			return opts.boot(cmd.Context(), devRuntimeBootConfig(cmd.Context(), runtime, derefString(host), opts, cmd.OutOrStdout()))
+			return opts.boot(cmd.Context(), devRuntimeBootConfig(runtime, derefString(host), opts, cmd.OutOrStdout()))
 		},
 	}
 	cmd.Flags().StringVar(&home, "home", "", "isolated runtime home; a temp directory is created when omitted")
 	cmd.Flags().StringVar(&dbPath, "db", "", "isolated SQLite path or :memory:; relative paths are resolved inside --home")
-	cmd.Flags().StringVar(&trackerMode, "tracker", devruntime.TrackerHubNative, "isolated tracker backend")
+	cmd.Flags().StringVar(&trackerMode, "tracker", devruntime.TrackerMemory, "isolated tracker backend")
 	cmd.Flags().StringVar(&fixturePath, "fixture", "", "YAML fixture with mock issues and pull requests")
 	cmd.Flags().StringVar(&demo, "demo", "", "built-in isolated demo fixture (kanban, screenshots)")
 	cmd.Flags().StringVar(&demoClock, "demo-clock", "frozen", "demo clock mode for screenshots fixtures (frozen, play)")
@@ -160,7 +158,7 @@ func devRuntimeAuthConfig(email string, smtpAddress string, from string, oidcIss
 	}, nil
 }
 
-func devRuntimeBootConfig(ctx context.Context, runtime devruntime.Runtime, host string, opts options, output io.Writer) BootConfig {
+func devRuntimeBootConfig(runtime devruntime.Runtime, host string, opts options, output io.Writer) BootConfig {
 	runtimePort := runtime.Port
 	runtimeHost := strings.TrimSpace(host)
 	if runtimeHost == "" {
@@ -195,20 +193,6 @@ func devRuntimeBootConfig(ctx context.Context, runtime devruntime.Runtime, host 
 		Output:           output,
 		Runner:           devRuntimeRunner{},
 		ConnectorFactory: devRuntimeConnectorFactory,
-		Scheduling: &fakehubscheduling.Source{Factory: func(id string) (connector.Connector, bool) {
-			for _, selected := range runtime.Global.Projects {
-				if selected.ID != id {
-					continue
-				}
-				workflow, err := project.LoadWorkflowContext(ctx, selected)
-				if err != nil {
-					return nil, false
-				}
-				conn, err := devRuntimeConnectorFactory(workflow.Config)
-				return conn, err == nil
-			}
-			return nil, false
-		}},
 	}
 }
 
@@ -233,10 +217,10 @@ func devRuntimeIsolationInfo(runtime devruntime.Runtime) *IsolatedRuntimeInfo {
 }
 
 func devRuntimeConnectorFactory(cfg workflowconfig.Config) (connector.Connector, error) {
-	if cfg.Tracker.Kind != workflowconfig.TrackerHubNative {
+	if cfg.Tracker.Kind != workflowconfig.TrackerMemory {
 		return nil, fmt.Errorf("%w: %s", devruntime.ErrUnsupportedTracker, cfg.Tracker.Kind)
 	}
-	return devRuntimeConnector{Connector: fakehub.New(fakehub.Config{
+	return devRuntimeConnector{Connector: memory.New(memory.Config{
 		Issues:   cfg.Tracker.Issues,
 		Stateful: true,
 	})}, nil
@@ -263,7 +247,7 @@ func devRuntimeError(err error) error {
 const devRuntimeAuditPatch = "diff --git a/example.txt b/example.txt\n--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-before\n+after\n"
 
 type devRuntimeConnector struct {
-	*fakehub.Connector
+	*memory.Connector
 }
 
 func (c devRuntimeConnector) PullRequestValidationDiff(ctx context.Context, issue connector.Issue) (connector.ValidationDiff, error) {

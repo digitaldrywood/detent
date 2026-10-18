@@ -7,21 +7,20 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
-	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 )
 
 func TestBuildChatProviderUsesConfiguredCodexBackend(t *testing.T) {
 	t.Parallel()
 
 	workflow := workflowconfig.Default()
-	workflow.Tracker.Kind = workflowconfig.TrackerHubNative
+	workflow.Tracker.Kind = workflowconfig.TrackerMemory
 	workflow.Workspace.SourceRoot = t.TempDir()
-	tracked, err := projectfixture.New(projectpkg.Config{
+	tracked, err := projectpkg.New(projectpkg.Config{
 		Project:  globalconfig.Project{ID: "detent", Weight: 1},
 		Workflow: workflowconfig.Workflow{Config: workflow},
-	}, projectpkg.Dependencies{Connector: fakehub.New(fakehub.Config{})})
+	}, projectpkg.Dependencies{Connector: memory.New(memory.Config{})})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

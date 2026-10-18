@@ -104,7 +104,7 @@ func TestConfigDocumentation(t *testing.T) {
 			t.Errorf("backend shell literal = %q, want symbolic null", shell.literal)
 		}
 		endpoint := byPath["tracker.endpoint"]
-		for _, expected := range []string{"https://api.github.com/graphql"} {
+		for _, expected := range []string{"https://api.linear.app/graphql", "https://api.github.com/graphql"} {
 			if !strings.Contains(endpoint.Default, expected) {
 				t.Errorf("tracker endpoint default = %q, want containing %q", endpoint.Default, expected)
 			}

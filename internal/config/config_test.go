@@ -24,7 +24,7 @@ import (
 func TestParseWorkflowOverlayPrecedence(t *testing.T) {
 	t.Parallel()
 
-	shared := []byte("---\ntracker:\n  kind: hub_native\n  assignee: shared\n  lanes:\n    - name: Backlog\n      role: holding\n    - name: Human Review\n      role: holding\n    - name: Blocked\n      role: holding\n    - name: Todo\n      role: active\n    - name: In Progress\n      role: active\n    - name: Closed\n      role: terminal\n    - name: Cancelled\n      role: terminal\n    - name: Canceled\n      role: terminal\n    - name: Duplicate\n      role: terminal\n    - name: Done\n      role: terminal\npolling:\n  interval_ms: 60000\n  conditional: true\nagent:\n  max_turns: 20\n---\nShared direction.\n")
+	shared := []byte("---\ntracker:\n  kind: memory\n  assignee: shared\n  lanes:\n    - name: Backlog\n      role: holding\n    - name: Human Review\n      role: holding\n    - name: Blocked\n      role: holding\n    - name: Todo\n      role: active\n    - name: In Progress\n      role: active\n    - name: Closed\n      role: terminal\n    - name: Cancelled\n      role: terminal\n    - name: Canceled\n      role: terminal\n    - name: Duplicate\n      role: terminal\n    - name: Done\n      role: terminal\npolling:\n  interval_ms: 60000\n  conditional: true\nagent:\n  max_turns: 20\n---\nShared direction.\n")
 	tests := []struct {
 		name             string
 		local            string
@@ -89,8 +89,8 @@ func TestParseWorkflowOverlayPrecedence(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseWorkflowOverlay() error = %v", err)
 			}
-			if workflow.Config.Tracker.Kind != TrackerHubNative {
-				t.Fatalf("Tracker.Kind = %q, want %q", workflow.Config.Tracker.Kind, TrackerHubNative)
+			if workflow.Config.Tracker.Kind != TrackerMemory {
+				t.Fatalf("Tracker.Kind = %q, want %q", workflow.Config.Tracker.Kind, TrackerMemory)
 			}
 			if workflow.Config.Tracker.Assignee != tt.wantAssignee {
 				t.Fatalf("Tracker.Assignee = %q, want %q", workflow.Config.Tracker.Assignee, tt.wantAssignee)
@@ -123,7 +123,7 @@ func TestParseWorkflowOverlayPrecedence(t *testing.T) {
 func TestWorkerGitHubPolicyConfiguration(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\nworker:\n  github_token: $DETENT_WORKER_GITHUB_TOKEN\n  github_token_resolution_timeout_ms: 30000\n  github_rest_min_remaining_reserve: 1250\n  github_rest_poll_interval_ms: 90000\n---\nPrompt\n"))
+	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\nworker:\n  github_token: $DETENT_WORKER_GITHUB_TOKEN\n  github_token_resolution_timeout_ms: 30000\n  github_rest_min_remaining_reserve: 1250\n  github_rest_poll_interval_ms: 90000\n---\nPrompt\n"))
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
@@ -149,8 +149,8 @@ func TestRefreshFailureThresholdConfiguration(t *testing.T) {
 		raw  string
 		want int
 	}{
-		{name: "default", raw: "---\ntracker:\n  kind: hub_native\n---\nPrompt\n", want: DefaultRefreshFailureThreshold},
-		{name: "override", raw: "---\ntracker:\n  kind: hub_native\npolling:\n  refresh_failure_threshold: 5\n---\nPrompt\n", want: 5},
+		{name: "default", raw: "---\ntracker:\n  kind: memory\n---\nPrompt\n", want: DefaultRefreshFailureThreshold},
+		{name: "override", raw: "---\ntracker:\n  kind: memory\npolling:\n  refresh_failure_threshold: 5\n---\nPrompt\n", want: 5},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -226,7 +226,7 @@ func TestWorkerGitHubPolicyValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := Default()
-			cfg.Tracker.Kind = TrackerHubNative
+			cfg.Tracker.Kind = TrackerMemory
 			tt.mutate(&cfg)
 			err := cfg.Validate()
 			if tt.wantProblem == "" {
@@ -304,7 +304,7 @@ func TestParseWorkflowActiveHours(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			workflow, err := ParseWorkflow([]byte("---\n" + test.activeHours + "tracker:\n  kind: hub_native\n---\n"))
+			workflow, err := ParseWorkflow([]byte("---\n" + test.activeHours + "tracker:\n  kind: memory\n---\n"))
 			if err == nil {
 				err = workflow.Config.Validate()
 			}
@@ -327,7 +327,7 @@ func TestParseWorkflowActiveHours(t *testing.T) {
 func TestLoadWorkflowWithoutOverlayPreservesExistingBehavior(t *testing.T) {
 	t.Parallel()
 
-	raw := []byte("---\ntracker:\n  kind: hub_native\n---\nShared direction.\n")
+	raw := []byte("---\ntracker:\n  kind: memory\n---\nShared direction.\n")
 	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -485,7 +485,7 @@ func TestParseWorkflowBillingMode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			frontmatter := "---\ntracker:\n  kind: hub_native\n"
+			frontmatter := "---\ntracker:\n  kind: memory\n"
 			if tt.value != "" {
 				frontmatter += "budget:\n  billing_mode: \"" + tt.value + "\"\n"
 			}
@@ -583,7 +583,7 @@ func TestParseWorkflowMergeMethod(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			raw := "---\ntracker:\n  kind: hub_native\n"
+			raw := "---\ntracker:\n  kind: memory\n"
 			if tt.value != "" {
 				raw += "deliverable:\n  merge_method: " + tt.value + "\n"
 			}
@@ -647,10 +647,10 @@ func TestNoProgressSpendLimitConfiguration(t *testing.T) {
 		want    float64
 		wantErr string
 	}{
-		{name: "default enabled", raw: "---\ntracker:\n  kind: hub_native\n---\nPrompt\n", want: DefaultNoProgressSpendLimitUSD},
-		{name: "explicitly disabled", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  no_progress_spend_limit_usd: 0\n---\nPrompt\n", want: 0},
-		{name: "custom threshold", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  no_progress_spend_limit_usd: 8.5\n---\nPrompt\n", want: 8.5},
-		{name: "negative rejected", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  no_progress_spend_limit_usd: -1\n---\nPrompt\n", wantErr: "agent.no_progress_spend_limit_usd must be greater than or equal to 0"},
+		{name: "default enabled", raw: "---\ntracker:\n  kind: memory\n---\nPrompt\n", want: DefaultNoProgressSpendLimitUSD},
+		{name: "explicitly disabled", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_spend_limit_usd: 0\n---\nPrompt\n", want: 0},
+		{name: "custom threshold", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_spend_limit_usd: 8.5\n---\nPrompt\n", want: 8.5},
+		{name: "negative rejected", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_spend_limit_usd: -1\n---\nPrompt\n", wantErr: "agent.no_progress_spend_limit_usd must be greater than or equal to 0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -684,10 +684,10 @@ func TestNoProgressTokenLimitConfiguration(t *testing.T) {
 		want    int64
 		wantErr string
 	}{
-		{name: "default enabled", raw: "---\ntracker:\n  kind: hub_native\n---\nPrompt\n", want: DefaultNoProgressTokenLimit},
-		{name: "explicitly disabled", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  no_progress_token_limit: 0\n---\nPrompt\n"},
-		{name: "custom threshold", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  no_progress_token_limit: 40000000\n---\nPrompt\n", want: 40_000_000},
-		{name: "negative rejected", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  no_progress_token_limit: -1\n---\nPrompt\n", wantErr: "agent.no_progress_token_limit must be greater than or equal to 0"},
+		{name: "default enabled", raw: "---\ntracker:\n  kind: memory\n---\nPrompt\n", want: DefaultNoProgressTokenLimit},
+		{name: "explicitly disabled", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_token_limit: 0\n---\nPrompt\n"},
+		{name: "custom threshold", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_token_limit: 40000000\n---\nPrompt\n", want: 40_000_000},
+		{name: "negative rejected", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_token_limit: -1\n---\nPrompt\n", wantErr: "agent.no_progress_token_limit must be greater than or equal to 0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -725,36 +725,36 @@ func TestLifetimeLimitConfiguration(t *testing.T) {
 	}{
 		{
 			name:         "default enabled",
-			raw:          "---\ntracker:\n  kind: hub_native\n---\nPrompt\n",
+			raw:          "---\ntracker:\n  kind: memory\n---\nPrompt\n",
 			wantSessions: DefaultLifetimeSessionLimit,
 			wantTokens:   DefaultLifetimeTokenLimit,
 			wantOverride: DefaultLifetimeLimitOverrideLabel,
 		},
 		{
 			name:         "custom values normalize override label",
-			raw:          "---\ntracker:\n  kind: hub_native\nagent:\n  lifetime_session_limit: 20\n  lifetime_token_limit: 50000000\n  lifetime_limit_cooldown_seconds: 7200\n  lifetime_limit_override_label: Allow-Hard-Issue\n---\nPrompt\n",
+			raw:          "---\ntracker:\n  kind: memory\nagent:\n  lifetime_session_limit: 20\n  lifetime_token_limit: 50000000\n  lifetime_limit_cooldown_seconds: 7200\n  lifetime_limit_override_label: Allow-Hard-Issue\n---\nPrompt\n",
 			wantSessions: 20,
 			wantTokens:   50_000_000,
 			wantOverride: "allow-hard-issue",
 		},
 		{
 			name:         "limits can be disabled",
-			raw:          "---\ntracker:\n  kind: hub_native\nagent:\n  lifetime_session_limit: 0\n  lifetime_token_limit: 0\n  lifetime_limit_cooldown_seconds: 0\n---\nPrompt\n",
+			raw:          "---\ntracker:\n  kind: memory\nagent:\n  lifetime_session_limit: 0\n  lifetime_token_limit: 0\n  lifetime_limit_cooldown_seconds: 0\n---\nPrompt\n",
 			wantOverride: DefaultLifetimeLimitOverrideLabel,
 		},
 		{
 			name:    "negative sessions rejected",
-			raw:     "---\ntracker:\n  kind: hub_native\nagent:\n  lifetime_session_limit: -1\n---\nPrompt\n",
+			raw:     "---\ntracker:\n  kind: memory\nagent:\n  lifetime_session_limit: -1\n---\nPrompt\n",
 			wantErr: "agent.lifetime_session_limit must be greater than or equal to 0",
 		},
 		{
 			name:    "negative tokens rejected",
-			raw:     "---\ntracker:\n  kind: hub_native\nagent:\n  lifetime_token_limit: -1\n---\nPrompt\n",
+			raw:     "---\ntracker:\n  kind: memory\nagent:\n  lifetime_token_limit: -1\n---\nPrompt\n",
 			wantErr: "agent.lifetime_token_limit must be greater than or equal to 0",
 		},
 		{
 			name:         "legacy cooldown ignored with enabled limits",
-			raw:          "---\ntracker:\n  kind: hub_native\nagent:\n  lifetime_session_limit: 1\n  lifetime_limit_cooldown_seconds: 0\n---\nPrompt\n",
+			raw:          "---\ntracker:\n  kind: memory\nagent:\n  lifetime_session_limit: 1\n  lifetime_limit_cooldown_seconds: 0\n---\nPrompt\n",
 			wantSessions: 1,
 			wantTokens:   DefaultLifetimeTokenLimit,
 			wantOverride: DefaultLifetimeLimitOverrideLabel,
@@ -807,7 +807,7 @@ func TestFailureBreakerConfiguration(t *testing.T) {
 	}{
 		{
 			name: "defaults enabled",
-			raw:  "---\ntracker:\n  kind: hub_native\n---\nPrompt\n",
+			raw:  "---\ntracker:\n  kind: memory\n---\nPrompt\n",
 			want: FailureBreaker{
 				SameClassLimit:  DefaultFailureBreakerSameClassLimit,
 				WindowSeconds:   DefaultFailureBreakerWindowSeconds,
@@ -816,22 +816,22 @@ func TestFailureBreakerConfiguration(t *testing.T) {
 		},
 		{
 			name: "custom values",
-			raw:  "---\ntracker:\n  kind: hub_native\nagent:\n  failure_breaker:\n    same_class_limit: 7\n    window_seconds: 900\n    cooldown_seconds: 120\n---\nPrompt\n",
+			raw:  "---\ntracker:\n  kind: memory\nagent:\n  failure_breaker:\n    same_class_limit: 7\n    window_seconds: 900\n    cooldown_seconds: 120\n---\nPrompt\n",
 			want: FailureBreaker{SameClassLimit: 7, WindowSeconds: 900, CooldownSeconds: 120},
 		},
 		{
 			name:    "negative limit rejected",
-			raw:     "---\ntracker:\n  kind: hub_native\nagent:\n  failure_breaker:\n    same_class_limit: -1\n---\nPrompt\n",
+			raw:     "---\ntracker:\n  kind: memory\nagent:\n  failure_breaker:\n    same_class_limit: -1\n---\nPrompt\n",
 			wantErr: "agent.failure_breaker.same_class_limit must be greater than 0",
 		},
 		{
 			name:    "negative window rejected",
-			raw:     "---\ntracker:\n  kind: hub_native\nagent:\n  failure_breaker:\n    window_seconds: -1\n---\nPrompt\n",
+			raw:     "---\ntracker:\n  kind: memory\nagent:\n  failure_breaker:\n    window_seconds: -1\n---\nPrompt\n",
 			wantErr: "agent.failure_breaker.window_seconds must be greater than 0",
 		},
 		{
 			name:    "negative cooldown rejected",
-			raw:     "---\ntracker:\n  kind: hub_native\nagent:\n  failure_breaker:\n    cooldown_seconds: -1\n---\nPrompt\n",
+			raw:     "---\ntracker:\n  kind: memory\nagent:\n  failure_breaker:\n    cooldown_seconds: -1\n---\nPrompt\n",
 			wantErr: "agent.failure_breaker.cooldown_seconds must be greater than 0",
 		},
 	}
@@ -867,10 +867,10 @@ func TestOverloadRetryDelayConfiguration(t *testing.T) {
 		want    int
 		wantErr string
 	}{
-		{name: "default", raw: "---\ntracker:\n  kind: hub_native\n---\nPrompt\n", want: DefaultOverloadRetryDelayMS},
-		{name: "custom", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  overload_retry_delay_ms: 60000\n---\nPrompt\n", want: 60000},
-		{name: "zero rejected", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  overload_retry_delay_ms: 0\n---\nPrompt\n", wantErr: "agent.overload_retry_delay_ms must be greater than 0"},
-		{name: "negative rejected", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  overload_retry_delay_ms: -1\n---\nPrompt\n", wantErr: "agent.overload_retry_delay_ms must be greater than 0"},
+		{name: "default", raw: "---\ntracker:\n  kind: memory\n---\nPrompt\n", want: DefaultOverloadRetryDelayMS},
+		{name: "custom", raw: "---\ntracker:\n  kind: memory\nagent:\n  overload_retry_delay_ms: 60000\n---\nPrompt\n", want: 60000},
+		{name: "zero rejected", raw: "---\ntracker:\n  kind: memory\nagent:\n  overload_retry_delay_ms: 0\n---\nPrompt\n", wantErr: "agent.overload_retry_delay_ms must be greater than 0"},
+		{name: "negative rejected", raw: "---\ntracker:\n  kind: memory\nagent:\n  overload_retry_delay_ms: -1\n---\nPrompt\n", wantErr: "agent.overload_retry_delay_ms must be greater than 0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -938,7 +938,7 @@ func TestRESTFanoutMaxRequestsConfiguration(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			raw := []byte("---\ntracker:\n  kind: hub_native\n  github_rest_fanout_max_requests: " + strconv.Itoa(tt.value) + "\n---\nPrompt\n")
+			raw := []byte("---\ntracker:\n  kind: memory\n  github_rest_fanout_max_requests: " + strconv.Itoa(tt.value) + "\n---\nPrompt\n")
 			workflow, err := ParseWorkflow(raw)
 			if err == nil {
 				err = workflow.Config.Validate()
@@ -978,7 +978,7 @@ func TestGitHubUnstartedCheckThresholdConfiguration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			raw := "---\ntracker:\n  kind: hub_native\n"
+			raw := "---\ntracker:\n  kind: memory\n"
 			if tt.value != nil {
 				raw += "  github_unstarted_check_threshold_seconds: " + strconv.Itoa(*tt.value) + "\n"
 			}
@@ -1497,10 +1497,7 @@ func TestParseWorkflowRetroDefaultsAndValidation(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
+  kind: memory
   lanes:
     - name: Backlog
       role: holding
@@ -1711,7 +1708,7 @@ func TestNormalizeGitHubLabelStatusSourceAliases(t *testing.T) {
 func TestParseWorkflowDefaults(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n---\nPrompt\n"))
+	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\n---\nPrompt\n"))
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
@@ -1721,7 +1718,7 @@ func TestParseWorkflowDefaults(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 
-	if cfg.Tracker.Endpoint != "" {
+	if cfg.Tracker.Endpoint != "https://api.linear.app/graphql" {
 		t.Fatalf("Tracker.Endpoint = %q", cfg.Tracker.Endpoint)
 	}
 	if cfg.Identity.Configured() {
@@ -1937,7 +1934,7 @@ func TestParseWorkflowDefaults(t *testing.T) {
 func TestParseWorkflowCanDisableOrphanedSessionResume(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\nagent:\n  resume_orphaned_sessions: false\n---\nPrompt\n"))
+	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\nagent:\n  resume_orphaned_sessions: false\n---\nPrompt\n"))
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
@@ -2283,7 +2280,7 @@ func TestServerBoardSnapshotStaleness(t *testing.T) {
 	}
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 server:
   board_snapshot_stale_after_seconds: 120
 ---
@@ -2370,7 +2367,7 @@ func TestStalenessRepeatedDecisionBenignReasonsOverride(t *testing.T) {
 			name: "project override replaces defaults",
 			yaml: `---
 tracker:
-  kind: hub_native
+  kind: memory
 observability:
   staleness:
     repeated_decision_benign_reasons:
@@ -2401,7 +2398,7 @@ func TestStalenessRepeatedDecisionBenignReasonsRejectUnknownSchedulerReason(t *t
 	t.Parallel()
 
 	cfg := Default()
-	cfg.Tracker.Kind = TrackerHubNative
+	cfg.Tracker.Kind = TrackerMemory
 	cfg.Observability.Staleness.RepeatedDecisionBenignReasons = []string{"unauthorized"}
 	err := cfg.Validate()
 	if err == nil {
@@ -2428,7 +2425,7 @@ func TestStalenessRepeatedDecisionBenignReasonsAcceptHistoricalReasons(t *testin
 	} {
 		t.Run(reason, func(t *testing.T) {
 			t.Parallel()
-			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\nobservability:\n  staleness:\n    repeated_decision_benign_reasons:\n      - " + reason + "\n---\nPrompt\n"))
+			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\nobservability:\n  staleness:\n    repeated_decision_benign_reasons:\n      - " + reason + "\n---\nPrompt\n"))
 			if err != nil {
 				t.Fatalf("ParseWorkflow() rejected historical reason: %v", err)
 			}
@@ -2517,7 +2514,7 @@ func TestParseWorkflowAgentsConfig(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 agents:
   backends:
     - id: codex-high
@@ -2613,7 +2610,7 @@ func TestParseWorkflowClaudeCodeAgentBackendConfig(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 agents:
   backends:
     - id: claude-worker
@@ -2696,7 +2693,7 @@ func TestParseWorkflowAgentRoleEffort(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 agent:
   effort:
     code: xhigh
@@ -2777,7 +2774,7 @@ func TestAgentBackendConfigsMergesLegacyCodexDefaults(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 codex:
   command: codex app-server
   shell: bash
@@ -2853,7 +2850,7 @@ func TestParseWorkflowCommandGateDisablesAutomatedReviewRequirement(t *testing.T
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 gate:
   kind: command
   run: make check
@@ -2900,7 +2897,7 @@ func TestParseWorkflowAutomatedReviewModeAndTimeoutAction(t *testing.T) {
 
 			raw := fmt.Sprintf(`---
 tracker:
-  kind: hub_native
+  kind: memory
 agent:
   auto_promote:
     gate_wait_timeout_action: %s
@@ -2932,7 +2929,7 @@ func TestParseWorkflowCommandGateCIFailureAction(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 gate:
   kind: command
   run: make check
@@ -2962,7 +2959,7 @@ func TestParseWorkflowGateRequiredStatusChecks(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 gate:
   required_status_checks:
     - " Lint "
@@ -2989,7 +2986,7 @@ func TestParseWorkflowGateCITriggerLabel(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 gate:
   ci_trigger_label: " CI:Ready "
   ci_trigger_label_stagger_seconds: 20
@@ -3016,7 +3013,7 @@ func TestParseWorkflowGateCITriggerLabelRejectsZeroStagger(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 gate:
   ci_trigger_label: ci:ready
   ci_trigger_label_stagger_seconds: 0
@@ -3036,7 +3033,7 @@ func TestParseWorkflowGateTransientCIRetryLimitCanDisable(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 gate:
   transient_ci_retry_limit: 0
 ---
@@ -3057,7 +3054,7 @@ func TestParseWorkflowGateValidatorConfig(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 gate:
   kind: command
   validator:
@@ -3136,7 +3133,11 @@ func TestParseWorkflowGateSecurityAuditConfig(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: github_local
+  api_key: ghp_example
+  repository: example-org/example-project
+  local_sqlite:
+    path: .detent/work-items.db
 gate:
   kind: command
   security_audit:
@@ -3173,7 +3174,7 @@ func TestParseWorkflowAgentRoutesCanUseLegacyCodexBackend(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 codex:
   command: codex app-server
 agents:
@@ -3200,7 +3201,7 @@ func TestParseWorkflowMemoryTrackerIssues(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
   issues:
     - id: issue-1
       identifier: MT-1
@@ -3271,7 +3272,7 @@ func TestParseWorkflowMemoryTrackerIssueDefaults(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
   issues:
     - id: issue-1
 ---
@@ -3293,12 +3294,15 @@ Prompt
 	}
 }
 
-func TestParseWorkflowNativeArtifactWorkflow(t *testing.T) {
+func TestParseWorkflowLocalSQLiteArtifactWorkflow(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: local_sqlite
+  local_sqlite:
+    path: .detent/work-items.db
+    project_id: video-production
   lanes:
     - name: Review
       role: holding
@@ -3349,7 +3353,7 @@ Produce the video artifact.
 	}
 
 	cfg := workflow.Config
-	if cfg.Tracker.Kind != TrackerHubNative {
+	if cfg.Tracker.Kind != TrackerLocalSQLite || cfg.Tracker.LocalSQLite.Path != ".detent/work-items.db" || cfg.Tracker.LocalSQLite.ProjectID != "video-production" {
 		t.Fatalf("Tracker local sqlite config = %#v", cfg.Tracker)
 	}
 	if cfg.Workspace.Kind != WorkspaceFilesystem || cfg.Workspace.Root != ".detent/workspaces" || cfg.Workspace.OutputRoot != ".detent/renders" {
@@ -3372,6 +3376,38 @@ Produce the video artifact.
 	}
 }
 
+func TestParseWorkflowGitHubLocalTracker(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: github_local
+  api_key: ghp_example
+  repository: digitaldrywood/detent
+  local_sqlite:
+    path: .detent/work-items.db
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	cfg := workflow.Config
+	if cfg.Tracker.Kind != TrackerGitHubLocal {
+		t.Fatalf("Tracker.Kind = %q, want %q", cfg.Tracker.Kind, TrackerGitHubLocal)
+	}
+	if cfg.Tracker.Endpoint != defaultGitHubEndpoint {
+		t.Fatalf("Tracker.Endpoint = %q, want %q", cfg.Tracker.Endpoint, defaultGitHubEndpoint)
+	}
+	if cfg.Tracker.GitHubStatusSource != GitHubStatusSourceProjectV2 {
+		t.Fatalf("GitHubStatusSource default changed to %q", cfg.Tracker.GitHubStatusSource)
+	}
+}
+
 func TestTrackerStatusPageDefaultsAndOverride(t *testing.T) {
 	t.Parallel()
 
@@ -3382,7 +3418,9 @@ func TestTrackerStatusPageDefaultsAndOverride(t *testing.T) {
 		want       string
 	}{
 		{name: "github default", kind: TrackerGitHub, want: defaultGitHubStatusPageURL},
-		{name: "unknown connector has no source", kind: TrackerHubNative},
+		{name: "github local default", kind: TrackerGitHubLocal, want: defaultGitHubStatusPageURL},
+		{name: "linear default", kind: TrackerLinear, want: defaultLinearStatusPageURL},
+		{name: "unknown connector has no source", kind: TrackerMemory},
 		{name: "configured source overrides default", kind: TrackerGitHub, configured: "https://status.example.com/", want: "https://status.example.com"},
 	}
 	for _, tt := range tests {
@@ -3424,6 +3462,32 @@ func TestValidateStatusPageURL(t *testing.T) {
 				t.Fatalf("validateStatusPageURL(%q) problems = %v, want error %t", tt.value, problems, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseWorkflowGitHubLocalRejectsGitHubStatusSource(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: github_local
+  api_key: ghp_example
+  repository: digitaldrywood/detent
+  github_status_source: label
+  local_sqlite:
+    path: .detent/work-items.db
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	err = workflow.Config.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want github_status_source rejection")
+	}
+	if !strings.Contains(err.Error(), "tracker.github_status_source must be omitted when tracker.kind is github_local") {
+		t.Fatalf("Validate() error = %q, want github_status_source rejection", err)
 	}
 }
 
@@ -3479,7 +3543,7 @@ func TestStringOrMapFieldsAcceptScalarOrMapping(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
   state_map: $STATE_MAP_JSON
   priority_map:
     P0: 1
@@ -3514,7 +3578,7 @@ func TestParseWorkflowDeliverableElicitationAllowlist(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 codex:
   deliverable_elicitation_allowlist:
     - server: " codex_apps "
@@ -3591,7 +3655,7 @@ func TestDeliverableElicitationAllowlistValidation(t *testing.T) {
 			t.Parallel()
 
 			cfg := Default()
-			cfg.Tracker.Kind = TrackerHubNative
+			cfg.Tracker.Kind = TrackerMemory
 			cfg.Codex.DeliverableElicitationAllowlist = tt.rules
 			err := cfg.Validate()
 			if tt.wantErr == "" {
@@ -3725,34 +3789,9 @@ func TestConfigValidateReportsInvalidSettings(t *testing.T) {
 			want: []string{"tracker.kind must be one of"},
 		},
 		{
-			name: "retired linear tracker",
+			name: "linear credentials",
 			raw:  "---\ntracker:\n  kind: linear\n---\nPrompt\n",
-			want: []string{"tracker.kind must be one of github, hub_native"},
-		},
-		{
-			name: "retired memory tracker",
-			raw:  "---\ntracker:\n  kind: memory\n---\nPrompt\n",
-			want: []string{"tracker.kind must be one of github, hub_native"},
-		},
-		{
-			name: "retired local_sqlite tracker",
-			raw:  "---\ntracker:\n  kind: local_sqlite\n---\nPrompt\n",
-			want: []string{"tracker.kind must be one of github, hub_native"},
-		},
-		{
-			name: "retired local tracker",
-			raw:  "---\ntracker:\n  kind: local\n---\nPrompt\n",
-			want: []string{"tracker.kind must be one of github, hub_native"},
-		},
-		{
-			name: "retired github_local tracker",
-			raw:  "---\ntracker:\n  kind: github_local\n---\nPrompt\n",
-			want: []string{"tracker.kind must be one of github, hub_native"},
-		},
-		{
-			name: "retired githublocal tracker",
-			raw:  "---\ntracker:\n  kind: githublocal\n---\nPrompt\n",
-			want: []string{"tracker.kind must be one of github, hub_native"},
+			want: []string{"tracker.api_key is required for linear", "tracker.project_slug is required for linear"},
 		},
 		{
 			name: "github credentials",
@@ -3761,7 +3800,7 @@ func TestConfigValidateReportsInvalidSettings(t *testing.T) {
 		},
 		{
 			name: "dependency source",
-			raw:  "---\ntracker:\n  kind: hub_native\ndependencies:\n  source: prose\n---\nPrompt\n",
+			raw:  "---\ntracker:\n  kind: memory\ndependencies:\n  source: prose\n---\nPrompt\n",
 			want: []string{"dependencies.source must be one of merged, native_only"},
 		},
 		{
@@ -3783,7 +3822,7 @@ Prompt
 			name: "positive numbers and states",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
   http_max_idle_conns: 0
   http_max_idle_conns_per_host: 0
   http_idle_conn_timeout_ms: 0
@@ -3867,7 +3906,7 @@ Prompt
 			name: "invalid agent workflow instructions",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
   lanes:
     - name: Blocked
       role: holding
@@ -3916,7 +3955,7 @@ Prompt
 			name: "polling interval floor",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
 polling:
   interval_ms: 59999
 ---
@@ -3928,7 +3967,7 @@ Prompt
 			name: "invalid dependency auto unblock config",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
   dependency_auto_unblock:
     enabled: true
     source_states: [""]
@@ -3948,7 +3987,7 @@ Prompt
 			name: "dependency auto unblock requires active rework",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
   lanes:
     - name: Backlog
       role: holding
@@ -3987,7 +4026,7 @@ Prompt
 			name: "invalid blocked recovery config",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
   lanes:
     - name: Backlog
       role: holding
@@ -4033,7 +4072,7 @@ Prompt
 			name: "blocked recovery requires active target state",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
   lanes:
     - name: Backlog
       role: holding
@@ -4073,7 +4112,7 @@ Prompt
 			name: "invalid blocker auto promote config",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
   blocker_auto_promote:
     enabled: true
     source_states: [""]
@@ -4092,7 +4131,7 @@ Prompt
 			name: "invalid transient ci retry limit",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
 gate:
   transient_ci_retry_limit: -1
 ---
@@ -4106,7 +4145,7 @@ Prompt
 			name: "invalid auto promote gate wait settings",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
 agent:
   auto_promote:
     gate_wait_state: backlog
@@ -4123,7 +4162,7 @@ Prompt
 			name: "invalid automated review settings",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
 agent:
   auto_promote:
     gate_wait_timeout_action: abandon
@@ -4141,7 +4180,7 @@ Prompt
 			name: "invalid paths and priority map",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
   priority_map:
     "": 1
     Bad: 5
@@ -4171,7 +4210,7 @@ Prompt
 			name: "invalid agents config",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
 agents:
   backends:
     - id: codex
@@ -4200,7 +4239,7 @@ Prompt
 			name: "invalid claude code protocol",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
 agents:
   backends:
     - id: claude
@@ -4220,7 +4259,7 @@ Prompt
 			name: "invalid agent backend options decode",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
 agents:
   backends:
     - id: codex
@@ -4243,7 +4282,7 @@ Prompt
 			name: "invalid claude code permission mode",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
 agents:
   backends:
     - id: claude
@@ -4264,7 +4303,7 @@ Prompt
 			name: "invalid runtime identity labels and effort",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
 agents:
   backends:
     - id: claude
@@ -4287,7 +4326,7 @@ Prompt
 			name: "invalid claude code plan permission mode",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
 agents:
   backends:
     - id: claude
@@ -4308,7 +4347,7 @@ Prompt
 			name: "invalid claude code option timeouts",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
 agents:
   backends:
     - id: claude
@@ -4331,7 +4370,7 @@ Prompt
 			name: "invalid agent backend option timeouts",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
 agents:
   backends:
     - id: codex
@@ -4361,7 +4400,7 @@ identity:
   github_login: detent-bot
   ownership_mode: field
 tracker:
-  kind: hub_native
+  kind: memory
   authorization:
     priority_in: [0]
     fields:
@@ -4383,7 +4422,7 @@ identity:
   name: release-captain
   github_login: detent-bot
 tracker:
-  kind: hub_native
+  kind: memory
   claims:
     enabled: true
     lease_field: ""
@@ -4401,7 +4440,7 @@ Prompt
 			name: "invalid gate config",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
 gate:
   kind: checklist
   ci_failure_action: bounce
@@ -4417,7 +4456,7 @@ Prompt
 			name: "invalid validator config",
 			raw: `---
 tracker:
-  kind: hub_native
+  kind: memory
 gate:
   validator:
     enabled: true
@@ -4470,7 +4509,7 @@ func TestParseWorkflowReportsInvalidFrontmatter(t *testing.T) {
 		want string
 	}{
 		{name: "missing frontmatter", raw: "Prompt only\n", want: "missing YAML frontmatter"},
-		{name: "unterminated frontmatter", raw: "---\ntracker:\n  kind: hub_native\n", want: "unterminated YAML frontmatter"},
+		{name: "unterminated frontmatter", raw: "---\ntracker:\n  kind: memory\n", want: "unterminated YAML frontmatter"},
 		{name: "invalid yaml", raw: "---\ntracker: [\n---\nPrompt\n", want: "parse YAML frontmatter"},
 		{name: "not a map", raw: "---\n- tracker\n---\nPrompt\n", want: "workflow frontmatter must be a mapping"},
 	}
@@ -4511,10 +4550,10 @@ func TestReleaseConfigValidation(t *testing.T) {
 		{
 			name: "requires github tracker",
 			change: func(cfg *Config) {
-				cfg.Tracker.Kind = TrackerHubNative
+				cfg.Tracker.Kind = TrackerMemory
 				cfg.Release.Enabled = true
 			},
-			want: "release.enabled requires tracker.kind github",
+			want: "release.enabled requires tracker.kind github or github_local",
 		},
 		{
 			name: "green ci cannot be waived",
@@ -4613,7 +4652,7 @@ func TestLoadWorkflowSandboxPolicy(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					base := "tracker:\n  kind: hub_native\ncodex:\n  thread_sandbox: danger-full-access\n"
+					base := "tracker:\n  kind: memory\ncodex:\n  thread_sandbox: danger-full-access\n"
 					policy := "  turn_sandbox_policy: " + tt.policy + "\n"
 					offendingPath := basePath
 					if overlay {
@@ -4753,10 +4792,11 @@ func TestWithRuntimeGitHubToken(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ name, kind, global, override, want string }{
 		{name: "github default", kind: TrackerGitHub, global: " global-token ", want: "global-token"},
+		{name: "local tracker default", kind: TrackerMemory, global: "global-token", want: "global-token"},
 		{name: "literal override", kind: TrackerGitHub, global: "global-token", override: "worker-token", want: "worker-token"},
 		{name: "environment override", kind: TrackerGitHub, global: "global-token", override: "$WORKER_TOKEN", want: "$WORKER_TOKEN"},
 		{name: "gh override", kind: TrackerGitHub, global: "global-token", override: "gh", want: "gh"},
-		{name: "no credentials", kind: TrackerHubNative},
+		{name: "no credentials", kind: TrackerMemory},
 		{name: "native default", kind: TrackerHubNative, global: "global-token"},
 		{name: "native explicit override", kind: TrackerHubNative, global: "global-token", override: "worker-token", want: "worker-token"},
 	} {
@@ -4786,7 +4826,7 @@ func TestClearedSandboxPolicyOverlay(t *testing.T) {
 				overlay := filepath.Join(dir, "detent.local.yaml")
 				for name, body := range map[string]string{
 					path:                              "Instructions.\n",
-					filepath.Join(dir, "detent.yaml"): "schema: 1\ntracker: {kind: hub_native}\ncodex:\n  thread_sandbox: danger-full-access\n  turn_sandbox_policy: {type: dangerFullAccess}\n",
+					filepath.Join(dir, "detent.yaml"): "schema: 1\ntracker: {kind: memory}\ncodex:\n  thread_sandbox: danger-full-access\n  turn_sandbox_policy: {type: dangerFullAccess}\n",
 					overlay:                           "schema: 1\ncodex:\n  thread_sandbox: ''\n  turn_sandbox_policy: " + policy + "\n",
 				} {
 					if err := os.WriteFile(name, []byte(body), 0o600); err != nil {
@@ -4823,7 +4863,7 @@ func TestTypelessSandboxPolicyValidation(t *testing.T) {
 	for _, thread := range []string{"", "custom", "workspace-write", "danger-full-access", "read-only"} {
 		for _, backend := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/backend=%t", thread, backend), func(t *testing.T) {
-				body := "---\ntracker: {kind: hub_native}\ncodex:\n  thread_sandbox: " + fmt.Sprintf("%q", thread) + "\n"
+				body := "---\ntracker: {kind: memory}\ncodex:\n  thread_sandbox: " + fmt.Sprintf("%q", thread) + "\n"
 				if backend {
 					body += "agents:\n  backends:\n    - id: primary\n      kind: codex\n      options:\n        turn_sandbox_policy: {networkAccess: false}\n"
 				} else {

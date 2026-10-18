@@ -18,7 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -30,7 +29,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	workflowPath := filepath.Join(root, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/orders\n---\nPRIVATE WORKFLOW\n"), 0o600); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: memory\n  repository: acme/orders\n---\nPRIVATE WORKFLOW\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(root, "global.yaml")
@@ -51,7 +50,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/repositories/example-org/orders/policy" || r.Header.Get("Authorization") != "Bearer fixture-admin" {
+		if r.URL.Path != "/api/v1/repositories/acme/orders/policy" || r.Header.Get("Authorization") != "Bearer fixture-admin" {
 			t.Errorf("unexpected request %s", r.URL.Path)
 		}
 		if r.Method == http.MethodPut {
@@ -107,7 +106,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeProject, err := projectfixture.New(project.Config{Project: managed, Workflow: workflow}, project.Dependencies{Runner: orchestrator.FakeRunner{}})
+	runtimeProject, err := project.New(project.Config{Project: managed, Workflow: workflow}, project.Dependencies{Runner: orchestrator.FakeRunner{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,17 +130,11 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 		organization := "org_" + strings.Repeat("a", 32)
 		projectID := "prj_" + strings.Repeat("b", 32)
 		var credential string
-		mappedWorkflow := workflow
-		mappedWorkflow.Config = project.MapNativeTracker(mappedWorkflow.Config, true)
-		enrolledPolicy, err := project.ResolvePolicy(managed, mappedWorkflow)
-		if err != nil {
-			t.Fatal(err)
-		}
 		hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/api/v2/organizations/"+organization+"/projects/"+projectID+"/policy" || r.Header.Get("Authorization") != "Bearer "+credential {
 				t.Error("doctor did not use the enrolled policy credential and project scope")
 			}
-			if err := json.NewEncoder(w).Encode(policy.Approval{Policy: enrolledPolicy}); err != nil {
+			if err := json.NewEncoder(w).Encode(policy.Approval{Policy: descriptor}); err != nil {
 				t.Error(err)
 			}
 		}))
@@ -166,7 +159,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 			t.Fatalf("enrolled doctor policy = %#v", check)
 		}
 	})
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/orders\ngate:\n  kind: artifact\n---\nChanged instructions\n"), 0o600); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: memory\n  repository: acme/orders\ngate:\n  kind: artifact\n---\nChanged instructions\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	check = checkDoctorHubPolicy(t.Context(), loaded, loaded.Projects[0], doctorDeps{lookupEnv: func(string) string { return "fixture-admin" }})

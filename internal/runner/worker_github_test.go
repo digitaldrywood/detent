@@ -296,7 +296,7 @@ func TestNewWorkerGitHubPolicyUsesGitHubEndpointForNonGitHubTracker(t *testing.T
 	t.Parallel()
 
 	cfg := config.Default()
-	cfg.Tracker.Kind = "linear"
+	cfg.Tracker.Kind = config.TrackerLinear
 	cfg.Tracker.Endpoint = "https://api.linear.app/graphql"
 	cfg.Tracker.APIKey = "linear-secret"
 	cfg.Worker.GitHubToken = "worker-token"

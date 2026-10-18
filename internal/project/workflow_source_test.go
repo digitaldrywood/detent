@@ -252,7 +252,7 @@ func TestLoadWorkflowUsesSplitDefinitionFromConfiguredGitRef(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "WORKFLOW.md"), []byte("from split ref\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(WORKFLOW.md) error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: hub_native\npolling:\n  interval_ms: 90000\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: memory\npolling:\n  interval_ms: 90000\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(detent.yaml) error = %v", err)
 	}
 	runWorkflowSourceGit(t, repo, "add", "WORKFLOW.md", "detent.yaml")
@@ -295,7 +295,7 @@ func TestLoadWorkflowUsesAdmissionEffortGuidanceFromConfiguredGitRef(t *testing.
 	workflowPrompt := "## Admission Criteria\n\n- **Alignment** — ready.\n"
 	config := `schema: 1
 tracker:
-  kind: hub_native
+  kind: memory
 backlog_admission:
   enabled: true
   sources:
@@ -502,7 +502,7 @@ func TestWorkflowWatchersUseReloadedHostBackends(t *testing.T) {
 			if ref != "" {
 				path = workflowconfig.LocalWorkflowPath(path)
 			}
-			raw := "---\ntracker:\n  kind: hub_native\nagents:\n  routes:\n    - name: new-default\n      backend: new-backend\n      default: true\n---\nupdated\n"
+			raw := "---\ntracker:\n  kind: memory\nagents:\n  routes:\n    - name: new-default\n      backend: new-backend\n      default: true\n---\nupdated\n"
 			if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -640,7 +640,7 @@ func initWorkflowSourceRepo(t *testing.T) string {
 func writeWorkflowSourceFile(t *testing.T, path string, prompt string) {
 	t.Helper()
 
-	content := "---\ntracker:\n  kind: hub_native\n---\n" + prompt + "\n"
+	content := "---\ntracker:\n  kind: memory\n---\n" + prompt + "\n"
 	temporaryPath := path + ".tmp"
 	if err := os.WriteFile(temporaryPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -927,7 +927,7 @@ func TestGitRefWorkflowWatcherReconcilesOverlayDeletion(t *testing.T) {
 					if err := os.WriteFile(filepath.Join(repo, "WORKFLOW.md"), []byte("shared\n"), 0o600); err != nil {
 						t.Fatal(err)
 					}
-					if err := os.WriteFile(filepath.Join(repo, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: hub_native\n"), 0o600); err != nil {
+					if err := os.WriteFile(filepath.Join(repo, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: memory\n"), 0o600); err != nil {
 						t.Fatal(err)
 					}
 					runWorkflowSourceGit(t, repo, "add", "detent.yaml")
@@ -941,9 +941,9 @@ func TestGitRefWorkflowWatcherReconcilesOverlayDeletion(t *testing.T) {
 				}
 				localPath := filepath.Join(repo, overlay)
 				for _, prompt := range []string{"created", "edited"} {
-					content := "---\ntracker:\n  kind: hub_native\n---\n" + prompt + "\n"
+					content := "---\ntracker:\n  kind: memory\n---\n" + prompt + "\n"
 					if overlay == "detent.local.yaml" {
-						content = "schema: 1\ntracker:\n  kind: hub_native\n"
+						content = "schema: 1\ntracker:\n  kind: memory\n"
 					}
 					if err := os.WriteFile(localPath, []byte(content), 0o600); err != nil {
 						t.Fatal(err)

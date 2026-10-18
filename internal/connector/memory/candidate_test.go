@@ -1,4 +1,4 @@
-package fakehub
+package memory
 
 import (
 	"context"

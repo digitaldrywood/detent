@@ -36,8 +36,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testenv"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehubscheduling"
-	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/tui"
@@ -1252,7 +1250,7 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 			Host:   "127.0.0.1",
 			Port:   &port,
 			Output: output,
-			Scheduling: &fakehubscheduling.Source{Factory: func(string) (connector.Connector, bool) {
+			ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
 				return bootProvisioningConnector{
 					provision: func(ctx context.Context) error {
 						provisionStartedOnce.Do(func() {
@@ -1265,8 +1263,8 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 							return nil
 						}
 					},
-				}, true
-			}},
+				}, nil
+			},
 		})
 	}()
 
@@ -1380,7 +1378,7 @@ func TestStartRunningSurvivesTransientConnectorProvisioningFailure(t *testing.T)
 					Host:   "127.0.0.1",
 					Port:   &port,
 					Output: output,
-					Scheduling: &fakehubscheduling.Source{Factory: func(string) (connector.Connector, bool) {
+					ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
 						return bootProvisioningConnector{
 							provision: func(ctx context.Context) error {
 								failed := false
@@ -1394,8 +1392,8 @@ func TestStartRunningSurvivesTransientConnectorProvisioningFailure(t *testing.T)
 								<-ctx.Done()
 								return ctx.Err()
 							},
-						}, true
-					}},
+						}, nil
+					},
 				}, startRunningDependencies{
 					snapshotNow: func() time.Time {
 						select {
@@ -1514,12 +1512,11 @@ func TestStartRunningHotReloadsLocalConfigurationProjects(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- startRunning(ctx, BootConfig{
-			Mode:       BootModeRunning,
-			Global:     global,
-			Host:       "127.0.0.1",
-			Port:       &port,
-			Output:     output,
-			Scheduling: &fakehubscheduling.Source{Connector: bootProvisioningConnector{}},
+			Mode:   BootModeRunning,
+			Global: global,
+			Host:   "127.0.0.1",
+			Port:   &port,
+			Output: output,
 		})
 	}()
 
@@ -1615,7 +1612,7 @@ func TestStartRunningReconcilesLocalConfigurationChangedBeforeWatcherStarts(t *t
 			Host:   "127.0.0.1",
 			Port:   &port,
 			Output: output,
-			Scheduling: &fakehubscheduling.Source{Factory: func(string) (connector.Connector, bool) {
+			ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
 				return bootProvisioningConnector{
 					provision: func(ctx context.Context) error {
 						provisionStartedOnce.Do(func() {
@@ -1628,8 +1625,8 @@ func TestStartRunningReconcilesLocalConfigurationChangedBeforeWatcherStarts(t *t
 							return nil
 						}
 					},
-				}, true
-			}},
+				}, nil
+			},
 		})
 	}()
 
@@ -2191,7 +2188,7 @@ func createBootProjectFiles(t *testing.T) bootProjectFiles {
 	workflow := filepath.Join(workdir, "WORKFLOW.md")
 	if err := os.WriteFile(workflow, []byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 ---
 Test workflow prompt.
 `), 0o600); err != nil {
@@ -2208,7 +2205,7 @@ func writeBootKanbanWorkflow(t *testing.T, path string, mode string) {
 
 	content := `---
 tracker:
-  kind: hub_native
+  kind: memory
   lanes: [{name: Backlog, role: holding}, {name: Blocked, role: holding}, {name: Ready, role: active}, {name: Doing, role: active}, {name: Done, role: terminal}]
 server:
   kanban:
@@ -2229,7 +2226,7 @@ func writeBootHostWorkflow(t *testing.T, path string, host string) {
 
 	content := `---
 tracker:
-  kind: hub_native
+  kind: memory
 server:
   host: ` + host + `
 ---
@@ -2351,8 +2348,8 @@ func newRefreshProject(t *testing.T, id string) *projectpkg.Project {
 	t.Helper()
 
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
-	project, err := projectfixture.New(projectpkg.Config{
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	project, err := projectpkg.New(projectpkg.Config{
 		Project: globalconfig.Project{
 			ID:      id,
 			Workdir: t.TempDir(),
@@ -2361,7 +2358,7 @@ func newRefreshProject(t *testing.T, id string) *projectpkg.Project {
 		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
 	}, projectpkg.Dependencies{})
 	if err != nil {
-		t.Fatalf("projectfixture.New() error = %v", err)
+		t.Fatalf("project.New() error = %v", err)
 	}
 	return project
 }

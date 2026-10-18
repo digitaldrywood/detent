@@ -14,7 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/operations"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/telemetry"
-	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	webconfig "github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -40,9 +39,9 @@ func TestOperationsMissingRequiredChecks(t *testing.T) {
 			setOperationsTestProject(t, deps.Registry, "p", true, "", nil, "", "", "", "", []string{"Done"}, true)
 			if tt.label != "" {
 				cfg := workflowconfig.Default()
-				cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+				cfg.Tracker.Kind = workflowconfig.TrackerMemory
 				cfg.Gate.CITriggerLabel = tt.label
-				tracked, err := projectfixture.New(project.Config{Project: global.Project{ID: "p"}, Workflow: workflowconfig.Workflow{Config: cfg}}, project.Dependencies{Connector: connectorProbe{name: "memory"}})
+				tracked, err := project.New(project.Config{Project: global.Project{ID: "p"}, Workflow: workflowconfig.Workflow{Config: cfg}}, project.Dependencies{Connector: connectorProbe{name: "memory"}})
 				if err != nil {
 					t.Fatal(err)
 				}

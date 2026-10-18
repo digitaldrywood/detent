@@ -2,11 +2,13 @@ package connector_test
 
 import (
 	"context"
+	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/connector/local"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 )
 
 func TestDetectCapabilities(t *testing.T) {
@@ -62,12 +64,28 @@ func TestDetectCapabilities(t *testing.T) {
 			want: reported,
 		},
 		{
-			name: "fake Hub connector",
+			name: "local sqlite connector",
+			conn: newLocalConnector,
+			want: connector.Capabilities{
+				UpdateIssueState:  true,
+				SetAssignee:       true,
+				SetField:          true,
+				CreateComment:     true,
+				CreateWorkItems:   true,
+				CloseIssues:       true,
+				RemoveFromProject: true,
+				SetIssueFields:    true,
+				ClearIssueFields:  true,
+				UpdateComments:    true,
+				DeleteComments:    true,
+			},
+		},
+		{
+			name: "memory connector",
 			conn: func(*testing.T) connector.Connector {
-				return fakehub.New(fakehub.Config{})
+				return memory.New(memory.Config{})
 			},
 			want: connector.Capabilities{
-				CreateWorkItems: true, UpdateComments: true, DeleteComments: true,
 				UpdateIssueState:      true,
 				SetAssignee:           true,
 				SetField:              true,
@@ -144,4 +162,19 @@ type reportingConnector struct {
 
 func (c reportingConnector) Capabilities() connector.Capabilities {
 	return c.capabilities
+}
+
+func newLocalConnector(t *testing.T) connector.Connector {
+	t.Helper()
+
+	c, err := local.New(local.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
+	if err != nil {
+		t.Fatalf("local.New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := c.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	return c
 }

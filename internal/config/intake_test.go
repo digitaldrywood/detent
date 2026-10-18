@@ -49,7 +49,7 @@ func TestValidateIntakeRequiresGitHubRepositoryTracker(t *testing.T) {
 	t.Parallel()
 
 	cfg := Default()
-	cfg.Tracker.Kind = TrackerHubNative
+	cfg.Tracker.Kind = TrackerMemory
 	cfg.Intake = intake.Config{Sources: []intake.Source{{
 		Kind:   intake.KindWebhook,
 		Secret: "secret",

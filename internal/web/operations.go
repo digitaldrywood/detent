@@ -196,7 +196,7 @@ func (s *Server) operationsDecisionHost(projectID string, issueURL string) strin
 		return ""
 	}
 	tracker := trackedProject.Workflow().Config.Tracker
-	if tracker.Kind != workflowconfig.TrackerGitHub {
+	if tracker.Kind != workflowconfig.TrackerGitHub && tracker.Kind != workflowconfig.TrackerGitHubLocal {
 		return ""
 	}
 	host := operationsURLHost(tracker.Endpoint)

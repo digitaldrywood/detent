@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
@@ -87,12 +87,12 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 				State:            "In Progress",
 				AssignedToWorker: true,
 			}
-			var events []fakehub.Event
-			tracker := fakehub.New(fakehub.Config{
+			var events []memory.Event
+			tracker := memory.New(memory.Config{
 				Issues:    []connector.Issue{issue},
 				Stateful:  true,
 				Now:       func() time.Time { return completedAt },
-				EventSink: func(event fakehub.Event) { events = append(events, event) },
+				EventSink: func(event memory.Event) { events = append(events, event) },
 			})
 			brake := &runpkg.SessionBrakeError{
 				Reason:           runpkg.SessionBrakeReasonDuration,
@@ -236,9 +236,9 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			var comment string
 			for _, event := range events {
 				switch event.Kind {
-				case fakehub.EventKindStateUpdate:
+				case memory.EventKindStateUpdate:
 					stateUpdated = event.State == tt.wantState
-				case fakehub.EventKindComment:
+				case memory.EventKindComment:
 					comment = event.Body
 				}
 			}
@@ -278,7 +278,7 @@ func TestSessionProgressProbeTracksLatestWorkpadContent(t *testing.T) {
 			{Body: "## Codex Workpad\n\ninitial"},
 		},
 	}
-	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	orch := &Orchestrator{connector: tracker}
 	probe := orch.sessionProgressProbe(issue)
 	if probe == nil {

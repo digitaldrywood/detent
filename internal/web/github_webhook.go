@@ -178,7 +178,7 @@ func (s *Server) githubWebhookRoutes(repository string) []githubWebhookRoute {
 	if s.registry != nil && s.registry.Len() > 0 {
 		for _, trackedProject := range s.registry.List() {
 			workflow := trackedProject.Workflow().Config
-			if workflow.Tracker.Kind != workflowconfig.TrackerGitHub {
+			if workflow.Tracker.Kind != workflowconfig.TrackerGitHub && workflow.Tracker.Kind != workflowconfig.TrackerGitHubLocal {
 				continue
 			}
 			configuredRepository := strings.TrimSpace(workflow.Tracker.Repository)

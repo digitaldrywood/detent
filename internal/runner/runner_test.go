@@ -1987,7 +1987,7 @@ func TestConfiguredRuntimeIdentityKeepsClaudeIntentDistinct(t *testing.T) {
 
 	workflow, err := config.ParseWorkflow([]byte(`---
 tracker:
-  kind: hub_native
+  kind: memory
 agents:
   backends:
     - id: claude-local

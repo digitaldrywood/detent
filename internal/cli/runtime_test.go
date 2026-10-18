@@ -811,7 +811,7 @@ func githubWorkflow(apiKey string) workflowconfig.Config {
 
 func nonGitHubWorkflow() workflowconfig.Config {
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	return cfg
 }
 
@@ -838,7 +838,7 @@ func writeRuntimeWorkflow(t *testing.T, path string, port int) {
 
 	content := `---
 tracker:
-  kind: hub_native
+  kind: memory
 server:
   port: ` + strconv.Itoa(port) + `
 ---
