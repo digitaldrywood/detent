@@ -138,7 +138,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		}
 		change.Validator = &gate.ValidatorResult{VersionID: "version_1", Submitted: true, Verdict: gate.ValidatorVerdictPass, Score: 1, CriteriaEvidence: entries}
 		gate.NormalizeCriterionEvidence(change.Validator, criteria, "")
-		gate.ApplyCriterionPolicy(gate.ValidatorConfig{UnverifiedCriteria: gate.UnverifiedCriteriaRework}, change.Validator)
+		cfg := gate.ValidatorConfig{Enabled: true, UnverifiedCriteria: gate.UnverifiedCriteriaRework}
+		gate.ApplyCriterionPolicy(cfg, change.Validator)
+		if decision, stopped := gate.EvaluateValidator(cfg, *change.Validator); stopped {
+			change.Validator.Verdict = string(decision.Action)
+		}
 		return &change
 	}
 	criterionReview := func(verdict string, score float64, findings ...gate.Finding) *runpkg.NativeChange {
