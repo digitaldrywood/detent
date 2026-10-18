@@ -21,6 +21,7 @@ import (
 
 type SSHRunRequest struct {
 	BatchedLanding bool
+	ExecutionTools []AgentTool
 	Request        RunRequest
 	Callbacks      []string
 	Recovery       *tracker.NativeRecovery
@@ -61,6 +62,9 @@ func NewSSHRunRequest(request RunRequest) SSHRunRequest {
 		recovery := request.Execution.Recovery()
 		wire.Recovery = &recovery
 		_, wire.Native = request.Execution.(ArtifactSourceExecution)
+		if source, ok := request.Execution.(ToolExecution); ok {
+			wire.ExecutionTools, _ = source.AgentTools()
+		}
 		if capacity, ok := request.Execution.(ProviderCapacityExecution); ok {
 			wire.Capacity = capacity.ProviderCapacity()
 		}
@@ -104,7 +108,7 @@ func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 			if sources == nil {
 				sources = &SSHExecutionSources{}
 			}
-			request.Execution = &sshNativeExecution{batchedLanding: wire.BatchedLanding, sshExecution: execution, sources: sources, capacity: wire.Capacity}
+			request.Execution = &sshNativeExecution{batchedLanding: wire.BatchedLanding, sshExecution: execution, sources: sources, capacity: wire.Capacity, tools: wire.ExecutionTools}
 		}
 	}
 	return request
@@ -136,6 +140,13 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 					return nil, nil
 				}
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
+			case "tools":
+				source, ok := request.Execution.(ToolExecution)
+				if !ok {
+					return nil, errors.New("execution tools are unavailable")
+				}
+				_, handler := source.AgentTools()
+				return invokeSSHMethod(ctx, handler, "", arguments)
 			case "ValidatorVersion":
 				if _, ok := request.Execution.(NativeValidatorExecution); !ok {
 					return NativeValidation{}, nil

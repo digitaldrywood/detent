@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -92,6 +94,7 @@ func TestSSHNativeEvidenceSource(t *testing.T) {
 	remote, closePeers := nativeSSHExecution(t, t.Context(), e, t.TempDir())
 	defer closePeers()
 	published := map[string]string{}
+	attachments := map[string]operatortool.AttachmentContentResult{}
 	uploadTransport := h.native.client.httpClient.Transport
 	h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/comments") {
@@ -104,6 +107,17 @@ func TestSSHNativeEvidenceSource(t *testing.T) {
 			}
 			return &http.Response{StatusCode: http.StatusCreated, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
 		}
+		if request.Method == http.MethodGet {
+			for id, content := range attachments {
+				if strings.HasSuffix(request.URL.Path, "/attachments/"+id) {
+					encoded, err := json.Marshal(content)
+					if err != nil {
+						return nil, err
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(string(encoded)))}, nil
+				}
+			}
+		}
 		if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/attachments") {
 			return uploadTransport.RoundTrip(request)
 		}
@@ -113,6 +127,7 @@ func TestSSHNativeEvidenceSource(t *testing.T) {
 		}
 		metadata := attachment.Metadata{ID: "att_" + policy.Digest(content)[:32], ProjectID: string(h.native.project), Name: request.Header.Get("X-Attachment-Name"), ContentType: request.Header.Get("Content-Type"), Size: int64(len(content)), SHA256: policy.Digest(content)}
 		metadata.Reference = metadata.Markdown(string(h.native.organization))
+		attachments[metadata.ID] = operatortool.AttachmentContentResult{Metadata: metadata, ContentBase64: base64.StdEncoding.EncodeToString(content), ReturnedBytes: len(content), EOF: true, MaxContentBytes: operatortool.AttachmentContentBytes}
 		encoded, err := json.Marshal(metadata)
 		if err != nil {
 			return nil, err
@@ -121,6 +136,7 @@ func TestSSHNativeEvidenceSource(t *testing.T) {
 	})
 	t.Cleanup(func() { h.native.client.httpClient.Transport = uploadTransport })
 	files := []runner.ValidationEvidence{
+		{Name: "baseline.log", ContentType: "text/plain", Content: []byte("source=baseline-head\nclaim failed: 409 host_capacity\n")},
 		{Name: "security-audit-source.json", ContentType: "application/json", Content: []byte(`{"error":"run.invocation_id is missing"}`)},
 		{Name: "security-audit-landing.json", ContentType: "application/json", Content: []byte(`{"error":"run.worker_pid is missing"}`)},
 	}
@@ -136,6 +152,37 @@ func TestSSHNativeEvidenceSource(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("published audit evidence %s is unavailable: %+v", file.Name, published)
+		}
+	}
+	tools, handler := remote.(runner.ToolExecution).AgentTools()
+	foundRead := false
+	for _, tool := range tools {
+		foundRead = foundRead || tool.Name == operatortool.ReadAttachment
+	}
+	if !foundRead || handler == nil {
+		t.Fatal("worker lost authenticated attachment reader")
+	}
+	log := files[0]
+	id := "att_" + policy.Digest(log.Content)[:32]
+	for _, project := range []string{string(h.project), "prj_other"} {
+		arguments, err := json.Marshal(map[string]any{"project_id": project, "attachment_id": id, "offset": 0, "length": operatortool.AttachmentContentBytes})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := handler(ctx, runner.AgentToolCall{Name: operatortool.ReadAttachment, Arguments: arguments})
+		if project != string(h.project) {
+			if err == nil || result.Success {
+				t.Fatal("worker attachment reader lost project scope")
+			}
+			continue
+		}
+		var content operatortool.AttachmentContentResult
+		if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &content) != nil {
+			t.Fatalf("worker attachment read: %+v %v", result, err)
+		}
+		decoded, err := base64.StdEncoding.Strict().DecodeString(content.ContentBase64)
+		if err != nil || string(decoded) != string(log.Content) || content.Metadata.SHA256 != policy.Digest(log.Content) || !content.EOF {
+			t.Fatalf("worker attachment content changed: %+v %v", content, err)
 		}
 	}
 	remote.(runner.EvidenceSourceExecution).SetEvidenceSource(func(_ context.Context, path string) (runner.ValidationEvidence, error) {
