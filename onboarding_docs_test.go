@@ -40,14 +40,18 @@ func TestWorkflowTemplatesUseSplitProjectDefinition(t *testing.T) {
 			if !strings.HasPrefix(strings.ReplaceAll(string(configRaw), "\r\n", "\n"), "schema: 1\n") {
 				t.Fatalf("%s missing schema version", configPath)
 			}
-			if _, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+			definition, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
 				WorkflowPath: workflowPath,
 				Workflow:     workflowRaw,
 				ConfigPath:   configPath,
 				Config:       configRaw,
 				HasConfig:    true,
-			}); err != nil {
+			})
+			if err != nil {
 				t.Fatalf("ParseProjectDefinition(%s) error = %v", variant, err)
+			}
+			if err := definition.Config.Validate(); err != nil {
+				t.Fatalf("template %s is not runnable: %v", variant, err)
 			}
 		})
 	}

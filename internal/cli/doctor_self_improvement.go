@@ -413,9 +413,9 @@ func doctorWorkflowLessonFailureKindPatterns(project globalconfig.Project, cfg w
 
 func createDoctorWorkflowImprovementProposalIssues(
 	ctx context.Context,
+	global globalconfig.Config,
 	projectID string,
 	cfg workflowconfig.Config,
-	global globalconfig.Config,
 	deps doctorDeps,
 	proposals []doctorWorkflowImprovementProposal,
 ) (created []doctorWorkflowCreatedProposalIssue, err error) {
@@ -430,11 +430,9 @@ func createDoctorWorkflowImprovementProposalIssues(
 	}
 
 	if deps.proposalConnector == nil {
-		deps.proposalConnector = func(workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
-			return defaultDoctorProposalConnector(global, projectID, deps.lookupEnv)
-		}
+		deps.proposalConnector = defaultDoctorProposalConnector
 	}
-	projectConnector, err := deps.proposalConnector(cfg)
+	projectConnector, err := deps.proposalConnector(global, projectID, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -488,25 +486,28 @@ func createDoctorWorkflowImprovementProposalIssues(
 
 func doctorWorkflowProposalIssueDeliverySupported(cfg workflowconfig.Config) error {
 	if cfg.Tracker.Kind != workflowconfig.TrackerHubNative {
-		return fmt.Errorf("self-improvement proposal issue creation is not supported for tracker kind %q", cfg.Tracker.Kind)
+		return errors.New("self-improvement proposal issue creation requires tracker.kind hub_native")
 	}
 	return nil
 }
 
-func defaultDoctorProposalConnector(cfg globalconfig.Config, projectID string, lookup func(string) string) (doctorWorkflowProposalConnector, error) {
-	nativeID := cfg.Client.NativeProjects[projectID]
-	if nativeID == "" {
-		return nil, errors.New("self-improvement proposals require a native project mapping")
+func defaultDoctorProposalConnector(global globalconfig.Config, projectID string, cfg workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
+	if err := doctorWorkflowProposalIssueDeliverySupported(cfg); err != nil {
+		return nil, err
 	}
-	if lookup == nil {
-		lookup = os.Getenv
+	settings := global.Client.Normalized()
+	id := settings.NativeProjects[projectID]
+	if strings.TrimSpace(id) == "" {
+		return nil, errors.New("self-improvement proposals require a configured native project mapping")
 	}
-	settings := cfg.Client.Normalized()
-	client, err := hubclient.New(hubclient.Config{URL: settings.URL, IdentityFile: settings.IdentityFile, TokenSource: func() string { return lookup(settings.TokenEnvironment) }})
+	client, err := hubclient.New(hubclient.Config{
+		URL: settings.URL, IdentityFile: settings.IdentityFile,
+		TokenSource: func() string { return os.Getenv(settings.TokenEnvironment) },
+	})
 	if err != nil {
 		return nil, err
 	}
-	native, err := client.Native(tracker.OrganizationID(settings.OrganizationID), tracker.ProjectID(nativeID))
+	native, err := client.Native(tracker.OrganizationID(settings.OrganizationID), tracker.ProjectID(id))
 	if err != nil {
 		return nil, err
 	}
