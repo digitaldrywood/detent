@@ -166,7 +166,7 @@ func TestReadOnlyGETsNeverAcquireWriter(t *testing.T) {
 		for _, path := range []string{
 			"/projects", "/project-rank", "/members", "/fleet", "/plan", "/billing", "/secrets/" + flySpritesToken,
 			"/monthly-budget", "/model-selection", "/integrations/slack",
-			"/sprite-pool", "/work-view-preference",
+			"/sprite-pool", "/work-view-preference", "/work-views",
 			"/issue-notification-preference",
 			"/projects/" + f.project + "/work-view-preference",
 			"/activity?project=" + f.project,
@@ -409,6 +409,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"ensureHostedCustomer":              "Billing customer creation reserves its intent and reads back that insertion.",
 		"bindHostedDatabase":                "Startup installs and verifies the hosted binding on the writer.",
 		"syncOrganizationSlug":              "Writes the organization slug received from the shared entry.",
+		"savedWorkViews":                    "Writes one owned saved view, its selections and the current user's favorite; GET uses the reader.",
 		"slugSettings":                      "Updates the organization or project slug under current authority; GET uses the reader.",
 	}
 	files, err := filepath.Glob("*.go")

@@ -46,6 +46,8 @@ export interface ToolbarFacets {
 
 export interface WorkToolbarProps {
   readonly view: WorkViewState;
+  readonly savedControls?: React.ReactNode;
+  readonly savedViewActive?: boolean;
   readonly onChange: (next: WorkViewState) => void;
   readonly lanes: readonly Lane[];
   readonly facets: ToolbarFacets;
@@ -58,6 +60,8 @@ export function WorkToolbar({
   lanes,
   facets,
   totals,
+  savedControls,
+  savedViewActive = false,
 }: WorkToolbarProps): React.ReactElement {
   const filters = activeFilterCount(view.view === "list" ? { ...view, state: [] } : { ...view, type: [] });
   const boardLanes = React.useMemo(() => lanes.filter((lane) => !lane.terminal), [lanes]);
@@ -66,162 +70,170 @@ export function WorkToolbar({
   const values = (key: FilterKey): readonly string[] => [...new Set([...(key === "type" ? ["bug", "change_request"] : facets[key]), ...view[key]])].toSorted();
 
   return (
-    <div data-testid="work-toolbar" className="flex shrink-0 items-center gap-2 overflow-x-auto px-3 pt-1.5 pb-3 sm:px-5">
-      <Button size="xs" variant="outline" aria-pressed={view.archived === true}
-        data-testid="work-archived" onClick={() => onChange({ ...view, archived: view.archived !== true })}>
-        {view.archived === true ? "Archived issues" : "Archived"}
-      </Button>
-      <Menu>
-        <MenuTrigger className={TRIGGER} data-testid="filters-trigger">
-          <FilterIcon />
-          Filters
-          {filters > 0 ? (
-            <span className="inline-grid h-4 min-w-4 place-items-center rounded bg-primary px-1 text-[10px] text-primary-foreground tabular-nums">
-              {filters}
-            </span>
-          ) : null}
-        </MenuTrigger>
-        <MenuPopup align="start" className="w-64">
-          <MenuCheckboxItem
-            checked={view.createdBy === "me"}
-            onCheckedChange={() => {
-              const { createdBy, ...rest } = view;
-              onChange(createdBy === "me" ? rest : { ...rest, createdBy: "me" });
-            }}
-          >
-            Filed by me
-          </MenuCheckboxItem>
-          <MenuSeparator />
-          {/* Every label is inside a `MenuGroup`: Base UI's `GroupLabel`
-              reads its group's context and throws without one. */}
-          {FILTER_KEYS.filter((key) => view.view === "board" ? key !== "type" : key !== "state").map((key) => (
-            <React.Fragment key={key}>
-              <MenuGroup>
-                <MenuGroupLabel>{FILTER_LABELS[key]}</MenuGroupLabel>
-                {values(key).length === 0 ? (
-                  <p className="px-2 py-1 text-muted-foreground text-xs">
-                    Nothing to filter by in the loaded issues.
-                  </p>
-                ) : (
-                  values(key).map((value) => (
-                    <MenuCheckboxItem
-                      key={value}
-                      checked={view[key].includes(value)}
-                      data-testid={`filter-${key}-${value}`}
-                      onCheckedChange={() => onChange(toggleFilter(view, key, value))}
-                    >
-                      {key === "type" ? value === "bug" ? "Bug" : "Change request" : value}
-                    </MenuCheckboxItem>
-                  ))
-                )}
-              </MenuGroup>
-              <MenuSeparator />
-            </React.Fragment>
-          ))}
-          <p className="px-2 py-1 text-muted-foreground text-xs">
-            Choices come from loaded issues in this scope. Every selected value filters the full project scope.
-          </p>
-          {isDefaultViewState(view) ? null : (
-            <MenuCheckboxItem
-              checked={false}
-              data-testid="filters-reset"
-              onCheckedChange={() => onChange(DEFAULT_VIEW_STATE)}
-            >
-              Reset everything
-            </MenuCheckboxItem>
-          )}
-        </MenuPopup>
-      </Menu>
-
-      <Menu>
-        <MenuTrigger className={TRIGGER} data-testid="sort-trigger">
-          Sort
-          <span className="text-muted-foreground">{SORT_LABELS[effectiveSort(view)]}</span>
-        </MenuTrigger>
-        <MenuPopup align="start" className="w-52">
-          <MenuRadioGroup
-            value={effectiveSort(view) === "default" ? "priority" : effectiveSort(view)}
-            onValueChange={(value) => onChange({ ...view, sort: value as WorkSort })}
-          >
-            {WORK_SORTS.map((sort) => (
-              <MenuRadioItem key={sort} value={sort} closeOnClick data-testid={`sort-${sort}`}>
-                {SORT_LABELS[sort]}
-              </MenuRadioItem>
-            ))}
-          </MenuRadioGroup>
-        </MenuPopup>
-      </Menu>
-
-      <span className="flex-1" />
-
-      <div
-        role="radiogroup"
-        aria-label="Board or list"
-        data-testid="view-segmented"
-        className="inline-flex h-7 shrink-0 items-center gap-0.5 rounded-[var(--control-radius)] bg-secondary p-0.5 sm:h-6"
-      >
-        {(
-          [
-            { value: "board", label: "Board", icon: <KanbanIcon /> },
-            { value: "list", label: "List", icon: <LayoutListIcon /> },
-          ] as const
-        ).map((option) => {
-          const selected = view.view === option.value;
-          return (
-            <button
-              key={option.value}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              tabIndex={selected ? 0 : -1}
-              data-testid={`view-${option.value}`}
-              onClick={() => onChange({ ...view, view: option.value as WorkViewMode })}
-              onKeyDown={(event) => {
-                if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-                event.preventDefault();
-                onChange({
-                  ...view,
-                  view: view.view === "board" ? "list" : "board",
-                });
-              }}
-              className={cn(
-                "inline-flex h-full cursor-pointer items-center gap-1.5 rounded-[calc(var(--control-radius)-2px)] px-2 font-medium text-xs outline-none ring-ring transition-colors focus-visible:ring-2 [&_svg]:size-3.5",
-                selected
-                  ? "bg-background text-foreground shadow-xs"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {option.icon}
-              {option.label}
-            </button>
-          );
-        })}
-      </div>
-
-      {view.view === "board" ? <Menu>
-        <MenuTrigger className={TRIGGER} data-testid="lanes-trigger">
-          Lanes
-          <span className="text-muted-foreground tabular-nums">
-            {visibleLanes}/{boardLanes.length}
-          </span>
-        </MenuTrigger>
-        <MenuPopup align="end" className="w-52">
-          <MenuGroup>
-            <MenuGroupLabel>Show lanes</MenuGroupLabel>
-            {boardLanes.map((lane) => (
+    <div className="flex shrink-0 flex-col gap-2 px-3 pt-1.5 pb-3 sm:flex-row sm:items-center sm:px-5">
+      <div data-testid="work-toolbar" className="flex items-center gap-2 overflow-x-auto sm:contents">
+        <div className="flex shrink-0 items-center gap-2 sm:order-1">
+          <Button size="xs" variant="outline" aria-pressed={view.archived === true}
+            data-testid="work-archived" onClick={() => onChange({ ...view, archived: view.archived !== true })}>
+            {view.archived === true ? "Archived issues" : "Archived"}
+          </Button>
+          <Menu>
+            <MenuTrigger className={TRIGGER} data-testid="filters-trigger">
+              <FilterIcon />
+              Filters
+              {filters > 0 ? (
+                <span className="inline-grid h-4 min-w-4 place-items-center rounded bg-primary px-1 text-[10px] text-primary-foreground tabular-nums">
+                  {filters}
+                </span>
+              ) : null}
+            </MenuTrigger>
+            <MenuPopup align="start" className="w-64">
               <MenuCheckboxItem
-                key={lane.name}
-                checked={laneVisible(view, lane)}
-                data-testid={`lane-toggle-${lane.name}`}
-                onCheckedChange={() => onChange(toggleLane(view, lane.name, lanes))}
+                checked={view.createdBy === "me"}
+                onCheckedChange={() => {
+                  const { createdBy, ...rest } = view;
+                  onChange(createdBy === "me" ? rest : { ...rest, createdBy: "me" });
+                }}
               >
-                {lane.name}
-                {totals === undefined ? null : <Badge variant="secondary" className="ml-auto tabular-nums">{totals[lane.name] ?? 0}</Badge>}
+                Filed by me
               </MenuCheckboxItem>
-            ))}
-          </MenuGroup>
-        </MenuPopup>
-      </Menu> : null}
+              <MenuSeparator />
+              {/* Every label is inside a `MenuGroup`: Base UI's `GroupLabel`
+                  reads its group's context and throws without one. */}
+              {FILTER_KEYS.filter((key) => view.view === "board" ? key !== "type" : key !== "state").map((key) => (
+                <React.Fragment key={key}>
+                  <MenuGroup>
+                    <MenuGroupLabel>{FILTER_LABELS[key]}</MenuGroupLabel>
+                    {values(key).length === 0 ? (
+                      <p className="px-2 py-1 text-muted-foreground text-xs">
+                        Nothing to filter by in the loaded issues.
+                      </p>
+                    ) : (
+                      values(key).map((value) => (
+                        <MenuCheckboxItem
+                          key={value}
+                          checked={view[key].includes(value)}
+                          data-testid={`filter-${key}-${value}`}
+                          onCheckedChange={() => onChange(toggleFilter(view, key, value))}
+                        >
+                          {key === "type" ? value === "bug" ? "Bug" : "Change request" : value}
+                        </MenuCheckboxItem>
+                      ))
+                    )}
+                  </MenuGroup>
+                  <MenuSeparator />
+                </React.Fragment>
+              ))}
+              <p className="px-2 py-1 text-muted-foreground text-xs">
+                Choices come from loaded issues in this scope. Every selected value filters the full project scope.
+              </p>
+              {isDefaultViewState(view) ? null : (
+                <MenuCheckboxItem
+                  checked={false}
+                  data-testid="filters-reset"
+                  onCheckedChange={() => onChange(DEFAULT_VIEW_STATE)}
+                >
+                  Reset everything
+                </MenuCheckboxItem>
+              )}
+            </MenuPopup>
+          </Menu>
+
+          <Menu>
+            <MenuTrigger className={TRIGGER} data-testid="sort-trigger">
+              Sort
+              <span className="text-muted-foreground">{SORT_LABELS[effectiveSort(view)]}</span>
+            </MenuTrigger>
+            <MenuPopup align="start" className="w-52">
+              <MenuRadioGroup
+                value={effectiveSort(view) === "default" ? "priority" : effectiveSort(view)}
+                onValueChange={(value) => onChange({ ...view, sort: value as WorkSort })}
+              >
+                {WORK_SORTS.map((sort) => (
+                  <MenuRadioItem key={sort} value={sort} closeOnClick data-testid={`sort-${sort}`}>
+                    {SORT_LABELS[sort]}
+                  </MenuRadioItem>
+                ))}
+              </MenuRadioGroup>
+            </MenuPopup>
+          </Menu>
+
+          {savedViewActive ? null : savedControls}
+
+        </div>
+        <div className="ml-auto flex shrink-0 items-center gap-2 sm:order-3">
+
+          <div
+            role="radiogroup"
+            aria-label="Board or list"
+            data-testid="view-segmented"
+            className="inline-flex h-7 shrink-0 items-center gap-0.5 rounded-[var(--control-radius)] bg-secondary p-0.5 sm:h-6"
+          >
+            {(
+              [
+                { value: "board", label: "Board", icon: <KanbanIcon /> },
+                { value: "list", label: "List", icon: <LayoutListIcon /> },
+              ] as const
+            ).map((option) => {
+              const selected = view.view === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  tabIndex={selected ? 0 : -1}
+                  data-testid={`view-${option.value}`}
+                  onClick={() => onChange({ ...view, view: option.value as WorkViewMode })}
+                  onKeyDown={(event) => {
+                    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                    event.preventDefault();
+                    onChange({
+                      ...view,
+                      view: view.view === "board" ? "list" : "board",
+                    });
+                  }}
+                  className={cn(
+                    "inline-flex h-full cursor-pointer items-center gap-1.5 rounded-[calc(var(--control-radius)-2px)] px-2 font-medium text-xs outline-none ring-ring transition-colors focus-visible:ring-2 [&_svg]:size-3.5",
+                    selected
+                      ? "bg-background text-foreground shadow-xs"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {option.icon}
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {view.view === "board" ? <Menu>
+            <MenuTrigger className={TRIGGER} data-testid="lanes-trigger">
+              Lanes
+              <span className="text-muted-foreground tabular-nums">
+                {visibleLanes}/{boardLanes.length}
+              </span>
+            </MenuTrigger>
+            <MenuPopup align="end" className="w-52">
+              <MenuGroup>
+                <MenuGroupLabel>Show lanes</MenuGroupLabel>
+                {boardLanes.map((lane) => (
+                  <MenuCheckboxItem
+                    key={lane.name}
+                    checked={laneVisible(view, lane)}
+                    data-testid={`lane-toggle-${lane.name}`}
+                    onCheckedChange={() => onChange(toggleLane(view, lane.name, lanes))}
+                  >
+                    {lane.name}
+                    {totals === undefined ? null : <Badge variant="secondary" className="ml-auto tabular-nums">{totals[lane.name] ?? 0}</Badge>}
+                  </MenuCheckboxItem>
+                ))}
+              </MenuGroup>
+            </MenuPopup>
+          </Menu> : null}
+        </div>
+      </div>
+    {savedViewActive ? <div className="flex shrink-0 items-center gap-2 sm:order-2">{savedControls}</div> : null}
     </div>
   );
 }

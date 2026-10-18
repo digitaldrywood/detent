@@ -18,6 +18,7 @@ import { setComposerText } from "./composerInput.ts";
 import { loadBootstrap, makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
 import { fetchEventStreamTransport } from "../../src/runtime/rpc/sse.ts";
 import * as sharedEntry from "../../src/app/entry/shared.ts";
+import { DEFAULT_VIEW_STATE } from "../../src/app/work/lib/viewState.ts";
 
 // The router restores scroll on navigation; jsdom has no scrolling.
 Object.defineProperty(globalThis, "scrollTo", { value: () => {}, writable: true });
@@ -120,6 +121,52 @@ async function control(path: string, body?: unknown): Promise<void> {
 }
 
 describe("the conversation shell", () => {
+  it.each([false, true])("restores saved-view project scope throughout the shell (direct entry: %s)", async (direct) => {
+    const { router } = await mountApp({
+      storedProject: "proj_alpha",
+      path: direct ? "/work/views/view_1" : "/work/p/proj_alpha",
+      seed: async (origin) => {
+        const base = `${origin}/api/v2/organizations/org_mock`;
+        for (const [project, title] of [["proj_alpha", "Alpha scope thread"], ["proj_beta", "Beta scope thread"]]) {
+          await fetch(`${base}/projects/${project}/conversations`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: project, title }),
+          });
+        }
+        for (const [name, project_id] of [["Beta saved view", "proj_beta"], ["All saved view", null]]) {
+          await fetch(`${base}/work-views`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, project_id, scope: "personal", favorite: true, state: DEFAULT_VIEW_STATE }),
+          });
+        }
+      },
+    });
+    if (!direct) {
+      await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("alpha"));
+      fireEvent.click(await screen.findByRole("button", { name: "Beta saved view" }));
+    }
+    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("beta"));
+    expect(router.state.location.pathname).toBe("/work/views/view_1");
+    expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("proj_beta");
+    expect(await screen.findByText("Beta scope thread")).toBeTruthy();
+    expect(screen.queryByText("Alpha scope thread")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/work/p/proj_beta"));
+    await act(async () => { router.history.back(); });
+    await waitFor(() => expect(router.state.location.pathname).toBe("/work/views/view_1"));
+    fireEvent.click(screen.getByRole("button", { name: "All saved view" }));
+    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All Mock organization projects"));
+    expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("");
+    expect(await screen.findByText("Alpha scope thread")).toBeTruthy();
+    expect(screen.getByText("Beta scope thread")).toBeTruthy();
+    await act(async () => { router.history.back(); });
+    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("beta"));
+    await act(async () => { router.history.forward(); });
+    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All Mock organization projects"));
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/work"));
+  });
+
   it("copies an exact read-only conversation handoff without posting or dispatching", async () => {
     let conversationId = "";
     const writeText = vi.fn().mockResolvedValue(undefined);
