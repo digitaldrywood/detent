@@ -2,9 +2,10 @@ package project
 
 import (
 	"context"
-	"encoding/json"
+
 	"errors"
 	"fmt"
+
 	"log/slog"
 	"net/http"
 	"os"
@@ -19,14 +20,13 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/gate"
+
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type policyTestScheduling struct {
@@ -169,7 +169,7 @@ func TestMappedNativeStartupUsesInspectedPolicy(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := globalconfig.Project{ID: "orders", Workdir: t.TempDir()}
-			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: github\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"))
+			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -213,7 +213,7 @@ func TestMappedNativeStartupUsesInspectedPolicy(t *testing.T) {
 
 func TestMappedNativeReloadRetainsPolicySchedulingSource(t *testing.T) {
 	t.Parallel()
-	updated, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: github\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\nintake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n---\nPrompt\n"))
+	updated, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\nintake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n---\nPrompt\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,154 +238,6 @@ func TestMappedNativeReloadRetainsPolicySchedulingSource(t *testing.T) {
 
 func (s *policyTestScheduling) CheckProjectPolicy(_ context.Context, project, _ string, descriptor policy.Descriptor) error {
 	return descriptor.Match(s.approved[project])
-}
-
-func TestProjectPolicyReloadAndGateIsolation(t *testing.T) {
-	t.Parallel()
-	scheduling := &policyTestScheduling{approved: make(map[string]policy.Descriptor)}
-	for _, test := range []struct {
-		name, kind string
-		automatic  bool
-		want       gate.Action
-	}{
-		{"human", "human_review", false, gate.ActionWait}, {"automatic", "command", true, gate.ActionPass},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			root := t.TempDir()
-			cfg := globalconfig.Project{ID: test.name, Workflow: filepath.Join(root, "WORKFLOW.md"), Workdir: root}
-			raw := fmt.Sprintf("---\ntracker:\n  kind: github\n  github_status_source: label\n  repository: acme/%s\n  api_key: test-token\ngate:\n  kind: %s\n  automated_review: off\n  security_audit:\n    enabled: false\nagent:\n  auto_promote:\n    enabled: %t\n---\nPrivate instructions.\n", test.name, test.kind, test.automatic)
-			if err := os.WriteFile(cfg.Workflow, []byte(raw), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			workflow, err := LoadWorkflow(cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			workflow.Config.Gate.Kind = test.kind
-			workflow.Config.Gate.AutomatedReview = gate.AutomatedReviewOff
-			workflow.Config.Agent.AutoPromote.Enabled = test.automatic
-			descriptor, err := ResolvePolicy(cfg, workflow)
-			if err != nil {
-				t.Fatal(err)
-			}
-			scheduling.approved[cfg.ID] = descriptor
-			p, err := New(Config{Project: cfg, Workflow: workflow}, Dependencies{Scheduling: scheduling, Runner: orchestrator.FakeRunner{}, ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) { return fakehub.New(fakehub.Config{}), nil }})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := p.Close(); err != nil {
-					t.Error(err)
-				}
-			})
-			before := p.Workflow()
-			decision := gate.Evaluate(before.Config.Gate, nil, gate.Summary{PullRequestPresent: true, CIStatus: "green"}, time.Now(), gate.EvaluationOptions{})
-			if decision.Action != test.want || before.Config.Agent.AutoPromote.Enabled != test.automatic {
-				t.Fatalf("repository gate leaked: %#v", decision)
-			}
-			if err := p.handleWorkflowUpdate(t.Context(), configwatcher.Update{Path: cfg.Workflow, Workflow: workflow}); err != nil {
-				t.Fatalf("unchanged approved reload: %v", err)
-			}
-			if err := p.updateLiveConfig(t.Context(), cfg); err != nil {
-				t.Fatalf("unchanged host settings: %v", err)
-			}
-			changed := cfg
-			changed.ActiveHours = &activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}}
-			if err := p.updateLiveConfig(t.Context(), changed); err == nil || !strings.Contains(err.Error(), "policy_mismatch") {
-				t.Fatalf("active hours policy change = %v", err)
-			}
-			version := tracker.ChangeVersion{
-				ChangeVersionInput: tracker.ChangeVersionInput{PolicyID: descriptor.ID, HeadSHA: strings.Repeat("c", 40)},
-				ID:                 "version_pending", Policy: descriptor,
-				ReviewPolicy: tracker.ChangeReviewPolicy{PolicyID: descriptor.ID},
-			}
-			versionBefore, err := json.Marshal(version)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, pacing := range []workflowconfig.RateWindowPacing{
-				{Mode: workflowconfig.RateWindowPacingOff},
-				{Mode: workflowconfig.RateWindowPacingFloor, FloorPercent: 35, StaleAfterSeconds: 600},
-				workflowconfig.DefaultRateWindowPacing(),
-			} {
-				changed := cfg
-				changed.GlobalRateWindowPacing = pacing.Normalized()
-				if err := p.updateLiveConfig(t.Context(), changed); err != nil {
-					t.Fatalf("approved pacing reload = %v", err)
-				}
-				current := p.Workflow()
-				if current.Config.Agent.RateWindowPacing != changed.GlobalRateWindowPacing || current.Config.Policy.ID != descriptor.ID {
-					t.Fatalf("runtime/policy reload = %#v", current.Config.Agent)
-				}
-				resolved, err := ResolvePolicy(changed, current)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := version.Policy.Match(resolved); err != nil || version.PolicyID != resolved.ID || version.ReviewPolicy.PolicyID != resolved.ID {
-					t.Fatalf("pending version policy changed: %v", err)
-				}
-				versionAfter, err := json.Marshal(version)
-				if err != nil || string(versionAfter) != string(versionBefore) {
-					t.Fatalf("immutable pending version changed: %v", err)
-				}
-			}
-			for _, change := range []string{"invalid", "review relaxation", "privileged runner", "model selection", "source instructions", "newly approved revision"} {
-				t.Run(change, func(t *testing.T) {
-					proposalRaw := raw
-					switch change {
-					case "review relaxation":
-						proposalRaw = strings.Replace(raw, "kind: "+test.kind, "kind: artifact", 1)
-					case "privileged runner":
-						proposalRaw = strings.Replace(raw, "---\nPrivate", "runners:\n  profile: privileged\n  profiles:\n    privileged:\n      required_tags: [production]\n---\nPrivate", 1)
-					case "model selection":
-						proposalRaw = strings.Replace(raw, "---\nPrivate", "agents:\n  model_selection:\n    normal_model: gpt-6-sol\n---\nPrivate", 1)
-					case "source instructions", "newly approved revision":
-						proposalRaw += "Changed instructions.\n"
-					}
-					proposal, err := workflowconfig.ParseWorkflow([]byte(proposalRaw))
-					if err != nil {
-						t.Fatal(err)
-					}
-					proposal.Definition.Layout = workflowconfig.ProjectDefinitionLegacy
-					proposal.Definition.Revision = proposal.SourceHash
-					update := configwatcher.Update{Path: cfg.Workflow, Workflow: proposal}
-					if change == "invalid" {
-						update.Err = errors.New("invalid YAML")
-					}
-					if change == "newly approved revision" {
-						approved, err := ResolvePolicy(cfg, proposal)
-						if err != nil {
-							t.Fatal(err)
-						}
-						scheduling.approved[cfg.ID] = approved
-					}
-					if change == "newly approved revision" {
-						if err := p.handleWorkflowUpdate(t.Context(), update); err != nil {
-							t.Fatal(err)
-						}
-						if p.Workflow().Config.Policy.ID != scheduling.approved[cfg.ID].ID || p.WorkflowSourceStatus().LastReloadError != "" {
-							t.Fatal("approved policy was not applied")
-						}
-						versionAfter, err := json.Marshal(version)
-						if err != nil || string(versionAfter) != string(versionBefore) {
-							t.Fatal("policy reload changed captured source review identity")
-						}
-						return
-					}
-
-					if err := p.handleWorkflowUpdate(t.Context(), update); err == nil {
-						t.Fatal("unsafe reload was accepted")
-					}
-					if got := p.Workflow().Config.Policy.ID; got != descriptor.ID {
-						t.Fatalf("last-good policy changed: %s", got)
-					}
-					if p.WorkflowSourceStatus().LastReloadError == "" {
-						t.Fatal("reload mismatch has no actionable diagnostic")
-					}
-				})
-			}
-		})
-	}
 }
 
 func TestTrustedRefIgnoresWorkingBranchPolicyEdits(t *testing.T) {
@@ -598,4 +450,8 @@ func TestNativeSharedPolicyReloadsRunningProject(t *testing.T) {
 	if p.Workflow().Config.Policy.ID != replacement.ID || p.Workflow().Config.Worker.EffectiveAllowLocalBinding() || p.Workflow().Config.EffectiveModelSelection().Model("normal") != "gpt-6.1-sol" {
 		t.Fatal("host reload changed shared permissions or policy identity")
 	}
+}
+
+func (s *policyTestScheduling) ConnectorForProject(string) (connector.Connector, bool) {
+	return fakehub.New(fakehub.Config{}), true
 }

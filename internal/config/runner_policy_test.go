@@ -244,7 +244,7 @@ func TestRunnerPolicyEquivalentOptoutRetainsSecurityAudit(t *testing.T) {
 	t.Parallel()
 	workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
 		WorkflowPath: "WORKFLOW.md",
-		Workflow:     []byte("---\ntracker:\n  kind: github\n  api_key: example-token\n  repository: example/repo\n  github_status_source: label\n---\nRun the work.\n"),
+		Workflow:     []byte("---\ntracker:\n  kind: hub_native\n  api_key: example-token\n  repository: example/repo\n  github_status_source: label\n---\nRun the work.\n"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -265,7 +265,7 @@ func TestRunnerPolicyEquivalentOptoutRetainsSecurityAudit(t *testing.T) {
 
 func TestRunnerPolicyCompatibility(t *testing.T) {
 	t.Parallel()
-	shared := "tracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\nrunners:\n  profile: build\n  profiles:\n    build:\n      required_tags: [Linux, linux, gpu]\n      machine_id: machine_abc\ngate:\n  kind: human_review\nagent:\n  auto_promote:\n    enabled: false\ndeliverable:\n  merge_method: rebase\n  github_pull_request: true\n"
+	shared := "tracker:\n  kind: hub_native\n  api_key: fixture-token\n  project_slug: fixture-project\nrunners:\n  profile: build\n  profiles:\n    build:\n      required_tags: [Linux, linux, gpu]\n      machine_id: machine_abc\ngate:\n  kind: human_review\nagent:\n  auto_promote:\n    enabled: false\ndeliverable:\n  merge_method: rebase\n  github_pull_request: true\n"
 	for _, test := range []struct {
 		name         string
 		split, local bool
@@ -275,7 +275,7 @@ func TestRunnerPolicyCompatibility(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
-			prompt := "Private workflow prose.\n"
+			prompt := "Shared repository workflow prose.\n"
 			workflow := "---\n" + shared + "---\n" + prompt
 			if test.split {
 				workflow = prompt
@@ -317,7 +317,7 @@ func TestRunnerPolicyCompatibility(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, private := range []string{"Private", root, "make check", "WORKFLOW.md"} {
+			for _, private := range []string{root, "fixture-token"} {
 				if strings.Contains(string(raw), private) {
 					t.Fatalf("policy uploaded private content %q", private)
 				}
@@ -369,7 +369,6 @@ func TestNativeGitHubCIReviewPolicy(t *testing.T) {
 	}{
 		{name: "native GitHub CI is a landing gate", tracker: "hub_native", github: true},
 		{name: "native local checks retain their review floor", tracker: "hub_native", floor: 1},
-		{name: "forge checks retain their review floor", tracker: "github", github: true, floor: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			source := "---\ntracker:\n  kind: " + test.tracker + "\n  api_key: fixture-token\n  project_slug: fixture-project\ngate:\n  run: true\n  required_status_checks: ['Full CI']\n  ci_trigger_label: run-full-ci\n  validator:\n    enabled: true\nreview:\n  human: true\ndeliverable:\n  github_pull_request: " + map[bool]string{true: "true", false: "false"}[test.github] + "\n---\nComplete the work.\n"

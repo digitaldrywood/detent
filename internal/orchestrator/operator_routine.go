@@ -62,12 +62,6 @@ func (o *Orchestrator) operatorClearClosedDependencies(ctx context.Context, stat
 	})
 }
 
-func (o *Orchestrator) operatorRestoreStuckMerging(ctx context.Context, state *State, issues []connector.Issue, now time.Time) map[string]struct{} {
-	return o.runOperatorAction(workflowconfig.OperatorActionRestoreStuckMerging, func() map[string]struct{} {
-		return o.reconcileStaleMergingPullRequestIssues(ctx, state, issues, now)
-	})
-}
-
 func (o *Orchestrator) operatorMergeWedgedPullRequests(ctx context.Context, state *State, issues []connector.Issue, now time.Time) map[string]struct{} {
 	return o.runOperatorAction(workflowconfig.OperatorActionMergeWhenWedged, func() map[string]struct{} {
 		transitioned := map[string]struct{}{}

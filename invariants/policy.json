@@ -154,13 +154,6 @@
       "TestSSHProbeRequiresProvidedScratch"
     ],
     "./internal/connector/github": [
-      "TestRefreshBoardFilterCost",
-      "TestFilteredRefreshExternalBlocker",
-      "TestFilteredRefreshBlockerLookupFailure",
-      "TestRefreshFilterChangeRestartsInterruptedScan",
-      "TestMachineIssueDuplicate",
-      "TestMachineIssueSeparateConnectors",
-      "TestMachineOriginSurvivesBodyUpdates",
       "TestPullRequestMergeTimeSurvivesLaterActivity"
     ],
     "./internal/scheduler": [

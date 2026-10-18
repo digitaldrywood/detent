@@ -450,13 +450,6 @@ func (s *Server) registerRoutes() {
 		s.echo.GET("/auth/oidc/callback", s.completeOIDC)
 	}
 	if s.mode == ModeOnboarding {
-		s.echo.GET("/", s.redirectToOnboarding)
-		s.echo.GET("/onboarding", s.onboarding)
-		s.echo.POST("/onboarding/tracker", s.onboardingTracker)
-		s.echo.POST("/onboarding/credentials", s.onboardingCredentials)
-		s.echo.POST("/onboarding/project", s.onboardingProject)
-		s.echo.POST("/onboarding/agent", s.onboardingAgent)
-		s.echo.POST("/onboarding/write", s.onboardingWrite)
 		return
 	}
 
@@ -484,11 +477,6 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/operations", s.operationsPage)
 	s.echo.GET("/events", s.events)
 	s.echo.GET("/onboarding", s.redirectToDashboard)
-	s.echo.POST("/onboarding/tracker", s.onboardingTracker)
-	s.echo.POST("/onboarding/credentials", s.onboardingCredentials)
-	s.echo.POST("/onboarding/project", s.onboardingProject)
-	s.echo.POST("/onboarding/agent", s.onboardingAgent)
-	s.echo.POST("/onboarding/write", s.onboardingWrite)
 	apiReadAuth := s.apiAuth(false)
 	mcpReadAuth := s.mcpAPIAuth()
 	apiMutateAuth := s.apiAuth(true)
@@ -1659,10 +1647,6 @@ func (s *Server) enforcedBudgets() []healthBudget {
 		})
 	}
 	return budgets
-}
-
-func (s *Server) redirectToOnboarding(c echo.Context) error {
-	return c.Redirect(http.StatusFound, "/onboarding")
 }
 
 func (s *Server) redirectToDashboard(c echo.Context) error {

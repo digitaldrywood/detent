@@ -3,7 +3,7 @@ package github
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+
 	"errors"
 	"log/slog"
 	"net/http"
@@ -14,107 +14,6 @@ import (
 	"sync/atomic"
 	"testing"
 )
-
-func TestConnectorAuthenticateValidatesViewerAndProject(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
-	t.Parallel()
-
-	requests := make(chan map[string]any, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var payload map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("Decode() error = %v", err)
-		}
-		requests <- payload
-
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"octocat"},"node":{"__typename":"ProjectV2","id":"PVT_1","url":"https://github.com/orgs/octo-org/projects/7"}}}`))
-	}))
-	t.Cleanup(server.Close)
-
-	c, err := NewConnector(Config{
-		Endpoint:    server.URL,
-		APIKey:      "token",
-		ProjectSlug: "PVT_1",
-		HTTPClient:  server.Client(),
-		GHToken: func(context.Context, string) (string, error) {
-			t.Fatal("gh token fallback should not run")
-			return "", nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewConnector() error = %v", err)
-	}
-
-	if err := c.Authenticate(context.Background()); err != nil {
-		t.Fatalf("Authenticate() error = %v", err)
-	}
-	if got := c.InstanceLogin(); got != "octocat" {
-		t.Fatalf("InstanceLogin() = %q, want octocat", got)
-	}
-	projectURL, err := c.ProjectURL(context.Background())
-	if err != nil {
-		t.Fatalf("ProjectURL() error = %v", err)
-	}
-	if projectURL != "https://github.com/orgs/octo-org/projects/7" {
-		t.Fatalf("ProjectURL() = %q, want authenticated project URL", projectURL)
-	}
-
-	payload := <-requests
-	variables := payload["variables"].(map[string]any)
-	if variables["projectId"] != "PVT_1" {
-		t.Fatalf("projectId = %v, want PVT_1", variables["projectId"])
-	}
-}
-
-func TestConnectorProjectURLResolvesAndCachesMetadata(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
-	t.Parallel()
-
-	var requests atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		var payload map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("Decode() error = %v", err)
-		}
-		if query, _ := payload["query"].(string); !strings.Contains(query, "DetentGitHubProjectURL") {
-			t.Fatalf("query = %q, want project URL metadata query", query)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"node":{"__typename":"ProjectV2","url":"https://github.com/users/octocat/projects/12"}}}`))
-	}))
-	t.Cleanup(server.Close)
-
-	c, err := NewConnector(Config{
-		Endpoint:    server.URL,
-		APIKey:      "token",
-		ProjectSlug: "PVT_1",
-		HTTPClient:  server.Client(),
-	})
-	if err != nil {
-		t.Fatalf("NewConnector() error = %v", err)
-	}
-
-	for range 2 {
-		projectURL, err := c.ProjectURL(context.Background())
-		if err != nil {
-			t.Fatalf("ProjectURL() error = %v", err)
-		}
-		if projectURL != "https://github.com/users/octocat/projects/12" {
-			t.Fatalf("ProjectURL() = %q, want resolved project URL", projectURL)
-		}
-	}
-	if got := requests.Load(); got != 1 {
-		t.Fatalf("project URL requests = %d, want 1", got)
-	}
-}
 
 func TestConnectorUsesDefaultLoggerForClientDiagnostics(t *testing.T) {
 	if testing.Short() {
@@ -218,7 +117,7 @@ func TestConnectorInstanceLoginConcurrentAuthenticateAndRead(t *testing.T) {
 	wg.Wait()
 }
 
-func TestConnectorAuthenticateReportsProjectProblems(t *testing.T) {
+func TestConnectorAuthenticateReportsViewerProblems(t *testing.T) {
 	if testing.Short() {
 		t.Skip("loopback network listener integration")
 	}
@@ -231,29 +130,9 @@ func TestConnectorAuthenticateReportsProjectProblems(t *testing.T) {
 		body    string
 		want    error
 	}{
-		{
-			name:    "missing project",
-			project: "",
-			want:    ErrMissingProject,
-		},
-		{
-			name:    "project not found",
-			project: "PVT_missing",
-			body:    `{"data":{"viewer":{"login":"octocat"},"node":null}}`,
-			want:    ErrProjectNotFound,
-		},
-		{
-			name:    "wrong node type",
-			project: "I_kw1",
-			body:    `{"data":{"viewer":{"login":"octocat"},"node":{"__typename":"Issue","id":"I_kw1"}}}`,
-			want:    ErrProjectNotFound,
-		},
-		{
-			name:    "viewer missing",
-			project: "PVT_1",
-			body:    `{"data":{"viewer":null,"node":{"__typename":"ProjectV2","id":"PVT_1"}}}`,
-			want:    ErrAuthenticationFailed,
-		},
+		{name: "viewer without project", body: `{"data":{"viewer":{"login":"example-user"}}}`},
+		{name: "viewer missing", body: `{"data":{"viewer":null}}`, want: ErrAuthenticationFailed},
+		{name: "viewer login missing", body: `{"data":{"viewer":{"login":""}}}`, want: ErrAuthenticationFailed},
 	}
 
 	for _, tt := range tests {
@@ -285,27 +164,5 @@ func TestConnectorAuthenticateReportsProjectProblems(t *testing.T) {
 				t.Fatalf("Authenticate() error = %v, want %v", err, tt.want)
 			}
 		})
-	}
-}
-
-func TestConnectorReportsMissingProjectForProjectOperations(t *testing.T) {
-	t.Parallel()
-
-	c, err := NewConnector(Config{APIKey: "token"})
-	if err != nil {
-		t.Fatalf("NewConnector() error = %v", err)
-	}
-
-	if _, err := c.FetchCandidateIssues(context.Background()); !errors.Is(err, ErrMissingProject) {
-		t.Fatalf("FetchCandidateIssues() error = %v, want ErrMissingProject", err)
-	}
-	if _, err := c.FetchIssuesByStates(context.Background(), []string{"Todo"}); !errors.Is(err, ErrMissingProject) {
-		t.Fatalf("FetchIssuesByStates() error = %v, want ErrMissingProject", err)
-	}
-	if _, err := c.FetchIssueStatesByIDs(context.Background(), []string{"I_kw1"}); !errors.Is(err, ErrMissingProject) {
-		t.Fatalf("FetchIssueStatesByIDs() error = %v, want ErrMissingProject", err)
-	}
-	if err := c.UpdateIssueState(context.Background(), "I_kw1", "Done"); !errors.Is(err, ErrMissingProject) {
-		t.Fatalf("UpdateIssueState() error = %v, want ErrMissingProject", err)
 	}
 }

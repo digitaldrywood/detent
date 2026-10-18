@@ -1382,7 +1382,6 @@ func defaultDoctorDeps() doctorDeps {
 		workflowSourcePolicy: defaultDoctorWorkflowSourcePolicy,
 		scheduleOwnership:    defaultDoctorScheduleOwnership,
 		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
-		proposalConnector:    defaultDoctorProposalConnector,
 		modelProbe:           defaultDoctorRouteModelProbe,
 		modelCatalogProbe:    defaultDoctorBackendModelCatalogProbe,
 		executable:           os.Executable,

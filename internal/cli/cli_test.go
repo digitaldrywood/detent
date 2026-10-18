@@ -656,62 +656,6 @@ func TestRootCommandPrintsBootBanner(t *testing.T) {
 	}
 }
 
-func TestRootCommandBootsFromDefaultWorkflowWhenGlobalConfigIsMissing(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("CONFIG_HOME", filepath.Join(root, ".detent"))
-	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), validWorkflowContent())
-	t.Chdir(root)
-
-	booted := make(chan cli.BootConfig, 1)
-	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
-		booted <- cfg
-		return nil
-	}))
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	got := <-booted
-	if got.Mode != cli.BootModeRunning {
-		t.Fatalf("boot mode = %q, want %q", got.Mode, cli.BootModeRunning)
-	}
-	if got.WorkflowPath != filepath.Join(root, "WORKFLOW.md") {
-		t.Fatalf("workflow path = %q, want default WORKFLOW.md", got.WorkflowPath)
-	}
-	if len(got.Global.Projects) != 1 {
-		t.Fatalf("projects length = %d, want 1", len(got.Global.Projects))
-	}
-	if got.Global.Projects[0].Workflow != got.WorkflowPath {
-		t.Fatalf("project workflow = %q, want %q", got.Global.Projects[0].Workflow, got.WorkflowPath)
-	}
-}
-
-func TestRootCommandUsesDefaultWorkflowServerAddress(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("CONFIG_HOME", filepath.Join(root, ".detent"))
-	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), workflowContentWithServer("0.0.0.0", 4101))
-	t.Chdir(root)
-
-	booted := make(chan cli.BootConfig, 1)
-	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
-		booted <- cfg
-		return nil
-	}))
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	assertBootServer(t, <-booted, "0.0.0.0", 4101)
-}
-
 func TestRootCommandUsesConfiguredProjectWorkflowServerAddress(t *testing.T) {
 	t.Parallel()
 

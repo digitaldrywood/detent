@@ -3923,115 +3923,6 @@ func TestKanbanPendingOverlayDoesNotMutateLatestSnapshot(t *testing.T) {
 	}
 }
 
-func TestKanbanMoveRejectsDefaultRestrictedActiveTransitions(t *testing.T) {
-	t.Parallel()
-
-	deps := testDeps(t)
-	actionConnector := &kanbanActionConnector{name: "github"}
-	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
-		Mode: workflowconfig.KanbanModeIntegration,
-	}, actionConnector)
-	if err := deps.Hub.Publish(telemetry.Snapshot{
-		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
-		Project:     telemetry.Project{ID: "detent"},
-		Running: []telemetry.Running{
-			{
-				Issue: telemetry.Issue{
-					ID:         "I_progress",
-					Identifier: "example-org/example-project#1",
-					ProjectID:  "detent",
-					Title:      "Active card",
-					State:      "In Progress",
-				},
-			},
-			{
-				Issue: telemetry.Issue{
-					ID:         "I_rework",
-					Identifier: "example-org/example-project#2",
-					ProjectID:  "detent",
-					Title:      "Rework card",
-					State:      "Rework",
-				},
-			},
-			{
-				Issue: telemetry.Issue{
-					ID:         "I_merging",
-					Identifier: "example-org/example-project#3",
-					ProjectID:  "detent",
-					Title:      "Merging card",
-					State:      "Merging",
-				},
-			},
-		},
-	}); err != nil {
-		t.Fatalf("Publish() error = %v", err)
-	}
-	server, err := newServerWithLaneWriter(web.Config{}, deps)
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
-
-	rejections := []struct {
-		name    string
-		issueID string
-		source  string
-		target  string
-	}{
-		{
-			name:    "in progress to human review",
-			issueID: "I_progress",
-			source:  "In Progress",
-			target:  "Human Review",
-		},
-		{
-			name:    "rework to done",
-			issueID: "I_rework",
-			source:  "Rework",
-			target:  "Done",
-		},
-		{
-			name:    "merging to done",
-			issueID: "I_merging",
-			source:  "Merging",
-			target:  "Done",
-		},
-	}
-	for _, tt := range rejections {
-		t.Run(tt.name, func(t *testing.T) {
-			form := url.Values{
-				"project_id":    {"detent"},
-				"issue_id":      {tt.issueID},
-				"current_state": {tt.source},
-				"target_state":  {tt.target},
-			}
-			rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
-			if rec.Code != http.StatusUnprocessableEntity {
-				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
-			}
-			if !strings.Contains(rec.Body.String(), "transition policy") {
-				t.Fatalf("body missing transition policy feedback: %s", rec.Body.String())
-			}
-		})
-	}
-	if got := actionConnector.stateUpdates(); len(got) != 0 {
-		t.Fatalf("state updates = %#v, want none before allowed move", got)
-	}
-
-	form := url.Values{
-		"project_id":    {"detent"},
-		"issue_id":      {"I_progress"},
-		"current_state": {"In Progress"},
-		"target_state":  {"Blocked"},
-	}
-	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_progress", state: "Blocked"}}; !equalStateUpdates(got, want) {
-		t.Fatalf("state updates = %#v, want %#v", got, want)
-	}
-}
-
 func TestKanbanMoveAllowsConfiguredTransitionOverrides(t *testing.T) {
 	t.Parallel()
 
@@ -5165,15 +5056,6 @@ func TestServerRendersInstanceNameInPagesStateAndMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
-	onboardingServer, err := newServerWithLaneWriter(web.Config{
-		Mode:         web.ModeOnboarding,
-		GlobalConfig: cfg.GlobalConfig,
-		Hostname:     cfg.Hostname,
-	}, web.Dependencies{})
-	if err != nil {
-		t.Fatalf("NewServer() onboarding error = %v", err)
-	}
-
 	tests := []struct {
 		name      string
 		handler   http.Handler
@@ -5185,7 +5067,6 @@ func TestServerRendersInstanceNameInPagesStateAndMetadata(t *testing.T) {
 		{name: "analytics", handler: server.Handler(), path: "/analytics", title: "buildbox · Analytics - Detent"},
 		{name: "reports", handler: server.Handler(), path: "/reports", title: "buildbox · Detent reports"},
 		{name: "settings", handler: server.Handler(), path: "/settings", title: "buildbox · Detent settings"},
-		{name: "onboarding", handler: onboardingServer.Handler(), path: "/onboarding", title: "buildbox · Detent onboarding", wantBadge: true},
 	}
 
 	for _, tt := range tests {
@@ -5460,14 +5341,6 @@ func TestServerStaticAssetsUseFingerprintsAndCacheHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
-	onboardingServer, err := newServerWithLaneWriter(web.Config{
-		Mode:      web.ModeOnboarding,
-		StaticDir: staticDir,
-	}, web.Dependencies{})
-	if err != nil {
-		t.Fatalf("NewServer() onboarding error = %v", err)
-	}
-
 	fingerprintedPath := "/static/css/output." + shortTestHash(css) + ".css"
 	fingerprintedFaviconPath := "/static/img/detent-mark." + shortTestHash(favicon) + ".svg"
 
@@ -5483,7 +5356,6 @@ func TestServerStaticAssetsUseFingerprintsAndCacheHeaders(t *testing.T) {
 			{name: "analytics", handler: server.Handler(), path: "/analytics"},
 			{name: "settings", handler: server.Handler(), path: "/settings"},
 			{name: "reports", handler: server.Handler(), path: "/reports"},
-			{name: "onboarding", handler: onboardingServer.Handler(), path: "/onboarding"},
 		}
 
 		for _, tt := range tests {
@@ -5695,16 +5567,14 @@ func TestOnboardingModeDoesNotRequireRuntimeDependencies(t *testing.T) {
 		wantLocation string
 	}{
 		{
-			name:         "root redirects to onboarding",
-			path:         "/",
-			wantStatus:   http.StatusFound,
-			wantLocation: "/onboarding",
+			name:       "retired setup root",
+			path:       "/",
+			wantStatus: http.StatusNotFound,
 		},
 		{
-			name:        "onboarding page",
-			path:        "/onboarding",
-			wantStatus:  http.StatusOK,
-			wantContent: "Detent onboarding",
+			name:       "onboarding page",
+			path:       "/onboarding",
+			wantStatus: http.StatusNotFound,
 		},
 		{
 			name:        "health",
@@ -5734,6 +5604,24 @@ func TestOnboardingModeDoesNotRequireRuntimeDependencies(t *testing.T) {
 			}
 		})
 	}
+	for _, mode := range []web.Mode{web.ModeOnboarding, web.ModeRunning} {
+		workflow := filepath.Join(t.TempDir(), "WORKFLOW.md")
+		retired, err := newServerWithLaneWriter(web.Config{Mode: mode, WorkflowPath: workflow}, testDeps(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, step := range []string{"tracker", "credentials", "project", "agent", "write"} {
+			rec := httptest.NewRecorder()
+			retired.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/onboarding/"+step, nil))
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("retired %s in %s returned %d", step, mode, rec.Code)
+			}
+		}
+		if _, err := os.Stat(workflow); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("retired setup wrote workflow: %v", err)
+		}
+	}
+
 }
 
 func TestDashboardRendersLatestSnapshot(t *testing.T) {
@@ -12587,7 +12475,7 @@ func mustSetWebGitHubLabelProject(t *testing.T, registry *project.Registry, id s
 	t.Helper()
 
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	workflowCfg.Tracker.APIKey = "$GITHUB_TOKEN"
 	workflowCfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
 	workflowCfg.Tracker.Repository = repository
@@ -12651,7 +12539,7 @@ func newSettingsTestProject(t *testing.T, cfg globalconfig.Project, worktreeRoot
 	t.Helper()
 
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	workflowCfg.Tracker.Endpoint = "https://api.github.com/graphql"
 	workflowCfg.Tracker.APIKey = "$GITHUB_TOKEN"
 	workflowCfg.Tracker.ProjectSlug = "PVT_settings"
@@ -12682,7 +12570,7 @@ func newBudgetTestProject(t *testing.T, id string, perDayMaxUSD float64, perIssu
 	t.Helper()
 
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	workflowCfg.Tracker.Endpoint = "https://api.github.com/graphql"
 	workflowCfg.Tracker.APIKey = "$GITHUB_TOKEN"
 	workflowCfg.Tracker.ProjectSlug = "https://github.com/orgs/example-org/projects/4"
@@ -13781,7 +13669,7 @@ func mustSetKanbanProject(t *testing.T, registry *project.Registry, id string, k
 	workflowCfg := workflowconfig.Default()
 	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	if actionConnector.Name() == "github" {
-		workflowCfg.Tracker.Kind = workflowconfig.TrackerGitHub
+		workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
 		workflowCfg.Tracker.APIKey = "fixture-token"
 		workflowCfg.Tracker.ProjectSlug = "fixture-project"
 		workflowCfg.Tracker.Repository = "example-org/example-project"

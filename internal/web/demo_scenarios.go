@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
+
+const (
+	onboardingStepTracker     = "tracker"
+	onboardingStepCredentials = "credentials"
+	onboardingStepProject     = "project"
+	onboardingStepAgent       = "agent"
+	onboardingStepWrite       = "write"
+)
+
+var minPollingIntervalMS = strconv.Itoa(workflowconfig.MinPollingIntervalMS)
 
 const (
 	DemoScenarioHeader  = "X-Detent-Demo-Scenario"

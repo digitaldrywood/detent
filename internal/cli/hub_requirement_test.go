@@ -84,7 +84,7 @@ func TestRootCommandWarnsAndRefusesStandalone(t *testing.T) {
 	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n---\nWork the issue.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := globalconfig.Config{Path: filepath.Join(root, "global.yaml"), Projects: []globalconfig.Project{{ID: "example", Workflow: workflowPath}}}
+	cfg := globalconfig.Config{Global: globalconfig.Settings{MaxConcurrentAgents: 1}, Path: filepath.Join(root, "global.yaml"), Projects: []globalconfig.Project{{ID: "example", Workflow: workflowPath}}}
 	var logs bytes.Buffer
 	previous := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(previous) })

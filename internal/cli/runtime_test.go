@@ -674,7 +674,7 @@ func TestRuntimeGitHubTokenRefresherUsesCurrentGlobalConfig(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "actions-token")
 
 	workflowPath := filepath.Join(t.TempDir(), "workflow.md")
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n---\nPrompt\n"), 0o644); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n---\nPrompt\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	globalState := newGlobalConfigState(globalconfig.Config{})
@@ -731,7 +731,7 @@ func TestRuntimeGitHubTokenRefresherResolvesConfiguredGHSentinelWithoutActionsTo
 			t.Setenv("PATH", fakeGHDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 			workflowPath := filepath.Join(t.TempDir(), "workflow.md")
-			if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n---\nPrompt\n"), 0o644); err != nil {
+			if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n---\nPrompt\n"), 0o644); err != nil {
 				t.Fatalf("WriteFile() error = %v", err)
 			}
 			globalState := newGlobalConfigState(globalconfig.Config{})

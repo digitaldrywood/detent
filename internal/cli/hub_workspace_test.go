@@ -126,7 +126,7 @@ func writeWorkspaceLaneProject(t *testing.T, projectID string) globalconfig.Proj
 	t.Helper()
 	root := t.TempDir()
 	path := filepath.Join(root, "WORKFLOW.md")
-	raw := "---\ntracker:\n  kind: github\n  github_status_source: label\n  repository: acme/" + projectID +
+	raw := "---\ntracker:\n  kind: hub_native\n  github_status_source: label\n  repository: acme/" + projectID +
 		"\n  api_key: test-token\nworkspace:\n  root: " + filepath.Join(root, "worktrees") + "\n---\nPrivate instructions.\n"
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)

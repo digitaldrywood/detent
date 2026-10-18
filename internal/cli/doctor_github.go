@@ -56,16 +56,6 @@ func checkDoctorGitHubReadiness(
 	return out
 }
 
-func doctorGitHubReadinessRequiresWrites(cfg ghconnector.ReadinessConfig) bool {
-	return cfg.RequireProjectStatusWrite ||
-		cfg.RequireIssueFieldStatusWrite ||
-		cfg.RequireLabelStatusWrite ||
-		cfg.RequireIssueComments ||
-		cfg.RequireAssigneeWrite ||
-		cfg.RequireIssueClose ||
-		len(cfg.ProjectFieldWrites) > 0
-}
-
 func doctorGitHubConnectorConfig(cfg workflowconfig.Config) ghconnector.Config {
 	return ghconnector.Config{
 		Endpoint: cfg.Tracker.Endpoint,
@@ -82,18 +72,11 @@ func doctorGitHubConnectorConfig(cfg workflowconfig.Config) ghconnector.Config {
 		GitHubAppPrivateKey:     cfg.Tracker.GitHubAppPrivateKey,
 		GitHubAppPrivateKeyPath: cfg.Tracker.GitHubAppPrivateKeyPath,
 		GitHubAppInstallationID: cfg.Tracker.GitHubAppInstallationID,
-		GitHubStatusSource:      cfg.Tracker.GitHubStatusSource,
-		DependencySource:        cfg.Dependencies.Source,
-		ProjectSlug:             cfg.Tracker.ProjectSlug,
-		Repository:              cfg.Tracker.Repository,
-		StatusField:             cfg.Tracker.StatusField,
-		StatusLabelPrefix:       cfg.Tracker.StatusLabelPrefix,
-		ActiveStates:            cfg.Tracker.ActiveStates,
-		ObservedStates:          cfg.Tracker.ObservedStates,
-		PlanStop:                cfg.Plan.Stop,
-		TerminalStates:          cfg.Tracker.TerminalStates,
-		StateMap:                doctorTrackerStateMap(cfg.Tracker.StateMap),
-		Logger:                  doctorConnectorLogger(),
+
+		ProjectSlug: cfg.Tracker.ProjectSlug,
+		Repository:  cfg.Tracker.Repository,
+
+		Logger: doctorConnectorLogger(),
 	}
 }
 

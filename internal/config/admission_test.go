@@ -12,7 +12,7 @@ func TestParseWorkflowBacklogAdmission(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: github
+  kind: hub_native
   api_key: token
   github_status_source: issue_field
   repository: digitaldrywood/detent
@@ -58,7 +58,7 @@ backlog_admission:
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
-	if err := workflow.Config.Validate(); err != nil {
+	if err := workflow.Config.Validate(); err == nil || !strings.Contains(err.Error(), "tracker.kind hub_native") {
 		t.Fatalf("Config.Validate() error = %v", err)
 	}
 	if err := ValidateWorkflowAdmission(workflow); err != nil {

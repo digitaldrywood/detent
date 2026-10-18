@@ -171,15 +171,15 @@ func mergeRevocationForIssue(
 
 // Draft merges share the existing review and CI routing before asking a human
 // to explain a draft whose current head has no actionable failure.
-func draftMergingPullRequestDecision(issue connector.Issue, cfg Config) staleMergingPullRequestDecision {
+func draftMergingPullRequestDecision(issue connector.Issue, cfg Config) draftMergeDecision {
 	config := normalizeAutoPromoteConfig(cfg.AutoPromote)
 	if len(issue.PullRequest.UnresolvedReviewThreads) > 0 {
-		return staleMergingPullRequestDecision{targetState: config.ReworkState, reason: string(AutoPromoteReasonUnresolvedReviewThreads)}
+		return draftMergeDecision{targetState: config.ReworkState, reason: string(AutoPromoteReasonUnresolvedReviewThreads)}
 	}
 	if mergeWorkerCIFailed(issue.PullRequest) {
-		return staleMergingPullRequestDecision{targetState: config.ReworkState, reason: string(AutoPromoteReasonCINotGreen)}
+		return draftMergeDecision{targetState: config.ReworkState, reason: string(AutoPromoteReasonCINotGreen)}
 	}
-	return staleMergingPullRequestDecision{targetState: config.reviewTargetState(), reason: mergeRevocationDraftPullRequest}
+	return draftMergeDecision{targetState: config.reviewTargetState(), reason: mergeRevocationDraftPullRequest}
 }
 
 func mergeReworkComment(issue connector.Issue, reason, target string) string {
@@ -743,4 +743,9 @@ func (o *Orchestrator) escalateMergeRevocationCommentLoss(
 
 func mergeRevocationError(revocation mergeRevocation) error {
 	return fmt.Errorf("%w: %s", runpkg.ErrMergeRevoked, revocation.reason)
+}
+
+type draftMergeDecision struct {
+	targetState string
+	reason      string
 }

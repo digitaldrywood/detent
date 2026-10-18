@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehubscheduling"
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 )
 
@@ -41,17 +42,17 @@ func TestStartupIsolatesWorkflowLoadFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			healthy = []byte(strings.Replace(string(healthy), "kind: hub_native", "kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project", 1))
+			healthy = []byte(strings.Replace(string(healthy), "kind: hub_native", "kind: hub_native\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project", 1))
 			if err := os.WriteFile(healthyPath, healthy, 0600); err != nil {
 				t.Fatal(err)
 			}
 			invalidPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
-			content := "---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project\nbacklog_admission:\n  enabled: true\n  criteria_section: Admission Criteria\n---\n## Renamed Criteria\nAccept bugs.\n"
+			content := "---\ntracker:\n  kind: hub_native\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project\nbacklog_admission:\n  enabled: true\n  criteria_section: Admission Criteria\n---\n## Renamed Criteria\nAccept bugs.\n"
 			if err := os.WriteFile(invalidPath, []byte(content), 0600); err != nil {
 				t.Fatal(err)
 			}
 			pausedPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
-			if err := os.WriteFile(pausedPath, []byte("---\ntracker:\n  kind: github\n  repository: owner/paused\n  api_key: test-token\n  github_status_source: label\n  status_label_prefix: 'detent:'\n---\nWork.\n"), 0600); err != nil {
+			if err := os.WriteFile(pausedPath, []byte("---\ntracker:\n  kind: hub_native\n  repository: owner/paused\n  api_key: test-token\n  github_status_source: label\n  status_label_prefix: 'detent:'\n---\nWork.\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			projects := []globalconfig.Project{
@@ -72,7 +73,7 @@ func TestStartupIsolatesWorkflowLoadFailure(t *testing.T) {
 				run := &workflowStartupRunner{started: make(chan struct{}, 1)}
 				tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{{ID: "1", Identifier: "TEST-1", Title: "Healthy work", State: "Todo", AssignedToWorker: true}}})
 				manager, err := projectfixture.NewManager(project.ManagerConfig{Projects: projects}, project.ManagerDependencies{
-					ProjectFactory: withRunnerFactory(t.Context(), project.Dependencies{Runner: run, Connector: tracker, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, nil, nil, serviceapi.Connection{}, nil),
+					ProjectFactory: withRunnerFactory(t.Context(), project.Dependencies{Runner: run, Connector: tracker, Scheduling: &fakehubscheduling.Source{Connector: tracker}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, nil, nil, serviceapi.Connection{}, nil),
 				})
 				if err != nil {
 					t.Fatal(err)
@@ -195,7 +196,7 @@ func TestStartupIsolatesWorkspacePathFailureAndReloads(t *testing.T) {
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
 			writeWorkflow := func(workspaceRoot, sourceRoot string) {
 				t.Helper()
-				content := "---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project\ncodex:\n  command: codex app-server\nworkspace:\n  root: " + workspaceRoot + "\n  source_root: " + sourceRoot + "\n---\n\nWork.\n"
+				content := "---\ntracker:\n  kind: hub_native\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project\ncodex:\n  command: codex app-server\nworkspace:\n  root: " + workspaceRoot + "\n  source_root: " + sourceRoot + "\n---\n\nWork.\n"
 				if err := os.WriteFile(workflowPath, []byte(content), 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -211,7 +212,7 @@ func TestStartupIsolatesWorkspacePathFailureAndReloads(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			healthy = []byte(strings.Replace(string(healthy), "kind: hub_native", "kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project", 1))
+			healthy = []byte(strings.Replace(string(healthy), "kind: hub_native", "kind: hub_native\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project", 1))
 			if err := os.WriteFile(healthyPath, healthy, 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -220,7 +221,7 @@ func TestStartupIsolatesWorkspacePathFailureAndReloads(t *testing.T) {
 				{ID: "healthy", Workflow: healthyPath, Workdir: filepath.Dir(healthyPath), Weight: 1},
 			}
 			manager, err := projectfixture.NewManager(project.ManagerConfig{Projects: projects}, project.ManagerDependencies{
-				ProjectFactory: withRunnerFactory(t.Context(), project.Dependencies{Connector: fakehub.New(fakehub.Config{}), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, nil, nil, serviceapi.Connection{}, nil),
+				ProjectFactory: withRunnerFactory(t.Context(), project.Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, nil, nil, serviceapi.Connection{}, nil),
 			})
 			if err != nil {
 				t.Fatal(err)

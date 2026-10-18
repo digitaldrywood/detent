@@ -304,7 +304,7 @@ func TestAPIBoardSessionPagesFailedRolloutHistory(t *testing.T) {
 
 	deps := testDeps(t)
 	workflow := workflowconfig.Default()
-	workflow.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflow.Tracker.Kind = workflowconfig.TrackerHubNative
 	workflow.Tracker.Repository = "example/repo"
 	workflow.Tracker.APIKey = "fixture"
 	workflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel

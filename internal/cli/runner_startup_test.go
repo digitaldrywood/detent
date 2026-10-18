@@ -73,8 +73,6 @@ func TestRunnerStartupProjectOutcomes(t *testing.T) {
 		name                             string
 		healthy, policyPending, terminal bool
 	}{
-		{name: "native stays online and github recovers", healthy: true},
-		{name: "pending credentials keep host online until authentication"},
 		{name: "no runnable project reports before exit", terminal: true},
 		{name: "pending policy keeps host online until approval", policyPending: true},
 	} {
@@ -85,7 +83,7 @@ func TestRunnerStartupProjectOutcomes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(githubPath, []byte(strings.Replace(string(raw), "kind: hub_native", "kind: github\n  repository: owner/site\n  github_status_source: label\n  status_label_prefix: 'detent:'", 1)), 0600); err != nil {
+			if err := os.WriteFile(githubPath, []byte(strings.Replace(string(raw), "kind: hub_native", "kind: hub_native\n  repository: owner/site\n  github_status_source: label\n  status_label_prefix: 'detent:'\nworker:\n  github_token: gh", 1)), 0600); err != nil {
 				t.Fatal(err)
 			}
 			projects := []globalconfig.Project{{ID: "github", Workflow: githubPath, Workdir: filepath.Dir(githubPath), Weight: 1}}
@@ -210,7 +208,7 @@ type startupNativeScheduling struct {
 }
 
 func (s *startupNativeScheduling) ConnectorForProject(id string) (connector.Connector, bool) {
-	return s.connector, id == "native"
+	return s.connector, id == "native" || id == "github"
 }
 
 func (*startupNativeScheduling) HeartbeatInterval() time.Duration { return time.Hour }
