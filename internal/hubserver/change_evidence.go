@@ -124,7 +124,15 @@ func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 		}
 	}
 	if !slices.Contains([]string{"approved", "changes_requested", "commented"}, request.Decision) || len(request.Body) > 64<<10 {
-		return nil, nativeInvalid("Review decision is invalid or body exceeds 64 KiB")
+		err := nativeInvalid("Review decision is invalid or body exceeds 64 KiB")
+		if scope.credential.Scope == apiScopeWorker && request.Validator != nil && request.ImplementationReview == nil && request.SecurityAudit == nil {
+			field := "decision"
+			if len(request.Body) > 64<<10 {
+				field = "body"
+			}
+			err = nativeRejection(err, "acceptance_validation", field)
+		}
+		return nil, err
 	}
 	if change.CurrentLanding() != nil {
 		return nil, nativeConflict(change.Revision)

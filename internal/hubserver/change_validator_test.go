@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -170,6 +172,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"separate session pass with human review", func(_ *tracker.ReviewChange) {}, http.StatusOK, "needs_evidence", nil},
 		{"implementing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"oversized acceptance body", func(r *tracker.ReviewChange) { r.Body = strings.Repeat("private-payload", 6000) }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"missing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 0 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"another head", func(r *tracker.ReviewChange) { r.Validator.HeadSHA = r.Validator.BaseSHA }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"another version", func(r *tracker.ReviewChange) { r.Validator.VersionID = "version_other" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
@@ -193,6 +196,9 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "validator")
 			descriptor := hubTestPolicy()
+			if test.name == "missing session" {
+				descriptor.Gates.GitHubPullRequest = true
+			}
 			if test.stages != nil && test.stages.gateKind != "" {
 				cfg := config.Default()
 				cfg.Tracker.Kind = config.TrackerHubNative
@@ -379,9 +385,117 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
 			requireNativeStatus(t, response, test.want)
+			rejectionField := map[string]string{
+				"oversized acceptance body":                              "body",
+				"missing session":                                        "validator.session_id",
+				"implementing session":                                   "validator.session_id",
+				"another head":                                           "validator.head_sha",
+				"another version":                                        "validator.version_id",
+				"verdict mismatch":                                       "decision",
+				"missing evidence cannot pass":                           "validator.criteria_evidence",
+				"restated evidence cannot pass":                          "validator.criteria_evidence",
+				"failed selected receipt cannot pass":                    "validator.criteria_evidence",
+				"required acceptance before source":                      "implementation_review",
+				"same machine source session cannot validate acceptance": "validator.session_id",
+			}[test.name]
+			if rejectionField != "" {
+				var failure hubclient.APIError
+				decodeHubResponse(t, response, &failure)
+				want := runnerauth.PublicationRejection{Category: "acceptance_validation", Field: rejectionField}
+				if failure.Rejection == nil || *failure.Rejection != want {
+					t.Fatalf("rejection = %+v, want %+v", failure.Rejection, want)
+				}
+			}
 			field := map[string]string{"security audit missing invocation": "invocation_id", "security audit missing run": "run.id", "security audit missing session": "session_id", "security audit foreign issue": "issue_id", "security audit foreign project": "project_id", "security audit foreign session": "session_id", "security audit stale base": "base_sha", "security audit stale head": "head_sha"}[test.name]
 			if field != "" && !strings.Contains(response.Body.String(), field) {
 				t.Fatalf("missing field diagnostic = %s, want %s", response.Body.String(), field)
+			}
+			if test.name == "missing session" {
+				server := httptest.NewServer(f.service.Handler())
+				t.Cleanup(server.Close)
+				client, err := hubclient.New(hubclient.Config{URL: server.URL, TokenSource: func() string { return worker }, HTTPClient: server.Client()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native(f.project.OrganizationID, f.project.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request.IdempotencyKey = "sdk-rejection"
+				request.Body = "private-payload token=private-credential"
+				_, err = native.ReviewChange(t.Context(), issue.WorkItemID, change.ID, version.ID, request)
+				var failure *hubclient.APIError
+				if !errors.As(err, &failure) || failure.Rejection == nil || strings.Contains(err.Error(), "private-payload") || strings.Contains(err.Error(), "private-credential") {
+					t.Fatalf("unsafe or missing SDK rejection: %v", err)
+				}
+				terminal := failure.NativeTerminalFailure()
+				terminal.Error, terminal.ObservedAt = err.Error(), f.service.config.now()
+				terminal = terminal.Public()
+				finished := event
+				finished.Type, finished.IdempotencyKey, finished.Data.Sequence = "run.finished", "acceptance-failed", 2
+				finished.Data.Outcome = "failed"
+				finished.Data.TerminalFailure = &terminal
+				publication := &tracker.NativePRPublication{ChangeID: change.ID, VersionID: version.ID, Repository: version.Repository, BaseRef: "develop", Branch: "work", HeadSHA: version.HeadSHA, PolicyID: version.PolicyID, SourceVersion: tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}, SourceAttemptID: version.AttemptID, External: tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: version.Repository + "/pull/7"}}
+				checkpoint := event
+				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "run.checkpointed", "published-pr", 2
+				checkpoint.Data.Handoff = nativeTestCheckpoint()
+				checkpoint.Data.Handoff.HeadSHA = version.HeadSHA
+				checkpoint.Data.Handoff.Change = &publication.SourceVersion
+				checkpoint.Data.Handoff.ExternalEffect, checkpoint.Data.Handoff.EffectState, checkpoint.Data.Handoff.EffectID = "pr_create", "confirmed", publication.EffectID("pr_create")
+				if err := native.AppendEvent(t.Context(), issue.WorkItemID, checkpoint); err != nil {
+					t.Fatal(err)
+				}
+				finished.Data.Sequence = 3
+				if _, err := native.PostAttemptDiff(t.Context(), event.Data.AttemptID, tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: event.Data.AttemptID, LeaseID: lease.ID, FencingToken: lease.FencingToken}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 3}, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}); err != nil {
+					t.Fatal(err)
+				}
+				finished.Data.Finalization = &tracker.NativeFinalization{ObservedAt: terminal.ObservedAt, Settled: true, Changed: true, ChangeID: change.ID, VersionID: version.ID, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Publication: publication}
+				if err := native.AppendEvent(t.Context(), issue.WorkItemID, finished); err != nil {
+					t.Fatal(err)
+				}
+				evidence, err := native.RuntimeEvidence(t.Context(), issue.WorkItemID, event.Data.AttemptID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if evidence.Attempt == nil || evidence.Attempt.TerminalFailure == nil || evidence.Attempt.Finalization == nil {
+					t.Fatalf("missing attempt evidence: %+v", evidence)
+				}
+				receipt, err := operatortool.NativeRuntimeResult(operatortool.WorkAttemptReceipt, operatortool.WorkReadRequest{ProjectID: string(f.project.ID), Reference: string(issue.WorkItemID), NativeAttemptID: event.Data.AttemptID}, evidence)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var decoded struct {
+					Data tracker.NativeRuntimeEvidence `json:"data"`
+				}
+				if err := json.Unmarshal(receipt.Content, &decoded); err != nil {
+					t.Fatal(err)
+				}
+				evidence = decoded.Data
+				if evidence.Attempt == nil || evidence.Attempt.TerminalFailure == nil || evidence.Attempt.Finalization == nil {
+					t.Fatalf("work_attempt_receipt lost evidence: %s", receipt.Content)
+				}
+				got := evidence.Attempt.TerminalFailure
+				source := evidence.Attempt.Finalization
+				if got.Stage != "acceptance_publication" || got.Attribution != "instance" || got.Rejection == nil || *got.Rejection != *failure.Rejection || got.Error != failure.Rejection.DiagnosticError() || source.VersionID != version.ID || source.HeadSHA != version.HeadSHA || source.Publication == nil || *source.Publication != *publication || source.Error != "" {
+					t.Fatalf("publication identity or acceptance rejection lost: failure=%+v source=%+v", got, source)
+				}
+				stale := request
+				stale.IdempotencyKey, stale.FencingToken = "stale-review", request.FencingToken+1
+				refused := performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, stale)
+				if refused.Code < 400 || strings.Contains(refused.Body.String(), "acceptance_validation") {
+					t.Fatalf("stale authority received acceptance details: %s", refused.Body.String())
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				request.IdempotencyKey = "expired-review"
+				refused = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
+				if refused.Code < 400 || strings.Contains(refused.Body.String(), "acceptance_validation") {
+					t.Fatalf("expired authority received acceptance details: %s", refused.Body.String())
+				}
+				other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-project")
+				refused = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", other.worker(t, "other-worker"), request)
+				if refused.Code < 400 || strings.Contains(refused.Body.String(), "acceptance_validation") {
+					t.Fatalf("another project received acceptance details: %s", refused.Body.String())
+				}
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
