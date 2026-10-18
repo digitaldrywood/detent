@@ -98,6 +98,57 @@ func TestLocalSettingsOperatorTools(t *testing.T) {
 	if err != nil || len(allowed.ProjectIDs) != 1 || allowed.ProjectIDs[0] != "detent" {
 		t.Fatalf("allowed=%+v,%v", allowed, err)
 	}
+	for _, tc := range []struct {
+		name    string
+		limits  json.RawMessage
+		project tracker.ProjectID
+		status  int
+	}{
+		{"omitted capacity limits", nil, "other", http.StatusOK},
+		{"nonempty capacity limits", json.RawMessage(`{"other":1}`), "detent", http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			change.ExpectedRevision = allowed.Revision
+			change.ProjectIDs = []tracker.ProjectID{tc.project}
+			encoded, err := json.Marshal(change)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &fields); err != nil {
+				t.Fatal(err)
+			}
+			delete(fields, "project_capacity_limits")
+			if tc.limits != nil {
+				fields["project_capacity_limits"] = tc.limits
+			}
+			raw, err := json.Marshal(struct {
+				RequestID string                     `json:"request_id"`
+				RunnerID  string                     `json:"runner_id"`
+				Change    map[string]json.RawMessage `json:"change"`
+			}{tc.name, snapshot.RunnerID, fields})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				response := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/"+operatortool.UpdateRunnerRouting, string(raw), headers)
+				if response.Code != tc.status || tc.status == http.StatusOK && !strings.Contains(response.Body.String(), "succeeded") {
+					t.Fatalf("grants=%d %s", response.Code, response.Body.String())
+				}
+				if tc.status != http.StatusOK {
+					break
+				}
+			}
+			expectedRevision := allowed.Revision
+			if tc.status == http.StatusOK {
+				expectedRevision++
+			}
+			allowed, err = db.LocalAllowedProjects(t.Context(), nil)
+			if err != nil || allowed.Revision != expectedRevision || len(allowed.ProjectIDs) != 1 || allowed.ProjectIDs[0] != "other" {
+				t.Fatalf("allowed=%+v,%v", allowed, err)
+			}
+		})
+	}
 	init := performJSON(t, server.Handler(), http.MethodPost, "/mcp", mcpInitializeRequest, headers)
 	if init.Code != http.StatusOK || init.Header().Get("Mcp-Session-Id") == "" {
 		t.Fatalf("initialize=%d %s", init.Code, init.Body.String())
