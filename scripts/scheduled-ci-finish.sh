@@ -7,9 +7,19 @@ issues_file="$scratch_dir/scheduled-ci-issues.json"
 evidence_file="$scratch_dir/scheduled-ci-evidence.jsonl"
 run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
+delete_prebuilt() {
+  gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name | startswith("release-prebuilt-")) | .id' |
+    while read -r artifact; do
+      gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact" > /dev/null
+    done
+}
+
 run_conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --jq .conclusion)"
 if [ "$run_conclusion" = cancelled ] || [ "${WORKFLOW_CANCELLED:-false}" = true ]; then
   echo "Scheduled validation was cancelled; skipping reporting and release."
+  if [ -n "${CI_RELEASE_BRANCH:-}" ]; then
+    delete_prebuilt || true
+  fi
   exit 0
 fi
 
@@ -29,12 +39,18 @@ fi
 
 failures="$(jq -r '.[] | select(.name != "Finalize scheduled validation" and .conclusion != "success") | .name' "$jobs_file")"
 if [ -n "$failures" ]; then
+  if [ -n "${CI_RELEASE_BRANCH:-}" ]; then
+    delete_prebuilt
+  fi
   report_validation
   exit 1
 fi
 
 publish_failure() {
   trap - ERR
+  if [ -n "${CI_RELEASE_BRANCH:-}" ]; then
+    delete_prebuilt || true
+  fi
   publisher_jobs_file="$scratch_dir/scheduled-ci-publisher-jobs.json"
   jq -n --arg url "$run_url" '[{name:"Finalize scheduled validation",conclusion:"failure",html_url:$url,id:0}]' > "$publisher_jobs_file"
   go run ./tools/cifailure < "$publisher_jobs_file" >> "$evidence_file"
@@ -76,6 +92,7 @@ series="${CI_RELEASE_BRANCH#release/}"
 head_sha="$(git ls-remote origin "refs/heads/$CI_RELEASE_BRANCH" | cut -f1)"
 if [ "$head_sha" != "$CI_DEVELOP_SHA" ]; then
   echo "Validated commit is no longer the release branch head; skipping release."
+  delete_prebuilt
   if [ "$GITHUB_REPOSITORY" = digitaldrywood/detent ]; then
     report_validated "$CI_RELEASE_BRANCH"
   fi
