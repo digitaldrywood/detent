@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -153,6 +154,56 @@ describe("organization Reports Overview", () => {
     expect(screen.getAllByTitle("Not recorded").length).toBeGreaterThanOrEqual(2);
     expect(screen.queryByText("$0.00")).toBeNull();
     expect(screen.queryByText("0%")).toBeNull();
+  });
+
+  it.each([false, true])("distinguishes prior availability %s from recorded zero activity", async (recorded) => {
+    response.prior_recorded = recorded;
+    response.previous = { ...response.previous, filed: 0, completed: 0, cancelled: 0, net_backlog: 0, changes_landed: 0, worked: 0, reworked: 0, completion_cost_usd: 0, cost_per_completed_usd: null, cycle_p50_seconds: null, rework_percent: null };
+    response.previous_series = response.previous_series.map((bucket) => ({ ...bucket, filed: 0, completed: 0 }));
+    const router = await openReports();
+    const metrics = within(screen.getByLabelText("Headline metrics"));
+    expect(metrics.getByText("142")).toBeTruthy();
+    expect(metrics.getAllByText("No prior data")).toHaveLength(recorded ? 2 : 6);
+    expect(screen.queryByText("Prior 7d completed") !== null).toBe(recorded);
+    fireEvent.keyDown(screen.getByRole("img", { name: "Filed and completed issues per bucket" }), { key: "ArrowRight" });
+    expect(screen.getByRole("status").textContent?.includes("Prior completed")).toBe(recorded);
+    await act(async () => { await router.navigate({ to: "/reports", search: { project: "all", compare: "off" } as never }); });
+    await waitFor(() => expect(metrics.queryByText("No prior data")).toBeNull());
+  });
+
+  it.each(["/reports?models=example-model&stages=code&labels=cloud&range=30d&compare=off", "/reports?project=all&models=example-model&stages=code&labels=cloud&range=30d&compare=off"])("clears unsupported organization filters on shared view %s", async (path) => {
+    const router = await openReports(path);
+    await waitFor(() => expect(router.state.location.search).toEqual({ project: "all", labels: "cloud", range: "30d", compare: "off" }));
+    expect(organizationReads().length).toBeGreaterThan(0);
+    for (const request of organizationReads()) {
+      expect(request.searchParams.has("models")).toBe(false);
+      expect(request.searchParams.has("stages")).toBe(false);
+      expect(request.searchParams.get("labels")).toBe("cloud");
+    }
+    expect(screen.queryByRole("combobox", { name: /Model/ })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /Stage/ })).toBeNull();
+    expect(screen.getByRole("combobox", { name: /Label/ }).textContent).toContain("cloud");
+  });
+
+  it("clears model and stage filters when switching from project Cost to organization Overview", async () => {
+    const user = userEvent.setup();
+    activeProjectId = "prj_alpha";
+    const router = await openReports("/reports/cost?project=prj_alpha&models=example-model&stages=code&labels=cloud");
+    expect(screen.getByRole("combobox", { name: /Model/ }).textContent).toContain("example-model");
+    expect(screen.getByRole("combobox", { name: /Stage/ }).textContent).toContain("code");
+    expect(requests.some((url) => url.searchParams.get("project") === "prj_alpha" && url.searchParams.get("models") === "example-model" && url.searchParams.get("stages") === "code")).toBe(true);
+    await user.click(screen.getByRole("combobox", { name: "Project" }));
+    await user.click(await screen.findByRole("option", { name: "All projects" }));
+    await waitFor(() => expect(router.state.location.search).toEqual({ project: "all", labels: "cloud" }));
+    await user.click(screen.getByRole("tab", { name: "Overview" }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Who filed" })).toBeTruthy());
+    expect(router.state.location.search).toEqual({ project: "all", labels: "cloud" });
+    for (const request of organizationReads()) {
+      expect(request.searchParams.has("models")).toBe(false);
+      expect(request.searchParams.has("stages")).toBe(false);
+    }
+    expect(screen.queryByRole("combobox", { name: /Model/ })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /Stage/ })).toBeNull();
   });
 
   it.each(["flow", "quality", "cost", "failures"])("keeps organization %s empty", async (tab) => {
