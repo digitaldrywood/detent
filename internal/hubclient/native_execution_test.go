@@ -170,7 +170,7 @@ func (f executionRoundTrip) RoundTrip(request *http.Request) (*http.Response, er
 }
 
 func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
-	for _, name := range []string{"expire", "renew", "renewal outage", "renew during native finish"} {
+	for _, name := range []string{"expire", "renew", "renewal outage", "renew during native finish", "guard during native finish"} {
 		renew := name == "renew"
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -212,7 +212,7 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 				scheduler.claimPolicies[id] = claimPolicy{project: "project", descriptor: descriptor}
 				execution := scheduler.RunExecution(id)
 				guarded := t.Context()
-				if name != "renew during native finish" {
+				if name != "renew during native finish" && name != "guard during native finish" {
 					var stop func()
 					guarded, stop, err = execution.Guard(t.Context())
 					if err != nil {
@@ -220,13 +220,19 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 					}
 					defer stop()
 				}
-				if name == "renew during native finish" {
+				if name == "renew during native finish" || name == "guard during native finish" {
 					claim := scheduler.nativeClaims[id]
 					scheduler.claims[id] = nativeTrackerLease(claim.lease)
 					scheduler.nativeHeartbeats[native.project] = time.Now()
 					nativeExecution := execution.(*nativeExecution)
 					nativeExecution.data.Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
 					nativeExecution.preparedOutcome = "failed"
+					var stopGuard func()
+					defer func() {
+						if stopGuard != nil {
+							stopGuard()
+						}
+					}()
 					started, allowFinish := make(chan struct{}), make(chan struct{})
 					defer func() {
 						select {
@@ -261,11 +267,25 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 						}
 						return original.RoundTrip(request)
 					})
+					if name == "guard during native finish" {
+						guarded, stopGuard, err = execution.Guard(t.Context())
+						if err != nil {
+							t.Fatal(err)
+						}
+						synctest.Wait()
+					}
 					finished := make(chan error, 1)
 					go func() { finished <- scheduler.ReleaseClaim(guarded, id, "released") }()
 					<-started
 					for range 7 {
 						time.Sleep(20 * time.Second)
+						if name == "guard during native finish" {
+							synctest.Wait()
+							if scheduler.nativeClaims[id].deadline.Before(time.Now()) {
+								t.Fatal("completion publication blocked the worker lease guard")
+							}
+							continue
+						}
 						renewed := make(chan error, 1)
 						go func() {
 							_, err := scheduler.RenewClaim(guarded, id, time.Now())
@@ -418,13 +438,17 @@ func TestNativeExecutionContextKeepsItsOriginalFence(t *testing.T) {
 
 func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 	t.Parallel()
-	for _, operation := range []string{"renew", "release", "release_finish_lost", "release_finish_ack_retry", "lost"} {
+	for _, operation := range []string{"renew", "renew_availability", "release", "release_finish_lost", "release_finish_ack_retry", "lost"} {
 		t.Run(operation, func(t *testing.T) {
 			descriptor := clientTestPolicy()
 			id := "wi_" + strings.Repeat("a", 32)
 			lease := tracker.NativeLease{ID: "old", WorkItemID: tracker.NativeWorkItemID(id), FencingToken: 1, PolicyID: descriptor.ID, ServerTime: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
 			next := lease
 			next.ID, next.FencingToken = "new", 2
+			availabilityDeadline := time.Now().Add(30 * time.Second)
+			if operation == "renew_availability" {
+				next = lease
+			}
 			var scheduler *Scheduler
 			var releaseCalls, finishedEvents int
 			transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
@@ -444,10 +468,13 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 						return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"tenant_unavailable"}`)), Request: request}, nil
 					}
 				}
-				if strings.HasSuffix(request.URL.Path, "/"+strings.Split(operation, "_finish_")[0]) {
+				if strings.HasSuffix(request.URL.Path, "/"+strings.Split(operation, "_")[0]) {
 					scheduler.mu.Lock()
 					claim := scheduler.nativeClaims[id]
 					claim.lease = next
+					if operation == "renew_availability" {
+						claim.availabilityDeadline = availabilityDeadline
+					}
 					scheduler.nativeClaims[id] = claim
 					scheduler.claims[id] = nativeTrackerLease(next)
 					scheduler.mu.Unlock()
@@ -478,6 +505,11 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 			scheduler.claims[id] = nativeTrackerLease(lease)
 			scheduler.claimPolicies[id] = claimPolicy{project: "project", descriptor: descriptor}
 			switch operation {
+			case "renew_availability":
+				_, err = scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id], 0)
+				if err != nil || !scheduler.nativeClaims[id].availabilityDeadline.Equal(availabilityDeadline) {
+					t.Fatalf("delayed renewal replaced refreshed availability: %v, %v", scheduler.nativeClaims[id].availabilityDeadline, err)
+				}
 			case "renew":
 				_, err = scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id], 0)
 				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
