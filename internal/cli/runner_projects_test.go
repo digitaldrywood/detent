@@ -267,7 +267,7 @@ func TestRunnerCloudProjects(t *testing.T) {
 		name               string
 		externalWorkspaces bool
 		noInstallationAuth bool
-	}{{name: "machine only"}, {name: "external retained checkpoint", externalWorkspaces: true}, {name: "unavailable project credentials", noInstallationAuth: true}} {
+	}{{name: "machine only"}, {name: "external retained checkpoint", externalWorkspaces: true}, {name: "unavailable installation authentication", noInstallationAuth: true}} {
 		t.Run(test.name, func(t *testing.T) {
 			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_orders": "Orders", "prj_tools": "Tools", "prj_unconfigured": "Unconfigured"})
 			hub.repositories["prj_unconfigured"] = ""
@@ -340,14 +340,13 @@ func TestRunnerCloudProjects(t *testing.T) {
 					if err != nil {
 						return cfg, err
 					}
-					if test.noInstallationAuth {
-						cfg.GitHubToken = ""
-					}
 					return resolveRunnerProjects(t.Context(), cfg)
 				}
+				ghCalls := 0
 				opts.ghAuthToken = func(context.Context) (string, error) {
+					ghCalls++
 					if test.noInstallationAuth {
-						t.Fatal("runner startup requested unrelated project credentials")
+						return "", errors.New("not logged in")
 					}
 					return "configured-token", nil
 				}
@@ -360,6 +359,13 @@ func TestRunnerCloudProjects(t *testing.T) {
 				boot, err := resolveBootConfigWithRuntimeDeps(t.Context(), path, "", runtimeFlags{}, opts, bootRuntimeDeps(opts), true)
 				if err != nil {
 					t.Fatal(err)
+				}
+				wantToken := "configured-token"
+				if test.noInstallationAuth {
+					wantToken = ""
+				}
+				if ghCalls != 1 || boot.Runtime.GitHubToken.Value != wantToken {
+					t.Fatalf("startup authentication: resolver calls=%d, token present=%v", ghCalls, boot.Runtime.GitHubToken.Value != "")
 				}
 				cfg := boot.Global
 				if err := scheduler.SetNativeProjects("org_example", nativeProjectsFromConfig(cfg.Client.NativeProjects), nil); err != nil {

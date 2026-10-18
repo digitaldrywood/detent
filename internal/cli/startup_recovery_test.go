@@ -226,14 +226,14 @@ func TestRuntimeUpdaterReleaseDiscoveryForEnrolledRunner(t *testing.T) {
 			cfg := BootConfig{Global: globalconfig.Config{Client: globalconfig.HubClient{URL: "https://hub.example.test"}}}
 			if tt.deferred {
 				cfg.Global.GitHubToken = "gh"
+				opts := defaultOptions()
+				opts.lookupEnv = mapLookup(nil)
+				opts.ghAuthToken = func(context.Context) (string, error) { return "configured-token", nil }
 				var err error
 				cfg.Runtime, err = resolveRuntimeSettings(t.Context(), runtimeInput{
 					Config: &cfg.Global, DeferProjectValidation: true,
 					Flags: runtimeFlags{Port: runtimeIntFlag{Set: true}},
-				}, runtimeDeps{
-					lookupEnv:   mapLookup(nil),
-					ghAuthToken: func(context.Context) (string, error) { return "configured-token", nil },
-				})
+				}, bootRuntimeDeps(opts))
 				if err != nil {
 					t.Fatal(err)
 				}
