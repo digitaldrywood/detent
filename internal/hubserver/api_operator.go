@@ -50,7 +50,7 @@ type mutationResponse struct {
 func (s *Service) changeWorkItemWorkflow(c echo.Context) error {
 	id, err := apiWorkItemID(c)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	var request workflowMutationRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
@@ -58,7 +58,7 @@ func (s *Service) changeWorkItemWorkflow(c echo.Context) error {
 	}
 	repositoryID, err := s.database.workItemRepositoryID(c.Request().Context(), id)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	item, err := s.ChangeWorkflowState(c.Request().Context(), WorkflowStateChange{
 		IssueID:         int64(id),
@@ -79,7 +79,7 @@ func (s *Service) changeWorkItemWorkflow(c echo.Context) error {
 func (s *Service) changeWorkItemDependency(c echo.Context) error {
 	id, err := apiWorkItemID(c)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	var request dependencyMutationRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
@@ -103,7 +103,7 @@ func (s *Service) changeWorkItemDependency(c echo.Context) error {
 func (s *Service) changeWorkItemPriority(c echo.Context) error {
 	id, err := apiWorkItemID(c)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	var request priorityMutationRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
@@ -163,7 +163,7 @@ func (s *Service) workItemPriorityCommand(ctx context.Context, id tracker.WorkIt
 func (s *Service) changeWorkItemOrder(c echo.Context) error {
 	id, err := apiWorkItemID(c)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	var request orderMutationRequest
 	if err := decodeAPIJSON(c, &request); err != nil {

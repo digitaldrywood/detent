@@ -68,15 +68,15 @@ func nativeRejection(err error, category, field string) error {
 	if !errors.As(err, &failure) || failure.Code != "invalid_request" || !rejection.Valid() {
 		return err
 	}
-	return &nativeError{Code: failure.Code, Message: "The requested operation is unavailable", status: failure.status, Details: map[string]any{"rejection": rejection}}
+	return &nativeError{Code: failure.Code, Message: "Publication rejected: " + category + " (" + field + ")", status: failure.status, Details: map[string]any{"rejection": rejection}, publicMessage: true}
 }
 
 func nativeNotFound() error {
-	return &nativeError{Code: "not_found", Message: "Resource was not found", status: http.StatusNotFound}
+	return &nativeError{Code: "not_found", Message: "Resource was not found", status: http.StatusNotFound, publicMessage: true}
 }
 
 func nativeConflict(revision tracker.Revision) error {
-	return &nativeError{Code: "revision_conflict", Message: "Resource has changed", CurrentRevision: revision, status: http.StatusConflict}
+	return &nativeError{Code: "revision_conflict", Message: "Resource has changed", CurrentRevision: revision, status: http.StatusConflict, publicMessage: true}
 }
 
 // isNativeNotFound reports whether err is the opaque native not-found error.
@@ -98,17 +98,18 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 	}
 	var refusal *apikey.Refusal
 	if errors.As(err, &refusal) {
-		return c.JSON(http.StatusForbidden, refusal)
+		return s.refusedAPIError(c, http.StatusForbidden, refusal.Code, refusal.Message, refusal)
 	}
 	if errors.Is(err, operatortool.ErrAccessDenied) {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: err.Error()})
+		message := operatortool.ErrAccessDenied.Error()
+		return s.refusedAPIError(c, http.StatusForbidden, "access_denied", message, apiErrorResponse{Code: "access_denied", Message: message})
 	}
 	if errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, auth.ErrInvalidSession) {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: "Access is no longer available"})
+		return s.refusedAPIError(c, http.StatusForbidden, "access_denied", "Access is no longer available", apiErrorResponse{Code: "access_denied", Message: "Access is no longer available"})
 	}
 	var limit *hostedLimitError
 	if errors.As(err, &limit) {
-		return c.JSON(http.StatusTooManyRequests, struct {
+		return s.refusedAPIError(c, http.StatusTooManyRequests, "allowance_exhausted", limit.Error(), struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
 			*hostedLimitError
@@ -116,29 +117,33 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 	}
 	var failure *nativeError
 	if errors.As(err, &failure) {
+		message := failure.Message
+		if failure.status >= http.StatusBadRequest && failure.status < http.StatusInternalServerError && !failure.publicMessage && failure.Code != "checkout_unavailable" {
+			message = http.StatusText(failure.status) + ": " + strings.ReplaceAll(failure.Code, "_", " ")
+		}
 		if s.config.Hosted != nil {
-			if failure.Code == "checkout_unavailable" || failure.publicMessage {
-				return c.JSON(failure.status, apiErrorResponse{Code: failure.Code, Message: failure.Message})
+			if failure.status >= http.StatusInternalServerError && failure.Code != "checkout_unavailable" && !failure.publicMessage {
+				message = "The requested operation is unavailable"
 			}
 			if len(failure.Details) > 0 {
-				return c.JSON(failure.status, &nativeError{Code: failure.Code, Message: "The requested operation is unavailable", Details: failure.Details, status: failure.status})
+				return s.refusedAPIError(c, failure.status, failure.Code, message, &nativeError{Code: failure.Code, Message: message, Details: failure.Details, status: failure.status})
 			}
-			return c.JSON(failure.status, apiErrorResponse{Code: failure.Code, Message: "The requested operation is unavailable"})
+			return s.refusedAPIError(c, failure.status, failure.Code, message, apiErrorResponse{Code: failure.Code, Message: message})
 		}
-		return c.JSON(failure.status, failure)
+		return s.refusedAPIError(c, failure.status, failure.Code, message, failure)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if errors.Is(err, tracker.ErrInvalidClaimRequest) || errors.Is(err, tracker.ErrInvalidLeaseRequest) || errors.Is(err, tracker.ErrInvalidWorkEvent) || errors.Is(err, tracker.ErrInvalidCandidateQuery) {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	if errors.Is(err, tracker.ErrLeaseConflict) || errors.Is(err, tracker.ErrStaleFencingToken) || errors.Is(err, tracker.ErrLeaseNotFound) || errors.Is(err, tracker.ErrMachineNotFound) || errors.Is(err, tracker.ErrWorkItemNotFound) || errors.Is(err, ErrNoClaimableWork) {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	var request *operatortool.RequestError
 	if errors.As(err, &request) {
-		return c.JSON(http.StatusUnprocessableEntity, request)
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, request.Code, request.Message, request)
 	}
 	return s.internalAPIError(c, "native_operation_failed", "Native operation could not be completed", err)
 }
