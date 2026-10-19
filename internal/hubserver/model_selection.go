@@ -10,6 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -37,6 +38,13 @@ func (s *Service) getCloudModelSelection(c echo.Context) error {
 }
 
 func (s *Service) organizationModelSelectionScope(c echo.Context) (nativeScope, error) {
+	if s.config.Hosted == nil {
+		credential, ok := c.Get("hub_api_credential").(apiCredential)
+		if !ok || credential.NativeOnly || credential.Runner.RunnerID != "" {
+			return nativeScope{}, operatortool.ErrAccessDenied
+		}
+		return nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, nil
+	}
 	credential, _, err := s.hostedCredential(c.Request().Context(), c)
 	return nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}, err
 }
