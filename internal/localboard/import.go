@@ -34,6 +34,7 @@ type Record struct {
 	Number       int       `json:"number"`
 	Repository   string    `json:"repository,omitempty"`
 	Title        string    `json:"title"`
+	Priority     *int      `json:"priority,omitempty"`
 	Body         string    `json:"body"`
 	State        string    `json:"state"`
 	Author       string    `json:"author"`
@@ -115,7 +116,7 @@ func Read(ctx context.Context, path, project, kind, store string, terminal []str
 	if has["github_issue_number"] {
 		githubColumn = "github_issue_number"
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id, identifier, title, description, state, author_id, created_at, updated_at, metadata_json, `+numberColumn+`, `+githubColumn+` FROM detent_work_items WHERE project_id = ? ORDER BY id`, project)
+	rows, err := tx.QueryContext(ctx, `SELECT id, identifier, title, description, priority, state, author_id, created_at, updated_at, metadata_json, `+numberColumn+`, `+githubColumn+` FROM detent_work_items WHERE project_id = ? ORDER BY id`, project)
 	if err != nil {
 		return nil, errors.New("unsupported local board schema")
 	}
@@ -126,7 +127,7 @@ func Read(ctx context.Context, path, project, kind, store string, terminal []str
 		record := Record{Kind: kind}
 		var identifier, created, updated, metadata string
 		var githubNumber int
-		if err := rows.Scan(&record.SourceID, &identifier, &record.Title, &record.Body, &record.State, &record.Author, &created, &updated, &metadata, &record.Number, &githubNumber); err != nil {
+		if err := rows.Scan(&record.SourceID, &identifier, &record.Title, &record.Body, &record.Priority, &record.State, &record.Author, &created, &updated, &metadata, &record.Number, &githubNumber); err != nil {
 			return nil, errors.New("read local board item")
 		}
 		record.Key = SourceKey(store, project, kind, record.SourceID)
