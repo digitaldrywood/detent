@@ -798,8 +798,18 @@ func TestNativePolicySubmissionConsistency(t *testing.T) {
 
 func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 	t.Parallel()
-	for _, approved := range []bool{false, true} {
-		t.Run(fmt.Sprintf("approved=%t", approved), func(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		approved bool
+		large    bool
+	}{
+		{name: "no approval"},
+		{name: "approved", approved: true},
+		{name: "no approval with large observation", large: true},
+		{name: "approved with large observation", approved: true, large: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			approved := test.approved
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "policy-read")
 			scope := string(f.project.OrganizationID) + "/" + string(f.project.ID)
@@ -812,6 +822,20 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 			}
 			candidate := descriptor
 			candidate.Gates.AutoPromote = true
+			if test.large {
+				workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{
+					ConfigPath: "detent.yaml", HasConfig: true,
+					Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\ngate:\n  run: true\n  required_status_checks: []\n"),
+					WorkflowPath: "WORKFLOW.md", Workflow: []byte(strings.Repeat("Implement the assigned issue.\n", operatortool.MaxResultBytes/28)),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				candidate, err = config.ResolvePolicy(workflow)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			candidate = candidate.WithID()
 			worker := f.worker(t, "policy-reader")
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", worker, policy.Observation{Descriptor: candidate}), http.StatusNoContent)
@@ -865,6 +889,16 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 				}
 				if err := json.Unmarshal(reply.Result, &result); err != nil {
 					t.Fatal(err)
+				}
+				if test.large {
+					var data projectPolicyRead
+					if result.IsError || json.Unmarshal(result.Structured.Data, &data) != nil || !data.ObservedPolicyDetailsOmitted || len(data.ObservedPolicies) != 1 || data.ObservedPolicies[0].Policy.ID != candidate.ID || len(result.Structured.Data) > operatortool.MaxResultBytes {
+						t.Fatalf("%s large policy read failed: %s", transport, reply.Result)
+					}
+					if !reflect.DeepEqual(data.Policy, rest.Policy) || !reflect.DeepEqual(data.History, rest.History) {
+						t.Fatalf("%s large observation changed approval or history", transport)
+					}
+					continue
 				}
 				var data any
 				var expected any
