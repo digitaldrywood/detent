@@ -120,28 +120,10 @@ export function keySetupPrompt(
   return `Use a Detent key from Settings → API keys & MCP. A key never grants more than its owner has. Store it privately as DETENT_API_KEY; never paste it into chat, logs or source files. ${direct ? `Use Authorization: Bearer with that private environment variable at ${origin}/api/v2. Read GET /api/v2/organizations, then GET /api/v2/organizations/ORG_ID/projects to choose a granted organization and project before using documented routes.` : `Configure one Streamable HTTP MCP server at ${endpoint}, with bearer_token_env_var = "DETENT_API_KEY". Initialize MCP, retain Mcp-Session-Id and protocol version, send notifications/initialized and discover every tools/list page. Call connection_info and confirm key.kind is ${kind ? `"${kind}"` : '"personal" or "service"'}${kind ? ", matching the key just created" : " and explain who it acts as"} before reporting success. Use organization_list and list_projects to choose granted organization_id and project_id selectors for calls.`} Check the returned organization and project before reporting success. Current membership, project grants, org policy, permission, expiry and revocation apply on every call. Your client's permission settings control sensitive-operation confirmation. This prompt contains no secret.`;
 }
 
-function CreatedKeySteps({
-  created,
-  endpoint,
-}: {
-  readonly created: CreatedAccessKey;
-  readonly endpoint: string;
-}) {
+function useKeyOwnerName(apiKey: AccessKey) {
   const api = useAccountApi();
-  const account = useAccountBootstrap();
-  const { id, kind, owner, owner_email: ownerEmail } = created;
-  const [revealed, setRevealed] = React.useState(false);
-  const [keyCopied, setKeyCopied] = React.useState(false);
-  const [copied, setCopied] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
-  const [transport, setTransport] = React.useState("mcp");
-  const [fullPrompt, setFullPrompt] = React.useState(false);
-  const [firstUse, setFirstUse] = React.useState(created.last_used_at ?? null);
+  const { kind, owner, owner_email: ownerEmail } = apiKey;
   const [ownerName, setOwnerName] = React.useState(ownerEmail || owner);
-  useRelativeTimeTick(60_000);
-  const prompt = keySetupPrompt(endpoint, transport === "rest", kind);
-  const promptLabel = `${transport === "mcp" ? "MCP" : "REST API"} setup prompt`;
-
   React.useEffect(() => {
     if (kind !== "personal") return;
     let current = true;
@@ -158,6 +140,152 @@ function CreatedKeySteps({
       current = false;
     };
   }, [api, kind, owner, ownerEmail]);
+  return ownerName;
+}
+
+function SetupTransport({
+  value,
+  onChange,
+}: {
+  readonly value: string;
+  readonly onChange: (value: string) => void;
+}) {
+  return (
+    <ToggleGroup
+      aria-label="Setup connection"
+      value={[value]}
+      onValueChange={(values) => {
+        if (values[0]) onChange(values[0]);
+      }}
+    >
+      <Toggle value="mcp">MCP</Toggle>
+      <Toggle value="rest">REST API</Toggle>
+    </ToggleGroup>
+  );
+}
+
+function ConnectKeySteps({
+  apiKey,
+  endpoint,
+  onRotate,
+}: {
+  readonly apiKey: AccessKey;
+  readonly endpoint: string;
+  readonly onRotate: () => void;
+}) {
+  const account = useAccountBootstrap();
+  const ownerName = useKeyOwnerName(apiKey);
+  const [transport, setTransport] = React.useState("mcp");
+  const promptLabel = `${transport === "mcp" ? "MCP" : "REST"} setup prompt`;
+  const prompt = keySetupPrompt(endpoint, transport === "rest", apiKey.kind);
+  return (
+    <>
+      <DialogPanel>
+        <ol className="space-y-5">
+          <li className="flex gap-3">
+            <span className="font-semibold text-muted-foreground">1</span>
+            <div className="min-w-0 flex-1 space-y-2">
+              <h3 className="text-sm font-medium">Use the key you saved</h3>
+              <p className="text-sm text-muted-foreground">
+                The token was shown once, when the key was created. Your agent
+                reads it from DETENT_API_KEY. Lost it?{" "}
+                {apiKey.kind === "personal" ? (
+                  <Button size="sm" variant="link" onClick={onRotate}>
+                    Rotate this key
+                  </Button>
+                ) : (
+                  "Create a replacement key."
+                )}
+              </p>
+            </div>
+          </li>
+          <li className="flex gap-3">
+            <span className="font-semibold text-muted-foreground">2</span>
+            <div className="min-w-0 flex-1 space-y-2">
+              <h3 className="text-sm font-medium">
+                Give your agent the setup prompt
+              </h3>
+              <SetupTransport value={transport} onChange={setTransport} />
+              <pre
+                aria-label={`${promptLabel} preview`}
+                tabIndex={0}
+                className="max-h-48 overflow-y-auto rounded-lg border border-border bg-background p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]"
+              >
+                {prompt}
+              </pre>
+              <SetupPromptControl
+                key={transport}
+                label={promptLabel}
+                value={prompt}
+              />
+            </div>
+          </li>
+          <li className="flex gap-3">
+            <span
+              className={
+                apiKey.last_used_at
+                  ? "font-semibold text-success-foreground"
+                  : "font-semibold text-muted-foreground"
+              }
+            >
+              3
+            </span>
+            <div className="min-w-0 flex-1 space-y-2">
+              <h3 className="text-sm font-medium">Check it connected</h3>
+              <p
+                role="status"
+                className="flex items-center gap-2 text-sm break-words text-muted-foreground"
+              >
+                {apiKey.last_used_at ? (
+                  <>
+                    <span
+                      aria-hidden="true"
+                      className="size-1.5 shrink-0 rounded-full bg-success-foreground"
+                    />
+                    <span>
+                      Last call {formatRelativeTimeLabel(apiKey.last_used_at)} ·
+                      acting as{" "}
+                      {apiKey.kind === "personal"
+                        ? ownerName
+                        : `${account?.organization.name} (service)`}
+                    </span>
+                  </>
+                ) : (
+                  "Waiting for the first call…"
+                )}
+              </p>
+            </div>
+          </li>
+        </ol>
+      </DialogPanel>
+      <DialogFooter>
+        <DialogClose render={<Button>Done</Button>} />
+      </DialogFooter>
+    </>
+  );
+}
+
+function CreatedKeySteps({
+  created,
+  endpoint,
+}: {
+  readonly created: CreatedAccessKey;
+  readonly endpoint: string;
+}) {
+  const api = useAccountApi();
+  const account = useAccountBootstrap();
+  const { id, kind } = created;
+  const [revealed, setRevealed] = React.useState(false);
+  const [keyCopied, setKeyCopied] = React.useState(false);
+  const [copied, setCopied] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [transport, setTransport] = React.useState("mcp");
+  const [fullPrompt, setFullPrompt] = React.useState(false);
+  const [firstUse, setFirstUse] = React.useState(created.last_used_at ?? null);
+  const ownerName = useKeyOwnerName(created);
+  useRelativeTimeTick(60_000);
+  const prompt = keySetupPrompt(endpoint, transport === "rest", kind);
+  const promptLabel = `${transport === "mcp" ? "MCP" : "REST API"} setup prompt`;
 
   React.useEffect(() => {
     let current = true;
@@ -404,6 +532,8 @@ export function APIKeysMCPSettings() {
   >([]);
   const [personalHistory, setPersonalHistory] = React.useState(false);
   const [serviceHistory, setServiceHistory] = React.useState(false);
+  const [transport, setTransport] = React.useState("mcp");
+  const [connectId, setConnectId] = React.useState<string | null>(null);
   const currentApi = React.useRef(api);
   currentApi.current = api;
   const list = React.useCallback(async () => {
@@ -423,6 +553,7 @@ export function APIKeysMCPSettings() {
     setOpen(false);
     setCreated(null);
     setAction(null);
+    setConnectId(null);
     Promise.all([list(), api.keyContext()])
       .then(([listed, choices]) => {
         if (!current) return;
@@ -445,6 +576,11 @@ export function APIKeysMCPSettings() {
   const inactive = (key: AccessKey) =>
     Boolean(key.revoked_at) ||
     Boolean(key.expires_at && new Date(key.expires_at).getTime() <= now);
+
+  const connectKey = [...keys, ...(canManage ? serviceKeys : [])].find(
+    (key) => key.id === connectId && !inactive(key),
+  );
+  const promptLabel = `${transport === "mcp" ? "MCP" : "REST"} setup prompt`;
 
   function openCreate() {
     setName("");
@@ -642,6 +778,15 @@ export function APIKeysMCPSettings() {
               control={
                 !inactive(key) && (
                   <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={!context || busy}
+                      aria-label={`Connect ${key.name}`}
+                      onClick={() => setConnectId(key.id)}
+                    >
+                      Connect
+                    </Button>
                     {key.kind === "personal" && (
                       <Button
                         size="xs"
@@ -702,66 +847,87 @@ export function APIKeysMCPSettings() {
             </Button>
           }
         >
-          <SettingsRow
-            title="API and MCP access"
-            description={`Connect Claude, Codex, scripts and CI to ${account?.organization.name ?? "your organization"}. A key never grants more than its owner has.`}
-          />
+          <p className="px-3 text-sm text-muted-foreground sm:px-4">
+            Connect Claude, Codex, scripts and CI to{" "}
+            {account?.organization.name ?? "your organization"}. A key never grants
+            more than its owner has.
+          </p>
         </SettingsSection>
-        <SettingsSection title="Which key do I need?" variant="plain">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <SettingsSection title="Personal key">
-              <SettingsRow
-                title="Acts as you"
-                description="For your own agents (Claude, Codex, CLI). Edits are recorded as you, so saving an issue confirms its contract. Stops working if you leave the org."
-              />
-            </SettingsSection>
-            <SettingsSection title="Service key">
-              <SettingsRow
-                title="Acts as the organization"
-                description="For shared automation (CI, bots, a team server). Edits are recorded as an integration and never count as a person. Owners/admins only. Keeps working when its creator leaves."
-              />
-            </SettingsSection>
+        <SettingsSection
+          title="Connect an agent"
+          headerAction={
+            <SetupTransport value={transport} onChange={setTransport} />
+          }
+        >
+          <div className="space-y-3 p-3 sm:p-4">
+            <p className="text-sm text-muted-foreground">
+              One endpoint for every key. The prompt reads DETENT_API_KEY and
+              holds no secret.
+            </p>
+            {context && (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <ConnectionValue
+                    label="MCP endpoint"
+                    value={context.mcp_endpoint}
+                    inline
+                  />
+                  <SetupPromptControl
+                    key={transport}
+                    label={promptLabel}
+                    value={keySetupPrompt(context.mcp_endpoint, transport === "rest")}
+                    inlinePreview
+                  />
+                </div>
+                <p className="text-xs break-words text-muted-foreground">
+                  Claude Code:{" "}
+                  <code className="font-mono [overflow-wrap:anywhere]">{`claude mcp add --transport http detent ${context.mcp_endpoint} --header 'Authorization: Bearer \${DETENT_API_KEY}'`}</code>
+                </p>
+              </>
+            )}
           </div>
         </SettingsSection>
         {error && <ControlError message={error} />}
         {renderKeys("personal", keys)}
         {canManage && renderKeys("service", serviceKeys)}
-        <SettingsSection title="Connect">
-          <SettingsRow
-            title="One connection for every key"
-            description="The same endpoint for every key. The key decides who you are and what you reach."
-          />
-          {context && (
+        {canManage && <OrganizationKeyControls />}
+      </SettingsPageContainer>
+      <Dialog
+        open={Boolean(connectKey)}
+        onOpenChange={(value) => {
+          if (!value) setConnectId(null);
+        }}
+      >
+        <DialogPopup>
+          {connectKey && context && (
             <>
-              <ConnectionValue
-                label="MCP endpoint"
-                value={context.mcp_endpoint}
-              />
-              <SettingsRow
-                title="MCP setup prompt"
-                control={
-                  <SetupPromptControl
-                    label="MCP setup prompt"
-                    value={keySetupPrompt(context.mcp_endpoint)}
-                    preview
-                  />
-                }
-              />
-              <SettingsRow
-                title="Direct API setup prompt"
-                control={
-                  <SetupPromptControl
-                    label="Direct API setup prompt"
-                    value={keySetupPrompt(context.mcp_endpoint, true)}
-                    preview
-                  />
-                }
+              <DialogHeader>
+                <DialogTitle>Connect {connectKey.name}</DialogTitle>
+                <div>
+                  <Badge variant="outline">
+                    {connectKey.kind === "personal"
+                      ? "Personal · acts as you"
+                      : "Service · acts as the organization"}
+                  </Badge>
+                </div>
+                <DialogDescription className="sr-only">
+                  Three steps to connect your agent using the key you saved.
+                </DialogDescription>
+              </DialogHeader>
+              <ConnectKeySteps
+                key={connectKey.id}
+                apiKey={connectKey}
+                endpoint={context.mcp_endpoint}
+                onRotate={() => {
+                  setConnectId(null);
+                  setDialogError(null);
+                  setAction({ key: connectKey, rotate: true });
+                }}
               />
             </>
           )}
-        </SettingsSection>
-        {canManage && <OrganizationKeyControls />}
-      </SettingsPageContainer>
+        </DialogPopup>
+      </Dialog>
       <Dialog
         open={open}
         onOpenChange={(value) => {
