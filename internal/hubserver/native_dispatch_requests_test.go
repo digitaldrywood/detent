@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -164,6 +165,8 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		expiredLease   bool
 		reviewOutcome  string
 		priorFindings  bool
+		automatedStage string
+		reviewContent  string
 		publication    string
 		terminal       bool
 		readAdmission  bool
@@ -239,6 +242,10 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "published version resumes implementation for actionable findings", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "changes_requested"},
 		{name: "published version retries implementation after failed validation", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "failed_check", wantCandidate: true},
 		{name: "completed rework does not repeat existing findings on the same head", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "changes_requested", priorFindings: true, readAdmission: true, exclusion: "validator_rework"},
+		{name: "completed rework ignores repeated implementation findings", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "changes_requested", priorFindings: true, automatedStage: "implementation", readAdmission: true, exclusion: "validator_rework"},
+		{name: "completed rework ignores repeated validator findings", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "changes_requested", priorFindings: true, automatedStage: "validator", readAdmission: true, exclusion: "validator_rework"},
+		{name: "completed rework ignores repeated unverified criteria", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "changes_requested", priorFindings: true, automatedStage: "validator", reviewContent: "criteria", readAdmission: true, exclusion: "validator_rework"},
+		{name: "completed rework ignores repeated summary only verdicts", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "changes_requested", priorFindings: true, automatedStage: "implementation", reviewContent: "summary", readAdmission: true, exclusion: "validator_rework"},
 		{name: "completed rework does not repeat an existing failed check", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "failed_check", priorFindings: true, readAdmission: true, exclusion: "validator_rework"},
 		{name: "published version review preserves active claim owner", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "active"},
 		{name: "aged published current version still waits for review", finalMessage: completeReport, retainedSource: true, publication: "owned", aged: true, readAdmission: true, exclusion: "automated_review_missing"},
@@ -319,6 +326,36 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			}
 			var published tracker.ChangeVersion
 			var changePath string
+			recordReview := func(key, decision, body string, session int64) {
+				t.Helper()
+				if test.automatedStage == "" {
+					request := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: key}, Decision: decision, Body: body}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/reviews", f.token, request), http.StatusOK)
+					return
+				}
+				result := &gate.ValidatorResult{VersionID: published.ID, SessionID: session, Submitted: true, Verdict: "rework", Score: .5, Summary: body, Repository: published.Repository, BaseSHA: published.BaseSHA, HeadSHA: published.HeadSHA, Findings: []gate.Finding{{Severity: "p1", Path: "source.go", Line: 10, Body: body}}}
+				result.Commands = []gate.CommandResult{{ReceiptID: fmt.Sprintf("timing_%d", session), Command: "go test ./internal/example", HeadSHA: published.HeadSHA}}
+				if test.reviewContent != "" {
+					result.Findings = nil
+					if test.reviewContent == "criteria" {
+						result.NotVerified = []string{body}
+					}
+				}
+				review := tracker.ChangeReview{ID: newNativeID("review"), VersionID: published.ID, Decision: decision, Body: fmt.Sprintf("Session %d: %s", session, body), Actor: tracker.Actor{Kind: "runner", PrincipalID: "review-worker"}, CreatedAt: f.now}
+				if test.automatedStage == "implementation" {
+					review.ImplementationReview = result
+				} else {
+					review.Validator = result
+				}
+				raw, err := marshalNative(review)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review',?)", published.ChangeID, published.ID, raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.reviewOutcome != "" {
 				states := append(append([]tracker.NativeState(nil), f.project.States...), tracker.NativeState{Name: "Fixing", Dispatchable: true, Transitions: []string{"Merging", "Blocked"}}, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}})
 				raw, err := marshalNative(states)
@@ -397,8 +434,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			}
 			if test.priorFindings {
 				if test.reviewOutcome == "changes_requested" {
-					request := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "existing-findings"}, Decision: "changes_requested", Body: "Resolve the existing findings"}
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/reviews", f.token, request), http.StatusOK)
+					recordReview("existing-findings", "changes_requested", "Resolve the existing findings", 41)
 				}
 				f.advance(time.Second)
 				started := f.now
@@ -594,12 +630,18 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusConflict)
 			}
 			if test.reviewOutcome != "" {
+				if test.automatedStage != "" {
+					recordReview("repeated-findings", "changes_requested", "Resolve the existing findings", 42)
+					if f.candidate(t) {
+						t.Fatal("a new automated session repeating existing findings admitted unchanged rework")
+					}
+					f.advance(time.Second)
+				}
 				decision := "approved"
 				if test.reviewOutcome == "changes_requested" {
 					decision = "changes_requested"
 				}
-				request := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "review-after-wait"}, Decision: decision, Body: "Review current source"}
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/reviews", f.token, request), http.StatusOK)
+				recordReview("review-after-wait", decision, "Review current source", 43)
 				want := "Fixing"
 				if current := f.reload(t); current.State != want {
 					t.Fatalf("review result lane=%s want=%s", current.State, want)
@@ -607,7 +649,9 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				if got := f.candidate(t); got != (decision == "changes_requested" || test.reviewOutcome == "failed_check" && !test.priorFindings) {
 					t.Fatalf("review result candidate=%t lane=%s", got, want)
 				}
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/reviews", f.token, request), http.StatusOK)
+				if test.automatedStage == "" {
+					recordReview("review-after-wait", decision, "Review current source", 43)
+				}
 				if current := f.reload(t); current.State != want {
 					t.Fatal("review replay changed lane")
 				}

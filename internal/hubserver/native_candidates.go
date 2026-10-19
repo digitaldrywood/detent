@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -420,7 +421,7 @@ func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.Wo
 			}
 		}
 		for _, finding := range detail.Reviews {
-			if finding.VersionID == finalization.VersionID && finding.Decision == "changes_requested" && !finding.CreatedAt.Before(started) {
+			if finding.VersionID == finalization.VersionID && finding.Decision == "changes_requested" && !finding.CreatedAt.Before(started) && !nativeReviewRepeatsFindings(finding, detail.Reviews, started) {
 				return tracker.NativeAnsweredExclusion{}, nil
 			}
 		}
@@ -432,4 +433,46 @@ func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.Wo
 		return tracker.NativeAnsweredExclusion{Kind: string(gate.ReasonValidatorRework), AttemptID: attempt}, nil
 	}
 	return tracker.NativeAnsweredExclusion{Kind: string(gate.ReasonAutomatedReviewMissing), AttemptID: attempt}, nil
+}
+
+func nativeReviewRepeatsFindings(finding tracker.ChangeReview, reviews []tracker.ChangeReview, started time.Time) bool {
+	result := finding.ImplementationReview
+	implementation := result != nil
+	if result == nil {
+		result = finding.Validator
+	}
+	if finding.Actor.Kind != "runner" || result == nil {
+		return false
+	}
+	var previous *gate.ValidatorResult
+	var decision string
+	for _, review := range reviews {
+		if review.VersionID != finding.VersionID || review.Actor.Kind != "runner" || !review.CreatedAt.Before(started) {
+			continue
+		}
+		candidate := review.Validator
+		if implementation {
+			candidate = review.ImplementationReview
+		}
+		if candidate != nil {
+			previous, decision = candidate, review.Decision
+		}
+	}
+	if previous == nil || decision != "changes_requested" || result.Verdict != previous.Verdict {
+		return false
+	}
+	for _, item := range result.Findings {
+		if !slices.Contains(previous.Findings, item) {
+			return false
+		}
+	}
+	for _, criterion := range result.NotVerified {
+		if !slices.Contains(previous.NotVerified, criterion) {
+			return false
+		}
+	}
+	if len(result.Findings) == 0 && len(result.NotVerified) == 0 {
+		return result.Summary == previous.Summary && result.Score == previous.Score
+	}
+	return true
 }
