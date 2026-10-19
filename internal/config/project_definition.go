@@ -493,6 +493,9 @@ func parseSchemaConfig(raw []byte, path string) (*yaml.Node, error) {
 	if root.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("parse %s: project config must be a YAML mapping", displayDefinitionPath(path, "detent.yaml"))
 	}
+	if err := validateRetiredWorkflowKeys(root); err != nil {
+		return nil, err
+	}
 	index := mappingKeyIndex(root, "schema")
 	if index < 0 {
 		return nil, fmt.Errorf("parse %s: schema is required", displayDefinitionPath(path, "detent.yaml"))

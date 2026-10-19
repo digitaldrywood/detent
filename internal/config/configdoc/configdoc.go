@@ -289,8 +289,7 @@ func expandable(typ reflect.Type) bool {
 		path == "github.com/digitaldrywood/detent/internal/activehours" ||
 		path == "github.com/digitaldrywood/detent/internal/connector" ||
 		path == "github.com/digitaldrywood/detent/internal/gate" ||
-		path == "github.com/digitaldrywood/detent/internal/intake" ||
-		path == "github.com/digitaldrywood/detent/internal/retro" ||
+		path == "github.com/digitaldrywood/detent/internal/issuefiling" ||
 		path == "github.com/digitaldrywood/detent/internal/scheduleowner" ||
 		path == "github.com/digitaldrywood/detent/internal/selector"
 }
