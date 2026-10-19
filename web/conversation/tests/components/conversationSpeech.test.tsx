@@ -256,7 +256,8 @@ describe("hands-free conversation", () => {
   }
 
   it("listens, sends one local transcript, speaks the reply and listens for the next message", async () => {
-    const onVoiceSend = vi.fn();
+    let finishSend!: () => void;
+    const onVoiceSend = vi.fn().mockReturnValueOnce(new Promise<void>((resolve) => { finishSend = resolve; }));
     const view = render(<Harness data={detail()} value="" onVoiceSend={onVoiceSend} />);
     expect(getUserMedia).not.toHaveBeenCalled();
     await startHandsFree();
@@ -266,6 +267,15 @@ describe("hands-free conversation", () => {
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "Start voice input" }).disabled).toBe(true);
     await finishPhrase("Please review this");
     expect(onVoiceSend).toHaveBeenCalledExactlyOnceWith("Please review this");
+    expect(screen.getByText("Waiting for reply…")).toBeTruthy();
+    const transcriptions = workers[0]!.postMessage.mock.calls.length;
+    await act(async () => {
+      callbacks.onSpeechRealStart();
+      callbacks.onSpeechEnd(new Float32Array(16000).fill(0.1));
+    });
+    expect(workers[0]!.postMessage).toHaveBeenCalledTimes(transcriptions);
+    expect(screen.getByText("Waiting for reply…")).toBeTruthy();
+    await act(async () => { finishSend(); });
     view.rerender(<Harness data={reply("Here is the answer.", false)} value="" onVoiceSend={onVoiceSend} />);
     expect(said()).toEqual(["Here is the answer."]);
     expect(screen.getByText("Speaking")).toBeTruthy();
@@ -293,6 +303,19 @@ describe("hands-free conversation", () => {
     expect(onVoiceSend).toHaveBeenCalledExactlyOnceWith("Let me clarify");
     view.rerender(<Harness data={reply("Understood.", false, { id: "next", seq: 21 })} value="" onVoiceSend={onVoiceSend} />);
     expect(said().at(-1)).toBe("Understood.");
+  });
+
+  it("ends hands-free and releases capture when sending the transcript fails", async () => {
+    const onVoiceSend = vi.fn().mockRejectedValue(new Error("Send failed"));
+    render(<Harness data={detail()} value="" onVoiceSend={onVoiceSend} />);
+    await startHandsFree();
+    await finishPhrase("Please review this");
+    expect(screen.getByRole("alert").textContent).toContain("The voice message could not send");
+    expect(screen.queryByRole("button", { name: "End hands-free voice" })).toBeNull();
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(destroyVad).toHaveBeenCalledOnce();
+    expect(workers[0]!.terminate).toHaveBeenCalledOnce();
+    expect(voice.enabled).toBe(false);
   });
 
   it.each(["end", "hidden", "pagehide", "leave", "disabled", "blocked", "draft", "unmount"])("releases microphone, model and playback and ignores late transcription on %s", async (reason) => {

@@ -24,7 +24,7 @@ export class HandsFreeInput {
     onReady: () => void;
     onSpeechStart: () => void;
     onTranscribing: () => void;
-    onTranscript: (text: string) => void;
+    onTranscript: (text: string) => Promise<void> | void;
     onError: (message: string) => void;
   }) {}
 
@@ -74,9 +74,9 @@ export class HandsFreeInput {
     try {
       const text = await this.transcription.transcribe(audio);
       if (!this.active) return;
-      this.busy = false;
-      if (text) this.callbacks.onTranscript(text);
+      if (text) await this.callbacks.onTranscript(text);
       else this.callbacks.onReady();
+      this.busy = false;
     } catch {
       if (!this.active) return;
       this.dispose();

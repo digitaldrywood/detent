@@ -16,7 +16,6 @@ export function useHandsFreeConversation(options: {
   const [error, setError] = useState<string | null>(null);
   const input = useRef<HandsFreeInput | null>(null);
   const speaking = useRef(false);
-  const sending = useRef(false);
   const latest = useRef(options);
   latest.current = options;
   const supported = options.speech?.supported === true && options.onSend !== undefined && supportsHandsFreeInput();
@@ -46,9 +45,8 @@ export function useHandsFreeConversation(options: {
   }, [options.unavailable, supported, end]);
 
   useEffect(() => {
-    if (phase === "waiting" && !options.sending && !options.streaming) setPhase("listening");
     if (speaking.current && options.speech?.readingMessageId) options.speech.stop();
-  }, [phase, options.sending, options.streaming, options.speech]);
+  }, [options.speech]);
 
   const toggle = () => {
     if (input.current) { end(); return; }
@@ -69,21 +67,19 @@ export function useHandsFreeConversation(options: {
         speaking.current = false;
         setPhase("transcribing");
       },
-      onTranscript: (text) => {
+      onTranscript: async (text) => {
         if (input.current !== capture) return;
         const current = latest.current;
         if (current.unavailable) { end(); return; }
-        if (current.sending || sending.current) { setPhase("waiting"); return; }
-        sending.current = true;
         setPhase("waiting");
-        void Promise.resolve().then(() => {
-          if (input.current !== capture || latest.current.unavailable) return;
-          return latest.current.onSend?.(text);
-        }).catch(() => {
+        try {
+          await current.onSend?.(text);
+          if (input.current === capture) setPhase("listening");
+        } catch {
           if (input.current !== capture) return;
           end();
           setError("The voice message could not send. Type your message or start hands-free again.");
-        }).finally(() => { sending.current = false; });
+        }
       },
       onError: (message) => {
         if (input.current !== capture) return;
@@ -97,6 +93,6 @@ export function useHandsFreeConversation(options: {
 
   const status = phase === "idle" ? null : phase === "starting" ? "Preparing hands-free voice…" :
     phase === "transcribing" ? "Transcribing…" : options.speech?.readingMessageId ? "Speaking" :
-      speaking.current ? "Listening" : options.sending || options.streaming ? "Waiting for reply…" : "Listening";
+      speaking.current ? "Listening" : phase === "waiting" || options.sending || options.streaming ? "Waiting for reply…" : "Listening";
   return { active: phase !== "idle", supported, error, status, toggle, end };
 }
