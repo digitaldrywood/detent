@@ -13,11 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/activity"
-	"github.com/digitaldrywood/detent/internal/admission"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
@@ -27,12 +24,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/coordination"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/hub"
-	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
-	"github.com/digitaldrywood/detent/internal/publication"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
-	"github.com/digitaldrywood/detent/internal/retro"
-	"github.com/digitaldrywood/detent/internal/routine"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
@@ -164,9 +157,6 @@ type Dependencies struct {
 	Logger                    *slog.Logger
 	GitHubToken               string
 	RefreshGitHubToken        func(context.Context) (string, error)
-	IntakeDependencies        intake.Dependencies
-	RetroStore                store.RetroStore
-	RoutineStore              store.RoutineStore
 	AdmissionStore            store.AdmissionStore
 	ScheduleStore             coordination.Store
 	ScheduleOwner             string
@@ -190,17 +180,12 @@ type Project struct {
 	runner                    orchestrator.Runner
 	scheduler                 scheduler.Scheduler
 	schedulerFactory          schedulerFactory
-	intake                    *intake.Manager
-	retro                     *retro.Manager
-	routine                   *routine.Manager
-	admission                 *admission.Manager
 	scheduleOwner             *scheduleowner.Manager
 	issueCoordinator          *scheduleowner.IssueCoordinator
 	scheduleConfig            scheduleowner.Config
 	scheduleHealth            *schedulehealth.Monitor
 	scheduleFault             *scheduleFaultState
 	scheduleUpdates           chan struct{}
-	retroProduct              connector.Connector
 	events                    *hub.Hub[Event]
 	logger                    *slog.Logger
 	watcher                   WorkflowWatcherFactory
@@ -352,110 +337,11 @@ func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, e
 	}()
 	var orch *orchestrator.Orchestrator
 	var project *Project
-	laneOwner := func() *orchestrator.Orchestrator {
-		if project == nil {
-			return nil
-		}
-		return project.Orchestrator()
-	}
-	intakeDependencies := deps.IntakeDependencies
-	intakeDependencies.Root = intakeRoot(cfg.Project, workflow.Config)
-	intakeDependencies.ProjectID = string(id)
-	intakeDependencies.ScheduleRuns = scheduleHealth
-	if intakeDependencies.Logger == nil {
-		intakeDependencies.Logger = logger
-	}
-	projectIntake, err := intake.New(workflow.Config.Intake, coordinatedIntakeStore(projectConnector, issueCoordinator, scheduledLaneWriter(laneOwner, projectConnector, "intake")), intakeDependencies)
-	if err != nil {
-		return nil, fmt.Errorf("create project intake: %w", err)
-	}
 	releaseBuild, err := buildReleaseCoordinator(workflow.Config, projectConnector)
 	if err != nil {
 		return nil, err
 	}
 	releaseCoordinator := releaseBuild.coordinator
-	projectRetroStore, productRetroStore, retroProductConnector, err := buildRetroIssueStores(ctx, workflow.Config, projectConnector, connectorFactory)
-	if err != nil {
-		return nil, fmt.Errorf("create project retro: %w", err)
-	}
-	if projectRetroStore != nil {
-		projectRetroStore = intakeLaneStore{IssueStore: projectRetroStore, write: scheduledLaneWriter(laneOwner, projectConnector, "retro")}
-		productTracker := retroProductConnector
-		if productTracker == nil {
-			productTracker = projectConnector
-		}
-		productRetroStore = intakeLaneStore{IssueStore: productRetroStore, write: scheduledLaneWriter(laneOwner, productTracker, "retro")}
-	}
-	projectRetro, err := retro.New(retro.Settings{
-		ProjectID:     string(id),
-		Config:        workflow.Config.Retro,
-		ProjectIssues: projectRetroStore,
-		ProductIssues: productRetroStore,
-		Metrics:       deps.WorkflowMetrics,
-	}, deps.RetroStore, logger, nil)
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("create project retro: %w", err), closeConnector(retroProductConnector))
-	}
-	projectRoutine, err := routine.New(routine.Settings{
-		ProjectID:    string(id),
-		Definitions:  workflow.Config.Routines,
-		SearchStates: workflow.Config.KanbanStateNames(),
-		Runner:       deps.Runner,
-		Issues:       coordinatedRoutineIssueStore(projectConnector, issueCoordinator, scheduledLaneWriter(laneOwner, projectConnector, "routine")),
-		Metrics:      deps.WorkflowMetrics,
-		ScheduleRuns: scheduleHealth,
-	}, deps.RoutineStore, logger, nil)
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("create project routine: %w", err), closeConnector(retroProductConnector))
-	}
-	admissionCriteria := workflowconfig.AdmissionCriteria{}
-	admissionEffortRubric := workflowconfig.AdmissionEffortRubric{}
-	if workflow.Config.BacklogAdmission.Enabled {
-		admissionCriteria, err = workflowconfig.ResolveAdmissionCriteria(
-			workflow.SharedPrompt,
-			workflow.Config.BacklogAdmission.CriteriaSection,
-		)
-		if err != nil {
-			return nil, errors.Join(fmt.Errorf("create project backlog admission: %w", err), closeConnector(retroProductConnector))
-		}
-		if workflow.Config.BacklogAdmission.RequireEffort {
-			admissionEffortRubric, err = workflowconfig.ResolveWorkflowAdmissionEffortRubric(workflow)
-			if err != nil {
-				return nil, errors.Join(fmt.Errorf("create project backlog admission: %w", err), closeConnector(retroProductConnector))
-			}
-		}
-	}
-	issueContract, err := workflowconfig.ResolveIssueContract(workflow.SharedPrompt)
-	if err != nil {
-		return nil, err
-	}
-	projectAdmission, err := admission.New(admission.Settings{
-		IssueContract:       issueContract,
-		ProjectID:           string(id),
-		Config:              workflow.Config.BacklogAdmission,
-		Criteria:            admissionCriteria,
-		EffortRubric:        admissionEffortRubric,
-		DispatchStates:      workflow.Config.Agent.DispatchPriorityByState,
-		DispatchLabels:      workflow.Config.Agent.DispatchPriorityByLabel,
-		PrioritizeBlockers:  workflow.Config.Agent.PrioritizeUnblockers,
-		DependencyIssues:    admissionDependencyIssues(laneOwner),
-		IntakeEnabled:       admissionIntakeEnabled(laneOwner),
-		DependencyReadiness: workflow.Config.Tracker.DependencyAutoUnblock.Readiness,
-		Runner:              deps.Runner,
-		Issues:              admissionIssueStore(projectConnector),
-		LaneWriter:          admissionLaneWriter(laneOwner),
-		ContractCheck:       admissionContractCheck(laneOwner),
-		Scheduler:           projectScheduler,
-		GlobalDispatchGate:  deps.GlobalDispatchGate,
-		ProjectCandidate:    projectSchedulerCandidate(cfg.Project, workflow.Config),
-		TerminalStates:      workflow.Config.Tracker.TerminalStates,
-		ReworkState:         workflow.Config.Agent.AutoPromote.ReworkState,
-		ScheduleRuns:        scheduleHealth,
-	}, deps.AdmissionStore, logger, nil)
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("create project backlog admission: %w", err), closeConnector(retroProductConnector))
-	}
-
 	orchestratorFactory := deps.OrchestratorFactory
 	if orchestratorFactory == nil {
 		orchestratorFactory = orchestrator.New
@@ -493,14 +379,13 @@ func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, e
 		Activity:           deps.Activity,
 		Release:            releaseCoordinator,
 		Logger:             logger,
-		Retrospector:       projectRetro,
 	}
 	orch, err = orchestratorFactory(orchConfig, orchDeps)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("create project orchestrator: %w", err), closeConnector(retroProductConnector))
+		return nil, errors.Join(fmt.Errorf("create project orchestrator: %w", err))
 	}
 	if orch == nil {
-		return nil, errors.Join(ErrMissingOrchestrator, closeConnector(retroProductConnector))
+		return nil, errors.Join(ErrMissingOrchestrator)
 	}
 	if workflow.Config.Policy.ID != "" {
 		if updater, ok := deps.Runner.(workflowUpdater); ok {
@@ -531,17 +416,12 @@ func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, e
 		runner:                    deps.Runner,
 		scheduler:                 projectScheduler,
 		schedulerFactory:          schedulerFactory,
-		intake:                    projectIntake,
-		retro:                     projectRetro,
-		routine:                   projectRoutine,
-		admission:                 projectAdmission,
 		scheduleOwner:             projectScheduleOwner,
 		issueCoordinator:          issueCoordinator,
 		scheduleConfig:            scheduleConfig,
 		scheduleHealth:            scheduleHealth,
 		scheduleFault:             scheduleFault,
 		scheduleUpdates:           make(chan struct{}, 1),
-		retroProduct:              retroProductConnector,
 		events:                    projectEvents,
 		logger:                    logger,
 		workflowReconcileInterval: deps.WorkflowReconcileInterval,
@@ -640,7 +520,6 @@ func (p *Project) updateLiveConfig(ctx context.Context, cfg globalconfig.Project
 	runtimeConfig := projectOrchestratorConfig(cfg, workflow.Config)
 	projectOrchestrator := p.orchestrator
 	running := p.done != nil
-	projectAdmission := p.admission
 	projectRunner := p.runner
 	p.mu.Unlock()
 
@@ -652,9 +531,6 @@ func (p *Project) updateLiveConfig(ctx context.Context, cfg globalconfig.Project
 		if err := projectOrchestrator.UpdateConfig(ctx, runtimeConfig); err != nil {
 			return fmt.Errorf("update project live config: %w", err)
 		}
-	}
-	if projectAdmission != nil {
-		projectAdmission.UpdateProjectCandidate(runtimeConfig.Project)
 	}
 	applyRunner()
 
@@ -706,27 +582,6 @@ func (p *Project) Scheduler() scheduler.Scheduler {
 	defer p.mu.Unlock()
 
 	return p.scheduler
-}
-
-func (p *Project) Intake() *intake.Manager {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	return p.intake
-}
-
-func (p *Project) Routines() *routine.Manager {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	return p.routine
-}
-
-func (p *Project) Admission() *admission.Manager {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	return p.admission
 }
 
 func (p *Project) Events() *hub.Hub[Event] {
@@ -1002,11 +857,10 @@ func (p *Project) close(ctx context.Context, publishEvents bool) error {
 func (p *Project) closeConnector() error {
 	p.mu.Lock()
 	projectConnector := p.connector
-	retroProductConnector := p.retroProduct
 	scheduleOwner := p.scheduleOwner
 	p.mu.Unlock()
 
-	return errors.Join(closeConnector(projectConnector), closeConnector(retroProductConnector), closeScheduleOwner(scheduleOwner))
+	return errors.Join(closeConnector(projectConnector), closeScheduleOwner(scheduleOwner))
 }
 
 func (p *Project) stop(ctx context.Context, publishEvents bool) error {
@@ -1096,8 +950,6 @@ func (p *Project) waitDone(ctx context.Context, done <-chan struct{}) error {
 func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrator.Orchestrator) {
 	watcherCtx, stopWatcher := context.WithCancel(ctx)
 	watcherDone := p.startWorkflowWatcher(watcherCtx)
-	retroCtx, stopRetro := context.WithCancel(ctx)
-	retroDone := p.startRetro(retroCtx)
 	schedulesCtx, stopSchedules := context.WithCancel(ctx)
 	schedulesDone := p.startSchedules(schedulesCtx)
 
@@ -1115,14 +967,6 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 		logProjectShutdownBoundaryEnd(p.logger, "workflow_watcher_stop", watcherStarted, nil, "component", "workflow_watcher", "project_id", p.id)
 	} else {
 		logProjectShutdownBoundaryEndResult(p.logger, "workflow_watcher_stop", watcherStarted, "skipped", nil, "component", "workflow_watcher", "project_id", p.id)
-	}
-	retroStarted := logProjectShutdownBoundaryBegin(p.logger, "retro_stop", "component", "retro", "project_id", p.id)
-	stopRetro()
-	if retroDone != nil {
-		<-retroDone
-		logProjectShutdownBoundaryEnd(p.logger, "retro_stop", retroStarted, nil, "component", "retro", "project_id", p.id)
-	} else {
-		logProjectShutdownBoundaryEndResult(p.logger, "retro_stop", retroStarted, "skipped", nil, "component", "retro", "project_id", p.id)
 	}
 	schedulesStarted := logProjectShutdownBoundaryBegin(p.logger, "schedules_stop", "component", "schedules", "project_id", p.id)
 	stopSchedules()
@@ -1154,23 +998,6 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 	}
 
 	close(done)
-}
-
-func (p *Project) startRetro(ctx context.Context) <-chan struct{} {
-	p.mu.Lock()
-	manager := p.retro
-	p.mu.Unlock()
-	if manager == nil {
-		return nil
-	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if err := manager.Run(ctx); err != nil && ctx.Err() == nil {
-			p.logger.Error("project retro stopped", "project_id", p.id, "error", err)
-		}
-	}()
-	return done
 }
 
 func (p *Project) startSchedules(ctx context.Context) <-chan struct{} {
@@ -1254,45 +1081,6 @@ func (p *Project) signalScheduleUpdate() {
 	case p.scheduleUpdates <- struct{}{}:
 	default:
 	}
-}
-
-func scheduleDefinitions(cfg workflowconfig.Config) []schedulehealth.Definition {
-	definitions := make([]schedulehealth.Definition, 0, len(cfg.Routines)+len(cfg.Intake.Sources)+1)
-	for _, definition := range cfg.Routines {
-		definitions = append(definitions, schedulehealth.Definition{ID: schedulehealth.RoutineID(definition.Name), Schedule: definition.Schedule})
-	}
-	if cfg.BacklogAdmission.Enabled {
-		definitions = append(definitions, schedulehealth.Definition{ID: schedulehealth.AdmissionID, Schedule: cfg.BacklogAdmission.Schedule})
-	}
-	for _, source := range cfg.Intake.Sources {
-		if source.Kind == intake.KindSchedule {
-			definitions = append(definitions, schedulehealth.Definition{ID: schedulehealth.IntakeID(source.Name), Schedule: source.Cron})
-		}
-	}
-	return definitions
-}
-
-func (p *Project) runOwnedSchedules(ctx context.Context) error {
-	p.mu.Lock()
-	intakeManager := p.intake
-	routineManager := p.routine
-	admissionManager := p.admission
-	scheduleHealth := p.scheduleHealth
-	p.mu.Unlock()
-	group, runCtx := errgroup.WithContext(ctx)
-	if scheduleHealth != nil {
-		group.Go(func() error { return scheduleHealth.Run(runCtx) })
-	}
-	if intakeManager != nil {
-		group.Go(func() error { return intakeManager.Run(runCtx) })
-	}
-	if routineManager != nil {
-		group.Go(func() error { return routineManager.Run(runCtx) })
-	}
-	if admissionManager != nil {
-		group.Go(func() error { return admissionManager.Run(runCtx) })
-	}
-	return group.Wait()
 }
 
 func logProjectShutdownBoundaryBegin(logger *slog.Logger, operation string, attrs ...any) time.Time {
@@ -1545,14 +1333,8 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 	runner := p.runner
 	projectOrchestrator := p.orchestrator
 	projectRunning := p.done != nil
-	projectIntake := p.intake
-	projectRetro := p.retro
-	projectRoutine := p.routine
-	projectAdmission := p.admission
 	projectScheduleHealth := p.scheduleHealth
-	issueCoordinator := p.issueCoordinator
 	scheduleConfig := p.scheduleConfig
-	globalDispatchGate := p.orchDeps.GlobalDispatchGate
 	scheduling := p.policyScheduling
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
@@ -1576,26 +1358,6 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 	if workflow.Config.ScheduleOwnership != scheduleConfig {
 		return p.workflowReloadError("workflow reload validation failed", update.Path, errors.New("schedule_ownership changes require a Detent restart"))
 	}
-	admissionCriteria := workflowconfig.AdmissionCriteria{}
-	admissionEffortRubric := workflowconfig.AdmissionEffortRubric{}
-	if workflow.Config.BacklogAdmission.Enabled {
-		resolvedCriteria, criteriaErr := workflowconfig.ResolveAdmissionCriteria(
-			workflow.SharedPrompt,
-			workflow.Config.BacklogAdmission.CriteriaSection,
-		)
-		if criteriaErr != nil {
-			return p.workflowReloadError("workflow reload backlog admission criteria failed", update.Path, criteriaErr)
-		}
-		admissionCriteria = resolvedCriteria
-		if workflow.Config.BacklogAdmission.RequireEffort {
-			resolvedRubric, rubricErr := workflowconfig.ResolveWorkflowAdmissionEffortRubric(workflow)
-			if rubricErr != nil {
-				return p.workflowReloadError("workflow reload backlog admission effort rubric failed", update.Path, rubricErr)
-			}
-			admissionEffortRubric = resolvedRubric
-		}
-	}
-
 	projectConnector, err := buildConnector(ctx, workflow.Config, connectorFactory, projectConfig.Paused)
 	if err != nil {
 		return p.workflowReloadError("workflow reload connector failed", update.Path, err)
@@ -1610,40 +1372,6 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 		return p.workflowReloadError("workflow reload release coordinator failed", update.Path, err)
 	}
 	releaseCoordinator := releaseBuild.coordinator
-
-	projectRetroStore, productRetroStore, retroProductConnector, err := buildRetroIssueStores(ctx, workflow.Config, projectConnector, connectorFactory)
-	if err != nil {
-		return p.workflowReloadError("workflow reload retro connector failed", update.Path, err)
-	}
-	if projectRetroStore != nil {
-		projectRetroStore = intakeLaneStore{IssueStore: projectRetroStore, write: scheduledLaneWriter(func() *orchestrator.Orchestrator { return p.Orchestrator() }, projectConnector, "retro")}
-		productTracker := retroProductConnector
-		if productTracker == nil {
-			productTracker = projectConnector
-		}
-		productRetroStore = intakeLaneStore{IssueStore: productRetroStore, write: scheduledLaneWriter(func() *orchestrator.Orchestrator { return p.Orchestrator() }, productTracker, "retro")}
-	}
-	retainRetroProduct := false
-	defer func() {
-		if retainRetroProduct {
-			return
-		}
-		if err := closeConnector(retroProductConnector); err != nil {
-			p.logger.Warn("close unused retro product connector failed", "project_id", p.id, "error", err)
-		}
-	}()
-
-	var preparedIntake *intake.Prepared
-	if projectIntake != nil {
-		preparedIntake, err = projectIntake.Prepare(
-			workflow.Config.Intake,
-			coordinatedIntakeStore(projectConnector, issueCoordinator, scheduledLaneWriter(func() *orchestrator.Orchestrator { return p.Orchestrator() }, projectConnector, "intake")),
-			intakeRoot(projectConfig, workflow.Config),
-		)
-		if err != nil {
-			return p.workflowReloadError("prepare workflow intake reload failed", update.Path, err)
-		}
-	}
 
 	applyRunner, err := prepareRunnerWorkflow(runner, workflow)
 	if err != nil {
@@ -1664,64 +1392,6 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 		}
 	}
 	applyRunner()
-	if projectIntake != nil {
-		projectIntake.Apply(preparedIntake)
-	}
-	if projectRetro != nil {
-		if err := projectRetro.Update(retro.Settings{
-			ProjectID:     string(p.id),
-			Config:        workflow.Config.Retro,
-			ProjectIssues: projectRetroStore,
-			ProductIssues: productRetroStore,
-			Metrics:       p.orchDeps.WorkflowMetrics,
-		}); err != nil {
-			return p.workflowReloadError("apply workflow retro reload failed", update.Path, err)
-		}
-	}
-	if projectRoutine != nil {
-		if err := projectRoutine.Update(routine.Settings{
-			ProjectID:    string(p.id),
-			Definitions:  workflow.Config.Routines,
-			SearchStates: workflow.Config.KanbanStateNames(),
-			Runner:       runner,
-			Issues:       coordinatedRoutineIssueStore(projectConnector, issueCoordinator, scheduledLaneWriter(func() *orchestrator.Orchestrator { return p.Orchestrator() }, projectConnector, "routine")),
-			Metrics:      p.orchDeps.WorkflowMetrics,
-			ScheduleRuns: projectScheduleHealth,
-		}); err != nil {
-			return p.workflowReloadError("apply workflow routine reload failed", update.Path, err)
-		}
-	}
-	if projectAdmission != nil {
-		issueContract, err := workflowconfig.ResolveIssueContract(workflow.SharedPrompt)
-		if err != nil {
-			return err
-		}
-		if err := projectAdmission.Update(admission.Settings{
-			IssueContract:       issueContract,
-			ProjectID:           string(p.id),
-			Config:              workflow.Config.BacklogAdmission,
-			Criteria:            admissionCriteria,
-			EffortRubric:        admissionEffortRubric,
-			DispatchStates:      workflow.Config.Agent.DispatchPriorityByState,
-			DispatchLabels:      workflow.Config.Agent.DispatchPriorityByLabel,
-			PrioritizeBlockers:  workflow.Config.Agent.PrioritizeUnblockers,
-			DependencyIssues:    admissionDependencyIssues(func() *orchestrator.Orchestrator { return p.Orchestrator() }),
-			IntakeEnabled:       admissionIntakeEnabled(func() *orchestrator.Orchestrator { return p.Orchestrator() }),
-			DependencyReadiness: workflow.Config.Tracker.DependencyAutoUnblock.Readiness,
-			Runner:              runner,
-			Issues:              admissionIssueStore(projectConnector),
-			LaneWriter:          admissionLaneWriter(func() *orchestrator.Orchestrator { return p.Orchestrator() }),
-			ContractCheck:       admissionContractCheck(func() *orchestrator.Orchestrator { return p.Orchestrator() }),
-			Scheduler:           projectScheduler,
-			GlobalDispatchGate:  globalDispatchGate,
-			ProjectCandidate:    projectSchedulerCandidate(projectConfig, workflow.Config),
-			TerminalStates:      workflow.Config.Tracker.TerminalStates,
-			ReworkState:         workflow.Config.Agent.AutoPromote.ReworkState,
-			ScheduleRuns:        projectScheduleHealth,
-		}); err != nil {
-			return p.workflowReloadError("apply workflow backlog admission reload failed", update.Path, err)
-		}
-	}
 	if projectScheduleHealth != nil {
 		if err := projectScheduleHealth.Update(scheduleDefinitions(workflow.Config)); err != nil {
 			return p.workflowReloadError("workflow reload schedule liveness failed", update.Path, err)
@@ -1729,7 +1399,6 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 	}
 
 	p.mu.Lock()
-	previousRetroProduct := p.retroProduct
 	p.workflow = workflow
 	p.workflowActiveHours = workflowActiveHours
 	p.workflowSource.Hash = workflow.SourceHash
@@ -1744,8 +1413,6 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 	p.workflowSource.LastReloadError = ""
 	p.workflowSource.ReloadFailedAt = time.Time{}
 	p.connector = projectConnector
-	p.retroProduct = retroProductConnector
-	retainRetroProduct = true
 	p.scheduler = projectScheduler
 	p.orchConfig = runtimeConfig
 	p.orchDeps.Connector = projectConnector
@@ -1754,12 +1421,6 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 	id := p.id
 	p.mu.Unlock()
 	p.signalScheduleUpdate()
-	if previousRetroProduct != retroProductConnector {
-		if err := closeConnector(previousRetroProduct); err != nil {
-			p.logger.Warn("close previous retro product connector failed", "project_id", p.id, "error", err)
-		}
-	}
-
 	for _, warning := range workflow.Config.ValidationWarnings() {
 		if strings.HasPrefix(warning, "tracker.") {
 			p.logger.Warn("workflow configuration warning", "project_id", id, "warning", warning)
@@ -1875,10 +1536,6 @@ func workflowConfigWithProjectIdentity(
 	workflow workflowconfig.Config,
 ) workflowconfig.Config {
 	workflow.Agent.RateWindowPacing = effectiveRateWindowPacing(project, workflow)
-	if project.IntakeConfigured {
-		workflow.Intake = project.Intake
-		workflow.Intake.Normalize()
-	}
 	workflow.ActiveHours = EffectiveActiveHours(project, workflow.ActiveHours)
 	workflow = workflowConfigWithProjectPaths(project, workflow)
 	if workflow.Agent.Knowledge.Enabled {
@@ -1904,125 +1561,6 @@ func effectiveRateWindowPacing(project globalconfig.Project, workflow workflowco
 		return workflow.Agent.RateWindowPacing.Normalized()
 	}
 	return project.GlobalRateWindowPacing.Normalized()
-}
-
-func intakeRoot(project globalconfig.Project, workflow workflowconfig.Config) string {
-	if root := strings.TrimSpace(workflow.Workspace.SourceRoot); root != "" {
-		return root
-	}
-	return strings.TrimSpace(project.Workdir)
-}
-
-func intakeStore(projectConnector connector.Connector) intake.IssueStore {
-	store, ok := projectConnector.(intake.IssueStore)
-	if !ok {
-		return nil
-	}
-	return store
-}
-
-type coordinatedIntakeIssueStore struct {
-	intake.IssueStore
-	coordinator *scheduleowner.IssueCoordinator
-}
-
-func (s coordinatedIntakeIssueStore) CreateComment(ctx context.Context, issueID, body string) error {
-	commenter, ok := s.IssueStore.(intake.OccurrenceCommenter)
-	if !ok {
-		return connector.ErrNotImplemented
-	}
-	return commenter.CreateComment(ctx, issueID, body)
-}
-
-func (s coordinatedIntakeIssueStore) EnsureIntakeIssue(
-	ctx context.Context,
-	marker string,
-	draft intake.IssueDraft,
-) (intake.Issue, bool, error) {
-	return s.coordinator.EnsureRecurring(ctx, marker, draft, s)
-}
-
-func (s coordinatedIntakeIssueStore) IntakeIssueClosed(ctx context.Context, issueID string) (bool, error) {
-	reader, ok := s.IssueStore.(interface {
-		FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error)
-	})
-	if !ok {
-		return false, connector.ErrNotImplemented
-	}
-	issues, err := reader.FetchIssueStatesByIDs(ctx, []string{issueID})
-	if err != nil {
-		return false, err
-	}
-	for _, issue := range issues {
-		if issue.ID == issueID {
-			return issue.Closed, nil
-		}
-	}
-	return false, nil
-}
-
-func coordinatedIntakeStore(projectConnector connector.Connector, coordinator *scheduleowner.IssueCoordinator, writers ...func(context.Context, string, string) error) intake.IssueStore {
-	store := intakeStore(projectConnector)
-	if store != nil && len(writers) > 0 {
-		store = intakeLaneStore{IssueStore: store, write: writers[0]}
-	}
-	if store == nil || coordinator == nil {
-		return store
-	}
-	return coordinatedIntakeIssueStore{IssueStore: store, coordinator: coordinator}
-}
-
-func routineIssueStore(projectConnector connector.Connector) routine.IssueStore {
-	issueStore, ok := projectConnector.(routine.IssueStore)
-	if !ok {
-		return nil
-	}
-	return issueStore
-}
-
-type coordinatedRoutineStore struct {
-	routine.IssueStore
-	coordinator *scheduleowner.IssueCoordinator
-}
-
-func (s coordinatedRoutineStore) CreateComment(ctx context.Context, issueID, body string) error {
-	commenter, ok := s.IssueStore.(intake.OccurrenceCommenter)
-	if !ok {
-		return connector.ErrNotImplemented
-	}
-	return commenter.CreateComment(ctx, issueID, body)
-}
-
-func (s coordinatedRoutineStore) EnsureRoutineIssue(
-	ctx context.Context,
-	marker string,
-	draft intake.IssueDraft,
-) (intake.Issue, bool, error) {
-	return s.coordinator.EnsureRecurring(ctx, marker, draft, s)
-}
-
-func (s coordinatedRoutineStore) IntakeIssueClosed(ctx context.Context, issueID string) (bool, error) {
-	issues, err := s.FetchIssueStatesByIDs(ctx, []string{issueID})
-	if err != nil {
-		return false, err
-	}
-	for _, issue := range issues {
-		if strings.TrimSpace(issue.ID) == strings.TrimSpace(issueID) {
-			return issue.Closed, nil
-		}
-	}
-	return false, nil
-}
-
-func coordinatedRoutineIssueStore(projectConnector connector.Connector, coordinator *scheduleowner.IssueCoordinator, writers ...func(context.Context, string, string) error) routine.IssueStore {
-	store := routineIssueStore(projectConnector)
-	if store != nil && len(writers) > 0 {
-		store = routineLaneStore{IssueStore: store, write: writers[0]}
-	}
-	if store == nil || coordinator == nil {
-		return store
-	}
-	return coordinatedRoutineStore{IssueStore: store, coordinator: coordinator}
 }
 
 func buildScheduleOwnership(
@@ -2109,17 +1647,6 @@ func buildScheduleOwnership(
 	return manager, coordinator, ownership, nil
 }
 
-func admissionIssueStore(projectConnector connector.Connector) admission.IssueStore {
-	if projectConnector == nil {
-		return nil
-	}
-	issueStore, ok := projectConnector.(admission.IssueStore)
-	if !ok {
-		return nil
-	}
-	return issueStore
-}
-
 func EffectiveActiveHours(project globalconfig.Project, workflow activehours.Config) activehours.Config {
 	if project.ActiveHours != nil {
 		return project.ActiveHours.Normalize()
@@ -2140,47 +1667,6 @@ func projectSchedulerCandidate(project globalconfig.Project, workflow workflowco
 		ActiveHours:              EffectiveActiveHours(project, workflow.ActiveHours),
 		ActiveHoursOverrideUntil: overrideUntil,
 	}
-}
-
-func buildRetroIssueStores(
-	ctx context.Context,
-	cfg workflowconfig.Config,
-	projectConnector connector.Connector,
-	connectorFactory ConnectorFactory,
-) (intake.IssueStore, intake.IssueStore, connector.Connector, error) {
-	if !cfg.Retro.Enabled {
-		return nil, nil, nil, nil
-	}
-	projectStore := intakeStore(projectConnector)
-	if projectStore == nil {
-		return nil, nil, nil, retro.ErrMissingProjectStore
-	}
-	if strings.EqualFold(strings.TrimSpace(cfg.Tracker.Repository), strings.TrimSpace(cfg.Retro.ProductRepository)) {
-		return projectStore, projectStore, nil, nil
-	}
-	productConfig := cfg
-	productConfig.Tracker.Repository = cfg.Retro.ProductRepository
-	productConfig.Tracker.Publication = publication.Policy{
-		DestinationRepository: cfg.Retro.ProductRepository,
-		Sources: []publication.Source{{
-			Repository: cfg.Tracker.Repository,
-			Workspaces: []string{cfg.Workspace.Root, cfg.Workspace.SourceRoot, cfg.Workspace.OutputRoot},
-			Logins:     []string{cfg.Identity.GitHubLogin},
-		}},
-		AllowPublicCrossProjectDetails: cfg.Retro.AllowPublicCrossProjectDetails,
-	}
-	productConnector, err := buildConnector(ctx, productConfig, connectorFactory, true)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	if productConnector == projectConnector {
-		return projectStore, projectStore, nil, nil
-	}
-	productStore := intakeStore(productConnector)
-	if productStore == nil {
-		return nil, nil, nil, errors.Join(retro.ErrMissingProductStore, closeConnector(productConnector))
-	}
-	return projectStore, productStore, productConnector, nil
 }
 
 func workflowConfigWithProjectPaths(project globalconfig.Project, workflow workflowconfig.Config) workflowconfig.Config {
@@ -2578,4 +2064,16 @@ func applyProjectAgentDefaults(cfg workflowconfig.Config, project globalconfig.P
 		cfg.Agents.ModelSelection = *project.ModelSelection
 	}
 	return cfg.WithAgentDefaults(project.GlobalAgents, project.GlobalBudget).WithWorkerDefaults(project.GlobalWorker)
+}
+
+func scheduleDefinitions(_ workflowconfig.Config) []schedulehealth.Definition { return nil }
+
+func (p *Project) runOwnedSchedules(ctx context.Context) error {
+	p.mu.Lock()
+	health := p.scheduleHealth
+	p.mu.Unlock()
+	if health == nil {
+		return nil
+	}
+	return health.Run(ctx)
 }

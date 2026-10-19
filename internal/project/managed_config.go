@@ -153,11 +153,7 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 			view.Applied = view.Constraint == "" && view.EffectivePolicy != nil && view.EffectivePolicy.ID == request.PolicyID && view.EffectivePolicy.SourceRevision == request.SourceRevision
 			return false
 		case "drain_local_project", "detach_local_project":
-			workflow := p.Workflow().Config
-			if workflow.Intake.Enabled() || len(workflow.Routines) != 0 || workflow.BacklogAdmission.Enabled || workflow.Retro.Enabled {
-				view.Constraint = "This workflow has local intake or schedules; migrate them through the existing workflow owner before cutover."
-				return false
-			}
+
 			if orch := p.Orchestrator(); operation == "drain_local_project" && orch != nil && p.Running() {
 				if err := orch.Drain(ctx); err != nil {
 					view.Constraint = "The selected project drain could not be acknowledged."
@@ -173,7 +169,7 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 				view.Constraint = "Active or deferred work must settle through its existing completion owner before detach."
 				return false
 			}
-			if o.handoff == nil || o.handoff(ctx, *cfg, request.ProjectID, workflow.Tracker.Repository, request.Checkpoint) != nil {
+			if o.handoff == nil || o.handoff(ctx, *cfg, request.ProjectID, p.Workflow().Config.Tracker.Repository, request.Checkpoint) != nil {
 				view.Constraint = "Durable handoff is incomplete or unavailable; verify the exact mapped Cloud cutover receipt."
 				return false
 			}

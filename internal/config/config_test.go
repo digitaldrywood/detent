@@ -370,62 +370,6 @@ func TestLocalWorkflowPath(t *testing.T) {
 	}
 }
 
-func TestShippedWorkflowTemplatesEnableBudgetCaps(t *testing.T) {
-	t.Parallel()
-
-	templateDir := filepath.Join("..", "..", "docs", "templates")
-	entries, err := os.ReadDir(templateDir)
-	if err != nil {
-		t.Fatalf("ReadDir(%q) error = %v", templateDir, err)
-	}
-
-	checked := 0
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "WORKFLOW.") || !strings.HasSuffix(entry.Name(), ".md") {
-			continue
-		}
-		checked++
-		t.Run(entry.Name(), func(t *testing.T) {
-			t.Parallel()
-
-			path := filepath.Join(templateDir, entry.Name())
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("ReadFile(%q) error = %v", path, err)
-			}
-			variant := strings.TrimSuffix(strings.TrimPrefix(entry.Name(), "WORKFLOW."), ".md")
-			configPath := filepath.Join(templateDir, "detent."+variant+".yaml")
-			configRaw, err := os.ReadFile(configPath)
-			if err != nil {
-				t.Fatalf("ReadFile(%q) error = %v", configPath, err)
-			}
-			workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
-				WorkflowPath: path,
-				Workflow:     raw,
-				ConfigPath:   configPath,
-				Config:       configRaw,
-				HasConfig:    true,
-			})
-			if err != nil {
-				t.Fatalf("ParseProjectDefinition(%q) error = %v", path, err)
-			}
-			if !workflow.Config.Budget.Enabled {
-				t.Fatalf("%s budget.enabled = false, want true", path)
-			}
-			if workflow.Config.Budget.BillingMode != BillingModeMetered {
-				t.Fatalf("%s budget.billing_mode = %q, want metered", path, workflow.Config.Budget.BillingMode)
-			}
-			normalizedRaw := strings.ReplaceAll(string(configRaw), "\r\n", "\n")
-			if workflow.Config.Deliverable.Kind == DeliverablePullRequest && !strings.Contains(normalizedRaw, "\n  merge_method: squash\n") {
-				t.Fatalf("%s does not declare deliverable.merge_method: squash", path)
-			}
-		})
-	}
-	if checked == 0 {
-		t.Fatal("no shipped WORKFLOW templates found")
-	}
-}
-
 func TestParseWorkflowBudgetCapPresence(t *testing.T) {
 	t.Parallel()
 
@@ -1490,51 +1434,6 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Hooks.Shell != "bash" {
 		t.Fatalf("Hooks.Shell = %q, want bash", cfg.Hooks.Shell)
-	}
-}
-
-func TestParseWorkflowRetroDefaultsAndValidation(t *testing.T) {
-	t.Parallel()
-
-	workflow, err := ParseWorkflow([]byte(`---
-tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
-  lanes:
-    - name: Backlog
-      role: holding
-    - name: Blocked
-      role: holding
-    - name: Todo
-      role: active
-    - name: Closed
-      role: terminal
-    - name: Cancelled
-      role: terminal
-    - name: Canceled
-      role: terminal
-    - name: Duplicate
-      role: terminal
-    - name: Done
-      role: terminal
-retro:
-  enabled: true
-  target_state: Backlog
-  allow_public_cross_project_details: true
----
-Prompt
-`))
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
-	}
-	if err := workflow.Config.Validate(); err == nil || !strings.Contains(err.Error(), "tracker.kind must be hub_native") {
-		t.Fatalf("Validate() error = %v", err)
-	}
-	retro := workflow.Config.Retro
-	if !retro.Enabled || !retro.AllowPublicCrossProjectDetails || retro.DailyIssueCap != 3 || retro.LookbackDays != 7 || retro.MinOccurrences != 2 || retro.ProductRepository != "digitaldrywood/detent" || !reflect.DeepEqual(retro.Labels, []string{"retro"}) {
-		t.Fatalf("Retro = %#v", retro)
 	}
 }
 
