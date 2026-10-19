@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -53,9 +54,9 @@ class ReverseDependentAuditTests(unittest.TestCase):
             git("commit", "-m", "safe provider")
             git("tag", "v0.0.0")
 
-            def run_audit():
+            def run_audit(checkout=root):
                 output = io.StringIO()
-                with mock.patch.object(audit, "ROOT", root), mock.patch.object(audit, "BASELINE", baseline), \
+                with mock.patch.object(audit, "ROOT", checkout), mock.patch.object(audit, "BASELINE", baseline), \
                      mock.patch("sys.argv", ["nilaway-changed.py", VERSION, "example.test/nilaway"]), \
                      contextlib.redirect_stdout(output):
                     code = audit.main()
@@ -85,7 +86,44 @@ class ReverseDependentAuditTests(unittest.TestCase):
             self.assertEqual(code, 0, output)
             self.assertIn("1 reviewed legacy diagnostics", output)
 
+            with tempfile.TemporaryDirectory(dir=scratch) as other_directory:
+                checkout = Path(other_directory) / "checkout"
+                shutil.copytree(root, checkout)
+                code, output = run_audit(checkout)
+                self.assertEqual(code, 0, output)
+                self.assertIn("1 reviewed legacy diagnostics", output)
+
             reviewed = f'{importer}:{line}:{diagnostic["column"]}: Potential nil panic detected\n'
+            foreign = root.parent / "removed-checkout" / "importer" / "importer.go"
+            foreign_reviewed = reviewed.replace(str(importer), str(foreign))
+            nested = root / ".detent" / "workspaces" / "removed-checkout" / "importer" / "importer.go"
+            existing = root / ".detent" / "workspaces" / "existing-checkout" / "importer" / "importer.go"
+            existing.parent.mkdir(parents=True)
+            existing.write_text(importer.read_text().replace("return *provider.Value()", "return 0"))
+            cases = [
+                (foreign_reviewed, 0),
+                (foreign_reviewed.replace(str(foreign), "../removed-checkout/importer/importer.go"), 0),
+                (foreign_reviewed.replace(f':{diagnostic["column"]}:', f':{int(diagnostic["column"]) + 1}:'), 1),
+                (foreign_reviewed.replace("Potential nil panic detected", "another analyzer failure"), 1),
+                (foreign_reviewed.replace("/importer/importer.go", "/other/importer.go"), 1),
+            ]
+            for path in (str(nested), nested.relative_to(root).as_posix(), str(existing), existing.relative_to(root).as_posix()):
+                replay = reviewed.replace(str(importer), path)
+                cases.extend([
+                    (replay, 0),
+                    (replay.replace(f':{diagnostic["column"]}:', f':{int(diagnostic["column"]) + 1}:'), 1),
+                ])
+            for replay, expected in cases:
+                with self.subTest(replay=replay), mock.patch.object(
+                    audit.subprocess, "run", side_effect=[
+                        subprocess.CompletedProcess([], 0, ""),
+                        subprocess.CompletedProcess([], 1, replay),
+                    ],
+                ):
+                    code, output = run_audit()
+                    self.assertEqual(code, expected, output)
+                    self.assertIn("reviewed legacy diagnostics" if expected == 0 else "Unexpected NilAway diagnostics", output)
+
             related = f'(Same nil source could also cause potential nil panic(s) at 1 other place(s): "importer/importer.go:{line}:{diagnostic["column"]}".)\n'
             with mock.patch.object(
                 audit.subprocess, "run", side_effect=[
@@ -120,6 +158,15 @@ class ReverseDependentAuditTests(unittest.TestCase):
             code, output = run_audit()
             self.assertEqual(code, 1, output)
             self.assertIn("Unexpected NilAway diagnostics", output)
+            with mock.patch.object(
+                audit.subprocess, "run", side_effect=[
+                    subprocess.CompletedProcess([], 0, ""),
+                    subprocess.CompletedProcess([], 1, foreign_reviewed),
+                ],
+            ):
+                code, output = run_audit()
+                self.assertEqual(code, 1, output)
+                self.assertIn("Unexpected NilAway diagnostics", output)
 
 
 if __name__ == "__main__":
