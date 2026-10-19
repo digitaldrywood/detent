@@ -2,9 +2,12 @@ package auth
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"io"
 	"mime"
 	"net"
+	"net/http/httptest"
 	"net/mail"
 	"net/textproto"
 	"strconv"
@@ -18,8 +21,12 @@ func TestSMTPMessages(t *testing.T) {
 	for _, test := range []struct {
 		name, subject, body string
 		magicLink           bool
+		implicitTLS         bool
+		untrusted           bool
 	}{
 		{name: "finding", subject: "[Detent] runner_heartbeat_gap: runner example", body: "Finding opened\nSummary: Heartbeat gap.\n"},
+		{name: "implicit TLS", subject: "New sign-up: user@example.test", body: "New sign-up", implicitTLS: true},
+		{name: "untrusted implicit TLS", implicitTLS: true, untrusted: true},
 		{name: "unicode", subject: "[Detent] signal: café", body: "Summary: café.\n"},
 		{name: "sign in", subject: "Your Detent sign-in link", body: "https://detent.example.test/auth/link?token=fixture", magicLink: true},
 	} {
@@ -28,6 +35,16 @@ func TestSMTPMessages(t *testing.T) {
 			listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
+			}
+			var roots *x509.CertPool
+			if test.implicitTLS {
+				server := httptest.NewTLSServer(nil)
+				t.Cleanup(server.Close)
+				listener = tls.NewListener(listener, server.TLS.Clone())
+				roots = x509.NewCertPool()
+				if !test.untrusted {
+					roots.AddCert(server.Certificate())
+				}
 			}
 			t.Cleanup(func() {
 				if err := listener.Close(); err != nil {
@@ -55,10 +72,29 @@ func TestSMTPMessages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if test.implicitTLS {
+				tlsSender, err := NewSMTPSender(SMTPConfig{Host: host, Port: 465, From: "detent@example.test"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				transport := tlsSender.(*smtpSender)
+				transport.port = port
+				transport.tlsConfig.RootCAs = roots
+				sender = transport
+			}
 			if test.magicLink {
 				err = sender.SendMagicLink(t.Context(), Message{To: "owner@example.test", URL: test.body, ExpiresAt: time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)})
 			} else {
 				err = sender.SendEmail(t.Context(), EmailMessage{To: "owner@example.test", Subject: test.subject, Body: test.body})
+			}
+			if test.untrusted {
+				if err == nil || !strings.Contains(err.Error(), "certificate") {
+					t.Fatalf("untrusted SMTP certificate error=%v", err)
+				}
+				if result := <-completed; result.err == nil {
+					t.Fatal("untrusted TLS connection delivered a message")
+				}
+				return
 			}
 			if err != nil {
 				t.Fatal(err)

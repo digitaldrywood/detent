@@ -90,6 +90,24 @@ detent cloud registry register --registry /var/lib/detent/cloud/registry.db \
   --name "Example" --endpoint unix:/run/detent/tenants/org_example.sock --generation 1
 ```
 
+## Platform notification email
+
+Set `RESEND_API_KEY` in the Cloud entry service environment to notify platform
+admins when an identity first signs in or an organization is created. No YAML
+settings are needed. Mail uses `smtp.resend.com:465` with implicit TLS, username
+`resend`, and sender `Detent <notifications@mail.detent.build>`. The key is read
+only from the environment. When it is empty, notifications are skipped and the
+entry logs that once at startup.
+
+Recipients are the registry's current `admin` platform members, read when each
+notification is sent. Sign-up messages contain the email address, event time and
+platform user link; organization messages contain the name, creator email, plan,
+event time and platform tenant link. Delivery runs in the background after the
+request commits. Each event is durably claimed before sending and is attempted
+at most once, including across restarts. Mail failures are logged once per event
+without failing the request; delivery is not retried, including if the process
+exits after claiming an event. Tenant Hub health-finding mail is independent.
+
 ## Self-service provisioning
 
 Adding an `allocation` block lets verified users create organizations without

@@ -40,12 +40,14 @@ type SMTPConfig struct {
 }
 
 type smtpSender struct {
-	host     string
-	port     int
-	username string
-	password string
-	from     string
-	timeout  time.Duration
+	host        string
+	port        int
+	username    string
+	password    string
+	from        string
+	timeout     time.Duration
+	implicitTLS bool
+	tlsConfig   *tls.Config
 }
 
 func NewSMTPSender(cfg SMTPConfig) (SMTPSender, error) {
@@ -64,12 +66,14 @@ func NewSMTPSender(cfg SMTPConfig) (SMTPSender, error) {
 		return nil, errors.New("smtp username and password must be set together")
 	}
 	return &smtpSender{
-		host:     host,
-		port:     cfg.Port,
-		username: strings.TrimSpace(cfg.Username),
-		password: cfg.Password,
-		from:     from.Address,
-		timeout:  smtpTimeout,
+		host:        host,
+		port:        cfg.Port,
+		username:    strings.TrimSpace(cfg.Username),
+		password:    cfg.Password,
+		from:        from.Address,
+		timeout:     smtpTimeout,
+		implicitTLS: cfg.Port == 465,
+		tlsConfig:   &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host},
 	}, nil
 }
 
@@ -90,7 +94,14 @@ func (s *smtpSender) SendEmail(ctx context.Context, message EmailMessage) (err e
 		deadline = contextDeadline
 	}
 	dialer := net.Dialer{Deadline: deadline}
-	connection, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(s.host, strconv.Itoa(s.port)))
+	address := net.JoinHostPort(s.host, strconv.Itoa(s.port))
+	var connection net.Conn
+	if s.implicitTLS {
+		tlsDialer := tls.Dialer{NetDialer: &dialer, Config: s.tlsConfig}
+		connection, err = tlsDialer.DialContext(ctx, "tcp", address)
+	} else {
+		connection, err = dialer.DialContext(ctx, "tcp", address)
+	}
 	if err != nil {
 		return fmt.Errorf("connect smtp server: %w", err)
 	}
@@ -107,8 +118,8 @@ func (s *smtpSender) SendEmail(ctx context.Context, message EmailMessage) (err e
 		}
 	}()
 
-	if ok, _ := client.Extension("STARTTLS"); ok {
-		if err := client.StartTLS(&tls.Config{MinVersion: tls.VersionTLS12, ServerName: s.host}); err != nil {
+	if ok, _ := client.Extension("STARTTLS"); ok && !s.implicitTLS {
+		if err := client.StartTLS(s.tlsConfig); err != nil {
 			return fmt.Errorf("start smtp tls: %w", err)
 		}
 	}

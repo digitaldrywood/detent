@@ -70,6 +70,7 @@ type Config struct {
 	transport           func(Organization) (http.RoundTripper, error)
 	clientFS            fs.FS
 	attachmentTransport http.RoundTripper
+	platformEmailSender auth.EmailSender
 
 	tenantStartTimeout time.Duration
 	platformDeadline   time.Duration
@@ -106,6 +107,7 @@ func (c Config) validate() error {
 }
 
 type Service struct {
+	notifications     *platformNotifications
 	runtime           atomic.Pointer[entryRuntime]
 	reloadMu          sync.Mutex
 	keyMCP            *mcp.HTTPHandler
@@ -205,6 +207,9 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 		return nil, errors.Join(err, service.CloseContext(ctx))
 	}
 	service.startBillingWorker(ctx)
+	if err := service.startPlatformNotifications(ctx); err != nil {
+		return nil, errors.Join(err, service.CloseContext(ctx))
+	}
 	return service, nil
 }
 
@@ -227,6 +232,7 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		keyErr = s.keyMCP.Shutdown(ctx)
 		cancel()
 	}
+	s.closePlatformNotifications()
 	s.closeBillingWorker()
 	var mcpErr error
 	if s.closePlatformMCP != nil {
