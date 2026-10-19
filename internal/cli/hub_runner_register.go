@@ -60,6 +60,10 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 }
 
 func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error) *cobra.Command {
+	return newHubRunnerRegisterCommandWithServiceName(version, lookupEnv, startService, privateLocation, report, ghAuthStatus, registeredRunnerServiceName)
+}
+
+func newHubRunnerRegisterCommandWithServiceName(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error, serviceName func(string) (string, error)) *cobra.Command {
 	var hubURL, token, organization, name, configPath, workspaceRoot, isolationTier string
 	var capacity int
 	var service bool
@@ -151,6 +155,12 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 				result.NextSteps = append(result.NextSteps, fmt.Sprintf("This Hub requires Detent %s or newer; this binary is %s. Update with detent update --yes --from-release (or brew upgrade digitaldrywood/tap/detent for Homebrew), then retry this register command", minimumVersion, version))
 			}
 			config := runnerConfig(base, org, name, capacity, paths)
+			if _, err := os.Lstat(paths.config); errors.Is(err, os.ErrNotExist) {
+				config.ServiceName, err = serviceName(paths.config)
+				if err != nil {
+					return err
+				}
+			}
 			result.Created, err = writeRunnerConfig(paths.config, config)
 			if err != nil {
 				return err
@@ -180,14 +190,14 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 			start := runnerStartCommand(paths.config, runtime.GOOS)
 			switch {
 			case service:
+				result.Service = serviceNameForConfig(loaded)
+				if result.Service == servicepkg.DefaultName {
+					return errors.New("runner service name must differ from the board service name")
+				}
 				if err := startService(cmd, paths.config); err != nil {
 					return NewClassifiedError(err, classifyError(err).Slug, "Runner enrollment succeeded; install and start service: "+ErrorDetail(err), "Check the runner service and logs; for foreground diagnostics after stopping the service: "+start, nil)
 				}
 				result.ServiceRun = true
-				result.Service = serviceNameForConfig(configuration)
-				if result.Created {
-					result.Service = runnerServiceName
-				}
 			default:
 				result.NextSteps = append(result.NextSteps, "Start the runner: "+start)
 			}
@@ -202,7 +212,7 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 	cmd.Flags().StringVar(&isolationTier, "isolation-tier", isolation.Sandbox, "agent access: sandbox (shared machines) or native-trusted (full access on a dedicated machine)")
 	cmd.Flags().StringVar(&configPath, "config", "", "runner configuration path (default: ~/.config/detent-runner/global.yaml)")
 	cmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "where project checkouts live (default: ~/detent-runner)")
-	cmd.Flags().BoolVar(&service, "service", false, "install and start the runner as a background service ("+runnerServiceName+")")
+	cmd.Flags().BoolVar(&service, "service", false, "install and start the runner as a background service")
 	return cmd
 }
 
