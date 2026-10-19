@@ -3,19 +3,23 @@ package project
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 )
 
 type githubReleaseBackend struct {
-	config ghconnector.Config
+	config  ghconnector.Config
+	tracker connector.Connector
 }
 
-func newGitHubReleaseBackend(cfg workflowconfig.Config) githubReleaseBackend {
-	return githubReleaseBackend{config: ghconnector.Config{
+func newGitHubReleaseBackend(cfg workflowconfig.Config, tracker connector.Connector) githubReleaseBackend {
+	return githubReleaseBackend{tracker: tracker, config: ghconnector.Config{
 		Endpoint:                   cfg.Tracker.Endpoint,
 		APIKey:                     cfg.Tracker.APIKey,
 		Repository:                 cfg.Tracker.Repository,
@@ -80,7 +84,54 @@ func (b githubReleaseBackend) RerunFailedChecks(ctx context.Context, checks []re
 }
 
 func (b githubReleaseBackend) EnsureReleaseReport(ctx context.Context, report releasepkg.Report) (bool, error) {
-	return withGitHubRelease(b.config, func(client *ghconnector.Connector) (bool, error) {
-		return client.EnsureReleaseReport(ctx, report)
-	})
+	reader, ok := b.tracker.(connector.IssueCommentReader)
+	if !ok {
+		return false, errors.New("release tracker cannot read report evidence")
+	}
+	refs := slices.Clone(report.IssueRefs)
+	slices.Sort(refs)
+	for _, ref := range refs {
+		if !strings.HasPrefix(ref, "wi_") {
+			continue
+		}
+		issues, err := b.tracker.FetchIssueStatesByIDs(ctx, []string{ref})
+		if err != nil {
+			return false, err
+		}
+		if len(issues) == 0 {
+			continue
+		}
+		issue := issues[0]
+		marker := "<!-- detent-auto-release:" + report.Fingerprint + " -->"
+		found, err := releaseReportExists(ctx, reader, issue, marker)
+		if err != nil || found {
+			return false, err
+		}
+		body := report.Body
+		if !strings.Contains(body, marker) {
+			body += "\n\n" + marker
+		}
+		if err := b.tracker.CreateComment(ctx, issue.ID, body); err != nil {
+			found, lookupErr := releaseReportExists(ctx, reader, issue, marker)
+			if found && lookupErr == nil {
+				return false, nil
+			}
+			return false, errors.Join(err, lookupErr)
+		}
+		return true, nil
+	}
+	return false, errors.New("release report has no originating native work item in this project")
+}
+
+func releaseReportExists(ctx context.Context, reader connector.IssueCommentReader, issue connector.Issue, marker string) (bool, error) {
+	comments, err := reader.FetchIssueComments(ctx, issue)
+	if err != nil {
+		return false, err
+	}
+	for _, comment := range comments {
+		if strings.Contains(comment.Body, marker) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
