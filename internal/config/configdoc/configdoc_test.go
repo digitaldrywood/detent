@@ -13,6 +13,36 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 )
 
+func TestPolicyApprovalDocumentation(t *testing.T) {
+	const begin = "<!-- BEGIN POLICY APPROVAL RULE -->"
+	const end = "<!-- END POLICY APPROVAL RULE -->"
+	readRule := func(t *testing.T, path string) string {
+		t.Helper()
+		content, err := os.ReadFile(filepath.Join("..", "..", "..", path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(content)
+		if strings.Count(text, begin) != 1 || strings.Count(text, end) != 1 {
+			t.Fatalf("%s must contain exactly one policy approval rule", path)
+		}
+		_, rule, _ := strings.Cut(text, begin)
+		rule, _, found := strings.Cut(rule, end)
+		if !found || strings.TrimSpace(rule) == "" {
+			t.Fatalf("%s has an empty or unterminated policy approval rule", path)
+		}
+		return strings.Join(strings.Fields(rule), " ")
+	}
+	canonical := readRule(t, "docs/api-mcp-setup.md")
+	for _, path := range []string{"README.md", "docs/cloud-onboarding.md"} {
+		t.Run(path, func(t *testing.T) {
+			if got := readRule(t, path); got != canonical {
+				t.Errorf("%s policy approval rule differs from docs/api-mcp-setup.md", path)
+			}
+		})
+	}
+}
+
 func TestConfigDocumentation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("repository configuration generation and type checking")

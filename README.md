@@ -48,7 +48,25 @@ A project's behavior lives in two files that you commit to the repository:
 - `detent.yaml` is the machine contract: lanes, gate command, review policy, scheduling, retries, and budgets.
 - `WORKFLOW.md` is the agent contract: how to work in this repository and what done means.
 
-The runner reports the resolved policy to the Hub, and an owner approves it before work runs. A changed `detent.yaml` needs a new approval, so a commit cannot quietly widen what agents may do.
+<!-- BEGIN POLICY APPROVAL RULE -->
+Repository configuration reports do not require approval before dispatch.
+Trusted workflow definitions from the bound repository's default-branch history
+apply automatically. Explicit approval is required for administrative
+configuration adoption, such as applying an external local definition or changing
+local-binding permission. Configuration identity changes do not revoke active
+leases or invalidate recovered source.
+
+On a self-hosted Hub without the web app, read `get_project_policy` and
+`get_onboarding`, then use `approve_project_policy` with the current
+`expected_policy_id` and the chosen `observed_policy_id`. The REST equivalent is
+GET and PUT on `/api/v2/organizations/{organization}/projects/{project}/policy`,
+with GET on the project's `/onboarding` for observed candidates. Approval needs
+administrator authority and preserves revision checks. Cloud owners and admins
+can continue approving in **Settings > Integrations**.
+<!-- END POLICY APPROVAL RULE -->
+
+See [policy approval without the web app](docs/api-mcp-setup.md#policy-approval-without-the-web-app)
+for credentials, request fields and first approval.
 
 Work then moves through the board:
 
@@ -74,8 +92,7 @@ Native projects make no GitHub API calls by default; git clone and push still wo
 
    This creates the runner's identity, writes its configuration, and installs a background service.
 6. Clone the repository into the directory that `register` printed (`~/detent-runner/PROJECT` by default) and install its dependencies.
-7. When the project settings show "A runner is waiting for a new policy", review it and choose **Approve reported policy**.
-8. File an issue in `Todo` and watch it move across the board.
+7. Let the runner report the repository configuration, then file an issue in `Todo` and watch it move across the board.
 
 [Cloud onboarding](docs/cloud-onboarding.md) covers each step in detail, including GitHub and artifact storage. For runners on Fly Sprites, see [Sprite runners](docs/sprite-runners.md).
 
