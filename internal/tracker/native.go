@@ -109,6 +109,7 @@ type NativeIssue struct {
 	ReporterStatus     string              `json:"reporter_status,omitempty"`
 	Archived           bool                `json:"archived"`
 	Terminal           bool                `json:"terminal"`
+	Dispatchable       bool                `json:"dispatchable"`
 	Priority           *int                `json:"priority,omitempty"`
 	Labels             []string            `json:"labels"`
 	Assignees          []string            `json:"assignees"`

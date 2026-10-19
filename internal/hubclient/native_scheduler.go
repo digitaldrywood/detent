@@ -590,6 +590,16 @@ func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request orchestra
 			return nil, err
 		}
 		if !renewable {
+			if err := source.client.Release(ctx, tracker.NativeLease{ID: held.ID, FencingToken: held.FencingToken}, "released"); err != nil && !nativeLeaseLost(err) {
+				return nil, err
+			}
+			for _, attempt := range recovery.Attempts {
+				if attempt.LeaseID == held.ID && attempt.FencingToken == held.FencingToken && (attempt.Status == "running" || attempt.Status == "interrupted") && attempt.Identity != nil {
+					if err := cancelNativeReleasedAttempt(ctx, source.client, held.WorkItemID, attempt); err != nil {
+						return nil, err
+					}
+				}
+			}
 			continue
 		}
 		lease, err := source.client.Renew(ctx, tracker.NativeLease{ID: held.ID, FencingToken: held.FencingToken}, int64(s.leaseTTL/time.Second))
@@ -696,7 +706,7 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 	if err != nil {
 		return false, err
 	}
-	if issue.Terminal || issue.Archived {
+	if issue.Terminal || issue.Archived || !issue.DependencyReady || !issue.Dispatchable {
 		return false, nil
 	}
 	if observation == nil || observation.LocalAttemptID == 0 || observation.Generation == 0 {

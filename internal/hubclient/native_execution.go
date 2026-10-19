@@ -683,14 +683,11 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 		}
 		if attempt.ClaimReleasedAt != nil {
 			if attempt.Outcome == "" || attempt.Outcome == "interrupted" {
-				data := tracker.NativeRunData{AttemptID: attempt.AttemptID, RunID: attempt.RunID, LeaseID: attempt.LeaseID,
-					FencingToken: attempt.FencingToken, PolicyID: attempt.PolicyID, Identity: e.data.Identity,
-					Sequence: attempt.Sequence + 1, Outcome: "cancelled"}
-				event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: attempt.AttemptID + ":terminated:" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.finished", SchemaVersion: 1, Data: data}
-				if err := e.claim.source.client.AppendEvent(ctx, e.claim.lease.WorkItemID, event); err != nil {
+				if err := cancelNativeReleasedAttempt(ctx, e.claim.source.client, e.claim.lease.WorkItemID, attempt); err != nil {
 					return errors.Join(finishErr, err)
 				}
-				attempt.Sequence, attempt.Outcome = data.Sequence, data.Outcome
+				attempt.Sequence++
+				attempt.Outcome = "cancelled"
 			}
 			attempt.Identity = e.data.Identity
 			if attempt.Handoff == nil {
@@ -713,6 +710,14 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 		}
 	}
 	return finishErr
+}
+
+func cancelNativeReleasedAttempt(ctx context.Context, client *NativeClient, item tracker.NativeWorkItemID, attempt tracker.NativeAttempt) error {
+	data := tracker.NativeRunData{AttemptID: attempt.AttemptID, RunID: attempt.RunID, LeaseID: attempt.LeaseID,
+		FencingToken: attempt.FencingToken, PolicyID: attempt.PolicyID, Identity: attempt.Identity,
+		Sequence: attempt.Sequence + 1, Outcome: "cancelled"}
+	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: attempt.AttemptID + ":terminated:" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.finished", SchemaVersion: 1, Data: data}
+	return client.AppendEvent(ctx, item, event)
 }
 
 // NativeChange reports what the finished run left for review.

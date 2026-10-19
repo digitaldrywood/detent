@@ -108,7 +108,10 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	}
 	organization := organizations.Items[0].ID
 	var project tracker.NativeProject
-	if err := admin.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "runners", "idempotency_key": "runners", "states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}, &project); err != nil {
+	if err := admin.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "runners", "idempotency_key": "runners", "require_dependencies": true, "states": []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"Blocked"}},
+		{Name: "Blocked", Transitions: []string{"Todo"}},
+	}}, &project); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "private", "identity.json")
@@ -612,7 +615,49 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		t.Fatalf("incomplete interruption replaced reconnect authority: old=%+v new=%+v", retained, resumedLease)
 	}
 	t.Log("genuine incomplete interruption retained its original lease/fence on reconnect")
-	if err := native.Release(t.Context(), retained, "cancelled"); err != nil {
+	resumedExecution := resumedScheduler.RunExecution(string(issue.WorkItemID))
+	if resumedExecution == nil {
+		t.Fatal("resumed claim has no native execution")
+	}
+	if err := resumedExecution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := adminNative.Issue(t.Context(), issue.WorkItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := adminNative.Transition(t.Context(), issue.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Blocked", Reason: "user_requested"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prerequisite, err := adminNative.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Unfinished prerequisite", Body: "Create the inventory schema and migrate existing storage.", State: "Blocked"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err = adminNative.Dependency(t.Context(), issue.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: held.Revision, RelatedWorkItemID: prerequisite.WorkItemID, Operation: "add"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	heldScheduler, err := NewScheduler(restarted, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	heldCandidates, err := heldScheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "native", Policy: descriptor})
+	if err != nil || len(heldCandidates) != 0 {
+		t.Fatalf("operator hold recovered as runnable: candidates=%+v error=%v", heldCandidates, err)
+	}
+	current, err = adminNative.Issue(t.Context(), issue.WorkItemID)
+	if err != nil || current.State != "Blocked" || current.Revision != held.Revision || current.DependencyReady {
+		t.Fatalf("recovery changed the operator hold: %+v, %v", current, err)
+	}
+	if _, err := native.Renew(t.Context(), retained, 90); !nativeLeaseLost(err) {
+		t.Fatalf("recovery retained the held lease: %v", err)
+	}
+	heldRecovery, err := adminNative.Recovery(t.Context(), issue.WorkItemID)
+	if err != nil || len(heldRecovery.Attempts) != 1 || heldRecovery.Attempts[0].Outcome != "cancelled" || heldRecovery.Attempts[0].ClaimReleasedAt == nil {
+		t.Fatalf("recovery retained a running attempt: %+v, %v", heldRecovery.Attempts, err)
+	}
+	if _, err := adminNative.Transition(t.Context(), issue.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Todo", Reason: "user_requested"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
