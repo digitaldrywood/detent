@@ -7,6 +7,7 @@ import { defineConfig, type Plugin } from "vitest/config";
 /** Include the complete upstream licenses in the distributed client. */
 function attributionBanner(): string {
   const licence = readFileSync(new URL("./LICENSE.t3code", import.meta.url), "utf8");
+  const voiceLicence = readFileSync(new URL("./LICENSE.voice-activity", import.meta.url), "utf8");
   const pierreLicence = readFileSync(new URL("./LICENSE.pierre-diffs", import.meta.url), "utf8");
   return [
     "/*!",
@@ -18,6 +19,10 @@ function attributionBanner(): string {
     " * Detent Cloud uses @pierre/diffs, licensed under the Apache License, Version 2.0.",
     " *",
     ...pierreLicence.trimEnd().split("\n").map((line) => line ? ` * ${line}` : " *"),
+    " *",
+    " * Detent Cloud uses @ricky0123/vad-web and Silero VAD for browser voice activity detection.",
+    " *",
+    ...voiceLicence.trimEnd().split("\n").map((line) => line ? ` * ${line}` : " *"),
     " */",
   ].join("\n");
 }
@@ -423,6 +428,7 @@ export default defineConfig({
   build: {
     outDir: "../../static/app/conversation",
     emptyOutDir: true,
+    assetsInlineLimit: (path) => path.endsWith("vad.worklet.bundle.min.js") ? false : undefined,
     chunkSizeWarningLimit: 700,
     // `app.js` and `app.css` keep fixed names: the shell references them
     // literally and the hub revalidates them on every load. Everything under
@@ -457,7 +463,10 @@ export default defineConfig({
         inlineDynamicImports: false,
         hashCharacters: "hex",
         chunkFileNames: "chunks/[name]-[hash].js",
-        assetFileNames: (asset) =>
+        assetFileNames: (asset) => asset.names?.some((name) => name.endsWith(".mjs"))
+          ? "assets/[name]-[hash].js" :
+          asset.names?.some((name) => name === "silero_vad_v5.onnx" || name === "vad.worklet.bundle.min.js")
+            ? "voice/[name][extname]" :
           asset.names?.some((name) => name.endsWith(".css")) ? "app.css" : "assets/[name]-[hash][extname]",
       },
     },

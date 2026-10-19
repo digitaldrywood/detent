@@ -1,10 +1,15 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Composer } from "../../src/app/components/Composer.tsx";
 import { Timeline } from "../../src/app/components/Timeline.tsx";
 import { followCreatedConversation, useConversationSpeech, type ConversationSpeech } from "../../src/app/hooks/useConversationSpeech.ts";
+import { createVoiceActivity } from "../../src/app/lib/voiceActivity.ts";
+import type { RealTimeVADOptions } from "@ricky0123/vad-web";
+
+vi.mock("../../src/app/lib/voiceActivity.ts", () => ({ createVoiceActivity: vi.fn() }));
+
 import { DEFAULT_TURN_PREFERENCES } from "../../src/contracts/index.ts";
 import type { ConversationDetail } from "../../src/runtime/state/conversationState.ts";
 import { assistantMessage, conversation, detail, execution, userMessage } from "./builders.ts";
@@ -13,13 +18,17 @@ const speak = vi.fn();
 const cancel = vi.fn();
 let voice: ConversationSpeech;
 
-function Harness({ data, id = "chat" }: { data: ConversationDetail; id?: string }) {
+function Harness({ data, id = "chat", value = "Next message", onVoiceSend, sending = false, streaming = false, disabled = false, blockedReason = null }: {
+  data: ConversationDetail; id?: string; value?: string; onVoiceSend?: (text: string) => void | Promise<void>;
+  sending?: boolean; streaming?: boolean; disabled?: boolean; blockedReason?: string | null;
+}) {
   const speech = useConversationSpeech(id, data);
   voice = speech;
   return <>
     <Timeline detail={data} speech={speech} onLoadOlder={() => {}} onRetry={() => {}} onDismiss={() => {}} />
-    <Composer value="Next message" onChange={() => {}} onSend={speech.prepareToSend}
-      sending={false} streaming={false} preferences={DEFAULT_TURN_PREFERENCES}
+    <Composer value={value} onChange={() => {}} onSend={speech.prepareToSend}
+      onVoiceSend={onVoiceSend === undefined ? undefined : (text) => { speech.prepareToSend(); return onVoiceSend(text); }}
+      sending={sending} streaming={streaming} disabled={disabled} blockedReason={blockedReason} preferences={DEFAULT_TURN_PREFERENCES}
       onPreferencesChange={() => {}} speech={speech} />
   </>;
 }
@@ -183,5 +192,221 @@ describe("conversation speech", () => {
     vi.stubGlobal("speechSynthesis", undefined);
     render(<Harness data={detail()} />);
     expect(screen.queryByRole("button", { name: "Voice" })).toBeNull();
+  });
+});
+
+
+describe("hands-free conversation", () => {
+  const stopTrack = vi.fn();
+  const track = { enabled: true, stop: stopTrack };
+  const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
+  const getUserMedia = vi.fn();
+  const closeContext = vi.fn();
+  const destroyVad = vi.fn();
+  let callbacks: Pick<RealTimeVADOptions, "onSpeechRealStart" | "onSpeechEnd">;
+  const workers: FakeWorker[] = [];
+
+  class FakeWorker {
+    onmessage: ((event: { data: { type: string; text?: string } }) => void) | null = null;
+    onerror: (() => void) | null = null;
+    terminate = vi.fn();
+    postMessage = vi.fn((data: { audio?: Float32Array }) => {
+      if (!data.audio) queueMicrotask(() => this.onmessage?.({ data: { type: "ready" } }));
+    });
+    constructor() { workers.push(this); }
+  }
+
+  beforeEach(() => {
+    workers.length = 0;
+    stopTrack.mockReset();
+    closeContext.mockReset();
+    destroyVad.mockReset().mockResolvedValue(undefined);
+    getUserMedia.mockReset().mockResolvedValue(stream);
+    vi.stubGlobal("isSecureContext", true);
+    vi.stubGlobal("AudioWorkletNode", class {});
+    vi.stubGlobal("AudioContext", class {
+      state = "running";
+      resume = async () => {};
+      close = closeContext;
+    });
+    vi.stubGlobal("Worker", FakeWorker);
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
+    vi.mocked(createVoiceActivity).mockReset().mockImplementation(async (_context, _stream, handlers) => {
+      callbacks = handlers;
+      return { destroy: destroyVad } as unknown as Awaited<ReturnType<typeof createVoiceActivity>>;
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    delete (navigator as unknown as { mediaDevices?: unknown }).mediaDevices;
+  });
+
+  async function startHandsFree() {
+    fireEvent.click(screen.getByRole("button", { name: "Start hands-free voice" }));
+    await screen.findByText("Listening");
+  }
+
+  async function finishPhrase(text: string) {
+    act(() => { callbacks.onSpeechRealStart(); callbacks.onSpeechEnd(new Float32Array(16000).fill(0.1)); });
+    await waitFor(() => expect(workers[0]!.postMessage).toHaveBeenCalledWith(expect.objectContaining({ audio: expect.any(Float32Array) }), expect.any(Array)));
+    expect(screen.getByText("Transcribing…")).toBeTruthy();
+    await act(async () => { workers[0]!.onmessage?.({ data: { type: "result", text } }); });
+  }
+
+  it("listens, sends one local transcript, speaks the reply and listens for the next message", async () => {
+    let finishSend!: () => void;
+    const onVoiceSend = vi.fn().mockReturnValueOnce(new Promise<void>((resolve) => { finishSend = resolve; }));
+    const view = render(<Harness data={detail()} value="" onVoiceSend={onVoiceSend} />);
+    expect(getUserMedia).not.toHaveBeenCalled();
+    await startHandsFree();
+    expect(getUserMedia).toHaveBeenCalledWith({ audio: expect.objectContaining({ echoCancellation: true }) });
+    expect(voice.enabled).toBe(true);
+    expect(localStorage.getItem("detent.chat.voice")).toBeNull();
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Start voice input" }).disabled).toBe(true);
+    await finishPhrase("Please review this");
+    expect(onVoiceSend).toHaveBeenCalledExactlyOnceWith("Please review this");
+    expect(screen.getByText("Waiting for reply…")).toBeTruthy();
+    const transcriptions = workers[0]!.postMessage.mock.calls.length;
+    await act(async () => {
+      callbacks.onSpeechRealStart();
+      callbacks.onSpeechEnd(new Float32Array(16000).fill(0.1));
+    });
+    expect(workers[0]!.postMessage).toHaveBeenCalledTimes(transcriptions);
+    expect(screen.getByText("Waiting for reply…")).toBeTruthy();
+    await act(async () => { finishSend(); });
+    view.rerender(<Harness data={reply("Here is the answer.", false)} value="" onVoiceSend={onVoiceSend} />);
+    expect(said()).toEqual(["Here is the answer."]);
+    expect(screen.getByText("Speaking")).toBeTruthy();
+    act(() => { speak.mock.calls.at(-1)![0].onend(); });
+    expect(screen.getByText("Listening")).toBeTruthy();
+    await finishPhrase("One more question");
+    expect(onVoiceSend).toHaveBeenLastCalledWith("One more question");
+    expect(onVoiceSend).toHaveBeenCalledTimes(2);
+  });
+
+  it("interrupts playback on speech and suppresses remaining streamed sentences before sending the new message", async () => {
+    const onVoiceSend = vi.fn();
+    const view = render(<Harness data={detail()} value="" onVoiceSend={onVoiceSend} />);
+    await startHandsFree();
+    view.rerender(<Harness data={reply("First. Second. ")} value="" streaming onVoiceSend={onVoiceSend} />);
+    const lateEnd = speak.mock.calls.at(-1)![0].onend;
+    const before = cancel.mock.calls.length;
+    act(() => { callbacks.onSpeechRealStart(); });
+    expect(cancel.mock.calls.length).toBeGreaterThan(before);
+    expect(screen.queryByText("Speaking")).toBeNull();
+    view.rerender(<Harness data={reply("First. Second. Third.", false)} value="" onVoiceSend={onVoiceSend} />);
+    expect(said()).toEqual(["First.", "Second."]);
+    act(() => lateEnd?.());
+    await finishPhrase("Let me clarify");
+    expect(onVoiceSend).toHaveBeenCalledExactlyOnceWith("Let me clarify");
+    view.rerender(<Harness data={reply("Understood.", false, { id: "next", seq: 21 })} value="" onVoiceSend={onVoiceSend} />);
+    expect(said().at(-1)).toBe("Understood.");
+  });
+
+  it("ends hands-free and releases capture when sending the transcript fails", async () => {
+    const onVoiceSend = vi.fn().mockRejectedValue(new Error("Send failed"));
+    render(<Harness data={detail()} value="" onVoiceSend={onVoiceSend} />);
+    await startHandsFree();
+    await finishPhrase("Please review this");
+    expect(screen.getByRole("alert").textContent).toContain("The voice message could not send");
+    expect(screen.queryByRole("button", { name: "End hands-free voice" })).toBeNull();
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(destroyVad).toHaveBeenCalledOnce();
+    expect(workers[0]!.terminate).toHaveBeenCalledOnce();
+    expect(voice.enabled).toBe(false);
+  });
+
+  it.each(["end", "hidden", "pagehide", "leave", "disabled", "blocked", "draft", "unmount"])("releases microphone, model and playback and ignores late transcription on %s", async (reason) => {
+    const onVoiceSend = vi.fn();
+    const view = render(<Harness data={detail()} value="" onVoiceSend={onVoiceSend} />);
+    await startHandsFree();
+    act(() => { callbacks.onSpeechEnd(new Float32Array(16000).fill(0.1)); });
+    await waitFor(() => expect(workers[0]!.postMessage.mock.calls.length).toBe(2));
+    if (reason === "end") fireEvent.click(screen.getByRole("button", { name: "End hands-free voice" }));
+    if (reason === "hidden") {
+      vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+    }
+    if (reason === "pagehide") act(() => window.dispatchEvent(new Event("pagehide")));
+    if (reason === "unmount") view.unmount();
+    if (["leave", "disabled", "blocked", "draft"].includes(reason)) view.rerender(<Harness data={detail()}
+      id={reason === "leave" ? "other" : "chat"} disabled={reason === "disabled"}
+      blockedReason={reason === "blocked" ? "Connection lost" : null}
+      value={reason === "draft" ? "Typed draft" : ""} onVoiceSend={onVoiceSend} />);
+    expect(stopTrack).toHaveBeenCalled();
+    expect(closeContext).toHaveBeenCalled();
+    expect(destroyVad).toHaveBeenCalled();
+    expect(workers[0]!.terminate).toHaveBeenCalled();
+    await act(async () => {
+      workers[0]!.onmessage?.({ data: { type: "result", text: "Late words" } });
+      callbacks.onSpeechEnd(new Float32Array(16000));
+    });
+    expect(onVoiceSend).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "End hands-free voice" })).toBeNull();
+    if (reason !== "unmount") expect(voice.enabled).toBe(false);
+  });
+
+  it.each(["microphone", "model"])("ends mode after a %s failure and leaves ordinary input usable", async (failure) => {
+    if (failure === "microphone") getUserMedia.mockRejectedValue(new DOMException("Denied", "NotAllowedError"));
+    else vi.mocked(createVoiceActivity).mockRejectedValue(new Error("Unsupported model"));
+    render(<Harness data={detail()} value="" onVoiceSend={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Start hands-free voice" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(failure === "microphone" ? "Microphone access is blocked" : "Hands-free voice could not start");
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Start voice input" }).disabled).toBe(false);
+    expect(voice.enabled).toBe(false);
+    expect(closeContext).toHaveBeenCalled();
+    if (failure === "model") expect(stopTrack).toHaveBeenCalled();
+  });
+
+  it("stops capture granted after mode ended without starting the models", async () => {
+    let grant!: (stream: MediaStream) => void;
+    getUserMedia.mockReturnValue(new Promise((resolve) => { grant = resolve; }));
+    render(<Harness data={detail()} value="" onVoiceSend={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Start hands-free voice" }));
+    fireEvent.click(screen.getByRole("button", { name: "End hands-free voice" }));
+    await act(async () => { grant(stream as unknown as MediaStream); });
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(createVoiceActivity).not.toHaveBeenCalled();
+    expect(workers).toHaveLength(0);
+  });
+
+  it("ends during model preparation and destroys a VAD that finishes loading later", async () => {
+    let finishLoad!: (vad: Awaited<ReturnType<typeof createVoiceActivity>>) => void;
+    vi.mocked(createVoiceActivity).mockReturnValue(new Promise((resolve) => { finishLoad = resolve; }));
+    render(<Harness data={detail()} value="" onVoiceSend={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Start hands-free voice" }));
+    await waitFor(() => expect(createVoiceActivity).toHaveBeenCalledOnce());
+    expect(track.enabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "End hands-free voice" }));
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(workers[0]!.terminate).toHaveBeenCalledOnce();
+    await act(async () => { finishLoad({ destroy: destroyVad } as unknown as Awaited<ReturnType<typeof createVoiceActivity>>); });
+    expect(destroyVad).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Listening")).toBeNull();
+  });
+
+  it("restores the saved spoken-reply preference when hands-free ends", async () => {
+    localStorage.setItem("detent.chat.voice", "on");
+    render(<Harness data={detail()} value="" onVoiceSend={vi.fn()} />);
+    await startHandsFree();
+    fireEvent.click(screen.getByRole("button", { name: "End hands-free voice" }));
+    expect(voice.enabled).toBe(true);
+    expect(localStorage.getItem("detent.chat.voice")).toBe("on");
+  });
+
+  it.each(["speech", "worklet", "wasm", "simd", "worker", "microphone", "insecure"])("hides hands-free without required %s support", (missing) => {
+    if (missing === "speech") vi.stubGlobal("speechSynthesis", undefined);
+    if (missing === "worklet") vi.stubGlobal("AudioWorkletNode", undefined);
+    if (missing === "wasm") vi.stubGlobal("WebAssembly", undefined);
+    if (missing === "simd") vi.stubGlobal("WebAssembly", { validate: () => false });
+    if (missing === "worker") vi.stubGlobal("Worker", undefined);
+    if (missing === "microphone") delete (navigator as unknown as { mediaDevices?: unknown }).mediaDevices;
+    if (missing === "insecure") vi.stubGlobal("isSecureContext", false);
+    render(<Harness data={detail()} value="" onVoiceSend={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Start hands-free voice" })).toBeNull();
+    expect(getUserMedia).not.toHaveBeenCalled();
   });
 });
