@@ -322,6 +322,7 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 		confirmed                                                                                                                  bool
 		delegation, source, state                                                                                                  string
 		priority                                                                                                                   *int
+		wantPriority                                                                                                               int
 		shortContract                                                                                                              bool
 		ordinary                                                                                                                   bool
 		noPolicy, noTemplate, unavailable, foreign, stalePolicy, staleRepository, markerOnly, duplicate, noDispatch, otherCheckout bool
@@ -332,6 +333,8 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 		{name: "verification unavailable", unavailable: true},
 		{name: "foreign repository", foreign: true},
 		{name: "approved generic project", confirmed: true},
+		{name: "approved generic High project", confirmed: true, shortContract: true, delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/verify.yaml` on `release/v*` enter Todo with High priority.", priority: new(1), wantPriority: 1},
+		{name: "High policy normalizes priority", confirmed: true, delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/verify.yaml` on `release/v2.0` enter Todo with High priority.", state: "Done", priority: new(0), wantPriority: 1},
 		{name: "delegated lane and priority", confirmed: true, state: "Done", priority: new(3)},
 		{name: "delegated default lane", confirmed: true, state: "Blocked"},
 		{name: "approved three-section project", confirmed: true, shortContract: true},
@@ -440,7 +443,7 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 				expectedWorkflow, expectedBranch := ".github/workflows/ci.yml", ""
 				if test.delegation != "" {
 					expectedWorkflow, expectedBranch = ".github/workflows/verify.yaml", "release/v2.0"
-					if test.name == "approved release family" {
+					if test.name == "approved release family" || test.name == "approved generic High project" {
 						expectedBranch = "release/v*"
 					}
 				}
@@ -483,7 +486,7 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 				}
 				return
 			}
-			if issue.State != "Todo" || issue.Terminal || issue.Priority == nil || *issue.Priority != 0 {
+			if issue.State != "Todo" || issue.Terminal || issue.Priority == nil || *issue.Priority != test.wantPriority {
 				t.Fatalf("delegated lane and priority: %+v", issue)
 			}
 			if (len(issue.IssueContract.ConfirmedSections) == sectionCount) != test.confirmed {

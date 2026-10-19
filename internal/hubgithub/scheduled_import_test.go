@@ -35,12 +35,13 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 		shortContract, runOrigin                                                                   bool
 		reportIdentity                                                                             bool
 		native                                                                                     bool
+		priority                                                                                   int
 	}{
 		{name: "native approved project", native: true, workflow: ".github/workflows/ci.yml", branch: "develop", state: "Todo"},
-		{name: "native portable release contract", native: true, shortContract: true, runOrigin: true, workflow: ".github/workflows/validated-release.yml", branch: "release/v2.1", state: "Todo", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/validated-release.yml` on `release/v*` enter Todo with Urgent priority."},
-		{name: "release family rejects develop", native: true, workflow: ".github/workflows/validated-release.yml", branch: "develop", state: "Triage", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/validated-release.yml` on `release/v*` enter Todo with Urgent priority."},
-		{name: "release family rejects nested branch", native: true, workflow: ".github/workflows/validated-release.yml", branch: "release/v2.1/feature", state: "Triage", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/validated-release.yml` on `release/v*` enter Todo with Urgent priority."},
-		{name: "release family rejects other workflow", native: true, workflow: ".github/workflows/ci.yml", branch: "release/v2.1", state: "Triage", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/validated-release.yml` on `release/v*` enter Todo with Urgent priority."},
+		{name: "native portable release contract", priority: 1, native: true, shortContract: true, runOrigin: true, workflow: ".github/workflows/validated-release.yml", branch: "release/v2.1", state: "Todo", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/validated-release.yml` on `release/v*` enter Todo with High priority."},
+		{name: "release family rejects develop", native: true, workflow: ".github/workflows/validated-release.yml", branch: "develop", state: "Triage", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/validated-release.yml` on `release/v*` enter Todo with High priority."},
+		{name: "release family rejects nested branch", native: true, workflow: ".github/workflows/validated-release.yml", branch: "release/v2.1/feature", state: "Triage", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/validated-release.yml` on `release/v*` enter Todo with High priority."},
+		{name: "release family rejects other workflow", native: true, workflow: ".github/workflows/ci.yml", branch: "release/v2.1", state: "Triage", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/validated-release.yml` on `release/v*` enter Todo with High priority."},
 		{name: "native exact release branch", native: true, workflow: ".github/workflows/ci.yaml", branch: "release/v2.0", state: "Todo", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/ci.yaml` on `release/v2.0` enter Todo with Urgent priority."},
 		{name: "native unapproved workflow", native: true, workflow: ".github/workflows/other.yml", branch: "develop", state: "Triage"},
 		{name: "native unapproved branch", native: true, workflow: ".github/workflows/ci.yaml", branch: "release/v2.0", state: "Triage", delegation: alternate},
@@ -206,7 +207,7 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 				t.Fatalf("lane=%s want=%s", issue.State, test.state)
 			}
 			if test.state == "Todo" {
-				if (!test.native && (issue.Priority == nil || *issue.Priority != 0)) || len(issue.IssueContract.ConfirmedSections) != sectionCount {
+				if (issue.Priority == nil || *issue.Priority != test.priority) || len(issue.IssueContract.ConfirmedSections) != sectionCount {
 					t.Fatalf("admission=%+v", issue)
 				}
 				contract, err := config.ResolvePolicyIssueContract(descriptor)

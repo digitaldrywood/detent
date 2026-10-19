@@ -28,6 +28,7 @@ type nativeWorkScheduledRepair struct {
 	Branches       []string `json:"branches"`
 	Body           string   `json:"body"`
 	EvidenceSchema int      `json:"evidence_schema"`
+	Priority       int      `json:"priority"`
 }
 
 // The scope is reconstructed by operatorCurrentAuthority on every invocation.
@@ -100,7 +101,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			if err != nil {
 				return operatortool.Result{}, safeWorkReadError(err)
 			}
-			if workflow, branch, authorized := repairContract.ScheduledRepairWorkflow(); authorized {
+			if workflow, branch, priority, authorized := repairContract.ScheduledRepairWorkflow(); authorized {
 				repository, err := policyRepository(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
 				if err != nil {
 					return operatortool.Result{}, safeWorkReadError(err)
@@ -109,7 +110,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 				if branch == "" {
 					branches = []string{"develop", "release/v*"}
 				}
-				issueContract.ScheduledRepair = &nativeWorkScheduledRepair{PolicyID: approval.Policy.ID, Repository: repository, Workflow: workflow, Branches: branches, Body: repairContract.ScheduledRepairBody(), EvidenceSchema: 1}
+				issueContract.ScheduledRepair = &nativeWorkScheduledRepair{PolicyID: approval.Policy.ID, Repository: repository, Workflow: workflow, Branches: branches, Body: repairContract.ScheduledRepairBody(), EvidenceSchema: 1, Priority: priority}
 			}
 		}
 		labels, err := readNativeLabels(ctx, s.database.reader, scope)

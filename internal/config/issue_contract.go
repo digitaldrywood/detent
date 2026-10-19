@@ -114,39 +114,46 @@ func (c IssueContract) ScheduledRepairBody() string {
 }
 
 func (c IssueContract) ScheduledImportBody() string {
-	if _, _, authorized := c.ScheduledImportWorkflow(); !authorized {
+	if _, _, _, authorized := c.ScheduledImportWorkflow(); !authorized {
 		return ""
 	}
 	return c.ScheduledRepairBody()
 }
 
-var scheduledImportWorkflow = regexp.MustCompile("^New verified GitHub Actions CI repair reports from `(\\.github/workflows/[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ya?ml)` on `(release/v\\*|[A-Za-z0-9_][A-Za-z0-9_./-]*)` enter Todo with Urgent priority\\.$")
+var scheduledImportWorkflow = regexp.MustCompile("^New verified GitHub Actions CI repair reports from `(\\.github/workflows/[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ya?ml)` on `(release/v\\*|[A-Za-z0-9_][A-Za-z0-9_./-]*)` enter Todo with (Urgent|High) priority\\.$")
 
-func (c IssueContract) ScheduledRepairWorkflow() (string, string, bool) {
+func (c IssueContract) ScheduledRepairWorkflow() (string, string, int, bool) {
 	if c.ScheduledRepairBody() == "" {
-		return "", "", false
+		return "", "", 0, false
 	}
 	return c.scheduledWorkflow(true)
 }
 
-func (c IssueContract) ScheduledImportWorkflow() (string, string, bool) {
+func (c IssueContract) ScheduledImportWorkflow() (string, string, int, bool) {
 	return c.scheduledWorkflow(false)
 }
 
-func (c IssueContract) scheduledWorkflow(allowLegacy bool) (string, string, bool) {
+func (c IssueContract) scheduledWorkflow(allowLegacy bool) (string, string, int, bool) {
 	_, template, err := resolveAdmissionSection(c.Context, "Scheduled CI repair contract", "scheduled repair", BacklogAdmissionEffortFileWorkflow)
 	if err != nil {
-		return "", "", false
+		return "", "", 0, false
 	}
 	preamble, _, _ := strings.Cut(template, "### ")
 	preamble = strings.TrimSpace(preamble)
 	if preamble == "New verified GitHub Actions CI repair reports enter Todo with Urgent priority." || allowLegacy && preamble == "" {
-		return ".github/workflows/ci.yml", "", true
+		return ".github/workflows/ci.yml", "", 0, true
+	}
+	if preamble == "New verified GitHub Actions CI repair reports enter Todo with High priority." {
+		return ".github/workflows/ci.yml", "", 1, true
 	}
 	if match := scheduledImportWorkflow.FindStringSubmatch(preamble); len(match) > 0 {
-		return match[1], match[2], true
+		priority := 0
+		if match[3] == "High" {
+			priority = 1
+		}
+		return match[1], match[2], priority, true
 	}
-	return "", "", false
+	return "", "", 0, false
 }
 
 func IssueContractSectionDigests(body string) map[string]string {
