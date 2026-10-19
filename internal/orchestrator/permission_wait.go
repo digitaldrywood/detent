@@ -11,14 +11,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
-const permissionWaitReason = "permission_wait"
+const (
+	permissionWaitReason                = "permission_wait"
+	permissionWaitCriteriaUnsatisfiable = "acceptance_criteria_unsatisfiable"
+)
 
 type permissionWaitRecord struct {
-	Question      string `json:"question"`
-	Kind          string `json:"kind"`
-	Source        string `json:"source"`
-	WorkAttemptID int64  `json:"work_attempt_id"`
-	SessionID     string `json:"session_id,omitempty"`
+	Question      string   `json:"question"`
+	Kind          string   `json:"kind"`
+	Source        string   `json:"source"`
+	WorkAttemptID int64    `json:"work_attempt_id"`
+	SessionID     string   `json:"session_id,omitempty"`
+	Criteria      []string `json:"criteria,omitempty"`
 }
 
 func terminalPermissionWait(output string) (permissionWaitRecord, bool) {
@@ -71,7 +75,7 @@ func terminalPermissionWait(output string) (permissionWaitRecord, bool) {
 	return permissionWaitRecord{}, false
 }
 
-func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
+func permissionWaitCompletionAllowed(event runpkg.Completion) bool {
 	if event.Result.FinalState != "" && event.Result.FinalState != runpkg.FinalStateCompleted && event.Result.FinalState != runpkg.FinalStateNeedsHumanAttention {
 		return false
 	}
@@ -80,6 +84,22 @@ func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state
 		if event.Result.FinalState != runpkg.FinalStateNeedsHumanAttention || !deliveryFailure || commandErr == nil {
 			return false
 		}
+	}
+	return true
+}
+
+func unsatisfiableCriteriaWait(criteria []string) permissionWaitRecord {
+	return permissionWaitRecord{
+		Question: "Rewrite each of these acceptance criteria as a pre-merge check or remove it; no repository change can satisfy them before merge:\n- " + strings.Join(criteria, "\n- "),
+		Kind:     permissionWaitCriteriaUnsatisfiable,
+		Source:   "acceptance_validator",
+		Criteria: criteria,
+	}
+}
+
+func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
+	if !permissionWaitCompletionAllowed(event) {
+		return false
 	}
 	wait, ok := terminalPermissionWait(event.Result.FinalMessage)
 	if !ok && event.Result.FinalState == runpkg.FinalStateNeedsHumanAttention {
@@ -93,6 +113,10 @@ func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state
 	if !ok {
 		return false
 	}
+	return o.parkPermissionWait(ctx, state, event, running, wait)
+}
+
+func (o *Orchestrator) parkPermissionWait(ctx context.Context, state *State, event runpkg.Completion, running Running, wait permissionWaitRecord) bool {
 	wait.Question = o.operatorText(wait.Question)
 	wait.WorkAttemptID = running.WorkAttemptID
 	wait.SessionID = running.SessionID
@@ -100,8 +124,11 @@ func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state
 	report, _ := workpad.SignalFromComment(event.Result.FinalMessage, "", "")
 	detail = nativeCompletionReason(detail, report, event.Result.FinalMessage, nil)
 	remedy := "Record direction for this question, then move the issue to Rework: " + wait.Question
-	if wait.Kind == "implementation_permission" {
+	switch wait.Kind {
+	case "implementation_permission":
 		remedy = "The worker requested implementation permission. Check the assigned scope and record direction, preserving explicit approval gates, then move the issue to Rework: " + wait.Question
+	case permissionWaitCriteriaUnsatisfiable:
+		remedy = wait.Question + "\nThen move the issue to Rework."
 	}
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
