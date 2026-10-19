@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -73,7 +74,7 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 				clientConfig.Token = "configured-token"
 				artifacts.service.cfg.Client = NewGitHubClient(clientConfig)
 			}
-			updater := &schedulerUpdaterStub{checkStatus: Status{UpdateAvailable: true, LatestVersion: "1.0.1", InstallSource: InstallSourceRelease}, applyStatus: Status{Action: ActionUpdated, LatestVersion: "1.0.1", Binary: "verified-controller"}}
+			updater := &schedulerUpdaterStub{checkStatus: Status{UpdateAvailable: true, LatestVersion: "1.0.1", InstallSource: InstallSourceRelease}, applyStatus: Status{Action: ActionUpdated, LatestVersion: "1.0.1", LatestCommit: testUpdatedCommit, Binary: "verified-controller", BinarySHA256: strings.Repeat("c", 64), VerifiedRelease: true}}
 			var drains, restarts int
 			preflight := BinaryPreflight(nil)
 			if path == "download failure" {
@@ -124,7 +125,7 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 					break
 				}
 				observed = scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), request)
-				if observed.Receipt == nil || !observed.Receipt.ExecutionReady() || observed.Running.Version != "1.0.0" || observed.Receipt.Applied == nil || observed.Receipt.Applied.Version != "1.0.1" {
+				if observed.Receipt == nil || !observed.Receipt.ExecutionReady() || observed.Running.Version != "1.0.0" || observed.Receipt.Applied == nil || observed.Receipt.Applied.Version != "1.0.1" || observed.Receipt.Applied.SHA256 != updater.applyStatus.BinarySHA256 {
 					t.Fatalf("untruthful mixed-version update receipt: %+v", observed)
 				}
 				resumed, resumeErr := NewScheduler(scheduler.cfg)
@@ -137,6 +138,7 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 				publish("1.0.2")
 				now = now.Add(time.Hour)
 				updater.checkStatus.LatestVersion = "1.0.2"
+				updater.applyStatus.LatestVersion = "1.0.2"
 				observed = scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), nil)
 				if observed.AvailableVersion != "1.0.2" || observed.Discovery != "available" {
 					t.Fatalf("later release discovery stalled: %+v", observed)
@@ -150,6 +152,13 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 			default:
 				_, err = scheduler.ApplyRelease(t.Context(), true)
 			}
+			wantControllerInstalls := 1
+			switch path {
+			case "startup", "authenticated startup", "enrolled advanced target":
+				wantControllerInstalls = 0
+			case "enrolled":
+				wantControllerInstalls = 2
+			}
 			if path == "download failure" {
 				if err == nil || drains != 0 || restarts != 0 {
 					t.Fatalf("artifact failure drained or appeared successful: %v, drains=%d restarts=%d", err, drains, restarts)
@@ -160,8 +169,8 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 				if drains != 1 || restarts != 1 || updater.applyCalls != 1 {
 					t.Fatalf("exceptional update did not use existing replacement: drains=%d restarts=%d applies=%d", drains, restarts, updater.applyCalls)
 				}
-			} else if drains != 0 || restarts != 0 || updater.applyCalls != 0 || path != "startup" && path != "authenticated startup" && path != "enrolled advanced target" && scheduler.Status().State != "applied" {
-				t.Fatalf("routine update withheld capacity: drains=%d restarts=%d applies=%d status=%+v", drains, restarts, updater.applyCalls, scheduler.Status())
+			} else if drains != 0 || restarts != 0 || updater.applyCalls != wantControllerInstalls || path != "startup" && path != "authenticated startup" && path != "enrolled advanced target" && scheduler.Status().State != "applied" {
+				t.Fatalf("routine update withheld capacity or skipped the controller binary: drains=%d restarts=%d applies=%d want %d status=%+v", drains, restarts, updater.applyCalls, wantControllerInstalls, scheduler.Status())
 			}
 			if path == "critical" || path == "protocol incompatible" || path == "startup critical" || path == "startup incompatible" {
 				fixture.listErr = errors.New("discovery unavailable")
@@ -189,6 +198,80 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 			}
 			if _, err := os.Stat(active.Status.Binary); err != nil {
 				t.Fatalf("update removed active worker artifact: %v", err)
+			}
+		})
+	}
+}
+
+func TestSchedulerRestartsControllerBehindAppliedRelease(t *testing.T) {
+	t.Parallel()
+	type heartbeat struct {
+		advance time.Duration
+		idle    bool
+		accept  bool
+	}
+	for _, test := range []struct {
+		name         string
+		applyErr     error
+		heartbeats   []heartbeat
+		wantRestarts []string
+		wantState    string
+		wantReserved int
+	}{
+		{name: "busy controller within deferral keeps serving", heartbeats: []heartbeat{{advance: time.Hour}, {advance: time.Hour}}, wantState: "applied"},
+		{name: "released worker leases restart into installed binary", heartbeats: []heartbeat{{advance: time.Minute}, {advance: time.Minute, idle: true, accept: true}, {advance: time.Minute, idle: true, accept: true}}, wantRestarts: []string{"verified-controller"}, wantState: "restart_requested", wantReserved: 1},
+		{name: "deferral elapsed requests graceful drain", heartbeats: []heartbeat{{advance: 5 * time.Hour}, {advance: time.Hour, accept: true}}, wantRestarts: []string{"verified-controller"}, wantState: "restart_requested"},
+		{name: "declined restart retries", heartbeats: []heartbeat{{idle: true}, {idle: true, accept: true}}, wantRestarts: []string{"verified-controller", "verified-controller"}, wantState: "restart_requested", wantReserved: 1},
+		{name: "controller install refused never restarts", applyErr: ErrRefused, heartbeats: []heartbeat{{idle: true, accept: true}, {advance: 7 * time.Hour, accept: true}}, wantState: "applied"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			artifacts, _, publish := workerArtifactFixture(t)
+			publish("1.0.0")
+			publish("1.0.1")
+			updater := &schedulerUpdaterStub{checkStatus: Status{UpdateAvailable: true, LatestVersion: "1.0.1", InstallSource: InstallSourceRelease}, applyErr: test.applyErr,
+				applyStatus: Status{Action: ActionUpdated, LatestVersion: "1.0.1", LatestCommit: testUpdatedCommit, Binary: "verified-controller", BinarySHA256: strings.Repeat("c", 64), VerifiedRelease: true}}
+			if test.applyErr != nil {
+				updater.applyStatus = Status{Action: ActionRefused}
+			}
+			now := time.Now().UTC()
+			current := heartbeat{}
+			var restarts []string
+			reserved := 0
+			scheduler, err := NewScheduler(SchedulerConfig{WorkerArtifacts: artifacts, Now: func() time.Time { return now }, Updater: updater, AutoApplyEnabled: true, CheckInterval: time.Hour, MaxDeferral: 6 * time.Hour,
+				StatePath: filepath.Join(t.TempDir(), "update.json"), RunningBuild: runnerauth.BuildEvidence{Version: "1.0.0", Commit: testPreviousCommit, Source: "release", SHA256: strings.Repeat("a", 64), OS: "linux", Architecture: "amd64", ObservedAt: now},
+				ReserveIdle: func(context.Context) (func(), bool) {
+					reserved++
+					return func() { reserved-- }, current.idle
+				},
+				ReserveDrain: func(context.Context) (func(), error) { return nil, errors.New("routine update must not drain") },
+				RequestRestart: func(binary string) bool {
+					restarts = append(restarts, binary)
+					return current.accept
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			observed := scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), nil)
+			request := &runnerauth.UpdateRequest{ID: "update-1", Service: "detent", Release: true, FollowHub: true, Version: "1.0.1", ExpectedBuildRevision: observed.Revision, RequestedAt: now}
+			observed = scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), request)
+			if observed.Receipt == nil || !observed.Receipt.ExecutionReady() || len(restarts) != 0 {
+				t.Fatalf("routine update restarted before idle or lost execution readiness: %+v restarts=%v", observed.Receipt, restarts)
+			}
+			for _, beat := range test.heartbeats {
+				current = beat
+				now = now.Add(beat.advance)
+				scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), nil)
+			}
+			if !slices.Equal(restarts, test.wantRestarts) || scheduler.Status().State != test.wantState {
+				t.Fatalf("restarts = %v state = %q, want %v %q", restarts, scheduler.Status().State, test.wantRestarts, test.wantState)
+			}
+			if updater.applyCalls != 1 {
+				t.Fatalf("controller binary installs = %d, want 1", updater.applyCalls)
+			}
+			if reserved != test.wantReserved {
+				t.Fatalf("held idle reservations = %d, want %d", reserved, test.wantReserved)
 			}
 		})
 	}
