@@ -593,13 +593,30 @@ func TestGitHubBatchAppPagesAndPartialRetry(t *testing.T) {
 func TestGitHubBatchLabelLaneConfirmation(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		labels  []string
-		mapping map[string]string
-		allow   bool
-		ignore  bool
-		lane    string
+		name          string
+		project       *tracker.GitHubProjectV2Source
+		projectStatus string
+		fallback      bool
+		selective     bool
+		rejected      bool
+		unmapped      bool
+		labels        []string
+		mapping       map[string]string
+		allow         bool
+		ignore        bool
+		lane          string
 	}{
+		{name: "mapped project status", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}, projectStatus: "Ready", lane: "Blocked"},
+		{name: "unmapped project status", labels: []string{"bug", "detent:blocked"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}, projectStatus: "Unknown", unmapped: true, lane: "Backlog"},
+		{name: "missing project status", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}, unmapped: true, lane: "Backlog"},
+		{name: "project status overrides lane label", labels: []string{"bug", "detent:blocked"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Todo"}}, projectStatus: "Ready", allow: true, lane: "Todo"},
+		{name: "dispatchable project mapping requires authorization", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Todo"}}, projectStatus: "Ready", rejected: true},
+		{name: "runner fallback project mapping", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}, projectStatus: "Ready", fallback: true, lane: "Blocked"},
+		{name: "selected project mapping", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}, projectStatus: "Ready", fallback: true, selective: true, lane: "Blocked"},
+		{name: "selected unmapped project status", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}, projectStatus: "Unknown", unmapped: true, fallback: true, selective: true, lane: "Backlog"},
+		{name: "unknown project lane refused", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Unknown"}}, rejected: true},
+		{name: "missing project identifier refused", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{StatusLanes: map[string]string{"Ready": "Blocked"}}, rejected: true},
+		{name: "missing project mappings refused", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source"}, rejected: true},
 		{name: "default destination", labels: []string{"bug"}, lane: "Backlog"},
 		{name: "lane label", labels: []string{"bug", "detent:todo"}, allow: true, lane: "Todo"},
 		{name: "hyphenated lane label", labels: []string{"bug", "detent:in-progress"}, allow: true, lane: "In Progress"},
@@ -612,14 +629,48 @@ func TestGitHubBatchLabelLaneConfirmation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newBatchFixture(t)
-			f.service.config.ImportBackend = scheduledContractImporter(func(context.Context, GitHubImportRequest) (GitHubImportPage, error) {
-				preview := previewIssue(12, false)
-				snapshot := batchSnapshot(12)
-				preview.Labels, preview.Snapshot = test.labels, &snapshot
-				return GitHubImportPage{BatchPage: &tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{preview}}}, nil
-			})
-			f.command(t, tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog", AllowDispatch: test.allow, LabelLanes: test.mapping, IgnoreLanes: test.ignore}, http.StatusOK)
-			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+			preview := previewIssue(12, false)
+			snapshot := batchSnapshot(12)
+			preview.Labels, preview.Snapshot, preview.ProjectStatus = test.labels, &snapshot, test.projectStatus
+			page := tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{preview}}
+			if !test.fallback {
+				f.service.config.ImportBackend = scheduledContractImporter(func(_ context.Context, request GitHubImportRequest) (GitHubImportPage, error) {
+					if request.Discovery == nil || (request.Discovery.ProjectV2 == nil) != (test.project == nil) {
+						t.Fatalf("discovery lost project source: %+v", request.Discovery)
+					}
+					return GitHubImportPage{BatchPage: &page}, nil
+				})
+			}
+			command := tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog", AllowDispatch: test.allow, LabelLanes: test.mapping, IgnoreLanes: test.ignore, ProjectV2: test.project}
+			status := http.StatusOK
+			if test.rejected {
+				status = http.StatusUnprocessableEntity
+			}
+			if test.selective {
+				command.Action = "discover"
+			}
+			f.command(t, command, status)
+			if test.rejected {
+				var imported int
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM issues WHERE project_id=? AND github_number=12", f.project.ID).Scan(&imported); err != nil {
+					t.Fatal(err)
+				}
+				if imported != 0 || f.heartbeat(t) != nil {
+					t.Fatalf("refused mapping imported %d issues or scheduled work", imported)
+				}
+				return
+			}
+			if test.fallback {
+				task := f.heartbeat(t)
+				if task == nil || task.Discovery == nil || task.Discovery.ProjectV2 == nil || task.Discovery.ProjectV2.ID != "PVT_source" || task.Discovery.ProjectV2.StatusLanes["Ready"] != "Blocked" {
+					t.Fatalf("runner discovery lost mapping: %+v", task)
+				}
+				f.report(t, tracker.GitHubBatchResult{Page: &page}, http.StatusOK)
+				if test.selective {
+					f.command(t, tracker.GitHubBatchCommand{Action: "apply", Destination: "Backlog", Numbers: []int{12}}, http.StatusOK)
+				}
+				f.report(t, tracker.GitHubBatchResult{Results: []tracker.GitHubBatchItemResult{{Number: 12, Snapshot: &snapshot}}}, http.StatusOK)
+			} else if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
@@ -628,6 +679,9 @@ func TestGitHubBatchLabelLaneConfirmation(t *testing.T) {
 				t.Fatal(err)
 			}
 			item := batch.Items[0]
+			if (item.UnmappedProjectStatus != nil) != test.unmapped || test.unmapped && *item.UnmappedProjectStatus != test.projectStatus {
+				t.Fatalf("unmapped Status report: %+v", item)
+			}
 			issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(item.WorkItemID))
 			if err != nil {
 				t.Fatalf("item=%+v: %v", item, err)

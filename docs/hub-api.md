@@ -2668,6 +2668,37 @@ returns `batch` (nullable) and configured `lanes`. Administrator mutations use
   dispatchable destination; `destination` and `label_lanes` can correct failed
   item routing. A retry rechecks the current plan's job limit.
 
+`start` and `discover` optionally accept a ProjectV2 source:
+
+```json
+{
+  "project_v2": {
+    "id": "PVT_example",
+    "status_lanes": {"Ready": "Todo", "Waiting": "Blocked", "Complete": "Done"}
+  },
+  "destination": "Backlog",
+  "allow_dispatch": true
+}
+```
+
+`id` is the board's GraphQL node ID. Supply 1–100 exact, case-sensitive
+Status-to-native-lane mappings. Discovery reads the board's single-select
+`Status` field, including archived items, through the existing App or runner
+transport and credentials. The selected credential must already have read
+access to that board; no additional credential or permission is requested.
+An inaccessible board fails discovery instead of silently dropping lane state.
+Without `project_v2`, intake performs no ProjectV2 reads and retains label routing.
+
+When supplied, ProjectV2 Status takes precedence over lane-label routing.
+Unmapped Status values, unset Status, and issues absent from the board use
+`destination`, even when a lane label matches. Previews expose `project_status`;
+item results report `unmapped_project_status` for this fallback (an empty string
+means missing Status or board membership). Other label-copying rules still apply.
+Dispatchable mapped lanes require `allow_dispatch: true` on `start` or `apply`.
+`apply` and `retry` may supply corrected `status_lanes` in `project_v2`, retaining
+the project ID selected before discovery. Omitting it retains the existing source
+and mapping. Completed and skipped items remain unchanged.
+
 The per-job size cap uses the plan catalog's `unarchived_issues` allowance:
 Free permits 200, Starter 2,000, Growth 10,000 and Scale 50,000. Unhosted Hubs
 permit 1,000. Source filters can narrow a repository to fit the cap. Normal
