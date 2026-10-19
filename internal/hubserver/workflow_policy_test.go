@@ -38,11 +38,13 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		history                                                                               int
 		historyLegacy                                                                         string
 		landing                                                                               string
-		unbound, unmerged, otherBranch                                                        bool
+		unbound, unmerged, otherBranch, lateLanding                                           bool
 		largeHistory                                                                          bool
 	}{
 		{name: "native landing applies instructions without reachability report", initial: true, canonical: true, changedInputs: true, landing: "native", active: true, status: http.StatusNoContent, applied: true},
 		{name: "bound merged PR applies instructions without reachability report", initial: true, canonical: true, changedInputs: true, landing: "pr", active: true, status: http.StatusNoContent, applied: true},
+		{name: "native landing after observation applies on refresh", initial: true, canonical: true, changedInputs: true, landing: "native", lateLanding: true, active: true, status: http.StatusNoContent, applied: true},
+		{name: "merged PR after observation applies on refresh", initial: true, canonical: true, changedInputs: true, landing: "pr", lateLanding: true, active: true, status: http.StatusNoContent, applied: true},
 		{name: "native default branch landing retains provenance", initial: true, canonical: true, changedInputs: true, reachable: true, landing: "native", status: http.StatusNoContent, applied: true},
 		{name: "merged PR default branch landing retains provenance", initial: true, canonical: true, changedInputs: true, reachable: true, landing: "pr", status: http.StatusNoContent, applied: true},
 		{name: "native landing on another branch stays pending", initial: true, canonical: true, changedInputs: true, landing: "native", otherBranch: true, status: http.StatusNoContent},
@@ -242,7 +244,10 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			if test.landing == "native" {
 				landingActor = "runner_landing"
 			}
-			if test.landing != "" {
+			seedLanding := func() {
+				if test.landing == "" {
+					return
+				}
 				baseRef := "develop"
 				if test.otherBranch {
 					baseRef = "feature"
@@ -285,6 +290,9 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+			}
+			if !test.lateLanding {
+				seedLanding()
 			}
 			token := runner.redemption.Credential
 			if test.legacy {
@@ -383,7 +391,37 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				}
 			}
 			report := policy.Observation{Descriptor: candidate, Source: source}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), test.status)
+			if test.lateLanding {
+				client, err := hubclient.New(hubclient.Config{URL: "https://policy-refresh.example.test", TokenSource: func() string { return token }, HTTPClient: &http.Client{Transport: policyAPITransport{service: f.service}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				scheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{OrganizationID: f.project.OrganizationID, NativeProjects: map[string]tracker.ProjectID{"project": f.project.ID}, Machine: hubclient.Machine{ID: "machine_refresh", Hostname: "refresh", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Minute, LeaseTTL: time.Hour})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for range 2 {
+					if err := scheduler.CheckProjectPolicyWithSource(t.Context(), "project", source.Repository, candidate, source); err != nil {
+						t.Fatal(err)
+					}
+					approval, err := readProjectPolicyWithHistory(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID), 0, "")
+					if err != nil || approval.Policy.ID != original.ID || len(approval.History) != historyCount {
+						t.Fatalf("observation before landing changed approval: %+v, %v", approval, err)
+					}
+					observed, err := readObservedPolicies(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID), approval.Policy, f.service.config.now())
+					if err != nil || len(observed) != 1 || observed[0].Policy.ID != candidate.ID {
+						t.Fatalf("missing pending observation before landing: %+v, %v", observed, err)
+					}
+				}
+				seedLanding()
+				for range 2 {
+					if err := scheduler.CheckProjectPolicyWithSource(t.Context(), "project", source.Repository, candidate, source); err != nil {
+						t.Fatal(err)
+					}
+				}
+			} else {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), test.status)
+			}
 			if test.history > 0 {
 				for path, before := range historySummaries {
 					response := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
