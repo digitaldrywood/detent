@@ -39,11 +39,20 @@ func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 	if !strings.HasPrefix(output, "Examples:\n") {
 		t.Fatalf("help output does not lead with examples:\n%s", output)
 	}
-	for _, want := range []string{"detent", "agent orchestrator", "doctor", "dev-runtime", "hub", "cloud", "artifact", "pause", "unpause", "promote"} {
+	for _, want := range []string{"detent", "agent orchestrator", "doctor", "dev-runtime", "hub", "cloud", "artifact", "pause", "resume", "issue", "report", "logs"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}
 	}
+	stdout.Reset()
+	cmd.SetArgs([]string{"hub", "--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("hub help error = %v", err)
+	}
+	if output := stdout.String(); strings.Contains(output, "\n  issue ") || !strings.Contains(output, "\n  serve ") {
+		t.Fatalf("hub help must retain serve and omit issue:\n%s", output)
+	}
+
 }
 
 func TestCommandHelpLeadsWithExample(t *testing.T) {
@@ -71,14 +80,15 @@ func TestCommandHelpLeadsWithExample(t *testing.T) {
 func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
+	type commandCase struct {
 		name       string
 		args       []string
 		want       []string
 		dontWant   []string
 		wantCount  map[string]int
 		wantNoBoot bool
-	}{
+	}
+	tests := []commandCase{
 		{
 			name:       "command typo",
 			args:       []string{"paues"},
@@ -119,6 +129,9 @@ func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
 		},
 	}
 
+	for _, name := range []string{"state", "mcp", "promote", "unpause"} {
+		tests = append(tests, commandCase{name: "removed " + name, args: []string{name}, want: []string{`unknown command "` + name + `"`}, wantNoBoot: true})
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -799,13 +812,6 @@ func TestCLIValidationErrorsCarryHints(t *testing.T) {
 			wantHint:     "e.g. detent --port 0",
 			wantCommands: []string{"detent --port 0"},
 		},
-		{
-			name:         "invalid promote priority",
-			args:         []string{"--config", configPath, "promote", "api", "--priority", "0"},
-			wantMessage:  "--priority must be positive",
-			wantHint:     "e.g. detent promote api --priority 10",
-			wantCommands: []string{"detent promote api --priority 10"},
-		},
 	}
 
 	for _, tt := range tests {
@@ -992,20 +998,9 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 	})
 	assertSignal(t, signals, cli.OperationPauseProject, "detent")
 
-	runCommand("unpause", "detent")
-	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
-		if project.Paused {
-			t.Fatal("Paused = true, want false")
-		}
-		if project.PausedReason != "" || project.PausedUntilIssue != "" || project.PausedUntil != "" || project.PausedAt != "" {
-			t.Fatalf("pause metadata not cleared: %#v", project)
-		}
-	})
-	assertSignal(t, signals, cli.OperationUnpauseProject, "detent")
-
 	resumeStarted := time.Now().UTC()
-	runCommand("resume", "detent", "--for", "2h")
-	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
+	runCommand("resume", "docs", "--for", "2h")
+	assertProject(t, configPath, "docs", func(project globalconfig.Project) {
 		until, err := time.Parse(time.RFC3339, project.ActiveHoursOverrideUntil)
 		if err != nil {
 			t.Fatalf("ActiveHoursOverrideUntil = %q: %v", project.ActiveHoursOverrideUntil, err)
@@ -1014,20 +1009,7 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 			t.Fatalf("ActiveHoursOverrideUntil = %v, want about two hours from now", until)
 		}
 	})
-	assertSignal(t, signals, cli.OperationResumeProject, "detent")
-
-	runCommand("promote", "docs", "--priority", "1")
-	assertProject(t, configPath, "docs", func(project globalconfig.Project) {
-		if project.Priority != 0 {
-			t.Fatalf("Priority = %d, want 0", project.Priority)
-		}
-	})
-	assertSignal(t, signals, cli.OperationPromoteProject, "docs")
-	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
-		if project.Priority != 1 {
-			t.Fatalf("detent rank = %d, want 1", project.Priority)
-		}
-	})
+	assertSignal(t, signals, cli.OperationResumeProject, "docs")
 
 }
 

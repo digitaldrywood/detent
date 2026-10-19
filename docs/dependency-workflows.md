@@ -79,7 +79,7 @@ automatically. An expired predicate that still holds is also unverifiable;
 orchestrator-owned unverifiable parks are escalated for operator attention.
 
 - **Keep the issue in `Todo`.** Record the dependency as a Hub dependency
-  relation with `detent hub issue dependency` or
+  relation with Hub MCP `set_dependency` or
   `POST /api/v1/work-items/{id}/dependencies`. The Hub offers `Todo` work to
   runners only when it is dependency-ready; a resolved dependency has a
   terminal workflow state. `require_dependencies` defaults to true; setting it

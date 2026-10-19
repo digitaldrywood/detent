@@ -208,22 +208,14 @@ events stay in Hub. Native claims ignore GitHub repository freshness. Issue webh
 and repair cannot overwrite native fields, and v1 compatibility mutation endpoints
 cannot mutate a cut-over issue merely because it retains a GitHub ID.
 
-Workers use `detent hub issue` with their configured Hub identity. The commands
-`get`, `create`, `edit`, `comment`, `edit-comment`, `transition`, `dependency`,
-`comments` and `history` call the scoped native APIs. Mutations read the existing
-v2 JSON schema from stdin, including idempotency keys and expected revisions.
-For example, save the mutation to a file and run:
-
-```sh
-detent hub issue edit wi_example --project prj_example < issue-edit.json
-```
-
-The command uses customer configuration by default. `--config` selects an external
-configuration; `--hub-url`, `--organization`, `--project`, and `--identity-file` can
-select an explicit enrolled identity. Operators may use `--token-env` with a scoped
-Hub credential. Credentials are never printed. Native worker prompts explain the
-authority and use `Detent-Work-Item: wi_...` in PRs, avoiding accidental GitHub closing
-references for unrelated issues with the same number.
+Native reads use Hub MCP `work_item`, `work_comments` and `work_history`.
+Authorized operators use `file_issue`, `edit_item`, `add_comment`, `edit_comment`,
+`move_item` and `set_dependency`, or the corresponding scoped native APIs.
+Mutations retain the v2 schema's idempotency keys and expected revisions.
+Credentials and project grants come from the existing Hub connection; worker
+publication remains governed by its completion contract. Native worker prompts
+identify the native work item and use `Detent-Work-Item: wi_...` in PRs, avoiding
+accidental GitHub closing references for unrelated issues with the same number.
 
 When `projection: summary` is enabled, an operator explicitly posts
 `/work-items/{work_item_id}/projection` with `idempotency_key` and `body`. Pending
