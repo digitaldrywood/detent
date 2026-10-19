@@ -14,9 +14,10 @@ import (
 )
 
 type policyLanding struct {
-	ChangeID       string
-	PullRequestURL string
-	Actor          string
+	ChangeID          string
+	PullRequestURL    string
+	Actor             string
+	SourceUnavailable bool
 }
 
 func readPolicyLanding(ctx context.Context, query policyQuerier, scope string, source *policy.RepositorySource) (policyLanding, error) {
@@ -92,31 +93,29 @@ func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope s
 		}
 	}
 	var landing policyLanding
+	carryover := descriptor.SameAuthoredInputs(approval.Policy)
 	if descriptor.Workflow != nil {
-		if source == nil || !validCommitID(source.Commit) || !validCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != descriptor.Workflow.Revision {
-			return d.commit(ctx, tx)
-		}
 		repository, err := policyRepository(ctx, tx, scope)
 		if err != nil {
 			return err
 		}
-		if repository == "" || !strings.EqualFold(repository, source.Repository) {
-			return d.commit(ctx, tx)
+		landing.SourceUnavailable = source == nil || !validCommitID(source.Commit) || !validCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != descriptor.Workflow.Revision || repository == "" || !strings.EqualFold(repository, source.Repository)
+		if !landing.SourceUnavailable {
+			landing, err = readPolicyLanding(ctx, tx, scope, source)
+			if err != nil {
+				return err
+			}
 		}
-		landing, err = readPolicyLanding(ctx, tx, scope, source)
-		if err != nil {
-			return err
-		}
-		if !source.DefaultBranchReachable && landing.ChangeID == "" && landing.PullRequestURL == "" && !descriptor.SameAuthoredInputs(approval.Policy) {
+		if !carryover && (landing.SourceUnavailable || !source.DefaultBranchReachable && landing.ChangeID == "" && landing.PullRequestURL == "") {
 			return d.commit(ctx, tx)
 		}
 	}
 	if current != descriptor.ID {
 		actor := "repository-default-branch"
-		if landing.Actor != "" {
-			actor = landing.Actor
-		} else if descriptor.SameAuthoredInputs(approval.Policy) && approval.ApprovedBy != "" {
+		if carryover && approval.ApprovedBy != "" {
 			actor = approval.ApprovedBy
+		} else if landing.Actor != "" {
+			actor = landing.Actor
 		}
 		if _, err := d.approvePolicyInTx(ctx, tx, scope, actor, policy.Change{ExpectedID: current, Policy: descriptor}, landing); err != nil {
 			return err
@@ -149,6 +148,9 @@ func recordWorkflowApply(ctx context.Context, tx *sql.Tx, scope, actor, current 
 		return err
 	}
 	entry.Repository = repository
+	if landing.SourceUnavailable {
+		entry.Repository, entry.Commit = "", ""
+	}
 	if current != "" {
 		var raw string
 		if err := tx.QueryRowContext(ctx, "SELECT metadata_json FROM policy_revisions WHERE scope = ? AND policy_id = ?", scope, current).Scan(&raw); err != nil {
@@ -208,7 +210,7 @@ func readProjectPolicyHistory(ctx context.Context, query nativeQueryer, scope st
 	}
 	rows, err := query.QueryContext(ctx, `SELECT a.id, a.repository, a.source_commit, a.previous_definition_digest, a.definition_digest, a.runner_id, a.applied_by, a.applied_at, a.change_id, a.pull_request_url,
 CASE WHEN ? THEN (SELECT r.metadata_json FROM policy_revisions r WHERE r.scope = a.scope AND json_extract(r.metadata_json, '$.source_digest') = a.previous_definition_digest ORDER BY r.approved_at DESC, r.policy_id LIMIT 1) END,
-CASE WHEN ? THEN (SELECT r.metadata_json FROM policy_revisions r WHERE r.scope = a.scope AND json_extract(r.metadata_json, '$.source_digest') = a.definition_digest AND COALESCE(json_extract(r.metadata_json, '$.workflow.revision'), '') = a.source_commit ORDER BY r.approved_at DESC, r.policy_id LIMIT 1) END
+CASE WHEN ? THEN (SELECT r.metadata_json FROM policy_revisions r WHERE r.scope = a.scope AND json_extract(r.metadata_json, '$.source_digest') = a.definition_digest AND (a.source_commit = '' OR COALESCE(json_extract(r.metadata_json, '$.workflow.revision'), '') = a.source_commit) ORDER BY r.approved_at DESC, r.policy_id LIMIT 1) END
 FROM project_workflow_applies a WHERE a.scope = ? AND (? = 0 OR a.id < ?) ORDER BY a.id DESC LIMIT ?`, definitions, definitions, scope, before, before, limit+1)
 	if err != nil {
 		return result, err
