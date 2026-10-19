@@ -185,7 +185,7 @@ func nativeChangeReviewSource(ctx context.Context, q nativeQueryer, scope native
 	if strings.EqualFold(state, cfg.Agent.AutoPromote.SourceState) {
 		return true, nil
 	}
-	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	approval, err := requireProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
 		return false, err
 	}
