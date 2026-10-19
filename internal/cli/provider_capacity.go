@@ -85,7 +85,7 @@ func runnerProviderReports(ctx context.Context, configuration func() globalconfi
 			}
 		}
 		if len(reports) == 0 && len(catalogErrors) > 0 {
-			return nil, errors.Join(catalogErrors...)
+			return nil, fmt.Errorf("%w: %w", providercapacity.ErrCatalogUnavailable, errors.Join(catalogErrors...))
 		}
 		reports = withProviderBilling(ctx, reports, backends, billing, usage)
 		reports = withProviderUsage(reports, usage)

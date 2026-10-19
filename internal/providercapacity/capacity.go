@@ -14,6 +14,8 @@ import (
 
 const MaxAge = 2 * time.Minute
 
+var ErrCatalogUnavailable = errors.New("agent provider model catalog unavailable")
+
 var token = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,127}$`)
 var alias = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
 
