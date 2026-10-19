@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
@@ -332,12 +333,13 @@ func (r *Runner) nativeLandingGitHubClient(ctx context.Context, req RunRequest, 
 	return client, policy, err
 }
 
-func (r *Runner) nativeReviewThreadTools(req RunRequest) ([]AgentTool, AgentToolHandler) {
+func (r *Runner) nativeReviewThreadTools(req RunRequest) ([]AgentTool, AgentToolHandler, func() int) {
 	landing, ok := req.Execution.(LandingExecution)
 	workflow, _, _, _ := r.runtimeSnapshot()
 	if workflow.Config.Tracker.Kind != config.TrackerHubNative || normalizeRunMode(req.Mode) != RunModeImplement || !ok || req.Execution == nil || runRole(req.Mode, req.Issue) != RoleRework && !nativeLandingRework(req.Execution.Recovery()) {
-		return nil, nil
+		return nil, nil, nil
 	}
+	var resolved atomic.Int64
 	tools := []AgentTool{
 		{Name: "detent_read_review_threads", Description: "Read unresolved review conversations on this native item's recorded GitHub PR and published head. Inspect the actual immutable Change source using native reads before judging feedback. Pending local edits are not evidence that published feedback is fixed. Human-rooted conversations remain human-owned.", InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
 		{Name: "detent_resolve_review_thread", Description: "Record an explicit fixed or dismissed disposition with concrete source/test evidence and resolve one bot conversation on this item's currently published, fully reviewed head. Read its full conversation first. Supply that published head, not an unpublished local repair. If a source fix is needed, stage it and return for normal host publication/review; resolve only once the actual published version contains the fix. Pending host publication or configured review/audit is a source handoff, not an instance failure: when source and worker-owned checks are complete, report complete and disclose the pending host work. Preserve genuine blockers and human actions. This does not approve or merge source and never resolves a human-rooted conversation.", InputSchema: json.RawMessage(`{"type":"object","properties":{"head_sha":{"type":"string"},"thread_id":{"type":"string"},"disposition":{"type":"string","enum":["fixed","dismissed"]},"evidence":{"type":"string","minLength":1,"maxLength":8192}},"required":["head_sha","thread_id","disposition","evidence"],"additionalProperties":false}`)},
@@ -427,6 +429,7 @@ func (r *Runner) nativeReviewThreadTools(req RunRequest) ([]AgentTool, AgentTool
 		if err := workspace.ResolveReviewConversation(ctx, client, opts, input.Thread, input.Disposition, evidence); err != nil {
 			return AgentToolResult{Content: err.Error()}, nil
 		}
+		resolved.Add(1)
 		return AgentToolResult{Content: "Recorded disposition and resolved the bot conversation at published head " + target.HeadSHA, Success: true}, nil
-	}
+	}, func() int { return int(resolved.Load()) }
 }

@@ -824,6 +824,7 @@ type RunResult struct {
 	TurnStarted             bool
 	TurnStartRefused        bool
 	TurnCount               int
+	ReviewThreadsResolved   int
 	RuntimeIdentity         agentidentity.Identity
 	Tokens                  TokenTotals
 	DiffStats               DiffStats

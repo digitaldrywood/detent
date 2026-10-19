@@ -1848,6 +1848,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		PriorAttempt:              req.PriorAttempt,
 		RecoveryState:             promptRecoveryState,
 	}
+	if mode == RunModeImplement && req.Execution != nil {
+		promptOptions.ReviewConversationRefusal = NativeReviewConversationRefusal(req.Execution.Recovery())
+	}
 	role := runRole(req.Mode, req.Issue)
 	routeRole := agentRuntime.effectiveRunRole(role)
 	selection, backend, backendConfig, err := agentRuntime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), routeRole)

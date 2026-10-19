@@ -357,7 +357,9 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			return AgentToolResult{Content: "unsupported tool"}, nil
 		}
 	}
-	if tools, handler := r.nativeReviewThreadTools(req); len(tools) != 0 {
+	reviewThreadsResolved := func() int { return 0 }
+	if tools, handler, resolved := r.nativeReviewThreadTools(req); len(tools) != 0 {
+		reviewThreadsResolved = resolved
 		previous := req.AgentToolHandler
 		req.AgentTools = append(append([]AgentTool(nil), req.AgentTools...), tools...)
 		req.AgentToolHandler = func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
@@ -385,6 +387,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	} else {
 		result, runErr = r.run(guarded, req)
 	}
+	result.ReviewThreadsResolved = reviewThreadsResolved()
 	if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok && result.TurnStarted {
 		diagnostics.ProviderCompleted(r.now())
 	}
@@ -728,6 +731,27 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 func nativeLandingRework(recovery tracker.NativeRecovery) bool {
 	landing := nativeRecoveryLanding(recovery)
 	return landing != nil && !landing.Landed && (landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == workspace.LandRefusalBaseMoved && landing.BaseSHA != "")
+}
+
+// NativeReviewConversationRefusal returns the refusal detail when GitHub
+// refused to land the recovered Change version because review conversations
+// are unresolved and the item has not left that refusal through Merging since.
+func NativeReviewConversationRefusal(recovery tracker.NativeRecovery) string {
+	landing := nativeRecoveryLanding(recovery)
+	if recovery.Change == nil || landing == nil || landing.Landed || landing.RefusalKind != workspace.LandRefusalProtected {
+		return ""
+	}
+	for i := len(recovery.History) - 1; i >= 0; i-- {
+		event := recovery.History[i]
+		if event.Type != "workflow.transitioned" || !strings.EqualFold(strings.TrimSpace(event.Data.FromState), "Merging") {
+			continue
+		}
+		if workspace.ReviewConversationsRefusal(event.Data.ReasonDetail) {
+			return strings.TrimSpace(event.Data.ReasonDetail)
+		}
+		return ""
+	}
+	return ""
 }
 
 func nativeRecoveryLanding(recovery tracker.NativeRecovery) *tracker.NativeLandingReceipt {

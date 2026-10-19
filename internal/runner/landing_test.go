@@ -840,7 +840,7 @@ func TestNativeReviewThreadTools(t *testing.T) {
 			if mode == "" {
 				mode = RunModeImplement
 			}
-			tools, handle := r.nativeReviewThreadTools(RunRequest{Execution: execution, Mode: mode, Issue: connector.Issue{ID: "wi_current", State: "Rework"}})
+			tools, handle, resolvedThreads := r.nativeReviewThreadTools(RunRequest{Execution: execution, Mode: mode, Issue: connector.Issue{ID: "wi_current", State: "Rework"}})
 			if (len(tools) != 0) != test.wantTools {
 				t.Fatalf("tools=%v, available=%t", tools, test.wantTools)
 			}
@@ -912,6 +912,13 @@ func TestNativeReviewThreadTools(t *testing.T) {
 			}
 			if result.Success != test.wantSuccess || mutations != test.wantMutations || !strings.Contains(content, test.wantContent) {
 				t.Fatalf("result=%+v err=%v mutations=%d; want success=%t mutations=%d content=%q", result, err, mutations, test.wantSuccess, test.wantMutations, test.wantContent)
+			}
+			wantResolved := 0
+			if resolved {
+				wantResolved = 1
+			}
+			if got := resolvedThreads(); got != wantResolved {
+				t.Fatalf("resolved review threads = %d, want %d", got, wantResolved)
 			}
 		})
 	}

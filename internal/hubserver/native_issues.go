@@ -829,6 +829,11 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 		if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
 			return nil, err
 		}
+		if scope.actor().Kind == "runner" && issue.State != request.State {
+			if err := requireNoHumanBlockedHold(ctx, tx, scope, issue); err != nil {
+				return nil, err
+			}
+		}
 		if contractHold || contractRecovery {
 			contract, err := nativeIssueContract(ctx, tx, scope)
 			if err != nil {
@@ -904,6 +909,26 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 		s.wakeSpriteRunnersAfter(scope, result)
 	}
 	return result, err
+}
+
+// requireNoHumanBlockedHold keeps a runner from moving an item out of Blocked
+// when a human put it there. A lease taken before the hold does not outrank it.
+func requireNoHumanBlockedHold(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue) error {
+	if !strings.EqualFold(issue.State, "Blocked") {
+		return nil
+	}
+	var actor string
+	err := tx.QueryRowContext(ctx, `SELECT coalesce(json_extract(actor_json,'$.kind'),'') FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned' AND lower(json_extract(data_json,'$.to_state'))='blocked' ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, issue.WorkItemID).Scan(&actor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if actor == "human" {
+		return &nativeError{Code: "human_hold", Message: "A human holds this item in Blocked; only a human move releases it", status: http.StatusConflict}
+	}
+	return nil
 }
 
 func validateNativeWorkflowTransition(states []tracker.NativeState, current, target string, scope apiScope) error {

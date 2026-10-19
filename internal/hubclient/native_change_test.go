@@ -4871,3 +4871,45 @@ func (h *nativeChangeHub) publicationCI(t *testing.T) *NativeClient {
 	}
 	return ci
 }
+
+func TestHumanBlockedHoldOutranksRunnerLease(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		holder string
+		want   string
+	}{
+		{holder: "human", want: "Blocked"},
+		{holder: "runner", want: "Todo"},
+	} {
+		t.Run(test.holder, func(t *testing.T) {
+			t.Parallel()
+			h := newNativeChangeHubWithStates(t, "In Review", []tracker.NativeState{
+				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Blocked", "Done"}},
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Blocked", "Done", "Todo"}},
+				{Name: "Blocked", Transitions: []string{"Todo", "In Progress"}},
+				{Name: "In Review", Transitions: []string{"In Progress", "Done"}},
+				{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+			})
+			issue := h.createInProgress(t, "held work")
+			h.claim(t, issue.ID)
+			if test.holder == "human" {
+				current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Blocked", Reason: "user_requested", ReasonDetail: "Operator lane owns this item"}); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Blocked"); err != nil {
+				t.Fatal(err)
+			}
+			err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Todo")
+			if blocked := errors.Is(err, connector.ErrStateUpdateBlocked); blocked != (test.want == "Blocked") || err != nil && !blocked {
+				t.Fatalf("runner release error = %v", err)
+			}
+			if got := h.state(t, issue.ID); got != test.want {
+				t.Fatalf("state = %s, want %s", got, test.want)
+			}
+		})
+	}
+}

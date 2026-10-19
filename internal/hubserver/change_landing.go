@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 // landingLane is the lane a reviewed Change Request waits in for the runner
@@ -452,6 +453,9 @@ func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nati
 	if !nativeChangeLandingReady("Merging", &detail) {
 		return false, true, 0, nil
 	}
+	if refused, err := nativeReviewConversationRefusalStands(ctx, query, *scope, item); err != nil || refused {
+		return false, true, 0, err
+	}
 	version, err := readChangeVersion(ctx, query, change.ID, change.CurrentVersion)
 	if err != nil {
 		return false, true, 0, err
@@ -474,6 +478,38 @@ func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nati
 	}
 	ready, landingCapacity, err = nativeLandingClaimCapacity(ctx, query, id, capacity, now)
 	return ready, true, landingCapacity, err
+}
+
+// nativeReviewConversationRefusalStands reports whether GitHub's latest
+// refusal to land this item named unresolved review conversations and nothing
+// has released it since: neither a newly published version nor a human move
+// into Merging. Landing the same version again would be refused again.
+func nativeReviewConversationRefusalStands(ctx context.Context, query *sql.Tx, scope nativeScope, item string) (bool, error) {
+	rows, err := query.QueryContext(ctx, `SELECT type, coalesce(json_extract(actor_json,'$.kind'),''), coalesce(json_extract(data_json,'$.from_state'),''), coalesce(json_extract(data_json,'$.to_state'),''), coalesce(json_extract(data_json,'$.reason_detail'),'')
+FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type IN ('workflow.transitioned','change.version_published') ORDER BY sequence DESC LIMIT 64`, scope.organization, scope.project, item)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind, actor, from, to, detail string
+		if err := rows.Scan(&kind, &actor, &from, &to, &detail); err != nil {
+			return false, err
+		}
+		if kind == "change.version_published" {
+			return false, nil
+		}
+		if strings.EqualFold(strings.TrimSpace(to), landingLane) {
+			if actor == "human" {
+				return false, nil
+			}
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(from), landingLane) {
+			return workspace.ReviewConversationsRefusal(detail), rows.Err()
+		}
+	}
+	return false, rows.Err()
 }
 
 func nativeChangeLandingReady(state string, detail *tracker.ChangeDetail) bool {

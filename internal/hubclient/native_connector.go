@@ -538,6 +538,10 @@ func (c *NativeConnector) UpdateIssueState(ctx context.Context, id, state string
 		}
 	}
 	_, err = c.client.Transition(ctx, issue.WorkItemID, request)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Code == "human_hold" {
+		return fmt.Errorf("%w: %s", connector.ErrStateUpdateBlocked, apiErr.Message)
+	}
 	return err
 }
 
