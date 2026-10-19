@@ -27,10 +27,17 @@ func (e *nativeExecution) retainChangeValidation(ctx context.Context, input *tra
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.client == nil {
-		if len(raw) <= operatortool.MaxResultBytes {
-			return nil
+		stored := *input
+		stored.Validation = &bounded
+		full, err := json.Marshal(stored)
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("retain Change validation: %w", artifact.ErrMissing)
+		if len(full) > operatortool.MaxResultBytes {
+			return fmt.Errorf("retain Change validation: %w", artifact.ErrMissing)
+		}
+		input.Validation = &bounded
+		return nil
 	}
 	raw, err = json.Marshal(input.Validation)
 	if err != nil {
