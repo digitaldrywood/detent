@@ -17,6 +17,7 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -219,6 +220,40 @@ func TestProjectSecretPermissions(t *testing.T) {
 					t.Fatalf("saved pool = %+v", pool)
 				}
 			})
+		}
+	})
+	t.Run("pending project policy approval keeps saved pool readable", func(t *testing.T) {
+		workflow := config.Workflow{Config: config.Default()}
+		workflow.Config.Tracker.Kind = config.TrackerHubNative
+		descriptor, err := config.ResolvePolicy(workflow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		descriptor.SourceRevision = strings.Repeat("b", 64)
+		descriptor = descriptor.WithID()
+		raw, err := json.Marshal(descriptor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope := f.service.config.Hosted.OrganizationID + "/" + f.project
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) VALUES (?, ?, ?, 'fixture', ?)", scope, descriptor.ID, string(raw), formatHubTime(f.service.config.now())); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO project_policies (scope, policy_id) VALUES (?, ?) ON CONFLICT(scope) DO UPDATE SET policy_id=excluded.policy_id", scope, descriptor.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO runner_enrollments(id,organization_id,runner_id,machine_id,token_hash,operations_json,created_at,expires_at,created_by) SELECT 'pending-policy-enrollment',organization_id,'pending-policy-runner','pending-policy-machine',?,'[]','2026-01-01T00:00:00Z','2999-01-01T00:00:00Z',configured_by FROM organization_sprite_pools WHERE organization_id=?", strings.Repeat("c", 64), f.service.config.Hosted.OrganizationID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organization_sprite_members(organization_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,'pending-policy-sprite','org','pending-policy-enrollment','deleted','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", f.service.config.Hosted.OrganizationID); err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range []string{"/api/v2/organizations/" + f.service.config.Hosted.OrganizationID + "/sprite-pool", strings.TrimSuffix(base, "/secrets/"+flySpritesToken) + "/sprite-pool"} {
+			var pool spritePoolView
+			decodeHubResponse(t, f.api(t, "owner", http.MethodGet, path, nil, http.StatusOK), &pool)
+			if pool.Bootstrap != "true" || pool.Revision == 0 || len(pool.Members) != 1 || pool.Members[0].Name != "pending-policy-sprite" || pool.Decision == nil || pool.Decision.Reason != placementPolicyApprovalPending || pool.RunnerSetupDeclared != nil {
+				t.Fatalf("%s pool = %+v decision = %+v", path, pool, pool.Decision)
+			}
 		}
 	})
 	f.api(t, "owner", http.MethodPut, strings.Replace(base, f.project, "prj_other", 1), map[string]any{"token": spritesSecretSentinel}, http.StatusNotFound)
