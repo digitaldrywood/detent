@@ -1021,6 +1021,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		Attempt:                attempt,
 		WorkAttemptID:          workAttemptID,
 		Policy:                 attemptPolicy,
+		ClaimPolicy:            o.cfg.Policy,
 		Generation:             generation,
 		Mode:                   runMode,
 		DispatchSourceState:    dispatchStartSourceState,

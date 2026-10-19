@@ -178,6 +178,7 @@ type Running struct {
 	TokenUSD                    float64
 	progress                    *workerProgress
 	Policy                      policy.Descriptor
+	ClaimPolicy                 policy.Descriptor
 	Issue                       connector.Issue
 	Attempt                     int
 	WorkAttemptID               int64

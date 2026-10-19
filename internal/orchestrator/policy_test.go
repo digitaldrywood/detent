@@ -86,6 +86,9 @@ func TestOrphanRecoveryRetainsPolicyAcrossHubTransition(t *testing.T) {
 			}
 			t.Cleanup(state.Running[issue.ID].cancel)
 			request := receiveWorkerHostRunRequest(t, runner.started)
+			if state.Running[issue.ID].ClaimPolicy.ID != test.current.ID {
+				t.Fatalf("claim policy = %q, want %q", state.Running[issue.ID].ClaimPolicy.ID, test.current.ID)
+			}
 			if request.RetryMode != runpkg.RetryModeResume || request.ResumeState.DetentSessionID != session.ResumeState.DetentSessionID || request.Policy.ID != test.pinned.ID || state.Running[issue.ID].Policy.ID != test.pinned.ID {
 				t.Fatalf("continuation identity = %+v, running policy = %q; want pinned policy %q", request, state.Running[issue.ID].Policy.ID, test.pinned.ID)
 			}
