@@ -1779,6 +1779,15 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 
 const ProviderStartupFailed = "agent provider startup failed"
 
+func IsProviderStartupFailure(message string) bool {
+	for line := range strings.SplitSeq(message, "\n") {
+		if strings.HasPrefix(line, ProviderStartupFailed+": ") {
+			return true
+		}
+	}
+	return false
+}
+
 func policyReloadFailure(err error) string {
 	if errors.Is(err, providercapacity.ErrCatalogUnavailable) {
 		return ProviderStartupFailed

@@ -221,6 +221,7 @@ func TestRunnerStartupProblemsSeparateProviderStartupFromSettings(t *testing.T) 
 	registry := project.NewRegistry()
 	for id, message := range map[string]string{
 		"provider": project.ProviderStartupFailed + ": scheduling source unavailable\nagent provider model catalog unavailable: provider models for backend codex: wait for initialize response: context deadline exceeded",
+		"startup":  "project definition failed\n" + project.ProviderStartupFailed + ": scheduling source unavailable\nagent provider model catalog unavailable: provider models for backend codex: authentication required",
 		"policy":   "repository policy reload rejected: policy_mismatch",
 	} {
 		if err := registry.SetPending(globalconfig.Project{ID: id}, project.RuntimeError{Message: message}); err != nil {
@@ -231,7 +232,7 @@ func TestRunnerStartupProblemsSeparateProviderStartupFromSettings(t *testing.T) 
 	for _, problem := range runnerStartupProblems(registry) {
 		codes[problem.ProjectID] = problem.Code
 	}
-	if want := map[string]string{"provider": "backend_probe_failed", "policy": "settings_invalid"}; !reflect.DeepEqual(codes, want) {
+	if want := map[string]string{"provider": "backend_probe_failed", "startup": "backend_probe_failed", "policy": "settings_invalid"}; !reflect.DeepEqual(codes, want) {
 		t.Fatalf("startup problem codes = %v, want %v", codes, want)
 	}
 	if err := runnerauth.ValidateReportedProblems(runnerStartupProblems(registry)); err != nil {

@@ -56,7 +56,7 @@ func runnerStartupProblems(registry *project.Registry) []runnerauth.Problem {
 			continue
 		}
 		code := "settings_invalid"
-		if strings.HasPrefix(health.LastError, project.ProviderStartupFailed+":") {
+		if project.IsProviderStartupFailure(health.LastError) {
 			code = "backend_probe_failed"
 		}
 		problem := runnerauth.NewProblem(code)
