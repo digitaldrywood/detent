@@ -4904,7 +4904,7 @@ func TestHumanBlockedHoldOutranksRunnerLease(t *testing.T) {
 				t.Fatal(err)
 			}
 			err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Todo")
-			if blocked := errors.Is(err, connector.ErrStateUpdateBlocked); blocked != (test.want == "Blocked") || err != nil && !blocked {
+			if fenced := errors.Is(err, runner.ErrExecutionAuthorityUnavailable); fenced != (test.want == "Blocked") || err != nil && !fenced {
 				t.Fatalf("runner release error = %v", err)
 			}
 			if got := h.state(t, issue.ID); got != test.want {

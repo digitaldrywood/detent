@@ -821,7 +821,9 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 	contractHold = contractHold && signal != nil && signal.Invalid == nil && signal.Fields["issue_contract_return_state"] != ""
 	contractRecovery := strings.ReplaceAll(request.ReasonDetail, " ", "_") == "recorded_blocker_recovery" && !recordedRecovery
 	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/workflow"), Item: item, RequireLease: !recordedRecovery && !contractHold && !contractRecovery, Feature: "collaboration"}
+	var heldLease tracker.LeaseID
 	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		heldLease = ""
 		issue, internalID, err := readNativeIssue(ctx, tx, scope, item)
 		if err != nil {
 			return nil, err
@@ -829,9 +831,19 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 		if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
 			return nil, err
 		}
-		if scope.actor().Kind == "runner" && issue.State != request.State {
-			if err := requireNoHumanBlockedHold(ctx, tx, scope, issue); err != nil {
+		if scope.actor().Kind == "human" && strings.EqualFold(request.State, "Blocked") && !strings.EqualFold(issue.State, "Blocked") {
+			lease, found, err := readUnreleasedLease(ctx, tx, internalID)
+			if err != nil {
 				return nil, err
+			}
+			if found && lease.session.ExpiresAt.After(now) {
+				if err := releaseLeaseRow(ctx, tx, lease, "cancelled", now); err != nil {
+					return nil, err
+				}
+				if err := cancelNativeLeaseAttempt(ctx, tx, scope, lease, now); err != nil {
+					return nil, err
+				}
+				heldLease = lease.session.ID
 			}
 		}
 		if contractHold || contractRecovery {
@@ -907,28 +919,11 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 	})
 	if err == nil {
 		s.wakeSpriteRunnersAfter(scope, result)
+		if heldLease != "" && s.conversations != nil {
+			s.conversations.leaseReleased(ctx, heldLease)
+		}
 	}
 	return result, err
-}
-
-// requireNoHumanBlockedHold keeps a runner from moving an item out of Blocked
-// when a human put it there. A lease taken before the hold does not outrank it.
-func requireNoHumanBlockedHold(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue) error {
-	if !strings.EqualFold(issue.State, "Blocked") {
-		return nil
-	}
-	var actor string
-	err := tx.QueryRowContext(ctx, `SELECT coalesce(json_extract(actor_json,'$.kind'),'') FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned' AND lower(json_extract(data_json,'$.to_state'))='blocked' ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, issue.WorkItemID).Scan(&actor)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if actor == "human" {
-		return &nativeError{Code: "human_hold", Message: "A human holds this item in Blocked; only a human move releases it", status: http.StatusConflict}
-	}
-	return nil
 }
 
 func validateNativeWorkflowTransition(states []tracker.NativeState, current, target string, scope apiScope) error {

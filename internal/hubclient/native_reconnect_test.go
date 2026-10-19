@@ -33,7 +33,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 		{name: "legacy Hub interrupted", outcome: "interrupted", legacy: true},
 		{name: "hidden dependency", hiddenDependency: true},
 		{name: "operator hold", hold: true},
-		{name: "hold release response lost", hold: true, loseRelease: true},
+		{name: "hold release response lost", hiddenDependency: true, loseRelease: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
