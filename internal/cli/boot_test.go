@@ -1311,7 +1311,7 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 
 	close(provisionRelease)
 	healthBody = []byte(waitForDashboard(t, baseURL+"/health", done))
-	for _, want := range []string{`"status":"ok"`, `"ready":true`, `"lifecycle":"ready"`} {
+	for _, want := range []string{`"status":"ok"`, `"ready":true`, `"lifecycle":"ready"`, `"connector":"configured"`, `"connector":"boot"`} {
 		if !strings.Contains(string(healthBody), want) {
 			t.Fatalf("ready health response missing %q:\n%s", want, healthBody)
 		}
