@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -160,10 +158,7 @@ func (s *Service) revokeRunnerIdentity(c echo.Context) error {
 		return s.nativeAPIError(c, runnerUnauthorized())
 	}
 	_, err := s.revokeRunnerIdentityCommand(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, c.Param("runner"))
-	var refusal *nativeError
-	if errors.As(err, &refusal) {
-		s.config.Logger.WarnContext(c.Request().Context(), "runner removal refused", "organization_id", c.Param("organization"), "runner_id", c.Param("runner"), "code", refusal.Code, "error", fmt.Errorf("revoke runner identity: %s", refusal.Message))
-	}
+
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

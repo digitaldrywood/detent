@@ -165,7 +165,7 @@ func (s *Service) claimWorkItem(c echo.Context) error {
 func (s *Service) renewLease(c echo.Context) error {
 	leaseID, err := apiLeaseID(c)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	var request renewLeaseAPIRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
@@ -189,7 +189,7 @@ func (s *Service) renewLease(c echo.Context) error {
 func (s *Service) releaseLease(c echo.Context) error {
 	leaseID, err := apiLeaseID(c)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	var request releaseLeaseAPIRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
@@ -197,7 +197,7 @@ func (s *Service) releaseLease(c echo.Context) error {
 	}
 	err = s.tracker.Release(c.Request().Context(), tracker.ReleaseRequest{LeaseID: leaseID, FencingToken: request.FencingToken, Reason: request.Reason})
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -205,7 +205,7 @@ func (s *Service) releaseLease(c echo.Context) error {
 func (s *Service) appendWorkItemEvent(c echo.Context) error {
 	id, err := apiWorkItemID(c)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	var request workEventAPIRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
@@ -232,7 +232,7 @@ func (s *Service) appendWorkItemEvent(c echo.Context) error {
 	return c.JSON(http.StatusCreated, event)
 }
 
-func trackerAPIError(c echo.Context, err error) error {
+func (s *Service) trackerAPIError(c echo.Context, err error) error {
 	status := http.StatusInternalServerError
 	code := "hub_operation_failed"
 	message := "Hub operation failed"
@@ -252,7 +252,7 @@ func trackerAPIError(c echo.Context, err error) error {
 	case errors.Is(err, tracker.ErrInvalidClaimRequest), errors.Is(err, tracker.ErrInvalidLeaseRequest), errors.Is(err, tracker.ErrInvalidWorkEvent), errors.Is(err, tracker.ErrInvalidCandidateQuery):
 		status, code, message = http.StatusUnprocessableEntity, "invalid_request", "Request is invalid"
 	}
-	return c.JSON(status, apiErrorResponse{Code: code, Message: message})
+	return s.refusedAPIError(c, status, code, message, apiErrorResponse{Code: code, Message: message})
 }
 
 // claimNext decides most claim attempts without the writer. A preflight runs
