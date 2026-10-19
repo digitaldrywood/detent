@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -17,6 +18,10 @@ func TestNewReworkFeedback(t *testing.T) {
 	implementation := func(at time.Time, session int64, summary string, findings ...gate.Finding) tracker.ChangeReview {
 		return tracker.ChangeReview{VersionID: "version_1", Decision: "changes_requested", Body: summary, CreatedAt: at, ImplementationReview: &gate.ValidatorResult{VersionID: "version_1", SessionID: session, Verdict: gate.ValidatorVerdictRework, Findings: findings}}
 	}
+	audit := func(at time.Time, findings ...securityaudit.Finding) tracker.ChangeReview {
+		return tracker.ChangeReview{VersionID: "version_1", Decision: "changes_requested", Body: "Security audit", CreatedAt: at, SecurityAudit: &tracker.SecurityAuditReview{VersionID: "version_1", Verdict: "rework", Run: securityaudit.Run{Findings: findings}}}
+	}
+	injection := securityaudit.Finding{ID: "f1", Severity: "P1", Path: "internal/sql.go", Body: "SQL injection"}
 	race := gate.Finding{Severity: "P1", Path: "internal/a.go", Line: 10, Body: "Data race on the cache"}
 	reworded := gate.Finding{Severity: "p1", Path: "internal/a.go", Line: 12, Body: "The cache map is written without the lock"}
 	leak := gate.Finding{Severity: "P2", Path: "internal/b.go", Line: 4, Body: "Goroutine leak"}
@@ -42,6 +47,8 @@ func TestNewReworkFeedback(t *testing.T) {
 		{name: "rework attempt re-records the same findings reworded on other lines", detail: tracker.ChangeDetail{Reviews: []tracker.ChangeReview{implementation(before, 1, "One race", race), implementation(after, 2, "Still racy", reworded)}}},
 		{name: "rework attempt review adds a finding on the unchanged head", detail: tracker.ChangeDetail{Reviews: []tracker.ChangeReview{implementation(before, 1, "One race", race), implementation(after, 2, "Race and leak", reworded, leak)}}, want: true},
 		{name: "validator escalates an existing path to a new severity", detail: tracker.ChangeDetail{Reviews: []tracker.ChangeReview{validator(before, 1, "Minor", leak), validator(after, 2, "Major", gate.Finding{Severity: "P1", Path: leak.Path})}}, want: true},
+		{name: "security audit rerun with the same findings is not new", detail: tracker.ChangeDetail{Reviews: []tracker.ChangeReview{audit(before, injection), audit(after, securityaudit.Finding{ID: "f9", Severity: "p1", Path: injection.Path, Body: "Unsanitized query"})}}},
+		{name: "security audit rerun adds a finding", detail: tracker.ChangeDetail{Reviews: []tracker.ChangeReview{audit(before, injection), audit(after, injection, securityaudit.Finding{ID: "f2", Severity: "P2", Path: "internal/auth.go", Body: "Token logged"})}}, want: true},
 		{name: "resubmitted check run is not new", detail: tracker.ChangeDetail{Checks: []tracker.ChangeCheck{run(before, "run-1"), run(after, "run-1")}}},
 		{name: "a distinct check run of the same workflow is new", detail: tracker.ChangeDetail{Checks: []tracker.ChangeCheck{run(before, "run-1"), run(after, "run-2")}}, want: true},
 		{name: "first automated verdict after the attempt started is new", detail: tracker.ChangeDetail{Reviews: []tracker.ChangeReview{validator(after, 2, "Missing regression")}}, want: true},

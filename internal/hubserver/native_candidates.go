@@ -471,24 +471,33 @@ func newReworkFeedback(detail tracker.ChangeDetail, versionID string, started ti
 
 func reviewFeedbackKeys(review tracker.ChangeReview) []string {
 	var kind string
-	var result *gate.ValidatorResult
+	var findings [][2]string
 	switch {
 	case review.Validator != nil:
-		kind, result = "validator", review.Validator
+		kind = "validator"
+		for _, finding := range review.Validator.Findings {
+			findings = append(findings, [2]string{finding.Severity, finding.Path})
+		}
 	case review.ImplementationReview != nil:
-		kind, result = "implementation_review", review.ImplementationReview
+		kind = "implementation_review"
+		for _, finding := range review.ImplementationReview.Findings {
+			findings = append(findings, [2]string{finding.Severity, finding.Path})
+		}
 	case review.SecurityAudit != nil:
 		kind = "security_audit"
+		for _, finding := range review.SecurityAudit.Run.Findings {
+			findings = append(findings, [2]string{finding.Severity, finding.Path})
+		}
 	default:
 		return []string{"review\x00" + review.Decision + "\x00" + review.Body}
 	}
 	prefix := kind + "\x00" + review.Decision
-	if result == nil || len(result.Findings) == 0 {
+	if len(findings) == 0 {
 		return []string{prefix}
 	}
-	keys := make([]string, 0, len(result.Findings))
-	for _, finding := range result.Findings {
-		keys = append(keys, prefix+"\x00"+strings.ToLower(strings.TrimSpace(finding.Severity))+"\x00"+strings.TrimSpace(finding.Path))
+	keys := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		keys = append(keys, prefix+"\x00"+strings.ToLower(strings.TrimSpace(finding[0]))+"\x00"+strings.TrimSpace(finding[1]))
 	}
 	return keys
 }
