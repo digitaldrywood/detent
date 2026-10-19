@@ -42,8 +42,103 @@ func (w *stoppedFinalizationWorkspace) RunReviewCommand(ctx context.Context, inf
 }
 
 func TestNativeStopDuringHostFinalization(t *testing.T) {
-	for _, mode := range []string{"stop", "drain during validation", "drain during publication", "drain during validation with pending status", "drain during publication with pending status"} {
+	for _, mode := range []string{"stop", "drain during validation", "drain during publication", "drain during validation with pending status", "drain during publication with pending status", "drain before dispatch with released status", "drain before dispatch with pending status"} {
 		t.Run(mode, func(t *testing.T) { testNativeStopDuringHostFinalization(t, mode) })
+	}
+}
+
+func testNativeDrainBeforeDispatch(t *testing.T, h *nativeChangeHub, issueID string, releaseRead bool) {
+	t.Helper()
+	started := make(chan struct{}, 1)
+	release := make(chan struct{}, 1)
+	defer close(release)
+	var intercepted atomic.Bool
+	var claims atomic.Int32
+	transport := h.native.client.httpClient.Transport
+	h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/claims") {
+			claims.Add(1)
+		}
+		if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/work-items") {
+			h.scheduler.mu.Lock()
+			_, acquired := h.scheduler.nativeClaims[issueID]
+			h.scheduler.mu.Unlock()
+			if acquired && intercepted.CompareAndSwap(false, true) {
+				started <- struct{}{}
+				select {
+				case <-request.Context().Done():
+					return nil, request.Context().Err()
+				case <-release:
+				}
+			}
+		}
+		return transport.RoundTrip(request)
+	})
+	h.native.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "status-refresh", Claimable: true, Reset: true})
+	worker := nativeDependencyRecoveryRunner{started: make(chan runner.RunRequest, 1)}
+	orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked", "In Review"}, TerminalStates: []string{"Done"}}, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: worker, Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- orch.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Error(err)
+		}
+	})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("status discovery did not block after native claim acquisition")
+	}
+	h.scheduler.mu.Lock()
+	original := h.scheduler.nativeClaims[issueID].lease
+	h.scheduler.mu.Unlock()
+	if claims.Load() != 1 || original.ID == "" || original.FencingToken == 0 {
+		t.Fatalf("status discovery has no unique fenced claim: claims=%d lease=%+v", claims.Load(), original)
+	}
+	orch.BeginDrain()
+	if releaseRead {
+		release <- struct{}{}
+	}
+	drainCtx, stopDrain := context.WithTimeout(t.Context(), time.Second)
+	defer stopDrain()
+	if err := orch.Drain(drainCtx); err != nil {
+		t.Fatal(err)
+	}
+	state, err := orch.State(drainCtx)
+	if err != nil || !state.Draining || len(state.Running) != 0 {
+		t.Fatalf("idle drain state=%+v error=%v", state, err)
+	}
+	select {
+	case request := <-worker.started:
+		t.Fatalf("drain dispatched acquired candidate: %+v", request)
+	default:
+	}
+	h.scheduler.mu.Lock()
+	retained := len(h.scheduler.nativeClaims) + len(h.scheduler.claims)
+	h.scheduler.mu.Unlock()
+	if retained != 0 {
+		t.Fatalf("drain retained an undispatched native claim: lease=%+v retained=%d", original, retained)
+	}
+	candidates := h.candidates(t)
+	if len(candidates) != 1 || candidates[0].ID != issueID {
+		t.Fatalf("settled candidate cannot be reclaimed: %+v", candidates)
+	}
+	h.scheduler.mu.Lock()
+	successor := h.scheduler.nativeClaims[issueID].lease
+	h.scheduler.mu.Unlock()
+	if successor.ID == original.ID || successor.FencingToken <= original.FencingToken {
+		t.Fatalf("reclaimed candidate lost fencing: original=%+v successor=%+v", original, successor)
+	}
+	if _, err := h.native.Renew(t.Context(), original, 90); err == nil {
+		t.Fatal("drained lease renewed across its successor's fence")
+	}
+	if err := h.scheduler.ReleaseClaim(t.Context(), issueID, "dispatch_deferred"); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -70,6 +165,10 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		t.Fatal(err)
 	}
 	confirmIssueContract(t, h.admin, issue.ID)
+	if strings.HasPrefix(mode, "drain before dispatch") {
+		testNativeDrainBeforeDispatch(t, h, issue.ID, strings.HasSuffix(mode, "released status"))
+		return
+	}
 	change, err := h.admin.CreateChange(t.Context(), current.WorkItemID, tracker.CreateChange{Mutation: nativeMutationKey(), Title: issue.Title})
 	if err != nil {
 		t.Fatal(err)

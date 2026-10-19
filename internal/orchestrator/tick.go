@@ -498,7 +498,7 @@ func (o *Orchestrator) fetchTickIssues(
 	now time.Time,
 	reserve githubBudgetReserveDecision,
 	timing *refreshTiming,
-) (tickFetchedIssues, bool) {
+) (fetched tickFetchedIssues, ok bool) {
 	if o.scheduling == nil {
 		discoveryCtx, finish := o.beginDispatchDiscovery(ctx)
 		defer finish()
@@ -541,6 +541,11 @@ func (o *Orchestrator) fetchTickIssues(
 
 	timing.step("fetch_candidates")
 	candidateIssues, err := o.fetchCandidateIssuesForTick(ctx, state)
+	defer func(claimCtx context.Context) {
+		if !ok {
+			o.releaseDeferredSchedulingClaims(claimCtx, state, candidateIssues)
+		}
+	}(ctx)
 	if ctx.Err() != nil {
 		return tickFetchedIssues{}, false
 	}
@@ -558,7 +563,7 @@ func (o *Orchestrator) fetchTickIssues(
 		o.recordTrackerReadSuccess(state, telemetry.RefreshSourceCandidates, now)
 	}
 
-	fetched := tickFetchedIssues{
+	fetched = tickFetchedIssues{
 		candidates: cloneIssues(candidateIssues),
 	}
 	if len(observedStates) == 0 && !canRefresh {
