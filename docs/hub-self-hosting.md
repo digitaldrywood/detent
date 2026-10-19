@@ -194,10 +194,10 @@ needed. Substitute your Hub URL, organization and project IDs in these examples.
    detent --config "$HOME/.config/detent-runner/global.yaml" --headless
    ```
 
-   For a background service, add `--service` to the registration command instead;
-   it installs and starts the runner service. Use only one running owner of this
-   config. Keep the `runner_id` and `machine_id` printed by registration for
-   inspection and any exact policy selectors.
+   For a background service, use `detent hub runner register --service` with the
+   same flags instead; it installs and starts the runner service. Use only one
+   running owner of this config. Keep the `runner_id` and `machine_id` printed
+   by registration for inspection and any exact policy selectors.
 
 4. From your authorized MCP client, call `runner_project_diagnostics`:
 

@@ -78,6 +78,7 @@ assets: app css release-notes
 
 generate-docs:
 	go run ./internal/config/cmd/configdoc -root .
+	python3 scripts/check-runner-enrollment-docs.py
 
 check-migrations:
 	go run ./tools/migrationcheck

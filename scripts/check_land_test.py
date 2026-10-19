@@ -120,7 +120,8 @@ class LandingGateTest(unittest.TestCase):
             with self.subTest(target=target, budget=budget, failure=failure, changed=changed), tempfile.TemporaryDirectory(prefix="npm-nilaway-", dir=scratch) as directory:
                 root = Path(directory)
                 (root / "scripts").mkdir()
-                for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/check-browser.sh", "scripts/test-workspace.sh", "scripts/cover-packages.sh"):
+                for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/check-browser.sh", "scripts/test-workspace.sh", "scripts/cover-packages.sh", "scripts/check-runner-enrollment-docs.py", "docs/hub-self-hosting.md", "internal/cli/hub_runner_register.go"):
+                    (root / name).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(ROOT / name, root / name)
                 for name in ("go", "git", "lint"):
                     path = root / name
