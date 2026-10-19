@@ -26,7 +26,6 @@ client:
 global:
   max_concurrent_agents: 8
   scheduling: weighted
-projects: []
 `), "hub-client.yaml")
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
@@ -108,7 +107,6 @@ kind: GlobalConfig
 global:
   max_concurrent_agents: 8
   scheduling: weighted
-projects: []
 `), test.name+".yaml")
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Parse() error = %v, want containing %q", err, test.want)

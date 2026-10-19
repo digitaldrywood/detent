@@ -26,7 +26,6 @@ func TestCheckDoctorPublicIssueExposure(t *testing.T) {
 		{name: "private destination is safe", sourceInfo: ghconnector.RepositoryInfo{Private: true, Visibility: "private"}, destInfo: ghconnector.RepositoryInfo{Private: true, Visibility: "private"}, wantStatus: doctorOK, wantDetail: "do not file"},
 		{name: "public source is safe", sourceInfo: ghconnector.RepositoryInfo{Visibility: "public"}, destInfo: ghconnector.RepositoryInfo{Visibility: "public"}, wantStatus: doctorOK, wantDetail: "sources are not private"},
 		{name: "unknown destination warns", sourceInfo: ghconnector.RepositoryInfo{Private: true, Visibility: "private"}, destErr: errors.New("unavailable"), wantStatus: doctorWarn, wantDetail: "could not be determined"},
-		{name: "operator override is explicit", sourceInfo: ghconnector.RepositoryInfo{Private: true, Visibility: "private"}, destInfo: ghconnector.RepositoryInfo{Visibility: "public"}, override: true, wantStatus: doctorOK, wantDetail: "do not file"},
 	}
 
 	for _, test := range tests {
@@ -35,9 +34,7 @@ func TestCheckDoctorPublicIssueExposure(t *testing.T) {
 			cfg := workflowconfig.Default()
 			cfg.Tracker.Kind = workflowconfig.TrackerGitHub
 			cfg.Tracker.Repository = "private/source"
-			cfg.Retro.Enabled = true
-			cfg.Retro.ProductRepository = "public/destination"
-			cfg.Retro.AllowPublicCrossProjectDetails = test.override
+			cfg.Codex.DeliverableElicitationAllowlist = []workflowconfig.DeliverableElicitationRule{{Repository: "public/destination", Server: "codex_apps", Tool: "github.create_issue"}}
 			check := checkDoctorPublicIssueExposure(context.Background(), "private", cfg, doctorDeps{
 				githubRepositoryInfo: func(_ context.Context, _ workflowconfig.Config, repository string) (ghconnector.RepositoryInfo, error) {
 					if repository == "private/source" {
