@@ -69,7 +69,7 @@ func TestHealthRules(t *testing.T) {
 		{"saturated project runners with organization room", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 2, RefusalReasons: []string{"runner_capacity_full", "runner_capacity_full"}}, {ID: "other-project", FreeSlots: 1}}}},
 		{"recorded capacity backpressure", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 2, RefusalReasons: []string{"capacity_full", "capacity_full"}}}}},
 		{"missing refusal reason", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 1, RefusalReasons: []string{""}}}}},
-		{"dependency hold with a claimable candidate", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 1, FreeSlots: 1, DependencyGated: 1, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-time.Hour), LastLanding: now}}}},
+		{"dependency hold with a claimable candidate", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 1, FreeSlots: 1, DependencyGated: 1, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-time.Hour)}}}},
 		{"new dependency hold without landing history", healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 1, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-30*time.Minute + time.Nanosecond)}}}},
 		{"new dependency hold after an old landing", healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 1, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-time.Minute), LastLanding: now.Add(-24 * time.Hour)}}}},
 		{"dependency hold without free slots", healthSnapshot{Projects: []healthProject{{ID: "project", DependencyGated: 1, HeldCount: 1, HeldBlockers: []string{"held"}}}}},
@@ -81,19 +81,6 @@ func TestHealthRules(t *testing.T) {
 				t.Fatalf("findings = %+v", got)
 			}
 		})
-	}
-}
-
-func TestDependencyHoldRequiresNoClaimableCandidate(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
-	p := healthProject{ID: "project", FreeSlots: 1, DependencyGated: 1, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-time.Hour)}
-	if _, active := dependencyHoldFinding(now, p); !active {
-		t.Fatal("held dependency without candidates stayed silent")
-	}
-	p.Candidates = 1
-	if _, active := dependencyHoldFinding(now, p); active {
-		t.Fatal("claimable candidate reported dependency hold")
 	}
 }
 

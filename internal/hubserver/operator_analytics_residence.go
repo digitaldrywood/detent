@@ -125,6 +125,14 @@ func projectNativeAnalyticsResidenceHistory(ctx context.Context, q nativeQueryer
 	return nil
 }
 
+type analyticsLiveIssuesKey struct{}
+
+// withAnalyticsLiveIssues leaves archived nonterminal issues out of residence
+// history so they neither appear as current work nor consume the population cap.
+func withAnalyticsLiveIssues(ctx context.Context) context.Context {
+	return context.WithValue(ctx, analyticsLiveIssuesKey{}, true)
+}
+
 func readAnalyticsResidenceHistory(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) (map[string]tracker.NativeState, []analyticsResidenceIssue, bool, error) {
 	states := map[string]tracker.NativeState{}
 	rows, err := queryAnalyticsRows(ctx, q, `SELECT ws.detent_state,ws.terminal,ws.dispatchable FROM workflow_states ws
@@ -150,6 +158,9 @@ JOIN projects p ON p.id=ws.project_id WHERE p.organization_id=? AND p.id=? LIMIT
 		return nil, nil, false, err
 	}
 	issueFilter, issueArgs := reportsIssueClause(ctx, "i.native_id")
+	if _, live := ctx.Value(analyticsLiveIssuesKey{}).(bool); live {
+		issueFilter += " AND NOT (i.archived=1 AND coalesce(ws.terminal,0)=0)"
+	}
 	rows, err = queryAnalyticsPopulation(ctx, q, "residence_issues", `SELECT i.native_id,i.created_at,coalesce(
 (SELECT json_extract(e.data_json,'$.from_state') FROM collaboration_events e
  WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned'

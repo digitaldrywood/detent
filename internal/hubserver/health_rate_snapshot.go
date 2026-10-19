@@ -15,16 +15,13 @@ func readHealthRates(ctx context.Context, q nativeQueryer, organization tracker.
 		p := healthRateProject{ID: project.ID, Candidates: project.Candidates}
 		scope := nativeScope{organization: organization, project: tracker.ProjectID(p.ID)}
 		window := operatortool.AnalyticsWindow{From: now.Add(-healthBaselineWindow - healthLongWindow), To: now}
-		states, issues, partial, err := readAnalyticsResidenceHistory(ctx, q, scope, window)
+		states, issues, partial, err := readAnalyticsResidenceHistory(withAnalyticsLiveIssues(ctx), q, scope, window)
 		if err != nil {
 			return err
 		}
 		p.ResidencePartial = partial
 		for _, issue := range issues {
 			p.Timelines = append(p.Timelines, buildAnalyticsResidenceTimeline(issue, states, now))
-		}
-		if p.Archived, err = readHealthArchivedItems(ctx, q, scope); err != nil {
-			return err
 		}
 		p.Attempts, err = readHealthRateAttempts(ctx, q, scope, window)
 		if err != nil {
@@ -154,27 +151,6 @@ func readHealthItemCosts(ctx context.Context, q nativeQueryer, scope nativeScope
 			return nil, err
 		}
 		out[id] = healthItemCost{Cost: cost, Known: true}
-	}
-	return out, errors.Join(rows.Err(), rows.Close())
-}
-
-func readHealthArchivedItems(ctx context.Context, q nativeQueryer, scope nativeScope) (map[string]bool, error) {
-	rows, err := q.QueryContext(ctx, `SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id
- WHERE i.organization_id=? AND i.project_id=? AND i.archived=1 AND coalesce(ws.terminal,0)=0 ORDER BY i.native_id LIMIT ?`, scope.organization, scope.project, healthReadLimit+1)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]bool{}
-	for rows.Next() {
-		if len(out) == healthReadLimit {
-			return nil, errHealthReadLimit
-		}
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out[id] = true
 	}
 	return out, errors.Join(rows.Err(), rows.Close())
 }

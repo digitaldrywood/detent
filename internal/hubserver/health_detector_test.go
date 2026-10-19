@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -834,7 +835,18 @@ func TestHealthSnapshotCloudTransitionDetailAndDependencyHolds(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE native_id IN (?,?)", active.WorkItemID, external.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
-	if archived, err := readHealthArchivedItems(t.Context(), f.service.database.db, scope); err != nil || !reflect.DeepEqual(archived, map[string]bool{string(active.WorkItemID): true}) {
-		t.Fatalf("archived=%v err=%v", archived, err)
+	window := operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: f.service.config.now().Add(24 * time.Hour)}
+	for _, test := range []struct {
+		ctx  context.Context
+		want bool
+	}{{t.Context(), true}, {withAnalyticsLiveIssues(t.Context()), false}} {
+		_, issues, _, err := readAnalyticsResidenceHistory(test.ctx, f.service.database.db, scope, window)
+		if err != nil {
+			t.Fatal(err)
+		}
+		present := slices.ContainsFunc(issues, func(issue analyticsResidenceIssue) bool { return issue.id == string(active.WorkItemID) })
+		if present != test.want || !slices.ContainsFunc(issues, func(issue analyticsResidenceIssue) bool { return issue.id == string(gated.WorkItemID) }) {
+			t.Fatalf("archived present=%v want %v issues=%d", present, test.want, len(issues))
+		}
 	}
 }
