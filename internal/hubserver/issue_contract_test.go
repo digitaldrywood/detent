@@ -315,12 +315,13 @@ func (f scheduledContractImporter) FetchImportPage(ctx context.Context, request 
 
 func TestNativeScheduledRepairContract(t *testing.T) {
 	t.Parallel()
-	const criteria = "## Acceptance criteria\nReproduce before a minimal fix.\n\n## Must not break\nPreserve behavior and authority.\n\n## How we know it worked\nPass make check-land.\n\n## Invariants touched\nPreserve INV-3 and INV-15.\n\n## Safety regression\nDo not change safety-critical paths."
-	const definition = "## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n- Invariants touched\n- Safety regression\n"
+	const defaultCriteria = "## Acceptance criteria\nReproduce before a minimal fix.\n\n## Must not break\nPreserve behavior and authority.\n\n## How we know it worked\nPass make check-land.\n\n## Invariants touched\nPreserve INV-3 and INV-15.\n\n## Safety regression\nDo not change safety-critical paths."
+	const defaultDefinition = "## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n- Invariants touched\n- Safety regression\n"
 	for _, test := range []struct {
 		name                                                                                                                       string
 		confirmed                                                                                                                  bool
-		delegation                                                                                                                 string
+		delegation, source                                                                                                         string
+		shortContract                                                                                                              bool
 		ordinary                                                                                                                   bool
 		noPolicy, noTemplate, unavailable, foreign, stalePolicy, staleRepository, markerOnly, duplicate, noDispatch, otherCheckout bool
 	}{
@@ -330,6 +331,13 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 		{name: "verification unavailable", unavailable: true},
 		{name: "foreign repository", foreign: true},
 		{name: "approved generic project", confirmed: true},
+		{name: "approved three-section project", confirmed: true, shortContract: true},
+		{name: "run origin without attempt", confirmed: true, source: "https://github.com/example-org/example-project/actions/runs/123"},
+		{name: "origin other run", source: "https://github.com/example-org/example-project/actions/runs/124"},
+		{name: "origin other repository", source: "https://github.com/example-org/other-project/actions/runs/123"},
+		{name: "origin other attempt", source: "https://github.com/example-org/example-project/actions/runs/123/attempts/2"},
+		{name: "origin query", source: "https://github.com/example-org/example-project/actions/runs/123?attempt=1"},
+		{name: "approved release family", confirmed: true, delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/verify.yaml` on `release/v*` enter Todo with Urgent priority."},
 		{name: "approved exact release branch", confirmed: true, delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/verify.yaml` on `release/v2.0` enter Todo with Urgent priority."},
 		{name: "unapproved branch wildcard", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/verify.yaml` on `release/*` enter Todo with Urgent priority."},
 		{name: "ordinary machine report", ordinary: true},
@@ -343,6 +351,13 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", test.name)
 			const repository = "example-org/example-project"
+			criteria, definition := defaultCriteria, defaultDefinition
+			sectionCount := 5
+			if test.shortContract {
+				criteria, _, _ = strings.Cut(criteria, "\n\n## Invariants touched")
+				definition = ""
+				sectionCount = 3
+			}
 			prompt := definition
 			if !test.noTemplate {
 				prompt += "## Scheduled CI repair contract\n" + test.delegation + "\n" + strings.ReplaceAll(criteria, "## ", "### ")
@@ -377,6 +392,9 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 				evidence.JobURL = "https://github.com/elsewhere/repo/actions/jobs/456"
 			}
 			origin := issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: evidence.RunURL, Fingerprint: "scheduled-ci-test"}
+			if test.source != "" {
+				origin.Source = test.source
+			}
 			if test.ordinary {
 				origin.Kind, origin.Instance = "worker", "runner"
 			}
@@ -415,6 +433,9 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 				expectedWorkflow, expectedBranch := ".github/workflows/ci.yml", ""
 				if test.delegation != "" {
 					expectedWorkflow, expectedBranch = ".github/workflows/verify.yaml", "release/v2.0"
+					if test.name == "approved release family" {
+						expectedBranch = "release/v*"
+					}
 				}
 				if got.ScheduledWorkflow != expectedWorkflow || got.ScheduledBranch != expectedBranch {
 					t.Fatalf("unapproved workflow/branch: %+v", got)
@@ -455,7 +476,7 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 				}
 				return
 			}
-			if (len(issue.IssueContract.ConfirmedSections) == 5) != test.confirmed {
+			if (len(issue.IssueContract.ConfirmedSections) == sectionCount) != test.confirmed {
 				t.Fatalf("confirmation=%+v body=%s", issue.IssueContract, issue.Body)
 			}
 			if !strings.HasPrefix(issue.Body, criteria+"\n\n## Verified CI occurrence") || issue.IssueContract.RecordedAt.IsZero() {

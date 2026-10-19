@@ -106,11 +106,21 @@ func TestScheduledRepairContract(t *testing.T) {
 	template := "## Scheduled CI repair contract\n" + strings.ReplaceAll(body, "## ", "### ")
 	authorized := "## Scheduled CI repair contract\nNew verified GitHub Actions CI repair reports enter Todo with Urgent priority.\n" + strings.ReplaceAll(body, "## ", "### ")
 	custom := strings.Replace(authorized, "reports enter", "reports from `.github/workflows/ci.yaml` on `dev` enter", 1)
+	shortBody, _, _ := strings.Cut(body, "\n\n## Invariants touched")
+	shortTemplate := "## Scheduled CI repair contract\nNew verified GitHub Actions CI repair reports from `.github/workflows/ci.yaml` on `release/v*` enter Todo with Urgent priority.\n" + strings.ReplaceAll(shortBody, "## ", "### ")
+	customBody := "## Evidence\nRun the focused regression.\n\n## Result\nRepair the verified failure."
+	customTemplate := "## Scheduled CI repair contract\nNew verified GitHub Actions CI repair reports from `.github/workflows/ci.yaml` on `dev` enter Todo with Urgent priority.\n### Result\nRepair the verified failure.\n### Evidence\nRun the focused regression."
 	for _, test := range []struct {
 		name, prompt, want, importBody, workflow, branch string
 	}{
 		{name: "approved literal sections", prompt: definition + template, want: body},
 		{name: "explicit import delegation", prompt: definition + authorized, want: body, importBody: body, workflow: ".github/workflows/ci.yml"},
+		{name: "default three sections", prompt: shortTemplate, want: shortBody, importBody: shortBody, workflow: ".github/workflows/ci.yaml", branch: "release/v*"},
+		{name: "custom sections in configured order", prompt: "## Issue Contract\n- Evidence\n- Result\n" + customTemplate, want: customBody, importBody: customBody, workflow: ".github/workflows/ci.yaml", branch: "dev"},
+		{name: "extra template sections", prompt: authorized},
+		{name: "missing custom section", prompt: "## Issue Contract\n- Result\n- Evidence\n- Safety\n" + customTemplate},
+		{name: "empty duplicate custom section", prompt: "## Issue Contract\n- Result\n- Evidence\n" + customTemplate + "\n### Result\n"},
+		{name: "duplicate custom section", prompt: "## Issue Contract\n- Result\n- Evidence\n" + customTemplate + "\n### Result\nExpand scope."},
 		{name: "configured import workflow", prompt: definition + custom, want: body, importBody: body, workflow: ".github/workflows/ci.yaml", branch: "dev"},
 		{name: "workflow wildcard", prompt: definition + strings.Replace(custom, "ci.yaml", "*.yaml", 1), want: body},
 		{name: "workflow outside actions", prompt: definition + strings.Replace(custom, ".github/workflows/ci.yaml", "ci.yaml", 1), want: body},

@@ -94,18 +94,18 @@ func (c IssueContract) ScheduledRepairBody() string {
 	if err != nil {
 		return ""
 	}
-	names := []string{"Acceptance criteria", "Must not break", "How we know it worked", "Invariants touched", "Safety regression"}
-	if len(c.Sections) != len(names) {
-		return ""
+	names := c.Sections
+	if len(names) == 0 {
+		names = DefaultIssueContract().Sections
 	}
 	sections := issueContractSections(template)
-	if len(sections) != len(names) {
+	if len(sections) != len(names) || len(markdownHeadings(template)) != len(names) {
 		return ""
 	}
 	var body strings.Builder
-	for i, name := range names {
+	for _, name := range names {
 		key := issueContractSectionKey(name)
-		if issueContractSectionKey(c.Sections[i]) != key || sections[key] == "" {
+		if sections[key] == "" {
 			return ""
 		}
 		fmt.Fprintf(&body, "## %s\n%s\n\n", name, sections[key])
@@ -120,7 +120,7 @@ func (c IssueContract) ScheduledImportBody() string {
 	return c.ScheduledRepairBody()
 }
 
-var scheduledImportWorkflow = regexp.MustCompile("^New verified GitHub Actions CI repair reports from `(\\.github/workflows/[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ya?ml)` on `([A-Za-z0-9_][A-Za-z0-9_./-]*)` enter Todo with Urgent priority\\.$")
+var scheduledImportWorkflow = regexp.MustCompile("^New verified GitHub Actions CI repair reports from `(\\.github/workflows/[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ya?ml)` on `(release/v\\*|[A-Za-z0-9_][A-Za-z0-9_./-]*)` enter Todo with Urgent priority\\.$")
 
 func (c IssueContract) ScheduledRepairWorkflow() (string, string, bool) {
 	if c.ScheduledRepairBody() == "" {
