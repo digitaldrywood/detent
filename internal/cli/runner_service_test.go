@@ -16,8 +16,8 @@ import (
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 )
 
-func testRunnerServiceName(path string) (string, error) {
-	return runnerServiceNameFromDefinitions(path, "", nil)
+func testRunnerServiceName(string) (string, error) {
+	return runnerServiceName, nil
 }
 
 func TestHubRunnerRegisterDistinctServices(t *testing.T) {
@@ -27,15 +27,18 @@ func TestHubRunnerRegisterDistinctServices(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
 			hubs := []*registerHub{newRegisterHub(t, nil), newRegisterHub(t, nil)}
-			paths := []string{filepath.Join(root, "cloud", "global.yaml"), filepath.Join(root, "local", "global.yaml")}
-			defaultDefinition := filepath.Join(root, "default-service")
+			paths := []string{filepath.Join(root, ".config", "detent-runner", "global.yaml"), filepath.Join(root, "local", "global.yaml")}
+			selected := [2]string{runnerServiceNameForPath(paths[0], root), runnerServiceNameForPath(paths[1], root)}
+			if selected[0] != "detent.runner" || selected[1] == selected[0] || !strings.HasPrefix(selected[1], "detent.runner-") {
+				t.Fatalf("service names before either installation = %v", selected)
+			}
 			var names [2]string
 			for _, test := range []struct {
 				name string
 				hub  int
 			}{
-				{name: "first install"},
 				{name: "second Hub", hub: 1},
+				{name: "first install"},
 				{name: "first Hub re-registration"},
 				{name: "second Hub re-registration", hub: 1},
 			} {
@@ -47,6 +50,9 @@ func TestHubRunnerRegisterDistinctServices(t *testing.T) {
 							return err
 						}
 						name := serviceNameForConfig(cfg)
+						if name != selected[test.hub] {
+							t.Fatalf("installation changed selected name %q to %q", selected[test.hub], name)
+						}
 						if name == servicepkg.DefaultName {
 							t.Fatal("runner selected the board service")
 						}
@@ -97,13 +103,10 @@ func TestHubRunnerRegisterDistinctServices(t *testing.T) {
 						if definition.StandardOutPath != filepath.Join(filepath.Dir(configPath), "logs", "service.out.log") || definition.StandardErrorPath != filepath.Join(filepath.Dir(configPath), "logs", "service.err.log") {
 							t.Fatalf("service logs = %+v", definition)
 						}
-						if test.hub == 0 {
-							return os.WriteFile(defaultDefinition, []byte(definition.Content), 0o600)
-						}
 						return nil
 					}
 					command := newHubRunnerRegisterCommandWithServiceName("test", func(string) string { return "" }, starter, func(string) error { return nil }, func(context.Context, globalconfig.Config, string) error { return nil }, func(context.Context) error { return nil }, func(path string) (string, error) {
-						return runnerServiceNameFromDefinitions(path, goos, []string{defaultDefinition})
+						return runnerServiceNameForPath(path, root), nil
 					})
 					output, err := executeRegister(t, command, "--url", hubs[test.hub].server.URL+"/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", path, "--workspace-root", filepath.Join(filepath.Dir(path), "work"), "--service")
 					if err != nil {

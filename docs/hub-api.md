@@ -557,11 +557,13 @@ detent hub runner register --url https://cloud.detent.build/organizations/org_ex
    `global.agents.model_selection`, `client.native_projects` and other local
    project policy defaults before upgrading. Nested unknown machine keys also
    fail validation; the warning-and-ignore transition has ended.
-4. With `--service`, installs and starts the `detent.runner` background service
-   (launchd `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`),
-   separate from a local board's `detent` service on the same host. When that
-   service belongs to another config, a new enrollment appends a stable hash of
-   its absolute config path to `detent.runner`. The selected name is stored in
+4. With `--service`, installs and starts a background service separate from a
+   local board's `detent` service on the same host. The default config path,
+   `~/.config/detent-runner/global.yaml`, keeps `detent.runner` (launchd
+   `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`).
+   New enrollments using other config paths append a stable hash of the absolute
+   config path to `detent.runner`, even when installed first. Naming does not
+   inspect installed services or depend on enrollment order. The name is stored in
    `service_name`, so re-registration and updates target the same service.
    Existing config names remain unchanged. Use a separate config directory for
    each Hub enrollment; its credentials and service logs stay in that directory.
