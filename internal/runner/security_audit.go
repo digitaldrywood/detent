@@ -196,7 +196,7 @@ func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (execution
 				runResult.Tokens = addAgentTokenTotals(previousUsage, runResult.Tokens)
 			}
 			if req.OnUsageUpdate != nil {
-				if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, Tokens: runResult.Tokens, RuntimeIdentity: runResult.RuntimeIdentity}); err != nil {
+				if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, Tokens: runResult.Tokens, RuntimeIdentity: runResult.RuntimeIdentity, RateLimits: runResult.RateLimits}); err != nil {
 					return err
 				}
 			}
