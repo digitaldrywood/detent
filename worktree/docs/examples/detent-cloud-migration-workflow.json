@@ -1,0 +1,11 @@
+[
+  {"name":"Backlog","terminal":false,"dispatchable":false,"operator_only":true,"transitions":["Todo","Cancelled"]},
+  {"name":"Todo","terminal":false,"dispatchable":true,"transitions":["Backlog","In Progress","Blocked","Done","Cancelled"]},
+  {"name":"In Progress","terminal":false,"dispatchable":true,"transitions":["Todo","Blocked","Human Review","Rework","Merging","Done","Cancelled"]},
+  {"name":"Blocked","terminal":false,"dispatchable":false,"transitions":["Backlog","Todo","In Progress","Rework","Done","Cancelled"]},
+  {"name":"Human Review","terminal":false,"dispatchable":false,"transitions":["In Progress","Rework","Blocked","Merging","Done","Cancelled"]},
+  {"name":"Rework","terminal":false,"dispatchable":true,"transitions":["In Progress","Blocked","Human Review","Merging","Done","Cancelled"]},
+  {"name":"Merging","terminal":false,"dispatchable":true,"transitions":["Done","Blocked","Human Review","In Progress","Rework","Cancelled"]},
+  {"name":"Done","terminal":true,"dispatchable":false,"transitions":["Backlog","Todo"]},
+  {"name":"Cancelled","terminal":true,"dispatchable":false,"operator_only":true,"transitions":["Backlog"]}
+]

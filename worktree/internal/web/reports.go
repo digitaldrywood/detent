@@ -1,0 +1,227 @@
+package web
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/web/templates"
+)
+
+func (s *Server) reports(c echo.Context) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		return s.demoReports(c, scenario)
+	}
+	from, to, response, status := reportsDateRange(c)
+	if response != nil {
+		return c.JSON(status, response)
+	}
+	outcomeWindow, err := reportsOutcomeWindow(c.QueryParam("outcome_window"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errorResponse("invalid_outcome_window", "outcome_window must be 24h, 7d, or 30d"))
+	}
+
+	ctx := c.Request().Context()
+	timezone, err := reportsTimezone(c.QueryParam("tz"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errorResponse("invalid_timezone", "tz must be an IANA timezone"))
+	}
+	data, err := s.reportsData(ctx, from, to, c.QueryParam("project"), timezone, outcomeWindow, time.Now())
+	if err != nil {
+		s.logger.Error("usage reports page failed", slog.Any("error", err))
+		return c.JSON(http.StatusInternalServerError, errorResponse("usage_reports_failed", "Usage reports failed"))
+	}
+	applyReportsPreferences(c.Request(), &data)
+
+	return render(c, templates.ReportsPageV2(data))
+}
+
+func reportsDateRange(c echo.Context) (time.Time, time.Time, *apiErrorResponse, int) {
+	from, response, status := usageDate("from", c.QueryParam("from"))
+	if response != nil {
+		return time.Time{}, time.Time{}, response, status
+	}
+	to, response, status := usageDate("to", c.QueryParam("to"))
+	if response != nil {
+		return time.Time{}, time.Time{}, response, status
+	}
+	if !from.IsZero() && !to.IsZero() && from.After(to) {
+		response := errorResponse("invalid_date_range", "from must be on or before to")
+		return time.Time{}, time.Time{}, &response, http.StatusBadRequest
+	}
+	return from, to, nil, 0
+}
+
+func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time, selectedProjectID string, timezone *time.Location, outcomeWindow reportsOutcomeWindowOption, now time.Time) (templates.ReportsData, error) {
+	groups, _, err := s.readReportGroups(ctx, nil, from, to, int(^uint(0)>>1), 0)
+	if err != nil {
+		return templates.ReportsData{}, err
+	}
+	day, project, issue, pr, model := usageReportTemplateData(groups[0]), usageReportTemplateData(groups[1]), usageReportTemplateData(groups[2]), usageReportTemplateData(groups[3]), usageReportTemplateData(groups[4])
+
+	instanceName := s.instanceName()
+	snapshot := s.latestSnapshot(ctx)
+	projects := s.projectSmallMultiples(ctx, snapshot)
+	projectID, projectName, _ := s.sidebarProjectContext(selectedProjectID, projects, snapshot)
+	digest, err := s.dailyDigestData(ctx, snapshot, projects, timezone, now)
+	if err != nil {
+		return templates.ReportsData{}, err
+	}
+	efficiencyFrom, efficiencyTo := efficiencyReportRange(from, to)
+	outcomeTo := now.UTC().Truncate(time.Second)
+	efficiencyRollup, costPerOutcome, err := s.readReportOutcomes(ctx, projectID, efficiencyFrom, efficiencyTo, outcomeTo.Add(-outcomeWindow.Duration), outcomeTo, outcomeWindow.Bucket)
+	if err != nil {
+		return templates.ReportsData{}, err
+	}
+
+	return templates.ReportsData{
+		Title:           instancePageTitle(instanceName, "Detent reports"),
+		ApplicationName: applicationName(instanceName),
+		InstanceName:    instanceName,
+		ConnectorName:   s.connectorName(),
+		Snapshot:        snapshot,
+		GeneratedAt:     time.Now().UTC().Truncate(time.Second),
+		Day:             day,
+		Project:         project,
+		Issue:           issue,
+		PR:              pr,
+		Model:           model,
+		Digest:          digest,
+		Efficiency:      efficiencyRollup,
+		CostPerOutcome:  costPerOutcome,
+		OutcomeWindow:   outcomeWindow.ID,
+		Assets:          s.assets.templatePaths(),
+		Projects:        projects,
+		ActiveNav:       "reports",
+		ProjectID:       projectID,
+		ProjectName:     projectName,
+	}, nil
+}
+
+type reportsOutcomeWindowOption struct {
+	ID       string
+	Duration time.Duration
+	Bucket   time.Duration
+}
+
+func reportsOutcomeWindow(value string) (reportsOutcomeWindowOption, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "7d":
+		return reportsOutcomeWindowOption{ID: "7d", Duration: 7 * 24 * time.Hour, Bucket: 24 * time.Hour}, nil
+	case "24h":
+		return reportsOutcomeWindowOption{ID: "24h", Duration: 24 * time.Hour, Bucket: time.Hour}, nil
+	case "30d":
+		return reportsOutcomeWindowOption{ID: "30d", Duration: 30 * 24 * time.Hour, Bucket: 24 * time.Hour}, nil
+	default:
+		return reportsOutcomeWindowOption{}, errors.New("unsupported outcome window")
+	}
+}
+
+func efficiencyReportRange(from time.Time, to time.Time) (time.Time, time.Time) {
+	if !to.IsZero() {
+		to = to.AddDate(0, 0, 1)
+	}
+	return from, to
+}
+
+func reportsTimezone(value string) (*time.Location, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.UTC, nil
+	}
+	location, err := time.LoadLocation(value)
+	if err != nil {
+		return nil, err
+	}
+	return location, nil
+}
+
+func usageReportTemplateData(response usageReportAPIResponse) templates.UsageReportData {
+	return templates.UsageReportData{
+		By:         response.By,
+		From:       optionalStringValue(response.From),
+		To:         optionalStringValue(response.To),
+		Totals:     usageTotalsTemplateData(response.Totals),
+		Series:     usageBucketTemplateData(response.Series),
+		Breakdowns: usageBucketTemplateData(response.Breakdowns),
+	}
+}
+
+func usageTotalsTemplateData(totals usageTotalsAPIResponse) templates.UsageTotalsData {
+	return templates.UsageTotalsData{
+		ComputeUSD:            totals.ComputeUSD,
+		ComputeEvents:         totals.ComputeEvents,
+		InputTokens:           totals.InputTokens,
+		CachedInputTokens:     totals.CachedInputTokens,
+		OutputTokens:          totals.OutputTokens,
+		ReasoningOutputTokens: totals.ReasoningOutputTokens,
+		TotalTokens:           totals.TotalTokens,
+		ModelContextWindow:    totals.ModelContextWindow,
+		RuntimeSeconds:        totals.RuntimeSeconds,
+		Events:                totals.Events,
+		SpendUSD:              totals.SpendUSD,
+		CacheReadFraction:     totals.CacheReadFraction,
+		Models:                usageModelsTemplateData(totals.Models),
+	}
+}
+
+func usageBucketTemplateData(rows []usageBucketAPIResponse) []templates.UsageBucketData {
+	payload := make([]templates.UsageBucketData, 0, len(rows))
+	for _, row := range rows {
+		payload = append(payload, templates.UsageBucketData{
+			ComputeUSD:            row.ComputeUSD,
+			ComputeEvents:         row.ComputeEvents,
+			Bucket:                row.Bucket,
+			Label:                 row.Label,
+			Date:                  optionalStringValue(row.Date),
+			InputTokens:           row.InputTokens,
+			CachedInputTokens:     row.CachedInputTokens,
+			OutputTokens:          row.OutputTokens,
+			ReasoningOutputTokens: row.ReasoningOutputTokens,
+			TotalTokens:           row.TotalTokens,
+			ModelContextWindow:    row.ModelContextWindow,
+			RuntimeSeconds:        row.RuntimeSeconds,
+			Events:                row.Events,
+			SpendUSD:              row.SpendUSD,
+			CacheReadFraction:     row.CacheReadFraction,
+			Models:                usageModelsTemplateData(row.Models),
+		})
+	}
+	return payload
+}
+
+func usageModelsTemplateData(models []usageModelAPIResponse) []templates.UsageModelData {
+	payload := make([]templates.UsageModelData, 0, len(models))
+	for _, model := range models {
+		payload = append(payload, templates.UsageModelData{
+			ComputeUSD:            model.ComputeUSD,
+			ComputeEvents:         model.ComputeEvents,
+			Model:                 model.Model,
+			InputTokens:           model.InputTokens,
+			CachedInputTokens:     model.CachedInputTokens,
+			OutputTokens:          model.OutputTokens,
+			ReasoningOutputTokens: model.ReasoningOutputTokens,
+			TotalTokens:           model.TotalTokens,
+			ModelContextWindow:    model.ModelContextWindow,
+			RuntimeSeconds:        model.RuntimeSeconds,
+			Events:                model.Events,
+			SpendUSD:              model.SpendUSD,
+			CacheReadFraction:     model.CacheReadFraction,
+		})
+	}
+	return payload
+}
+
+func optionalStringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}

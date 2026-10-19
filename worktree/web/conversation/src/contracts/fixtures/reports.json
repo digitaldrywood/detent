@@ -1,0 +1,1468 @@
+{
+  "completion": {
+    "done": 276,
+    "cancelled": 112,
+    "cost_usd": 6201.72,
+    "cost_p50_usd": 11.2,
+    "cost_p90_usd": 58.4,
+    "system": {
+      "count": 276,
+      "seconds": 15102720,
+      "p50_seconds": 34200,
+      "p90_seconds": 147600
+    },
+    "lead": {
+      "count": 276,
+      "seconds": 27184896,
+      "p50_seconds": 61560,
+      "p90_seconds": 236160
+    },
+    "working": {
+      "count": 276,
+      "seconds": 1086336,
+      "p50_seconds": 2460,
+      "p90_seconds": 10440
+    },
+    "partial": false,
+    "lanes": [
+      {
+        "lane": "Todo",
+        "group": "system",
+        "count": 276,
+        "seconds": 1281600,
+        "p50_seconds": 6480,
+        "p90_seconds": 132480
+      },
+      {
+        "lane": "In Progress",
+        "group": "system",
+        "count": 276,
+        "seconds": 284400,
+        "p50_seconds": 2400,
+        "p90_seconds": 10440
+      },
+      {
+        "lane": "Rework",
+        "group": "system",
+        "count": 276,
+        "seconds": 342000,
+        "p50_seconds": 6120,
+        "p90_seconds": 38520
+      },
+      {
+        "lane": "Merging",
+        "group": "system",
+        "count": 276,
+        "seconds": 109440,
+        "p50_seconds": 1200,
+        "p90_seconds": 9000
+      },
+      {
+        "lane": "Blocked",
+        "group": "held",
+        "count": 276,
+        "seconds": 82800,
+        "p50_seconds": 9720,
+        "p90_seconds": 29160
+      },
+      {
+        "lane": "Human Review",
+        "group": "held",
+        "count": 276,
+        "seconds": 61200,
+        "p50_seconds": 5400,
+        "p90_seconds": 18000
+      }
+    ]
+  },
+  "previous": {
+    "done": 220,
+    "cancelled": 97,
+    "cost_usd": 5241.35,
+    "system": {
+      "count": 220,
+      "seconds": 13812480,
+      "p50_seconds": 39240,
+      "p90_seconds": 126000
+    },
+    "lead": {
+      "count": 220,
+      "seconds": 23443200,
+      "p50_seconds": 66600,
+      "p90_seconds": 216000
+    },
+    "working": {
+      "count": 220,
+      "seconds": 929280,
+      "p50_seconds": 2640,
+      "p90_seconds": 11160
+    },
+    "partial": false,
+    "lanes": [
+      {
+        "lane": "Todo",
+        "group": "system",
+        "count": 276,
+        "seconds": 1144286,
+        "p50_seconds": 16560,
+        "p90_seconds": 143078
+      },
+      {
+        "lane": "In Progress",
+        "group": "system",
+        "count": 276,
+        "seconds": 307152,
+        "p50_seconds": 2592,
+        "p90_seconds": 11275
+      },
+      {
+        "lane": "Rework",
+        "group": "system",
+        "count": 276,
+        "seconds": 369360,
+        "p50_seconds": 6610,
+        "p90_seconds": 41602
+      },
+      {
+        "lane": "Merging",
+        "group": "system",
+        "count": 276,
+        "seconds": 118195,
+        "p50_seconds": 1296,
+        "p90_seconds": 9720
+      },
+      {
+        "lane": "Blocked",
+        "group": "held",
+        "count": 276,
+        "seconds": 89424,
+        "p50_seconds": 10498,
+        "p90_seconds": 31493
+      },
+      {
+        "lane": "Human Review",
+        "group": "held",
+        "count": 276,
+        "seconds": 66096,
+        "p50_seconds": 5832,
+        "p90_seconds": 19440
+      }
+    ]
+  },
+  "tokens": 7100000000,
+  "input": 6800000000,
+  "cached": 6324000000,
+  "cost_usd": 6201,
+  "previous_cost_usd": 5791,
+  "first_try_percent": 61.2,
+  "previous_first_try_percent": 65.3,
+  "cancelled": 112,
+  "previous_failed": 177,
+  "failed_issues": 71,
+  "open_work": {
+    "count": 26,
+    "held": 1,
+    "stuck": 2,
+    "previous_stuck": 4,
+    "items": [
+      {
+        "work_item_id": "wi_pilot",
+        "lane": "Todo",
+        "entered_at": "2026-10-03T00:00:00Z",
+        "hours": 240,
+        "lane_p90_hours": 37,
+        "since_todo_hours": 240
+      },
+      {
+        "work_item_id": "wi_urls",
+        "lane": "Rework",
+        "entered_at": "2026-10-11T17:00:00Z",
+        "hours": 31,
+        "lane_p90_hours": 11,
+        "since_todo_hours": 144
+      },
+      {
+        "work_item_id": "wi_pages",
+        "lane": "Blocked",
+        "entered_at": "2026-10-12T05:00:00Z",
+        "hours": 19,
+        "lane_p90_hours": 8,
+        "since_todo_hours": 48
+      },
+      {
+        "work_item_id": "wi_rollups",
+        "lane": "Rework",
+        "entered_at": "2026-10-12T12:00:00Z",
+        "hours": 12,
+        "lane_p90_hours": 11,
+        "since_todo_hours": 24
+      },
+      {
+        "work_item_id": "wi_export",
+        "lane": "In Progress",
+        "entered_at": "2026-10-12T17:48:00Z",
+        "hours": 6.2,
+        "lane_p90_hours": 2.9,
+        "since_todo_hours": 22
+      },
+      {
+        "work_item_id": "wi_running",
+        "lane": "In Progress",
+        "entered_at": "2026-10-12T21:30:00Z",
+        "hours": 2.5,
+        "lane_p90_hours": 2.9,
+        "since_todo_hours": 7
+      },
+      {
+        "work_item_id": "wi_old",
+        "lane": "Merging",
+        "entered_at": "2026-10-12T23:36:00Z",
+        "hours": 0.4,
+        "lane_p90_hours": 2.5,
+        "since_todo_hours": 5
+      }
+    ]
+  },
+  "prior": {
+    "rework_percent": 31.4,
+    "infrastructure_returns": 76,
+    "lane_seconds": {
+      "Todo": 1140624,
+      "In Progress": 307152,
+      "Rework": 342000,
+      "Merging": 138989,
+      "Blocked": 79488,
+      "Human Review": 67320
+    }
+  },
+  "runners": [
+    {
+      "runner_id": "run_studio",
+      "name": "mac-studio",
+      "sessions": 712,
+      "succeeded": 541,
+      "duration": {
+        "count": 541,
+        "seconds": 1298400,
+        "p50_seconds": 1500,
+        "p90_seconds": 4500
+      },
+      "cost_usd": 3410.5
+    },
+    {
+      "runner_id": "run_sprite_a",
+      "name": "sprite-pool-a",
+      "sessions": 501,
+      "succeeded": 402,
+      "duration": {
+        "count": 402,
+        "seconds": 810432,
+        "p50_seconds": 1260,
+        "p90_seconds": 3780
+      },
+      "cost_usd": 2050.25
+    },
+    {
+      "runner_id": "run_sprite_b",
+      "name": "sprite-pool-b",
+      "sessions": 192,
+      "succeeded": 192,
+      "duration": {
+        "count": 192,
+        "seconds": 313344,
+        "p50_seconds": 1020,
+        "p90_seconds": 3060
+      },
+      "cost_usd": 740.25
+    }
+  ],
+  "unavailable": [
+    "private_instruction_causality"
+  ],
+  "titles": {
+    "wi_old": "Resolve landing conflict",
+    "wi_running": "Reports flow metrics",
+    "wi_git": "Runner commits depend on the host's git identity and GPG config",
+    "wi_workflow": "feat(chat): inspect and configure project workflow from the app",
+    "wi_tenant": "feat(platform): replace the tenant side sheet with a tenant page",
+    "wi_staff": "feat(platform): redesign the Staff page",
+    "wi_lanes": "Lanes menu: lane counts run into lane names",
+    "wi_pilot": "test(cloud): prove native pilot readiness and GitHub request budgets",
+    "wi_urls": "feat(cloud): readable GitHub-style issue URLs with org and project slugs",
+    "wi_pages": "fix(runner): bound native issue pages so large boards can start workers",
+    "wi_rollups": "perf(hub): serve Diagnostics and Reports from hourly rollups",
+    "wi_export": "feat(mcp): bulk export work items with bodies and comments",
+    "wi_audit": "feat(gate): run the security audit as a default-on stage",
+    "wi_probe": "fix(mcp): distinguish cancelled backend probes from missing tools"
+  },
+  "coverage": [
+    {
+      "source": "Transitions",
+      "observed": 204,
+      "total": 204
+    },
+    {
+      "source": "Attempts",
+      "observed": 300,
+      "total": 300
+    },
+    {
+      "source": "Usage joins",
+      "observed": 285,
+      "total": 300
+    },
+    {
+      "source": "Activity receipts",
+      "observed": 240,
+      "total": 300
+    },
+    {
+      "source": "Queue intervals",
+      "observed": 200,
+      "total": 204
+    },
+    {
+      "source": "Skip reasons",
+      "observed": 10,
+      "total": null
+    },
+    {
+      "source": "Merge identity",
+      "observed": 116,
+      "total": 116
+    },
+    {
+      "source": "Landing refusal reason",
+      "observed": 34,
+      "total": 34
+    },
+    {
+      "source": "Detector tick",
+      "observed": null,
+      "total": null
+    }
+  ],
+  "stages": [
+    {
+      "stage": "code",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "sessions": 412,
+      "succeeded": 293,
+      "duration": {
+        "count": 293,
+        "seconds": 1068864,
+        "p50_seconds": 2280,
+        "p90_seconds": 6840
+      },
+      "tokens": 3915900000,
+      "input": 3748320000,
+      "cached": 3484980000,
+      "cost_usd": 3420,
+      "issues": 276,
+      "usage_observed": 412,
+      "disabled": false
+    },
+    {
+      "stage": "rework",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "sessions": 231,
+      "succeeded": 148,
+      "duration": {
+        "count": 148,
+        "seconds": 312576,
+        "p50_seconds": 1320,
+        "p90_seconds": 3960
+      },
+      "tokens": 1843450000,
+      "input": 1764560000,
+      "cached": 1640590000,
+      "cost_usd": 1610,
+      "issues": 116,
+      "usage_observed": 231,
+      "disabled": false
+    },
+    {
+      "stage": "merge",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "sessions": 344,
+      "succeeded": 303,
+      "duration": {
+        "count": 303,
+        "seconds": 174528,
+        "p50_seconds": 360,
+        "p90_seconds": 1080
+      },
+      "tokens": 698450000,
+      "input": 668560000,
+      "cached": 621590000,
+      "cost_usd": 610,
+      "issues": 290,
+      "usage_observed": 344,
+      "disabled": false
+    },
+    {
+      "stage": "validator",
+      "model": "gpt-6-astra",
+      "effort": "low",
+      "sessions": 298,
+      "succeeded": 289,
+      "duration": {
+        "count": 289,
+        "seconds": 110976,
+        "p50_seconds": 240,
+        "p90_seconds": 720
+      },
+      "tokens": 435100000,
+      "input": 416480000,
+      "cached": 387220000,
+      "cost_usd": 380,
+      "issues": 276,
+      "usage_observed": 298,
+      "disabled": false
+    },
+    {
+      "stage": "plan",
+      "model": "gpt-6-astra",
+      "effort": "low",
+      "sessions": 120,
+      "succeeded": 119,
+      "duration": {
+        "count": 119,
+        "seconds": 34272,
+        "p50_seconds": 180,
+        "p90_seconds": 540
+      },
+      "tokens": 207245000,
+      "input": 198376000,
+      "cached": 184439000,
+      "cost_usd": 181,
+      "issues": 120,
+      "usage_observed": 120,
+      "disabled": false
+    }
+  ],
+  "spend": [
+    {
+      "work_item_id": "wi_git",
+      "title": "Runner commits depend on the host's git identity and GPG config",
+      "cost_usd": 106.36,
+      "attempts": 14,
+      "shipped": true,
+      "state": "Done"
+    },
+    {
+      "work_item_id": "wi_workflow",
+      "title": "feat(chat): inspect and configure project workflow from the app",
+      "cost_usd": 100.31,
+      "attempts": 11,
+      "shipped": false,
+      "state": "Blocked"
+    },
+    {
+      "work_item_id": "wi_tenant",
+      "title": "feat(platform): replace the tenant side sheet with a tenant page",
+      "cost_usd": 96.87,
+      "attempts": 9,
+      "shipped": true,
+      "state": "Done"
+    },
+    {
+      "work_item_id": "wi_staff",
+      "title": "feat(platform): redesign the Staff page",
+      "cost_usd": 93.65,
+      "attempts": 10,
+      "shipped": true,
+      "state": "Done"
+    },
+    {
+      "work_item_id": "wi_lanes",
+      "title": "Lanes menu: lane counts run into lane names",
+      "cost_usd": 90.34,
+      "attempts": 8,
+      "shipped": true,
+      "state": "Done"
+    },
+    {
+      "work_item_id": "wi_old",
+      "title": "Resolve landing conflict",
+      "cost_usd": 74.2,
+      "attempts": 7,
+      "shipped": false,
+      "state": "Rework"
+    },
+    {
+      "work_item_id": "wi_rollups",
+      "title": "perf(hub): serve Diagnostics and Reports from hourly rollups",
+      "cost_usd": 61.4,
+      "attempts": 6,
+      "shipped": false,
+      "state": "Rework"
+    },
+    {
+      "work_item_id": "wi_running",
+      "title": "Reports flow metrics",
+      "cost_usd": 38.1,
+      "attempts": 4,
+      "shipped": false,
+      "state": "In Progress"
+    },
+    {
+      "work_item_id": "wi_audit",
+      "title": "feat(gate): run the security audit as a default-on stage",
+      "cost_usd": 22.75,
+      "attempts": 3,
+      "shipped": true,
+      "state": "Done"
+    },
+    {
+      "work_item_id": "wi_probe",
+      "title": "fix(mcp): distinguish cancelled backend probes from missing tools",
+      "cost_usd": 11.2,
+      "attempts": 2,
+      "shipped": true,
+      "state": "Done"
+    }
+  ],
+  "throughput": [
+    {
+      "from": "2026-10-07T00:00:00Z",
+      "to": "2026-10-08T00:00:00Z",
+      "done": 36,
+      "failed": 20,
+      "slots": 7
+    },
+    {
+      "from": "2026-10-08T00:00:00Z",
+      "to": "2026-10-09T00:00:00Z",
+      "done": 44,
+      "failed": 26,
+      "slots": 7
+    },
+    {
+      "from": "2026-10-09T00:00:00Z",
+      "to": "2026-10-10T00:00:00Z",
+      "done": 32,
+      "failed": 18,
+      "slots": 7
+    },
+    {
+      "from": "2026-10-10T00:00:00Z",
+      "to": "2026-10-11T00:00:00Z",
+      "done": 48,
+      "failed": 28,
+      "slots": 7
+    },
+    {
+      "from": "2026-10-11T00:00:00Z",
+      "to": "2026-10-12T00:00:00Z",
+      "done": 52,
+      "failed": 18,
+      "slots": 7
+    },
+    {
+      "from": "2026-10-12T00:00:00Z",
+      "to": "2026-10-13T00:00:00Z",
+      "done": 24,
+      "failed": 14,
+      "slots": 7
+    },
+    {
+      "from": "2026-10-13T00:00:00Z",
+      "to": "2026-10-13T10:00:00Z",
+      "done": 40,
+      "failed": 26,
+      "slots": 7
+    }
+  ],
+  "series": [
+    {
+      "from": "2026-10-07T00:00:00Z",
+      "to": "2026-10-08T00:00:00Z",
+      "done": 36,
+      "prior_done": 29,
+      "failed": 20,
+      "failed_infrastructure": 12,
+      "failed_issue": 7,
+      "cycle": {
+        "count": 36,
+        "seconds": 1907712,
+        "p50_seconds": 33120,
+        "p90_seconds": 136800
+      },
+      "lead": {
+        "count": 36,
+        "seconds": 3433882,
+        "p50_seconds": 59616,
+        "p90_seconds": 218880
+      },
+      "lane_seconds": {
+        "Todo": 219600,
+        "In Progress": 43200,
+        "Rework": 57600,
+        "Merging": 16200,
+        "Blocked": 12600,
+        "Human Review": 7200
+      },
+      "stage_cost": {
+        "code": 380,
+        "rework": 150,
+        "merge": 60,
+        "plan": 16,
+        "validator": 24
+      },
+      "not_shipped_cost": 180,
+      "rework_classes": {
+        "Gate failed before landing": 10,
+        "Landing refused: protected base": 5,
+        "Review findings to address": 7,
+        "Conflict on landing": 2,
+        "Finished without a change": 1,
+        "Not classified": 2
+      }
+    },
+    {
+      "from": "2026-10-08T00:00:00Z",
+      "to": "2026-10-09T00:00:00Z",
+      "done": 44,
+      "prior_done": 35,
+      "failed": 26,
+      "failed_infrastructure": 16,
+      "failed_issue": 10,
+      "cycle": {
+        "count": 44,
+        "seconds": 2559744,
+        "p50_seconds": 36360,
+        "p90_seconds": 151200
+      },
+      "lead": {
+        "count": 44,
+        "seconds": 4607539,
+        "p50_seconds": 65448,
+        "p90_seconds": 241920
+      },
+      "lane_seconds": {
+        "Todo": 187200,
+        "In Progress": 43200,
+        "Rework": 46800,
+        "Merging": 16200,
+        "Blocked": 9000,
+        "Human Review": 7200
+      },
+      "stage_cost": {
+        "code": 420,
+        "rework": 170,
+        "merge": 65,
+        "plan": 16.8,
+        "validator": 25.2
+      },
+      "not_shipped_cost": 170,
+      "rework_classes": {
+        "Gate failed before landing": 12,
+        "Landing refused: protected base": 6,
+        "Review findings to address": 6,
+        "Conflict on landing": 2,
+        "Finished without a change": 1,
+        "Not classified": 1
+      }
+    },
+    {
+      "from": "2026-10-09T00:00:00Z",
+      "to": "2026-10-10T00:00:00Z",
+      "done": 32,
+      "prior_done": 27,
+      "failed": 18,
+      "failed_infrastructure": 10,
+      "failed_issue": 8,
+      "cycle": {
+        "count": 32,
+        "seconds": 1548288,
+        "p50_seconds": 30240,
+        "p90_seconds": 122400
+      },
+      "lead": {
+        "count": 32,
+        "seconds": 2786918,
+        "p50_seconds": 54432,
+        "p90_seconds": 195840
+      },
+      "lane_seconds": {
+        "Todo": 237600,
+        "In Progress": 39600,
+        "Rework": 61200,
+        "Merging": 16200,
+        "Blocked": 9000,
+        "Human Review": 7200
+      },
+      "stage_cost": {
+        "code": 330,
+        "rework": 130,
+        "merge": 55,
+        "plan": 12.8,
+        "validator": 19.2
+      },
+      "not_shipped_cost": 130,
+      "rework_classes": {
+        "Gate failed before landing": 8,
+        "Landing refused: protected base": 4,
+        "Review findings to address": 7,
+        "Conflict on landing": 2,
+        "Finished without a change": 1,
+        "Not classified": 1
+      }
+    },
+    {
+      "from": "2026-10-10T00:00:00Z",
+      "to": "2026-10-11T00:00:00Z",
+      "done": 48,
+      "prior_done": 39,
+      "failed": 28,
+      "failed_infrastructure": 18,
+      "failed_issue": 9,
+      "cycle": {
+        "count": 48,
+        "seconds": 2985984,
+        "p50_seconds": 38880,
+        "p90_seconds": 165600
+      },
+      "lead": {
+        "count": 48,
+        "seconds": 5374771,
+        "p50_seconds": 69984,
+        "p90_seconds": 264960
+      },
+      "lane_seconds": {
+        "Todo": 172800,
+        "In Progress": 46800,
+        "Rework": 39600,
+        "Merging": 16200,
+        "Blocked": 9000,
+        "Human Review": 7200
+      },
+      "stage_cost": {
+        "code": 520,
+        "rework": 210,
+        "merge": 80,
+        "plan": 22.400000000000002,
+        "validator": 33.6
+      },
+      "not_shipped_cost": 240,
+      "rework_classes": {
+        "Gate failed before landing": 17,
+        "Landing refused: protected base": 6,
+        "Review findings to address": 7,
+        "Conflict on landing": 2,
+        "Finished without a change": 1,
+        "Not classified": 2
+      }
+    },
+    {
+      "from": "2026-10-11T00:00:00Z",
+      "to": "2026-10-12T00:00:00Z",
+      "done": 52,
+      "prior_done": 40,
+      "failed": 18,
+      "failed_infrastructure": 12,
+      "failed_issue": 6,
+      "cycle": {
+        "count": 52,
+        "seconds": 2875392,
+        "p50_seconds": 34560,
+        "p90_seconds": 140400
+      },
+      "lead": {
+        "count": 52,
+        "seconds": 5175706,
+        "p50_seconds": 62208,
+        "p90_seconds": 224640
+      },
+      "lane_seconds": {
+        "Todo": 158400,
+        "In Progress": 43200,
+        "Rework": 46800,
+        "Merging": 16200,
+        "Blocked": 9000,
+        "Human Review": 7200
+      },
+      "stage_cost": {
+        "code": 460,
+        "rework": 180,
+        "merge": 70,
+        "plan": 19.200000000000003,
+        "validator": 28.799999999999997
+      },
+      "not_shipped_cost": 200,
+      "rework_classes": {
+        "Gate failed before landing": 20,
+        "Landing refused: protected base": 7,
+        "Review findings to address": 6,
+        "Conflict on landing": 1,
+        "Finished without a change": 1,
+        "Not classified": 2
+      }
+    },
+    {
+      "from": "2026-10-12T00:00:00Z",
+      "to": "2026-10-13T00:00:00Z",
+      "done": 24,
+      "prior_done": 17,
+      "failed": 14,
+      "failed_infrastructure": 8,
+      "failed_issue": 6,
+      "cycle": {
+        "count": 24,
+        "seconds": 1092096,
+        "p50_seconds": 28440,
+        "p90_seconds": 111600
+      },
+      "lead": {
+        "count": 24,
+        "seconds": 1965773,
+        "p50_seconds": 51192,
+        "p90_seconds": 178560
+      },
+      "lane_seconds": {
+        "Todo": 126000,
+        "In Progress": 28800,
+        "Rework": 36000,
+        "Merging": 12240,
+        "Blocked": 21600,
+        "Human Review": 18000
+      },
+      "stage_cost": {
+        "code": 230,
+        "rework": 90,
+        "merge": 40,
+        "plan": 9.600000000000001,
+        "validator": 14.399999999999999
+      },
+      "not_shipped_cost": 90,
+      "rework_classes": {
+        "Gate failed before landing": 11,
+        "Landing refused: protected base": 1,
+        "Review findings to address": 4,
+        "Not classified": 1
+      }
+    },
+    {
+      "from": "2026-10-13T00:00:00Z",
+      "to": "2026-10-13T10:00:00Z",
+      "done": 40,
+      "prior_done": 33,
+      "failed": 26,
+      "failed_infrastructure": 14,
+      "failed_issue": 11,
+      "cycle": {
+        "count": 40,
+        "seconds": 2188800,
+        "p50_seconds": 34200,
+        "p90_seconds": 144000
+      },
+      "lead": {
+        "count": 40,
+        "seconds": 3939840,
+        "p50_seconds": 61560,
+        "p90_seconds": 230400
+      },
+      "lane_seconds": {
+        "Todo": 180000,
+        "In Progress": 39600,
+        "Rework": 54000,
+        "Merging": 16200,
+        "Blocked": 12600,
+        "Human Review": 7200
+      },
+      "stage_cost": {
+        "code": 400,
+        "rework": 160,
+        "merge": 60,
+        "plan": 16,
+        "validator": 24
+      },
+      "not_shipped_cost": 160,
+      "rework_classes": {
+        "Gate failed before landing": 10,
+        "Review findings to address": 17,
+        "Conflict on landing": 3,
+        "Not classified": 1
+      }
+    }
+  ],
+  "rework_classes": [
+    {
+      "class": "Gate failed before landing",
+      "kind": "issue",
+      "count": 88,
+      "issues": 41,
+      "cost_usd": 402,
+      "work_items": [
+        "wi_rollups",
+        "wi_audit",
+        "wi_probe"
+      ]
+    },
+    {
+      "class": "Review findings to address",
+      "kind": "issue",
+      "count": 54,
+      "issues": 31,
+      "cost_usd": 388,
+      "work_items": [
+        "wi_staff",
+        "wi_probe",
+        "wi_tenant"
+      ]
+    },
+    {
+      "class": "Landing refused: protected base",
+      "kind": "infrastructure",
+      "count": 29,
+      "issues": 24,
+      "cost_usd": 180,
+      "work_items": [
+        "wi_urls",
+        "wi_tenant"
+      ]
+    },
+    {
+      "class": "Conflict on landing",
+      "kind": "issue",
+      "count": 12,
+      "issues": 10,
+      "cost_usd": 71,
+      "work_items": [
+        "wi_old"
+      ]
+    },
+    {
+      "class": "Finished without a change",
+      "kind": "issue",
+      "count": 5,
+      "issues": 5,
+      "cost_usd": 22,
+      "work_items": [
+        "wi_lanes"
+      ]
+    },
+    {
+      "class": "Base moved after validation",
+      "kind": "infrastructure",
+      "count": 1,
+      "issues": 1,
+      "cost_usd": 4,
+      "work_items": [
+        "wi_export"
+      ]
+    },
+    {
+      "class": "Not classified",
+      "kind": "unknown",
+      "count": 10,
+      "issues": 9,
+      "cost_usd": 38
+    }
+  ],
+  "failure_classes": [
+    {
+      "class": "Finalization gate failed",
+      "kind": "issue",
+      "count": 40,
+      "issues": 35,
+      "cost_usd": 412,
+      "work_items": [
+        "wi_rollups",
+        "wi_audit",
+        "wi_probe"
+      ],
+      "first_seen": "2026-10-06T09:14:00Z",
+      "last_seen": "2026-10-12T23:46:00Z"
+    },
+    {
+      "class": "Landing refused: protected base",
+      "kind": "infrastructure",
+      "count": 29,
+      "issues": 24,
+      "cost_usd": 180,
+      "work_items": [
+        "wi_urls",
+        "wi_tenant"
+      ],
+      "first_seen": "2026-10-06T04:10:00Z",
+      "last_seen": "2026-10-12T18:02:00Z"
+    },
+    {
+      "class": "Hub request timed out",
+      "kind": "infrastructure",
+      "count": 32,
+      "issues": 19,
+      "cost_usd": 121,
+      "work_items": [
+        "wi_export",
+        "wi_pages"
+      ],
+      "first_seen": "2026-10-06T13:20:00Z",
+      "last_seen": "2026-10-12T22:05:00Z",
+      "tracking_work_item_id": "wi_pages"
+    },
+    {
+      "class": "Agent turn timed out",
+      "kind": "infrastructure",
+      "count": 29,
+      "issues": 17,
+      "cost_usd": 98,
+      "work_items": [
+        "wi_staff"
+      ],
+      "first_seen": "2026-10-07T01:00:00Z",
+      "last_seen": "2026-10-12T20:40:00Z"
+    },
+    {
+      "class": "Review conversations unresolved at merge",
+      "kind": "issue",
+      "count": 13,
+      "issues": 9,
+      "cost_usd": 96,
+      "work_items": [
+        "wi_workflow",
+        "wi_lanes"
+      ],
+      "first_seen": "2026-10-06T15:40:00Z",
+      "last_seen": "2026-10-12T21:15:00Z"
+    },
+    {
+      "class": "Conflict on landing",
+      "kind": "issue",
+      "count": 7,
+      "issues": 5,
+      "cost_usd": 44,
+      "work_items": [
+        "wi_old"
+      ],
+      "first_seen": "2026-10-08T11:00:00Z",
+      "last_seen": "2026-10-11T08:30:00Z"
+    },
+    {
+      "class": "Not classified",
+      "kind": "unknown",
+      "count": 11,
+      "issues": 9,
+      "cost_usd": 63,
+      "work_items": [
+        "wi_git"
+      ],
+      "first_seen": "2026-10-06T07:00:00Z",
+      "last_seen": "2026-10-12T20:00:00Z"
+    }
+  ],
+  "analytics": {
+    "project_id": "prj_reports",
+    "window": {
+      "from": "2026-10-07T00:00:00Z",
+      "to": "2026-10-13T10:00:00Z"
+    },
+    "partial": false,
+    "unavailable": [
+      "private_instruction_causality"
+    ],
+    "lane_residence": {
+      "source": "native_workflow_transitions_and_issue_creation",
+      "coverage": "residence_clipped_to_window",
+      "partial": false,
+      "issues_observed": 440,
+      "events_observed": 1200,
+      "lanes": [
+        {
+          "lane": "Todo",
+          "group": "system",
+          "count": 124,
+          "seconds": 1281600,
+          "p50_seconds": 6480,
+          "p90_seconds": 132480
+        },
+        {
+          "lane": "In Progress",
+          "group": "system",
+          "count": 74,
+          "seconds": 284400,
+          "p50_seconds": 2400,
+          "p90_seconds": 10440
+        },
+        {
+          "lane": "Rework",
+          "group": "system",
+          "count": 35,
+          "seconds": 342000,
+          "p50_seconds": 6120,
+          "p90_seconds": 38520
+        },
+        {
+          "lane": "Merging",
+          "group": "system",
+          "count": 57,
+          "seconds": 109440,
+          "p50_seconds": 1200,
+          "p90_seconds": 9000
+        },
+        {
+          "lane": "Blocked",
+          "group": "held",
+          "count": 5,
+          "seconds": 82800,
+          "p50_seconds": 9720,
+          "p90_seconds": 29160
+        },
+        {
+          "lane": "Human Review",
+          "group": "held",
+          "count": 7,
+          "seconds": 61200,
+          "p50_seconds": 5400,
+          "p90_seconds": 18000
+        }
+      ],
+      "system_total": {
+        "count": 220,
+        "seconds": 1584000,
+        "p50_seconds": 7200,
+        "p90_seconds": 18000
+      },
+      "held_total": {
+        "count": 50,
+        "seconds": 450000,
+        "p50_seconds": 9000,
+        "p90_seconds": 20000
+      },
+      "lead_total": {
+        "count": 204,
+        "seconds": 3672000,
+        "p50_seconds": 18000,
+        "p90_seconds": 36000
+      },
+      "aging": {
+        "items": [
+          {
+            "work_item_id": "wi_pilot",
+            "lane": "Todo",
+            "entered_at": "2026-10-03T00:00:00Z",
+            "hours": 240,
+            "lane_p90_hours": 37,
+            "since_todo_hours": 240
+          },
+          {
+            "work_item_id": "wi_urls",
+            "lane": "Rework",
+            "entered_at": "2026-10-11T17:00:00Z",
+            "hours": 31,
+            "lane_p90_hours": 11,
+            "since_todo_hours": 144
+          },
+          {
+            "work_item_id": "wi_pages",
+            "lane": "Blocked",
+            "entered_at": "2026-10-12T05:00:00Z",
+            "hours": 19,
+            "lane_p90_hours": 8,
+            "since_todo_hours": 48
+          },
+          {
+            "work_item_id": "wi_rollups",
+            "lane": "Rework",
+            "entered_at": "2026-10-12T12:00:00Z",
+            "hours": 12,
+            "lane_p90_hours": 11,
+            "since_todo_hours": 24
+          },
+          {
+            "work_item_id": "wi_export",
+            "lane": "In Progress",
+            "entered_at": "2026-10-12T17:48:00Z",
+            "hours": 6.2,
+            "lane_p90_hours": 2.9,
+            "since_todo_hours": 22
+          },
+          {
+            "work_item_id": "wi_running",
+            "lane": "In Progress",
+            "entered_at": "2026-10-12T21:30:00Z",
+            "hours": 2.5,
+            "lane_p90_hours": 2.9,
+            "since_todo_hours": 7
+          },
+          {
+            "work_item_id": "wi_old",
+            "lane": "Merging",
+            "entered_at": "2026-10-12T23:36:00Z",
+            "hours": 0.4,
+            "lane_p90_hours": 2.5,
+            "since_todo_hours": 5
+          }
+        ]
+      },
+      "rework_causes": [
+        {
+          "from_state": "Merging",
+          "reason_detail": "gate failed before landing",
+          "count": 88
+        },
+        {
+          "from_state": "Merging",
+          "reason_detail": "landing refused: protected base",
+          "count": 29
+        },
+        {
+          "from_state": "In Progress",
+          "reason_detail": "review findings to address",
+          "count": 54
+        },
+        {
+          "from_state": "Merging",
+          "reason_detail": "conflict on landing",
+          "count": 12
+        },
+        {
+          "from_state": "In Progress",
+          "reason_detail": "terminal attempt without work product",
+          "count": 5
+        },
+        {
+          "from_state": "In Progress",
+          "reason_detail": "unrecognised",
+          "count": 10
+        }
+      ]
+    },
+    "failure_signatures": {
+      "items": [
+        {
+          "signature": "sig_final_gate",
+          "example": "Finalization gate failed",
+          "class": "infrastructure",
+          "count": 88,
+          "work_items": [
+            "wi_rollups",
+            "wi_audit",
+            "wi_probe"
+          ],
+          "work_items_count": 35,
+          "work_items_partial": true,
+          "first_seen": "2026-10-07T09:14:00Z",
+          "last_seen": "2026-10-12T23:46:00Z",
+          "cost_usd": 412
+        },
+        {
+          "signature": "sig_protected",
+          "example": "Landing refused: protected base",
+          "class": "infrastructure",
+          "count": 29,
+          "work_items": [
+            "wi_urls",
+            "wi_tenant"
+          ],
+          "work_items_count": 24,
+          "work_items_partial": true,
+          "first_seen": "2026-10-06T04:10:00Z",
+          "last_seen": "2026-10-12T18:02:00Z",
+          "cost_usd": 180
+        },
+        {
+          "signature": "sig_conflict",
+          "example": "Landing refused: merge conflict",
+          "class": "source",
+          "count": 34,
+          "work_items": [
+            "wi_old"
+          ],
+          "work_items_count": 1,
+          "work_items_partial": false,
+          "first_seen": "2026-10-06T02:00:00Z",
+          "last_seen": "2026-10-07T23:00:00Z",
+          "cost_usd": 120
+        },
+        {
+          "signature": "sig_landing_gate",
+          "example": "Landing gate failed",
+          "class": "infrastructure",
+          "count": 7,
+          "work_items": [
+            "wi_staff"
+          ],
+          "work_items_count": 7,
+          "work_items_partial": true,
+          "first_seen": "2026-10-08T11:00:00Z",
+          "last_seen": "2026-10-11T08:30:00Z",
+          "cost_usd": 44
+        },
+        {
+          "signature": "sig_timeout",
+          "example": "Hub request timed out",
+          "class": "infrastructure",
+          "count": 6,
+          "work_items": [
+            "wi_export"
+          ],
+          "work_items_count": 5,
+          "work_items_partial": true,
+          "first_seen": "2026-10-09T13:20:00Z",
+          "last_seen": "2026-10-12T02:05:00Z",
+          "cost_usd": 21
+        },
+        {
+          "signature": "sig_unresolved",
+          "example": "Review conversations unresolved at merge",
+          "class": "merge",
+          "count": 13,
+          "work_items": [
+            "wi_workflow",
+            "wi_lanes"
+          ],
+          "work_items_count": 9,
+          "work_items_partial": true,
+          "first_seen": "2026-10-06T15:40:00Z",
+          "last_seen": "2026-10-12T21:15:00Z",
+          "cost_usd": 96
+        },
+        {
+          "signature": "sig_unknown",
+          "example": "Worker exited without a result",
+          "class": "unknown",
+          "count": 11,
+          "work_items": [
+            "wi_git"
+          ],
+          "work_items_count": 9,
+          "work_items_partial": true,
+          "first_seen": "2026-10-06T07:00:00Z",
+          "last_seen": "2026-10-12T20:00:00Z",
+          "cost_usd": 63
+        }
+      ]
+    },
+    "quality": {
+      "worked_items": 413,
+      "reworked_items": 116,
+      "landed_versions": 276,
+      "escaped_versions": 0,
+      "escapes": 0,
+      "infrastructure": 0,
+      "pending_classification": 0,
+      "rework_percent": 28.1,
+      "escape_percent": 0,
+      "causes": {},
+      "source": "native_landing_workflow_review_and_escape_evidence",
+      "coverage": "Landing cohorts; escapes grouped by detection time; infrastructure excluded from escape rate",
+      "partial": false,
+      "unavailable": [],
+      "buckets": [
+        {
+          "from": "2026-10-07T00:00:00Z",
+          "to": "2026-10-08T00:00:00Z",
+          "worked_items": 60,
+          "reworked_items": 17,
+          "landed_versions": 36,
+          "escaped_versions": 0,
+          "escapes": 0,
+          "infrastructure": 0,
+          "infrastructure_returns": 15,
+          "pending_classification": 0,
+          "rework_percent": 28.3,
+          "escape_percent": 0,
+          "causes": {}
+        },
+        {
+          "from": "2026-10-08T00:00:00Z",
+          "to": "2026-10-09T00:00:00Z",
+          "worked_items": 60,
+          "reworked_items": 16,
+          "landed_versions": 44,
+          "escaped_versions": 0,
+          "escapes": 0,
+          "infrastructure": 0,
+          "infrastructure_returns": 18,
+          "pending_classification": 0,
+          "rework_percent": 26.7,
+          "escape_percent": 0,
+          "causes": {}
+        },
+        {
+          "from": "2026-10-09T00:00:00Z",
+          "to": "2026-10-10T00:00:00Z",
+          "worked_items": 60,
+          "reworked_items": 18,
+          "landed_versions": 32,
+          "escaped_versions": 0,
+          "escapes": 0,
+          "infrastructure": 0,
+          "infrastructure_returns": 12,
+          "pending_classification": 0,
+          "rework_percent": 30,
+          "escape_percent": 0,
+          "causes": {}
+        },
+        {
+          "from": "2026-10-10T00:00:00Z",
+          "to": "2026-10-11T00:00:00Z",
+          "worked_items": 60,
+          "reworked_items": 15,
+          "landed_versions": 48,
+          "escaped_versions": 0,
+          "escapes": 0,
+          "infrastructure": 0,
+          "infrastructure_returns": 23,
+          "pending_classification": 0,
+          "rework_percent": 25,
+          "escape_percent": 0,
+          "causes": {}
+        },
+        {
+          "from": "2026-10-11T00:00:00Z",
+          "to": "2026-10-12T00:00:00Z",
+          "worked_items": 60,
+          "reworked_items": 17,
+          "landed_versions": 52,
+          "escaped_versions": 0,
+          "escapes": 0,
+          "infrastructure": 0,
+          "infrastructure_returns": 27,
+          "pending_classification": 0,
+          "rework_percent": 28.3,
+          "escape_percent": 0,
+          "causes": {}
+        },
+        {
+          "from": "2026-10-12T00:00:00Z",
+          "to": "2026-10-13T00:00:00Z",
+          "worked_items": 60,
+          "reworked_items": 11,
+          "landed_versions": 24,
+          "escaped_versions": 0,
+          "escapes": 0,
+          "infrastructure": 0,
+          "infrastructure_returns": 12,
+          "pending_classification": 0,
+          "rework_percent": 18.3,
+          "escape_percent": 0,
+          "causes": {}
+        },
+        {
+          "from": "2026-10-13T00:00:00Z",
+          "to": "2026-10-13T10:00:00Z",
+          "worked_items": 60,
+          "reworked_items": 22,
+          "landed_versions": 40,
+          "escaped_versions": 0,
+          "escapes": 0,
+          "infrastructure": 0,
+          "infrastructure_returns": 10,
+          "pending_classification": 0,
+          "rework_percent": 36.7,
+          "escape_percent": 0,
+          "causes": {}
+        }
+      ],
+      "infrastructure_returns": 117
+    }
+  },
+  "prior_recorded": true
+}
