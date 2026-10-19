@@ -17,7 +17,8 @@ import (
 )
 
 type nativeWorkIssueContract struct {
-	RequiredSections []string `json:"required_sections"`
+	RequiredSections []string                         `json:"required_sections"`
+	ReleaseDelivery  *nativeReleaseDeliveryDelegation `json:"release_delivery,omitempty"`
 }
 
 // The scope is reconstructed by operatorCurrentAuthority on every invocation.
@@ -83,6 +84,14 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
+		delivery, err := readReleaseDeliveryDelegation(ctx, s.database.reader, scope)
+		if err != nil {
+			return operatortool.Result{}, safeWorkReadError(err)
+		}
+		var deliveryContract *nativeReleaseDeliveryDelegation
+		if delivery.Body != "" {
+			deliveryContract = &delivery
+		}
 		labels, err := readNativeLabels(ctx, s.database.reader, scope)
 		return hubWorkResult(r, request, struct {
 			Project           tracker.NativeProject    `json:"project"`
@@ -90,7 +99,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			Labels            []nativeLabel            `json:"labels"`
 			ReporterTemplates config.ReporterContracts `json:"reporter_templates"`
 			IssueContract     nativeWorkIssueContract  `json:"issue_contract"`
-		}{project, []int{0, 1, 2, 3}, labels, templates, nativeWorkIssueContract{contract.Sections}}, err)
+		}{project, []int{0, 1, 2, 3}, labels, templates, nativeWorkIssueContract{RequiredSections: contract.Sections, ReleaseDelivery: deliveryContract}}, err)
 	}
 	item, err := s.resolveOperatorNativeReadItem(ctx, s.database.reader, scope, request.Reference)
 	if err != nil {
