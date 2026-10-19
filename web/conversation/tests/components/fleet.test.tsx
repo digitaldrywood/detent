@@ -571,15 +571,19 @@ describe("runner details", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("round-trips allowed project IDs, including unreadable projects", async () => {
+  it.each([["prj_known", "prj_unknown"], ["prj_unknown"]])("shows and round-trips allowed project IDs, including unreadable projects: %s", async (...projectIds) => {
     const save = vi.fn().mockResolvedValue(undefined);
-    render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
+    const runner = { ...RUNNER, routing: { ...ROUTING, project_ids: projectIds } };
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [runner] }} projects={PROJECTS} onSaveRouting={save} />);
+    const row = within(screen.getByTestId("host-card"));
+    expect(row.getByText(/Unavailable project/)).toBeTruthy();
+    expect(row.queryByText("No projects reported")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     const sheet = screen.getByRole("dialog");
-    expect((within(sheet).getByRole("checkbox", { name: "Known project" }) as HTMLInputElement).checked).toBe(true);
+    expect((within(sheet).getByRole("checkbox", { name: "Known project" }) as HTMLInputElement).checked).toBe(projectIds.includes("prj_known"));
     expect((within(sheet).getByRole("checkbox", { name: "prj_unknown" }) as HTMLInputElement).checked).toBe(true);
     fireEvent.click(within(sheet).getByRole("button", { name: "Save runner" }));
-    await waitFor(() => expect(save).toHaveBeenCalledWith(RUNNER, ROUTING));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(runner, runner.routing));
   });
 
   it("saves a permitted runner when unrelated projects prevent org-wide editing", async () => {
@@ -752,6 +756,20 @@ describe("runner problem reports", () => {
 describe("runner slot settings", () => {
   const routing: RunnerRouting = { ...ROUTING, project_ids: PROJECTS.map((project) => project.id), project_capacity_limits: { prj_second: 0 }, project_ranks: { prj_known: 10 }, availability: { ...ROUTING.availability, window_slots: { "Mon-Fri 09:00-17:00": 3 } } };
   const runner = decodeFleet({ ...FLEET, runners: [{ ...RUNNER, state: "draining", host_capacity: 8, host_used: 3, routing: { ...routing, state: "draining" }, capacity_configuration: capacityFixture }] }).runners[0]!;
+
+  it.each(["prj_known", "prj_second", null])("prunes unselected maxima when converting organization scope to projects: %s", async (selected) => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const organizationRunner = { ...runner, routing: { ...runner.routing!, scope: "organization" as const, project_ids: [], project_capacity_limits: { prj_known: 4, prj_second: 0 } } };
+    render(<RunnersSectionView fleet={{ ...FLEET, runners: [organizationRunner] }} projects={PROJECTS} onSaveRouting={save} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    fireEvent.change(screen.getByLabelText("Runner scope"), { target: { value: "projects" } });
+    if (selected) fireEvent.click(screen.getByRole("checkbox", { name: selected === "prj_known" ? "Known project" : "Second project" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(organizationRunner, {
+      ...organizationRunner.routing, scope: "projects", project_ids: selected ? [selected] : [],
+      project_capacity_limits: selected === "prj_known" ? { prj_known: 4 } : selected === "prj_second" ? { prj_second: 0 } : {},
+    }));
+  });
 
   it("saves total and independent named maxima, reloads them, and leaves sibling settings and grants intact", async () => {
     let fleet: FleetResponse = { ...FLEET, runners: [runner, { ...RUNNER, id: "runner_second", display_name: "Second runner", state: "disabled" }] };

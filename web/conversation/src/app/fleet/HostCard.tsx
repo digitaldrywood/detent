@@ -40,6 +40,8 @@ export function HostCard({
       ? "Draining work or installing"
       : runnerUpdateStatusLabel(runner.update.status)
     : undefined;
+  const runnerProjects = runner.routing?.scope === "organization" ? projects
+    : runner.routing?.project_ids.map((id) => projects.find((project) => project.id === id) ?? { id, name: "Unavailable project" }) ?? [];
   return (
     <article
       id={`runner-${runner.id}`}
@@ -66,7 +68,7 @@ export function HostCard({
         <p className="text-muted-foreground @[48rem]/runner-list:sr-only">Running</p>
         <RunnerCapacity runner={runner} />
       </div>
-      <div className="min-w-0 space-y-1 break-words text-xs text-muted-foreground">{projects.filter((project) => runner.routing?.scope === "organization" || runner.routing?.project_ids.includes(project.id)).map((project) => {
+      <div className="min-w-0 space-y-1 break-words text-xs text-muted-foreground">{runnerProjects.map((project) => {
         const capacity = runner.capacity_configuration?.projects?.[project.id];
         const maximum = runner.routing?.project_capacity_limits?.[project.id];
         return <p key={project.id}>{project.name}: {capacity?.used ?? "Unknown"} in use · maximum {maximum ?? "inherited"}{capacity ? ` · effective ${capacity.effective ?? "unknown"}` : ""}</p>;

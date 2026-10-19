@@ -109,11 +109,12 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
       return;
     }
     const valid = (value: string) => /^\d+$/.test(value) && Number(value) <= 10000;
-    if (!valid(total) || Object.values(projectLimits).some((value) => value !== "" && !valid(value))) {
+    const allowedLimits = Object.entries(projectLimits).filter(([id]) => draft.scope === "organization" || draft.project_ids.includes(id));
+    if (!valid(total) || allowedLimits.some(([, value]) => value !== "" && !valid(value))) {
       setError("Enter whole numbers from 0 to 10000. Total runner slots is required; an empty project maximum inherits the total.");
       return;
     }
-    const limits = Object.fromEntries(Object.entries(projectLimits).filter(([, value]) => value !== "").map(([id, value]) => [id, Number(value)]));
+    const limits = Object.fromEntries(allowedLimits.filter(([, value]) => value !== "").map(([id, value]) => [id, Number(value)]));
     const savedLimits = draft.project_capacity_limits ?? {};
     const limitsChanged = Object.keys(limits).length !== Object.keys(savedLimits).length || Object.entries(limits).some(([id, value]) => savedLimits[id] !== value);
     const next: RunnerRouting = {
