@@ -17,7 +17,17 @@ import (
 )
 
 type nativeWorkIssueContract struct {
-	RequiredSections []string `json:"required_sections"`
+	RequiredSections []string                   `json:"required_sections"`
+	ScheduledRepair  *nativeWorkScheduledRepair `json:"scheduled_repair,omitempty"`
+}
+
+type nativeWorkScheduledRepair struct {
+	PolicyID       string   `json:"policy_id"`
+	Repository     string   `json:"repository"`
+	Workflow       string   `json:"workflow"`
+	Branches       []string `json:"branches"`
+	Body           string   `json:"body"`
+	EvidenceSchema int      `json:"evidence_schema"`
 }
 
 // The scope is reconstructed by operatorCurrentAuthority on every invocation.
@@ -83,6 +93,25 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
+		issueContract := nativeWorkIssueContract{RequiredSections: contract.Sections}
+		approval, approvalErr := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+		if approvalErr == nil && approval.Policy.Authored != nil {
+			repairContract, err := config.ResolvePolicyIssueContract(approval.Policy)
+			if err != nil {
+				return operatortool.Result{}, safeWorkReadError(err)
+			}
+			if workflow, branch, authorized := repairContract.ScheduledRepairWorkflow(); authorized {
+				repository, err := policyRepository(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+				if err != nil {
+					return operatortool.Result{}, safeWorkReadError(err)
+				}
+				branches := []string{branch}
+				if branch == "" {
+					branches = []string{"develop", "release/v*"}
+				}
+				issueContract.ScheduledRepair = &nativeWorkScheduledRepair{PolicyID: approval.Policy.ID, Repository: repository, Workflow: workflow, Branches: branches, Body: repairContract.ScheduledRepairBody(), EvidenceSchema: 1}
+			}
+		}
 		labels, err := readNativeLabels(ctx, s.database.reader, scope)
 		return hubWorkResult(r, request, struct {
 			Project           tracker.NativeProject    `json:"project"`
@@ -90,7 +119,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			Labels            []nativeLabel            `json:"labels"`
 			ReporterTemplates config.ReporterContracts `json:"reporter_templates"`
 			IssueContract     nativeWorkIssueContract  `json:"issue_contract"`
-		}{project, []int{0, 1, 2, 3}, labels, templates, nativeWorkIssueContract{contract.Sections}}, err)
+		}{project, []int{0, 1, 2, 3}, labels, templates, issueContract}, err)
 	}
 	item, err := s.resolveOperatorNativeReadItem(ctx, s.database.reader, scope, request.Reference)
 	if err != nil {
