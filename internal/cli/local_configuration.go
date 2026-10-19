@@ -105,7 +105,7 @@ func readLocalConfigurationFile(path string, opts ...globalconfig.Option) (globa
 	if err != nil {
 		return cfg, err
 	}
-	return resolveRunnerProjects(context.Background(), cfg)
+	return resolveRunnerProjectsReadOnly(context.Background(), cfg)
 }
 
 func readLocalConfigurationSource(path string, opts ...globalconfig.Option) (globalconfig.Config, error) {
