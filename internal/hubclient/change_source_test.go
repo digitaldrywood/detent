@@ -50,6 +50,7 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 		{name: "code-lane transfer restores source and preserves dirty custody", republish: true, transferDirty: true, transfer: true, transferCode: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			updatePolicy := test.updatePolicy
 			h := newNativeChangeHubWithStates(t, "In Review", []tracker.NativeState{
 				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
