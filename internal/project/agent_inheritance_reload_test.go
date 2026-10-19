@@ -20,7 +20,7 @@ func TestManagerReloadsInheritedAgentSelection(t *testing.T) {
 	manager, err := projectfixture.NewManager(project.ManagerConfigFromGlobal(global), project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 			created++
-			workflow := workflowConfig(workflowconfig.TrackerHubNative)
+			workflow := workflowConfig(workflowconfig.TrackerGitHub)
 			if cfg.ID == "beta" {
 				workflow.Agents.ModelSelection.ComplexModel = new("beta-complex")
 			}
