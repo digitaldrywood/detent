@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 )
 
@@ -18,22 +19,48 @@ func TestApplyApprovedNativePolicy(t *testing.T) {
 		{"stored revision", func(d *policy.Descriptor, _ map[string]json.RawMessage) {
 			d.SourceRevision = strings.Repeat("b", 64)
 		}},
+		{"stored gate metadata", func(d *policy.Descriptor, _ map[string]json.RawMessage) {
+			d.Gates.Kind = gate.KindCommand
+			d.Gates.AutomatedReview = gate.AutomatedReviewOff
+			d.Gates.Validator = false
+			d.Gates.SecurityAudit = true
+		}},
 		{"unknown behavior", func(_ *policy.Descriptor, b map[string]json.RawMessage) {
 			b["RetiredBehavior"] = json.RawMessage(`{"Enabled":true}`)
 		}},
 		{"missing behavior defaults", func(_ *policy.Descriptor, b map[string]json.RawMessage) {
 			delete(b, "Gate")
 		}},
+		{"missing nested gate fields", func(_ *policy.Descriptor, b map[string]json.RawMessage) {
+			b["Gate"] = json.RawMessage(`{"SecurityAudit":{},"Validator":{}}`)
+		}},
+		{"missing runner requirements", func(_ *policy.Descriptor, b map[string]json.RawMessage) {
+			delete(b, "Runners")
+		}},
 		{"older behavior shape", func(d *policy.Descriptor, b map[string]json.RawMessage) {
 			d.SourceRevision = strings.Repeat("b", 64)
 			b["RetiredBehavior"] = json.RawMessage(`{"Enabled":true}`)
 			delete(b, "Gate")
+			delete(b, "Runners")
+			delete(b, "Plan")
+			delete(b, "Review")
+			delete(b, "Deliverable")
+			delete(b, "Agent")
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := Default()
 			cfg.Tracker.Kind = TrackerHubNative
 			cfg.Plan.Enabled = false
+			cfg.Plan.Review = gate.PlanReviewAutomated
+			cfg.Review.Human = true
+			cfg.Gate.Kind = gate.KindArtifact
+			cfg.Gate.AutomatedReview = gate.AutomatedReviewOptional
+			cfg.Gate.SecurityAudit.Enabled = false
+			cfg.Gate.Validator.Enabled = true
+			cfg.Agent.AutoPromote.Enabled = true
+			cfg.Deliverable.MergeMethod = "rebase"
+			cfg.Deliverable.GitHubPullRequest = true
 			cfg.Runners = Runners{Profile: "approved", Profiles: map[string]policy.Requirements{"approved": {RequiredTags: []string{"linux"}}}}
 			descriptor, err := ResolvePolicy(Workflow{Config: cfg, Prompt: "Approved instructions."})
 			if err != nil {
@@ -54,10 +81,11 @@ func TestApplyApprovedNativePolicy(t *testing.T) {
 				t.Fatal(err)
 			}
 			if applied.Prompt != "Approved instructions." || applied.Config.Plan.Enabled || applied.Config.Runners.Profile != "approved" || !reflect.DeepEqual(applied.Config.Runners.Profiles["approved"], policy.Requirements{RequiredTags: []string{"linux"}}) {
-				t.Fatalf("approved behavior lost: %+v", applied)
+				t.Fatalf("approved behavior lost: prompt=%q plan=%+v runners=%+v", applied.Prompt, applied.Config.Plan, applied.Config.Runners)
 			}
-			if applied.Config.Gate.Validator.Enabled != descriptor.Gates.Validator || applied.Config.Gate.SecurityAudit.Enabled != descriptor.Gates.SecurityAudit {
-				t.Fatalf("approved gates lost: %+v", applied.Config.Gate)
+			resolved, err := ResolvePolicy(applied)
+			if err != nil || resolved.Gates != descriptor.Gates || !reflect.DeepEqual(resolved.Requirements, descriptor.Requirements) {
+				t.Fatalf("approved metadata lost: gates=%+v requirements=%+v error=%v; want gates=%+v requirements=%+v", resolved.Gates, resolved.Requirements, err, descriptor.Gates, descriptor.Requirements)
 			}
 		})
 	}

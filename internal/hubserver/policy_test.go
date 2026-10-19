@@ -665,6 +665,8 @@ func TestApprovedPolicyClaimExposure(t *testing.T) {
 			cfg.Tracker.Kind = config.TrackerHubNative
 			cfg.Budget.BillingMode = mode
 			cfg.Plan.Enabled = false
+			cfg.Gate.SecurityAudit.Enabled = false
+			cfg.Gate.Validator.Enabled = true
 			cfg.Runners = config.Runners{Profile: "approved", Profiles: map[string]policy.Requirements{"approved": {RequiredTags: []string{"linux"}}}}
 			descriptor, err := config.ResolvePolicy(config.Workflow{Config: cfg})
 			if err != nil {
@@ -701,7 +703,7 @@ func TestApprovedPolicyClaimExposure(t *testing.T) {
 				t.Fatalf("claim exposure = %+v, error = %v", exposure, err)
 			}
 			contract, err := nativeIssueContractConfig(t.Context(), db, scope)
-			if err != nil || contract.Budget.EffectiveBillingMode() != mode || contract.Plan.Enabled || contract.Gate.SecurityAudit.Enabled != descriptor.Gates.SecurityAudit {
+			if err != nil || contract.Budget.EffectiveBillingMode() != mode || contract.Plan.Enabled || contract.Gate.SecurityAudit.Enabled != descriptor.Gates.SecurityAudit || contract.Gate.Validator.Enabled != descriptor.Gates.Validator {
 				t.Fatalf("issue contract configuration = %+v, error = %v", contract, err)
 			}
 			snapshot, err := readPlacementSnapshotWithCapacity(t.Context(), db, scope, f.service.config.now(), nil, newPlacementCapacity(), make(map[string]bool))
@@ -723,6 +725,8 @@ func TestNativePolicySubmissionConsistency(t *testing.T) {
 		change func(*policy.Descriptor)
 	}{
 		{"gates", func(d *policy.Descriptor) { d.Gates.SecurityAudit = !d.Gates.SecurityAudit }},
+		{"validator", func(d *policy.Descriptor) { d.Gates.Validator = !d.Gates.Validator }},
+		{"planning", func(d *policy.Descriptor) { d.Gates.PlanEnabled = !d.Gates.PlanEnabled }},
 		{"requirements", func(d *policy.Descriptor) { d.Requirements.RequiredTags = []string{"privileged"} }},
 		{"profile", func(d *policy.Descriptor) { d.Profile = "privileged" }},
 		{"revision", func(d *policy.Descriptor) { d.SourceRevision = strings.Repeat("b", 64) }},

@@ -204,6 +204,41 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 	if descriptor.Configuration == nil {
 		return workflow, nil
 	}
+	workflow, err := applyNativePolicyConfiguration(workflow, descriptor)
+	if err != nil {
+		return Workflow{}, err
+	}
+	cfg := &workflow.Config
+	cfg.Review.Human = descriptor.Gates.HumanReview
+	effectiveGate := gate.Effective(cfg.Gate)
+	if effectiveGate.Kind != descriptor.Gates.Kind {
+		cfg.Gate.Kind = descriptor.Gates.Kind
+	}
+	if effectiveGate.AutomatedReview != descriptor.Gates.AutomatedReview {
+		cfg.Gate.AutomatedReview = descriptor.Gates.AutomatedReview
+	}
+	cfg.Gate.Validator.Enabled = descriptor.Gates.Validator
+	cfg.Gate.SecurityAudit.Enabled = descriptor.Gates.SecurityAudit
+	cfg.Plan.Enabled = descriptor.Gates.PlanEnabled
+	if gate.EffectivePlan(cfg.Plan).Review != descriptor.Gates.PlanReview {
+		cfg.Plan.Review = descriptor.Gates.PlanReview
+	}
+	cfg.Agent.AutoPromote.Enabled = descriptor.Gates.AutoPromote
+	if cfg.Deliverable.EffectiveMergeMethod() != descriptor.Gates.MergeMethod {
+		cfg.Deliverable.MergeMethod = descriptor.Gates.MergeMethod
+	}
+	cfg.Deliverable.GitHubPullRequest = descriptor.Gates.GitHubPullRequest
+	cfg.Runners.Profile = descriptor.Profile
+	if descriptor.Profile != "" && !reflect.DeepEqual(cfg.Runners.Profiles[descriptor.Profile].Normalized(), descriptor.Requirements) {
+		if cfg.Runners.Profiles == nil {
+			cfg.Runners.Profiles = make(map[string]policy.Requirements)
+		}
+		cfg.Runners.Profiles[descriptor.Profile] = descriptor.Requirements.Normalized()
+	}
+	return workflow, nil
+}
+
+func applyNativePolicyConfiguration(workflow Workflow, descriptor policy.Descriptor) (Workflow, error) {
 	behavior := nativeProjectBehavior(Default())
 	decoder := json.NewDecoder(bytes.NewReader(descriptor.Configuration.Behavior))
 	decoder.UseNumber()
@@ -311,7 +346,7 @@ func ResolveSharedPolicy(descriptor policy.Descriptor) (policy.Descriptor, error
 	if descriptor.Configuration == nil {
 		return descriptor, nil
 	}
-	workflow, err := ApplyNativePolicy(Workflow{Config: Default()}, descriptor)
+	workflow, err := applyNativePolicyConfiguration(Workflow{Config: Default()}, descriptor)
 	if err != nil {
 		return policy.Descriptor{}, err
 	}
