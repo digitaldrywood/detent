@@ -1,6 +1,10 @@
 package detent
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestRepositoryGuidanceRequiresUISurfaceContracts(t *testing.T) {
 	t.Parallel()
@@ -42,4 +46,30 @@ func TestRepositoryGuidanceRequiresUISurfaceContracts(t *testing.T) {
 	} {
 		assertContainsWords(t, prTemplate, want)
 	}
+}
+
+func readRepositoryTextFile(t *testing.T, path string) string {
+	t.Helper()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	return string(raw)
+}
+
+func assertContains(t *testing.T, text string, want string) {
+	t.Helper()
+
+	if !strings.Contains(text, want) {
+		t.Fatalf("document missing %q", want)
+	}
+}
+
+func assertContainsWords(t *testing.T, text string, want string) {
+	t.Helper()
+
+	normalizedText := strings.Join(strings.Fields(text), " ")
+	normalizedWant := strings.Join(strings.Fields(want), " ")
+	assertContains(t, normalizedText, normalizedWant)
 }

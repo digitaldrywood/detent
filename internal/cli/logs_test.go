@@ -167,8 +167,7 @@ func TestEnrolledReadCommandsDuringIdentityWrite(t *testing.T) {
 										workflow := workflowconfig.Workflow{Config: workflowconfig.Default()}
 										workflow.Config.Tracker.Kind = workflowconfig.TrackerGitHub
 										workflow.Config.Tracker.Repository = "owner/repository"
-										workflow.Config.Retro.Enabled = true
-										workflow.Config.Retro.ProductRepository = "example-org/public-project"
+										workflow.Config.Codex.DeliverableElicitationAllowlist = []workflowconfig.DeliverableElicitationRule{{Repository: "example-org/public-project", Server: "codex_apps", Tool: "github.create_issue"}}
 										return workflow, nil
 									},
 									repositoryInfo: func(_ context.Context, _ workflowconfig.Config, repository string) (ghconnector.RepositoryInfo, error) {
