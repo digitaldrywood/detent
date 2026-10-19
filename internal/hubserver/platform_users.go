@@ -3,8 +3,6 @@ package hubserver
 import (
 	"context"
 	"net/http"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -22,10 +20,7 @@ func (s *Service) hostedPlatformUsers(c echo.Context) error {
 	if err := decodeAPIJSON(c, &input); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	query, err := platformusers.Parse(input.Text)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, apiErrorResponse{Code: "invalid_query", Message: "Enter at least three characters"})
-	}
+	query := platformusers.Parse(input.Text)
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	result := platformusers.TenantResult{Members: []platformusers.TenantMember{}, Invitations: []platformusers.TenantInvitation{}}
@@ -76,34 +71,5 @@ WHERE organization_id=? AND accepted_user_id='' AND CASE WHEN ? THEN lower(email
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	emails := make(map[string]bool)
-	for _, member := range result.Members {
-		emails[strings.ToLower(member.Email)] = true
-	}
-	for _, invitation := range result.Invitations {
-		emails[strings.ToLower(invitation.Email)] = true
-	}
-	ordered := make([]string, 0, len(emails))
-	for email := range emails {
-		ordered = append(ordered, email)
-	}
-	sort.Strings(ordered)
-	for _, email := range ordered[min(len(ordered), platformusers.Limit):] {
-		delete(emails, email)
-	}
-	members := result.Members[:0]
-	for _, member := range result.Members {
-		if emails[strings.ToLower(member.Email)] {
-			members = append(members, member)
-		}
-	}
-	result.Members = members
-	invitations := result.Invitations[:0]
-	for _, invitation := range result.Invitations {
-		if emails[strings.ToLower(invitation.Email)] {
-			invitations = append(invitations, invitation)
-		}
-	}
-	result.Invitations = invitations
 	return c.JSON(http.StatusOK, result)
 }

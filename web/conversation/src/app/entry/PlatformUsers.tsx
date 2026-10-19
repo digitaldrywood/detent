@@ -4,7 +4,12 @@ import { Link, useNavigate, useParams, useRouterState } from "@tanstack/react-ro
 import { Badge } from "../../components/ui/badge.tsx";
 import { Empty, EmptyHeader, EmptyTitle } from "../../components/ui/empty.tsx";
 import { Input } from "../../components/ui/input.tsx";
-import { Label } from "../../components/ui/label.tsx";
+import { Button } from "../../components/ui/button.tsx";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../components/ui/select.tsx";
+import { ToggleGroup, ToggleGroupItem } from "../../components/ui/toggle-group.tsx";
+import { ArrowDown, ArrowUp } from "lucide-react";
+import { type UserSearch, type UserSort } from "./userList.ts";
+import { formatCount } from "../usage/usageFormat.ts";
 import { Skeleton } from "../../components/ui/skeleton.tsx";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/table.tsx";
 import { SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
@@ -34,72 +39,90 @@ function Unsearched({ value }: { readonly value: PlatformUsers }): React.ReactEl
   );
 }
 
-export function PlatformUserResults({ value, query }: { readonly value: PlatformUsers; readonly query: string }): React.ReactElement {
-  return (
-    <div className="flex min-w-0 flex-col gap-6" aria-live="polite">
-      <SettingsSection title="Users" headerAction={<Badge variant="outline">{value.users.length}</Badge>}>
-        <Table aria-label="Users">
-          <TableHeader><TableRow>
-            <TableHead>User</TableHead><TableHead>Platform role</TableHead><TableHead className="text-right">Organizations</TableHead><TableHead>Last sign-in</TableHead>
-          </TableRow></TableHeader>
-          <TableBody>
-            {value.users.map((user) => <TableRow key={user.email}>
-              <TableCell><Link to={"/platform/users/$email" as never} params={{ email: user.email } as never} search={{ q: query } as never} className="font-medium underline-offset-4 hover:underline focus-visible:underline">{user.email}</Link></TableCell>
-              <TableCell><PlatformRole role={user.platform_role} /></TableCell>
-              <TableCell className="text-right"><Badge variant="outline">{user.memberships.length}</Badge></TableCell>
-              <TableCell><time dateTime={user.last_sign_in_at || undefined}>{date(user.last_sign_in_at, true)}</time></TableCell>
-            </TableRow>)}
-            {value.users.length === 0 ? <TableRow><TableCell colSpan={4}><Empty size="compact"><EmptyHeader><EmptyTitle>No users match</EmptyTitle></EmptyHeader></Empty></TableCell></TableRow> : null}
-          </TableBody>
-        </Table>
-      </SettingsSection>
-      {value.users.length === 50 ? <p className="text-sm text-muted-foreground">Showing up to 50 users. Refine your search to find other users.</p> : null}
-      <Unsearched value={value} />
-    </div>
-  );
+function UserFilter({ label, value, items, onChange }: {
+  readonly label: string;
+  readonly value: string;
+  readonly items: readonly { value: string; label: string }[];
+  readonly onChange: (value: string) => void;
+}): React.ReactElement {
+  return <Select value={value} items={items} onValueChange={(next) => onChange(next ?? "all")}>
+    <SelectTrigger size="compact" aria-label={label} className="w-full sm:w-40"><SelectValue /></SelectTrigger>
+    <SelectPopup>{items.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectPopup>
+  </Select>;
 }
 
 export function PlatformUsersPage(): React.ReactElement {
   usePageTitle("Users", "Platform");
   const api = useEntryApi();
   const navigate = useNavigate();
-  const routeQuery = useRouterState({ select: (state) => (state.location.search as { q?: string }).q ?? "" });
+  const search = useRouterState({ select: (state) => state.location.search as UserSearch });
+  const routeQuery = search.q ?? "";
   const [query, setQuery] = React.useState(routeQuery);
   React.useEffect(() => { setQuery(routeQuery); }, [routeQuery]);
+  const change = React.useCallback((next: Partial<UserSearch>) => {
+    void navigate({ to: "/platform/users", search: { ...search, page: undefined, ...next }, resetScroll: false } as never);
+  }, [navigate, search]);
   React.useEffect(() => {
     if (query.trim() === routeQuery) return;
-    const timer = setTimeout(() => {
-      void navigate({ to: "/platform/users", search: { q: query.trim() || undefined }, resetScroll: false } as never);
-    }, 300);
+    const timer = setTimeout(() => change({ q: query.trim() || undefined }), 300);
     return () => clearTimeout(timer);
-  }, [query, routeQuery, navigate]);
-  const submitted = routeQuery.trim();
-  const valid = Array.from(submitted).length >= 3;
-  const resource = usePlatformResource(() => valid ? api.platformUsers(submitted) : Promise.resolve(null), [api, submitted, valid]);
-  const loading = valid && resource.loading;
-  const value = loading || resource.error !== null ? null : resource.value;
-
-  return (
-    <>
-      <form onSubmit={(event) => {
-        event.preventDefault();
-        if (query.trim() === submitted) {
-          if (valid) void resource.refresh();
-          return;
-        }
-        void navigate({ to: "/platform/users", search: { q: query.trim() || undefined }, resetScroll: false } as never);
-      }} className="flex flex-col gap-2">
-        <Label htmlFor="user-email">Search by email</Label>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-          <Input id="user-email" type="search" placeholder="Search by email" value={query} onChange={(event) => setQuery(event.target.value)} aria-describedby="user-search-help" className="min-w-0 sm:max-w-sm" />
-          <p id="user-search-help" className="text-xs text-muted-foreground">Enter at least three characters. Matches verified emails across all tenants. Search stays in the URL.</p>
-        </div>
-      </form>
-      <Problem message={resource.error?.message ?? null} />
-      {loading ? <div role="status" aria-label="Searching users" className="space-y-3"><Skeleton className="h-6 w-1/2" /><Skeleton className="h-24 w-full" /></div> : null}
-      {value == null ? null : <PlatformUserResults value={value} query={submitted} />}
-    </>
-  );
+  }, [query, routeQuery, change]);
+  const resource = usePlatformResource(() => api.platformUsers(routeQuery, search), [api, routeQuery, search.segment, search.organization, search.role, search.sort, search.direction, search.page]);
+  const value = resource.value;
+  const loading = resource.loading;
+  const sort = search.sort ?? "last_sign_in";
+  const descending = (search.direction ?? (sort === "last_sign_in" ? "desc" : "asc")) === "desc";
+  const sortHead = (field: UserSort, title: string) => <TableHead aria-sort={sort === field ? descending ? "descending" : "ascending" : "none"}>
+    <Button variant="ghost" size="compact" onClick={() => change({ sort: field, direction: sort === field ? descending ? "asc" : "desc" : field === "last_sign_in" ? "desc" : "asc" })}>
+      {title}{sort === field ? descending ? <ArrowDown /> : <ArrowUp /> : null}
+    </Button>
+  </TableHead>;
+  const segments = [
+    { value: "all", label: "All", count: value?.counts.all },
+    { value: "staff", label: "Staff", count: value?.counts.staff },
+    { value: "no_organization", label: "No organization", count: value?.counts.no_organization },
+    { value: "invited", label: "Invited", count: value?.counts.invited },
+  ] as const;
+  const filtered = Boolean(routeQuery || search.segment && search.segment !== "all" || search.organization || search.role);
+  const page = value?.page ?? 1;
+  const sortLabel = sort === "last_sign_in" ? `Last sign-in · ${descending ? "newest first" : "oldest first"}` : `${sort === "email" ? "User" : sort === "role" ? "Platform role" : "Organizations"} · ${sort === "organizations" ? descending ? "highest first" : "lowest first" : descending ? "Z–A" : "A–Z"}`;
+  return <div className="flex min-w-0 flex-col gap-5">
+    <form className="flex flex-wrap items-center gap-3" onSubmit={(event) => {
+      event.preventDefault();
+      if (query.trim() === routeQuery) void resource.refresh();
+      else change({ q: query.trim() || undefined });
+    }}>
+      <Input size="compact" type="search" aria-label="Search by email" placeholder="Filter by email" value={query} onChange={(event) => setQuery(event.target.value)} className="min-w-0 sm:w-40 sm:flex-1" />
+      <ToggleGroup aria-label="User segment" className="max-w-full flex-wrap" value={[search.segment ?? "all"]} onValueChange={(values) => {
+        if (values[0]) change({ segment: values[0] === "all" ? undefined : values[0] as UserSearch["segment"] });
+      }}>
+        {segments.map((segment) => <ToggleGroupItem key={segment.value} value={segment.value}>
+          {segment.label}<Badge variant={segment.value === "no_organization" && (segment.count ?? 0) > 0 ? "warning" : "outline"}>{segment.count === undefined ? "…" : formatCount(segment.count)}</Badge>
+        </ToggleGroupItem>)}
+      </ToggleGroup>
+      <div className="flex w-full gap-2 sm:ml-auto sm:w-auto">
+        <UserFilter label="Organization" value={search.organization ?? "all"} items={[{ value: "all", label: "All organizations" }, ...(value?.organizations ?? []).map((org) => ({ value: org.organization_id, label: org.organization_name }))]} onChange={(organization) => change({ organization: organization === "all" ? undefined : organization })} />
+        <UserFilter label="Platform role" value={search.role ?? "all"} items={[{ value: "all", label: "All roles" }, { value: "none", label: "None" }, ...["admin", "support", "billing", "viewer"].map((role) => ({ value: role, label: role }))]} onChange={(role) => change({ role: role === "all" ? undefined : role })} />
+      </div>
+    </form>
+    <Problem message={resource.error?.message ?? null} />
+    <SettingsSection title={value ? `${formatCount(value.total)} ${value.total === 1 ? "user" : "users"}` : "Users"} className="min-w-0" headerAction={<span className="text-xs text-muted-foreground">{sortLabel}</span>}>
+      {loading ? <div role="status" aria-label="Loading users"><Skeleton className="h-24 w-full" /></div> : resource.error ? <Empty><EmptyHeader><EmptyTitle>Users could not be loaded</EmptyTitle></EmptyHeader><Button variant="outline" size="compact" onClick={() => { void resource.refresh(); }}>Try again</Button></Empty> : !value?.users.length ? <Empty><EmptyHeader><EmptyTitle>{filtered ? "No users match" : "No users yet"}</EmptyTitle></EmptyHeader></Empty> : <Table aria-label="Users" className="min-w-[720px]">
+        <TableHeader><TableRow>{sortHead("email", "User")}{sortHead("role", "Platform role")}{sortHead("organizations", "Organizations")}{sortHead("last_sign_in", "Last sign-in")}</TableRow></TableHeader>
+        <TableBody>{value.users.map((user) => <TableRow key={user.email}>
+          <TableCell><Link to={"/platform/users/$email" as never} params={{ email: user.email } as never} search={search as never} className="font-medium underline-offset-4 hover:underline focus-visible:underline">{user.email}</Link><div className="text-xs text-muted-foreground">{user.memberships.length ? user.memberships.map((org) => org.organization_name).join(", ") : user.invitations.length ? `Invited to ${user.invitations.map((org) => org.organization_name).join(", ")}` : "No organization"}</div></TableCell>
+          <TableCell><PlatformRole role={user.platform_role} /></TableCell>
+          <TableCell><Badge variant={user.memberships.length === 0 ? "warning" : "outline"}>{formatCount(user.memberships.length)}</Badge></TableCell>
+          <TableCell><time dateTime={user.last_sign_in_at || undefined}>{user.last_sign_in_at ? date(user.last_sign_in_at, true) : "Never"}</time></TableCell>
+        </TableRow>)}</TableBody>
+      </Table>}
+    </SettingsSection>
+    {value && !resource.error ? <nav aria-label="User pages" className="flex items-center justify-between gap-3">
+      <span className="text-xs text-muted-foreground">{value.total === 0 ? "0" : `${formatCount((page - 1) * value.page_size + 1)}–${formatCount(Math.min(page * value.page_size, value.total))}`} of {formatCount(value.total)}</span>
+      <div className="flex gap-2"><Button variant="outline" size="compact" disabled={loading || page <= 1} onClick={() => change({ page: page - 1 })}>Previous</Button><Button variant="outline" size="compact" disabled={loading || page * value.page_size >= value.total} onClick={() => change({ page: page + 1 })}>Next</Button></div>
+    </nav> : null}
+    {value ? <Unsearched value={value} /> : null}
+  </div>;
 }
 
 export function PlatformUserPage(): React.ReactElement {

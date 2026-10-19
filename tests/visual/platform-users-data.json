@@ -22,5 +22,29 @@
       "invitations": []
     }
   ],
-  "unsearched": [{ "organization_id": "org_timeout", "organization_name": "Slow Tenant" }]
+  "unsearched": [{ "organization_id": "org_timeout", "organization_name": "Slow Tenant" }],
+  "total": 2,
+  "total_users": 2,
+  "page": 1,
+  "page_size": 50,
+  "counts": {
+    "all": 2,
+    "staff": 1,
+    "no_organization": 1,
+    "invited": 1
+  },
+  "organizations": [
+    {
+      "organization_id": "org_alpha",
+      "organization_name": "Example Alpha"
+    },
+    {
+      "organization_id": "org_beta",
+      "organization_name": "Example Beta"
+    },
+    {
+      "organization_id": "org_example",
+      "organization_name": "Example Co"
+    }
+  ]
 }

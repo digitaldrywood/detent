@@ -1,3 +1,4 @@
+import type { UserSearch } from "./userList.ts";
 // The shared entry's JSON surface: the organization chooser, self-service
 // creation and its provisioning status. These live on
 // the shared origin itself, outside any organization's base path, and use the
@@ -113,6 +114,12 @@ export const PlatformUsers = Schema.Struct({
     invitations: Schema.Array(Schema.Struct({ ...UserOrganization, expires_at: Schema.String })),
   })),
   unsearched: Schema.Array(Schema.Struct(UserOrganization)),
+  organizations: Schema.Array(Schema.Struct(UserOrganization)),
+  total: Schema.Number,
+  total_users: Schema.Number,
+  page: Schema.Number,
+  page_size: Schema.Number,
+  counts: Schema.Struct({ all: Schema.Number, staff: Schema.Number, no_organization: Schema.Number, invited: Schema.Number }),
 });
 export type PlatformUsers = typeof PlatformUsers.Type;
 
@@ -405,7 +412,11 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
         action === "add" ? "POST" : action === "change" ? "PATCH" : "DELETE");
     },
     platformHealth: () => read(PlatformHealth, "/api/cloud/platform/health"),
-    platformUsers: (query: string) => read(PlatformUsers, `/api/cloud/platform/users?q=${encodeURIComponent(query)}`),
+    platformUsers: (query: string, filters: UserSearch = {}) => {
+      const params = new URLSearchParams({ q: query });
+      for (const [key, value] of Object.entries(filters)) if (value !== undefined) params.set(key, String(value));
+      return read(PlatformUsers, `/api/cloud/platform/users?${params}`);
+    },
     platformAudit: (query: string, signal?: AbortSignal) => read(PlatformAudit, `/api/cloud/platform/audit${query === "" ? "" : `?${query}`}`, signal),
     platformEntitlements: (organization: string) => read(OrganizationEntitlements, entitlementsPath(organization)),
     changePlatformEntitlement: (input: { organization: string; csrf: string; change: EntitlementChange }) =>
