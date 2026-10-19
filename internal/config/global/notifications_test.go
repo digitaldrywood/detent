@@ -33,7 +33,7 @@ func TestHealthNotificationConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			raw := []byte("apiVersion: detent/v1\nkind: GlobalConfig\nglobal:\n  max_concurrent_agents: 1\n  scheduling: weighted\nprojects: []\n" + tt.yaml)
+			raw := []byte("apiVersion: detent/v1\nkind: GlobalConfig\nglobal:\n  max_concurrent_agents: 1\n  scheduling: weighted\n" + tt.yaml)
 			cfg, err := Parse(raw, "/tmp/global.yaml", WithProjectPathLiterals())
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {

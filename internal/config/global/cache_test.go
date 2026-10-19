@@ -22,7 +22,7 @@ func TestParseGlobalCache(t *testing.T) {
 		{"invalid age", "  cache: {max_age: yesterday}\n", 0, 0, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			raw := "apiVersion: detent/v1\nkind: GlobalConfig\nglobal:\n  max_concurrent_agents: 2\n  scheduling: weighted\n" + tt.yaml + "projects: []\n"
+			raw := "apiVersion: detent/v1\nkind: GlobalConfig\nglobal:\n  max_concurrent_agents: 2\n  scheduling: weighted\n" + tt.yaml + ""
 			cfg, err := Parse([]byte(raw), "", WithHome(t.TempDir()))
 			if (err != nil) != tt.bad {
 				t.Fatalf("Parse error=%v", err)
@@ -47,7 +47,7 @@ func TestWritePreservesCacheDefault(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
 			path := filepath.Join(root, "global.yaml")
-			raw := "apiVersion: detent/v1\nkind: GlobalConfig\nglobal:\n  max_concurrent_agents: 2\n  scheduling: weighted\n" + tt.cache + "projects: []\n"
+			raw := "apiVersion: detent/v1\nkind: GlobalConfig\nglobal:\n  max_concurrent_agents: 2\n  scheduling: weighted\n" + tt.cache + ""
 			if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 				t.Fatal(err)
 			}
