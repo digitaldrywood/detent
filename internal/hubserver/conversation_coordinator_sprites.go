@@ -210,25 +210,36 @@ func (s *Service) executeCoordinatorSpriteAction(ctx context.Context, action cha
 	if err := validateSpritePoolAccess(change.Input.IsolationTier); err != nil {
 		return chat.ActionExecution{}, coordinatorActionError(err)
 	}
-	view, err := s.readSpritePool(ctx, scope)
-	if err != nil {
-		return chat.ActionExecution{}, coordinatorActionError(err)
-	}
-	if string(action.Kind) != "set_sprite_pool" && view.Revision != change.Revision {
-		return chat.ActionExecution{}, coordinatorActionError(nativeConflict(tracker.Revision(view.Revision)))
-	}
-	settings := view.spritePoolSettings
-	change.Input.apply(&settings)
-	if string(action.Kind) == "scale_up_sprite_pool" && (settings.Revision == 0 || settings.MaxRunners == 0) {
-		return chat.ActionExecution{}, operatortool.ErrInvalidArguments
-	}
-	if err := s.validateCoordinatorSpriteChange(ctx, scope, settings); err != nil {
-		return chat.ActionExecution{}, coordinatorActionError(err)
-	}
 	if string(action.Kind) == "set_sprite_pool" {
-		settings.Revision = change.Revision
-		err = s.executeSpritePoolCommand(ctx, scope, spritePoolCommand{Mutation: tracker.MutationForContext(ctx, action.RequestID), spritePoolSettings: settings, Bootstrap: change.Input.Bootstrap, IsolationTier: change.Input.IsolationTier, ShareIdleCapacity: change.Input.ShareIdleCapacity})
+		err = s.executeSpritePoolSettingsCommand(ctx, scope, tracker.MutationForContext(ctx, action.RequestID), change, func(ctx context.Context, tx *sql.Tx, scope nativeScope) (spritePoolSettings, *string, error) {
+			settings, err := readSpritePoolSettings(ctx, tx, scope)
+			if err != nil {
+				return settings, nil, err
+			}
+			change.Input.apply(&settings)
+			settings.Revision = change.Revision
+			if err := s.validateCoordinatorSpriteChange(ctx, scope, settings); err != nil {
+				return settings, nil, err
+			}
+			return settings, change.Input.IsolationTier, nil
+		})
 	} else {
+		var view spritePoolView
+		view, err = s.readSpritePool(ctx, scope)
+		if err != nil {
+			return chat.ActionExecution{}, coordinatorActionError(err)
+		}
+		if view.Revision != change.Revision {
+			return chat.ActionExecution{}, coordinatorActionError(nativeConflict(tracker.Revision(view.Revision)))
+		}
+		settings := view.spritePoolSettings
+		change.Input.apply(&settings)
+		if string(action.Kind) == "scale_up_sprite_pool" && (settings.Revision == 0 || settings.MaxRunners == 0) {
+			return chat.ActionExecution{}, operatortool.ErrInvalidArguments
+		}
+		if err := s.validateCoordinatorSpriteChange(ctx, scope, settings); err != nil {
+			return chat.ActionExecution{}, coordinatorActionError(err)
+		}
 		err = s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
 			if err := requireCredentialAuthority(ctx, tx, scope.credential, s.config.now()); err != nil {
 				return err
