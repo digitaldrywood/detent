@@ -101,6 +101,7 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 		{name: "replaced source", stage: "source", refusal: "source"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
 				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
 				{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Blocked", "Merging", "Rework"}},
