@@ -70,7 +70,7 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidNativeEventRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	err := s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		if err := validateNativeRunEvent(request); err != nil {
 			return nil, err
 		}
@@ -209,6 +209,10 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 			Accepted bool `json:"accepted"`
 		}{true}, nil
 	})
+	if request.Data.Handoff != nil && request.Data.Handoff.Publication != nil || request.Data.Finalization != nil && request.Data.Finalization.Publication != nil {
+		s.pullRequests.invalidate(pullRequestCacheKey(nativeRequestScope(c), c.Param("item")))
+	}
+	return err
 }
 
 func (s *Service) invalidNativeEventRequest(c echo.Context, err error) error {

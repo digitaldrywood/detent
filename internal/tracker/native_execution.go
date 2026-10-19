@@ -27,6 +27,7 @@ type NativeExecutionIdentity struct {
 }
 
 type NativeCheckpoint struct {
+	Publication     *NativePRPublication   `json:"publication,omitempty"`
 	Resume          string                 `json:"resume"`
 	Availability    string                 `json:"availability"`
 	Storage         string                 `json:"storage"`
