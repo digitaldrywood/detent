@@ -22,7 +22,7 @@ function fleet(longErrors = false) {
   const raw = "policy_digest git command error_output ".repeat(50);
   return { ...fleetFixture, runners: [8, 4, 8].map((capacity, index) => ({
     ...base, id: `runner_${index}`, machine_id: `machine_${index}`, display_name: ["Example desktop", "Example laptop", "Example build host"][index], hostname: `example-host-${index}`,
-    health: "online", capacity_health: "online", connection_health: "online", state: index === 2 ? "draining" : "active", claim_refusal_reason: "", host_capacity: capacity, host_used: 1, capacity_limit: capacity, reported_capacity: capacity, provider_capacity: [],
+    health: "online", capacity_health: "online", connection_health: "online", state: index === 2 ? "draining" : "active", claim_refusal_reason: "", host_capacity: capacity, host_used: 1, capacity_limit: index === 0 ? 2 : capacity, reported_capacity: index === 0 ? 2 : capacity, provider_capacity: [],
     update: index === 2 ? { status: "draining", desired: { version: "v1.0.0" } } : undefined,
     problems: longErrors ? [{ code: index === 1 ? "policy_mismatch" : "settings_invalid", project_id: index === 1 ? hub.fixture.project_id : "prj_optional", subject: "project configuration", check: "load settings", message: raw, error_output: raw, fix_hint: raw, first_seen: "2026-10-07T10:00:00Z" }] : [],
   })) };
@@ -71,7 +71,7 @@ async function open(page, report = fixture, longErrors = false) {
     page
       .getByRole("region", { name: "Needs attention", exact: true })
       .getByRole("article"),
-  ).toHaveCount((report.findings?.length ?? 0) + (longErrors ? 2 : 0));
+  ).toHaveCount((report.findings?.length ?? 0) + (longErrors ? 3 : 0));
 }
 
 test("Browse opens Diagnostics, orders findings, and changes the read window", async ({
@@ -102,7 +102,8 @@ test("Browse opens Diagnostics, orders findings, and changes the read window", a
     page.getByRole("img", { name: "Hourly slots in use and Todo queue depth" }),
   ).toBeVisible();
   const capacity = page.getByRole("region", { name: "Capacity right now", exact: true });
-  await expect(capacity).toContainText("3 of 20 slots occupied");
+  await expect(capacity).toContainText("3 of 14 slots occupied");
+  await expect(capacity).toContainText("7 slots can't take work");
   await expect(capacity.getByRole("link", { name: "Example desktop" })).toBeVisible();
   await rows.first().getByRole("link").click();
   await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2\?tab=diagnostics$/);
@@ -248,6 +249,7 @@ for (const theme of ["light", "dark"]) {
       }
       await expect(live).toContainText("Finishing work before updating");
       await expect(attention).toContainText("Optional project");
+      await expect(attention).toContainText("Not taking work because project settings could not be loaded");
       await expect(attention).toContainText("Example project");
       await expect(attention.getByRole("link", { name: "Review policy" })).toHaveAttribute("href", `/settings/integrations?project=${hub.fixture.project_id}`);
       await expect(page.getByText("Instrumentation coverage", { exact: true })).toHaveCount(0);

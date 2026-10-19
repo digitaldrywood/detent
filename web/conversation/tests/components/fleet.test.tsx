@@ -457,11 +457,10 @@ describe("shared host capacity", () => {
     }
   });
 
-  it("shows host slots no runner is assigned as idle headroom, not as slots that can't take work", () => {
+  it("counts a runner limit below the host ceiling as its slots, not as slots that can't take work", () => {
     renderSection({ ...FLEET, runners: [{ ...active, capacity_limit: 2 }] });
     const host = screen.getByTestId("runner-capacity");
     expect(screen.getByText("1 of 2 slots occupied")).toBeTruthy();
-    expect(screen.getByText("6 idle host slots not assigned to a runner")).toBeTruthy();
     expect(screen.queryByText(/slots can't take work/)).toBeNull();
     expect(host.querySelectorAll('[data-slot-state="free"]')).toHaveLength(1);
     expect(host.querySelectorAll('[data-slot-state="unavailable"]')).toHaveLength(0);
@@ -476,7 +475,6 @@ describe("shared host capacity", () => {
     expect(screen.getByText("1 of 4 slots occupied")).toBeTruthy();
     expect(screen.getByText("2 free")).toBeTruthy();
     expect(screen.getByText("1 slots can't take work")).toBeTruthy();
-    expect(screen.getByText("9 idle host slots not assigned to a runner")).toBeTruthy();
   });
 
   it("uses only an active sibling's remaining allowance while another drains", () => {

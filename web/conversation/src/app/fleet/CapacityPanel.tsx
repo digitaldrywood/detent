@@ -63,7 +63,6 @@ export function CapacityPanel({ runners, appUpdates, onOpen, showProviders = tru
   const total = hosts.reduce((count, host) => count + host.capacity, 0);
   const free = hosts.reduce((count, host) => count + host.free, 0);
   const unavailable = hosts.reduce((count, host) => count + Math.max(0, host.capacity - host.used - host.free), 0);
-  const headroom = hosts.reduce((count, host) => count + host.headroom, 0);
   return (
     <section aria-label="Capacity right now" className="min-w-0 space-y-3">
       <h2 className="text-sm font-medium">Capacity right now</h2>
@@ -72,7 +71,6 @@ export function CapacityPanel({ runners, appUpdates, onOpen, showProviders = tru
           <p className="text-base font-medium tabular-nums">{used} of {total} slots occupied</p>
           <p className="text-xs text-muted-foreground">{free} free</p>
           {unavailable > 0 ? <p className="text-xs text-warning-foreground">{unavailable} slots can't take work</p> : null}
-          {headroom > 0 ? <p className="text-xs text-muted-foreground">{headroom} idle host {headroom === 1 ? "slot" : "slots"} not assigned to a runner</p> : null}
           {appUpdates && appUpdates.behind_count > 0 ? <p className="text-xs text-warning-foreground">{appUpdates.behind_count} {appUpdates.behind_count === 1 ? "runner" : "runners"} behind the Hub</p> : null}
         </div>
         <p className="text-xs text-muted-foreground">Occupied slots include execution, finalization and merging across projects. Work board live counts follow its filters. New work also depends on project access and provider availability.{appUpdates ? " Versions are what each runner’s last heartbeat reported." : ""}</p>
@@ -123,7 +121,7 @@ export function CapacityPanel({ runners, appUpdates, onOpen, showProviders = tru
                 </div>
               </TableCell> : null}
               <TableCell rowSpan={span} className="align-top">
-                <div className="flex w-39 flex-wrap gap-1" aria-label={`${host.used} of ${host.capacity} slots occupied on ${host.runner.display_name || host.runner.hostname} · ${host.free} free · ${Math.max(0, host.capacity - host.used - host.free)} can't take work · ${host.headroom} idle host headroom`}>
+                <div className="flex w-39 flex-wrap gap-1" aria-label={`${host.used} of ${host.capacity} slots occupied on ${host.runner.display_name || host.runner.hostname} · ${host.free} free · ${Math.max(0, host.capacity - host.used - host.free)} can't take work`}>
                   {Array.from({ length: Math.min(64, host.capacity) }, (_, index) => {
                     const lease = host.leases[index];
                     const state = index < host.used ? "running" : index < host.used + host.free ? "free" : "unavailable";

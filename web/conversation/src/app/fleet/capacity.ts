@@ -19,9 +19,8 @@ export function fleetHosts(runners: readonly FleetRunner[]) {
     const used = Math.max(leases.length, ...group.map((entry) => entry.host_used));
     const assigned = Math.min(runner.host_capacity, group.reduce((count, entry) => count + Math.max(0, entry.capacity_limit), 0));
     const capacity = Math.max(used, assigned);
-    const headroom = Math.max(0, runner.host_capacity - capacity);
     const available = group.reduce((count, entry) => canTakeWork(entry) ? count + Math.max(0, Math.min(entry.capacity_limit, entry.reported_capacity) - entry.leases.length) : count, 0);
     const free = Math.min(Math.max(0, capacity - used), available);
-    return { runner, runners: group, leases, used, capacity, free, headroom };
+    return { runner, runners: group, leases, used, capacity, free };
   });
 }

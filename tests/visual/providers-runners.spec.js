@@ -137,19 +137,19 @@ for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1100 });
     await openFleet(page);
     await page.getByText("Fleet capacity and providers", { exact: true }).click();
-    await expect(page.getByText("1 of 7 slots occupied", { exact: true })).toBeVisible();
-    await expect(page.getByText("5 slots can't take work")).toBeVisible();
+    await expect(page.getByText("1 of 5 slots occupied", { exact: true })).toBeVisible();
+    await expect(page.getByText("3 slots can't take work")).toBeVisible();
     const groups = page.getByTestId("runner-capacity");
     await expect(groups).toHaveCount(fleet.runners.length);
     for (const [index, runner] of fleet.runners.entries()) {
       const group = groups.nth(index);
-      await expect(group.locator("[data-slot-state]")).toHaveCount(runner.host_capacity);
+      await expect(group.locator("[data-slot-state]")).toHaveCount(Math.min(runner.host_capacity, runner.capacity_limit));
       await expect(group.locator('[data-slot-state="running"]')).toHaveCount(runner.leases.length);
       for (const lease of runner.leases) {
         await expect(group.locator('[data-slot-state="running"]').first()).toHaveAttribute("title", "#" + lease.work_item_id + " " + lease.title);
       }
     }
-    await expect(groups.nth(1).locator('[data-slot-state="unavailable"]')).toHaveCount(4);
+    await expect(groups.nth(1).locator('[data-slot-state="unavailable"]')).toHaveCount(2);
     const buildRunner = page.getByTestId("host-card").filter({ has: page.getByRole("heading", { name: "Build runner", exact: true }) });
     await expect(buildRunner.getByText("Needs attention", { exact: true })).toBeVisible();
     const buildAlert = buildRunner.getByRole("alert");
