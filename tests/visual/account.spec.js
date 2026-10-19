@@ -603,7 +603,7 @@ test("the fleet page redirects into settings and renders the hosts and providers
   page,
 }) => {
   const errors = watchConsole(page);
-  // §17.3: `/fleet` is the Providers & runners section of settings now. The
+  // §17.3: `/fleet` is the Runners section of settings now. The
   // spend hero, the chart, the range control and the allowance totals moved to
   // `/usage` with the numbers they measure (§17.5).
   await openAs(page, "owner", "/fleet");
@@ -612,18 +612,16 @@ test("the fleet page redirects into settings and renders the hosts and providers
   await expectOneHeadingOne(page, "Settings");
   await expect(page.getByLabel("Go to Detent Cloud")).toHaveCount(1);
   await expect(
-    page.locator("[data-app-sidebar]").getByRole("button", { name: "Providers & runners" }),
+    page.locator("[data-app-sidebar]").getByRole("button", { name: "Runners", exact: true }),
   ).toHaveAttribute("data-active", "true");
-  await expect(page.getByRole("heading", { name: "Providers & runners", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Runners", exact: true })).toBeVisible();
   if (await page.getByTestId("host-card").count()) {
     await expect(page.getByRole("heading", { name: "Runners", exact: true })).toBeVisible();
   } else {
     await expect(page.getByText("No runners yet. Add a runner manually or let Luna help you set one up.")).toBeVisible();
   }
-  if (await page.getByTestId("host-card").count()) {
-    await page.getByText("Fleet capacity and providers", { exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Providers", exact: true })).toBeVisible();
-  }
+  await expect(page.getByRole("heading", { name: "Capacity right now", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Provider accounts" })).toHaveCount(0);
 
   const meters = page.getByRole("progressbar");
   if ((await meters.count()) > 0) {
@@ -638,7 +636,7 @@ test("the fleet page redirects into settings and renders the hosts and providers
   await expectNoSeriousAxeViolations(page, "/settings/runners as viewer");
 });
 
-test("Providers & runners enrolls a host through setup, a masked command, and live check-in", async ({ page }, testInfo) => {
+test("Runners enrolls a host through setup, a masked command, and live check-in", async ({ page }, testInfo) => {
   const errors = watchConsole(page);
   let connected = false;
   const fleet = require("../../web/conversation/src/contracts/fixtures/account-fleet.json");

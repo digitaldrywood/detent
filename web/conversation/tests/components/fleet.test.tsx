@@ -3,7 +3,11 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RunnerProblems } from "../../src/app/fleet/RunnerProblems.tsx";
-import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
+import React from "react";
+import { RunnerDetailPage } from "../../src/app/fleet/RunnerDetailPage.tsx";
+import { CapacityPanel } from "../../src/app/fleet/CapacityPanel.tsx";
+import { ProviderSummary } from "../../src/app/usage/ProviderSummary.tsx";
+import { RunnersSectionView as RunnersList } from "../../src/app/fleet/RunnersSection.tsx";
 import { spriteBootstrapPin } from "../../src/app/fleet/EnrollRunner.tsx";
 import type { FleetResponse, RunnerRouting } from "../../src/contracts/account.ts";
 import { decodeFleet, type SuggestedLimit } from "../../src/contracts/account.ts";
@@ -30,6 +34,17 @@ const ROUTING: RunnerRouting = {
 const RUNNER = { can_edit_projects: true, ...FLEET.runners[0]!, editable: true, claim_refusal_reason: "", routing: ROUTING, revision: 7 };
 const PROJECTS = [{ id: "prj_known", name: "Known project" }, { id: "prj_second", name: "Second project" }];
 
+function RunnersSectionView(props: React.ComponentProps<typeof RunnersList> & {
+  onSaveRouting?: React.ComponentProps<typeof RunnerDetailPage>["onSave"];
+  onReloadRunner?: () => Promise<void>;
+  suggestions?: Record<string, SuggestedLimit>;
+  loadHostHistory?: React.ComponentProps<typeof RunnerDetailPage>["loadHostHistory"];
+}) {
+  const [id, setId] = React.useState<string | null>(null);
+  const runner = props.fleet.runners.find((entry) => entry.id === id);
+  return runner ? <RunnerDetailPage runner={runner} projects={props.projects ?? []} editable={(runner.editable ?? props.fleet.editable) !== false} onSave={props.onSaveRouting} onReload={props.onReloadRunner} suggestion={props.suggestions?.[runner.id]} loadHostHistory={props.loadHostHistory} now={props.now} onClose={() => setId(null)} /> : <RunnersList {...props} onOpenRunner={(entry) => setId(entry.id)} />;
+}
+
 function renderSection(fleet: FleetResponse = FLEET) {
   render(<RunnersSectionView fleet={fleet} now={NOW} />);
 }
@@ -50,13 +65,13 @@ describe("Sprite bootstrap pin", () => {
 describe("runner rows", () => {
   it.each([
     ["subscription", "Subscription"], ["api_key", "API key"], ["unknown", "Billing unknown"], [undefined, "Billing unknown"],
-  ] as const)("shows backend billing in row and details: %s", (billing, label) => {
+  ] as const)("shows backend billing in details: %s", (billing, label) => {
     const capacity = { ...RUNNER.provider_capacity[0]!, billing, usage_windows: [{ kind: "weekly", percent_used: 95, observed_at: new Date(NOW - 30_000).toISOString() }] };
     renderSection({ ...FLEET, runners: [{ ...RUNNER, provider_capacity: [capacity] }] });
-    expect(within(screen.getByTestId("host-card")).getByText(new RegExp(`${capacity.backend}.*${label}`))).toBeTruthy();
+    expect(within(screen.getByTestId("host-card")).queryByText(new RegExp(`${capacity.backend}.*${label}`))).toBeNull();
     if (billing === "api_key") expect(screen.queryByText(/95% used|At risk/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: `Manage ${RUNNER.display_name}` }));
-    expect(within(screen.getByRole("dialog")).getByText(new RegExp(`${capacity.backend}.*${label}`))).toBeTruthy();
+    expect(within(screen.getByRole("article")).getByText(new RegExp(`${capacity.backend}.*${label}`))).toBeTruthy();
   });
 
   it.each([
@@ -68,10 +83,12 @@ describe("runner rows", () => {
     ["stale", 85, 120_000, "Stale"],
     ["future", 85, -1_000, "Stale"],
     ["unknown", undefined, undefined, "Unknown"],
-  ])("shows subscription usage in the runner row and details: %s", (_name, percent, age, status) => {
+  ])("shows subscription usage only in details: %s", (_name, percent, age, status) => {
     const window = { kind: "weekly", percent_used: percent, reset_at: new Date(NOW + 3_600_000).toISOString(), observed_at: age === undefined ? undefined : new Date(NOW - age).toISOString() };
     const capacity = { ...RUNNER.provider_capacity[0]!, billing: "subscription" as const, usage_windows: [window] };
     renderSection({ ...FLEET, runners: [{ ...RUNNER, provider_capacity: [capacity] }] });
+    expect(screen.queryByRole("list", { name: `${capacity.backend} subscription usage` })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: `Manage ${RUNNER.display_name}` }));
     const row = within(screen.getByRole("list", { name: `${capacity.backend} subscription usage` }));
     expect(row.getByText(percent === undefined ? /Usage unknown/ : new RegExp(`${percent}% used`))).toBeTruthy();
     expect(row.getByText(/Resets/)).toBeTruthy();
@@ -79,8 +96,7 @@ describe("runner rows", () => {
     if (status) expect(row.getByText(status)).toBeTruthy();
     else expect(row.queryByText("At risk")).toBeNull();
     expect(row.queryByText("Healthy")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: `Manage ${RUNNER.display_name}` }));
-    const detail = within(screen.getByRole("dialog"));
+    const detail = within(screen.getByRole("article"));
     expect(detail.getByRole("list", { name: `${capacity.backend} subscription usage` })).toBeTruthy();
     if (status) expect(detail.getByText(status)).toBeTruthy();
   });
@@ -90,136 +106,51 @@ describe("runner rows", () => {
     const decoded = decodeFleet({ ...FLEET, runners: [{ ...RUNNER, provider_capacity: [capacity] }] });
     expect(decoded.runners[0]!.provider_capacity[0]!.usage_windows).toEqual([{ kind: "five_hour" }]);
     const { rerender } = render(<RunnersSectionView fleet={decoded} now={NOW} />);
+    fireEvent.click(screen.getByRole("button", { name: `Manage ${RUNNER.display_name}` }));
     expect(screen.getByText("Reset unknown")).toBeTruthy();
     expect(screen.getByText("Observation unknown")).toBeTruthy();
     rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [RUNNER] }} now={NOW} />);
     expect(screen.queryByText(/Usage unknown|Reset unknown|Observation unknown|At risk|Stale/)).toBeNull();
   });
 
-  it.each([false, true])("shows runner problems independently of update warnings (%s)", (updateWarning) => {
-    const problem = {
-      code: "settings_rejected", project_id: "prj_known",
-      message: "The runner could not apply the Hub’s routing settings.",
-      fix_hint: "Check routing cache permissions and configured host services.",
-      first_seen: "2026-10-08T15:07:53Z",
-    };
-    const { rerender } = render(<RunnersSectionView fleet={{ ...FLEET, runners: [{ ...RUNNER, problems: [problem], update: updateWarning ? { status: "uncertain", desired: { version: "1.2.4" } } : undefined }] }} now={NOW} />);
-    const card = within(screen.getByTestId("host-card"));
-    expect(card.getByText("Needs human: settings rejected")).toBeTruthy();
-    expect(card.getByText(problem.message)).toBeTruthy();
-    expect(card.getByText(problem.fix_hint)).toBeTruthy();
-    if (updateWarning) {
-      expect(card.getByText(/Needs human: run/)).toBeTruthy();
-      expect(card.getByText("Update to 1.2.4 · Update needs attention")).toBeTruthy();
-    }
-    rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [{ ...RUNNER, problems: [] }] }} now={NOW} />);
-    expect(screen.queryByText(/Needs human:/)).toBeNull();
-  });
-  it("shows every runner problem on the card", () => {
-    const problems = [
-      { code: "backend_missing", message: "Codex is unavailable.", fix_hint: "Install Codex.", first_seen: "2026-10-08T15:07:53Z" },
-      { code: "settings_invalid", project_id: "prj_known", message: "Known project settings are invalid.", fix_hint: "Check the known project’s workflow files.", first_seen: "2026-10-08T15:07:53Z" },
-      { code: "settings_invalid", project_id: "prj_second", message: "Second project settings are invalid.", fix_hint: "Check the second project’s workflow files.", first_seen: "2026-10-08T15:07:53Z" },
-    ];
-    renderSection({ ...FLEET, runners: [{ ...RUNNER, problems }] });
-    const card = within(screen.getByTestId("host-card"));
-    for (const problem of problems) {
-      expect(card.getByText(problem.message)).toBeTruthy();
-      expect(card.getByText(problem.fix_hint)).toBeTruthy();
-    }
-  });
   it.each([
-    ["healthy idle", "healthy", "active", false, "", "bg-success", true, "Healthy"],
-    ["healthy busy", "healthy", "active", true, "", "bg-success", true, "Healthy"],
-    ["online idle", "online", "active", false, "", "bg-success", true, "Healthy"],
-    ["online busy", "online", "active", true, "", "bg-success", true, "Healthy"],
-    ["paused", "online", "paused", false, "", "bg-muted-foreground", false, "Paused"],
-    ["disabled", "online", "disabled", false, "", "bg-muted-foreground", false, "Offline"],
-    ["draining", "online", "draining", true, "", "bg-muted-foreground", false, "Offline"],
-    ["failed state", "online", "failed", false, "", "bg-error", false, "Failed"],
-    ["failed health", "failed", "active", false, "", "bg-error", false, "Failed"],
-    ["needs attention", "needs_attention", "active", false, "", "bg-warning", false, "Needs attention"],
-    ["paused with warning", "needs_attention", "disabled", false, "", "bg-muted-foreground", false, "Offline"],
-    ["claim refused", "online", "active", false, "Too old to take work", "bg-warning", false, "Needs attention"],
-    ["offline", "offline", "active", false, "", "bg-muted-foreground", false, "Offline"],
-    ["outside hours", "outside_hours", "active", false, "", "bg-muted-foreground", false, "Offline"],
-    ["asleep", "asleep", "active", false, "", "bg-muted-foreground", false, "Asleep"],
-  ])("renders the status tone and motion-safe live pulse for %s", (_name, health, state, busy, claim_refusal_reason, tone, pulse, label) => {
-    const runner = { ...RUNNER, health, state, claim_refusal_reason, leases: busy ? RUNNER.leases : [] };
-    renderSection({ ...FLEET, runners: [runner] });
-    expect(within(screen.getByTestId("host-card")).getByRole("img", { name: label })).toBeTruthy();
-    const dot = screen.getByTestId("host-card").querySelector('[aria-hidden="true"]')!;
-    expect([...dot.classList].filter((name) => name.startsWith("bg-"))).toEqual([tone]);
-    expect(dot.classList.contains("motion-safe:animate-status-pulse")).toBe(pulse);
-    expect([...dot.classList].filter((name) => name.startsWith("animate-"))).toEqual([]);
-    expect(screen.getByText(`${state} · Limit ${runner.capacity_limit}`)).toBeTruthy();
-    expect(screen.getByText(`${runner.leases.length} of ${runner.host_capacity} slots in use`)).toBeTruthy();
+    ["healthy", "healthy", "active", undefined, "Healthy", null],
+    ["attention", "needs_attention", "active", undefined, "Needs attention", "Needs attention"],
+    ["draining", "healthy", "draining", undefined, "Draining", "Finishing running work"],
+    ["offline", "offline", "active", undefined, "Offline", "Offline"],
+    ["failed update", "healthy", "active", "refused", "Needs attention", "Update failed · reinstall needed"],
+  ])("renders a compact %s row without diagnostics", (_name, health, state, update, label, reason) => {
+    const onOpenRunner = vi.fn();
+    const runner = { ...RUNNER, health: health!, state: state!, version: "1.2.3", ...(update ? { update: { status: update, desired: { version: "1.2.4" } } } : {}) };
+    render(<RunnersList fleet={{ ...FLEET, runners: [runner] }} projects={PROJECTS} onOpenRunner={onOpenRunner} />);
+    const row = within(screen.getByTestId("host-card"));
+    expect(row.getByRole("img", { name: label! })).toBeTruthy();
+    if (reason) expect(row.getByText(reason)).toBeTruthy();
+    else expect(row.queryByText("Healthy")).toBeNull();
+    expect(row.getByText("1.2.3")).toBeTruthy();
+    expect(row.getByText(`${runner.leases.length}/${runner.host_capacity}`)).toBeTruthy();
+    expect(row.queryByRole("alert")).toBeNull();
+    expect(row.queryByRole("list", { name: /subscription usage/ })).toBeNull();
+    fireEvent.click(row.getByRole("button", { name: `Manage ${runner.display_name}` }));
+    expect(onOpenRunner).toHaveBeenCalledWith(runner);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it.each([
-    ["requested", "Update requested", 1],
-    ["draining", "Draining work or installing", 0],
-    ["draining", "Draining work or installing", 1],
-    ["draining", "Draining work or installing", 4],
-    ["refused", "Update failed", 1],
-    ["uncertain", "Update needs attention", 1],
-    ["applied", "Update installed", 1],
-    ["restart_requested", "Restart requested", 1],
-  ] as const)("shows the enrolled update outcome %s: %s", (status, label, count) => {
-    const leases = Array.from({ length: count }, (_, index) => ({ ...RUNNER.leases[0]!, lease_id: `lease_${index}` }));
-    renderSection({ ...FLEET, runners: [{ ...RUNNER, version: "1.2.3", host_used: 6, leases, update: { status, desired: { version: "1.2.4" } } }] });
-    expect(screen.getByText("Running 1.2.3")).toBeTruthy();
-    expect(screen.queryByText("Running 1.2.4")).toBeNull();
-    expect(screen.getByText(`Update to 1.2.4 · ${label}`)).toBeTruthy();
-    expect(screen.queryByText(/waiting for \d+ jobs? to finish/)).toBeNull();
-    if (status === "refused" || status === "uncertain") {
-      expect(screen.getByText(/Needs human: run/)).toBeTruthy();
-      expect(screen.getByText("detent update --yes")).toBeTruthy();
-      expect(screen.getByText(/this installed updater cannot repair it/)).toBeTruthy();
-    }
+  it("keeps raw problem and update output out of the list", () => {
+    renderSection({ ...FLEET, runners: [{ ...RUNNER, health: "needs_attention", problems: [{ code: "backend_probe_failed", message: "raw probe failure", error_output: "raw stack trace", check: "raw probe command", fix_hint: "Check provider setup", fix_command: "provider login", first_seen: "2026-09-10T12:00:00Z" }] }] });
+    const row = within(screen.getByTestId("host-card"));
+    expect(row.getByText("Backend probe failed")).toBeTruthy();
+    expect(row.queryByText(/raw|provider login/)).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Capacity right now" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Provider accounts" })).toBeNull();
   });
-  it("changes the running version only after the replacement reports it", () => {
-    const runner = { ...RUNNER, version: "1.2.3", update: { status: "applied", desired: { version: "1.2.4" } } };
-    const { rerender } = render(<RunnersSectionView fleet={{ ...FLEET, runners: [runner] }} now={NOW} />);
-    expect(screen.getByText("Running 1.2.3")).toBeTruthy();
-    expect(screen.getByText("Update to 1.2.4 · Update installed")).toBeTruthy();
-    rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [{ ...runner, version: "1.2.4", update: { ...runner.update, status: "running" } }] }} now={NOW} />);
-    expect(screen.getByText("Running 1.2.4")).toBeTruthy();
-    expect(screen.queryByText(/Update to/)).toBeNull();
-    expect(screen.queryByText("Running 1.2.3")).toBeNull();
+
+  it.each([undefined, "", "1.2.3"])("shows only a reported version badge (%s)", (version) => {
+    renderSection({ ...FLEET, runners: [{ ...RUNNER, version, has_heartbeat: false }] });
+    expect(within(screen.getByTestId("host-card")).getByText("Version unknown")).toBeTruthy();
+    expect(within(screen.getByTestId("host-card")).queryByText("1.2.3")).toBeNull();
   });
-  it.each([undefined, { status: "unavailable", desired: null }])("shows the running version with no pending update (%s)", (update) => {
-    renderSection({ ...FLEET, runners: [{ ...RUNNER, version: "1.2.3", update }] });
-    expect(screen.getByText("Running 1.2.3")).toBeTruthy();
-    expect(screen.queryByText(/Update to/)).toBeNull();
-  });
-  it.each([
-    ["missing", undefined, true, "online", "healthy", "Version unknown"],
-    ["empty", "", true, "online", "healthy", "Version unknown"],
-    ["no heartbeat", "1.2.3", false, "online", "healthy", "Version unknown"],
-    ["offline unknown", undefined, false, "offline", "offline", "Version unknown"],
-    ["offline", "1.2.3", true, "offline", "needs_attention", "Last reported 1.2.3 · 5 minutes ago"],
-    ["revoked", "1.2.3", true, "revoked", "needs_attention", "Last reported 1.2.3 · 5 minutes ago"],
-    ["expired", "1.2.3", true, "expired", "expired", "Last reported 1.2.3 · 5 minutes ago"],
-    ["revoked unknown", undefined, false, "revoked", "revoked", "Version unknown"],
-    ["expired unknown", undefined, false, "expired", "expired", "Version unknown"],
-    ["legacy offline", "1.2.3", true, undefined, "offline", "Last reported 1.2.3 · 5 minutes ago"],
-    ["legacy stale", "1.2.3", true, undefined, "stale", "Last reported 1.2.3 · 5 minutes ago"],
-    ["legacy revoked", "1.2.3", true, undefined, "revoked", "Last reported 1.2.3 · 5 minutes ago"],
-    ["legacy expired", "1.2.3", true, undefined, "expired", "Last reported 1.2.3 · 5 minutes ago"],
-  ] as const)("keeps %s running-version evidence distinct from the target", (_name, version, has_heartbeat, connection_health, health, label) => {
-    renderSection({ ...FLEET, runners: [{ ...RUNNER, version, has_heartbeat, connection_health, health, update: { status: "draining", desired: { version: "1.2.4" } } }] });
-    const card = within(screen.getByTestId("host-card"));
-    expect(card.getByText(label.startsWith("Last reported") ? /^Last reported/ : label).textContent).toBe(label);
-    expect(card.queryByText(/^Running 1\.2\./)).toBeNull();
-    expect(card.getByText("Update to 1.2.4 · Draining work or installing")).toBeTruthy();
-    if (label.startsWith("Last reported")) expect(card.getByText("5 minutes ago").getAttribute("datetime")).toBe(RUNNER.last_heartbeat_at);
-  });
-  it.each(["0.117.47", "0.117.50"])("explains the one-time reinstall for %s", (version) => {
-    renderSection({ ...FLEET, runners: [{ ...FLEET.runners[0]!, version, claim_refusal_reason: "Too old to take work, needs 0.117.51", update: { status: "unavailable", desired: null } }] });
-    expect(screen.getByText(/One-time manual reinstall required/)).toBeTruthy();
-    expect(screen.getByText("curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh")).toBeTruthy();
-  });
+
   it("refreshes active and historical names through the scoped names projection", async () => {
     vi.useFakeTimers();
     const id = FLEET.runners[0]!.id;
@@ -252,18 +183,6 @@ describe("runner rows", () => {
     await act(async () => {});
     expect(other.result.current.size).toBe(0);
     expect(runnerDisplay(other.result.current, id)).toBe(id);
-  });
-
-  it.each([
-    ["lower", 4, "Suggest 4 ↓"],
-    ["raise", 7, "Room for 7 ↑"],
-    ["insufficient_evidence", undefined, "Gathering data"],
-    ["hold", 6, null],
-    ["shrink", 5, null],
-  ] as const)("labels a %s suggestion on the runner row", (direction, limit, label) => {
-    render(<RunnersSectionView fleet={{ ...FLEET, runners: [RUNNER] }} now={NOW} suggestions={{ [RUNNER.id]: { ...(limit === undefined ? {} : { limit }), current: 6, direction: direction as SuggestedLimit["direction"], hours_covered: 48, saturated_hours: 0, reasons: [] } }} />);
-    const chip = within(screen.getByTestId("host-card")).queryByTestId("suggested-limit");
-    expect(chip?.textContent ?? null).toBe(label);
   });
 
   it("reads the suggestion and host history through the existing runner and fleet routes", async () => {
@@ -313,11 +232,13 @@ describe("runner rows", () => {
       if (refused) throw new Error("This runner has active work. Drain it first.");
     });
     render(<RunnersSectionView fleet={{ ...FLEET, editable: true }} onRemoveRunner={remove} />);
-    fireEvent.click(screen.getByRole("button", { name: `Remove runner ${FLEET.runners[0]!.display_name}` }));
+    fireEvent.click(screen.getByRole("button", { name: `More actions for ${FLEET.runners[0]!.display_name}` }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Remove runner" }));
     expect(remove).not.toHaveBeenCalled();
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
     expect(remove).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: `Remove runner ${FLEET.runners[0]!.display_name}` }));
+    fireEvent.click(screen.getByRole("button", { name: `More actions for ${FLEET.runners[0]!.display_name}` }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Remove runner" }));
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Remove runner" }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith(FLEET.runners[0]));
     if (refused) {
@@ -350,8 +271,8 @@ describe("runner rows", () => {
     fireEvent.click(screen.getByRole("button", { name: `Manage ${FLEET.runners[0]!.display_name}` }));
     const warning = screen.queryByTestId("host-update");
     if (reason !== "") {
-      expect(warning?.textContent).toContain(reason);
-      expect(screen.getAllByText(reason)).toHaveLength(1);
+      expect(warning?.textContent).toContain("Runner update needed");
+      expect(screen.queryByText(reason)).toBeNull();
     } else {
       expect(warning).toBeNull();
     }
@@ -365,7 +286,7 @@ describe("runner rows", () => {
     const runner = { ...RUNNER, isolation_tier: tier, routing: { ...ROUTING, isolation_tier: tier }, backend_isolation: { codex: probe }, problems: [{ code: "tier_unavailable", message: "Access unavailable", fix_hint: "Choose supported access", first_seen: "2026-09-10T12:00:00Z" }], sprite: { name: "build-host", status: "warm", can_wake: true, wake_failed: false } };
     render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [runner] }} projects={PROJECTS} onSaveRouting={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
-    const sheet = within(screen.getByRole("dialog"));
+    const sheet = within(screen.getByRole("article"));
     expect(sheet.getByRole("radio", { name: "Sandbox" }).getAttribute("aria-disabled") === "true").toBe(!allowed);
     expect(sheet.getByRole("radio", { name: tier === "sandbox" ? "Sandbox" : "Full access" }).getAttribute("aria-checked")).toBe("true");
     expect(sheet.queryByText("Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support.") !== null).toBe(!allowed);
@@ -378,10 +299,10 @@ describe("runner rows", () => {
     renderSection({ ...FLEET, runners: FLEET.runners.map((runner, index) => index === 0 ? { ...runner, health: "needs_attention", problems: [problem] } : runner) });
     expect(screen.getByRole("link", { name: "Needs attention 1" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: `Manage ${FLEET.runners[0]!.display_name}` }));
-    const sheet = within(screen.getByRole("dialog"));
-    expect(sheet.getByText(problem.message)).toBeTruthy();
+    const sheet = within(screen.getByRole("article"));
+    expect(sheet.getByText("Agent access unavailable")).toBeTruthy();
     expect(sheet.getByText(problem.fix_hint)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to Runners" }));
     fireEvent.click(screen.getByRole("link", { name: "Needs attention 1" }));
     expect(window.location.search).toBe("?health=needs_attention");
     expect(screen.getAllByTestId("host-card")).toHaveLength(1);
@@ -395,20 +316,21 @@ describe("runner rows", () => {
     const rows = screen.getAllByTestId("host-card");
     expect(rows).toHaveLength(FLEET.runners.length);
     expect(within(rows[0]!).getByRole("heading", { name: "Example laptop" })).toBeTruthy();
-    expect(rows[0]!.textContent).toContain("1 of 2 slots in use");
-    expect(rows[1]!.textContent).toContain("0 of 2 slots in use");
-    expect(rows[1]!.textContent).toContain("Can’t take work");
-    expect(screen.getByText("1 of 4 slots occupied")).toBeTruthy();
+    expect(rows[0]!.textContent).toContain("1/2");
+    expect(rows[1]!.textContent).toContain("0/2");
+    expect(rows[1]!.textContent).toContain("Runner update needed");
+    expect(screen.queryByTestId("runner-capacity")).toBeNull();
     expect(screen.queryAllByRole("heading", { level: 1 })).toHaveLength(0);
   });
 });
 
 describe("shared host capacity", () => {
+  function renderCapacity(fleet: FleetResponse) { render(<CapacityPanel runners={fleet.runners} onOpen={vi.fn()} />); }
   const active = { ...FLEET.runners[0]!, machine_id: "machine_shared", state: "active", health: "online", claim_refusal_reason: "", provider_capacity: [], host_capacity: 8, host_used: 1, capacity_limit: 8, reported_capacity: 8 };
   const lease = active.leases[0]!;
 
   it("counts a shared eight-slot host once and retains each identity's work", () => {
-    renderSection({ ...FLEET, runners: [
+    renderCapacity({ ...FLEET, runners: [
       { ...active, capacity_limit: 4, reported_capacity: 4, host_used: 3 },
       { ...active, id: "runner_sibling", display_name: "Sibling", capacity_limit: 4, reported_capacity: 4, host_used: 3, leases: [
         { ...lease, lease_id: "lease_second", work_item_id: "wi_second" },
@@ -421,7 +343,7 @@ describe("shared host capacity", () => {
     expect(host.querySelectorAll('[data-slot-state="running"]')).toHaveLength(3);
     expect(host.querySelectorAll('[data-slot-state="free"]')).toHaveLength(5);
     expect(host.querySelector('[title="#wi_second connections: custom alerts from segment membership"]')).toBeTruthy();
-    expect(screen.getAllByTestId("host-card")).toHaveLength(2);
+
   });
 
   it.each([
@@ -445,7 +367,7 @@ describe("shared host capacity", () => {
     ["zero account limit", { provider_capacity: [{ ...FLEET.runners[0]!.provider_capacity[0]!, max_concurrent: 0, state: "unknown" }] }, 7],
     ["bounded provider full", { provider_capacity: [{ ...FLEET.runners[0]!.provider_capacity[0]!, max_concurrent: 2, used: 2 }] }, 0],
   ])("preserves running work and limits free slots for %s", (_name, values, free) => {
-    renderSection(decodeFleet({ ...FLEET, runners: [{ ...active, ...values }] }));
+    renderCapacity(decodeFleet({ ...FLEET, runners: [{ ...active, ...values }] }));
     const host = screen.getByTestId("runner-capacity");
     expect(screen.getByText("1 of 8 slots occupied")).toBeTruthy();
     expect(host.querySelectorAll('[data-slot-state="running"]')).toHaveLength(1);
@@ -459,7 +381,7 @@ describe("shared host capacity", () => {
   });
 
   it("counts a runner limit below the host ceiling as its slots, not as slots that can't take work", () => {
-    renderSection({ ...FLEET, runners: [{ ...active, capacity_limit: 2 }] });
+    renderCapacity({ ...FLEET, runners: [{ ...active, capacity_limit: 2 }] });
     const host = screen.getByTestId("runner-capacity");
     expect(screen.getByText("1 of 2 slots occupied")).toBeTruthy();
     expect(screen.queryByText(/slots can't take work/)).toBeNull();
@@ -468,7 +390,7 @@ describe("shared host capacity", () => {
   });
 
   it("counts only offline runner slots as unable to take work across a mixed fleet", () => {
-    renderSection({ ...FLEET, runners: [
+    renderCapacity({ ...FLEET, runners: [
       { ...active, capacity_limit: 1, reported_capacity: 1 },
       { ...active, id: "runner_mini", machine_id: "machine_mini", host_capacity: 4, host_used: 0, capacity_limit: 2, reported_capacity: 2, leases: [] },
       { ...active, id: "runner_hosted", machine_id: "machine_hosted", state: "draining", health: "offline", connection_health: "offline", host_capacity: 1, host_used: 0, capacity_limit: 1, reported_capacity: 1, leases: [] },
@@ -479,7 +401,7 @@ describe("shared host capacity", () => {
   });
 
   it("uses only an active sibling's remaining allowance while another drains", () => {
-    renderSection({ ...FLEET, runners: [
+    renderCapacity({ ...FLEET, runners: [
       { ...active, state: "draining", host_used: 2 },
       { ...active, id: "runner_sibling", host_used: 2, capacity_limit: 2, reported_capacity: 4, leases: [{ ...lease, lease_id: "lease_second" }] },
     ] });
@@ -490,7 +412,7 @@ describe("shared host capacity", () => {
   });
 
   it("keeps distinct machine identities separate despite identical names", () => {
-    renderSection({ ...FLEET, runners: [active, { ...active, id: "runner_other", machine_id: "machine_other" }] });
+    renderCapacity({ ...FLEET, runners: [active, { ...active, id: "runner_other", machine_id: "machine_other" }] });
     expect(screen.getAllByTestId("runner-capacity")).toHaveLength(2);
     expect(screen.getByText("2 of 16 slots occupied")).toBeTruthy();
   });
@@ -498,12 +420,13 @@ describe("shared host capacity", () => {
 
 describe("providers", () => {
   it("folds every runner's capacity onto one table row per provider", () => {
-    renderSection();
+    render(<ProviderSummary runners={FLEET.runners} />);
     const providers = screen.getByRole("region", { name: "Provider accounts" });
     expect(providers.querySelectorAll("tbody tr")).toHaveLength(2);
     expect(within(providers).getByText("codex")).toBeTruthy();
     expect(within(providers).getByText("claude")).toBeTruthy();
-    expect(within(providers).getByText(/gpt-6-astra/)).toBeTruthy();
+    expect(within(providers).getAllByText(/models/).length).toBeGreaterThan(0);
+    expect(within(providers).queryByText(/gpt-6-astra/)).toBeNull();
   });
 
   it("invites enrollment and omits capacity when the fleet is empty", () => {
@@ -522,6 +445,12 @@ describe("runner details", () => {
     swap_used_max_bytes: 0, pressure_warn_count: 3, pressure_critical_count: 0, cpu_sample_count: 120, cpu_busy_average_percent: 95, load1_max: 32, load_sample_count: 120,
     disk_free_min_bytes: 50e9, disk_total_min_bytes: 2000 * 2 ** 30, disk_sample_count: 120,
   };
+
+  it.each([["v1.2.3", "1.2.3", "same as the Hub"], ["1.2.2", "1.2.3", "Hub is 1.2.3"]])("compares the reported version %s with Hub %s", (version, currentVersion, label) => {
+    render(<RunnerDetailPage runner={{ ...RUNNER, version }} currentVersion={currentVersion} projects={PROJECTS} editable onSave={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.getByText(label!)).toBeTruthy();
+    expect(screen.getByText(`${RUNNER.host_used} of ${RUNNER.host_capacity} machine slots in use`)).toBeTruthy();
+  });
 
   it("fills only the draft from the suggestion until Save runner", async () => {
     const save = vi.fn().mockResolvedValue(undefined);
@@ -592,7 +521,7 @@ describe("runner details", () => {
     const save = vi.fn().mockResolvedValue(undefined);
     render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
-    const sheet = screen.getByRole("dialog");
+    const sheet = screen.getByRole("article");
     expect((within(sheet).getByRole("checkbox", { name: "Known project" }) as HTMLInputElement).checked).toBe(true);
     expect((within(sheet).getByRole("checkbox", { name: "prj_unknown" }) as HTMLInputElement).checked).toBe(true);
     fireEvent.click(within(sheet).getByRole("button", { name: "Save runner" }));
@@ -615,7 +544,7 @@ describe("runner details", () => {
     const save = vi.fn().mockResolvedValue(undefined);
     render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
-    const sheet = screen.getByRole("dialog");
+    const sheet = screen.getByRole("article");
     expect((within(sheet).getByRole("checkbox", { name: "Second project" }) as HTMLInputElement).checked).toBe(false);
     fireEvent.click(within(sheet).getByRole("checkbox", { name: "Second project" }));
     fireEvent.click(within(sheet).getByRole("checkbox", { name: "prj_unknown" }));
@@ -641,7 +570,8 @@ describe("runner details", () => {
     await waitFor(() => expect(save).toHaveBeenCalledWith(RUNNER, expect.objectContaining({
       tags: ["linux", "gpu"], availability: { ...ROUTING.availability, windows: ["Mon-Fri 09:00-18:00", "Sat-Sun 00:00-24:00"] },
     })));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await screen.findByText("Runner saved");
+    fireEvent.click(screen.getByRole("button", { name: "Back to Runners" }));
     rerender(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     fireEvent.change(screen.getByLabelText("Availability"), { target: { value: "always" } });
@@ -655,7 +585,7 @@ describe("runner details", () => {
     const reason = 'Project "Second project" lacks a manage_runner grant; ask an owner or admin.';
     render(<RunnersSectionView fleet={{ ...FLEET, editable, runners: [{ ...RUNNER, editable: false, edit_refusal_reason: reason }] }} projects={PROJECTS} onSaveRouting={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
-    const sheet = screen.getByRole("dialog");
+    const sheet = screen.getByRole("article");
     expect(sheet.querySelectorAll("input, select, textarea")).toHaveLength(0);
     expect(sheet.querySelector('[data-slot="sheet-footer"]')).toBeNull();
     for (const name of ["Taking work", "Capacity", "Allowed projects", "Tags", "Schedule", "Agent access", "Running work", "Provider accounts"]) {
@@ -670,16 +600,16 @@ describe("runner details", () => {
     expect(sheet.textContent).not.toContain("not reported");
   });
 
-  it("shows project checkout failures and the authentication command on the runner sheet", () => {
+  it("shows project checkout failures and the authentication command on the runner page", () => {
     const runner = { ...RUNNER, project_checkouts: {
-      prj_known: { status: "missing", message: "Cannot clone https://github.com/acme/orders.git", fix_command: "gh auth login --hostname github.com --git-protocol https" },
+      prj_known: { status: "missing", message: "Cannot clone https://github.com/example-org/example-project.git", fix_command: "gh auth login --hostname github.com --git-protocol https" },
       prj_unknown: { status: "ready" },
     } };
     render(<RunnersSectionView fleet={{ ...FLEET, runners: [runner] }} projects={PROJECTS} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
-    const sheet = screen.getByRole("dialog");
+    const sheet = screen.getByRole("article");
     expect(within(sheet).getByText("Checkout unavailable")).toBeTruthy();
-    expect(within(sheet).getByText("Cannot clone https://github.com/acme/orders.git")).toBeTruthy();
+    expect(within(sheet).queryByText("Cannot clone https://github.com/example-org/example-project.git")).toBeNull();
     expect(within(sheet).getByText("gh auth login --hostname github.com --git-protocol https")).toBeTruthy();
     expect(within(sheet).getByText("Checkout ready")).toBeTruthy();
     expect(within(sheet).getByText("The runner retries automatically after repository access is fixed.")).toBeTruthy();
@@ -688,7 +618,7 @@ describe("runner details", () => {
   it("does not invent settings when the fleet omits routing for a viewer", () => {
     render(<RunnersSectionView fleet={{ ...FLEET, editable: false, runners: [{ ...FLEET.runners[0]!, availability: ROUTING.availability }] }} projects={PROJECTS} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
-    const sheet = screen.getByRole("dialog");
+    const sheet = screen.getByRole("article");
     expect(sheet.querySelectorAll("input, select, textarea")).toHaveLength(0);
     expect(sheet.textContent).toContain("Project access is not reported.");
     expect(sheet.textContent).toContain("Tags are not reported.");
@@ -711,7 +641,7 @@ describe("runner details", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
     const saveError = await screen.findByRole("alert");
     expect(saveError.textContent).toContain("Invalid runner hours");
-    expect(saveError.closest('[data-slot="sheet-footer"]')).not.toBeNull();
+    expect(saveError.closest("form")).not.toBeNull();
     expect((screen.getByLabelText("Jobs at once") as HTMLInputElement).value).toBe("10");
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("settings have been reloaded"));
@@ -729,10 +659,10 @@ describe("runner details", () => {
     ];
     render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [{ ...RUNNER, health: "needs_attention", problems }] }} projects={PROJECTS} onSaveRouting={save} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
-    const sheet = screen.getByRole("dialog");
+    const sheet = screen.getByRole("article");
     expect(within(sheet).getAllByRole("alert")).toHaveLength(2);
-    expect(sheet.textContent).toContain("Last report");
-    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+    expect(sheet.textContent).not.toContain("raw stack trace");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Back to Runners" }));
     expect(save).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).toBeNull();
   });
@@ -747,17 +677,15 @@ describe("runner details", () => {
 });
 
 describe("runner problem reports", () => {
-  it.each(["online", "offline"])("labels %s reports with their observation time", (connection_health) => {
-    const reported_at = "2026-09-10T12:00:00Z";
-    const last_heartbeat_at = "2026-09-10T12:01:00Z";
-    const view = render(<RunnerProblems now={NOW} runner={{ ...RUNNER, health: "needs_attention", connection_health, last_heartbeat_at, problems: [{ code: "backend_missing", message: "not signed in", fix_hint: "Sign in", first_seen: reported_at, reported_at, subject: "codex", check: "codex login status", error_output: "Not logged in", fix_command: "codex login --device-auth" }] }} />);
-    expect(screen.getByText("codex: not signed in")).toBeTruthy();
-    expect(screen.getByText("Not logged in")).toBeTruthy();
+  it("shows each problem with its fix action and excludes raw diagnostics", () => {
+    render(<RunnerProblems runner={{ ...RUNNER, problems: [
+      { code: "backend_missing", message: "raw error message", check: "raw probe", error_output: "raw stack trace", fix_command: "codex login --device-auth", fix_hint: "Sign in", first_seen: "2026-09-10T12:00:00Z", subject: "codex" },
+      { code: "policy_mismatch", project_id: "prj_second", message: "raw policy digest", fix_hint: "Approve the project policy", first_seen: "2026-09-10T12:00:00Z" },
+    ] }} />);
+    expect(screen.getByText("Provider sign-in or setup needed")).toBeTruthy();
+    expect(screen.getByText("Project policy needs approval")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Copy codex login --device-auth" })).toBeTruthy();
-    expect(view.container.querySelector(`time[datetime="${reported_at}"]`)).toBeTruthy();
-    expect(view.container.textContent?.includes("Offline since")).toBe(connection_health === "offline");
-    if (connection_health === "offline") expect(view.container.querySelector('time[datetime="2026-09-10T12:03:00.000Z"]')).toBeTruthy();
-    view.rerender(<RunnerProblems runner={{ ...RUNNER, problems: [] }} />);
-    expect(view.container.textContent).toBe("");
+    expect(screen.getByText("Approve the project policy")).toBeTruthy();
+    expect(screen.queryByText(/raw/)).toBeNull();
   });
 });

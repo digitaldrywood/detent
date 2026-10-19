@@ -38,7 +38,7 @@ import {
 } from "../../src/app/settings/settingsLayout.tsx";
 import { ITEM_ROW_CLASSNAME } from "../../src/app/settings/itemRows.ts";
 import { ExpandableText } from "../../src/app/settings/ExpandableText.tsx";
-import { ProviderSummary, summarizeProviders } from "../../src/app/fleet/RunnersSection.tsx";
+import { ProviderSummary, summarizeProviders } from "../../src/app/usage/ProviderSummary.tsx";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
 import type { FleetResponse } from "../../src/contracts/account.ts";
 import { AccountBootstrap } from "../../src/contracts/account.ts";
@@ -85,6 +85,64 @@ function labelsFor(items: readonly SettingsNavItem[]): readonly string[] {
   return items.map((item) => item.label);
 }
 
+describe("runner detail routes", () => {
+  it.each([
+    { detail: false, refreshFails: false },
+    { detail: false, refreshFails: true },
+    { detail: true, refreshFails: false },
+    { detail: true, refreshFails: true },
+  ])("preserves removal before fleet refresh settles (detail=$detail, refreshFails=$refreshFails)", async ({ detail, refreshFails }) => {
+    const runner = { ...FLEET.runners[0]!, claim_refusal_reason: "", state: "active" };
+    const sibling = FLEET.runners[1]!;
+    let removed = false;
+    let finishRefresh!: (response: Response) => void;
+    const refresh = new Promise<Response>((resolve) => { finishRefresh = resolve; });
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        removed = true;
+        return new Response(null, { status: 204 });
+      }
+      if (String(input).endsWith("/fleet")) {
+        return removed ? (await refresh).clone() : Response.json({ ...FLEET, editable: true, runners: [runner, sibling] });
+      }
+      return Response.json([]);
+    });
+    vi.stubGlobal("fetch", fetch);
+    const { router } = renderSidebarNav(detail ? `/settings/runners/${runner.id}` : "/settings/runners", {
+      ...OWNER_ACCOUNT,
+      bootstrap: { organization: OWNER_ACCOUNT.account.organization, actor: OWNER_ACCOUNT.account.actor },
+    }, null, true);
+    if (detail) fireEvent.click(await screen.findByRole("button", { name: "Remove runner" }));
+    else {
+      fireEvent.click(await screen.findByRole("button", { name: `More actions for ${runner.display_name}` }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Remove runner" }));
+    }
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Remove runner" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(router.state.location.pathname).toBe("/settings/runners");
+    expect(screen.queryByRole("button", { name: `Manage ${runner.display_name}` })).toBeNull();
+    expect(screen.getByRole("button", { name: `Manage ${sibling.display_name}` })).toBeTruthy();
+    await act(async () => {
+      finishRefresh(refreshFails ? new Response(null, { status: 503 }) : Response.json({ ...FLEET, editable: true, runners: [sibling] }));
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("button", { name: `Manage ${runner.display_name}` })).toBeNull();
+    expect(screen.getByRole("button", { name: `Manage ${sibling.display_name}` })).toBeTruthy();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
+  });
+
+  it.each([true, false])("loads a direct runner link with Settings / Runners breadcrumb (present: %s)", async (present) => {
+    const runner = { ...FLEET.runners[0]!, claim_refusal_reason: "", state: "active" };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(String(input).includes("include=host_metrics") ? [] : { ...FLEET, runners: present ? [runner] : [] }), { status: 200, headers: { "content-type": "application/json" } })));
+    renderSidebarNav(`/settings/runners/${runner.id}`, { ...OWNER_ACCOUNT, bootstrap: { organization: OWNER_ACCOUNT.account.organization, actor: OWNER_ACCOUNT.account.actor } }, null, true);
+    if (present) expect(await screen.findByRole("article", { name: runner.display_name })).toBeTruthy();
+    else expect(await screen.findByText("This runner was removed or is not accessible.")).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "Settings breadcrumb" }).textContent).toContain("Settings/Runners");
+    expect(screen.getByRole("link", { name: "Runners" }).getAttribute("href")).toContain("/settings/runners");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
 describe("which sections an actor gets", () => {
   beforeEach(() => applyHubPaths({ base_path: "/organizations/org_test" }));
   it("gives an owner every Detent section, in the reading order", () => {
@@ -95,7 +153,7 @@ describe("which sections an actor gets", () => {
       "Members",
       "Models",
       "Projects",
-      "Providers & runners",
+      "Runners",
       "Integrations",
       "API keys & MCP",
       "Plan & usage",
@@ -1033,7 +1091,7 @@ describe("the settings navigation in the sidebar", () => {
       "Members",
       "Models",
       "Projects",
-      "Providers & runners",
+      "Runners",
       "Integrations",
       "API keys & MCP",
       "Plan & usage",

@@ -935,16 +935,19 @@ export function AboutSettings(): React.ReactElement {
 
 export function SettingsRoute({
   section = DEFAULT_SECTION,
+  runnerId,
   onNavigate,
 }: {
   /** The path segment after `/settings`. */
   readonly section?: SettingsSectionId;
+  readonly runnerId?: string;
   /** The router's navigation. Absent in a test that renders the page alone. */
   readonly onNavigate?: (to: string) => void;
 }): React.ReactElement {
   const bootstrap = useAccountBootstrap();
   const canManage = bootstrap?.actor.can_manage ?? false;
   const supporting = bootstrap?.support != null;
+  const [runnerName, setRunnerName] = React.useState("Runner");
 
   const items = React.useMemo(
     () => settingsNavItems({ canManage, supporting }),
@@ -961,7 +964,7 @@ export function SettingsRoute({
     : DEFAULT_SECTION;
   const activeLabel = items.find((item) => item.id === activeId)?.label ?? SETTINGS_SECTION_LABELS[activeId];
   usePageTitle(
-    activeId === "general" ? "Settings" : activeId === "runners" ? "Runners" : activeLabel,
+    runnerId ? runnerName : activeId === "general" ? "Settings" : activeLabel,
   );
 
   return (
@@ -978,23 +981,27 @@ export function SettingsRoute({
               <WorkspaceBreadcrumbSeparator />
             </>
           ) : null}
-          <WorkspaceBreadcrumbItem current className="min-w-10">
-            <span className="min-w-0 truncate">{activeId === "organization" ? "Overview" : activeLabel}</span>
+          <WorkspaceBreadcrumbItem current={!runnerId} className="min-w-10">
+            <span className="min-w-0 truncate">{runnerId ? <a href={`${basePath()}/settings/runners`} onClick={(event) => { if (onNavigate && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); onNavigate("/settings/runners"); } }}>Runners</a> : activeId === "organization" ? "Overview" : activeLabel}</span>
           </WorkspaceBreadcrumbItem>
+          {runnerId ? <><WorkspaceBreadcrumbSeparator /><WorkspaceBreadcrumbItem current><span className="truncate">{runnerName}</span></WorkspaceBreadcrumbItem></> : null}
         </WorkspaceBreadcrumb>
       </WorkspacePageHeader>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <SettingsBody section={activeId} onNavigate={onNavigate} />
+        <SettingsBody runnerId={runnerId} onRunnerName={setRunnerName} section={activeId} onNavigate={onNavigate} />
       </div>
     </div>
   );
 }
 
 function SettingsBody({
+  runnerId, onRunnerName,
   section,
   onNavigate,
 }: {
+  readonly runnerId?: string;
+  readonly onRunnerName?: (name: string) => void;
   readonly section: SettingsSectionId;
   readonly onNavigate?: (to: string) => void;
 }): React.ReactElement {
@@ -1008,7 +1015,7 @@ function SettingsBody({
     case "projects":
       return <ProjectsSettings onNavigate={onNavigate} />;
     case "runners":
-      return <RunnersSettings />;
+      return <RunnersSettings runnerId={runnerId} onNavigate={onNavigate} onRunnerName={onRunnerName} />;
     case "integrations":
       return <IntegrationsSettings />;
     case "mcp":
