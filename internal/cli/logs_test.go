@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -149,22 +152,59 @@ func TestEnrolledReadCommandsDuringIdentityWrite(t *testing.T) {
 							beforeInfo[path] = info
 						}
 					}
-					for _, command := range []string{"logs", "state"} {
+					for _, command := range []string{"logs", "state", "exposure", "exposure project"} {
 						t.Run(command, func(t *testing.T) {
 							readsBefore := projectReads.Load()
+							scans := 0
 							cmd := NewRootCommand(t.Context())
+							if strings.HasPrefix(command, "exposure") {
+								cmd.RemoveCommand(findCommandByName(cmd, "exposure"))
+								cmd.AddCommand(newExposureCommandWithDeps(&configPath, defaultOptions(), exposureDeps{
+									loadWorkflow: func(project globalconfig.Project) (workflowconfig.Workflow, error) {
+										if project.ID != string(projectID) {
+											t.Fatalf("exposure loaded unauthorized project %s", project.ID)
+										}
+										workflow := workflowconfig.Workflow{Config: workflowconfig.Default()}
+										workflow.Config.Tracker.Kind = workflowconfig.TrackerGitHub
+										workflow.Config.Tracker.Repository = "owner/repository"
+										workflow.Config.Retro.Enabled = true
+										workflow.Config.Retro.ProductRepository = "example-org/public-project"
+										return workflow, nil
+									},
+									repositoryInfo: func(_ context.Context, _ workflowconfig.Config, repository string) (ghconnector.RepositoryInfo, error) {
+										if repository == "owner/repository" {
+											return ghconnector.RepositoryInfo{Private: true, Visibility: "private"}, nil
+										}
+										return ghconnector.RepositoryInfo{Visibility: "public"}, nil
+									},
+									scan: func(_ context.Context, _ workflowconfig.Config, repository string, identifiers []string) ([]ghconnector.IssueExposure, error) {
+										if repository != "example-org/public-project" || !containsString(identifiers, "owner/repository") {
+											t.Fatalf("unexpected exposure scan: %s %v", repository, identifiers)
+										}
+										scans++
+										return []ghconnector.IssueExposure{{Number: 42, MatchedIdentifier: "owner/repository"}}, nil
+									},
+								}))
+							}
 							var stdout, stderr bytes.Buffer
 							cmd.SetOut(&stdout)
 							cmd.SetErr(&stderr)
-							args := []string{"--config", configPath, "--format", "json", command}
+							args := []string{"--config", configPath, "--format", "json", strings.Fields(command)[0]}
 							if command == "logs" {
 								args = append(args, "--since", at.Format(time.RFC3339), "--until", at.Format(time.RFC3339), "--limit", "1", "--max-bytes", "1048576", "--output", "jsonl")
 							}
+							wantErr := test.wantErr
+							if command == "exposure project" {
+								args = append(args, "--project", string(projectID))
+								if wantErr == "" && (test.noProjects || test.projectStatus == http.StatusNotFound) {
+									wantErr = "not found"
+								}
+							}
 							cmd.SetArgs(args)
 							err := cmd.Execute()
-							if test.wantErr != "" {
-								if err == nil || !strings.Contains(err.Error(), test.wantErr) {
-									t.Fatalf("authority refusal = %v, want %s", err, test.wantErr)
+							if wantErr != "" {
+								if err == nil || !strings.Contains(err.Error(), wantErr) {
+									t.Fatalf("authority refusal = %v, want %s", err, wantErr)
 								}
 								if stdout.Len() != 0 {
 									t.Fatal("unauthorized diagnostic returned local data")
@@ -185,6 +225,27 @@ func TestEnrolledReadCommandsDuringIdentityWrite(t *testing.T) {
 								}
 								if command == "state" && !strings.Contains(stdout.String(), "generated_at") {
 									t.Fatal("state result omitted the snapshot")
+								}
+							}
+							if strings.HasPrefix(command, "exposure") {
+								wantScans := 0
+								if wantErr == "" && !test.noProjects && test.projectStatus == 0 {
+									wantScans = 1
+								}
+								if scans != wantScans {
+									t.Fatalf("exposure scans = %d, want %d", scans, wantScans)
+								}
+								if wantErr == "" {
+									var report exposureReport
+									if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+										t.Fatal(err)
+									}
+									if len(report.Findings) != wantScans || len(report.Warnings) != 0 {
+										t.Fatalf("exposure report = %+v", report)
+									}
+									if wantScans == 1 && (report.Findings[0].SourceProject != string(projectID) || report.Findings[0].IssueNumber != 42) {
+										t.Fatalf("exposure finding = %+v", report.Findings[0])
+									}
 								}
 							}
 							for _, secret := range []string{file.Credential, "fixture_service_token"} {
