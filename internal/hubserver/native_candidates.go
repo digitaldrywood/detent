@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -433,13 +435,21 @@ func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.Wo
 // are identified by reviewer kind, severity and path rather than by record
 // time, session or wording.
 func newReworkFeedback(detail tracker.ChangeDetail, versionID string, started time.Time) bool {
+	var blockOn []string
+	for _, version := range detail.Versions {
+		if version.ID == versionID {
+			if workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, version.Policy); err == nil {
+				blockOn = workflow.Config.Gate.SecurityAudit.BlockOn
+			}
+		}
+	}
 	prior := map[string]bool{}
 	var recent []string
 	for _, review := range detail.Reviews {
 		if review.VersionID != versionID || review.Decision != "changes_requested" {
 			continue
 		}
-		if keys := reviewFeedbackKeys(review); review.CreatedAt.Before(started) {
+		if keys := reviewFeedbackKeys(review, blockOn); review.CreatedAt.Before(started) {
 			for _, key := range keys {
 				prior[key] = true
 			}
@@ -469,7 +479,7 @@ func newReworkFeedback(detail tracker.ChangeDetail, versionID string, started ti
 	return false
 }
 
-func reviewFeedbackKeys(review tracker.ChangeReview) []string {
+func reviewFeedbackKeys(review tracker.ChangeReview, blockOn []string) []string {
 	var kind string
 	var findings [][2]string
 	switch {
@@ -485,7 +495,7 @@ func reviewFeedbackKeys(review tracker.ChangeReview) []string {
 		}
 	case review.SecurityAudit != nil:
 		kind = "security_audit"
-		for _, finding := range review.SecurityAudit.Run.Findings {
+		for _, finding := range securityaudit.BlockingFindings(review.SecurityAudit.Run.Findings, blockOn) {
 			findings = append(findings, [2]string{finding.Severity, finding.Path})
 		}
 	default:

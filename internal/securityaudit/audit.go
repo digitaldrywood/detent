@@ -261,6 +261,12 @@ func keyMismatch(run Run, key Key) string {
 	}
 }
 
+// BlockingFindings returns the findings whose severity blocks under blockOn,
+// ignoring dispositions.
+func BlockingFindings(findings []Finding, blockOn []string) []Finding {
+	return unresolvedFindings(findings, nil, "", blockOn)
+}
+
 func unresolvedFindings(findings []Finding, dispositions []Disposition, serviceIdentity string, blockOn []string) []Finding {
 	blockedSeverities := normalizeSeverities(blockOn)
 	latest := make(map[string]Disposition, len(dispositions))
