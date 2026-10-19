@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issuefiling"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 )
 
@@ -69,7 +69,7 @@ var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)
 var _ connector.IssueBodyUpdater = (*Connector)(nil)
 var _ connector.IssueCreator = (*Connector)(nil)
-var _ intake.IssueStore = (*Connector)(nil)
+var _ issuefiling.IssueStore = (*Connector)(nil)
 var _ connector.IssueParentResolver = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
 var _ connector.ProjectRemover = (*Connector)(nil)
@@ -349,7 +349,7 @@ func (c *Connector) CreateIssue(_ context.Context, draft connector.IssueDraft) (
 	return cloneIssue(issue), nil
 }
 
-func (c *Connector) FindIntakeIssue(_ context.Context, marker string) (intake.Issue, bool, error) {
+func (c *Connector) FindIntakeIssue(_ context.Context, marker string) (issuefiling.Issue, bool, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for _, issue := range c.issues {
@@ -357,18 +357,18 @@ func (c *Connector) FindIntakeIssue(_ context.Context, marker string) (intake.Is
 			return fakehubIntakeIssue(issue), true, nil
 		}
 	}
-	return intake.Issue{}, false, nil
+	return issuefiling.Issue{}, false, nil
 }
 
-func (c *Connector) CreateIntakeIssue(ctx context.Context, draft intake.IssueDraft) (intake.Issue, error) {
+func (c *Connector) CreateIntakeIssue(ctx context.Context, draft issuefiling.IssueDraft) (issuefiling.Issue, error) {
 	issue, err := c.CreateIssue(ctx, connector.IssueDraft{Title: draft.Title, Body: draft.Body, Labels: draft.Labels})
 	if err != nil {
-		return intake.Issue{}, err
+		return issuefiling.Issue{}, err
 	}
 	return fakehubIntakeIssue(issue), nil
 }
 
-func (c *Connector) UpdateIntakeIssue(_ context.Context, issueID string, draft intake.IssueDraft) (intake.Issue, error) {
+func (c *Connector) UpdateIntakeIssue(_ context.Context, issueID string, draft issuefiling.IssueDraft) (issuefiling.Issue, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for index := range c.issues {
@@ -382,7 +382,7 @@ func (c *Connector) UpdateIntakeIssue(_ context.Context, issueID string, draft i
 		c.issues[index].UpdatedAt = &now
 		return fakehubIntakeIssue(c.issues[index]), nil
 	}
-	return intake.Issue{}, connector.ErrNotImplemented
+	return issuefiling.Issue{}, connector.ErrNotImplemented
 }
 
 func (c *Connector) SetIntakeIssueState(ctx context.Context, issueID string, state string) error {
@@ -628,8 +628,8 @@ func normalizeState(state string) string {
 	return strings.ToLower(strings.TrimSpace(state))
 }
 
-func fakehubIntakeIssue(issue connector.Issue) intake.Issue {
-	return intake.Issue{
+func fakehubIntakeIssue(issue connector.Issue) issuefiling.Issue {
+	return issuefiling.Issue{
 		ID:         issue.ID,
 		Identifier: issue.Identifier,
 		Number:     issue.Number,
