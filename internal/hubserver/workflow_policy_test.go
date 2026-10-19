@@ -3,6 +3,7 @@ package hubserver
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -43,8 +44,10 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 	}{
 		{name: "native landing applies instructions without reachability report", initial: true, canonical: true, changedInputs: true, landing: "native", active: true, status: http.StatusNoContent, applied: true},
 		{name: "bound merged PR applies instructions without reachability report", initial: true, canonical: true, changedInputs: true, landing: "pr", active: true, status: http.StatusNoContent, applied: true},
-		{name: "native landing after observation applies on refresh", initial: true, canonical: true, changedInputs: true, landing: "native", lateLanding: true, active: true, status: http.StatusNoContent, applied: true},
-		{name: "merged PR after observation applies on refresh", initial: true, canonical: true, changedInputs: true, landing: "pr", lateLanding: true, active: true, status: http.StatusNoContent, applied: true},
+		{name: "native landing recorded after default branch apply gains provenance", initial: true, canonical: true, changedInputs: true, reachable: true, landing: "native", lateLanding: true, active: true, status: http.StatusNoContent, applied: true},
+		{name: "merged PR recorded after default branch apply gains provenance", initial: true, canonical: true, changedInputs: true, reachable: true, landing: "pr", lateLanding: true, active: true, status: http.StatusNoContent, applied: true},
+		{name: "native landing recorded after unlanded observation stays pending", initial: true, canonical: true, changedInputs: true, landing: "native", lateLanding: true, status: http.StatusNoContent},
+		{name: "merged PR recorded after unlanded observation stays pending", initial: true, canonical: true, changedInputs: true, landing: "pr", lateLanding: true, status: http.StatusNoContent},
 		{name: "native default branch landing retains provenance", initial: true, canonical: true, changedInputs: true, reachable: true, landing: "native", status: http.StatusNoContent, applied: true},
 		{name: "merged PR default branch landing retains provenance", initial: true, canonical: true, changedInputs: true, reachable: true, landing: "pr", status: http.StatusNoContent, applied: true},
 		{name: "native landing on another branch stays pending", initial: true, canonical: true, changedInputs: true, landing: "native", otherBranch: true, status: http.StatusNoContent},
@@ -391,36 +394,28 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				}
 			}
 			report := policy.Observation{Descriptor: candidate, Source: source}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), test.status)
 			if test.lateLanding {
-				client, err := hubclient.New(hubclient.Config{URL: "https://policy-refresh.example.test", TokenSource: func() string { return token }, HTTPClient: &http.Client{Transport: policyAPITransport{service: f.service}}})
-				if err != nil {
-					t.Fatal(err)
-				}
-				scheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{OrganizationID: f.project.OrganizationID, NativeProjects: map[string]tracker.ProjectID{"project": f.project.ID}, Machine: hubclient.Machine{ID: "machine_refresh", Hostname: "refresh", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Minute, LeaseTTL: time.Hour})
-				if err != nil {
-					t.Fatal(err)
-				}
-				for range 2 {
-					if err := scheduler.CheckProjectPolicyWithSource(t.Context(), "project", source.Repository, candidate, source); err != nil {
-						t.Fatal(err)
-					}
-					approval, err := readProjectPolicyWithHistory(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID), 0, "")
-					if err != nil || approval.Policy.ID != original.ID || len(approval.History) != historyCount {
-						t.Fatalf("observation before landing changed approval: %+v, %v", approval, err)
-					}
-					observed, err := readObservedPolicies(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID), approval.Policy, f.service.config.now())
-					if err != nil || len(observed) != 1 || observed[0].Policy.ID != candidate.ID {
-						t.Fatalf("missing pending observation before landing: %+v, %v", observed, err)
-					}
-				}
 				seedLanding()
-				for range 2 {
-					if err := scheduler.CheckProjectPolicyWithSource(t.Context(), "project", source.Repository, candidate, source); err != nil {
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if test.landing == "native" {
+					err = recordPolicyLandingProvenance(t.Context(), tx, string(f.project.OrganizationID)+"/"+string(f.project.ID), 0, "example-org/example-project", source.Commit, policyLanding{ChangeID: "change_landed"})
+				} else {
+					var repositoryID int64
+					if err := tx.QueryRowContext(t.Context(), "SELECT id FROM repositories WHERE github_owner = 'example-org' AND github_name = 'example-project'").Scan(&repositoryID); err != nil {
 						t.Fatal(err)
 					}
+					err = recordMergedPullRequestPolicyLanding(t.Context(), tx, repositoryID, normalizedPullRequest{State: "closed", URL: "https://github.com/example-org/example-project/pull/1", MergeSHA: source.Commit, MergedAt: time.Now()})
 				}
-			} else {
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), test.status)
+				if err != nil {
+					t.Fatal(errors.Join(err, tx.Rollback()))
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if test.history > 0 {
 				for path, before := range historySummaries {
@@ -611,7 +606,11 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			if test.applied {
 				entry := approval.History[0]
 				if test.landing != "" {
-					if entry.AppliedBy != landingActor || approval.ApprovedBy != landingActor || test.landing == "native" && entry.ChangeID != "change_landed" || test.landing == "pr" && entry.PullRequestURL != "https://github.com/example-org/example-project/pull/1" {
+					wantActor := landingActor
+					if test.lateLanding {
+						wantActor = "repository-default-branch"
+					}
+					if entry.AppliedBy != wantActor || approval.ApprovedBy != wantActor || test.landing == "native" && entry.ChangeID != "change_landed" || test.landing == "pr" && entry.PullRequestURL != "https://github.com/example-org/example-project/pull/1" {
 						t.Fatalf("missing landing provenance: %+v", approval)
 					}
 				}

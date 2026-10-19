@@ -617,6 +617,9 @@ func applyPullRequestProjection(ctx context.Context, tx *sql.Tx, repositoryID in
 		if err != nil {
 			return projectionApplyResult{}, fmt.Errorf("insert GitHub webhook pull request: %w", err)
 		}
+		if err := recordMergedPullRequestPolicyLanding(ctx, tx, repositoryID, pullRequest); err != nil {
+			return projectionApplyResult{}, fmt.Errorf("record merged pull request policy landing: %w", err)
+		}
 		return projectionApplyResult{Changed: true}, nil
 	}
 	if err != nil {
@@ -663,8 +666,22 @@ func applyPullRequestProjection(ctx context.Context, tx *sql.Tx, repositoryID in
 		formatWebhookTime(pullRequest.CreatedAt), formatWebhookTime(pullRequest.UpdatedAt), pullRequest.MergeSHA, mergedPullRequestTime(pullRequest.MergedAt), pullRequest.MergedBy, pullRequestID); err != nil {
 		return projectionApplyResult{}, fmt.Errorf("update GitHub webhook pull request: %w", err)
 	}
+	if err := recordMergedPullRequestPolicyLanding(ctx, tx, repositoryID, pullRequest); err != nil {
+		return projectionApplyResult{}, fmt.Errorf("record merged pull request policy landing: %w", err)
+	}
 	result.Changed = true
 	return result, nil
+}
+
+func recordMergedPullRequestPolicyLanding(ctx context.Context, tx *sql.Tx, repositoryID int64, pullRequest normalizedPullRequest) error {
+	if pullRequest.MergedAt.IsZero() || !strings.EqualFold(pullRequest.State, "closed") {
+		return nil
+	}
+	var repository string
+	if err := tx.QueryRowContext(ctx, "SELECT github_owner || '/' || github_name FROM repositories WHERE id = ?", repositoryID).Scan(&repository); err != nil {
+		return err
+	}
+	return recordPolicyLandingProvenance(ctx, tx, "repository:"+repository, repositoryID, repository, pullRequest.MergeSHA, policyLanding{PullRequestURL: pullRequest.URL})
 }
 
 // enqueueHydration records a demand for fresh connector data. deliveryID names

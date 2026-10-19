@@ -162,17 +162,13 @@ func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow work
 }
 
 func (s *Scheduler) reportObservedPolicy(ctx context.Context, project string, source *NativeConnector, observation policy.Observation) error {
-	state := source.client.heartbeatProject()
-	state.mu.Lock()
-	adopted := state.changes != nil && state.changes.PolicyID == observation.ID
-	state.mu.Unlock()
 	raw, err := json.Marshal(observation)
 	if err != nil {
 		return err
 	}
 	reportID := policy.Digest(raw)
 	s.mu.Lock()
-	if s.reportedPolicies[project] == reportID && adopted {
+	if s.reportedPolicies[project] == reportID {
 		s.mu.Unlock()
 		return nil
 	}
@@ -190,6 +186,7 @@ func (s *Scheduler) reportObservedPolicy(ctx context.Context, project string, so
 		s.mu.Unlock()
 		return fmt.Errorf("report the resolved repository policy to the Hub: %w", err)
 	}
+	state := source.client.heartbeatProject()
 	state.mu.Lock()
 	state.approvalSet = false
 	state.mu.Unlock()

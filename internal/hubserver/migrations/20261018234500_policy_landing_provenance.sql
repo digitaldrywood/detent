@@ -7,7 +7,7 @@ ALTER TABLE pull_requests ADD COLUMN merged_by TEXT NOT NULL DEFAULT '';
 CREATE INDEX pull_requests_landing_idx ON pull_requests(repository_id, merge_sha, base_ref);
 
 CREATE INDEX change_requests_policy_landing_idx ON change_requests(organization_id, project_id, json_extract(record_json, '$.landed.merge_sha'), json_extract(record_json, '$.landed.base_ref'));
-CREATE INDEX project_workflow_applies_revision_idx ON project_workflow_applies(scope, definition_digest, source_commit);
+CREATE INDEX project_workflow_applies_revision_idx ON project_workflow_applies(source_commit, scope);
 
 -- +goose Down
 DROP INDEX project_workflow_applies_revision_idx;

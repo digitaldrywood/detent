@@ -173,6 +173,16 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, scope, entry.Repository, entry.Commit, e
 	return err
 }
 
+func recordPolicyLandingProvenance(ctx context.Context, tx *sql.Tx, scope string, repositoryID int64, repository, commit string, landing policyLanding) error {
+	if !validCommitID(commit) || repository == "" || landing.ChangeID == "" && landing.PullRequestURL == "" {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE project_workflow_applies SET change_id = ?, pull_request_url = ?
+WHERE source_commit = ? AND change_id = '' AND pull_request_url = '' AND repository = ? COLLATE NOCASE
+AND (scope = ? OR scope IN (SELECT organization_id || '/' || id FROM projects WHERE repository_id = ?))`, landing.ChangeID, landing.PullRequestURL, commit, repository, scope, repositoryID)
+	return err
+}
+
 func readProjectPolicyWithHistory(ctx context.Context, query nativeQueryer, scope string, limit int, after string) (policy.Approval, error) {
 	return readProjectPolicyHistory(ctx, query, scope, limit, after, true)
 }

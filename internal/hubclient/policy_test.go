@@ -191,7 +191,7 @@ func TestSchedulerRejectsMissingConfigurationBeforeWork(t *testing.T) {
 	}
 }
 
-func TestNativeSchedulerReportsConfigurationOnRefresh(t *testing.T) {
+func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 	t.Parallel()
 	changed := func() policy.Descriptor { d := clientTestPolicy(); d.Gates.AutoPromote = true; return d.WithID() }()
 	workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte("Run the work.\n"), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n"), HasConfig: true, ConfigPath: "detent.yaml"})
@@ -217,7 +217,6 @@ func TestNativeSchedulerReportsConfigurationOnRefresh(t *testing.T) {
 		name         string
 		autoApply    bool
 		loadApproved bool
-		heartbeat    bool
 		provenance   *policy.RepositorySource
 		approved     *policy.Descriptor
 		status       int
@@ -226,21 +225,19 @@ func TestNativeSchedulerReportsConfigurationOnRefresh(t *testing.T) {
 		wantLost     bool
 		reports      int
 	}{
-		{name: "authored external load retains approved configuration", loadApproved: true, approved: &current, status: http.StatusOK, local: current, reports: 3},
-		{name: "verified authored source preserves supplied definition", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40)}, approved: &current, status: http.StatusOK, local: current, reports: 3},
-		{name: "legacy external load retains approved configuration", loadApproved: true, approved: &legacy, status: http.StatusOK, local: legacy, reports: 3},
-		{name: "verified legacy source preserves supplied definition", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: &legacy, status: http.StatusOK, local: legacy, reports: 3},
-		{name: "canonical version carries feature approval", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40)}, approved: &previous, status: http.StatusOK, local: current, reports: 3},
-		{name: "canonical version without source is reported", approved: &previous, status: http.StatusOK, local: current, reports: 3},
-		{name: "older canonical runner remains approved", approved: &current, status: http.StatusOK, local: previous, reports: 3},
-		{name: "default branch applies immediately", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, status: http.StatusConflict, local: clientTestPolicy(), reports: 3},
-		{name: "different default branch configuration is reported", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, reports: 3},
-		{name: "nothing approved", status: http.StatusConflict, local: clientTestPolicy(), reports: 3},
-		{name: "runner B approval preserves runner A heartbeat", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, reports: 3},
-		{name: "invalid approved descriptor", approved: ptr(policy.Descriptor{}), status: http.StatusOK, local: clientTestPolicy(), reports: 3},
-		{name: "approved policy matches", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: clientTestPolicy(), reports: 3},
-		{name: "adopted policy heartbeat keeps runner quiet", heartbeat: true, approved: ptr(clientTestPolicy()), status: http.StatusOK, local: clientTestPolicy(), reports: 1},
-		{name: "pending policy heartbeat repeats observation", heartbeat: true, approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, reports: 3},
+		{name: "authored external load retains approved configuration", loadApproved: true, approved: &current, status: http.StatusOK, local: current, reports: 1},
+		{name: "verified authored source preserves supplied definition", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40)}, approved: &current, status: http.StatusOK, local: current, reports: 1},
+		{name: "legacy external load retains approved configuration", loadApproved: true, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
+		{name: "verified legacy source preserves supplied definition", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
+		{name: "canonical version carries feature approval", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40)}, approved: &previous, status: http.StatusOK, local: current, reports: 1},
+		{name: "canonical version without source is reported", approved: &previous, status: http.StatusOK, local: current, reports: 1},
+		{name: "older canonical runner remains approved", approved: &current, status: http.StatusOK, local: previous, reports: 1},
+		{name: "default branch applies immediately", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, status: http.StatusConflict, local: clientTestPolicy(), reports: 1},
+		{name: "different default branch configuration is reported", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, reports: 1},
+		{name: "nothing approved", status: http.StatusConflict, local: clientTestPolicy(), reports: 1},
+		{name: "runner B approval preserves runner A heartbeat", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, reports: 1},
+		{name: "invalid approved descriptor", approved: ptr(policy.Descriptor{}), status: http.StatusOK, local: clientTestPolicy(), reports: 1},
+		{name: "approved policy matches", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: clientTestPolicy(), reports: 1},
 		{name: "hub unavailable", status: http.StatusServiceUnavailable, local: clientTestPolicy(), wantError: true, reports: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -366,9 +363,6 @@ func TestNativeSchedulerReportsConfigurationOnRefresh(t *testing.T) {
 				if err != nil || resolved.Prompt != workflow.Prompt {
 					t.Fatalf("supplied %s definition was replaced by shared approval: %q, %v", layout, resolved.Prompt, err)
 				}
-			}
-			if test.heartbeat {
-				scheduler.nativeProjects["site"].client.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "stable", PolicyID: test.approved.ID})
 			}
 			for range 3 {
 				err = scheduler.CheckProjectPolicyWithSource(t.Context(), "site", "", test.local, test.provenance)
