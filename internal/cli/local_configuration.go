@@ -46,17 +46,6 @@ func initializeLocalConfiguration(ctx context.Context, settings store.LocalConfi
 			}
 		}
 	}
-	if cfg.Path != "" {
-		if _, err := os.Stat(cfg.Path); err == nil {
-			full, err := globalconfig.Read(cfg.Path, globalconfig.WithMissingProjectPaths())
-			if err != nil {
-				return cfg, err
-			}
-			cfg.Projects = full.Projects
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return cfg, err
-		}
-	}
 	selection := legacy.Global.Agents.ModelSelection
 	if selection == nil && cfg.Global.Agents.ModelSelection.Configured() {
 		selection = &cfg.Global.Agents.ModelSelection

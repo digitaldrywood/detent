@@ -54,7 +54,7 @@ func TestConfigDocumentation(t *testing.T) {
 			required   string
 			ruleDetail string
 		}{
-			{path: "tracker.kind", required: "Yes", ruleDetail: "must be one of"},
+			{path: "tracker.kind", required: "Yes", ruleDetail: "must be hub_native"},
 			{path: "identity.name", required: "Conditional", ruleDetail: "must not be blank"},
 			{path: "agents.backends[].provider", required: "No", ruleDetail: "sanitized label"},
 			{path: "agents.backends[].protocol", required: "No", ruleDetail: "must be app-server"},
@@ -63,7 +63,7 @@ func TestConfigDocumentation(t *testing.T) {
 			{path: "agents.backends[].options.deliverable_elicitation_allowlist", required: "Conditional", ruleDetail: "values.repository must be owner/name"},
 			{path: "tracker.authorization.priority_in", required: "No", ruleDetail: "integers 1 through 4"},
 			{path: "agents.routes[].selector.priority_in", required: "No", ruleDetail: "integers 1 through 4"},
-			{path: "tracker.github_app_id", required: "Conditional", ruleDetail: "required for github app"},
+			{path: "tracker.github_app_id", required: "No"},
 		}
 		for _, test := range tests {
 			test := test
