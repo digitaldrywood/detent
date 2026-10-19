@@ -443,6 +443,7 @@ describe("Composer voice input", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
     expect((await screen.findByRole("alert")).textContent).toContain("speech model could not load");
     expect(stopTrack).toHaveBeenCalled();
+    await screen.findByRole("button", { name: "Start voice input" });
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(onSend).toHaveBeenCalledOnce();
     failModel = false;
