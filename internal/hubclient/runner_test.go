@@ -830,7 +830,7 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/validate"):
 			_ = json.NewEncoder(w).Encode(runnerauth.Runner{})
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/work-items/wi_example"):
-			_ = json.NewEncoder(w).Encode(tracker.NativeIssue{})
+			_ = json.NewEncoder(w).Encode(tracker.NativeIssue{SchedulingEligible: new(true)})
 		case strings.HasSuffix(r.URL.Path, "/renew"):
 			var mutation tracker.NativeLeaseMutation
 			if err := json.NewDecoder(r.Body).Decode(&mutation); err != nil {
