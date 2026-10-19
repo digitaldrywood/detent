@@ -170,7 +170,7 @@ UNION ALL SELECT body FROM native_comments WHERE organization_id=? AND project_i
 			continue
 		}
 		for _, scheduled := range gate.ParseScheduledEvidence(body) {
-			if scheduled.OccurrenceKey == escape.OccurrenceID && scheduled.RunURL == escape.EvidenceReference && origin.Source == scheduled.RunURL && scheduled.Conclusion == "failure" {
+			if scheduled.OccurrenceKey == escape.OccurrenceID && scheduled.RunURL == escape.EvidenceReference && scheduledRepairOriginMatches(origin.Source, scheduled) && scheduled.Conclusion == "failure" {
 				return nil
 			}
 		}

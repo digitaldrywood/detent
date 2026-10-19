@@ -326,7 +326,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 	scheduledCheck.StartedAt, scheduledCheck.FinishedAt, scheduledCheck.ExitCode = at.Add(time.Minute), at.Add(2*time.Minute), 1
 	scheduled := gate.ScheduledEvidence{Schema: 1, Repository: "example/repo", OccurrenceKey: strings.Repeat("f", 64), RunID: "123", RunAttempt: "2", JobID: "456", JobName: "Lint", RunURL: "https://github.com/example/repo/actions/runs/123/attempts/2", JobURL: "https://github.com/example/repo/actions/jobs/456", HeadSHA: scheduledCheck.HeadSHA, Conclusion: "failure", Checks: []gate.CheckObservation{scheduledCheck}}
 	report := f.create(t, "scheduled failure")
-	stamp := issueorigin.Stamp("Scheduled job failed"+scheduled.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: scheduled.RunURL, Fingerprint: strings.Repeat("a", 64)})
+	stamp := issueorigin.Stamp("Scheduled job failed"+scheduled.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: strings.TrimSuffix(scheduled.RunURL, "/attempts/2"), Fingerprint: strings.Repeat("a", 64)})
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", stamp, report.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
