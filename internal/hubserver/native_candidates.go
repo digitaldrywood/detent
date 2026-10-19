@@ -429,8 +429,9 @@ func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.Wo
 
 // newReworkFeedback reports whether the version received rework feedback at or
 // after started that it had not already received before started. Automated
-// reviewers re-evaluate an unchanged head on every attempt, so their verdict is
-// identified by reviewer kind and decision rather than by its record time.
+// reviewers re-evaluate an unchanged head on every attempt, so their findings
+// are identified by reviewer kind, severity and path rather than by record
+// time, session or wording.
 func newReworkFeedback(detail tracker.ChangeDetail, versionID string, started time.Time) bool {
 	prior := map[string]bool{}
 	var recent []string
@@ -438,17 +439,23 @@ func newReworkFeedback(detail tracker.ChangeDetail, versionID string, started ti
 		if review.VersionID != versionID || review.Decision != "changes_requested" {
 			continue
 		}
-		if key := reviewFeedbackKey(review); review.CreatedAt.Before(started) {
-			prior[key] = true
+		if keys := reviewFeedbackKeys(review); review.CreatedAt.Before(started) {
+			for _, key := range keys {
+				prior[key] = true
+			}
 		} else {
-			recent = append(recent, key)
+			recent = append(recent, keys...)
 		}
 	}
 	for _, check := range detail.Checks {
 		if check.VersionID != versionID || check.Conclusion == "success" {
 			continue
 		}
-		if key := "check\x00" + check.Source + "\x00" + check.WorkflowID + "\x00" + check.Conclusion; check.ReceivedAt.Before(started) {
+		key := "check\x00" + check.CheckRunID
+		if check.CheckRunID == "" {
+			key = "check\x00" + check.Source + "\x00" + check.WorkflowID + "\x00" + check.Conclusion
+		}
+		if check.ReceivedAt.Before(started) {
 			prior[key] = true
 		} else {
 			recent = append(recent, key)
@@ -462,14 +469,26 @@ func newReworkFeedback(detail tracker.ChangeDetail, versionID string, started ti
 	return false
 }
 
-func reviewFeedbackKey(review tracker.ChangeReview) string {
+func reviewFeedbackKeys(review tracker.ChangeReview) []string {
+	var kind string
+	var result *gate.ValidatorResult
 	switch {
 	case review.Validator != nil:
-		return "validator\x00" + review.Decision
+		kind, result = "validator", review.Validator
 	case review.ImplementationReview != nil:
-		return "implementation_review\x00" + review.Decision
+		kind, result = "implementation_review", review.ImplementationReview
 	case review.SecurityAudit != nil:
-		return "security_audit\x00" + review.Decision
+		kind = "security_audit"
+	default:
+		return []string{"review\x00" + review.Decision + "\x00" + review.Body}
 	}
-	return "review\x00" + review.Decision + "\x00" + review.Body
+	prefix := kind + "\x00" + review.Decision
+	if result == nil || len(result.Findings) == 0 {
+		return []string{prefix}
+	}
+	keys := make([]string, 0, len(result.Findings))
+	for _, finding := range result.Findings {
+		keys = append(keys, prefix+"\x00"+strings.ToLower(strings.TrimSpace(finding.Severity))+"\x00"+strings.TrimSpace(finding.Path))
+	}
+	return keys
 }
