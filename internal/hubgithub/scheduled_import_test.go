@@ -28,14 +28,19 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 	const repository = "example-org/example-project"
 	const token = "isolated-scheduled-import-administrator-token"
 	const secret = "isolated-scheduled-import-webhook-secret"
-	const criteria = "## Acceptance criteria\nReproduce and minimally repair.\n\n## Must not break\nPreserve intended behavior.\n\n## How we know it worked\nRun make check-land.\n\n## Invariants touched\nPreserve INV-3 and INV-7.\n\n## Safety regression\nPreserve existing regressions."
+	const defaultCriteria = "## Acceptance criteria\nReproduce and minimally repair.\n\n## Must not break\nPreserve intended behavior.\n\n## How we know it worked\nRun make check-land.\n\n## Invariants touched\nPreserve INV-3 and INV-7.\n\n## Safety regression\nPreserve existing regressions."
 	const alternate = "New verified GitHub Actions CI repair reports from `.github/workflows/ci.yaml` on `dev` enter Todo with Urgent priority."
 	for _, test := range []struct {
 		name, workflow, branch, state, delegation, sourceRepository, headRepository, runRepository string
+		shortContract, runOrigin                                                                   bool
 		reportIdentity                                                                             bool
 		native                                                                                     bool
 	}{
 		{name: "native approved project", native: true, workflow: ".github/workflows/ci.yml", branch: "develop", state: "Todo"},
+		{name: "native portable release contract", native: true, shortContract: true, runOrigin: true, workflow: ".github/workflows/validated-release.yml", branch: "release/v2.1", state: "Todo", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/validated-release.yml` on `release/v*` enter Todo with Urgent priority."},
+		{name: "release family rejects develop", native: true, workflow: ".github/workflows/validated-release.yml", branch: "develop", state: "Triage", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/validated-release.yml` on `release/v*` enter Todo with Urgent priority."},
+		{name: "release family rejects nested branch", native: true, workflow: ".github/workflows/validated-release.yml", branch: "release/v2.1/feature", state: "Triage", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/validated-release.yml` on `release/v*` enter Todo with Urgent priority."},
+		{name: "release family rejects other workflow", native: true, workflow: ".github/workflows/ci.yml", branch: "release/v2.1", state: "Triage", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/validated-release.yml` on `release/v*` enter Todo with Urgent priority."},
 		{name: "native exact release branch", native: true, workflow: ".github/workflows/ci.yaml", branch: "release/v2.0", state: "Todo", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/ci.yaml` on `release/v2.0` enter Todo with Urgent priority."},
 		{name: "native unapproved workflow", native: true, workflow: ".github/workflows/other.yml", branch: "develop", state: "Triage"},
 		{name: "native unapproved branch", native: true, workflow: ".github/workflows/ci.yaml", branch: "release/v2.0", state: "Triage", delegation: alternate},
@@ -59,6 +64,13 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 		{name: "default CI wrong branch", workflow: ".github/workflows/ci.yml", branch: "dev", state: "Triage"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			criteria := defaultCriteria
+			definition := "## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n- Invariants touched\n- Safety regression\n"
+			sectionCount := 5
+			if test.shortContract {
+				criteria, _, _ = strings.Cut(criteria, "\n\n## Invariants touched")
+				definition, sectionCount = "", 3
+			}
 			sourceRepository, headRepository, runRepository := repository, repository, repository
 			if test.sourceRepository != "" {
 				sourceRepository = test.sourceRepository
@@ -72,7 +84,11 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 			owner, name, _ := strings.Cut(repository, "/")
 			sha := strings.Repeat("a", 40)
 			evidence := gate.ScheduledEvidence{Schema: 1, Repository: repository, OccurrenceKey: strings.Repeat("b", 64), RunID: "123", RunAttempt: "1", JobID: "456", JobName: "Verify", RunURL: "https://github.com/" + repository + "/actions/runs/123/attempts/1", JobURL: "https://github.com/" + repository + "/actions/jobs/456", HeadSHA: sha, Conclusion: "failure"}
-			body := issueorigin.Stamp(criteria+"\n\n## Diagnostic evidence\nExpected a healthy worker; got cancellation.", issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: evidence.RunURL, Fingerprint: "scheduled-verify"}) + evidence.Stamp()
+			source := evidence.RunURL
+			if test.runOrigin {
+				source = strings.TrimSuffix(source, "/attempts/1")
+			}
+			body := issueorigin.Stamp(criteria+"\n\n## Diagnostic evidence\nExpected a healthy worker; got cancellation.", issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: source, Fingerprint: "scheduled-verify"}) + evidence.Stamp()
 			if test.reportIdentity {
 				body += "\n" + alternate
 			}
@@ -129,7 +145,7 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 			if delegation == "" {
 				delegation = "New verified GitHub Actions CI repair reports enter Todo with Urgent priority."
 			}
-			workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{Workflow: []byte("## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n- Invariants touched\n- Safety regression\n\n## Scheduled CI repair contract\n" + delegation + "\n" + strings.ReplaceAll(criteria, "## ", "### ")), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: " + repository + "\n  lanes:\n    - {name: Backlog, role: holding}\n    - {name: Blocked, role: holding}\n    - {name: Todo, role: active}\n    - {name: Done, role: terminal}\n"), HasConfig: true, ConfigPath: "detent.yaml"})
+			workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{Workflow: []byte(definition + "\n## Scheduled CI repair contract\n" + delegation + "\n" + strings.ReplaceAll(criteria, "## ", "### ")), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: " + repository + "\n  lanes:\n    - {name: Backlog, role: holding}\n    - {name: Blocked, role: holding}\n    - {name: Todo, role: active}\n    - {name: Done, role: terminal}\n"), HasConfig: true, ConfigPath: "detent.yaml"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -190,7 +206,7 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 				t.Fatalf("lane=%s want=%s", issue.State, test.state)
 			}
 			if test.state == "Todo" {
-				if (!test.native && (issue.Priority == nil || *issue.Priority != 0)) || len(issue.IssueContract.ConfirmedSections) != 5 {
+				if (!test.native && (issue.Priority == nil || *issue.Priority != 0)) || len(issue.IssueContract.ConfirmedSections) != sectionCount {
 					t.Fatalf("admission=%+v", issue)
 				}
 				contract, err := config.ResolvePolicyIssueContract(descriptor)

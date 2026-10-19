@@ -206,7 +206,7 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 	_, sourceRepository, _, err := tracker.ParseGitHubIssueURL(snapshot.URL)
 	repository, repoErr := policyRepository(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
 	result.importReason = "Scheduled CI import requires a verified failed job from the configured repository CI workflow"
-	if err != nil || repoErr != nil || len(evidence) != 1 || !strings.EqualFold(repository, sourceRepository) || !strings.EqualFold(repository, evidence[0].Repository) || origin.Source != evidence[0].RunURL {
+	if err != nil || repoErr != nil || len(evidence) != 1 || !strings.EqualFold(repository, sourceRepository) || !strings.EqualFold(repository, evidence[0].Repository) || !scheduledRepairOriginMatches(origin.Source, evidence[0]) {
 		return result
 	}
 	workflow, branch, authorized := contract.ScheduledImportWorkflow()
@@ -227,7 +227,7 @@ func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope,
 		return nil
 	}
 	evidence := gate.ParseScheduledEvidence(request.Body)
-	if len(evidence) != 1 || evidence[0].RunURL != origin.Source {
+	if len(evidence) != 1 || !scheduledRepairOriginMatches(origin.Source, evidence[0]) {
 		return nil
 	}
 	approval, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
@@ -284,7 +284,7 @@ func applyScheduledRepairContract(ctx context.Context, q nativeQueryer, scope na
 		return
 	}
 	origin, ok := issueorigin.Parse(issue.Body)
-	if !ok || origin.Kind != "doctor" || origin.Instance != "github-actions" || origin.Source != verified.evidence.RunURL {
+	if !ok || origin.Kind != "doctor" || origin.Instance != "github-actions" || !scheduledRepairOriginMatches(origin.Source, verified.evidence) {
 		return
 	}
 	verified.importReason = ""
@@ -293,4 +293,9 @@ func applyScheduledRepairContract(ctx context.Context, q nativeQueryer, scope na
 	body += fmt.Sprintf("\n\n## Verified CI occurrence\nRun: %s\nJob: %s\nTested commit: %s\nApproved policy: %s", verified.evidence.RunURL, verified.evidence.JobURL, verified.evidence.HeadSHA, verified.policyID)
 	body += "\n\n## Diagnostic evidence (untrusted)\n\n> " + strings.ReplaceAll(html.EscapeString(strings.ReplaceAll(issue.Body, "\r", "")), "\n", "\n> ")
 	issue.Body = issueorigin.Stamp(body, origin) + verified.evidence.Stamp()
+}
+
+func scheduledRepairOriginMatches(source string, evidence gate.ScheduledEvidence) bool {
+	runURL := "https://github.com/" + evidence.Repository + "/actions/runs/" + evidence.RunID
+	return source == runURL || source == runURL+"/attempts/"+evidence.RunAttempt
 }

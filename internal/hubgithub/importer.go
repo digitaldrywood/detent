@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -244,6 +245,10 @@ func matchesScheduledCIWorkflow(request hubserver.GitHubImportRequest, workflow,
 	}
 	if workflow != expectedWorkflow {
 		return false
+	}
+	if request.ScheduledBranch == "release/v*" {
+		matched, err := path.Match(request.ScheduledBranch, branch)
+		return err == nil && matched && branch != "release/v"
 	}
 	if request.ScheduledBranch != "" {
 		return branch == request.ScheduledBranch
