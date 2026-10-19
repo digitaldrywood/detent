@@ -983,6 +983,7 @@ export function ConversationView({
                 client.drafts.writeDraft(scope, next);
               }}
               onSend={() => void send()}
+              onVoiceSend={(text) => send(text)}
               {...(closed ? {} : { onStop: stop })}
               attachments={attachments}
               sending={sending}
