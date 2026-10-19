@@ -281,12 +281,11 @@ func TestRunnerCodexSignInRefresh(t *testing.T) {
 		t.Fatalf("sign-in did not clear: %v", err)
 	}
 	for _, test := range []struct {
-		name     string
-		deadline bool
-		want     error
+		name string
+		want error
 	}{
-		{"parent cancelled", false, context.Canceled},
-		{"parent deadline", true, context.DeadlineExceeded},
+		{"parent cancelled", context.Canceled},
+		{"parent deadline", context.DeadlineExceeded},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -295,12 +294,12 @@ func TestRunnerCodexSignInRefresh(t *testing.T) {
 			}
 			defer listener.Close()
 			t.Setenv("DETENT_TEST_LOGIN_PROBE_ADDRESS", listener.Addr().String())
-			ctx, cancel := context.WithCancel(t.Context())
-			if test.deadline {
-				cancel()
-				ctx, cancel = context.WithTimeout(t.Context(), 3*time.Second)
+			ctx := &controlledRuntimeCommandContext{
+				deadline: time.Now().Add(3 * time.Second),
+				done:     make(chan struct{}),
+				value:    t.Context().Value,
 			}
-			defer cancel()
+			defer ctx.cancel(context.Canceled)
 			done := make(chan error, 1)
 			go func() {
 				defer listener.Close()
@@ -311,9 +310,7 @@ func TestRunnerCodexSignInRefresh(t *testing.T) {
 				t.Fatalf("probe exited before login readiness: accept=%v probe=%v", err, <-done)
 			}
 			defer connection.Close()
-			if !test.deadline {
-				cancel()
-			}
+			ctx.cancel(test.want)
 			err = <-done
 			if !errors.Is(err, test.want) {
 				t.Fatalf("probe lost parent error: %v", err)
