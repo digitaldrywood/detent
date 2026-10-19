@@ -1,5 +1,3 @@
-import { LocalTranscription, VOICE_MODEL_DOWNLOADED, VOICE_MODEL_FAILURE } from "./localTranscription.ts";
-
 export type VoicePhase = "idle" | "starting" | "loading" | "recording" | "transcribing";
 
 export interface VoiceState {
@@ -37,7 +35,9 @@ export const idleVoiceState: VoiceState = {
   phase: "idle", transcript: "", seconds: 0, level: 0, notice: null, error: null,
 };
 
+const MODEL_DOWNLOADED = "detent.voice-model-downloaded";
 const NO_SPEECH = "No speech detected. Try again, or type your message.";
+const MODEL_FAILURE = "The speech model could not load. Check your connection and try again, or type your message.";
 
 function nativeRecognition() {
   const browser = window as unknown as {
@@ -50,7 +50,10 @@ function nativeRecognition() {
 export class VoiceInput {
   private session: Session | undefined;
   private state = idleVoiceState;
-  private readonly transcription = new LocalTranscription();
+  private worker: Worker | undefined;
+  private model: Promise<void> | undefined;
+  private downloaded = false;
+  private rejectWorker: ((error: Error) => void) | undefined;
 
   constructor(
     private readonly onState: (state: VoiceState) => void,
@@ -150,15 +153,15 @@ export class VoiceInput {
 
   private async startFallback(session: Session) {
     try {
-      let downloaded = this.transcription.downloaded;
-      try { downloaded ||= localStorage.getItem(VOICE_MODEL_DOWNLOADED) === "true"; } catch {}
+      let downloaded = this.downloaded;
+      try { downloaded ||= localStorage.getItem(MODEL_DOWNLOADED) === "true"; } catch {}
       session.stream?.getAudioTracks().forEach((track) => { track.enabled = false; });
       this.update({
         phase: "loading",
         notice: downloaded ? "Preparing voice input…" :
           "Downloading the speech model for first use (about 75 MB). It is cached in this browser. Audio stays on your device.",
       });
-      await this.transcription.load();
+      await this.loadModel();
       if (this.session !== session) return;
       const chunks: Blob[] = [];
       const recorder = new MediaRecorder(session.stream!);
@@ -171,10 +174,39 @@ export class VoiceInput {
       this.meter(session);
     } catch {
       if (this.session === session) {
-        this.transcription.dispose();
-        this.finish(session, VOICE_MODEL_FAILURE);
+        this.resetWorker();
+        this.finish(session, MODEL_FAILURE);
       }
     }
+  }
+
+  private loadModel() {
+    this.model ??= new Promise<void>((resolve, reject) => {
+      const worker = new Worker(new URL("./voiceTranscription.worker.ts", import.meta.url), { type: "module" });
+      this.worker = worker;
+      this.rejectWorker = reject;
+      worker.onmessage = (event: MessageEvent<{ type: string }>) => {
+        if (event.data.type === "ready") {
+          this.downloaded = true;
+          try { localStorage.setItem(MODEL_DOWNLOADED, "true"); } catch {}
+          this.rejectWorker = undefined;
+          resolve();
+        } else {
+          this.resetWorker();
+        }
+      };
+      worker.onerror = () => this.resetWorker();
+      worker.postMessage({});
+    });
+    return this.model;
+  }
+
+  private resetWorker() {
+    this.rejectWorker?.(new Error(MODEL_FAILURE));
+    this.rejectWorker = undefined;
+    this.worker?.terminate();
+    this.worker = undefined;
+    this.model = undefined;
   }
 
   private async transcribe(session: Session, blob: Blob) {
@@ -197,7 +229,18 @@ export class VoiceInput {
         this.finish(session, NO_SPEECH);
         return;
       }
-      const text = await this.transcription.transcribe(audio);
+      const text = await new Promise<string>((resolve, reject) => {
+        this.rejectWorker = reject;
+        this.worker!.onmessage = (event: MessageEvent<{ type: string; text?: string }>) => {
+          if (event.data.type === "result") {
+            this.rejectWorker = undefined;
+            resolve(event.data.text ?? "");
+          } else {
+            this.resetWorker();
+          }
+        };
+        this.worker!.postMessage({ audio }, [audio.buffer]);
+      });
       if (this.session !== session) return;
       session.transcript = [session.transcript, text.trim()].filter(Boolean).join(" ");
       this.finish(session, session.transcript ? null : NO_SPEECH);
@@ -254,12 +297,12 @@ export class VoiceInput {
     const session = this.session;
     this.session = undefined;
     if (session) this.cleanup(session);
-    if (this.state.phase === "transcribing") this.transcription.dispose();
+    if (this.state.phase === "transcribing") this.resetWorker();
     this.update(idleVoiceState);
   }
 
   dispose() {
     this.cancel();
-    this.transcription.dispose();
+    this.resetWorker();
   }
 }
