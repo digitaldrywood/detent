@@ -59,6 +59,8 @@ def main():
             try:
                 relative = path.resolve().relative_to(ROOT)
             except ValueError:
+                relative = None
+            if relative not in baseline_paths:
                 candidates = [candidate for candidate in baseline_paths if path.parts[-len(candidate.parts):] == candidate.parts]
                 if len(candidates) != 1:
                     raise ValueError

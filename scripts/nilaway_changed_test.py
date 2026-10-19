@@ -96,6 +96,10 @@ class ReverseDependentAuditTests(unittest.TestCase):
             reviewed = f'{importer}:{line}:{diagnostic["column"]}: Potential nil panic detected\n'
             foreign = root.parent / "removed-checkout" / "importer" / "importer.go"
             foreign_reviewed = reviewed.replace(str(importer), str(foreign))
+            nested = root / ".detent" / "workspaces" / "removed-checkout" / "importer" / "importer.go"
+            existing = root / ".detent" / "workspaces" / "existing-checkout" / "importer" / "importer.go"
+            existing.parent.mkdir(parents=True)
+            existing.write_text(importer.read_text().replace("return *provider.Value()", "return 0"))
             cases = [
                 (foreign_reviewed, 0),
                 (foreign_reviewed.replace(str(foreign), "../removed-checkout/importer/importer.go"), 0),
@@ -103,6 +107,12 @@ class ReverseDependentAuditTests(unittest.TestCase):
                 (foreign_reviewed.replace("Potential nil panic detected", "another analyzer failure"), 1),
                 (foreign_reviewed.replace("/importer/importer.go", "/other/importer.go"), 1),
             ]
+            for path in (str(nested), nested.relative_to(root).as_posix(), str(existing), existing.relative_to(root).as_posix()):
+                replay = reviewed.replace(str(importer), path)
+                cases.extend([
+                    (replay, 0),
+                    (replay.replace(f':{diagnostic["column"]}:', f':{int(diagnostic["column"]) + 1}:'), 1),
+                ])
             for replay, expected in cases:
                 with self.subTest(replay=replay), mock.patch.object(
                     audit.subprocess, "run", side_effect=[
