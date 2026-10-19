@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -476,3 +477,50 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 }
 
 func ptr[T any](value T) *T { return &value }
+
+func TestFleetProjectEligibilityRequiresApproval(t *testing.T) {
+	t.Parallel()
+	for _, approved := range []bool{false, true} {
+		t.Run(fmt.Sprintf("approved=%t", approved), func(t *testing.T) {
+			t.Parallel()
+			descriptor := clientTestPolicy()
+			fleetReads := 0
+			client, err := New(Config{URL: "https://hub.example.test", TokenSource: func() string { return "administrator" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				recorder := httptest.NewRecorder()
+				switch r.URL.Path {
+				case "/api/v2/organizations/org_example/projects/prj_example/policy":
+					var selected *policy.Descriptor
+					if approved {
+						selected = &descriptor
+					}
+					if err := json.NewEncoder(recorder).Encode(map[string]any{"policy": selected}); err != nil {
+						t.Fatal(err)
+					}
+				case "/api/v2/organizations/org_example/runners":
+					fleetReads++
+					if err := json.NewEncoder(recorder).Encode([]runnerauth.Runner{{Routing: runnerauth.Routing{ProjectIDs: []tracker.ProjectID{"prj_example"}, CapacityLimit: 1}, Operations: []string{runnerauth.Claim}, HostCapacity: 1, ReportedCapacity: 1}}); err != nil {
+						t.Fatal(err)
+					}
+				default:
+					t.Fatalf("unexpected request %s", r.URL.Path)
+				}
+				return recorder.Result(), nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fleet, err := NewFleetClient(client, "org_example", map[string]tracker.ProjectID{"example": "prj_example"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := fleet.ProjectEligibility(t.Context(), "example")
+			if approved {
+				if err != nil || result.Policy.ID != descriptor.ID || fleetReads != 1 || len(result.Runners) != 1 || len(result.Runners[0].Exclusions) != 0 || len(result.Exclusions) != 0 {
+					t.Fatalf("approved eligibility: %+v, %v; fleet reads=%d", result, err, fleetReads)
+				}
+			} else if err == nil || fleetReads != 0 || len(result.Runners) != 0 {
+				t.Fatalf("missing approval evaluated runner eligibility: %+v, %v; fleet reads=%d", result, err, fleetReads)
+			}
+		})
+	}
+}

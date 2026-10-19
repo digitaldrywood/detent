@@ -97,6 +97,8 @@ func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
 			switch path {
 			case "":
 				response = tracker.NativeProject{ID: "prj_example", OrganizationID: "org_example", Profile: "native", States: []tracker.NativeState{{Name: "Todo", Transitions: []string{"In Progress"}}, {Name: "In Progress"}}}
+			case "/policy":
+				response = map[string]any{"policy": nil}
 			case "/labels":
 				response = map[string]any{"items": []tracker.NativeLabel{{Name: "bug", Count: 1}}}
 			case "/work-items":
@@ -263,6 +265,7 @@ func TestNativeWorkReadAndBrowserAuthorization(t *testing.T) {
 	for _, tt := range []struct{ path, want string }{
 		{"/projects/native/issues/new", "New issue"},
 		{"/projects/native/issues/wi_example", "Imported from github"},
+		{"/projects/native/issues/wi_example", "Approved repository policy is unavailable."},
 		{"/projects/native/issues/wi_example?cursor=next-page", "First page"},
 		{"/projects/native/issues/wi_example/edit?action=comment_edit&comment=cmt_example", "Edit comment"},
 		{"/projects/native/issues/wi_example/export", "external_references"},

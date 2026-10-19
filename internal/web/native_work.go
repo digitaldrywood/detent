@@ -320,7 +320,7 @@ func (s *Server) loadNativeWork(c echo.Context, client *hubclient.NativeClient, 
 		data.DiscussionError = "Discussion could not be loaded. Return to the first page and retry."
 	}
 	policy, err := client.ProjectPolicy(ctx)
-	if err != nil {
+	if err != nil || policy.Policy.ID == "" {
 		data.PolicyError = "Approved repository policy is unavailable."
 	} else {
 		data.Policy = &policy

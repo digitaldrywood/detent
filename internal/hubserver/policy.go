@@ -468,8 +468,10 @@ func requireProjectPolicy(ctx context.Context, db policyQuerier, scope string) (
 
 type projectPolicyRead struct {
 	policy.Approval
-	Policy           *policy.Descriptor      `json:"policy"`
-	ObservedPolicies []policy.ObservedPolicy `json:"observed_policies,omitempty"`
+	Policy                       *policy.Descriptor      `json:"policy"`
+	ObservedPolicies             []policy.ObservedPolicy `json:"observed_policies,omitempty"`
+	ObservedPolicyDetailsOmitted bool                    `json:"observed_policy_details_omitted,omitempty"`
+	ObservedPoliciesOmitted      int                     `json:"observed_policies_omitted,omitempty"`
 }
 
 func (s *Service) projectPolicyRead(ctx context.Context, query nativeQueryer, scope string, approval policy.Approval, observations bool) (projectPolicyRead, error) {
