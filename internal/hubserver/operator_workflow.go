@@ -179,7 +179,7 @@ func workflowExecutionFailure(err error) (chat.ActionExecution, error) {
 		switch {
 		case failure.status == http.StatusUnprocessableEntity && failure.Code == "transition_not_allowed":
 			message = "Workflow transition is not allowed"
-			safe = &operatortool.RequestError{Code: failure.Code, Message: message}
+			safe = operatortool.ErrInvalidArguments
 		case failure.status == http.StatusConflict && failure.Code == "revision_conflict":
 			message = "Resource has changed"
 		}
