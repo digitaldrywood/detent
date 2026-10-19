@@ -19,12 +19,12 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -63,8 +63,8 @@ func TestNativeCloudWorkflowFallback(t *testing.T) {
 		{name: "instructions only", instructions: "# Agent instructions\n- Todo\n- A prose lane is not configuration\n", wantCloud: true},
 		{name: "split takes precedence", instructions: "Repository instructions.\n", config: "schema: 1\ntracker:\n  kind: hub_native\n  lanes:\n    - name: Backlog\n      role: holding\n    - name: Human Review\n      role: holding\n    - name: Blocked\n      role: holding\n    - name: Todo\n      role: active\n    - name: Rework\n      role: active\n    - name: Closed\n      role: terminal\n    - name: Cancelled\n      role: terminal\n    - name: Canceled\n      role: terminal\n    - name: Duplicate\n      role: terminal\n    - name: Done\n      role: terminal\n"},
 		{name: "legacy takes precedence", instructions: "---\ntracker:\n  kind: hub_native\n---\nRepository instructions.\n"},
-		{name: "invalid supplied definition", instructions: "Repository instructions.\n", config: "schema: 999\ntracker:\n  kind: memory\n", wantError: "schema"},
-		{name: "mixed supplied definition", instructions: "---\ntracker:\n  kind: memory\n---\nInstructions.\n", config: "schema: 1\ntracker:\n  kind: memory\n", wantError: "mixed"},
+		{name: "invalid supplied definition", instructions: "Repository instructions.\n", config: "schema: 999\ntracker:\n  kind: hub_native\n", wantError: "schema"},
+		{name: "mixed supplied definition", instructions: "---\ntracker:\n  kind: hub_native\n---\nInstructions.\n", config: "schema: 1\ntracker:\n  kind: hub_native\n", wantError: "mixed"},
 		{name: "unavailable definition directory", wantError: "read definition directory"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -132,7 +132,7 @@ func TestNativeCloudWorkflowFallback(t *testing.T) {
 }
 
 func (s *mappedPolicyScheduling) ConnectorForProject(string) (connector.Connector, bool) {
-	return memory.New(memory.Config{}), true
+	return fakehub.New(fakehub.Config{}), true
 }
 
 func (s *mappedPolicyScheduling) CheckProjectPolicy(_ context.Context, _, _ string, descriptor policy.Descriptor) error {
@@ -268,7 +268,7 @@ func TestProjectPolicyReloadAndGateIsolation(t *testing.T) {
 				t.Fatal(err)
 			}
 			scheduling.approved[cfg.ID] = descriptor
-			p, err := New(Config{Project: cfg, Workflow: workflow}, Dependencies{Scheduling: scheduling, Runner: orchestrator.FakeRunner{}, ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) { return memory.New(memory.Config{}), nil }})
+			p, err := New(Config{Project: cfg, Workflow: workflow}, Dependencies{Scheduling: scheduling, Runner: orchestrator.FakeRunner{}, ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) { return fakehub.New(fakehub.Config{}), nil }})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -400,7 +400,7 @@ func TestTrustedRefIgnoresWorkingBranchPolicyEdits(t *testing.T) {
 		}
 	}
 	path := filepath.Join(root, "WORKFLOW.md")
-	trusted := "---\ntracker:\n  kind: memory\ngate:\n  kind: human_review\nagent:\n  auto_promote:\n    enabled: false\n---\nTrusted instructions.\n"
+	trusted := "---\ntracker:\n  kind: hub_native\ngate:\n  kind: human_review\nagent:\n  auto_promote:\n    enabled: false\n---\nTrusted instructions.\n"
 	if err := os.WriteFile(path, []byte(trusted), 0o600); err != nil {
 		t.Fatal(err)
 	}

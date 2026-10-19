@@ -219,7 +219,7 @@ func TestWorkflowLayoutFixModes(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			workflowPath := filepath.Join(dir, "WORKFLOW.md")
-			if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: memory\n---\nPrompt\n"), 0o640); err != nil {
+			if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n---\nPrompt\n"), 0o640); err != nil {
 				t.Fatalf("WriteFile() error = %v", err)
 			}
 			var stdout bytes.Buffer
@@ -255,7 +255,7 @@ func TestWorkflowLayoutFixJSONDryRun(t *testing.T) {
 
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: memory\n---\nPrompt\n"), 0o644); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n---\nPrompt\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	var stdout bytes.Buffer

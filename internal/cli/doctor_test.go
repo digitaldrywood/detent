@@ -585,7 +585,7 @@ func TestRunDoctorFailsRejectedPinnedRouteModelWithoutChangingModelChoice(t *tes
 		workflowPath := filepath.Join(dir, "WORKFLOW.md")
 		if err := os.WriteFile(workflowPath, []byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 workspace:
   source_root: `+dir+`
 agents:
@@ -676,7 +676,7 @@ func TestCheckDoctorRouteModelsFailsRejectedBackendCommandPin(t *testing.T) {
 
 	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: codex-main
@@ -720,7 +720,7 @@ func TestCheckDoctorRouteModelsProbesRoleBackendCommandPins(t *testing.T) {
 
 	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: codex-code
@@ -1191,12 +1191,13 @@ func TestCheckDoctorProjects(t *testing.T) {
 					return tt.gitErr
 				},
 			}, RuntimeSecret{}, false)
-			for i, check := range got {
-				if check.Name == "Project alpha Human Review policy" {
-					got = append(got[:i], got[i+1:]...)
-					break
+			checks := got[:0]
+			for _, check := range got {
+				if check.Name != "Project alpha Human Review policy" && check.Name != "Project alpha native workflow instructions" {
+					checks = append(checks, check)
 				}
 			}
+			got = checks
 			if len(got) != len(tt.wantStatus) {
 				t.Fatalf("len(checks) = %d, want %d", len(got), len(tt.wantStatus))
 			}
@@ -5084,56 +5085,6 @@ func TestCheckDoctorDailyBudgetAccuracy(t *testing.T) {
 	}
 }
 
-func TestDoctorGitHubLocalReadinessUsesLocalStatusMode(t *testing.T) {
-	t.Parallel()
-
-	workflow := validDoctorWorkflow("/repo")
-	workflow.Tracker.Kind = workflowconfig.TrackerGitHubLocal
-	workflow.Tracker.Repository = "digitaldrywood/detent"
-	workflow.Tracker.LocalSQLite.Path = ".detent/work-items.db"
-	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
-	workflow.Tracker.ObservedStates = []string{"Blocked", "Human Review"}
-	workflow.Tracker.TerminalStates = []string{"Done"}
-
-	got := doctorGitHubReadinessConfig(context.Background(), globalconfig.Project{Workdir: "/repo"}, workflow, doctorDeps{}, RuntimeSecret{}, "/repo")
-	if !got.LocalStatusMode {
-		t.Fatalf("LocalStatusMode = false, want true")
-	}
-	if got.RequireProjectRead || got.RequireProjectStatusWrite || got.RequireIssueFieldStatusWrite || got.RequireLabelStatusWrite || got.RequireIssueComments {
-		t.Fatalf("write/status requirements = %#v, want local-only status mode", got)
-	}
-	if !got.RequireIssueCommentsRead || !got.RequireDependencyMetadataRead || !got.RequirePullRequestRead || !got.RequirePullRequestReviews || !got.RequirePullRequestChecks {
-		t.Fatalf("read requirements = %#v, want GitHub issue/PR/check reads", got)
-	}
-	if len(got.Repositories) != 1 || got.Repositories[0] != "digitaldrywood/detent" {
-		t.Fatalf("Repositories = %#v, want digitaldrywood/detent", got.Repositories)
-	}
-}
-
-func TestCheckDoctorLocalSQLiteTrackerResolvesProjectRelativePath(t *testing.T) {
-	t.Parallel()
-
-	workdir := t.TempDir()
-	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerLocalSQLite
-	cfg.Tracker.LocalSQLite.Path = ".detent/work-items.db"
-
-	var opened string
-	got := checkDoctorLocalSQLiteTracker(context.Background(), "video", globalconfig.Project{Workdir: workdir}, cfg, doctorDeps{
-		openSQLite: func(_ context.Context, path string) (doctorStore, error) {
-			opened = path
-			return fakeDoctorStore{}, nil
-		},
-	})
-	if got.Status != doctorOK {
-		t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorOK, got)
-	}
-	want := filepath.Join(workdir, ".detent", "work-items.db")
-	if opened != want {
-		t.Fatalf("opened path = %q, want %q", opened, want)
-	}
-}
-
 func TestCheckDoctorFilesystemWorkspaceValidatesRootAndOutput(t *testing.T) {
 	t.Parallel()
 
@@ -5333,7 +5284,7 @@ func TestCheckDoctorWorkflowDriftReportsStaleLiveConfig(t *testing.T) {
 
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: memory\n---\ncurrent\n"), 0o600); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n---\ncurrent\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	loadedAt := time.Date(2026, 7, 12, 14, 0, 0, 0, time.UTC)
@@ -6560,7 +6511,7 @@ func TestDoctorNormalizedTimeoutDefaultsToLiveReadinessBudget(t *testing.T) {
 
 func validDoctorWorkflow(sourceRoot string) workflowconfig.Config {
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Workspace.Root = sourceRoot
 	cfg.Budget.BillingMode = workflowconfig.BillingModeMetered
 	cfg.Budget.Enabled = true

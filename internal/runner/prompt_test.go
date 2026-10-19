@@ -61,8 +61,6 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 		{name: "native recovery", kind: config.TrackerHubNative, state: "Rework", want: true, recovery: true},
 		{name: "github recovery", kind: config.TrackerGitHub, state: "Rework", recovery: true},
 		{name: "github", kind: config.TrackerGitHub, state: "In Progress"},
-		{name: "linear", kind: config.TrackerLinear, state: "Rework"},
-		{name: "memory", kind: config.TrackerMemory, state: "In Progress"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -278,7 +276,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	prompt, err := BuildPrompt(config.Workflow{
 		Config: config.Config{
 			Tracker: config.Tracker{
-				Kind:        config.TrackerMemory,
+				Kind:        config.TrackerGitHub,
 				Endpoint:    "memory://local",
 				ProjectSlug: "memory-project",
 			},
@@ -322,7 +320,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"Prompt for digitaldrywood/detent#21 via memory attempt=2 auto=true",
+		"Prompt for digitaldrywood/detent#21 via github attempt=2 auto=true",
 		"metadata=author-1 reviewer-1, reviewer-2 map[Status:Todo]",
 		"## Lessons from prior runs",
 		"Check generator aliases before editing.",
@@ -360,7 +358,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 func TestBuildRoutinePromptUsesConfiguredCriteriaAndProposalContract(t *testing.T) {
 	t.Parallel()
 	prompt, err := BuildRoutinePrompt(config.Workflow{Config: config.Config{
-		Tracker: config.Tracker{Kind: config.TrackerMemory},
+		Tracker: config.Tracker{Kind: config.TrackerHubNative},
 	}}, connector.Issue{Identifier: "detent/routine/dependency-audit"}, RoutineRequest{
 		Name: "dependency-audit", Schedule: "0 3 * * 1", Prompt: "Follow the dependency criteria in WORKFLOW.md.",
 	}, PromptOptions{WorkspacePath: "/tmp/detent", Branch: "main"})

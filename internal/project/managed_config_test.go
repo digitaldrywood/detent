@@ -18,11 +18,11 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -33,11 +33,21 @@ func TestManagedProjectConfiguration(t *testing.T) {
 
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	writeWorkflow := func(path, prompt string) {
+		t.Helper()
+		content := "---\ntracker:\n  kind: github\n  github_status_source: label\n  repository: example-org/example-project\n  api_key: fixture-token\n---\n" + prompt + "\n"
+		if err := os.WriteFile(path+".tmp", []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(path+".tmp", path); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, scenario := range []string{"resume", "resume running", "resume drained", "resume manager drained", "resume native drained", "resume native busy drained", "resume drained restart refused", "resume native", "resume database", "resume restart refused", "resume runtime pause", "resume stale revision", "resume wrong policy", "native policy running", "native policy busy running", "native policy paused", "native policy git drained", "native policy plain drained", "native policy retry drained", "detach", "database detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "apply policy hooks", "apply policy hooks active", "apply policy hooks deferred", "apply policy hooks backend failure", "unapproved policy", "wrong source", "local overlay", "local policy", "local policy overlays", "local policy native", "local policy native busy", "local policy native unapproved", "local policy native wrong source", "binding", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained", "binding running", "binding native running", "binding native paused", "binding native drained", "binding native schedule change"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := initWorkflowSourceRepo(t)
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
-			writeWorkflowSourceFile(t, workflowPath, "Private workflow instructions")
+			writeWorkflow(workflowPath, "Private workflow instructions")
 			commitWorkflowSourceRepo(t, root, "initial workflow")
 			hookReload := strings.HasPrefix(scenario, "apply policy hooks")
 			binding := strings.HasPrefix(scenario, "binding")
@@ -49,7 +59,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				if err := os.WriteFile(workflowPath, []byte("Private workflow instructions\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(root, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: memory\n"), 0600); err != nil {
+				if err := os.WriteFile(filepath.Join(root, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: github\n  github_status_source: label\n  repository: example-org/example-project\n  api_key: fixture-token\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
 				runWorkflowSourceGit(t, root, "add", "detent.yaml")
@@ -58,12 +68,12 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					t.Fatal(err)
 				}
 				otherRoot = initWorkflowSourceRepo(t)
-				writeWorkflowSourceFile(t, filepath.Join(otherRoot, "WORKFLOW.md"), "unrelated")
+				writeWorkflow(filepath.Join(otherRoot, "WORKFLOW.md"), "unrelated")
 				commitWorkflowSourceRepo(t, otherRoot, "unrelated")
 			}
 			if sharedPolicy {
 				otherRoot = initWorkflowSourceRepo(t)
-				writeWorkflowSourceFile(t, filepath.Join(otherRoot, "WORKFLOW.md"), "unrelated")
+				writeWorkflow(filepath.Join(otherRoot, "WORKFLOW.md"), "unrelated")
 				commitWorkflowSourceRepo(t, otherRoot, "unrelated")
 			}
 			cfg, err := globalconfig.DefaultAt(filepath.Join(root, "global.yaml"), globalconfig.WithProjectPathLiterals())
@@ -204,7 +214,9 @@ func TestManagedProjectConfiguration(t *testing.T) {
 						return nil, err
 					}
 				}
-				return New(Config{Project: selected, Workflow: workflow}, Dependencies{Scheduling: scheduling, Runner: worker, WorkAttempts: attempts})
+				return New(Config{Project: selected, Workflow: workflow}, Dependencies{Scheduling: scheduling, Runner: worker, WorkAttempts: attempts, ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
+					return fakehub.New(fakehub.Config{}), nil
+				}})
 			}})
 			if err != nil {
 				t.Fatal(err)
@@ -291,7 +303,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 						t.Fatal(err)
 					}
 				} else {
-					writeWorkflowSourceFile(t, workflowPath, "Changed committed private instructions")
+					writeWorkflow(workflowPath, "Changed committed private instructions")
 				}
 				commitWorkflowSourceRepo(t, root, "changed workflow")
 				if scenario == "local overlay" {
@@ -771,7 +783,7 @@ type managedConfigScheduling struct {
 }
 
 func (s *managedConfigScheduling) ConnectorForProject(id string) (connector.Connector, bool) {
-	return memory.New(memory.Config{}), s.native && id == "selected"
+	return fakehub.New(fakehub.Config{}), s.native && id == "selected"
 }
 
 func (s *managedConfigScheduling) ResolveProjectWorkflow(_ context.Context, id string, workflow workflowconfig.Workflow, _ *policy.RepositorySource) (workflowconfig.Workflow, error) {

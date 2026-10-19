@@ -46,10 +46,9 @@ import (
 )
 
 var (
-	ErrMissingHub       = errors.New("web server requires hub")
-	ErrMissingStore     = errors.New("web server requires store")
-	ErrMissingRegistry  = errors.New("web server requires registry")
-	ErrMissingConnector = errors.New("web server requires connector")
+	ErrMissingHub      = errors.New("web server requires hub")
+	ErrMissingStore    = errors.New("web server requires store")
+	ErrMissingRegistry = errors.New("web server requires registry")
 )
 
 type Dependencies struct {
@@ -258,9 +257,6 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		}
 		if deps.Registry == nil {
 			return nil, ErrMissingRegistry
-		}
-		if deps.Connector == nil {
-			return nil, ErrMissingConnector
 		}
 	}
 
@@ -911,7 +907,7 @@ func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot)
 		InstanceName:          instanceName,
 		Version:               s.version,
 		Build:                 s.build,
-		ConnectorName:         s.connector.Name(),
+		ConnectorName:         s.connectorName(),
 		DashboardURL:          s.dashboardURL,
 		Snapshot:              snapshot,
 		ConfiguredAgents:      agents,
@@ -946,7 +942,7 @@ func (s *Server) dashboardFirstPaintData(ctx context.Context, snapshot telemetry
 		InstanceName:          instanceName,
 		Version:               s.version,
 		Build:                 s.build,
-		ConnectorName:         s.connector.Name(),
+		ConnectorName:         s.connectorName(),
 		DashboardURL:          s.dashboardURL,
 		Snapshot:              snapshot,
 		ConfiguredAgents:      agents,
@@ -1037,7 +1033,7 @@ func (s *Server) projectDashboardDataFromProjects(
 		InstanceName:              instanceName,
 		Version:                   s.version,
 		Build:                     s.build,
-		ConnectorName:             s.connector.Name(),
+		ConnectorName:             s.connectorName(),
 		DashboardURL:              s.dashboardURL,
 		Snapshot:                  scopedSnapshot,
 		ConfiguredAgents:          agents,
@@ -1310,7 +1306,7 @@ func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 		"hub":       configuredStatus(s.hub),
 		"store":     configuredStatus(s.store),
 		"registry":  configuredStatus(s.registry),
-		"connector": configuredStatus(s.connector),
+		"connector": configuredStatus(s.currentConnector()),
 	}
 	orphanedProcesses, orphanErr := s.orphanedAgentProcesses(ctx, latestSnapshot, now)
 	if orphanErr != nil {
@@ -1839,10 +1835,23 @@ func configuredStatus(value any) string {
 }
 
 func (s *Server) connectorName() string {
-	if s.connector == nil {
+	conn := s.currentConnector()
+	if conn == nil {
 		return ""
 	}
-	return s.connector.Name()
+	return conn.Name()
+}
+
+func (s *Server) currentConnector() connector.Connector {
+	if s.connector != nil || s.registry == nil {
+		return s.connector
+	}
+	for _, trackedProject := range s.registry.List() {
+		if conn := trackedProject.Connector(); conn != nil {
+			return conn
+		}
+	}
+	return nil
 }
 
 type healthResponse struct {

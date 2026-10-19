@@ -14,8 +14,9 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -244,12 +245,12 @@ func addWebhookProject(t *testing.T, registry *project.Registry, id string, repo
 	workflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
 	workflow.Tracker.Repository = repository
 	workflow.Tracker.GitHubWebhookSecret = secret
-	trackedProject, err := project.New(project.Config{
+	trackedProject, err := projectfixture.New(project.Config{
 		Project:  globalconfig.Project{ID: id, Workdir: t.TempDir(), Weight: 1},
 		Workflow: workflowconfig.Workflow{Config: workflow, Prompt: "Work the issue."},
-	}, project.Dependencies{Connector: memory.New(memory.Config{})})
+	}, project.Dependencies{Connector: fakehub.New(fakehub.Config{})})
 	if err != nil {
-		t.Fatalf("project.New() error = %v", err)
+		t.Fatalf("projectfixture.New() error = %v", err)
 	}
 	if err := registry.Set(trackedProject); err != nil {
 		t.Fatalf("Registry.Set() error = %v", err)

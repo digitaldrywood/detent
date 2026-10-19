@@ -343,7 +343,7 @@ func newWorkerGitHubPolicy(ctx context.Context, cfg config.Config, projectID str
 		return workerGitHubPolicy{}, err
 	}
 	orchestratorCredential := ""
-	if cfg.Tracker.Kind == config.TrackerGitHub || cfg.Tracker.Kind == config.TrackerGitHubLocal {
+	if cfg.Tracker.Kind == config.TrackerGitHub {
 		orchestratorCredential = cfg.Tracker.APIKey
 	}
 	orchestratorToken, err := resolveWorkerGitHubSecretReference(strings.TrimSpace(orchestratorCredential), lookupEnv)
@@ -555,7 +555,7 @@ func hostGitHubCLIEnviron() []string {
 
 func workerGitHubEndpoints(cfg config.Config) (string, string, string, error) {
 	graphQLEndpoint := ""
-	if cfg.Tracker.Kind == config.TrackerGitHub || cfg.Tracker.Kind == config.TrackerGitHubLocal {
+	if cfg.Tracker.Kind == config.TrackerGitHub {
 		graphQLEndpoint = strings.TrimSpace(cfg.Tracker.Endpoint)
 	}
 	if graphQLEndpoint == "" {

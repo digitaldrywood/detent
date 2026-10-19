@@ -12,10 +12,9 @@ import (
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
-	"github.com/digitaldrywood/detent/internal/connector/local"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestManagerCandidateCoverageAcrossRunsAndRestart(t *testing.T) {
@@ -25,12 +24,11 @@ func TestManagerCandidateCoverageAcrossRunsAndRestart(t *testing.T) {
 
 	t.Parallel()
 	for _, test := range []struct {
-		name                     string
-		local, restart, excluded bool
+		name              string
+		restart, excluded bool
 	}{
 		{name: "memory excluded prefix", excluded: true},
 		{name: "memory restart", restart: true, excluded: true},
-		{name: "sqlite restart", local: true, restart: true, excluded: true},
 		{name: "eligible pages", restart: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -44,21 +42,7 @@ func TestManagerCandidateCoverageAcrossRunsAndRestart(t *testing.T) {
 				}
 			}
 			dir := t.TempDir()
-			var tracker IssueStore
-			if test.local {
-				c, err := local.New(local.Config{Path: filepath.Join(dir, "issues.db"), ProjectID: "detent", Issues: issues})
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() {
-					if err := c.Close(); err != nil {
-						t.Error(err)
-					}
-				})
-				tracker = c
-			} else {
-				tracker = memory.New(memory.Config{Issues: issues, Stateful: true})
-			}
+			tracker := fakehub.New(fakehub.Config{Issues: issues, Stateful: true})
 			cfg := store.Config{Backend: store.BackendSQLite, Path: filepath.Join(dir, "runtime.db")}
 			backend, err := store.Open(t.Context(), cfg)
 			if err != nil {
@@ -161,7 +145,7 @@ func TestManagerCandidateSelectorBudgetFairness(t *testing.T) {
 			tail := admissionIssueFixture("tail", "DD-2", 1, now)
 			tail.State = "Investigate"
 			tail.Labels = []string{"intake"}
-			tracker := &budgetCandidateStore{IssueStore: memory.New(memory.Config{Issues: []connector.Issue{prefix, tail}, Stateful: true}), partial: partial}
+			tracker := &budgetCandidateStore{IssueStore: fakehub.New(fakehub.Config{Issues: []connector.Issue{prefix, tail}, Stateful: true}), partial: partial}
 			backend := openManagerTestStore(t)
 			agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 			settings := admissionTestSettings(tracker, agent)
@@ -215,7 +199,7 @@ func TestManagerPartialReadWithStaleHistory(t *testing.T) {
 			now := time.Date(2026, 9, 13, 0, 0, 0, 0, time.UTC)
 			previous := admissionIssueFixture("previous", "DD-1", 1, now)
 			fresh := admissionIssueFixture("fresh", "DD-2", 1, now)
-			tracker := &staleHistoryBudgetStore{budgetCandidateStore: &budgetCandidateStore{IssueStore: memory.New(memory.Config{Issues: []connector.Issue{previous, fresh}, Stateful: true}), remaining: 1, partial: true}, stale: stale}
+			tracker := &staleHistoryBudgetStore{budgetCandidateStore: &budgetCandidateStore{IssueStore: fakehub.New(fakehub.Config{Issues: []connector.Issue{previous, fresh}, Stateful: true}), remaining: 1, partial: true}, stale: stale}
 			backend := openManagerTestStore(t)
 			agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 			settings := admissionTestSettings(tracker, agent)
@@ -315,7 +299,7 @@ func TestManagerAdmissionUsesAcceptedDependencyFrontier(t *testing.T) {
 				dependent.Labels = []string{"human-owned"}
 			}
 			cohort := []connector.Issue{dependent, dependent}
-			tracker := memory.New(memory.Config{Issues: []connector.Issue{older, frontier, prerequisite}, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{older, frontier, prerequisite}, Stateful: true})
 			settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{})
 			resolver := &dependencyAdmissionTracker{IssueStore: tracker, issues: []connector.Issue{prerequisite}}
 			if tt.prerequisite == "ambiguous" {

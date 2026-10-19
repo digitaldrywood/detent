@@ -25,8 +25,8 @@ func TestBuildCreatesIsolatedRuntimeDefaults(t *testing.T) {
 	if runtime.DBPath != defaultDBPath || runtime.DBMode != "memory" {
 		t.Fatalf("DB = %q mode %q, want :memory: memory", runtime.DBPath, runtime.DBMode)
 	}
-	if runtime.TrackerMode != TrackerMemory {
-		t.Fatalf("TrackerMode = %q, want %q", runtime.TrackerMode, TrackerMemory)
+	if runtime.TrackerMode != TrackerHubNative {
+		t.Fatalf("TrackerMode = %q, want %q", runtime.TrackerMode, TrackerHubNative)
 	}
 	if runtime.Global.Path != runtime.ConfigPath {
 		t.Fatalf("Global.Path = %q, want %q", runtime.Global.Path, runtime.ConfigPath)
@@ -44,7 +44,7 @@ func TestBuildCreatesIsolatedRuntimeDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadWorkflow() error = %v", err)
 	}
-	if workflow.Config.Tracker.Kind != workflowconfig.TrackerMemory {
+	if workflow.Config.Tracker.Kind != workflowconfig.TrackerHubNative {
 		t.Fatalf("workflow tracker = %q, want memory", workflow.Config.Tracker.Kind)
 	}
 	if workflow.Config.Workspace.Root != runtime.WorkspaceRoot {
@@ -194,7 +194,7 @@ func TestBuildKanbanDemoCreatesIntegrationWorkflow(t *testing.T) {
 	if runtime.Demo != DemoKanban {
 		t.Fatalf("Demo = %q, want %q", runtime.Demo, DemoKanban)
 	}
-	if runtime.TrackerMode != TrackerMemory || runtime.FixturePath != "" {
+	if runtime.TrackerMode != TrackerHubNative || runtime.FixturePath != "" {
 		t.Fatalf("TrackerMode = %q FixturePath = %q, want memory demo without external fixture", runtime.TrackerMode, runtime.FixturePath)
 	}
 
@@ -224,7 +224,7 @@ func TestBuildKanbanDemoCreatesIntegrationWorkflow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadWorkflow(%s) error = %v", project.Workflow, err)
 		}
-		if workflow.Config.Tracker.Kind != workflowconfig.TrackerMemory {
+		if workflow.Config.Tracker.Kind != workflowconfig.TrackerHubNative {
 			t.Fatalf("workflow tracker = %q, want memory", workflow.Config.Tracker.Kind)
 		}
 		if workflow.Config.Server.Kanban.Mode != workflowconfig.KanbanModeIntegration {

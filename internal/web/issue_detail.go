@@ -18,7 +18,7 @@ func (s *Server) issueDetail(c echo.Context) error {
 	projectID := strings.TrimSpace(c.Param("project_id"))
 	issueRef := strings.TrimSpace(c.Param("issue_ref"))
 	trackedProject, ok := s.registry.Get(project.ID(projectID))
-	if !ok || trackedProject.Workflow().Config.Tracker.Kind != workflowconfig.TrackerLocalSQLite && trackedProject.Workflow().Config.Tracker.Kind != workflowconfig.TrackerHubNative {
+	if !ok || trackedProject.Workflow().Config.Tracker.Kind != workflowconfig.TrackerHubNative {
 		return echo.NewHTTPError(http.StatusNotFound, "Issue not found")
 	}
 
