@@ -97,9 +97,7 @@ func (s *Service) requireConversationScope(extra ...apiScope) echo.MiddlewareFun
 // requireConversationOrganization authenticates an operator or admin
 // credential for the organization-level listing, which has no :project.
 // requireAPIScope cannot be reused: in hosted mode it rejects session
-// credentials outside the native project base. The organization check is
-// the hosted tenant for sessions, and at least one grant in the
-// organization for tokens (instance administrators need none).
+// credentials outside the native project base.
 func (s *Service) requireConversationOrganization() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -143,7 +141,7 @@ func (s *Service) authorizeConversationOrganization(ctx context.Context, scope n
 	var count int
 	query := "SELECT count(*) FROM organizations WHERE id = ?"
 	args := []any{scope.organization}
-	if scope.credential.Scope != apiScopeAdmin || scope.credential.NativeOnly {
+	if scope.credential.Scope != apiScopeAdmin && scope.credential.Scope != apiScopeOperator || scope.credential.NativeOnly {
 		query = "SELECT count(*) FROM token_grants WHERE token_id = ? AND organization_id = ?"
 		args = []any{scope.credential.ID, scope.organization}
 	}

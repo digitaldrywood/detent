@@ -103,12 +103,14 @@ func TestSelfHostedModelSelection(t *testing.T) {
 		{"administrator", testHubAdminToken, http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			request.ExpectedRevision = read(org, testHubAdminToken).Revision
+			request.IdempotencyKey = "organization-default-" + test.name
 			for _, method := range []string{http.MethodGet, http.MethodPut} {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, method, org, test.token, request), test.status)
 			}
 		})
 	}
-	if saved := read(org, testHubAdminToken); saved.Revision != initial.Revision+1 || saved.Effective.Model("normal") != "organization-model" {
+	if saved := read(org, testHubAdminToken); saved.Revision != initial.Revision+2 || saved.Effective.Model("normal") != "organization-model" {
 		t.Fatalf("organization default = %+v", saved)
 	}
 	for _, test := range []struct {
