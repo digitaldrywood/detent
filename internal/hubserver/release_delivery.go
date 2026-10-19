@@ -195,7 +195,7 @@ func (s *Service) associateReleasePickCommand(ctx context.Context, tx *sql.Tx, s
 	if err != nil {
 		return nil, err
 	}
-	approved, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
+	approved, err := requireProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
 		return nil, err
 	}

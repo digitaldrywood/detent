@@ -95,8 +95,8 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
 		issueContract := nativeWorkIssueContract{RequiredSections: contract.Sections}
-		approval, approvalErr := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
-		if approvalErr == nil && approval.Policy.Authored != nil {
+		approval, found, approvalErr := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+		if approvalErr == nil && found && approval.Policy.Authored != nil {
 			repairContract, err := config.ResolvePolicyIssueContract(approval.Policy)
 			if err != nil {
 				return operatortool.Result{}, safeWorkReadError(err)

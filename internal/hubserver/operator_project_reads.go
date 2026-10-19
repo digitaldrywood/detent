@@ -78,9 +78,10 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		var policyScope string
 		policyScope, err = operatorPolicyScope(ctx, s.database.reader, scope, r.RepositoryPolicy)
 		if err == nil {
-			value, err = readProjectPolicyHistory(ctx, s.database.reader, policyScope, r.Limit, r.After, false)
-			if errors.Is(err, errNoApprovedRepositoryPolicy) {
-				return operatortool.Result{}, &operatortool.ConflictError{Code: "policy_mismatch", Message: "No approved repository policy exists for this project"}
+			var approval policy.Approval
+			approval, err = readProjectPolicyHistory(ctx, s.database.reader, policyScope, r.Limit, r.After, false)
+			if err == nil {
+				value, err = s.projectPolicyRead(ctx, s.database.reader, policyScope, approval, true)
 			}
 		}
 	case "project_secret_metadata":
@@ -121,7 +122,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		Data           any                    `json:"data"`
 	}{scope.organization, scope.project, s.config.now().UTC(), value}
 	if call.Name == "get_project_policy" {
-		approval, ok := value.(policy.Approval)
+		view, ok := value.(projectPolicyRead)
 		if !ok {
 			return operatortool.Result{}, errProjectServiceUnavailable
 		}
@@ -130,7 +131,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		if err != nil {
 			return operatortool.Result{}, err
 		}
-		page.Data, err = boundedProjectPolicyHistory(approval, operatortool.MaxResultBytes-len(envelope)+2)
+		page.Data, err = boundedProjectPolicyHistory(view, operatortool.MaxResultBytes-len(envelope)+2)
 		if err != nil {
 			return operatortool.Result{}, err
 		}
@@ -138,7 +139,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 	return hubProjectResult(page)
 }
 
-func boundedProjectPolicyHistory(approval policy.Approval, budget int) (policy.Approval, error) {
+func boundedProjectPolicyHistory(approval projectPolicyRead, budget int) (projectPolicyRead, error) {
 	history, next := approval.History, approval.HistoryNext
 	approval.History, approval.HistoryNext = nil, ""
 	for i, entry := range history {

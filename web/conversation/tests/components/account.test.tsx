@@ -8,6 +8,7 @@
 // behaviour rather than the client it would otherwise be wired to.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
+import * as Schema from "effect/Schema";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
@@ -40,8 +41,10 @@ import { hubUrlNamesOrganization, parseCapacity, runnerNameFits, registerCommand
 import { EntrySignIn } from "../../src/app/entry/EntryScreens.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
 import { applyHubPaths, resetHubPaths } from "../../src/runtime/basePath.ts";
-import { noApprovedPolicy, saveMessage, WorkflowSettings, ProjectDeletionSettings } from "../../src/app/account/ProjectSettings.tsx";
+import { saveMessage, WorkflowSettings, ProjectDeletionSettings } from "../../src/app/account/ProjectSettings.tsx";
 import { allowanceRows, allowanceLabel } from "../../src/app/settings/Settings.tsx";
+import emptyApproval from "../../src/contracts/fixtures/account-policy-empty.json";
+import { PolicyApproval } from "../../src/contracts/account.ts";
 import approval from "../../src/contracts/fixtures/account-policy.json";
 import { WorkflowRevisions } from "../../src/app/account/WorkflowRevisions.tsx";
 
@@ -740,17 +743,11 @@ describe("the project settings", () => {
     expect(screen.getByText(/Controlled by acme\/example-project: detent.yaml at revision abc123/)).toBeTruthy();
   });
 
-  it("reads both shapes of \"nothing is approved\" as an answer, not a failure", () => {
-    expect(
-      noApprovedPolicy(new AccountError({ status: 404, code: "not_found", message: "" })),
-    ).toBe(true);
-    // The hosted preview answers this for a project with no matching approval.
-    expect(
-      noApprovedPolicy(new AccountError({ status: 409, code: "policy_mismatch", message: "" })),
-    ).toBe(true);
-    expect(
-      noApprovedPolicy(new AccountError({ status: 503, code: "unavailable", message: "" })),
-    ).toBe(false);
+  it("reads a successful policy response with nothing approved", () => {
+    const result = Schema.decodeUnknownSync(PolicyApproval)(emptyApproval);
+    expect(result.policy).toBeNull();
+    expect(result.history).toEqual([]);
+    expect(result.observed_policies).toEqual([]);
   });
 
   it("tells the reader to look again after a revision conflict, and never to retry blind", () => {
