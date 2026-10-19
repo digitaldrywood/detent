@@ -145,6 +145,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 
 func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	s.registerOnboardingRoutes(e)
+	e.POST(nativeBase+"/local-board-import", s.importLocalBoard, s.requireNativeScope(apiScopeOperator))
 	s.registerArtifactRoutes(e)
 	s.registerCloudAttachmentRoutes(e)
 	s.registerAttemptDiffBodyRoutes(e)
