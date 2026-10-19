@@ -939,7 +939,7 @@ func TestSafeNativeWorkError(t *testing.T) {
 			}
 			response := httptest.NewRecorder()
 			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/work-items", nil), response)
-			service := &Service{config: Config{Hosted: &HostedConfig{}}}
+			service := &Service{config: Config{Hosted: &HostedConfig{}, Logger: discardLogger()}}
 			if err := service.nativeAPIError(context, cause); err != nil {
 				t.Fatal(err)
 			}
@@ -974,7 +974,11 @@ func TestSafeNativeWorkError(t *testing.T) {
 			}
 			var failure apiErrorResponse
 			decodeHubResponse(t, response, &failure)
-			if failure.Message != "The requested operation is unavailable" && failure.Message != "Native operation could not be completed" {
+			want := "Native operation could not be completed"
+			if test.name == "private refusal" {
+				want = "Unprocessable Entity: invalid request"
+			}
+			if failure.Message != want {
 				t.Fatalf("hosted private failure=%s", response.Body.String())
 			}
 		})

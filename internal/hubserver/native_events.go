@@ -249,12 +249,7 @@ func (s *Service) nativeRunEventError(c echo.Context, request tracker.NativeRunE
 		if !validNativeID(item, "wi") {
 			item = ""
 		}
-		reason := rejection.DiagnosticError()
-		if failure.publicMessage {
-			reason = failure.Message
-		}
-		s.config.Logger.Warn("native run event rejected", "code", failure.Code,
-			"category", rejection.Category, "field", rejection.Field, "reason", reason, "route", c.Path(),
+		return s.nativeAPIError(c, err, "category", rejection.Category, "field", rejection.Field,
 			"organization", scope.organization, "project", scope.project, "work_item", item, "attempt", attempt)
 	}
 	return s.nativeAPIError(c, err)

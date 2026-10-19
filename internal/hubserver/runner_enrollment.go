@@ -226,10 +226,7 @@ func (s *Service) createRunnerEnrollment(c echo.Context) error {
 	}
 	value, err := s.createRunnerEnrollmentCommand(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, request)
 	if err != nil {
-		var failure *nativeError
-		if errors.As(err, &failure) {
-			s.config.Logger.WarnContext(c.Request().Context(), "runner enrollment request rejected", "method", c.Request().Method, "route", c.Path(), "error", failure.Code+": "+failure.Message)
-		}
+
 		return s.nativeAPIError(c, err)
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
