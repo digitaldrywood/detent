@@ -329,7 +329,7 @@ func (s *Service) establishSession(c echo.Context, identity auth.Identity) (acco
 	if _, err := s.auth.store.db.ExecContext(ctx, "UPDATE sessions SET expires_at = ? WHERE token_hash = ?", formatTime(s.config.now().Add(sessionLifetime)), hash); err != nil {
 		return accountSession{}, err
 	}
-	if err := s.auth.audit(ctx, identity.Subject, "", "session_started"); err != nil {
+	if err := s.recordSignIn(ctx, identity); err != nil {
 		return accountSession{}, err
 	}
 	s.setCookie(c, "session", token, s.config.now().Add(sessionLifetime))
