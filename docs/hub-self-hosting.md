@@ -92,13 +92,136 @@ their own outbound access. These are customer-selected endpoints, not Detent
 Cloud dependencies. Artifact service outbound access is limited to the selected
 Hub and object store (plus any explicitly selected credential provider).
 
-For GitHub compatibility, remove `--github-disabled` only after configuring
-GitHub credentials for the dedicated service user and, if used, a webhook HMAC
-secret through the existing CLI environment options. Allow GitHub API traffic
-and the separately selected Git transport. Follow [GitHub profiles](github-profiles.md)
-for import, cutover and native GitHub intake. Hosted deployments use the product
-App credentials described there; Cloud comments remain private. The example service's `ProtectHome` means interactive login
-files in a human home directory are deliberately unavailable.
+For GitHub integration, choose one of the modes below. Allow GitHub API traffic
+from whichever process owns intake and the separately selected Git transport
+from runners. Follow [GitHub profiles](github-profiles.md) for import, cutover
+and field ownership; Cloud comments remain private.
+
+## GitHub modes
+
+These modes use existing Hub flags and environment variables; no additional
+configuration keys or token scopes are required. The example service keeps
+GitHub disabled by default. Hub credentials and runner credentials are separate.
+
+| Mode | Use when | GitHub credentials on the Hub |
+| --- | --- | --- |
+| Hub disabled, runner fallback | Native-only operation or runner-owned intake and PR landing | None |
+| Hub CLI fallback | An interactive Hub or a service with an explicitly provisioned CLI login | The Hub process's existing `gh` login |
+| Operator-owned GitHub App | A service needs independent GitHub access and optional webhook intake | App ID, private key and, for webhooks, a shared secret |
+
+### Enable manual intake
+
+Before selective intake or historical import, an administrator must enable manual
+import on the project. Read
+`GET /api/v2/organizations/{organization}/projects/{project}/integration`, then
+`PUT` to the same URL with a fresh `idempotency_key`, `expected_revision` set to
+the returned decimal-string `revision`, and `intake: "manual"`. Include the
+current `projection` and `repository_enabled` values to preserve those settings.
+See [GitHub integration settings](github-profiles.md) for the request contract.
+
+Confirm `manual_import_enabled: true` in the response. A bound native project
+still reports `intake: "automatic"` for webhook intake; that value alone does
+not enable manual import. Enabling manual import does not disable webhooks.
+
+### Hub disabled: runner fallback
+
+Keep `--github-disabled` in the service's `detent hub serve` command. It bypasses
+Hub credential lookup and disables Hub import, outbox, reconciliation and webhook
+verification, even if App variables are present. Pure native work needs no
+GitHub repository or login.
+
+For a native project that uses GitHub, associate the runner's matching checkout,
+[enable manual intake](#enable-manual-intake), and use
+[selective onboarding issue intake](hub-api.md#selective-onboarding-issue-intake).
+An enrolled runner with access to that repository supplies its existing `gh`
+credentials when Hub transport is unavailable; `runner_id` can select it.
+PR landing continues through the configured runner GitHub integration and its
+existing credentials and repository protections. Disabling Hub GitHub transport
+does not disable that runner integration or bypass required reviews/checks.
+Intake is explicitly requested, not an idle poll for new native issues; Hub
+GitHub outbox writes are unavailable in this mode.
+
+### Hub CLI fallback
+
+Remove `--github-disabled` and leave both `DETENT_HUB_GITHUB_APP_ID` and
+`DETENT_HUB_GITHUB_APP_PRIVATE_KEY` unset. On self-hosted startup the Hub runs
+`gh auth token` and uses the returned token for its import, outbox and periodic
+reconciliation clients. The `gh` executable must be on the Hub process's PATH,
+and its login must be accessible to that process. Failure to resolve a token
+fails startup. This mode reuses an existing login; it does not require a new PAT
+or additional scopes.
+
+An interactive login as a human does not provision the `detent-hub` service
+user. The example unit has `ProtectHome=true`, so credentials under a human home
+directory are unavailable, and a service may also lack the interactive user's
+keyring session. If using this mode in a service, provision an existing authorized
+CLI credential/configuration for the service identity in its accessible private
+state, without weakening `ProtectHome` or copying a human's home directory.
+Otherwise choose runner fallback or the App mode. Without a webhook secret the
+webhook endpoint is unavailable; outbound polling is described below.
+
+### Operator-owned GitHub App
+
+Register your own App using GitHub's [registration guide](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app).
+You can own it under a personal account and install it on selected repositories
+you control; organization administration is not a prerequisite for self-hosting.
+An organization installation remains subject to that organization's existing App
+approval policy. The hosted `detent-cloud` App and its Cloud webhook remain
+unchanged; a self-hosted Hub uses its own App and origin.
+
+Use the existing Detent App repository permissions: **Issues** and **Pull
+requests** read/write; **Contents**, **Checks**, **Commit statuses** and
+**Metadata** read-only. No organization permissions or user OAuth token are
+needed for Hub intake. Install the App on the repositories bound to the Hub's
+projects, for example `example-org/example-project`. Generate an RSA private
+key in the App settings and deliver these values through private service secret
+storage (such as the existing root-only `credentials.env`):
+
+| Environment variable | Value |
+| --- | --- |
+| `DETENT_HUB_GITHUB_APP_ID` | Numeric App ID, not its client ID or installation ID |
+| `DETENT_HUB_GITHUB_APP_PRIVATE_KEY` | PEM private key contents, not a filename; literal `\n` escapes are also accepted |
+| `DETENT_HUB_GITHUB_WEBHOOK_SECRET` | High-entropy shared webhook secret, identical to the App's configured secret |
+
+Remove `--github-disabled` from the service command. Both App ID and private key
+must be nonempty to select App transport; setting only one falls back to the
+CLI mode. The Hub resolves repository installations and refreshes installation
+tokens itself; no installation-ID variable is needed. Keep secrets out of shell
+arguments, source control and logs. The Hub reads the webhook secret from
+`DETENT_HUB_GITHUB_WEBHOOK_SECRET` by default; `--github-webhook-secret-env`
+selects a different environment variable name, not the secret value.
+
+In the App settings, activate webhooks, keep SSL verification enabled, set the
+same secret, and subscribe to **Issues** (`issues`) and **Issue comment**
+(`issue_comment`). Set the webhook URL to your reachable HTTPS origin followed
+by `/api/v1/webhooks/github`, for example
+`https://hub.example.com/api/v1/webhooks/github`. The self-hosted Hub verifies
+the GitHub HMAC signature itself. Bound native projects receive new issues in
+Triage; later source updates follow the ownership rules in GitHub profiles.
+
+### Webhook reachability and operation without webhooks
+
+GitHub cannot deliver to a loopback-only Hub. A public HTTPS reverse proxy or
+operator-managed HTTPS tunnel must forward the webhook path to the Hub, preserving
+the request body and GitHub signature/delivery/event headers. Use the existing
+[Caddy example](examples/hub/Caddyfile) or equivalent; keep the backend bound with
+`--listen 127.0.0.1:7777` and add `--trusted-proxy` when the proxy terminates TLS.
+That flag does not create a tunnel, TLS or firewall rules. Keep the backend
+private and the other API routes protected by scoped bearer authentication;
+GitHub webhook requests authenticate with their signature, not a Hub API token.
+
+To stay loopback-only, leave the App webhook inactive and omit the webhook
+secret. With either Hub CLI or App credentials, compatibility projects still
+receive periodic issue reconciliation: `--reconcile-interval` defaults to 10
+minutes, and `--full-repair-interval` to 24 hours, with a full repair at startup.
+These existing outbound reads need no inbound endpoint. Native projects skip
+issue reconciliation: it does **not** discover new native GitHub issues.
+Without reachable webhooks, [enable manual intake](#enable-manual-intake) before
+periodically requesting the existing selective intake operation linked above
+(using the Hub transport or runner fallback), or use
+explicit [historical import](github-profiles.md#import-and-inspect) with Hub
+credentials. There is no built-in periodic native issue-intake poll; automatic
+new-issue intake requires reachable webhooks.
 
 ## Authentication, projects and runners
 
