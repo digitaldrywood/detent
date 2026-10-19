@@ -13,6 +13,66 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 )
 
+func TestPolicyApprovalDocumentation(t *testing.T) {
+	const begin = "<!-- BEGIN POLICY APPROVAL RULE -->"
+	const end = "<!-- END POLICY APPROVAL RULE -->"
+	readDocument := func(t *testing.T, path string) string {
+		t.Helper()
+		content, err := os.ReadFile(filepath.Join("..", "..", "..", path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(content)
+	}
+	readRule := func(t *testing.T, path string) string {
+		t.Helper()
+		text := readDocument(t, path)
+		if strings.Contains(strings.Join(strings.Fields(text), " "), "approving the repository policy the runner reports") {
+			t.Errorf("%s still requires approval of runner-reported repository configuration", path)
+		}
+		if strings.Count(text, begin) != 1 || strings.Count(text, end) != 1 {
+			t.Fatalf("%s must contain exactly one policy approval rule", path)
+		}
+		_, rule, _ := strings.Cut(text, begin)
+		rule, _, found := strings.Cut(rule, end)
+		if !found || strings.TrimSpace(rule) == "" {
+			t.Fatalf("%s has an empty or unterminated policy approval rule", path)
+		}
+		return strings.Join(strings.Fields(rule), " ")
+	}
+	canonical := readRule(t, "docs/api-mcp-setup.md")
+	for _, path := range []string{"README.md", "docs/cloud-onboarding.md"} {
+		t.Run(path, func(t *testing.T) {
+			if got := readRule(t, path); got != canonical {
+				t.Errorf("%s policy approval rule differs from docs/api-mcp-setup.md", path)
+			}
+		})
+	}
+	t.Run("README setup prompt", func(t *testing.T) {
+		_, prompt, found := strings.Cut(readDocument(t, "README.md"), "```text\n")
+		if !found {
+			t.Fatal("README setup prompt is missing")
+		}
+		prompt, _, found = strings.Cut(prompt, "```")
+		if !found {
+			t.Fatal("README setup prompt is unterminated")
+		}
+		prompt = strings.Join(strings.Fields(prompt), " ")
+		for _, guidance := range []string{
+			"Repository configuration reports do not require approval before dispatch.",
+			"Explicit approval is required for administrative configuration adoption",
+			"docs/api-mcp-setup.md",
+			"get_project_policy",
+			"get_onboarding",
+			"approve_project_policy",
+		} {
+			if !strings.Contains(prompt, guidance) {
+				t.Errorf("README setup prompt omits policy approval guidance: %s", guidance)
+			}
+		}
+	})
+}
+
 func TestConfigDocumentation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("repository configuration generation and type checking")

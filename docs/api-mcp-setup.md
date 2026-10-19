@@ -48,12 +48,87 @@ returns an explicit constraint; these calls never start or enable a board.
 Verify `registered` and `runtime_registered` through a
 fresh read after a saved removal; a command retry returns its original receipt.
 
+## Policy approval without the web app
+
+<!-- BEGIN POLICY APPROVAL RULE -->
 Repository configuration reports do not require approval before dispatch.
+Trusted workflow definitions from the bound repository's default-branch history
+apply automatically. Explicit approval is required for administrative
+configuration adoption, such as applying an external local definition or changing
+local-binding permission. Configuration identity changes do not revoke active
+leases or invalidate recovered source.
+
+On a self-hosted Hub without the web app, read `get_project_policy` and
+`get_onboarding`, then use `approve_project_policy` with the current
+`expected_policy_id` and the chosen `observed_policy_id`. The REST equivalent is
+GET and PUT on `/api/v2/organizations/{organization}/projects/{project}/policy`,
+with GET on the project's `/onboarding` for observed candidates. Approval needs
+administrator authority and preserves revision checks. Cloud owners and admins
+can continue approving in **Settings > Integrations**.
+<!-- END POLICY APPROVAL RULE -->
+
 A difference between the selected and effective configuration remains diagnostic
 information; it does not by itself block claims, revoke leases or invalidate
 recovered source. The configuration identity records what an attempt used.
 Legacy configuration-management operations remain separate from dispatch and
 still require their documented administrative authority and revisions.
+
+Use the Hub's organization-scoped MCP connection (the `projects` toolset) with
+an Admin key authorized for the project. An enrolled runner's credential reports
+configuration; it cannot approve it. No configured project list on the runner
+is needed. Use the native project ID, such as `prj_example`.
+
+1. Call `get_project_policy` with `{"project_id":"prj_example"}`. Its `data`
+   contains the current approval; copy `data.policy.policy_id` for
+   `expected_policy_id`. If it returns `policy_mismatch` because no approval
+   exists, use an empty string for first approval.
+2. Call `get_onboarding` for the same project. Inspect
+   `data.observed_policies` and the selected descriptor, source revision and
+   reporting runners. Choose its `policy.policy_id` as `observed_policy_id`.
+   Conflicting or previously approved reports are not new approval candidates;
+   resolve the configuration conflict rather than approving a stale report.
+   An empty candidate list can mean the trusted report already applied; read
+   the current policy again instead of inventing a candidate.
+3. Call `approve_project_policy` using the same project and a unique
+   `request_id`, with the following `input` (replace the example policy IDs
+   with the values just read; use `""` for `expected_policy_id` on first approval):
+
+   ```json
+   {
+     "project_id": "prj_example",
+     "request_id": "approve-shared-configuration-1",
+     "input": {
+       "expected_policy_id": "policy_current",
+       "observed_policy_id": "policy_selected"
+     }
+   }
+   ```
+
+   Omit `input.policy` when approving by reference. Alternatively, supply the
+   complete, unchanged `local_project_configuration.selected_policy` as
+   `input.policy`, preserving every field; do not reconstruct its identity.
+4. Read `get_project_policy` again to confirm the approved identity and
+   provenance. Approval and runner adoption are separate: use
+   `local_project_configuration` to inspect adoption if applying a local
+   configuration. On a revision conflict, read the current state and review
+   the candidate again before submitting a new request. Exact retries use
+   the same `request_id` and unchanged arguments.
+
+For a bearer-authenticated self-hosted Hub, use the instance administrator
+credential for REST approval. GET
+`/api/v2/organizations/{organization}/projects/{project}/policy` returns the
+approval directly (`policy.policy_id`); GET the same project's `/onboarding`
+returns `observed_policies` directly. PUT to `/policy` takes the two fields
+inside `input` above as its top-level JSON body, without the MCP envelope.
+The Hub resolves the stored descriptor and checks `expected_policy_id`
+atomically. A stale expected identity returns HTTP 409; reread before replacing
+it. On hosted Cloud, the web app uses the owner/admin
+`/onboarding/policy` route; the instance-admin `/policy` PUT is not served there.
+
+The `hub policy` CLI resolves a configured project from a global project list;
+it is not the approval path for enrolled runners. Use the API/MCP procedure
+above for a native project ID. The legacy policy-revocation operation returns
+HTTP 410; pause or drain the runner, or remove project access, to stop execution.
 
 For an external local definition without trusted repository provenance, the
 approved authored Cloud descriptor supplies shared behavior. Private overlays
@@ -66,8 +141,9 @@ restarts. `applied: true` confirms runtime adoption; `saved: false` means no loc
 configuration file was changed. Cloud readback retains the completed receipt,
 including refusal constraints, in `last_operation` after later heartbeats.
 Trusted repository definitions retain their repository authority: commit the
-intended shared files at the configured source revision and approve that
-descriptor. An authored `source_revision` digest is not a Git commit.
+intended shared files to the bound repository's default branch so the runner
+can report and apply that revision automatically. An authored `source_revision`
+digest is not a Git commit.
 
 For the existing `worker.allow_local_binding` setting, read the effective
 `allow_local_binding` and the complete `local_binding_policy` or

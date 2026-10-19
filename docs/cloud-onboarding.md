@@ -189,7 +189,27 @@ Only checkbox acknowledgments of these local checks are saved in Cloud; they are
 explicitly user-reported and do not override runtime validation.
 
 Runners report the configuration resolved from `detent.yaml` and `WORKFLOW.md`.
-Repository configuration changes do not require a separate execution approval.
+
+<!-- BEGIN POLICY APPROVAL RULE -->
+Repository configuration reports do not require approval before dispatch.
+Trusted workflow definitions from the bound repository's default-branch history
+apply automatically. Explicit approval is required for administrative
+configuration adoption, such as applying an external local definition or changing
+local-binding permission. Configuration identity changes do not revoke active
+leases or invalidate recovered source.
+
+On a self-hosted Hub without the web app, read `get_project_policy` and
+`get_onboarding`, then use `approve_project_policy` with the current
+`expected_policy_id` and the chosen `observed_policy_id`. The REST equivalent is
+GET and PUT on `/api/v2/organizations/{organization}/projects/{project}/policy`,
+with GET on the project's `/onboarding` for observed candidates. Approval needs
+administrator authority and preserves revision checks. Cloud owners and admins
+can continue approving in **Settings > Integrations**.
+<!-- END POLICY APPROVAL RULE -->
+
+See [policy approval without the web app](api-mcp-setup.md#policy-approval-without-the-web-app)
+for the complete API/MCP procedure.
+
 Edit validation, review, auto-promotion and merge settings in the repository;
 the runner reports the resulting configuration when it reloads. Configuration
 identities remain attached to attempts and published source for provenance.
@@ -209,7 +229,7 @@ credential, open or look up pull requests, or ask the agent for Workpad comments
 it opens the native Change Request from the attempt's commits after a successful
 run, and the local gate is the CI. Git transport (clone, fetch) still works. The
 agent prompt ends with a native completion contract that overrides GitHub steps
-in `WORKFLOW.md`. `detent doctor` and `detent hub policy inspect` warn when the
+in `WORKFLOW.md`. `detent doctor` warns when the
 repository `WORKFLOW.md` still describes GitHub steps; remove them from a
 native project's workflow. Setting `worker.github_token` explicitly in the
 project is the only way to give its workers GitHub access.
