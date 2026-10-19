@@ -73,14 +73,14 @@ func (s *Service) setProjectSpriteAllocation(c echo.Context) error {
 func updateProjectSpriteAllocation(request projectSpriteAllocationRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
 	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		if request.DesiredCount < 0 || request.ExpectedRevision < 0 {
-			return nil, nativeInvalid("Sprite desired count and expected revision must be nonnegative")
+			return nil, spritePoolInvalid("Sprite desired count and expected revision must be nonnegative")
 		}
 		var configured int
 		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM organization_sprite_pools WHERE organization_id=?`, scope.organization).Scan(&configured); err != nil {
 			return nil, err
 		}
 		if configured == 0 {
-			return nil, nativeInvalid("Configure the organization Sprite pool before allocating project members")
+			return nil, spritePoolInvalid("Configure the organization Sprite pool before allocating project members")
 		}
 		current, err := readProjectSpriteAllocation(ctx, tx, scope)
 		if err != nil {

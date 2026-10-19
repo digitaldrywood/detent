@@ -39,6 +39,7 @@ func TestOperatorRevisionSchemaContract(t *testing.T) {
 		"bind_native_repository":                      &operatortool.RepositoryInput{},
 		"start_git_hub_import":                        &operatortool.ImportStartInput{},
 		"advance_git_hub_import":                      &operatortool.ImportAdvanceInput{},
+		operatortool.UpdateProjectSpriteAllocation:    &operatortool.SpriteAllocationInput{},
 		"patch_project_action":                        &projectActionPatch{},
 		"create_project_action_run":                   &workspaceToolRequest{},
 	}

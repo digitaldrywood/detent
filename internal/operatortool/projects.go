@@ -13,6 +13,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/usagecost"
 )
 
+const (
+	GetSpritePool                 = "get_sprite_pool"
+	UpdateSpritePool              = "update_sprite_pool"
+	GetProjectSpriteAllocation    = "get_project_sprite_allocation"
+	UpdateProjectSpriteAllocation = "update_project_sprite_allocation"
+)
+
 // ProjectRequest keeps business retry identity separate from protocol IDs and
 // authority. Input is a concrete application input, never an operation proxy.
 type ProjectRequest[T any] struct {
@@ -42,6 +49,19 @@ type OnboardingInput struct {
 }
 type SpriteUsageInput struct {
 	Observations []usagecost.Observation `json:"observations"`
+}
+type SpritePoolInput struct {
+	Placement     *policy.Placement `json:"placement,omitempty"`
+	Bootstrap     *string           `json:"bootstrap,omitempty"`
+	IsolationTier *string           `json:"isolation_tier,omitempty"`
+	MinRunners    int               `json:"min_runners"`
+	MaxRunners    int               `json:"max_runners"`
+	IdleSeconds   int               `json:"idle_seconds,omitempty"`
+	Revision      int64             `json:"revision"`
+}
+type SpriteAllocationInput struct {
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	DesiredCount     int              `json:"desired_count"`
 }
 type IntegrationInput struct {
 	DuplicateChallenge *bool                  `json:"duplicate_challenge,omitempty"`
@@ -107,12 +127,12 @@ type SummaryInput struct {
 // ProjectCatalog includes only named, typed operations. Browser setup tools
 // return navigation and requirements without accepting credentials or file paths.
 func ProjectCatalog() []Definition {
-	reads := []string{"list_projects", "get_native_project", "get_onboarding", "get_project_integration", "get_cutover_receipt", "get_git_hub_import", "list_git_hub_import_records", "get_git_hub_batch", "get_project_policy", "project_secret_metadata", "repository_freshness", "project_settings", "project_setup", "demo_setup_scenarios"}
+	reads := []string{"list_projects", "get_native_project", "get_onboarding", "get_project_integration", "get_cutover_receipt", "get_git_hub_import", "list_git_hub_import_records", "get_git_hub_batch", "get_project_policy", "project_secret_metadata", "repository_freshness", "project_settings", "project_setup", "demo_setup_scenarios", GetSpritePool, GetProjectSpriteAllocation}
 	out := make([]Definition, 0, len(reads)+14)
 	for _, name := range reads {
 		schema := projectSchema(reflect.TypeFor[ProjectReadRequest]())
 		required := []string{"project_id"}
-		if name == "list_projects" || name == "project_setup" || name == "demo_setup_scenarios" {
+		if name == "list_projects" || name == "project_setup" || name == "demo_setup_scenarios" || name == GetSpritePool {
 			required = []string{}
 		}
 		if name == "get_git_hub_import" || name == "list_git_hub_import_records" {
@@ -124,6 +144,12 @@ func ProjectCatalog() []Definition {
 			panic(err)
 		}
 		description := "Read authorized project application data: " + strings.ReplaceAll(name, "_", " ") + ". Setup returns the existing browser flow and requirements."
+		switch name {
+		case GetSpritePool:
+			description = "Read the organization Sprite pool shown in Settings: settings and revision, members with status, placement decision and runner setup. Pass project_id to read it through a project grant; omit it for an organization-wide read."
+		case GetProjectSpriteAllocation:
+			description = "Read the project's Sprite allocation: desired and allocated member counts, shortfall, provisioning failures and revision."
+		}
 		if name == "get_project_policy" {
 			description = "Read the complete approved policy and approval provenance. History contains compact apply identities, definition digests and provenance, bounded by rows and serialized bytes; pass history_next as after for the next page."
 		}
@@ -145,6 +171,8 @@ func ProjectCatalog() []Definition {
 		projectWrite[SummaryInput]("project_native_summary", true, true),
 		projectWrite[struct{}]("remove_project_secret", true, false),
 		projectWrite[SpriteUsageInput]("import_sprite_usage", false, false),
+		projectWrite[SpritePoolInput](UpdateSpritePool, true, true),
+		projectWrite[SpriteAllocationInput](UpdateProjectSpriteAllocation, true, true),
 	)
 	return append(out, ModelSelectionCatalog()...)
 }
@@ -170,14 +198,21 @@ func projectWrite[T any](name string, destructive, openWorld bool) Definition {
 			properties[field] = map[string]any{"type": "string", "maxLength": 512}
 		}
 	}
-	if name == "create_native_project" || name == "create_hosted_project" {
+	if name == "create_native_project" || name == "create_hosted_project" || name == UpdateSpritePool {
 		schema["required"] = []string{"request_id", "input"}
 	}
 	raw, err := json.Marshal(schema)
 	if err != nil {
 		panic(err)
 	}
-	return Definition{Name: name, Description: "Use the shared dashboard application command: " + strings.ReplaceAll(name, "_", " ") + ". Current scoped authority is required; request_id is the business retry key.", InputSchema: raw, Annotations: Annotations{Destructive: destructive, Idempotent: true, OpenWorld: openWorld}, Meta: ToolMetadata{Toolset: "projects"}}
+	description := "Use the shared dashboard application command: " + strings.ReplaceAll(name, "_", " ") + ". Current scoped authority is required; request_id is the business retry key."
+	switch name {
+	case UpdateSpritePool:
+		description += " Saves the organization Sprite pool settings from Settings at the read revision; the pool then creates or retires Sprites toward min_runners and max_runners. Owner or admin authority is required; project_id is optional."
+	case UpdateProjectSpriteAllocation:
+		description += " Sets the project's desired Sprite count at expected_revision; the organization pool must be configured first. Owner or admin authority is required."
+	}
+	return Definition{Name: name, Description: description, InputSchema: raw, Annotations: Annotations{Destructive: destructive, Idempotent: true, OpenWorld: openWorld}, Meta: ToolMetadata{Toolset: "projects"}}
 }
 
 func projectSchema(t reflect.Type) map[string]any {
@@ -325,7 +360,7 @@ func projectStringLimit(key string) int {
 		return 128 * 1024
 	case "rate_source", "evidence_source", "resource_name":
 		return 512
-	case "prompt", "shared_prompt", "agents_prompt", "files":
+	case "prompt", "shared_prompt", "agents_prompt", "files", "bootstrap":
 		return MaxArgumentBytes
 	case "source":
 		return 1024
