@@ -180,9 +180,10 @@ Repository-controlled definitions cannot be replaced by Cloud Markdown or
 independent state arrays.
 
 For the shared-site target, use `client.hub_url: https://cloud.detent.build`
-and the selected immutable organization ID. Configure `client.organization_id` and
-`client.native_projects` mapping in the instance configuration. The project's
-page shows its native ID. Run `detent doctor` against that configuration; resolve
+and set `client.organization_id` to the selected immutable organization ID.
+Select the runner's projects through enrollment `project_ids` or update its
+allowed projects through [runner routing](hub-api.md#runner-routing-authority).
+The project's page shows its native ID. Run `detent doctor` against that configuration; resolve
 reported problems locally. Sign in to the selected agent provider on that host.
 Only checkbox acknowledgments of these local checks are saved in Cloud; they are
 explicitly user-reported and do not override runtime validation.
