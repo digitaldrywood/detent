@@ -215,14 +215,11 @@ func (s *Service) readNativeRecoveryPage(ctx context.Context, scope nativeScope,
 		if err != nil {
 			return tracker.NativeRecovery{}, err
 		}
-		digest := sha256.Sum256(content)
-		sha := hex.EncodeToString(digest[:])
-		if selection.Digest != "" && selection.Digest != sha || selection.Offset >= int64(len(content)) {
-			return tracker.NativeRecovery{}, nativeConflict(0)
-		}
-		end := min(selection.Offset+(64<<10), int64(len(content)))
 		page.Section, page.RecordID, page.VersionID = section, id, version
-		page.Offset, page.TotalBytes, page.SHA256, page.Data = selection.Offset, int64(len(content)), sha, content[selection.Offset:end]
+		if err := recoveryRecordFragment(page, content, selection.Offset, selection.Digest); err != nil {
+			return tracker.NativeRecovery{}, err
+		}
+		end, sha := page.Offset+int64(len(page.Data)), page.SHA256
 		if end == int64(len(content)) {
 			selection.After, selection.Offset, selection.Digest = sequence, 0, ""
 		} else {
@@ -240,6 +237,17 @@ func (s *Service) readNativeRecoveryPage(ctx context.Context, scope nativeScope,
 		break
 	}
 	return tracker.NativeRecovery{Continuation: page}, tx.Commit()
+}
+
+func recoveryRecordFragment(page *tracker.NativeRecoveryPage, content []byte, offset int64, expectedDigest string) error {
+	digest := sha256.Sum256(content)
+	sha := hex.EncodeToString(digest[:])
+	if offset < 0 || offset >= int64(len(content)) || expectedDigest != "" && expectedDigest != sha {
+		return nativeConflict(0)
+	}
+	end := min(offset+(64<<10), int64(len(content)))
+	page.Offset, page.TotalBytes, page.SHA256, page.Data = offset, int64(len(content)), sha, content[offset:end]
+	return nil
 }
 
 func (s *Service) readRecoveryEvidenceRecord(ctx context.Context, query nativeQueryer, scope nativeScope, item, section string, cursor recoveryEvidenceCursor) (int64, string, string, []byte, error) {

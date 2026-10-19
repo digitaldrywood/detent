@@ -88,6 +88,7 @@ type ChangeArguments struct {
 
 // ChangeResult contains bounded application data, never rendered HTML.
 type ChangeResult struct {
+	Fragment        *tracker.NativeRecoveryPage `json:"fragment,omitempty"`
 	ValidationAudit *tracker.ValidationAudit    `json:"validation_audit,omitempty"`
 	OrganizationID  string                      `json:"organization_id"`
 	ProjectID       string                      `json:"project_id"`

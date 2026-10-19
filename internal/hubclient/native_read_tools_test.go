@@ -644,6 +644,148 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	}
 }
 
+func TestNativeChangeOversizedReviewRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+	h := newNativeChangeHub(t, true)
+	type evidence struct {
+		name    string
+		item    tracker.NativeWorkItemID
+		change  tracker.ChangeRequest
+		version tracker.ChangeVersion
+		reviews []tracker.ChangeReview
+	}
+	var fixtures []evidence
+	for i, field := range []string{"criterion", "security finding", "implementation commands", "second implementation commands"} {
+		issue := h.createInProgress(t, "Oversized retained "+field)
+		item := tracker.NativeWorkItemID(issue.ID)
+		change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Retained review"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		version := h.publish(t, item, change.ID, nativeChangeFixtureHead([]string{"b", "c", "d", "e"}[i]))
+		reviews := []tracker.ChangeReview{
+			{ID: fmt.Sprintf("review_small_%d", i), VersionID: version.ID, Decision: "approved", Body: "Initial review"},
+			{ID: fmt.Sprintf("review_large_%d", i), VersionID: version.ID, Decision: "changes_requested"},
+		}
+		large := &reviews[1]
+		text := strings.Repeat("<\\\"\n世界", 40000)
+		switch i {
+		case 0:
+			large.Validator = &gate.ValidatorResult{VersionID: version.ID, HeadSHA: version.HeadSHA, Verdict: "rework", Submitted: true, Findings: []gate.Finding{{Severity: "p1", Body: "Failed criterion"}}, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Retained criterion", Kind: gate.EvidenceNotVerified, Behavior: text, ReceiptIDs: []string{"receipt_failed"}, HeadSHA: version.HeadSHA}}, Commands: []gate.CommandResult{{ReceiptID: "receipt_failed", HeadSHA: version.HeadSHA, ExitCode: 1, Output: "Failed"}}}
+		case 1:
+			large.SecurityAudit = &tracker.SecurityAuditReview{VersionID: version.ID, Verdict: "rework", Run: securityaudit.Run{Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Verdict: "fail", Findings: []securityaudit.Finding{{ID: "finding_blocking", Severity: "p2", Body: text}}}}
+		default:
+			result := &gate.ValidatorResult{VersionID: version.ID, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Verdict: "rework", Submitted: true, Findings: []gate.Finding{{Severity: "p2", Body: "Command evidence requires rework"}}}
+			for command := range 76 {
+				receipt := fmt.Sprintf("receipt_%d_%02d", i, command)
+				result.Commands = append(result.Commands, gate.CommandResult{ReceiptID: receipt, Execution: "executed", Command: fmt.Sprintf("go test -timeout=60s ./internal/example%d -run TestCase%d", i, command), HeadSHA: version.HeadSHA, TreeSHA: strings.Repeat("f", 40), ExitCode: command % 2, Output: fmt.Sprintf("Command %d result\n", command) + strings.Repeat("output <\\\"\n世界", 500)})
+				result.CriteriaEvidence = append(result.CriteriaEvidence, gate.CriterionEvidence{Criterion: fmt.Sprintf("Command criterion %d", command), Kind: gate.EvidenceNotVerified, Behavior: "Command evidence retained", ReceiptIDs: []string{receipt}, HeadSHA: version.HeadSHA})
+			}
+			large.ImplementationReview = result
+			bounded := *result
+			bounded.Commands = slices.Clone(result.Commands)
+			for command := range bounded.Commands {
+				bounded.Commands[command] = tracker.PublicGateResult(bounded.Commands[command])
+				if !bounded.Commands[command].OutputTruncated {
+					t.Fatal("many-command fixture did not exercise normal output bounding")
+				}
+			}
+			raw, err := json.Marshal(bounded)
+			if err != nil || len(raw) <= operatortool.MaxResultBytes {
+				t.Fatalf("many-command review must overflow after normal output bounding: bytes=%d error=%v", len(raw), err)
+			}
+			t.Logf("%s: commands=%d bounded_review_bytes=%d", field, len(result.Commands), len(raw))
+		}
+		fixtures = append(fixtures, evidence{name: field, item: item, change: change, version: version, reviews: reviews})
+	}
+	h.reopen(func(path string) error {
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		for _, fixture := range fixtures {
+			for _, review := range fixture.reviews {
+				raw, err := json.Marshal(review)
+				if err != nil {
+					return err
+				}
+				if _, err := db.ExecContext(t.Context(), "INSERT INTO change_evidence (change_id, version_id, kind, source_key, record_json) VALUES (?, ?, 'review', ?, ?)", fixture.change.ID, review.VersionID, review.ID, string(raw)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	nativeTransport := h.native.client.httpClient.Transport
+	h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		response, err := nativeTransport.RoundTrip(request)
+		if err != nil {
+			return nil, err
+		}
+		data, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > operatortool.MaxResultBytes {
+			t.Errorf("recovery transport exceeded byte cap: %d", len(data))
+		}
+		response.Body = io.NopCloser(strings.NewReader(string(data)))
+		return response, nil
+	})
+	t.Cleanup(func() { h.native.client.httpClient.Transport = nativeTransport })
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			path, err := changePath(fixture.item, fixture.change.ID, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var first operatortool.ChangeResult
+			if err := h.native.client.request(t.Context(), http.MethodGet, h.native.base()+path+"?view=bounded", nil, &first); err != nil {
+				t.Fatal(err)
+			}
+			if first.Read.Sections["reviews"].Complete || len(first.Detail.Reviews) != 1 {
+				t.Fatal("fixture must fit its current page and defer its oversized review")
+			}
+			var next operatortool.ChangeResult
+			err = h.native.client.request(t.Context(), http.MethodGet, h.native.base()+path+"?view=bounded&section=reviews&cursor="+first.Read.Sections["reviews"].NextCursor, nil, &next)
+			if err != nil || next.Fragment == nil || next.Read.Sections["reviews"].Complete || len(next.Detail.Reviews) != 0 {
+				t.Fatalf("oversized continuation did not return a bounded fragment: %v", err)
+			}
+			newer, err := h.admin.CreateChange(t.Context(), fixture.item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Newer independent Change"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			newerVersion := h.publish(t, fixture.item, newer.ID, nativeChangeFixtureHead("f"))
+			latest, err := h.native.currentChange(t.Context(), fixture.item)
+			if err != nil || latest.Change.ID != newer.ID || latest.Change.CurrentVersion != newerVersion.ID {
+				t.Fatalf("newer Change is not independently usable: %v", err)
+			}
+			detail, err := h.native.runtimeChange(t.Context(), fixture.item, fixture.change.ID)
+			if err != nil {
+				t.Fatalf("recover oversized retained review: %v", err)
+			}
+			if !reflect.DeepEqual(detail.Reviews, fixture.reviews) {
+				t.Fatal("recovery lost complete review verdicts, criteria, findings or receipts")
+			}
+			if detail.Change.ID != fixture.change.ID || detail.Change.CurrentVersion != fixture.version.ID || len(detail.Versions) != 1 || detail.Versions[0].ID != fixture.version.ID || detail.Versions[0].HeadSHA != fixture.version.HeadSHA || !reflect.DeepEqual(detail.Versions[0].Source, fixture.version.Source) {
+				t.Fatal("recovery changed immutable source/version identity")
+			}
+			state, err := h.connector.ReadChangeReview(t.Context(), string(fixture.item), fixture.change.ID, fixture.version.ID, fixture.version.HeadSHA)
+			if err != nil || !state.Current || state.Reviewed || !state.ChangesRequested {
+				t.Fatalf("controller recovery changed failing review state: %+v, %v", state, err)
+			}
+			canonical, err := h.admin.Change(t.Context(), fixture.item, fixture.change.ID)
+			if err != nil || !reflect.DeepEqual(canonical.Reviews, fixture.reviews) {
+				t.Fatalf("recovery changed canonical reviews: %v", err)
+			}
+		})
+	}
+}
+
 func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
