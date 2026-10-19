@@ -10,12 +10,13 @@ import (
 )
 
 const (
-	UploadAttachment       = "upload_attachment"
-	ReadAttachmentMetadata = "read_attachment_metadata"
-	ReadAttachment         = "read_attachment"
-	ReferenceAttachment    = "reference_attachment"
-	DeleteAttachment       = "delete_attachment"
-	AttachmentContentBytes = 32768
+	UploadAttachment              = "upload_attachment"
+	ReadAttachmentMetadata        = "read_attachment_metadata"
+	ReadAttachment                = "read_attachment"
+	ReferenceAttachment           = "reference_attachment"
+	DeleteAttachment              = "delete_attachment"
+	AttachmentContentBytes        = 32768
+	AttachmentEvidencePublication = "Publish diagnostic evidence as complete UTF-8 text/plain attachments of at most 32768 bytes each, including JSON diagnostics as text/plain. For larger documents, publish ordered bounded parts split at UTF-8 boundaries that preserve all original bytes, with part order, original document/attachment identity and SHA-256, and byte ranges recorded in the publication. Preserve source identities, commands, output and provenance limitations; do not substitute summaries for required observations. Use upload_attachment or the worker's attach_evidence within existing authority."
 )
 
 type AttachmentOperationArguments struct {
@@ -103,7 +104,7 @@ type AttachmentArguments struct {
 }
 
 func uploadAttachmentCatalog() []Definition {
-	return []Definition{{Name: UploadAttachment, Description: "Upload a Cloud issue attachment from base64 content. Reuse request_id only for identical upload retries. Returns id and reference; embed reference in file_issue description (create_issue in the API) or add_comment body. Larger files use detent attach or the upload API. Requires project write authority.", InputSchema: json.RawMessage(`{"type":"object","required":["project_id","name","content_base64","request_id"],"properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"name":{"type":"string","minLength":1,"maxLength":256},"content_type":{"type":"string","maxLength":128},"content_base64":{"type":"string","minLength":1,"maxLength":60000}},"additionalProperties":false}`), Annotations: Annotations{Idempotent: true, OpenWorld: true}, Meta: ToolMetadata{Toolset: "work"}}}
+	return []Definition{{Name: UploadAttachment, Description: "Upload a Cloud issue attachment from base64 content. Reuse request_id only for identical upload retries. Returns id and reference; embed reference in file_issue description (create_issue in the API) or add_comment body. Larger files use detent attach or the upload API. Requires project write authority. " + AttachmentEvidencePublication, InputSchema: json.RawMessage(`{"type":"object","required":["project_id","name","content_base64","request_id"],"properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"name":{"type":"string","minLength":1,"maxLength":256},"content_type":{"type":"string","maxLength":128},"content_base64":{"type":"string","minLength":1,"maxLength":60000}},"additionalProperties":false}`), Annotations: Annotations{Idempotent: true, OpenWorld: true}, Meta: ToolMetadata{Toolset: "work"}}}
 }
 
 func AttachmentCatalog() []Definition {
@@ -114,7 +115,7 @@ func AttachmentCatalog() []Definition {
 		readOnly, destructive                   bool
 	}{
 		{ReadAttachmentMetadata, "Read authenticated Cloud attachment metadata, including type, size, SHA-256, dimensions and item/comment references. No storage URL or credentials. Results are bounded to 256 KiB; oversized metadata is unavailable.", "", "", true, false},
-		{ReadAttachment, "Read up to 32768 bytes of authenticated Cloud attachment content as base64 with recorded metadata, offset, returned_bytes and eof. Offset is bounded by the recorded file size (at most 20 MiB). No storage URL or credentials.", `,"offset":{"type":"integer","minimum":0,"maximum":20971520},"length":{"type":"integer","minimum":1,"maximum":32768}`, "", true, false},
+		{ReadAttachment, "Read up to 32768 bytes of authenticated Cloud attachment content as base64 with recorded metadata, offset, returned_bytes and eof. Offset is bounded by the recorded file size (at most 20 MiB). No storage URL or credentials. Ordinary implementation/Rework reads do not issue acceptance inspection receipts; acceptance validators obtain their own review-bound receipts from complete supported content read from offset 0. " + AttachmentEvidencePublication, `,"offset":{"type":"integer","minimum":0,"maximum":20971520},"length":{"type":"integer","minimum":1,"maximum":32768}`, "", true, false},
 		{ReferenceAttachment, "Bind a Cloud attachment to an authorized work item and optional comment in the same project. Repeating a binding does not duplicate references. Requires project write authority.", `,"request_id":{"type":"string","minLength":1,"maxLength":128},"work_item_id":{"type":"string","minLength":1,"maxLength":256},"comment_id":{"type":"string","minLength":1,"maxLength":256}`, `,"request_id","work_item_id"`, false, false},
 		{DeleteAttachment, "Explicitly delete a Cloud attachment using current write authority. Hides metadata before entry deletes bytes; quota remains charged until object deletion is confirmed. Poll action_result for the receipt and object_deletion state.", `,"request_id":{"type":"string","minLength":1,"maxLength":128}`, `,"request_id"`, false, true},
 	} {
