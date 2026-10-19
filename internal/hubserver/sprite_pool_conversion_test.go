@@ -49,6 +49,9 @@ func TestSpritePoolConversion(t *testing.T) {
 			var lease tracker.NativeLease
 			decodeHubResponse(t, response, &lease)
 			db := f.service.database.db
+			if _, err := db.ExecContext(t.Context(), `ALTER TABLE organization_sprite_pools DROP COLUMN share_idle_capacity`); err != nil {
+				t.Fatal(err)
+			}
 			legacy, err := migrationFiles.ReadFile("migrations/00071_migration.sql")
 			if err != nil {
 				t.Fatal(err)
@@ -94,7 +97,7 @@ func TestSpritePoolConversion(t *testing.T) {
 					}
 				}
 			}
-			if _, err := db.ExecContext(t.Context(), "DELETE FROM "+hubSchemaTable+" WHERE version_id IN ("+versions+")"); err != nil {
+			if _, err := db.ExecContext(t.Context(), "DELETE FROM "+hubSchemaTable+" WHERE version_id IN ("+versions+",20261019160000)"); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := runMigrations(t.Context(), db, discardLogger()); err != nil {

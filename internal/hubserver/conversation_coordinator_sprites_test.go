@@ -58,6 +58,10 @@ func TestCoordinatorSpriteArguments(t *testing.T) {
 		valid                 bool
 	}{
 		{"sandbox", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":"sandbox"}`, false},
+		{"idle sharing", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"share_idle_capacity":true}`, true},
+		{"private capacity", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"share_idle_capacity":false}`, true},
+		{"invalid sharing", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"share_idle_capacity":"true"}`, false},
+		{"null sharing", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"share_idle_capacity":null}`, false},
 		{"full access", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":"native-trusted"}`, true},
 		{"invalid access", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":"user"}`, false},
 		{"null access", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":null}`, false},
