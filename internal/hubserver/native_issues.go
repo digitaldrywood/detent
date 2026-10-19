@@ -363,11 +363,21 @@ func validateNativeProvenance(scope nativeScope, provenance *tracker.Provenance)
 	if scope.credential.Scope == apiScopeWorker {
 		return nativeInvalid("Imported provenance requires an operator")
 	}
-	return validateImportProvenance(provenance)
+	if provenance.Provider != "github" && provenance.Provider != "local_sqlite" && provenance.Provider != "github_local" {
+		return nativeInvalid("Import source is invalid")
+	}
+	return validateSourceProvenance(provenance)
 }
 
 func validateImportProvenance(provenance *tracker.Provenance) error {
-	if provenance.Provider != "github" || strings.TrimSpace(provenance.ExternalID) == "" || len(provenance.ExternalID) > 200 || strings.TrimSpace(provenance.AuthorID) == "" || len(provenance.AuthorID) > 200 || len(provenance.AuthorDisplayName) > 200 {
+	if provenance.Provider != "github" {
+		return nativeInvalid("GitHub import source is invalid")
+	}
+	return validateSourceProvenance(provenance)
+}
+
+func validateSourceProvenance(provenance *tracker.Provenance) error {
+	if strings.TrimSpace(provenance.ExternalID) == "" || len(provenance.ExternalID) > 200 || strings.TrimSpace(provenance.AuthorID) == "" || len(provenance.AuthorID) > 200 || len(provenance.AuthorDisplayName) > 200 {
 		return nativeInvalid("Import source and author are invalid")
 	}
 	if provenance.CreatedAt.IsZero() || provenance.UpdatedAt.Before(provenance.CreatedAt) || provenance.ObservedAt.Before(provenance.UpdatedAt) {
