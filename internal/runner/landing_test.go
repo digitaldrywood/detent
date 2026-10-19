@@ -789,17 +789,23 @@ func TestNativeReviewConversationsCleared(t *testing.T) {
 			History:  []tracker.CollaborationEvent{{Type: "workflow.transitioned", Data: tracker.CollaborationData{FromState: "Merging", ToState: "Rework", ReasonDetail: refusal}}},
 		}
 	}
+	current := &NativeChange{Changed: true, ChangeID: "change_current", VersionID: "version_current", HeadSHA: head}
 	for _, test := range []struct {
 		name       string
 		recovery   tracker.NativeRecovery
+		change     *NativeChange
 		unresolved bool
+		readFails  bool
 		want       bool
+		wantErr    bool
 		wantReads  int
 	}{
-		{name: "conversations resolved on GitHub clear the refusal", recovery: refused("version_current"), want: true, wantReads: 1},
-		{name: "an unresolved conversation keeps the refusal", recovery: refused("version_current"), unresolved: true, wantReads: 1},
-		{name: "a refusal of another version is not consulted", recovery: refused("version_old")},
-		{name: "work without a review refusal reads nothing", recovery: tracker.NativeRecovery{}},
+		{name: "conversations resolved on GitHub clear the refusal", recovery: refused("version_current"), change: current, want: true, wantReads: 1},
+		{name: "an unresolved conversation keeps the refusal", recovery: refused("version_current"), change: current, unresolved: true, wantReads: 1},
+		{name: "a failed read is an error, not an unresolved answer", recovery: refused("version_current"), change: current, readFails: true, wantErr: true, wantReads: 1},
+		{name: "a newly published version does not wait on GitHub", recovery: refused("version_current"), change: &NativeChange{Changed: true, ChangeID: "change_current", VersionID: "version_next", HeadSHA: strings.Repeat("2", 40)}},
+		{name: "a refusal of another version is not consulted", recovery: refused("version_old"), change: current},
+		{name: "work without a review refusal reads nothing", recovery: tracker.NativeRecovery{}, change: current},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			execution := &landingRunExecution{testExecution: testExecution{recovery: test.recovery}, landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_current", VersionID: "version_current", Repository: "https://github.com/example/repo", HeadSHA: head, BaseRef: "develop", GitHubPullRequest: true, External: &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/example/repo/pull/7"}}}}
@@ -808,6 +814,9 @@ func TestNativeReviewConversationsCleared(t *testing.T) {
 			originalClient := http.DefaultClient
 			http.DefaultClient = &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {
 				reads++
+				if test.readFails {
+					return &http.Response{StatusCode: http.StatusBadGateway, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"message":"bad gateway"}`))}, nil
+				}
 				nodes := ""
 				if test.unresolved {
 					nodes = `{"id":"T1","isResolved":false,"comments":{"nodes":[{"body":"P2 finding","author":{"__typename":"Bot","login":"example-bot"}}]}}`
@@ -816,9 +825,9 @@ func TestNativeReviewConversationsCleared(t *testing.T) {
 				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 			})}
 			t.Cleanup(func() { http.DefaultClient = originalClient })
-			got := r.nativeReviewConversationsCleared(t.Context(), RunRequest{Execution: execution, Mode: RunModeImplement, Issue: connector.Issue{ID: "wi_current", State: "Rework"}})
-			if got != test.want || reads != test.wantReads {
-				t.Fatalf("cleared = %t after %d GitHub reads, want %t after %d", got, reads, test.want, test.wantReads)
+			got, err := r.nativeReviewConversationsCleared(t.Context(), RunRequest{Execution: execution, Mode: RunModeImplement, Issue: connector.Issue{ID: "wi_current", State: "Rework"}}, test.change)
+			if got != test.want || (err != nil) != test.wantErr || reads != test.wantReads {
+				t.Fatalf("cleared = %t, error = %v after %d GitHub reads; want %t, error %t after %d", got, err, reads, test.want, test.wantErr, test.wantReads)
 			}
 		})
 	}

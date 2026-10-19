@@ -385,9 +385,6 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	} else {
 		result, runErr = r.run(guarded, req)
 	}
-	if runErr == nil && result.FinalState == FinalStateCompleted {
-		result.ReviewConversationsCleared = r.nativeReviewConversationsCleared(ctx, req)
-	}
 	if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok && result.TurnStarted {
 		diagnostics.ProviderCompleted(r.now())
 	}
@@ -488,6 +485,15 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		if result.NativeChange != nil && errors.As(runErr, &reviewErr) {
 			result.NativeChange.ImplementationReviewError = reviewErr.Error()
 		}
+	}
+	if runErr == nil && result.FinalState == FinalStateCompleted {
+		readCtx, readCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
+		cleared, err := r.nativeReviewConversationsCleared(readCtx, req, result.NativeChange)
+		readCancel()
+		if err != nil {
+			runErr = fmt.Errorf("%w: read the review conversations that refused landing: %w", ErrReviewConversationsUnavailable, err)
+		}
+		result.ReviewConversationsCleared = cleared
 	}
 	return result, runErr
 }

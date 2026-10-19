@@ -413,6 +413,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "unchanged Rework after a review-conversation refusal goes to human review", change: accepted, states: rework, sourceState: "Rework", reviewed: &yes, recovery: refusedVersion("version_1"), wantState: "In Review", wantComment: "resolved none of the review conversations"},
 		{name: "unchanged Rework after a review-conversation refusal holds without human review", change: accepted, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, reviewed: &yes, recovery: refusedVersion("version_1"), wantState: "Blocked", wantComment: "internal/app.go:12"},
 		{name: "Rework whose refused conversations are cleared lands", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, recovery: refusedVersion("version_1"), cleared: true, wantState: "Merging", wantComment: "runner lands it next. " + workspace.ReviewConversationsResolvedText},
+		{name: "unreadable review conversation state retries as an instance failure", change: accepted, states: rework, sourceState: "Rework", reviewed: &yes, recovery: refusedVersion("version_1"), runErr: fmt.Errorf("%w: bad gateway", runpkg.ErrReviewConversationsUnavailable), turnStarted: true, wantSameState: true, wantContinue: true},
 		{name: "Rework that published a new version after the refusal lands", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, recovery: refusedVersion("version_0"), wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "refused completed Rework landing retains completion ownership", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", updateErr: errors.New("stale fencing token"), wantState: "Merging", wantDeferred: true, roundTrip: true},
 		{name: "publication outage retries current publisher", reviewed: &yes, republish: true, change: &runpkg.NativeChange{Error: "hub unavailable"}, states: landing, wantDeferred: true},
@@ -1086,6 +1087,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					receipt := attempts.completions[0]
 					if allowanceInfrastructureAttempt(store.WorkAttempt{TerminalState: receipt.TerminalState, ErrorClass: receipt.ErrorClass, MetricsJSON: `{"turns":1,"total_tokens":42}`}) || !terminalAttemptRetryableFailure(telemetry.WorkAttempt{TerminalState: string(receipt.TerminalState), ErrorClass: receipt.ErrorClass}) {
 						t.Fatal("unresolved model conflict escaped genuine failure accounting")
+					}
+				}
+				if errors.Is(test.runErr, runpkg.ErrReviewConversationsUnavailable) {
+					if _, retried := state.Retry[issue.ID]; attempts.completions[0].ErrorClass != workAttemptErrorRunner || len(tick.updates) != 0 || !retried {
+						t.Fatalf("unreadable review conversations did not retry as an instance failure: class=%s updates=%v", attempts.completions[0].ErrorClass, tick.updates)
 					}
 				}
 				if errors.Is(test.runErr, runpkg.ErrWorkerProcessReap) || errors.Is(test.runErr, runpkg.ErrWorkspacePreparation) {

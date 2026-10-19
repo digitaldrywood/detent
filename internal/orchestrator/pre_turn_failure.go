@@ -63,7 +63,7 @@ func (o *Orchestrator) handleWorkspaceDiskExhaustion(ctx context.Context, state 
 }
 
 func preTurnFailureClass(event runpkg.Completion, running Running) string {
-	if errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) && running.Cancellation == nil && !errors.Is(event.Err, context.Canceled) {
+	if (errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) || errors.Is(event.Err, runpkg.ErrReviewConversationsUnavailable)) && running.Cancellation == nil && !errors.Is(event.Err, context.Canceled) {
 		return workAttemptErrorRunner
 	}
 

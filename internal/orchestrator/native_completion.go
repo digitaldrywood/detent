@@ -75,7 +75,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
-		if (preProvider || errors.Is(event.Err, runpkg.ErrValidatorInfrastructure)) && !recoveryRequired && o.handlePreTurnFailure(ctx, state, event, running) {
+		if (preProvider || errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) || errors.Is(event.Err, runpkg.ErrReviewConversationsUnavailable)) && !recoveryRequired && o.handlePreTurnFailure(ctx, state, event, running) {
 			return true
 		}
 		states, err := reader.WorkflowStates(ctx)
