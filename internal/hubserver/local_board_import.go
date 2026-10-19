@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -29,14 +30,20 @@ func (s *Service) importLocalBoard(c echo.Context) error {
 	if err := localboard.Validate(request.Record); err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
-	if err := validateNativeContent(request.Record.Title, request.Record.Body, nil, nil, nil); err != nil {
+	if err := validateNativeContent(request.Record.Title, request.Record.Body, nil, nil, request.Record.Priority); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	plan, _, err := planLocalBoardItem(c.Request().Context(), s.database.reader, scope, request.Record)
+	plan, issue, err := planLocalBoardItem(c.Request().Context(), s.database.reader, scope, request.Record)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if request.DryRun || plan.Action == "unchanged" {
+	if plan.Action == "unchanged" {
+		return c.JSON(http.StatusOK, plan)
+	}
+	if request.DryRun {
+		if err := s.preflightLocalBoardAllowances(c.Request().Context(), scope, request.Record, plan, issue); err != nil {
+			return s.nativeAPIError(c, err)
+		}
 		return c.JSON(http.StatusOK, plan)
 	}
 	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/local-board-import"), Feature: "collaboration"}
@@ -48,6 +55,59 @@ func (s *Service) importLocalBoard(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSONBlob(http.StatusOK, result)
+}
+
+func (s *Service) preflightLocalBoardAllowances(ctx context.Context, scope nativeScope, record localboard.Record, plan localboard.Result, issue tracker.NativeIssue) error {
+	if s.database.plans() == nil {
+		return nil
+	}
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := s.config.now()
+	if err := s.database.requireHostedFeature(ctx, tx, "collaboration", now); err != nil {
+		return err
+	}
+	before, err := s.database.hostedConsumption(ctx, tx, now, hostedNativeMutationMetrics(localboard.Request{}, false)...)
+	if err != nil {
+		return err
+	}
+	after := maps.Clone(before)
+	if record.Kind == "local_sqlite" {
+		var terminal bool
+		if err := tx.QueryRowContext(ctx, "SELECT terminal FROM workflow_states WHERE project_id=? AND detent_state=?", scope.project, plan.State).Scan(&terminal); err != nil {
+			return err
+		}
+		if !terminal {
+			after["unarchived_issues"]++
+		}
+		after["collaboration_bytes"] += int64(len(record.Title) + len(record.Body))
+	}
+	for _, comment := range record.Comments {
+		after["collaboration_bytes"] += int64(len(comment.Body))
+	}
+	changes := int64(len(record.Comments))
+	if record.Kind == "local_sqlite" || issue.State != plan.State {
+		changes++
+	}
+	for _, key := range record.Dependencies {
+		var id tracker.NativeWorkItemID
+		err := tx.QueryRowContext(ctx, "SELECT work_item_id FROM local_board_imports WHERE organization_id=? AND project_id=? AND source_key=?", scope.organization, scope.project, key).Scan(&id)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if errors.Is(err, sql.ErrNoRows) || !slices.Contains(issue.Dependencies, id) {
+			changes++
+		}
+	}
+	if changes > 0 {
+		after["collaboration_bytes"]++
+		after["history_records"] += changes
+		after["events_total"] += changes
+	}
+	return s.database.validateHostedConsumptionGrowth(ctx, tx, before, after, now, false)
 }
 
 func localBoardState(states []tracker.NativeState, source string) (string, bool, error) {
@@ -151,7 +211,7 @@ func importLocalBoardItem(ctx context.Context, tx *sql.Tx, scope nativeScope, re
 	}
 	provenance := &tracker.Provenance{Provider: record.Kind, ExternalID: record.Key, AuthorID: record.Author, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, ObservedAt: now}
 	if record.Kind == "local_sqlite" {
-		issue, err = createNativeIssueDraft(ctx, tx, scope, tracker.CreateIssue{Title: record.Title, Body: record.Body, State: result.State, Provenance: provenance}, now, false, true)
+		issue, err = createNativeIssueDraft(ctx, tx, scope, tracker.CreateIssue{Title: record.Title, Body: record.Body, Priority: record.Priority, State: result.State, Provenance: provenance}, now, false, true)
 		if err != nil {
 			return result, err
 		}

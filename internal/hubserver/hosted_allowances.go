@@ -145,7 +145,19 @@ func (d *database) checkHostedGrowth(ctx context.Context, tx *sql.Tx, before map
 }
 
 func (d *database) checkHostedConsumptionGrowth(ctx context.Context, tx *sql.Tx, before, after map[string]int64, now time.Time, completion bool) error {
-	entitlement, err := d.hostedEntitlement(ctx, tx, now)
+	if err := d.validateHostedConsumptionGrowth(ctx, tx, before, after, now, completion); err != nil {
+		return err
+	}
+	if ctx.Value(runnerRequestBudgetContext{}) != true {
+		if err := d.recordHostedUsage(ctx, tx, now, "api_mutations", 1); err != nil {
+			return err
+		}
+	}
+	return d.recordHostedUsage(ctx, tx, now, "ingested_events", max(int64(0), after["events_total"]-before["events_total"]))
+}
+
+func (d *database) validateHostedConsumptionGrowth(ctx context.Context, query nativeQueryer, before, after map[string]int64, now time.Time, completion bool) error {
+	entitlement, err := d.hostedEntitlement(ctx, query, now)
 	if err != nil {
 		return err
 	}
@@ -169,9 +181,6 @@ func (d *database) checkHostedConsumptionGrowth(ctx context.Context, tx *sql.Tx,
 		}
 		if !completion && sample.amount > 0 && sample.amount > entitlement.Allowances[sample.name]-after[sample.name] {
 			return &hostedLimitError{Resource: sample.name, Allowance: entitlement.Allowances[sample.name], Consumption: after[sample.name]}
-		}
-		if err := d.recordHostedUsage(ctx, tx, now, sample.name, sample.amount); err != nil {
-			return err
 		}
 	}
 	return nil

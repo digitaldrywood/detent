@@ -159,6 +159,11 @@ func TestLocalBoardImportFixtures(t *testing.T) {
 					} else if issue.Title != record.Title || issue.Body != record.Body || issue.Provenance == nil || issue.Provenance.AuthorID != "source-author" {
 						t.Fatalf("local content/provenance: %+v", issue)
 					}
+					if kind == "local_sqlite" {
+						if i == 0 && (issue.Priority == nil || *issue.Priority != 2) || i == 1 && issue.Priority != nil {
+							t.Fatalf("source priority lost: %v", issue.Priority)
+						}
+					}
 					imported = append(imported, issue)
 				}
 				if !reflect.DeepEqual(imported[1].Dependencies, []tracker.NativeWorkItemID{imported[0].WorkItemID}) {
@@ -270,16 +275,59 @@ func TestLocalBoardImportHostedAuthorityAndAllowances(t *testing.T) {
 		{"reporter", "reporter", "write", nil, http.StatusForbidden},
 		{"storage allowance", "owner", "write", map[string]int64{"collaboration_bytes": 1}, http.StatusTooManyRequests},
 		{"issue allowance", "owner", "write", map[string]int64{"unarchived_issues": 0}, http.StatusTooManyRequests},
+		{"terminal issue allowance", "owner", "write", map[string]int64{"unarchived_issues": 0}, http.StatusOK},
+		{"content exceeds storage", "owner", "write", map[string]int64{"collaboration_bytes": int64(len(records[0].Title) + len(records[0].Body) - 1)}, http.StatusTooManyRequests},
+		{"history allowance", "owner", "write", map[string]int64{"history_records": 0}, http.StatusTooManyRequests},
+		{"mutation allowance", "owner", "write", map[string]int64{"api_mutations": 1}, http.StatusTooManyRequests},
+		{"event allowance", "owner", "write", map[string]int64{"ingested_events": 0}, http.StatusTooManyRequests},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newHostedSecurityFixture(t)
 			hostedTestPlans(t, f.service, test.limits)
 			user := f.user(t, test.role, test.role, test.role+"@example.test", test.scope, "")
+			record := records[0]
+			if test.name == "terminal issue allowance" {
+				record.State = "Done"
+			}
 			before := localBoardCounts(t, nativeFixture{service: f.service})
-			response := f.request(t, user, http.MethodPost, f.base+"/local-board-import", localboard.Request{Record: records[0]})
+			usageBefore, err := f.service.database.hostedConsumption(t.Context(), f.service.database.reader, f.service.config.now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			dry := f.request(t, user, http.MethodPost, f.base+"/local-board-import", localboard.Request{Record: record, DryRun: true})
+			requireNativeStatus(t, dry, test.status)
+			if !reflect.DeepEqual(before, localBoardCounts(t, nativeFixture{service: f.service})) {
+				t.Fatal("dry-run persisted rows")
+			}
+			usageAfter, err := f.service.database.hostedConsumption(t.Context(), f.service.database.reader, f.service.config.now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, metric := range []string{"api_mutations", "ingested_events", "collaboration_bytes", "history_records", "events_total", "unarchived_issues"} {
+				if usageBefore[metric] != usageAfter[metric] {
+					t.Fatalf("dry-run changed %s: before=%d after=%d", metric, usageBefore[metric], usageAfter[metric])
+				}
+			}
+			response := f.request(t, user, http.MethodPost, f.base+"/local-board-import", localboard.Request{Record: record})
 			requireNativeStatus(t, response, test.status)
 			if test.status != http.StatusOK && !reflect.DeepEqual(before, localBoardCounts(t, nativeFixture{service: f.service})) {
 				t.Fatal("rejected import persisted rows")
+			}
+			if test.name == "operator" {
+				hostedTestPlans(t, f.service, map[string]int64{"unarchived_issues": 0, "collaboration_bytes": 0, "history_records": 0, "api_mutations": 0, "ingested_events": 0})
+				before := localBoardCounts(t, nativeFixture{service: f.service})
+				for _, dryRun := range []bool{true, false} {
+					response := f.request(t, user, http.MethodPost, f.base+"/local-board-import", localboard.Request{Record: record, DryRun: dryRun})
+					requireNativeStatus(t, response, http.StatusOK)
+					var result localboard.Result
+					decodeHubResponse(t, response, &result)
+					if result.Action != "unchanged" {
+						t.Fatalf("replay at allowance limit: %+v", result)
+					}
+				}
+				if !reflect.DeepEqual(before, localBoardCounts(t, nativeFixture{service: f.service})) {
+					t.Fatal("replay at allowance limit wrote rows")
+				}
 			}
 		})
 	}

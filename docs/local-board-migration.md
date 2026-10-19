@@ -37,7 +37,8 @@ detent hub issue import-local ./board-copy.sqlite \
 Repeat the same command without `--dry-run` to import. JSON output lists each
 source ID and lane, action (`created`, `updated`, or `unchanged`), target lane, comment and
 dependency counts, and `unknown_lane: true` when a fallback lane was necessary.
-Native work-item IDs are included when they exist. Errors omit issue titles and
+Native work-item IDs are included when they exist. Local SQLite items retain
+their source priority, including an unset priority. Errors omit issue titles and
 bodies. A failure can leave earlier items imported; replay the same copy and
 identity to finish safely. A successful replay creates nothing and preserves
 subsequent native edits, lane moves, comments, and relationship changes. This
@@ -78,9 +79,15 @@ replaced with duplicate issues. Existing native title, body, and GitHub
 provenance remain authoritative; local comments and dependencies are added and
 the local lane is restored.
 
-The CLI preflights every item before publishing any. Dry-run reports describe
-the current target snapshot; changed permissions, allowances, or native items
-can still refuse a later real run. The authenticated endpoint is
+The CLI preflights every item before publishing any. Hosted dry-runs check the
+collaboration feature and current allowance capacity against the incoming item
+and comment content without consuming mutation or event allowances. These checks
+include nonterminal issue, storage, history, mutation, and event limits. Replaying
+an already imported item consumes no allowance. Dry-run reports describe the
+current target snapshot; cumulative growth across items, serialized history
+storage, changed permissions, allowances, or native items can still refuse a
+later real run. Publication checks actual growth in each item's transaction.
+The authenticated endpoint is
 `POST /api/v2/organizations/{organization}/projects/{project}/local-board-import`.
 It accepts one `record` and a `dry_run` boolean using the CLI's serialized
 request shape. Requests retain the normal 1 MiB limit, at most 1,000 comments
