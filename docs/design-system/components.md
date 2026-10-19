@@ -472,13 +472,13 @@ Explaining why a region has no content and offering the relevant next action. `s
 
 ### Runner status dot
 
-Runner health beside a runner name in Fleet and Activity; healthy active runners pulse green, inactive runners remain neutral.
+Runner health beside a runner name in Runners and Activity; healthy active runners pulse green, draining runners use an outlined dot, and offline runners remain neutral.
 
 - Kind: Composition; status: available; id: `runner-status-dot`.
 - Import: `import { RunnerStatusDot } from "~/components/RunnerStatusDot";`
 - Source: [src/components/RunnerStatusDot.tsx](../../web/conversation/src/components/RunnerStatusDot.tsx).
 - Variants: none.
-- States: healthy, paused, failed, needs attention, asleep, offline.
+- States: healthy, draining, paused, failed, needs attention, asleep, offline.
 - Keyboard: Static status image; the surrounding control owns keyboard behavior.
 - Avoid: Work stage or job outcome; use StageProgress for stage timing.
 

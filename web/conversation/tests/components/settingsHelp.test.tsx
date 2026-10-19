@@ -5,7 +5,7 @@ import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } fr
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectSettingsView, draftOf, draftChanged } from "../../src/app/account/ProjectSettings.tsx";
-import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
+import { RunnerDetailPage } from "../../src/app/fleet/RunnerDetailPage.tsx";
 import { SettingsHelp } from "../../src/app/settings/SettingsHelp.tsx";
 import type { FleetResponse, ProjectIntegration, RunnerRouting, PolicyApproval } from "../../src/contracts/account.ts";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
@@ -287,16 +287,14 @@ describe("project settings help", () => {
 
 describe("runner settings help", () => {
   it("explains capacity and tag routing inline without submitting", async () => {
-    const user = userEvent.setup();
     const save = vi.fn();
     const routing: RunnerRouting = {
       display_name: "Example runner", tags: ["linux"], state: "active", capacity_limit: 6,
       project_ids: ["prj_example"], isolation_tier: "sandbox", host_services: [],
       availability: { timezone: "", windows: [], hard_deadline: "" },
     };
-    render(<RunnersSectionView fleet={{ ...fleet, editable: true, runners: [{ ...fleet.runners[0]!, editable: true, routing }] }} onSaveRouting={save} />);
-    await user.click(screen.getByRole("button", { name: `Manage ${fleet.runners[0]!.display_name}` }));
-    const sheet = screen.getByRole("dialog");
+    render(<RunnerDetailPage runner={{ ...fleet.runners[0]!, editable: true, routing }} projects={[]} editable onSave={save} onClose={vi.fn()} />);
+    const sheet = screen.getByRole("article");
     expect(sheet.textContent).toContain("The lower of the two wins");
     expect(sheet.textContent).toContain("Tags pick from allowed runners; they never grant a project.");
     expect((screen.getByRole("spinbutton", { name: "Jobs at once" }) as HTMLInputElement).value).toBe("6");

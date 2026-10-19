@@ -19,13 +19,13 @@ function useGo(): (to: string) => void {
 }
 
 export function SettingsScreen(): React.ReactElement {
-  const { section, organizationPage } = useParams({ strict: false }) as { section?: string; organizationPage?: string };
+  const { section, organizationPage, runner } = useParams({ strict: false }) as { section?: string; organizationPage?: string; runner?: string };
   const search = useSearch({ strict: false }) as { project?: string };
-  const requested = organizationPage === undefined ? section : `organization/${organizationPage}`;
+  const requested = runner ? "runners" : organizationPage === undefined ? section : `organization/${organizationPage}`;
   const id = requested !== undefined && isSettingsSectionId(requested) ? requested : organizationPage === undefined ? DEFAULT_SECTION : "organization";
   const go = useGo();
   if (id === "integrations" && search.project) return <Navigate to="/settings/projects/$project/$tab" params={{ project: search.project, tab: "general" }} replace />;
-  return <SettingsRoute section={id} onNavigate={go} />;
+  return <SettingsRoute section={id} runnerId={runner} onNavigate={go} />;
 }
 
 export function SetupScreen(): React.ReactElement {

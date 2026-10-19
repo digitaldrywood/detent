@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -154,6 +154,16 @@ describe("the breakdown", () => {
 });
 
 describe("the limits tab", () => {
+  it("shows provider accounts only in Limits and reveals the model list on keyboard focus", async () => {
+    const fleet = (await import("../../src/contracts/fixtures/account-fleet.json")).default as unknown as import("../../src/contracts/account.ts").FleetResponse;
+    renderUsage({ fleet, preferences: { metric: "limits", windowDays: 30 } });
+    const summary = within(screen.getByRole("region", { name: "Provider accounts" }));
+    expect(summary.getByText("codex")).toBeTruthy();
+    expect(summary.queryByText(/gpt-6-astra/)).toBeNull();
+    act(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" })); summary.getAllByLabelText("2 models")[0]!.focus(); });
+    expect(await screen.findByText("gpt-6-astra, gpt-5.6-sol")).toBeTruthy();
+  });
+
   it("draws the entitlement allowances with a meter each", () => {
     renderUsage({ preferences: { metric: "limits", windowDays: 30 } });
     expect(screen.getByRole("heading", { name: "Limits" })).toBeTruthy();

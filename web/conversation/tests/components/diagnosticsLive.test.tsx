@@ -101,13 +101,11 @@ it("puts shared host totals and every runner before grouped typed findings witho
   expect(within(attention).getByText("Runner operator: check routing cache permissions and configured host services.")).toBeTruthy();
   expect(within(attention).getByText("Example project", { exact: false })).toBeTruthy();
   for (const text of ["policy_digest", "git error_output", "Instrumentation coverage", "Configuration that shapes these numbers", "Check local workflow"]) expect(view.container.textContent).not.toContain(text);
-  const totals = within(live).getAllByTestId("runner-capacity").map((row) => row.textContent);
-  const slots = [...live.querySelectorAll("[data-slot-state]")].map((slot) => slot.getAttribute("data-slot-state"));
   view.unmount();
   render(<RunnersSectionView fleet={{ ...decodeFleet(fleetFixture), runners }} />);
-  const settingsLive = screen.getByRole("region", { name: "Capacity right now", hidden: true });
-  expect(within(settingsLive).getAllByTestId("runner-capacity").map((row) => row.textContent)).toEqual(totals);
-  expect([...settingsLive.querySelectorAll("[data-slot-state]")].map((slot) => slot.getAttribute("data-slot-state"))).toEqual(slots);
+  expect(screen.queryByRole("region", { name: "Capacity right now", hidden: true })).toBeNull();
+  expect(screen.getAllByTestId("host-card")).toHaveLength(runners.length);
+  expect(screen.queryByText(/policy_digest|git error_output/)).toBeNull();
 });
 
 const appUpdates: UpdatesReport = {
