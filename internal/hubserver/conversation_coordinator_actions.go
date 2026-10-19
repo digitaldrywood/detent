@@ -451,11 +451,17 @@ func (t *coordinatorToolset) postActionRefusal(ctx context.Context, name string,
 func coordinatorActionError(err error) error {
 	var request *operatortool.RequestError
 	if errors.As(err, &request) {
-		return errors.New(request.Message)
+		return &nativeError{Code: cmp.Or(request.Code, "invalid_request"), Message: request.Message, status: http.StatusUnprocessableEntity, publicMessage: true}
 	}
 	var conflict *operatortool.ConflictError
 	if errors.As(err, &conflict) {
-		return errors.New(conflict.Message)
+		message := conflict.Message
+		if message == "" && conflict.Code == "revision_conflict" {
+			message = fmt.Sprintf("The item changed after this was proposed; its current revision is %d. Ask for a fresh proposal.", conflict.CurrentRevision)
+		} else if message == "" {
+			message = "The item changed after this was proposed. Ask for a fresh proposal."
+		}
+		return &nativeError{Code: conflict.Code, Message: message, CurrentRevision: tracker.Revision(conflict.CurrentRevision), status: http.StatusConflict, publicMessage: true}
 	}
 	var native *nativeError
 	if errors.As(err, &native) {
