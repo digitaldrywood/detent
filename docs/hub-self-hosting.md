@@ -4,9 +4,10 @@ Moving an existing standalone board? Start with the
 [local board to local Hub migration runbook](hub-local-migration.md) for backups,
 pilot cutover, import prerequisites and rollback before replacing its service.
 
-One customer-controlled Linux host or ordinary VM, one Hub process, and local
+One customer-controlled macOS or Linux host, one Hub process, and local
 durable storage are the supported deployment described here. Use the released
-Detent binary and systemd, with a TLS reverse proxy. This is single-host operation
+Detent binary with launchd or systemd. A same-machine runner can use loopback;
+remote access requires TLS. This is single-host operation
 with explicit downtime for maintenance; there is no active-active replication,
 automatic failover, or high availability guarantee. Never share a live SQLite
 file over NFS/SMB, mount it into runners, or run a second owner against it.
@@ -66,14 +67,152 @@ sudo systemctl status detent-hub
 ```
 
 These commands operate on the example installation only. Use this dedicated
-Hub unit for `hub serve`. The Hub has no source checkouts, agent login
-sessions or execution workspaces on this host. Do not expose the backend port
+Hub unit for `hub serve`. Keep Hub data separate from runner source checkouts,
+agent login sessions and execution workspaces, even on a shared host.
+Do not expose the backend port
 by relying on `--trusted-proxy` alone: that flag declares trust, it does not
 create TLS or configure a firewall. Alternatively use `--tls-cert` and
 `--tls-key` with an explicit public listen address. Do not log Authorization
 headers or request/response bodies at the proxy. Keep private keys readable
 only by the TLS owner. The API continues to enforce scoped bearer auth behind
 the proxy; arbitrary identity headers are not an authentication integration.
+
+## Single-machine Hub and runner
+
+The Hub and runner can share one macOS or Linux machine. The Hub owns its
+private database; the runner talks to it over `http://127.0.0.1:7777` and never
+opens that database. Run them under separate OS accounts. Runner workloads must
+not be able to read Hub credentials or read or modify Hub state, backups, logs
+or service configuration. Modes `0700` and `0600` protect files from other users,
+but do not isolate processes sharing a UID. Keep the runner account
+unprivileged, without sudo access to the Hub account or its files; do not share
+Hub administrator credentials with it. Use `--isolation-tier sandbox` for runner
+registration on this shared host.
+
+Loopback HTTP needs no reverse proxy for this setup. Keep
+the listen address on loopback; use the TLS setup above before allowing remote
+clients. This bearer-authenticated setup does not require a hosted login provider.
+
+### macOS with launchd
+
+Install and verify the selected release as described in [release distribution](release.md).
+The [Hub LaunchAgent example](examples/hub/com.digitaldrywood.detent.hub.plist)
+uses `/usr/local/bin/detent`; replace that absolute executable path if your
+installation uses another location, such as `/opt/homebrew/bin/detent`.
+Through macOS Users & Groups, create a dedicated standard account for the Hub,
+separate from the runner account. Log in to that Hub account and run the
+following in its session. All `$HOME` paths in this subsection refer to the
+Hub account, including during maintenance:
+
+```sh
+umask 077
+mkdir -p "$HOME/Library/Application Support/Detent Hub" "$HOME/Library/Logs/Detent Hub" "$HOME/Library/LaunchAgents"
+chmod 700 "$HOME/Library/Application Support/Detent Hub" "$HOME/Library/Logs/Detent Hub"
+openssl rand -hex 32 > "$HOME/Library/Application Support/Detent Hub/admin-token"
+chmod 600 "$HOME/Library/Application Support/Detent Hub/admin-token"
+cp docs/examples/hub/com.digitaldrywood.detent.hub.plist "$HOME/Library/LaunchAgents/com.digitaldrywood.detent.hub.plist"
+```
+
+Generate the token only for a new installation; preserve it on subsequent
+installs. Keep a separate private secret-manager copy. Edit the copied plist,
+replacing every `/Users/example` with the Hub account's absolute home path and
+adjusting the binary path. Use an executable installed by the administrator in
+a location the runner cannot modify. launchd does not expand `~` or `$HOME` in
+argument or log paths.
+The shell wrapper reads `admin-token` relative to its user's `$HOME`, exports
+`DETENT_HUB_ADMIN_TOKEN`, then replaces itself with `detent hub serve`. The
+credential never appears in the plist or process arguments. Do not enable shell
+tracing. The decimal `Umask` value 63 is octal `077`.
+
+```sh
+plutil -lint "$HOME/Library/LaunchAgents/com.digitaldrywood.detent.hub.plist"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.digitaldrywood.detent.hub.plist"
+launchctl print "gui/$(id -u)/com.digitaldrywood.detent.hub"
+```
+
+This LaunchAgent starts at login and stays available while that user session
+exists; it is not a system LaunchDaemon. Keep the session available for local
+work: use Fast User Switching to enter the runner account without logging out
+the Hub account. stdout and stderr go to the private
+`~/Library/Logs/Detent Hub/` directory;
+include these files in your log rotation policy. The Hub database and sidecars
+live in `~/Library/Application Support/Detent Hub/`, outside runner workspaces.
+
+As the Hub administrator, create the organization/project, grant project access
+and obtain a one-use enrollment using [runner onboarding](#enroll-a-runner-without-the-web-app).
+Deliver only that enrollment credential to the separate runner account through
+private secret storage. In the runner account's session, use the
+[register command](hub-api.md#register-a-runner-with-one-command) with
+your local organization URL, for example
+`http://127.0.0.1:7777/organizations/org_example`, and `--service`. Use the
+enrollment credential, never the Hub admin token, for runner registration.
+Registration installs the existing `com.digitaldrywood.detent.runner`
+LaunchAgent in the runner account, with its own config, identity, workspace root
+and logs. Keep those paths in the runner account's home; do not copy Hub files
+there or grant that account access to the Hub's private directories. The Hub
+label is `com.digitaldrywood.detent.hub`; the board label remains
+`com.digitaldrywood.detent`. Do not overwrite either existing runner or board
+plist. Start the Hub before enrolling or starting the runner; there is no
+launchd dependency ordering between these jobs. Approve the project's trusted
+repository/workflow policy before dispatching work.
+
+For offline backups, drain active runner work while the Hub is still available,
+then remove the runner job in the runner account's session:
+
+```sh
+launchctl bootout "gui/$(id -u)/com.digitaldrywood.detent.runner"
+```
+
+Switch to the still-logged-in Hub account for the following
+maintenance commands. Remove the Hub job from that account's launchd domain so
+`KeepAlive` cannot restart it:
+
+```sh
+launchctl bootout "gui/$(id -u)/com.digitaldrywood.detent.hub"
+mkdir -p "$HOME/Library/Application Support/Detent Hub/backups"
+detent hub backup --database "$HOME/Library/Application Support/Detent Hub/hub.db" --output "$HOME/Library/Application Support/Detent Hub/backups/snapshot-unique.db"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.digitaldrywood.detent.hub.plist"
+detent hub verify --database "$HOME/Library/Application Support/Detent Hub/backups/snapshot-unique.db"
+```
+
+Wait for the Hub process to exit before running backup. Choose a new snapshot
+filename each time; backup refuses an existing output. Restart the Hub even if
+backup fails, then switch back to the runner account and reload its LaunchAgent:
+
+```sh
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.digitaldrywood.detent.runner.plist"
+```
+
+Keep snapshots and secret-manager copies in storage inaccessible to the runner account.
+Follow [backup and export](#backup-and-export) for custody and retention; never
+copy live SQLite files or delete the ownership lock to bypass a running owner.
+
+### Linux with both systemd units
+
+Install the [Hub unit](examples/hub/detent-hub.service) and private credentials
+file using [Install one host](#install-one-host). For a loopback-only setup,
+omit Caddy, DNS and inbound HTTPS configuration. Keep `--listen 127.0.0.1:7777`.
+The system Hub runs as `detent-hub`, reads the root-only environment file, and
+writes only its own `/var/lib/detent-hub/` state. Logs are in
+`sudo journalctl -u detent-hub`.
+
+As the regular runner user, use the same onboarding and local organization URL
+as on macOS and register with `--service`. This installs the separate user unit
+`detent.runner.service`; it does not replace `detent-hub.service` or the board's
+`detent.service`. Runner credentials and checkouts stay under that user's
+runner configuration and workspace root. If the runner must survive logout,
+have an OS administrator enable lingering with
+`sudo loginctl enable-linger USERNAME`.
+Inspect it with `systemctl --user status detent.runner.service` and
+`journalctl --user -u detent.runner.service`.
+
+For backups, drain work while the Hub is online, stop the runner with
+`systemctl --user stop detent.runner.service`, then follow the stopped-owner
+[backup commands](#backup-and-export). `sudo systemctl stop detent-hub` suppresses
+the unit's automatic restart during maintenance. Restart the Hub even if backup
+fails, then start the runner with `systemctl --user start detent.runner.service`.
+Neither platform needs shared Hub/runner database access or changes to runner
+placement or installation configuration.
 
 ## Durable paths and outbound access
 
