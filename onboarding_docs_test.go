@@ -2,11 +2,40 @@ package detent
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 )
+
+func TestCloudOnboardingOmitsRejectedRunnerInstructions(t *testing.T) {
+	t.Parallel()
+
+	content := readRepositoryTextFile(t, "docs/cloud-onboarding.md")
+	for _, key := range []string{
+		"projects", "weight", "priority", "scheduling", "fair_share",
+		"client.native_projects", "global.agents.model_selection",
+		"global.weight", "global.priority", "global.scheduling", "global.fair_share",
+		"global.agents", "global.worker", "global.budget", "global.agent_pools",
+		"global.active_hours", "global.identity", "global.knowledge", "global.local_intake_enabled",
+	} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+
+			parts := strings.Split(key, ".")
+			assignment := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(parts[len(parts)-1]) + `\s*:`)
+			for _, paragraph := range strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n\n") {
+				if strings.Contains(paragraph, "remove ") && strings.Contains(paragraph, "prevents startup") {
+					continue
+				}
+				if strings.Contains(paragraph, "`"+key+"`") || strings.Contains(paragraph, "`"+key+":") || assignment.MatchString(paragraph) {
+					t.Errorf("onboarding instructs using rejected runner key %s:\n%s", key, paragraph)
+				}
+			}
+		})
+	}
+}
 
 func TestLabelWorkflowTemplateOmitsWriteProbeIssue(t *testing.T) {
 	t.Parallel()
