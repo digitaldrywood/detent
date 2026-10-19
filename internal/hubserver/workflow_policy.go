@@ -74,12 +74,9 @@ func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope s
 			resultErr = errors.Join(resultErr, tx.Rollback())
 		}
 	}()
-	approval, err := readProjectPolicy(ctx, tx, scope)
+	approval, _, err := readProjectPolicy(ctx, tx, scope)
 	if err != nil {
-		var nativeErr *nativeError
-		if !errors.As(err, &nativeErr) || nativeErr.Code != "policy_mismatch" {
-			return err
-		}
+		return err
 	}
 	current := approval.Policy.ID
 	if current != "" && current != descriptor.ID {
@@ -202,7 +199,7 @@ func readProjectPolicyHistory(ctx context.Context, query nativeQueryer, scope st
 			return result, nativePublicInvalid("History cursor is invalid")
 		}
 	}
-	result, err := readProjectPolicy(ctx, query, scope)
+	result, _, err := readProjectPolicy(ctx, query, scope)
 	if err != nil {
 		return result, err
 	}

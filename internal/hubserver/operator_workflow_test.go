@@ -230,14 +230,14 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 						if reply.Result.StructuredContent.Code != "policy_mismatch" {
 							t.Fatalf("stale refusal must be structured: %s", response.Body)
 						}
-						unchanged, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+						unchanged, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 						if err != nil || !reflect.DeepEqual(unchanged.Policy, previous) {
 							t.Fatalf("stale refusal changed policy = %+v, %v", unchanged, err)
 						}
 					}
 				})
 			}
-			approved, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+			approved, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 			if err != nil || !reflect.DeepEqual(approved.Policy, descriptor) || approved.ApprovedBy != key.ID {
 				t.Fatalf("approval=%+v error=%v", approved, err)
 			}
@@ -625,12 +625,9 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 				raw, _ := json.Marshal(map[string]any{"description": nativeContractTestBody, "project_id": f.project, "request_id": "create-terminal", "title": "Terminal creation", "state": test.target})
 				call = operatortool.Call{Name: test.tool, Arguments: raw}
 			default:
-				current, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+				current, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 				if err != nil {
-					var failure *nativeError
-					if !errors.As(err, &failure) || failure.Code != "policy_mismatch" {
-						t.Fatal(err)
-					}
+					t.Fatal(err)
 				}
 				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
 					ConfigPath: "detent.yaml", HasConfig: true,
@@ -708,7 +705,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 						}
 					}
 				} else {
-					approval, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+					approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 					if err != nil || !reflect.DeepEqual(approval.Policy, descriptor) || approval.ApprovedBy != key.ID {
 						t.Fatalf("policy=%+v %v", approval, err)
 					}
@@ -753,7 +750,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 								t.Fatalf("%s refusal = %v (%s, %s)", refusal.name, err, code, message)
 							}
 						}
-						unchanged, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+						unchanged, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 						if err != nil || !reflect.DeepEqual(unchanged.Policy, descriptor) {
 							t.Fatalf("refusal changed policy = %+v, %v", unchanged, err)
 						}

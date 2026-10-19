@@ -62,13 +62,12 @@ projects:
 			states = normalizedQueryStrings(query.WorkflowStates)
 		}
 		projectQuery.AvailableAt = now
-		approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(project))
+		approval, found, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(project))
 		if err != nil {
-			var failure *nativeError
-			if errors.As(err, &failure) && failure.Code == "policy_mismatch" {
-				continue projects
-			}
 			return 0, false, err
+		}
+		if !found {
+			continue projects
 		}
 		if len(r.Exclusions(project, approval.Policy.Requirements, false)) > 0 {
 			continue projects

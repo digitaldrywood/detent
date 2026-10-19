@@ -24,11 +24,11 @@ import (
 func TestNativeClaimsDoNotWaitForPolicyApproval(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name          string
-		pendingStatus int
+		name    string
+		pending bool
 	}{
-		{name: "approval pending", pendingStatus: http.StatusConflict},
-		{name: "previous policy approved", pendingStatus: http.StatusOK},
+		{name: "approval pending", pending: true},
+		{name: "previous policy approved", pending: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -65,9 +65,8 @@ func TestNativeClaimsDoNotWaitForPolicyApproval(t *testing.T) {
 						if err := json.NewEncoder(w).Encode(policy.Approval{Policy: selected}); err != nil {
 							t.Fatal(err)
 						}
-					} else if test.pendingStatus == http.StatusConflict {
-						w.WriteHeader(http.StatusConflict)
-						if err := json.NewEncoder(w).Encode(map[string]string{"code": "policy_mismatch", "message": "approval pending"}); err != nil {
+					} else if test.pending {
+						if _, err := w.Write([]byte(`{"policy":null}`)); err != nil {
 							t.Fatal(err)
 						}
 					} else {
@@ -307,9 +306,9 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 		{name: "canonical version carries feature approval", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40)}, approved: &previous, status: http.StatusOK, local: current, reports: 1},
 		{name: "canonical version without source is reported", approved: &previous, status: http.StatusOK, local: current, reports: 1},
 		{name: "older canonical runner remains approved", approved: &current, status: http.StatusOK, local: previous, reports: 1},
-		{name: "default branch applies immediately", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, status: http.StatusConflict, local: clientTestPolicy(), reports: 1},
+		{name: "default branch applies immediately", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, status: http.StatusOK, local: clientTestPolicy(), reports: 1},
 		{name: "different default branch configuration is reported", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, reports: 1},
-		{name: "nothing approved", status: http.StatusConflict, local: clientTestPolicy(), reports: 1},
+		{name: "nothing approved", status: http.StatusOK, local: clientTestPolicy(), reports: 1},
 		{name: "runner B approval preserves runner A heartbeat", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, reports: 1},
 		{name: "invalid approved descriptor", approved: ptr(policy.Descriptor{}), status: http.StatusOK, local: clientTestPolicy(), reports: 1},
 		{name: "approved policy matches", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: clientTestPolicy(), reports: 1},
@@ -346,9 +345,11 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 					w.WriteHeader(status)
 					switch status {
 					case http.StatusOK:
-						_ = json.NewEncoder(w).Encode(policy.Approval{Policy: *approved})
-					case http.StatusConflict:
-						_ = json.NewEncoder(w).Encode(map[string]string{"code": "policy_mismatch", "message": "No approved repository policy"})
+						if approved == nil {
+							_, _ = w.Write([]byte(`{"policy":null}`))
+						} else {
+							_ = json.NewEncoder(w).Encode(policy.Approval{Policy: *approved})
+						}
 					default:
 						_ = json.NewEncoder(w).Encode(map[string]string{"code": "unavailable", "message": "down"})
 					}

@@ -60,8 +60,7 @@ func (c *NativeClient) ProjectPolicy(ctx context.Context) (policy.Approval, erro
 	err := retryableProjectRead(ctx, c.client.request(ctx, http.MethodGet, c.base()+"/policy", nil, &approval))
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	var failure *APIError
-	if c.client.runner != nil && (err == nil || errors.As(err, &failure) && failure.Code == "policy_mismatch") {
+	if c.client.runner != nil && err == nil {
 		c.client.runner.setApprovedPolicy(c.project, approval.Policy.ID)
 		if state.changes != nil && state.approvalRev == revision {
 			state.approval, state.approvalErr, state.approvalSet = approval, err, true
@@ -153,12 +152,11 @@ func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow work
 		return workflow, nil
 	}
 	approval, err := c.ProjectPolicy(ctx)
-	var apiErr *APIError
-	if errors.As(err, &apiErr) && apiErr.Code == "policy_mismatch" {
-		return workflow, nil
-	}
 	if err != nil {
 		return workflowconfig.Workflow{}, fmt.Errorf("load approved shared project configuration: %w", err)
+	}
+	if approval.Policy.ID == "" {
+		return workflow, nil
 	}
 	if supplied && approval.Policy.Authored == nil && (approval.Policy.Configuration == nil || workflow.DefinitionSources != nil) {
 		return workflow, nil

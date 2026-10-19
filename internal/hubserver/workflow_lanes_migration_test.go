@@ -103,7 +103,7 @@ VALUES (?, 'org_upgrade', ?, 'native', ?, ?, ?, 7)`, id, id, states, testTimesta
 				t.Fatalf("startup %d project %s: workflow=%#v states=%s revision=%d", startup, id, migrated, storedStates, revision)
 			}
 			scope := "org_upgrade/" + id
-			approval, err := readProjectPolicy(t.Context(), db, scope)
+			approval, _, err := readProjectPolicy(t.Context(), db, scope)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -232,7 +232,7 @@ func TestCloudWorkflowLanesMigration(t *testing.T) {
 			if !slices.Equal(workflow.Config.KanbanStateNames(), []string{"Backlog", "Todo", "Blocked", "Done"}) || workflow.Prompt != "Keep the Cloud prompt.\n" || revision != 8 {
 				t.Fatalf("migrated workflow = %#v revision=%d", workflow, revision)
 			}
-			approval, err := readProjectPolicy(t.Context(), db, "org/project")
+			approval, _, err := readProjectPolicy(t.Context(), db, "org/project")
 			if err != nil {
 				t.Fatal(err)
 			}
