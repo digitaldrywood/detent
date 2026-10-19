@@ -103,6 +103,46 @@ func SummarizeCurrentVersion(detail tracker.ChangeDetail, policyID, reviewPolicy
 	return summarize(detail, policyID, reviewPolicyID, now, priorApproval)
 }
 
+func CurrentPolicyIdentities(version *tracker.ChangeVersion, approved policy.Descriptor, rules tracker.ChangeReviewPolicy) (string, string) {
+	policyID, reviewID := approved.ID, rules.ID
+	if version == nil {
+		return policyID, reviewID
+	}
+	if version.Policy.Gates.LandingMode == gate.LandingRollingBarrier {
+		return "", reviewID
+	}
+	rules.PolicyID = policyID
+	if version.PolicyID != version.Policy.ID || version.ReviewPolicy.ID == "" ||
+		policyID != "" && reviewID == "" || ValidatePolicy(rules, approved) != nil {
+		return policyID, reviewID
+	}
+	if policyID != "" && !gatesSatisfied(version.Policy.Gates, approved.Gates) ||
+		rules.RequireReview && !version.ReviewPolicy.RequireReview {
+		return policyID, reviewID
+	}
+	for _, check := range rules.RequiredChecks {
+		if !slices.Contains(version.ReviewPolicy.RequiredChecks, check) {
+			return policyID, reviewID
+		}
+	}
+	return version.PolicyID, version.ReviewPolicy.ID
+}
+
+func gatesSatisfied(version, current policy.Gates) bool {
+	if current.Validator && !version.Validator || current.SecurityAudit && !version.SecurityAudit ||
+		current.HumanReview && !version.HumanReview || current.PlanEnabled && !version.PlanEnabled ||
+		current.GitHubPullRequest && !version.GitHubPullRequest ||
+		current.AutomatedReview == gate.AutomatedReviewRequired && version.AutomatedReview != gate.AutomatedReviewRequired {
+		return false
+	}
+	if current.Kind != "" && current.Kind != version.Kind ||
+		current.LandingCommandDigest != "" && current.LandingCommandDigest != version.LandingCommandDigest ||
+		current.GitHubCIDigest != "" && current.GitHubCIDigest != version.GitHubCIDigest {
+		return false
+	}
+	return !current.PlanEnabled || current.PlanReview == "" || current.PlanReview == version.PlanReview || version.PlanReview == gate.PlanReviewBoth
+}
+
 func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) tracker.ChangeSummary {
 	summary := tracker.ChangeSummary{NativeReview: "pending", ExternalReview: "not_linked", Checks: "missing", Status: "draft", Messages: []string{}}
 	var current *tracker.ChangeVersion
