@@ -327,6 +327,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "delegated external verification returns to source rework", delegated: true, change: criterionChange(gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", laneReason: "validator_rework", wantComment: "Record equivalent pre-merge criteria", details: []string{chatGPTCriterion}},
 		{name: "delegated policy preserves actual human action", delegated: true, change: criterionReview("wait", 1), states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "human_action: null", "human_action: Approve the consumer rollout"), wantState: "Blocked", wantComment: "issue acceptance is not recorded"},
 		{name: "1245 production connectors block on first validator run", change: criterionChange(gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}, gate.CriterionEvidence{Criterion: claudeCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, wantState: "Blocked", wantHuman: true, wantQuestion: connectorAction, roundTrip: true},
+		{name: "criteria gate lane outage defers without a generic permission wait", change: criterionChange(gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}, gate.CriterionEvidence{Criterion: claudeCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, updateErr: errors.New("native lane write unavailable"), wantDeferred: true, wantState: "Blocked", wantQuestion: connectorAction},
 		{name: "mixed criteria block with only unsatisfiable actions", change: criterionChange(gate.CriterionEvidence{Criterion: "Missing regression test", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionReworkFixable}, gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}, gate.CriterionEvidence{Criterion: claudeCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, wantState: "Blocked", wantHuman: true, wantQuestion: connectorAction},
 		{name: "rewritten connector criterion reuses retained source and passes", change: criterionChange(gate.CriterionEvidence{Criterion: "Connector sign-in covered by local regression", Kind: gate.EvidenceTest, Reference: "connector_test.go:TestSignIn", Behavior: "The local client signs in successfully"}), states: rework, sourceState: "Rework", humanReview: &no, wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "validator rework routes to Rework", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework", Summary: "Changes requested", NotVerified: []string{"Reject invalid input"}, Findings: []gate.Finding{{Severity: "p1", Path: "input.go", Body: "Invalid input is accepted"}}}}, states: unfinishedWorkflow, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Reject invalid input", "p1 input.go: Invalid input is accepted", "Changes requested"}},
@@ -1103,8 +1104,14 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				if test.wantDeferred && len(attempts.completions) != 0 {
 					t.Fatalf("deferred native completion recorded a terminal outcome: %#v", attempts.completions)
 				}
-				if test.wantDeferred && state.deferredCompletions[issue.ID].Result.FinalMessage != event.Result.FinalMessage {
+				if test.wantDeferred && (state.deferredCompletions[issue.ID].Result.FinalMessage != event.Result.FinalMessage || state.deferredCompletions[issue.ID].Result.FinalState != event.Result.FinalState) {
 					t.Fatal("deferred completion lost the worker disposition")
+				}
+				if test.wantDeferred && test.wantQuestion != "" {
+					if orch.handlePermissionWaitCompletion(t.Context(), nil, state.deferredCompletions[issue.ID].completion(), Running{}) {
+						t.Fatal("deferred criteria gate replays as a generic permission wait")
+					}
+					return
 				}
 				if test.wantDeferred && test.change != nil && test.change.VersionError != "" {
 					preserved := state.deferredCompletions[issue.ID].Result.NativeChange

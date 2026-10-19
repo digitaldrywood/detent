@@ -214,8 +214,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 			if o.cfg.IssueContract != nil && !o.cfg.IssueContract.RequiresHumanConfirmation() {
 				validatorRework = true
 			} else {
-				event.Result.FinalState = runpkg.FinalStateNeedsHumanAttention
-				if !permissionWaitCompletionAllowed(event) {
+				gated := event
+				gated.Result.FinalState = runpkg.FinalStateNeedsHumanAttention
+				if !permissionWaitCompletionAllowed(gated) {
 					return false
 				}
 				return o.parkPermissionWait(ctx, state, event, running, unsatisfiableCriteriaWait(criteria))
