@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
@@ -64,11 +65,15 @@ func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
 				}
 			}
 
-			write := fmt.Sprintf(`{"name":%q,"arguments":{"identifier":%q,"expected_revision":"1","related":%q,"relationship_type":"related","operation":"add"}}`, operatortool.SetDependency, first, second)
-			result, err = tools.handle(t.Context(), runner.AgentToolCall{Name: coordinatorToolCallTool, Arguments: json.RawMessage(write)})
-			if err != nil {
-				t.Fatal(err)
+			propose := func(revision string) {
+				t.Helper()
+				write := fmt.Sprintf(`{"name":%q,"arguments":{"identifier":%q,"expected_revision":%q,"related":%q,"relationship_type":"related","operation":"add"}}`, operatortool.SetDependency, first, revision, second)
+				result, err = tools.handle(t.Context(), runner.AgentToolCall{Name: coordinatorToolCallTool, Arguments: json.RawMessage(write)})
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
+			propose("7")
 			if role.role == "viewer" {
 				if result.Success {
 					t.Fatalf("viewer proposed a write: %s", result.Content)
@@ -78,7 +83,27 @@ func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
 			if !result.Success || !strings.Contains(result.Content, "proposed") {
 				t.Fatalf("write was not proposed: %#v", result)
 			}
-			action := coordinatorSettingsProposal(t, f, record.ID)
+			response := f.request(t, user, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", coordinatorSettingsProposal(t, f, record.ID))
+			requireNativeStatus(t, response, http.StatusConflict)
+			if !strings.Contains(response.Body.String(), "current revision is 1") {
+				t.Fatalf("stale confirmation did not name the conflict: %s", response.Body.String())
+			}
+			propose("1")
+			messages, err := f.service.conversations.store.listMessages(t.Context(), f.service.database.db, record.ID, 0, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var action chat.Action
+			for _, message := range messages {
+				var data struct {
+					OperatorAction struct {
+						Action chat.Action `json:"action"`
+					} `json:"operator_action"`
+				}
+				if json.Unmarshal(message.Data, &data) == nil && data.OperatorAction.Action.ID != "" {
+					action = data.OperatorAction.Action
+				}
+			}
 			if string(action.Kind) != operatortool.SetDependency || action.ProjectID != string(f.project) {
 				t.Fatalf("incorrect proposal: %+v", action)
 			}
