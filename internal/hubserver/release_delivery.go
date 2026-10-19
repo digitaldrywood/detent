@@ -70,12 +70,12 @@ func (s *Service) prepareReleasePick(ctx context.Context, scope nativeScope, ite
 	if err := validateReleasePick(r); err != nil {
 		return err
 	}
-	connector, _, err := projectConnector(ctx, s.database.reader, scope)
+	connector, _, _, err := projectRepositoryBinding(ctx, s.database.reader, scope)
 	if err != nil {
 		return err
 	}
 	if connector == nil || r.Repository != "https://github.com/"+connector.Repository {
-		return nativeInvalid("Release PR repository must match the project's enabled repository")
+		return nativeInvalid("Release PR repository must match the project's configured repository")
 	}
 	existing, found, err := readReleaseDelivery(ctx, s.database.reader, scope, item)
 	if err != nil {
@@ -163,12 +163,12 @@ func (s *Service) associateReleasePickCommand(ctx context.Context, tx *sql.Tx, s
 	if err != nil {
 		return nil, err
 	}
-	connector, repositoryID, err := projectConnector(ctx, tx, scope)
+	connector, repositoryID, _, err := projectRepositoryBinding(ctx, tx, scope)
 	if err != nil {
 		return nil, err
 	}
 	if connector == nil || r.Repository != "https://github.com/"+connector.Repository || sourceVersion.Repository != r.Repository {
-		return nil, nativeInvalid("Source and release delivery must share the project's enabled repository")
+		return nil, nativeInvalid("Source and release delivery must share the project's configured repository")
 	}
 	prior, found, err := readLatestNativeChangeRequest(ctx, tx, scope, item)
 	if err != nil {
