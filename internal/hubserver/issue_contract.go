@@ -209,7 +209,7 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 	if err != nil || repoErr != nil || len(evidence) != 1 || !strings.EqualFold(repository, sourceRepository) || !strings.EqualFold(repository, evidence[0].Repository) || !scheduledRepairOriginMatches(origin.Source, evidence[0]) {
 		return result
 	}
-	workflow, branch, authorized := contract.ScheduledImportWorkflow()
+	workflow, branch, _, authorized := contract.ScheduledImportWorkflow()
 	if !authorized {
 		return result
 	}
@@ -242,7 +242,7 @@ func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope,
 	if err != nil || !strings.EqualFold(repository, evidence[0].Repository) {
 		return nil
 	}
-	workflow, branch, authorized := contract.ScheduledRepairWorkflow()
+	workflow, branch, _, authorized := contract.ScheduledRepairWorkflow()
 	if !authorized {
 		return nil
 	}
@@ -273,6 +273,10 @@ func applyScheduledRepairContract(ctx context.Context, q nativeQueryer, scope na
 	if err != nil {
 		return
 	}
+	_, _, priority, authorized := contract.ScheduledRepairWorkflow()
+	if !authorized {
+		return
+	}
 	body := contract.ScheduledRepairBody()
 	if verified.importURL != "" {
 		body = contract.ScheduledImportBody()
@@ -298,7 +302,7 @@ func applyScheduledRepairContract(ctx context.Context, q nativeQueryer, scope na
 	if !eligible {
 		return
 	}
-	issue.State, issue.Priority = "Todo", new(0)
+	issue.State, issue.Priority = "Todo", new(priority)
 	verified.importReason = ""
 	issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(body)
 	issue.IssueContract.RecordedAt = now

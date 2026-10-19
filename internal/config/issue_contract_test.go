@@ -112,9 +112,13 @@ func TestScheduledRepairContract(t *testing.T) {
 	customTemplate := "## Scheduled CI repair contract\nNew verified GitHub Actions CI repair reports from `.github/workflows/ci.yaml` on `dev` enter Todo with Urgent priority.\n### Result\nRepair the verified failure.\n### Evidence\nRun the focused regression."
 	for _, test := range []struct {
 		name, prompt, want, importBody, workflow, branch string
+		priority                                         int
 	}{
 		{name: "approved literal sections", prompt: definition + template, want: body},
 		{name: "explicit import delegation", prompt: definition + authorized, want: body, importBody: body, workflow: ".github/workflows/ci.yml"},
+		{name: "High priority release family", priority: 1, prompt: strings.Replace(shortTemplate, "Urgent priority", "High priority", 1), want: shortBody, importBody: shortBody, workflow: ".github/workflows/ci.yaml", branch: "release/v*"},
+		{name: "High priority legacy workflow", priority: 1, prompt: definition + strings.Replace(authorized, "Urgent priority", "High priority", 1), want: body, importBody: body, workflow: ".github/workflows/ci.yml"},
+		{name: "unsupported priority", prompt: definition + strings.Replace(custom, "Urgent priority", "Medium priority", 1), want: body},
 		{name: "default three sections", prompt: shortTemplate, want: shortBody, importBody: shortBody, workflow: ".github/workflows/ci.yaml", branch: "release/v*"},
 		{name: "custom sections in configured order", prompt: "## Issue Contract\n- Evidence\n- Result\n" + customTemplate, want: customBody, importBody: customBody, workflow: ".github/workflows/ci.yaml", branch: "dev"},
 		{name: "extra template sections", prompt: authorized},
@@ -146,16 +150,16 @@ func TestScheduledRepairContract(t *testing.T) {
 			if got := contract.ScheduledImportBody(); got != test.importBody {
 				t.Fatalf("import contract = %q, want %q", got, test.importBody)
 			}
-			if workflow, branch, authorized := contract.ScheduledImportWorkflow(); test.importBody != "" && (!authorized || workflow != test.workflow || branch != test.branch) {
+			if workflow, branch, priority, authorized := contract.ScheduledImportWorkflow(); test.importBody != "" && (!authorized || workflow != test.workflow || branch != test.branch || priority != test.priority) {
 				t.Fatalf("import workflow = %q branch = %q authorized = %t", workflow, branch, authorized)
 			}
 			wantAuthorized := test.importBody != "" || test.name == "approved literal sections"
-			workflow, branch, authorized := contract.ScheduledRepairWorkflow()
+			workflow, branch, priority, authorized := contract.ScheduledRepairWorkflow()
 			wantWorkflow := test.workflow
 			if test.name == "approved literal sections" {
 				wantWorkflow = ".github/workflows/ci.yml"
 			}
-			if authorized != wantAuthorized || authorized && (workflow != wantWorkflow || branch != test.branch) {
+			if authorized != wantAuthorized || authorized && (workflow != wantWorkflow || branch != test.branch || priority != test.priority) {
 				t.Fatalf("repair workflow = %q branch = %q authorized = %t", workflow, branch, authorized)
 			}
 		})

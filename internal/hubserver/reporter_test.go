@@ -751,6 +751,7 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 				expectedRepairBody, _, _ = strings.Cut(repairBody, "\n\n## Invariants touched")
 				prompt = strings.Replace(repairDefinition, "- Invariants touched\n- Safety regression\n", "", 1) + strings.ReplaceAll(expectedRepairBody, "## ", "### ")
 				prompt = strings.Replace(prompt, "`release/v2.0`", "`release/v*`", 1)
+				prompt = strings.Replace(prompt, "Urgent priority", "High priority", 1)
 				branch = "release/v*"
 			}
 			required := test.required
@@ -801,7 +802,11 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 				t.Fatalf("work_config required sections=%v, want %v", read.Data.IssueContract.RequiredSections, required)
 			}
 			if test.repair {
-				want := &nativeWorkScheduledRepair{PolicyID: descriptor.ID, Repository: "example-org/example-project", Workflow: ".github/workflows/verify.yaml", Branches: []string{branch}, Body: expectedRepairBody, EvidenceSchema: 1}
+				priority := 0
+				if test.shortContract {
+					priority = 1
+				}
+				want := &nativeWorkScheduledRepair{PolicyID: descriptor.ID, Repository: "example-org/example-project", Workflow: ".github/workflows/verify.yaml", Branches: []string{branch}, Body: expectedRepairBody, EvidenceSchema: 1, Priority: priority}
 				if !reflect.DeepEqual(read.Data.IssueContract.ScheduledRepair, want) {
 					t.Fatalf("scheduled repair=%+v want=%+v", read.Data.IssueContract.ScheduledRepair, want)
 				}
