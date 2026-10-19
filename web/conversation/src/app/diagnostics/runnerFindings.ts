@@ -22,6 +22,9 @@ export function runnerFindings(runners: readonly FleetRunner[], projects: readon
     destination: string | null;
   }>();
   for (const runner of runners) {
+    if (runner.state !== "active" && runner.leases.length === 0) continue;
+    const connection = runner.connection_health ?? runner.health;
+    if (["offline", "unknown", "revoked", "expired"].includes(connection)) continue;
     for (const problem of runner.problems ?? []) {
       const id = JSON.stringify([problem.code, problem.project_id, problem.subject, problem.check]);
       const existing = rows.get(id);

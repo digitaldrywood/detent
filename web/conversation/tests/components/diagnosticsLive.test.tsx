@@ -180,6 +180,22 @@ it("keeps read-only policy review with its administrator and does not group unre
   expect(screen.queryByRole("button", { name: /Approve|Update runner|Remove runner/ })).toBeNull();
 });
 
+it.each([
+  ["disabled", "online", false],
+  ["draining", "online", false],
+  ["active", "offline", false],
+  ["active", "unknown", false],
+  ["active", "online", true],
+] as const)("shows current runner checks for %s/%s only", (state, connection, visible) => {
+  const runner = { ...runners[0]!, state, connection_health: connection, leases: [], host_used: 0 };
+  const view = render(<DiagnosticsView {...viewProps} runners={[runner]} />);
+  const attention = screen.getByRole("region", { name: "Needs attention" });
+  expect(within(attention).queryByText("Project settings could not be loaded") !== null).toBe(visible);
+  expect(within(screen.getByRole("region", { name: "Capacity right now" })).getByText(runner.display_name)).toBeTruthy();
+  view.rerender(<DiagnosticsView {...viewProps} runners={[{ ...runner, state: "active", connection_health: "online", problems: [] }]} />);
+  expect(within(attention).queryByText("Project settings could not be loaded")).toBeNull();
+});
+
 it.each([null, []])("keeps unavailable capacity distinct from no enrolled runners (%j)", (empty) => {
   render(<DiagnosticsView {...viewProps} runners={empty} findings={null} detectorTick={null} report={{ ...viewProps.report, capacity: null, partial: true, busy_percent: null }} />);
   expect(screen.getByText(empty === null ? "Runner capacity is unavailable. Refresh to try again." : "No runners enrolled.")).toBeTruthy();
@@ -207,11 +223,10 @@ it.each([
   expect(within(live).queryByText("Online")).toBeNull();
 });
 
-it("updates findings in place, retains resolutions until reload, and restores reopened findings", async () => {
+it("removes resolved findings on live updates and restores reopened findings", async () => {
   render(<DiagnosticsRoute />, { wrapper: ({ children }) => <HealthFindingsProvider projects={mocks.bootstrap.projects}>{children}</HealthFindingsProvider> });
   await screen.findByText(original.summary);
   expect(openCount()).toBe("1");
-  const row = screen.getByText(original.summary).closest("article")!;
   const headline = screen.getByRole("region", { name: "Diagnostics headline" });
   const viewport = headline.closest("[data-slot='scroll-area-viewport']")!;
   viewport.scrollTop = 120;
@@ -219,9 +234,7 @@ it("updates findings in place, retains resolutions until reload, and restores re
   resolved = [{ ...original, resolved_at: tick }, { ...next, id: "historical", summary: "Historical resolved", resolved_at: tick }];
   act(() => emit());
   await screen.findByText(next.summary);
-  await within(row).findByText("Resolved");
-  expect(row.querySelector("time")!.dateTime).toBe(tick);
-  expect(screen.getByText(original.summary).closest("article")).toBe(row);
+  await waitFor(() => expect(screen.queryByText(original.summary)).toBeNull());
   expect(screen.getByRole("region", { name: "Diagnostics headline" })).toBe(headline);
   expect(viewport.scrollTop).toBe(120);
   expect(screen.queryByText("Historical resolved")).toBeNull();
@@ -232,16 +245,17 @@ it("updates findings in place, retains resolutions until reload, and restores re
   resolved = [{ ...original, resolved_at: tick }, { ...next, resolved_at: tick }];
   act(() => emit("2026-10-07T10:00:30Z"));
   await waitFor(() => expect(openCount()).toBe("0"));
-  expect(screen.getAllByText("Resolved")).toHaveLength(2);
+  expect(screen.queryByText("Resolved")).toBeNull();
+  expect(screen.queryByText(next.summary)).toBeNull();
   open = [original, next];
   resolved = [];
   act(() => emit("2026-10-07T10:01:00Z"));
-  await waitFor(() => expect(within(row).queryByText("Resolved")).toBeNull());
+  await screen.findByText(original.summary);
   expect(openCount()).toBe("2");
   open = [next];
   resolved = [{ ...original, resolved_at: tick }];
   act(() => emit("2026-10-07T10:02:00Z"));
-  await within(row).findByText("Resolved");
+  await waitFor(() => expect(screen.queryByText(original.summary)).toBeNull());
   fireEvent.click(screen.getByRole("button", { name: "Refresh diagnostics" }));
   await waitFor(() => expect(screen.queryByText(original.summary)).toBeNull());
   expect(screen.getByText(next.summary)).toBeTruthy();
@@ -264,14 +278,14 @@ it("catches up on visibility and ignores failed or superseded live reads after u
   open = [next];
   resolved = [{ ...original, resolved_at: tick }];
   act(() => emit("newer"));
-  await screen.findByText("Resolved");
+  await waitFor(() => expect(screen.queryByText(original.summary)).toBeNull());
   await act(async () => release({ items: [original], last_tick_at: tick }));
   expect(openCount()).toBe("1");
-  expect(screen.getByText("Resolved")).toBeTruthy();
+  expect(screen.queryByText("Resolved")).toBeNull();
   mocks.http.listHealthFindings.mockRejectedValueOnce(new Error("offline"));
   act(() => emit("failed"));
   await screen.findByText(/Unable to refresh findings/);
-  expect(screen.getByText("Resolved")).toBeTruthy();
+  expect(screen.queryByText("Resolved")).toBeNull();
   const source = FindingEvents.current;
   view.unmount();
   expect(source.close).toHaveBeenCalledOnce();
@@ -349,8 +363,8 @@ it("shares one findings read per project and detector tick between Diagnostics a
   await act(async () => emit(at));
   expectReads(2);
   expect(within(sidebar).queryByRole("link", { name: finding.summary })).toBeNull();
-  expect(screen.getByText("Resolved")).toBeTruthy();
-  expect(screen.getByText(finding.summary).closest("article")!.querySelector("time")!.dateTime).toBe(at);
+  expect(screen.queryByText("Resolved")).toBeNull();
+  expect(screen.queryByText(finding.summary)).toBeNull();
   expect(openCount()).toBe("0");
   at = "2026-10-07T10:02:00Z";
   items = [finding, { ...finding, id: "another_finding", summary: "Another finding" }];
@@ -375,8 +389,8 @@ it("shares one findings read per project and detector tick between Diagnostics a
   await act(async () => emit(at));
   expectReads(6);
   expect(screen.queryByText(/Unable to refresh findings/)).toBeNull();
-  expect(screen.getByText("Resolved")).toBeTruthy();
-  expect(screen.getByText(finding.summary).closest("article")!.querySelector("time")!.dateTime).toBe("2026-10-07T10:03:00Z");
+  expect(screen.queryByText("Resolved")).toBeNull();
+  expect(screen.queryByText(finding.summary)).toBeNull();
   expect(openCount()).toBe("1");
   expect(within(sidebar).queryByRole("link", { name: finding.summary })).toBeNull();
   expect(within(sidebar).getByRole("link", { name: "Another finding" })).toBeTruthy();
