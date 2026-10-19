@@ -1,9 +1,13 @@
 # Hosted capacity allowances
 
-Hosted identity enables organization entitlements in the owning Hub database.
-Local and self-hosted Hubs do not create assignments, query a billing service, or
-apply hosted restrictions. No Stripe account, subscription, or card is necessary
-for the permanent Free base plan. Model-provider charges remain separate from hosting.
+Organization entitlements are enabled only when a plan catalog or legacy plan
+metadata is configured. By default, local and self-hosted Hubs, including Hubs
+using `--hosted-config` for hosted identity and the web app, do not create plan
+assignments or apply plan allowances. Omitted or empty `entitlements` leaves
+plans disabled, just like a bearer-only Hub. Runner, host, policy and provider
+safety limits still apply. With the Cloud capacity catalog configured, no Stripe
+account, subscription, or card is necessary for the permanent Free base plan.
+Model-provider charges remain separate from hosting.
 
 ## Capacity catalog
 
@@ -15,7 +19,8 @@ for the permanent Free base plan. Model-provider charges remain separate from ho
 | Growth | 2 | 249 | 50 |
 | Scale | 2 | Contact us | Custom |
 
-Omitted or empty `entitlements` selects this catalog. `team` uses version 2
+The Cloud capacity catalog applies only when explicitly configured in
+`entitlements`; its base assignment is `free` version 1. `team` uses version 2
 because version 1 is a legacy paid mapping. Growth and Scale moved to version 2
 with the new prices; their version-1 records keep their stored prices for
 existing subscriptions and resolve with Growth and Scale concurrent work. Scale
@@ -47,9 +52,9 @@ once the capacity catalog is installed. In any other plan, a configured
 
 ## Configuration and plan versions
 
-An explicit catalog replaces the default and must retain any referenced legacy
+An explicit catalog enables plan allowances and must retain any referenced legacy
 versions. The following is the legacy pilot catalog, retained for compatibility;
-use the default capacity catalog for new deployments:
+Cloud deployments configure the capacity catalog instead:
 
 ```yaml
 entitlements:
@@ -89,10 +94,10 @@ entitlements:
         history_records: 20000
 ```
 
-Omitting the entire section, or leaving it empty (`entitlements: {}`), selects
-exactly this catalog and these pilot settings. Any key inside the section, even
-`plans: []`, makes it an explicit catalog that must validate:
-every organization starts on `pilot_free`, and `comp_team` exists only to be
+Omitting the entire section, or leaving it empty (`entitlements: {}`), applies no
+plan allowances. Any key inside the section, even `plans: []`, makes it an
+explicit catalog that must validate. With the pilot catalog above configured,
+every new organization starts on `pilot_free`, and `comp_team` exists only to be
 granted as complimentary access. `comp_team` doubles the `pilot_free` allowances
 and adds `hosted_artifacts`; its artifact allowances stay zero until an operator
 configures them (see below). Both sets of numbers are provisional.

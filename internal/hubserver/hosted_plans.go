@@ -39,12 +39,12 @@ type HostedPlansConfig struct {
 	InvitationSeconds int64         `yaml:"invitation_seconds" json:"invitation_seconds"`
 
 	// written records that the YAML section named at least one key, so an
-	// explicitly empty plan list is an error rather than the defaults.
+	// explicitly empty plan list is an error rather than an absent catalog.
 	written bool
 }
 
 // UnmarshalYAML decodes the catalog and remembers whether the section had
-// any keys: `entitlements: {}` means the default catalog, while a section
+// any keys: `entitlements: {}` means no catalog, while a section
 // that names keys is the operator's own catalog and must validate.
 func (c *HostedPlansConfig) UnmarshalYAML(node *yaml.Node) error {
 	type plain HostedPlansConfig
@@ -213,11 +213,10 @@ func capacityHostedPlans() HostedPlansConfig {
 }
 
 func defaultHostedPlans(cfg *HostedConfig) HostedPlansConfig {
-	config := capacityHostedPlans()
 	if cfg.PlanID == "" && cfg.StorageQuotaBytes == 0 && cfg.EventQuota == 0 {
-		return config
+		return HostedPlansConfig{}
 	}
-	config = pilotHostedPlans()
+	config := pilotHostedPlans()
 	if cfg.PlanID != "" {
 		config.Plans[0].ID = cfg.PlanID
 		config.Base.ID = cfg.PlanID
@@ -296,6 +295,9 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 	config := defaultHostedPlans(cfg)
 	if !cfg.Plans.IsZero() {
 		config = *cfg.Plans
+	}
+	if config.IsZero() {
+		return nil
 	}
 	if err := config.validate(); err != nil {
 		return err
