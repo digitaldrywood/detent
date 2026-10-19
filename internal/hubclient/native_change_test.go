@@ -37,6 +37,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -44,6 +45,10 @@ import (
 )
 
 const nativeChangeAdminToken = "native-change-admin"
+
+var nativeRuntimeDatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
+	return store.Open(ctx, store.Config{Path: path})
+})
 
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
@@ -2997,7 +3002,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			}
 			var runtimeStore store.Store
 			if test.validator != "" || test.summaryFailure {
-				runtimeStore, err = store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+				runtimeStore, err = store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
 				if err != nil {
 					t.Fatal(err)
 				}
