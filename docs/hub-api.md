@@ -1212,9 +1212,9 @@ report history are excluded. Existing health reads, needs-attention surfaces
 and email delivery carry this flow finding; it creates no tracker issue.
 
 The `dependency_hold` flow finding reports delivery stalled when no candidate is
-claimable, a runner slot is free, nothing landed for thirty minutes, and
-dispatchable items wait on dependencies held in non-dispatchable, non-terminal
-lanes. Its evidence counts `dependency_gated`, `held_blockers` and
+claimable, a runner slot is free, nothing landed for thirty minutes, and, in
+a project that requires dependencies, dispatchable items have waited at least
+thirty minutes on dependencies held in non-dispatchable, non-terminal lanes. Its evidence counts `dependency_gated`, `held_blockers` and
 `free_slots`, and `work_item_ids` lists the held blockers.
 
 Rate signals listed in `baseline_unavailable` lack a comparable history, but
