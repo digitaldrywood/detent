@@ -142,6 +142,26 @@ ID selectors and approve the resulting policy. Preserve old principal rows for
 history; never reactivate them by editing SQLite. See `detent hub runner --help`
 for renewal, rotation, revocation, routing and fleet inspection commands.
 
+## Model selection
+
+Set the organization default once through `GET`/`PUT`
+`/api/v2/organizations/{org}/model-selection`, or MCP
+`get_organization_model_selection` / `update_organization_model_selection`,
+using an organization-wide operator or administrator bearer token. Project
+grants do not authorize organization settings. Project settings at
+`/api/v2/organizations/{org}/projects/{prj}/model-selection` override individual
+fields; setting the project `selection` to null restores organization
+inheritance. See [the Hub API](hub-api.md#scoped-runner-onboarding) for request
+fields and the corresponding project MCP tools.
+
+An unconfigured self-hosted Hub uses the same seeded organization defaults as
+a hosted Hub: Codex Sol (`gpt-6.1-sol`) at `high` for normal and complex work,
+Codex Astra (`gpt-6-astra`) at `low` for planning and `medium` for validation,
+and Astra at `medium` for `complexity:very-complex` work. Per-issue effort
+remains clamped to the stage ceiling. Runners receive the effective selection
+from the Hub; runner-local `global.agents.model_selection` in `global.yaml` is
+ignored, and model selection does not belong in repository `detent.yaml`.
+
 ## Optional durable artifacts
 
 Use the existing [artifact deployment](artifacts-deployment.md) and its systemd,

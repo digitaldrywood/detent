@@ -584,6 +584,28 @@ committed `detent.yaml` names, so the checkout needs no local override.
 Hub or organization. Model selection comes from organization/project settings
 in the Hub; local `global.agents.model_selection` is ignored.
 
+Organization defaults are available on hosted and self-hosted Hubs through
+`GET`/`PUT /api/v2/organizations/{org}/model-selection` and MCP
+`get_organization_model_selection` / `update_organization_model_selection`.
+Self-hosted organization operations require an organization-wide operator or
+administrator bearer token; project-scoped credentials cannot access them.
+Hosted organization operations retain their browser-session authorization.
+Updates supply `expected_revision` (a JSON string), `selection`, and
+`idempotency_key` for HTTP or `request_id` for MCP.
+Project overrides use `GET`/`PUT`
+`/api/v2/organizations/{org}/projects/{prj}/model-selection` or MCP
+`get_project_model_selection` / `update_project_model_selection`.
+Partial project settings override the organization default; a null project
+`selection` restores inheritance. Runners receive the effective selection from
+the Hub.
+
+With no settings configured, every organization, including on a self-hosted
+Hub, uses the seeded Codex selection: Sol (`gpt-6.1-sol`) at `high` for normal
+and complex work, Astra (`gpt-6-astra`) at `low` for planning and `medium` for
+validation, and Astra at `medium` for `complexity:very-complex` work. Per-issue
+effort is clamped to each stage's configured ceiling. Configure these defaults
+in the Hub, not in runner-local `global.yaml` or repository `detent.yaml`.
+
 `init` and `enroll` below remain for scripted setups that bind the IDs before
 the token exists.
 
