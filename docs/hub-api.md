@@ -1598,8 +1598,10 @@ existing health detector opens an instance finding for the runner, including
 its top routes. Claims, lease renewal/release, machine heartbeats and runner
 credential renewal are exempt. Hub clients share the response backoff across
 ordinary requests and downloads, honor seconds and HTTP-date `Retry-After`,
-and allow exempt traffic through during backoff. Mutations are never replayed
-automatically.
+and allow exempt traffic through during backoff. A refused read or download
+waits out the window and is sent again, at most three times; a refusal without
+a usable `Retry-After` waits for the next minute. Other `429` codes do not
+start the backoff. Mutations are never replayed automatically.
 
 Native `analytics_dashboard`, `time_series` and `reports` return a paged
 `failure_signatures` read model per project. It groups recorded terminal errors
