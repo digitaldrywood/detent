@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +45,42 @@ func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestDocumentedHubRunnerSubcommands(t *testing.T) {
+	t.Parallel()
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	pattern := regexp.MustCompile(`\bdetent\s+hub\s+runner\s+([a-z][a-z0-9-]*)`)
+	docs := filepath.Join("..", "..", "docs")
+	mentions := 0
+	err := filepath.WalkDir(docs, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".md") && !strings.HasSuffix(path, ".md.in") {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, match := range pattern.FindAllSubmatch(content, -1) {
+			mentions++
+			subcommand := string(match[1])
+			found, remaining, findErr := cmd.Find([]string{"hub", "runner", subcommand})
+			if findErr != nil || len(remaining) != 0 || found.Name() != subcommand {
+				t.Errorf("%s mentions unregistered command %q", path, "detent hub runner "+subcommand)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mentions == 0 {
+		t.Fatal("no documented runner subcommands found")
 	}
 }
 
