@@ -32,10 +32,18 @@ func TestRunnerProjectCredentials(t *testing.T) {
 	for _, test := range []struct {
 		name, kind, global, apiKey, token string
 		authError                         bool
+		release                           bool
+		app                               bool
 		wantError                         bool
 		wantToken                         string
 	}{
 		{name: "native ignores broken global auth", kind: "hub_native", global: "gh", authError: true},
+		{name: "native release configured token", kind: "hub_native", release: true, global: "configured", wantToken: "configured"},
+		{name: "native release signed in", kind: "hub_native", release: true, token: "test-token", wantToken: "test-token"},
+		{name: "native release project token", kind: "hub_native", release: true, apiKey: "$PROJECT_TOKEN", wantToken: "project-token"},
+		{name: "native release project gh", kind: "hub_native", release: true, apiKey: "gh", token: "test-token", wantToken: "test-token"},
+		{name: "native release invalid auth", kind: "hub_native", release: true, global: "gh", authError: true, wantError: true},
+		{name: "native release app ignores broken global auth", kind: "hub_native", release: true, app: true, global: "gh", authError: true},
 		{name: "github missing auth", kind: "github", authError: true, wantError: true},
 		{name: "github invalid stored auth", kind: "github", global: "gh", authError: true, wantError: true},
 		{name: "github signed in", kind: "github", token: "test-token", wantToken: "test-token"},
@@ -46,6 +54,12 @@ func TestRunnerProjectCredentials(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := workflowconfig.Default()
 			cfg.Tracker.Kind, cfg.Tracker.APIKey = test.kind, test.apiKey
+			cfg.Release.Enabled = test.release
+			if test.app {
+				cfg.Tracker.GitHubAppID = "123"
+				cfg.Tracker.GitHubAppInstallationID = "456"
+				cfg.Tracker.GitHubAppPrivateKey = "fixture-key"
+			}
 			calls := 0
 			token, err := resolveRunnerProjectGitHubToken(t.Context(), globalconfig.Config{GitHubToken: test.global}, globalconfig.Project{ID: "site"}, cfg, runtimeDeps{
 				lookupEnv: mapLookup(map[string]string{"PROJECT_TOKEN": "project-token"}),
@@ -60,7 +74,7 @@ func TestRunnerProjectCredentials(t *testing.T) {
 			if (err != nil) != test.wantError || token != test.wantToken {
 				t.Fatalf("resolved token matches=%v, error=%v", token == test.wantToken, err)
 			}
-			if test.kind == "hub_native" && calls != 0 {
+			if test.kind == "hub_native" && (!test.release || test.app) && calls != 0 {
 				t.Fatal("native project probed GitHub authentication")
 			}
 		})
