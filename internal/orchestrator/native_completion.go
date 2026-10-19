@@ -298,6 +298,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 	} else {
 		comment = nativeCompletionComment(change, issue.State, target)
 	}
+	if reviewChangesRequested && normalizeState(target) == normalizeState(cfg.ReworkState) {
+		comment = fmt.Sprintf("The provider turn completed, but the current Change Request %s (head %s) still has requested changes. Implementation remains in %s because those findings are unresolved; issue acceptance is not recorded.", change.ChangeID, shortCommit(change.HeadSHA), displayStateName(target))
+	}
 	if needsReview {
 		comment = nativeCompletionReason(comment, report, event.Result.FinalMessage, nil)
 		if change != nil && change.VersionError != "" {

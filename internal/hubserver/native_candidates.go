@@ -357,14 +357,15 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.WorkItemID, now time.Time) (tracker.NativeAnsweredExclusion, error) {
 	var scope nativeScope
 	var item, attempt, raw, checkpoint string
-	err := q.QueryRowContext(ctx, `SELECT i.organization_id, i.project_id, i.native_id, a.id, a.data_json, COALESCE(a.checkpoint_json, 'null')
+	var startedAt string
+	err := q.QueryRowContext(ctx, `SELECT i.organization_id, i.project_id, i.native_id, a.id, a.data_json, COALESCE(a.checkpoint_json, 'null'), a.started_at
  FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
  JOIN workflow_states ws ON ws.id = i.workflow_state_id
  JOIN native_attempts a ON a.organization_id = i.organization_id AND a.project_id = i.project_id AND a.work_item_id = i.native_id
  WHERE i.id = ? AND p.profile = 'native' AND lower(trim(ws.detent_state)) <> 'merging'
  AND a.status = 'succeeded' AND a.work_item_revision >= i.revision AND a.dispatch_generation >= i.dispatch_generation
  AND a.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest WHERE latest.organization_id = i.organization_id AND latest.project_id = i.project_id AND latest.work_item_id = i.native_id)
- LIMIT 1`, id).Scan(&scope.organization, &scope.project, &item, &attempt, &raw, &checkpoint)
+ LIMIT 1`, id).Scan(&scope.organization, &scope.project, &item, &attempt, &raw, &checkpoint, &startedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return tracker.NativeAnsweredExclusion{}, nil
 	}
@@ -405,8 +406,30 @@ func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.Wo
 		return tracker.NativeAnsweredExclusion{}, err
 	}
 	review := changerequest.ReviewState(detail, finalization.VersionID, source.HeadSHA)
-	if !review.Current || review.ChangesRequested || detail.Change.CurrentLanding() != nil {
+	if !review.Current || detail.Change.CurrentLanding() != nil {
 		return tracker.NativeAnsweredExclusion{}, nil
+	}
+	if review.ChangesRequested {
+		started, err := parseTimeValue(startedAt)
+		if err != nil {
+			return tracker.NativeAnsweredExclusion{}, err
+		}
+		for _, version := range detail.Versions {
+			if version.ID == finalization.VersionID && !version.CreatedAt.Before(started) {
+				return tracker.NativeAnsweredExclusion{}, nil
+			}
+		}
+		for _, finding := range detail.Reviews {
+			if finding.VersionID == finalization.VersionID && finding.Decision == "changes_requested" && !finding.CreatedAt.Before(started) {
+				return tracker.NativeAnsweredExclusion{}, nil
+			}
+		}
+		for _, check := range detail.Checks {
+			if check.VersionID == finalization.VersionID && check.Conclusion != "success" && !check.ReceivedAt.Before(started) {
+				return tracker.NativeAnsweredExclusion{}, nil
+			}
+		}
+		return tracker.NativeAnsweredExclusion{Kind: string(gate.ReasonValidatorRework), AttemptID: attempt}, nil
 	}
 	return tracker.NativeAnsweredExclusion{Kind: string(gate.ReasonAutomatedReviewMissing), AttemptID: attempt}, nil
 }
