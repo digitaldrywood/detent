@@ -250,6 +250,9 @@ func TestRunnerRequestBudgetHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.service.requestMetrics = m
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET reported_capacity=0 WHERE id=?", r.binding.RunnerID); err != nil {
+		t.Fatal(err)
+	}
 	for range 240 {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items", r.redemption.Credential, nil), http.StatusOK)
 	}
@@ -257,6 +260,9 @@ func TestRunnerRequestBudgetHTTP(t *testing.T) {
 	requireNativeCode(t, response, http.StatusTooManyRequests, "runner_request_budget")
 	if response.Header().Get("Retry-After") != "40" {
 		t.Fatalf("retry=%q", response.Header().Get("Retry-After"))
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET reported_capacity=capacity_limit WHERE id=?", r.binding.RunnerID); err != nil {
+		t.Fatal(err)
 	}
 	claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "request-budget", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	claimed := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
