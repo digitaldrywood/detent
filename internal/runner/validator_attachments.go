@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"unicode/utf8"
@@ -25,13 +26,21 @@ type validatorAttachments struct {
 	handle AgentToolHandler
 }
 
+type validatorAttachmentResult struct {
+	Metadata        attachment.Metadata  `json:"metadata"`
+	ReadReceipt     *gate.AttachmentRead `json:"read_receipt,omitempty"`
+	Content         string               `json:"content,omitempty"`
+	Truncated       bool                 `json:"truncated,omitempty"`
+	InspectionError string               `json:"inspection_error,omitempty"`
+}
+
 func validatorEvidenceTools(tools []AgentTool) []AgentTool {
 	var result []AgentTool
 	for _, tool := range tools {
 		switch tool.Name {
 		case operatortool.WorkItem, operatortool.WorkComments, operatortool.ReadAttachmentMetadata, operatortool.ReadAttachment:
 			if tool.Name == operatortool.ReadAttachment {
-				tool.Description += " During native validation, reading an image or text/plain attachment from offset 0 verifies its complete digest. Displayed text is limited to 32768 bytes; a truncated preview supplies no read_receipt. Complete content displayed in this review returns a host read_receipt for observed attachment evidence. Images require a backend that can display them."
+				tool.Description += " During native acceptance validation, reading an image or text/plain attachment from offset 0 verifies its complete digest. Only complete content displayed in this review returns a host read_receipt bound to the reviewed head and tree. Unsupported MIME or truncated text returns inspection_error and no read_receipt. Images require a backend that can display them."
 			}
 			result = append(result, tool)
 		}
@@ -48,12 +57,12 @@ func (v *validatorAttachments) call(ctx context.Context, call AgentToolCall) (Ag
 	if err != nil {
 		return AgentToolResult{}, err
 	}
-	if input.Offset != 0 {
-		return result, nil
-	}
 	var first operatortool.AttachmentContentResult
 	if err := json.Unmarshal([]byte(result.Content), &first); err != nil {
 		return AgentToolResult{}, err
+	}
+	if err := first.Metadata.Validate(); err != nil || first.Metadata.ID != input.AttachmentID || first.Metadata.ProjectID != input.ProjectID {
+		return AgentToolResult{}, errors.New("invalid attachment metadata")
 	}
 	switch first.Metadata.ContentType {
 	case "image/png", "image/jpeg":
@@ -62,10 +71,14 @@ func (v *validatorAttachments) call(ctx context.Context, call AgentToolCall) (Ag
 		}
 	case "text/plain":
 	default:
-		return result, nil
+		data, err := json.Marshal(validatorAttachmentResult{
+			Metadata:        first.Metadata,
+			InspectionError: fmt.Sprintf("MIME %s is unsupported for acceptance inspection; content was not displayed or digest-verified and no read_receipt was issued. ", first.Metadata.ContentType) + operatortool.AttachmentEvidencePublication,
+		})
+		return AgentToolResult{Success: err == nil, Content: string(data)}, err
 	}
-	if err := first.Metadata.Validate(); err != nil || first.Metadata.ID != input.AttachmentID || first.Metadata.ProjectID != input.ProjectID {
-		return AgentToolResult{}, errors.New("invalid attachment metadata")
+	if input.Offset != 0 {
+		return result, nil
 	}
 	limit := first.Metadata.Size
 	if first.Metadata.ContentType == "text/plain" {
@@ -130,15 +143,12 @@ func (v *validatorAttachments) call(ctx context.Context, call AgentToolCall) (Ag
 		ProjectID: first.Metadata.ProjectID, WorkItemID: first.Metadata.WorkItemID, CommentID: first.Metadata.CommentID,
 		HeadSHA: v.head, TreeSHA: v.tree,
 	}
+	var inspectionError string
 	if truncated {
 		read = nil
+		inspectionError = "Text exceeds the 32768-byte inspection bound; the complete digest was verified but only a preview was displayed, so no read_receipt was issued. " + operatortool.AttachmentEvidencePublication
 	}
-	data, err := json.Marshal(struct {
-		Metadata    attachment.Metadata  `json:"metadata"`
-		ReadReceipt *gate.AttachmentRead `json:"read_receipt,omitempty"`
-		Content     string               `json:"content,omitempty"`
-		Truncated   bool                 `json:"truncated,omitempty"`
-	}{first.Metadata, read, text, truncated})
+	data, err := json.Marshal(validatorAttachmentResult{Metadata: first.Metadata, ReadReceipt: read, Content: text, Truncated: truncated, InspectionError: inspectionError})
 	if err != nil {
 		return AgentToolResult{}, err
 	}

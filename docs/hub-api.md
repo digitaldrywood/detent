@@ -2087,6 +2087,18 @@ visual outcome and its relevance to the reviewed source in `behavior`. The revie
 stores these reads in `attachment_reads`, with attachment provenance and review
 head/tree identities. Download success or worker prose does not establish visual
 acceptance. Older captures remain usable when the affected UI is unchanged.
+Complete UTF-8 `text/plain` attachments of at most 32768 bytes can also support
+nonvisual criteria. Diagnostic producers follow the
+[bounded evidence publication contract](api-mcp-setup.md): publish JSON as
+`text/plain` and preserve larger documents in ordered bounded parts. Unsupported
+MIME and oversized text return actionable `inspection_error` guidance during
+validation, without a complete-inspection receipt. A verified digest for a
+truncated preview does not establish complete inspection. The acceptance
+validator obtains its own review-bound receipts for every required part;
+ordinary implementation and Rework workers cannot issue them and must not edit
+source solely to obtain them. Inspection receipts prove observation in that
+review, not independent execution or that the captured source matches the
+reviewed source; validators assess that applicability separately.
 The Change review page shows this map and highlights the unverified list.
 `gate.validator.unverified_criteria` defaults to `rework`, naming every gap.
 Projects may select `pass-with-disclosure` to retain gaps while allowing a pass;
