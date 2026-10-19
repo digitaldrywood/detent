@@ -3,6 +3,9 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -997,6 +1000,106 @@ func TestOperatorChangeCommands(t *testing.T) {
 		if stored := f.detail(t); !reflect.DeepEqual(stored, full) {
 			t.Fatal("bounded reads changed canonical records or original command output")
 		}
+		fragmentReviews := map[string][]byte{}
+		for _, size := range []int{operatortool.MaxResultBytes - 1, operatortool.MaxResultBytes, operatortool.MaxResultBytes + 1} {
+			review := tracker.ChangeReview{ID: "review_fragment_" + strconv.Itoa(size), VersionID: current.ID, Decision: "commented", Body: "Escaped <\"\n世界"}
+			raw, err := json.Marshal(review)
+			if err != nil {
+				t.Fatal(err)
+			}
+			review.Body += strings.Repeat("x", size-len(raw))
+			raw, err = json.Marshal(review)
+			if err != nil || len(raw) != size {
+				t.Fatalf("boundary fixture size=%d: %v", len(raw), err)
+			}
+			fragmentReviews[review.ID] = raw
+			insert(ctx, "review", current.ID, review)
+		}
+		fragmentArgs := base
+		fragmentArgs.Section, fragmentArgs.Limit = "reviews", 1
+		var record []byte
+		var identity tracker.NativeRecoveryPage
+		fragmentCursor := ""
+		for pages := 0; ; pages++ {
+			if pages > 40 {
+				t.Fatal("fragment pagination did not terminate")
+			}
+			result, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, fragmentArgs))
+			var value operatortool.ChangeResult
+			if err != nil || len(result.Content) > operatortool.MaxResultBytes || json.Unmarshal(result.Content, &value) != nil {
+				t.Fatalf("fragment read: %v", err)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.path+"?view=bounded&section=reviews&limit=1&cursor="+url.QueryEscape(fragmentArgs.Cursor), f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var native operatortool.ChangeResult
+			decodeHubResponse(t, response, &native)
+			if response.Body.Len() > operatortool.MaxResultBytes || !reflect.DeepEqual(native.Fragment, value.Fragment) || !reflect.DeepEqual(native.Read, value.Read) {
+				t.Fatal("HTTP and MCP fragments diverged")
+			}
+			if page := value.Fragment; page != nil {
+				if len(record) == 0 {
+					identity = *page
+				}
+				if page.OrganizationID != f.project.OrganizationID || page.ProjectID != f.project.ID || page.WorkItemID != f.issue.WorkItemID || page.VersionID != current.ID || page.Section != "reviews" || page.RecordID != identity.RecordID || page.TotalBytes != identity.TotalBytes || page.SHA256 != identity.SHA256 || page.Offset != int64(len(record)) || len(page.Data) == 0 || len(page.Data) > 64<<10 || len(value.Detail.Reviews) != 0 {
+					t.Fatal("fragment lost identity or byte bounds")
+				}
+				record = append(record, page.Data...)
+				if int64(len(record)) == page.TotalBytes {
+					digest := sha256.Sum256(record)
+					var review tracker.ChangeReview
+					if hex.EncodeToString(digest[:]) != page.SHA256 || json.Unmarshal(record, &review) != nil || !bytes.Equal(record, fragmentReviews[review.ID]) {
+						t.Fatal("fragment changed canonical bytes")
+					}
+					delete(fragmentReviews, review.ID)
+					record = nil
+				} else if fragmentCursor == "" {
+					fragmentCursor = value.Read.Sections["reviews"].NextCursor
+					var cursor changeReadCursor
+					raw, err := base64.RawURLEncoding.DecodeString(fragmentCursor)
+					if err != nil || json.Unmarshal(raw, &cursor) != nil {
+						t.Fatal("invalid issued fragment cursor")
+					}
+					for _, mode := range []string{"digest", "offset", "version", "change", "section", "past end"} {
+						t.Run("fragment cursor/"+mode, func(t *testing.T) {
+							altered := cursor
+							switch mode {
+							case "digest":
+								altered.Digest = strings.Repeat("0", 64)
+							case "offset":
+								altered.Offset = -1
+							case "version":
+								altered.Version = version.ID
+							case "change":
+								altered.Change = "change_foreign"
+							case "section":
+								altered.Section = "checks"
+							case "past end":
+								altered.Offset = page.TotalBytes
+							}
+							args := fragmentArgs
+							args.Cursor, err = encodeChangeReadCursor(altered)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if _, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, args)); err == nil {
+								t.Fatal("altered fragment cursor accepted")
+							}
+						})
+					}
+				}
+			}
+			page := value.Read.Sections["reviews"]
+			if page.Complete {
+				break
+			}
+			if page.NextCursor == "" || page.NextCursor == fragmentArgs.Cursor {
+				t.Fatal("fragment cursor did not advance")
+			}
+			fragmentArgs.Cursor = page.NextCursor
+		}
+		if len(record) != 0 || len(fragmentReviews) != 0 || fragmentCursor == "" {
+			t.Fatal("lost boundary review evidence")
+		}
 		args := base
 		args.VersionID = version.ID
 		historical := read(args)
@@ -1060,6 +1163,10 @@ func TestOperatorChangeCommands(t *testing.T) {
 		response = performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "advance-after-cursor"}, ExpectedVersionID: current.ID, ChangeVersionInput: input})
 		requireNativeStatus(t, response, http.StatusOK)
 		args = base
+		args.Cursor = fragmentCursor
+		if _, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, args)); !errors.Is(err, mutation.ErrConflict) {
+			t.Fatalf("fragment cursor crossed current-head change: %v", err)
+		}
 		args.Cursor = first.Read.Sections["versions"].NextCursor
 		if _, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, args)); !errors.Is(err, mutation.ErrConflict) {
 			t.Fatalf("cursor crossed current-head change: %v", err)

@@ -742,9 +742,19 @@ criteria, findings, command results and receipt identities remain complete;
 section completeness describes records, not the completeness of output text.
 The canonical scoped Change HTTP GET without `view=bounded` retains the full
 stored reviews and output; exact-version reads also retain stored output.
-Records whose remaining semantic evidence exceeds the budget still return
-`change_record_too_large` without record content or passing evidence. The result
-budget remains 256 KiB.
+When a review cannot fit with its required envelope, a `section: "reviews"`
+continuation returns `fragment` using the retained recovery record format:
+scoped item, record and version identities, byte offset, total byte length,
+SHA-256 and base64-encoded canonical stored JSON. Each fragment carries at most
+64 KiB of record bytes. Follow `read.sections.reviews.next_cursor` on the same
+Change until the record is complete; verify contiguous offsets, stable identity,
+length and digest before using its review. Fragmented records retain full command
+output. Section completion describes traversal progress and never makes a partial
+record passing evidence. Change cursors retain their selected Change, version,
+head and history boundary, including for a non-latest Change on the same item.
+Other unrepresentable records or envelopes still return `change_record_too_large`
+without record content or passing evidence. Every serialized result remains
+within the existing 256 KiB budget.
 Native workers use the same projection through the Change HTTP read with
 `view=bounded` and the same section, cursor, version and limit selectors.
 
