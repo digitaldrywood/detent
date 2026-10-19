@@ -1,8 +1,10 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
+import { createRootRoute, createRoute, createRouter, RouterProvider, Outlet } from "@tanstack/react-router";
 import { ClientContext } from "../../web/conversation/src/app/client.ts";
-import { RunnersSettings } from "../../web/conversation/src/app/fleet/RunnersSection.tsx";
+import { SettingsRoute } from "../../web/conversation/src/app/settings/Settings.tsx";
+import { useNavigate } from "@tanstack/react-router";
+import { SettingsScreen } from "../../web/conversation/src/app/routes.account.screens.tsx";
 import { DraftStore } from "../../web/conversation/src/runtime/state/drafts.ts";
 import type { ConversationClient } from "../../web/conversation/src/runtime/bootstrap.ts";
 import fleet from "../../web/conversation/src/contracts/fixtures/account-fleet.json";
@@ -12,7 +14,7 @@ const params = new URLSearchParams(location.search);
 const poolState = params.get("poolState");
 const projects = [
   { id: "proj_preview", name: "Preview project", can_write: true },
-  ...(params.has("multipleProjects") ? [{ id: "proj_second", name: "Second project", can_write: true }, { id: "proj_viewer", name: "Read-only project", can_write: false }] : []),
+  ...((params.has("multipleProjects") || (window as unknown as { previewMultipleProjects?: boolean }).previewMultipleProjects) ? [{ id: "proj_second", name: "Second project", can_write: true }, { id: "proj_viewer", name: "Read-only project", can_write: false }] : []),
 ];
 const client = {
   bootstrap: { organization: { id: "org_preview" }, actor: { principal_id: "owner_preview" } },
@@ -61,15 +63,19 @@ if (location.protocol === "file:") {
   };
 }
 
+function RunnersListScreen() {
+  const navigate = useNavigate();
+  return <SettingsRoute section="runners" onNavigate={(to) => { void navigate({ to } as never); }} />;
+}
+
 const route = createRootRoute({
   component: () => (
     <ClientContext.Provider value={client}>
       <div className="flex h-dvh min-w-0 flex-col bg-background text-foreground">
-        <header className="border-b border-border px-5 py-3"><h1 className="text-sm">Settings</h1></header>
-        <RunnersSettings />
+        <Outlet />
       </div>
     </ClientContext.Provider>
   ),
 });
-const router = createRouter({ routeTree: route });
+const router = createRouter({ routeTree: route.addChildren([createRoute({ getParentRoute: () => route, path: "/settings/runners", component: RunnersListScreen }), createRoute({ getParentRoute: () => route, path: "/settings/runners/$runner", component: () => <SettingsScreen /> })]) });
 createRoot(document.getElementById("root")!).render(<RouterProvider router={router} />);

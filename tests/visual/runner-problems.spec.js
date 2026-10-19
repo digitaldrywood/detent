@@ -13,7 +13,7 @@ test.beforeEach(async () => {
 
 test.afterEach(async () => { await hub?.stop(); });
 
-test("runner diagnostics show on the card, filter by count, and clear on heartbeat", async ({ page }) => {
+test("runner problems stay concise on the list, filter by count, and clear on heartbeat", async ({ page }) => {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("response", (response) => { if (response.status() >= 500) errors.push(`${response.status()} ${response.url()}`); });
@@ -21,22 +21,21 @@ test("runner diagnostics show on the card, filter by count, and clear on heartbe
   const url = new URL("/settings/runners", hub.fixture.url).toString();
   await page.goto(url);
   const card = page.getByTestId("host-card").filter({ hasText: "Settings runner" });
-  await expect(card.getByText("Needs attention", { exact: true })).toBeVisible();
-  await expect(card).toContainText("codex: not signed in");
-  await expect(card).toContainText("Not logged in");
-  await expect(card).toContainText("codex login --device-auth");
-  await expect(card.getByRole("alert")).toContainText("Needs human:");
-  await expect(page.getByRole("alert")).toHaveCount(1);
+  await expect(card.getByRole("img", { name: "Needs attention" })).toBeVisible();
+  await expect(card).toContainText("Provider sign-in or setup needed");
+  await expect(card).not.toContainText("Not logged in");
+  await expect(card).not.toContainText("codex login --device-auth");
+  await expect(card.getByRole("alert")).toHaveCount(0);
   await card.getByRole("button", { name: "Manage Settings runner" }).click();
-  const sheet = page.getByRole("dialog", { name: "Settings runner" });
-  await expect(sheet.getByRole("alert")).toContainText("codex: not signed in");
-  await expect(sheet.getByRole("alert")).toContainText("Not logged in");
-  await expect(sheet.getByRole("alert")).toContainText("codex login status");
+  const sheet = page.getByRole("article", { name: "Settings runner" });
+  await expect(sheet.getByRole("alert")).toContainText("Provider sign-in or setup needed");
+  await expect(sheet).not.toContainText("Not logged in");
+  await expect(sheet).not.toContainText("codex login status");
   await expect(sheet.getByRole("alert")).toContainText("codex login --device-auth");
-  await expect(sheet.getByRole("alert")).toContainText("Last report");
-  await page.keyboard.press("Escape");
+  await expect(sheet).toContainText("Last check-in");
+  await page.getByRole("link", { name: "Runners", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.getByRole("alert")).toHaveCount(1);
+  await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(page.getByTestId("host-card")).toHaveCount(2);
   await page.getByRole("link", { name: "Needs attention 1" }).click();
   await expect(page).toHaveURL(/health=needs_attention/);
@@ -60,11 +59,11 @@ test("runner diagnostics show on the card, filter by count, and clear on heartbe
   const lastReport = "2026-10-08T14:41:00Z";
   await page.route("**/api/v2/organizations/org_browser_preview/fleet", (route) => route.fulfill({ json: { ...fleet, runners: fleet.runners.map((runner) => runner.id === hub.fixture.problem_runner.runner_id ? { ...runner, connection_health: "offline", last_heartbeat_at: lastReport, problems: runner.problems.map((problem) => ({ ...problem, reported_at: lastReport })) } : runner) } }));
   await page.goto(url);
-  await expect(card).toContainText("Offline since");
-  await expect(card).toContainText("last report");
+  await expect(card.getByRole("img", { name: "Offline" })).toBeVisible();
   await card.getByRole("button", { name: "Manage Settings runner" }).click();
-  await expect(sheet).toContainText("Offline since");
-  await page.keyboard.press("Escape");
+  await expect(sheet.getByRole("img", { name: "Offline" })).toBeVisible();
+  await expect(sheet).toContainText("Last check-in");
+  await page.getByRole("link", { name: "Runners", exact: true }).click();
   await page.goto(new URL("/diagnostics", hub.fixture.url).toString());
   await expect(page.getByRole("region", { name: "Capacity right now" })).toContainText("Offline");
   await expect(attention).not.toContainText("Offline since");

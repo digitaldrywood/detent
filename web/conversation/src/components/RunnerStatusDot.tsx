@@ -8,20 +8,22 @@ export function RunnerStatusDot({
   readonly runner?: Pick<
     FleetRunner,
     "state" | "health" | "claim_refusal_reason"
-  >;
+  > & Partial<Pick<FleetRunner, "connection_health" | "update" | "problems">>;
   readonly className?: string;
 }) {
+  const offline = ["offline", "stale", "revoked", "expired"].includes(runner?.connection_health ?? runner?.health ?? "");
+  const draining = runner?.state === "draining";
   const failed =
     runner?.state === "failed" ||
     (runner?.state === "active" && runner.health === "failed");
   const attention =
     runner?.state === "active" &&
-    (runner.health === "needs_attention" || !!runner.claim_refusal_reason);
+    (runner.health === "needs_attention" || !!runner.claim_refusal_reason || !!runner.problems?.length || runner.update?.status === "refused" || runner.update?.status === "uncertain");
   const healthy =
     runner?.state === "active" &&
     !attention &&
     (runner.health === "healthy" || runner.health === "online");
-  const label = failed
+  const label = offline ? "Offline" : draining ? "Draining" : failed
     ? "Failed"
     : runner?.state === "paused"
       ? "Paused"
@@ -43,7 +45,7 @@ export function RunnerStatusDot({
         aria-hidden="true"
         className={cn(
           "size-2 shrink-0 rounded-full",
-          failed
+          offline ? "bg-muted-foreground" : draining ? "border-2 border-primary" : failed
             ? "bg-error"
             : attention
               ? "bg-warning"

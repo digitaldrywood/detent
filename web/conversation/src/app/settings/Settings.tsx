@@ -813,11 +813,13 @@ export function AboutSettings(): React.ReactElement {
 
 export function SettingsRoute({
   section = DEFAULT_SECTION,
+  runnerId,
   project = null,
   onNavigate,
 }: {
   /** The path segment after `/settings`. */
   readonly section?: SettingsSectionId;
+  readonly runnerId?: string;
   /** `?project=`, for the Integrations section. */
   readonly project?: string | null;
   /** The router's navigation. Absent in a test that renders the page alone. */
@@ -826,6 +828,7 @@ export function SettingsRoute({
   const bootstrap = useAccountBootstrap();
   const canManage = bootstrap?.actor.can_manage ?? false;
   const supporting = bootstrap?.support != null;
+  const [runnerName, setRunnerName] = React.useState("Runner");
 
   const items = React.useMemo(
     () => settingsNavItems({ canManage, supporting }),
@@ -843,7 +846,7 @@ export function SettingsRoute({
   const activeLabel = items.find((item) => item.id === activeId)?.label ?? SETTINGS_SECTION_LABELS[activeId];
   const projectName = bootstrap?.projects.find((candidate) => candidate.id === project)?.name;
   usePageTitle(
-    activeId === "general" ? "Settings" : activeId === "runners" ? "Runners" : activeLabel,
+    runnerId ? runnerName : activeId === "general" ? "Settings" : activeLabel,
     projectName,
   );
 
@@ -861,24 +864,28 @@ export function SettingsRoute({
               <WorkspaceBreadcrumbSeparator />
             </>
           ) : null}
-          <WorkspaceBreadcrumbItem current className="min-w-10">
-            <span className="min-w-0 truncate">{activeId === "organization" ? "Overview" : activeLabel}</span>
+          <WorkspaceBreadcrumbItem current={!runnerId} className="min-w-10">
+            <span className="min-w-0 truncate">{runnerId ? <a href={`${basePath()}/settings/runners`} onClick={(event) => { if (onNavigate && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); onNavigate("/settings/runners"); } }}>Runners</a> : activeId === "organization" ? "Overview" : activeLabel}</span>
           </WorkspaceBreadcrumbItem>
+          {runnerId ? <><WorkspaceBreadcrumbSeparator /><WorkspaceBreadcrumbItem current><span className="truncate">{runnerName}</span></WorkspaceBreadcrumbItem></> : null}
         </WorkspaceBreadcrumb>
       </WorkspacePageHeader>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <SettingsBody section={activeId} project={project} onNavigate={onNavigate} />
+        <SettingsBody runnerId={runnerId} onRunnerName={setRunnerName} section={activeId} project={project} onNavigate={onNavigate} />
       </div>
     </div>
   );
 }
 
 function SettingsBody({
+  runnerId, onRunnerName,
   section,
   project,
   onNavigate,
 }: {
+  readonly runnerId?: string;
+  readonly onRunnerName?: (name: string) => void;
   readonly section: SettingsSectionId;
   readonly project: string | null;
   readonly onNavigate?: (to: string) => void;
@@ -893,7 +900,7 @@ function SettingsBody({
     case "projects":
       return <ProjectsSettings onNavigate={onNavigate} />;
     case "runners":
-      return <RunnersSettings />;
+      return <RunnersSettings runnerId={runnerId} onNavigate={onNavigate} onRunnerName={onRunnerName} />;
     case "integrations":
       return <IntegrationsSettings project={project} onNavigate={onNavigate} />;
     case "mcp":

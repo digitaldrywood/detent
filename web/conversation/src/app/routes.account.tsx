@@ -59,6 +59,7 @@ export const ACCOUNT_ROUTE_PATHS = [
   "/settings",
   "/settings/$section",
   "/settings/organization/$organizationPage",
+  "/settings/runners/$runner",
   "/usage",
   "/reports",
   "/reports/$tab",
@@ -103,6 +104,7 @@ export function accountRoutes(rootRoute: AnyRoute): AnyRoute[] {
       }
     } }),
     createRoute({ getParentRoute, path: "/settings/organization/$organizationPage", component: SettingsScreen }),
+    createRoute({ getParentRoute, path: "/settings/runners/$runner", component: SettingsScreen }),
     createRoute({ getParentRoute, path: "/usage", component: UsageRoute }),
     createRoute({ getParentRoute, path: "/reports", component: ReportsRoute }),
     createRoute({
