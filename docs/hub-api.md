@@ -550,7 +550,7 @@ detent hub runner register --url https://cloud.detent.build/organizations/org_ex
    read or sent.
 3. Writes machine-only `global.yaml` once: the `client:` block (`hub_url`,
    `identity_file`, `organization_id`, `display_name`, `capacity`),
-   `service_name: detent.runner`, and `workspace_root` (default `~/detent-runner`).
+   `service_name`, and `workspace_root` (default `~/detent-runner`).
    Existing configuration files are left untouched. Cloud owns the project list;
    enrolled runners reject unknown keys at startup, naming the key paths.
    Remove local `projects`, weights, priorities, scheduling, fair-share settings,
@@ -559,8 +559,13 @@ detent hub runner register --url https://cloud.detent.build/organizations/org_ex
    fail validation; the warning-and-ignore transition has ended.
 4. With `--service`, installs and starts the `detent.runner` background service
    (launchd `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`),
-   separate from a local board's `detent` service on the same host. At startup,
-   the runner reads its current allowed projects from Cloud, clones missing
+   separate from a local board's `detent` service on the same host. When that
+   service belongs to another config, a new enrollment appends a stable hash of
+   its absolute config path to `detent.runner`. The selected name is stored in
+   `service_name`, so re-registration and updates target the same service.
+   Existing config names remain unchanged. Use a separate config directory for
+   each Hub enrollment; its credentials and service logs stay in that directory.
+   At startup, the runner reads its current allowed projects from Cloud, clones missing
    linked repositories into `workspace_root/PROJECT_ID` using host Git
    authentication, and loads `detent.yaml` and `WORKFLOW.md` from the repository's
    current default branch. Existing matching checkouts under `workspace_root`

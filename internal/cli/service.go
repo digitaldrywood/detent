@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -251,7 +252,7 @@ func quotedArgumentEnd(value string) int {
 }
 
 func launchdDefinitionArguments(content []byte) []string {
-	decoder := xml.NewDecoder(bytes.NewReader(content))
+	decoder := xml.NewDecoder(io.LimitReader(bytes.NewReader(content), 1<<20))
 	wantArguments := false
 	inArguments := false
 	var arguments []string
