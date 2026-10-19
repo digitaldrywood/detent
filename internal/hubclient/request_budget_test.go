@@ -50,7 +50,6 @@ func TestClientWaitsOutRequestBudgetRefusal(t *testing.T) {
 		{"HTTP date", http.MethodGet, "/items", func() string { return time.Now().Add(time.Minute).UTC().Format(http.TimeFormat) }, false},
 		{"malformed header waits for the next minute", http.MethodGet, "/items", func() string { return "invalid" }, false},
 		{"missing header waits for the next minute", http.MethodGet, "/items", func() string { return "" }, false},
-		{"mutation", http.MethodPost, "/items", func() string { return "60" }, false},
 		{"download", http.MethodGet, "/attachment", func() string { return "60" }, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -156,8 +155,8 @@ func TestClientBudgetRefusalBrakesLaterRequests(t *testing.T) {
 			}
 			response.WriteHeader(http.StatusNoContent)
 		})
-		if err := client.request(t.Context(), http.MethodPost, "/items", strings.NewReader("stream"), nil); !isBudgetRefusal(err) {
-			t.Fatalf("streaming err=%v", err)
+		if err := client.request(t.Context(), http.MethodPost, "/items", map[string]string{"k": "v"}, nil); !isBudgetRefusal(err) {
+			t.Fatalf("mutation err=%v", err)
 		}
 		start := time.Now()
 		if err := client.request(t.Context(), http.MethodGet, "/other", nil, nil); err != nil || *calls != 2 {
@@ -169,14 +168,31 @@ func TestClientBudgetRefusalBrakesLaterRequests(t *testing.T) {
 	})
 }
 
-func TestClientDoesNotReplayStreamingBodyAfterBudgetRefusal(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		client, calls := budgetClient(t, func(_ int, response *httptest.ResponseRecorder) { refuseBudget(response, "60") })
-		err := client.request(t.Context(), http.MethodPost, "/items", strings.NewReader("stream"), nil)
-		if !isBudgetRefusal(err) || *calls != 1 {
-			t.Fatalf("calls=%d err=%v", *calls, err)
-		}
-	})
+func TestClientDoesNotReplayMutationsAfterBudgetRefusal(t *testing.T) {
+	for _, test := range []struct {
+		name, method string
+		input        any
+	}{
+		{"JSON POST", http.MethodPost, map[string]string{"k": "v"}},
+		{"JSON PATCH", http.MethodPatch, map[string]string{"k": "v"}},
+		{"JSON PUT", http.MethodPut, map[string]string{"k": "v"}},
+		{"DELETE", http.MethodDelete, nil},
+		{"streaming POST", http.MethodPost, strings.NewReader("stream")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				client, calls := budgetClient(t, func(_ int, response *httptest.ResponseRecorder) { refuseBudget(response, "60") })
+				start := time.Now()
+				err := client.request(t.Context(), test.method, "/items", test.input, nil)
+				if !isBudgetRefusal(err) || *calls != 1 {
+					t.Fatalf("calls=%d err=%v", *calls, err)
+				}
+				if elapsed := time.Since(start); elapsed != 0 {
+					t.Fatalf("elapsed=%s", elapsed)
+				}
+			})
+		})
+	}
 }
 
 func TestClientRequestBudgetExemptions(t *testing.T) {

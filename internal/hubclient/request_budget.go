@@ -9,18 +9,19 @@ import (
 	"time"
 )
 
-// A runner request refused for its per-minute budget was never admitted to a
-// handler, so the client waits out the window and sends it again instead of
-// failing the caller. The retry count bounds a Hub that keeps refusing.
+// A read refused for the runner's per-minute budget waits out the window and is
+// sent again instead of failing the caller. Mutations are never replayed
+// automatically. The retry count bounds a Hub that keeps refusing.
 const maxRequestBudgetRetries = 3
 
 const requestBudgetCode = "runner_request_budget"
 
 // withinRequestBudget is the client's single request-budget path: it waits
 // for any window an earlier refusal recorded, sends, and on a budget refusal
-// records the window for every request on this client before sending the same
-// request again. Other refusals, including other 429 codes, return unchanged.
-func (c *Client) withinRequestBudget(ctx context.Context, method, path string, replayable bool, send func() error) error {
+// records the window for every request on this client before sending a read
+// again. Other refusals, including other 429 codes, return unchanged.
+func (c *Client) withinRequestBudget(ctx context.Context, method, path string, send func() error) error {
+	replayable := method == http.MethodGet || method == http.MethodHead
 	for attempt := 0; ; attempt++ {
 		if err := c.waitRequestBudget(ctx, method, path); err != nil {
 			return err

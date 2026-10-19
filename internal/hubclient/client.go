@@ -270,8 +270,7 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	_, streaming := input.(io.Reader)
-	return c.withinRequestBudget(ctx, method, path, !streaming, func() error {
+	return c.withinRequestBudget(ctx, method, path, func() error {
 		return c.requestOnce(ctx, timeout, method, path, headers, input, output)
 	})
 }
@@ -441,7 +440,7 @@ func (c *Client) download(ctx context.Context, target string, limit int64) ([]by
 	}
 	var payload []byte
 	var contentType string
-	err := c.withinRequestBudget(ctx, http.MethodGet, target, true, func() error {
+	err := c.withinRequestBudget(ctx, http.MethodGet, target, func() error {
 		var err error
 		payload, contentType, err = c.downloadOnce(ctx, target, limit)
 		return err
