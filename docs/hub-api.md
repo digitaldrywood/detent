@@ -411,6 +411,15 @@ The bootstrap token is inserted only when the Hub database has no bootstrap cred
 
 The default listener is `127.0.0.1:7777`. A non-loopback `--listen` value is rejected unless either `--tls-cert` and `--tls-key` are both set or `--trusted-proxy` explicitly declares that a trusted reverse proxy terminates TLS. The proxy or host firewall must prevent clients from bypassing that proxy.
 
+## Local board migration
+
+An operator can import a read-only copy of a retired `local_sqlite` or
+`github_local` store into an existing native project using
+`detent hub issue import-local`. See the [migration runbook](local-board-migration.md)
+for dry-run, stable store identity, lane mapping, GitHub onboarding prerequisites,
+and item-level transaction and replay behavior. The scoped command endpoint is
+`POST /api/v2/organizations/{organization}/projects/{project}/local-board-import`.
+
 ## Authentication
 
 Send a bearer token with every control-plane and health request:
