@@ -428,7 +428,7 @@ func doctorWorkflowOptimization(
 		if err != nil {
 			return doctorWorkflowOptimizationReport{}, err
 		}
-		retroStatus, err := doctorWorkflowRetroStatusForProject(ctx, db, projectID, workflow.Config.Retro.Enabled)
+		retroStatus, err := doctorWorkflowRetroStatusForProject(ctx, db, projectID, false)
 		if err != nil {
 			return doctorWorkflowOptimizationReport{}, err
 		}

@@ -10,7 +10,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issuefiling"
 )
 
 func TestCheckDoctorCapabilities(t *testing.T) {
@@ -35,7 +35,7 @@ func TestCheckDoctorCapabilities(t *testing.T) {
 				cfg.BacklogAdmission.TargetState = "Todo"
 				cfg.BacklogAdmission.ExcludeLabels = []string{"skip-admission"}
 				cfg.Routines = []workflowconfig.Routine{{Name: "dependency-audit"}}
-				cfg.Intake.Sources = []intake.Source{{Name: "alerts"}}
+				cfg.Intake.Sources = []issuefiling.Source{{Name: "alerts"}}
 				cfg.Agent.Followups.Enabled = true
 				cfg.Agent.AutoPromote.Enabled = true
 				cfg.Retro.Enabled = true
@@ -48,7 +48,7 @@ func TestCheckDoctorCapabilities(t *testing.T) {
 				"backlog_admission.sources.untracked": doctorCapabilityConfigured,
 				"backlog_admission.exclude_labels":    doctorCapabilityConfigured,
 				"routines":                            doctorCapabilityConfigured,
-				"intake.sources":                      doctorCapabilityConfigured,
+				"issuefiling.sources":                      doctorCapabilityConfigured,
 				"agent.followups":                     doctorCapabilityConfigured,
 				"agent.auto_promote":                  doctorCapabilityConfigured,
 				"retro":                               doctorCapabilityConfigured,
@@ -69,7 +69,7 @@ func TestCheckDoctorCapabilities(t *testing.T) {
 				"backlog_admission.sources.untracked": doctorCapabilityUnused,
 				"backlog_admission.exclude_labels":    doctorCapabilityUnused,
 				"routines":                            doctorCapabilityUnused,
-				"intake.sources":                      doctorCapabilityUnused,
+				"issuefiling.sources":                      doctorCapabilityUnused,
 				"agent.followups":                     doctorCapabilityUnused,
 				"agent.auto_promote":                  doctorCapabilityUnused,
 				"retro":                               doctorCapabilityUnused,
@@ -83,7 +83,7 @@ func TestCheckDoctorCapabilities(t *testing.T) {
 					"backlog_admission.criteria_section to a shared WORKFLOW.md heading",
 				},
 				"routines":                   {"recurring agent prompts"},
-				"intake.sources":             {"external webhook or scheduled signals"},
+				"issuefiling.sources":             {"external webhook or scheduled signals"},
 				"agent.followups":            {"meaningful out-of-scope discoveries"},
 				"agent.auto_promote":         {"review-ready work automatically"},
 				"retro":                      {"recurring failure telemetry"},
@@ -107,7 +107,7 @@ func TestCheckDoctorCapabilities(t *testing.T) {
 				"backlog_admission.sources.untracked": doctorCapabilityUnavailable,
 				"backlog_admission.exclude_labels":    doctorCapabilityUnavailable,
 				"routines":                            doctorCapabilityUnused,
-				"intake.sources":                      doctorCapabilityUnused,
+				"issuefiling.sources":                      doctorCapabilityUnused,
 				"agent.followups":                     doctorCapabilityUnused,
 				"agent.auto_promote":                  doctorCapabilityUnused,
 				"retro":                               doctorCapabilityUnused,
@@ -194,7 +194,7 @@ func TestCheckDoctorCapabilitiesUsesProjectIntakeOverride(t *testing.T) {
 	tests := []struct {
 		name          string
 		trackerKind   string
-		projectIntake intake.Config
+		projectIntake issuefiling.Config
 		wantState     doctorCapabilityState
 		wantDetail    string
 	}{
@@ -206,9 +206,9 @@ func TestCheckDoctorCapabilitiesUsesProjectIntakeOverride(t *testing.T) {
 		{
 			name:          "enabled override is unavailable for non github tracker",
 			trackerKind:   workflowconfig.TrackerHubNative,
-			projectIntake: intake.Config{Sources: []intake.Source{{Name: "project-source"}}},
+			projectIntake: issuefiling.Config{Sources: []issuefiling.Source{{Name: "project-source"}}},
 			wantState:     doctorCapabilityUnavailable,
-			wantDetail:    "intake.sources requires github",
+			wantDetail:    "issuefiling.sources requires github",
 		},
 	}
 
@@ -220,7 +220,7 @@ func TestCheckDoctorCapabilitiesUsesProjectIntakeOverride(t *testing.T) {
 			cfg := workflowconfig.Default()
 			cfg.Tracker.Kind = tt.trackerKind
 			cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
-			cfg.Intake.Sources = []intake.Source{{Name: "workflow-source"}}
+			cfg.Intake.Sources = []issuefiling.Source{{Name: "workflow-source"}}
 			check := checkDoctorCapabilities(
 				globalconfig.Project{
 					ID:               "alpha",
@@ -232,18 +232,18 @@ func TestCheckDoctorCapabilitiesUsesProjectIntakeOverride(t *testing.T) {
 			)
 
 			for _, capability := range check.Capabilities.Capabilities {
-				if capability.Name != "intake.sources" {
+				if capability.Name != "issuefiling.sources" {
 					continue
 				}
 				if capability.State != tt.wantState {
-					t.Fatalf("intake.sources state = %s, want %s", capability.State, tt.wantState)
+					t.Fatalf("issuefiling.sources state = %s, want %s", capability.State, tt.wantState)
 				}
 				if !strings.Contains(capability.Detail, tt.wantDetail) {
-					t.Fatalf("intake.sources detail = %q, want containing %q", capability.Detail, tt.wantDetail)
+					t.Fatalf("issuefiling.sources detail = %q, want containing %q", capability.Detail, tt.wantDetail)
 				}
 				return
 			}
-			t.Fatal("intake.sources capability missing")
+			t.Fatal("issuefiling.sources capability missing")
 		})
 	}
 }

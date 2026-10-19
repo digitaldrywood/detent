@@ -458,10 +458,6 @@ func checkDoctorProjectWithProgress(
 	}
 	setDoctorCurrentCheck("Project " + id + " workflow lint")
 	checks = append(checks, checkDoctorWorkflowLint(ctx, id, project, workflow.Config, workflow.Prompt, workflowTokenThreshold, storePath, deps)...)
-	if len(workflow.Config.Routines) > 0 {
-		setDoctorCurrentCheck("Project " + id + " scheduled routines")
-		checks = append(checks, checkDoctorRoutines(ctx, id, workflow.Config.Routines, storePath, deps))
-	}
 	if workflow.Config.BacklogAdmission.Enabled {
 		setDoctorCurrentCheck("Project " + id + " backlog admission")
 		checks = append(checks, checkDoctorAdmission(ctx, id, workflow, storePath, deps))

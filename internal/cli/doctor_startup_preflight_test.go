@@ -9,7 +9,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issuefiling"
 )
 
 func TestRunDoctorStartupPreflight(t *testing.T) {
@@ -117,10 +117,10 @@ func TestRunDoctorStartupPreflightExplainsMappedNativeMigration(t *testing.T) {
 		globalIntake        bool
 		selected            bool
 	}{
-		{name: "intake", feature: "intake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n", want: "intake.sources"},
+		{name: "intake", feature: "intake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n", want: "issuefiling.sources"},
 		{name: "routines", feature: "schedule_ownership:\n  enabled: true\n  key: acme/alpha\n  repository: acme/alpha\nroutines:\n  - name: audit\n    schedule: '0 * * * *'\n    prompt: Inspect.\n", want: "routines"},
-		{name: "global intake override", globalIntake: true, want: "intake.sources"},
-		{name: "selected mapped intake", selected: true, globalIntake: true, want: "intake.sources"},
+		{name: "global intake override", globalIntake: true, want: "issuefiling.sources"},
+		{name: "selected mapped intake", selected: true, globalIntake: true, want: "issuefiling.sources"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			configPath := filepath.Join(t.TempDir(), "global.yaml")
@@ -129,7 +129,7 @@ func TestRunDoctorStartupPreflightExplainsMappedNativeMigration(t *testing.T) {
 			global.Client.NativeProjects = map[string]string{"alpha": "prj_test"}
 			if test.globalIntake {
 				global.Projects[0].IntakeConfigured = true
-				global.Projects[0].Intake = intake.Config{Sources: []intake.Source{{Name: "errors", Kind: intake.KindWebhook, Secret: "test-secret", Creates: intake.Creates{Status: "Backlog"}}}}
+				global.Projects[0].Intake = issuefiling.Config{Sources: []issuefiling.Source{{Name: "errors", Kind: issuefiling.KindWebhook, Secret: "test-secret", Creates: issuefiling.Creates{Status: "Backlog"}}}}
 			}
 			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  project_slug: PVT_test\n  repository: acme/alpha\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"))
 			if err != nil {

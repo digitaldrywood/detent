@@ -13,7 +13,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/coordination"
-	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issuefiling"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 )
 
@@ -252,8 +252,8 @@ func TestWorkflowConfigWithProjectIntakeOverride(t *testing.T) {
 	t.Parallel()
 
 	workflow := workflowconfig.Default()
-	workflow.Intake = intake.Config{Sources: []intake.Source{{Name: "workflow", Kind: intake.KindWebhook, Secret: "workflow-secret"}}}
-	projectIntake := intake.Config{Sources: []intake.Source{{Name: "global", Kind: intake.KindSlack, Secret: "global-secret"}}}
+	workflow.Intake = issuefiling.Config{Sources: []issuefiling.Source{{Name: "workflow", Kind: issuefiling.KindWebhook, Secret: "workflow-secret"}}}
+	projectIntake := issuefiling.Config{Sources: []issuefiling.Source{{Name: "global", Kind: issuefiling.KindSlack, Secret: "global-secret"}}}
 	got := workflowConfigWithProjectIdentity(globalconfig.Project{
 		Intake:           projectIntake,
 		IntakeConfigured: true,
