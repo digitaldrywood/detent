@@ -10,9 +10,6 @@ export function followCreatedConversation(id: string): void {
 }
 
 export interface ConversationSpeech {
-  readonly conversationId: string;
-  readonly startHandsFree: () => void;
-  readonly endHandsFree: () => void;
   readonly supported: boolean;
   readonly enabled: boolean;
   readonly readingMessageId: string | null;
@@ -32,8 +29,6 @@ export function useConversationSpeech(
     try { return supported && localStorage.getItem(STORAGE_KEY) === "on"; }
     catch { return false; }
   });
-  const [handsFree, setHandsFree] = React.useState(false);
-  const speakingEnabled = enabled || handsFree;
   const [readingMessageId, setReadingMessageId] = React.useState<string | null>(null);
   const queue = React.useRef<Array<{ id: string; utterance: SpeechSynthesisUtterance }>>([]);
   const cursor = React.useRef(new Map<string, number>());
@@ -74,21 +69,10 @@ export function useConversationSpeech(
 
   const prepareToSend = React.useCallback(() => {
     stop();
-    if (speakingEnabled) unlock();
-  }, [speakingEnabled, stop, unlock]);
-
-  const startHandsFree = React.useCallback(() => {
-    stop();
-    unlock();
-    setHandsFree(true);
-  }, [stop, unlock]);
-  const endHandsFree = React.useCallback(() => {
-    stop();
-    setHandsFree(false);
-  }, [stop]);
+    if (enabled) unlock();
+  }, [enabled, stop, unlock]);
 
   React.useEffect(() => {
-    setHandsFree(false);
     baseline.current = null;
     cursor.current.clear();
     suppressed.current.clear();
@@ -109,7 +93,7 @@ export function useConversationSpeech(
     }
     for (const message of detail.messages) {
       const text = message.text + deltaText(detail.deltas[message.id]);
-      if (!speakingEnabled || !supported || message.seq <= baseline.current ||
+      if (!enabled || !supported || message.seq <= baseline.current ||
         suppressed.current.has(message.id) || message.role !== "assistant" || message.kind !== "text") {
         cursor.current.set(message.id, text.length);
         continue;
@@ -134,11 +118,11 @@ export function useConversationSpeech(
         window.speechSynthesis.speak(utterance);
       }
     }
-  }, [conversationId, detail, speakingEnabled, supported, stop]);
+  }, [conversationId, detail, enabled, supported, stop]);
 
   return React.useMemo(() => ({
-    conversationId, startHandsFree, endHandsFree, supported, enabled: speakingEnabled, readingMessageId, toggle, stop, prepareToSend,
-  }), [conversationId, startHandsFree, endHandsFree, supported, speakingEnabled, readingMessageId, toggle, stop, prepareToSend]);
+    supported, enabled, readingMessageId, toggle, stop, prepareToSend,
+  }), [supported, enabled, readingMessageId, toggle, stop, prepareToSend]);
 }
 
 function speechSegments(text: string, complete: boolean): Array<{ text: string; end: number }> {
