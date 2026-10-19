@@ -752,11 +752,19 @@ func TestNativeChangeOversizedReviewRecovery(t *testing.T) {
 			}
 			var next operatortool.ChangeResult
 			err = h.native.client.request(t.Context(), http.MethodGet, h.native.base()+path+"?view=bounded&section=reviews&cursor="+first.Read.Sections["reviews"].NextCursor, nil, &next)
-			var refusal *APIError
-			if !errors.As(err, &refusal) || refusal.Status != http.StatusUnprocessableEntity || refusal.Code != "change_record_too_large" {
-				t.Fatalf("fixture did not reproduce continuation refusal: %v", err)
+			if err != nil || next.Fragment == nil || next.Read.Sections["reviews"].Complete || len(next.Detail.Reviews) != 0 {
+				t.Fatalf("oversized continuation did not return a bounded fragment: %v", err)
 			}
-			detail, err := h.native.currentChange(t.Context(), fixture.item)
+			newer, err := h.admin.CreateChange(t.Context(), fixture.item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Newer independent Change"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			newerVersion := h.publish(t, fixture.item, newer.ID, nativeChangeFixtureHead("f"))
+			latest, err := h.native.currentChange(t.Context(), fixture.item)
+			if err != nil || latest.Change.ID != newer.ID || latest.Change.CurrentVersion != newerVersion.ID {
+				t.Fatalf("newer Change is not independently usable: %v", err)
+			}
+			detail, err := h.native.runtimeChange(t.Context(), fixture.item, fixture.change.ID)
 			if err != nil {
 				t.Fatalf("recover oversized retained review: %v", err)
 			}

@@ -3,6 +3,9 @@ package hubclient
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -77,15 +80,19 @@ func (c *NativeClient) runtimeChange(ctx context.Context, item tracker.NativeWor
 		return tracker.ChangeDetail{}, err
 	}
 	detail := *first.Detail
-	retainedReviews := false
 	for _, section := range []string{"versions", "reviews", "checks", "discussion"} {
 		page, ok := first.Read.Sections[section]
 		seen := map[string]bool{}
+		var record []byte
+		var identity tracker.NativeRecoveryPage
 		for {
 			if !ok {
 				return tracker.ChangeDetail{}, fmt.Errorf("%w: bounded Change section is missing", ErrUnavailable)
 			}
 			if page.Complete {
+				if len(record) != 0 {
+					return tracker.ChangeDetail{}, fmt.Errorf("%w: retained Change review is incomplete", ErrUnavailable)
+				}
 				break
 			}
 			if page.NextCursor == "" || seen[page.NextCursor] {
@@ -94,24 +101,30 @@ func (c *NativeClient) runtimeChange(ctx context.Context, item tracker.NativeWor
 			seen[page.NextCursor] = true
 			next, err := read(url.Values{"view": {"bounded"}, "section": {section}, "cursor": {page.NextCursor}, "version_id": {first.Read.VersionID}})
 			if err != nil {
-				var refusal *APIError
-				if section == "reviews" && errors.As(err, &refusal) && refusal.Status == http.StatusUnprocessableEntity && refusal.Code == "change_record_too_large" {
-					reviews, err := c.retainedChangeReviews(ctx, item, first.Read.VersionID)
-					if err != nil {
-						return tracker.ChangeDetail{}, err
-					}
-					for _, previous := range detail.Reviews {
-						if !slices.ContainsFunc(reviews, func(review tracker.ChangeReview) bool { return review.ID == previous.ID }) {
-							return tracker.ChangeDetail{}, fmt.Errorf("%w: retained Change reviews changed during traversal", ErrUnavailable)
-						}
-					}
-					detail.Reviews, retainedReviews = reviews, true
-					break
-				}
 				return tracker.ChangeDetail{}, err
 			}
 			if next.Detail.Change.CurrentVersion != detail.Change.CurrentVersion {
 				return tracker.ChangeDetail{}, fmt.Errorf("%w: bounded Change head changed during traversal", ErrUnavailable)
+			}
+			if fragment := next.Fragment; fragment != nil {
+				if len(record) == 0 {
+					identity = *fragment
+				}
+				if section != "reviews" || fragment.Section != section || fragment.OrganizationID != c.organization || fragment.ProjectID != c.project || fragment.WorkItemID != item || fragment.VersionID != first.Read.VersionID || fragment.RecordID == "" || fragment.Offset != int64(len(record)) || len(fragment.Data) == 0 || len(fragment.Data) > 64<<10 || fragment.TotalBytes <= fragment.Offset || int64(len(fragment.Data)) > fragment.TotalBytes-fragment.Offset || len(fragment.SHA256) != 64 || fragment.RecordID != identity.RecordID || fragment.VersionID != identity.VersionID || fragment.TotalBytes != identity.TotalBytes || fragment.SHA256 != identity.SHA256 || len(next.Detail.Reviews) != 0 {
+					return tracker.ChangeDetail{}, fmt.Errorf("%w: retained Change review fragment is invalid", ErrUnavailable)
+				}
+				record = append(record, fragment.Data...)
+				if int64(len(record)) == fragment.TotalBytes {
+					digest := sha256.Sum256(record)
+					var review tracker.ChangeReview
+					if hex.EncodeToString(digest[:]) != fragment.SHA256 || json.Unmarshal(record, &review) != nil || review.ID == "" || review.VersionID != fragment.VersionID || slices.ContainsFunc(detail.Reviews, func(previous tracker.ChangeReview) bool { return previous.ID == review.ID }) {
+						return tracker.ChangeDetail{}, fmt.Errorf("%w: retained Change review digest or identity is invalid", ErrUnavailable)
+					}
+					next.Detail.Reviews = append(next.Detail.Reviews, review)
+					record = nil
+				}
+			} else if len(record) != 0 {
+				return tracker.ChangeDetail{}, fmt.Errorf("%w: retained Change review fragment is missing", ErrUnavailable)
 			}
 			switch section {
 			case "versions":
@@ -125,15 +138,6 @@ func (c *NativeClient) runtimeChange(ctx context.Context, item tracker.NativeWor
 				detail.Discussion = append(detail.Discussion, next.Detail.Discussion...)
 			}
 			page, ok = next.Read.Sections[section]
-		}
-	}
-	if retainedReviews {
-		current, err := read(url.Values{"view": {"bounded"}, "section": {"versions"}, "version_id": {first.Read.VersionID}, "limit": {"1"}})
-		if err != nil {
-			return tracker.ChangeDetail{}, err
-		}
-		if current.Detail.Change.CurrentVersion != detail.Change.CurrentVersion {
-			return tracker.ChangeDetail{}, fmt.Errorf("%w: bounded Change head changed during traversal", ErrUnavailable)
 		}
 	}
 	slices.SortFunc(detail.Versions, func(a, b tracker.ChangeVersion) int { return cmp.Compare(a.Number, b.Number) })

@@ -294,7 +294,7 @@ func TestNativeRecoveryUsesPublishedVersion(t *testing.T) {
 
 func TestNativeRetainedChangeReviewBoundaries(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"complete", "denied", "unsupported refusal", "unsupported section", "corrupt bytes", "changed digest", "changed record", "changed version", "foreign item", "foreign project", "repeated offset", "repeated cursor", "early end", "empty fragment", "invalid JSON", "wrong review version", "head changed"} {
+	for _, mode := range []string{"complete", "denied", "unsupported refusal", "unsupported section", "corrupt bytes", "changed digest", "changed record", "changed version", "foreign item", "foreign project", "repeated offset", "repeated cursor", "early end", "empty fragment", "invalid JSON", "wrong review version", "head changed", "missing fragment", "duplicate review", "oversized fragment"} {
 		t.Run(mode, func(t *testing.T) {
 			version := "version_current"
 			want := tracker.ChangeReview{ID: "review_large", VersionID: version, Decision: "changes_requested", Body: strings.Repeat("<\"\n界", 8000)}
@@ -311,40 +311,37 @@ func TestNativeRetainedChangeReviewBoundaries(t *testing.T) {
 			}
 			digest := sha256.Sum256(raw)
 			sha := hex.EncodeToString(digest[:])
-			calls, boundedReads := 0, 0
+			calls := 0
 			client, err := New(Config{URL: "http://native-hub.test", TokenSource: func() string { return "token" }, HTTPClient: providerHandlerClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
-				if calls > 16 {
-					t.Error("recovery did not terminate")
+				if calls > 16 || r.URL.Query().Get("view") != "bounded" || !strings.HasSuffix(r.URL.Path, "/changes/change_example") {
+					t.Error("recovery escaped bounded Change traversal")
 					w.WriteHeader(http.StatusInternalServerError)
 					return
 				}
-				w.Header().Set("Content-Type", "application/json")
-				var response any
-				if r.URL.Query().Get("view") == "recovery" {
-					if mode == "denied" {
-						w.WriteHeader(http.StatusForbidden)
+				change := tracker.ChangeRequest{ID: "change_example", OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_item", CurrentVersion: version}
+				response := operatortool.ChangeResult{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_item", Detail: &tracker.ChangeDetail{Change: change}, Read: &operatortool.ChangeRead{VersionID: version, Sections: map[string]operatortool.ChangeReadPage{"versions": {Complete: true}, "reviews": {NextCursor: "0"}, "checks": {Complete: true}, "discussion": {Complete: true}}}}
+				if r.URL.Query().Get("section") == "reviews" {
+					if mode == "denied" || mode == "unsupported refusal" {
+						status := http.StatusForbidden
+						if mode == "unsupported refusal" {
+							status = http.StatusUnprocessableEntity
+						}
+						w.WriteHeader(status)
+						json.NewEncoder(w).Encode(map[string]string{"code": "unsupported_record"})
 						return
 					}
-					start := 0
-					if cursor := r.URL.Query().Get("cursor"); cursor != "" {
-						var err error
-						start, err = strconv.Atoi(cursor)
-						if err != nil {
-							t.Error(err)
-							w.WriteHeader(http.StatusBadRequest)
-							return
-						}
+					start, err := strconv.Atoi(r.URL.Query().Get("cursor"))
+					if err != nil || start < 0 || start >= len(raw) {
+						t.Error("invalid fragment cursor")
+						w.WriteHeader(http.StatusBadRequest)
+						return
 					}
 					end := min(start+(64<<10), len(raw))
-					page := tracker.NativeRecoveryPage{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_item"}, Section: "reviews", RecordID: "17", VersionID: version, Offset: int64(start), TotalBytes: int64(len(raw)), SHA256: sha, Data: append([]byte(nil), raw[start:end]...), NextCursor: strconv.Itoa(end)}
-					if start == len(raw) {
-						page.Section, page.Data, page.NextCursor = "complete", nil, ""
-						if mode == "unsupported section" {
-							page.Section = "unsupported"
-						}
-					}
-					if start > 0 && start < len(raw) {
+					page := &tracker.NativeRecoveryPage{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_item"}, Section: "reviews", RecordID: "17", VersionID: version, Offset: int64(start), TotalBytes: int64(len(raw)), SHA256: sha, Data: append([]byte(nil), raw[start:end]...)}
+					response.Fragment = page
+					response.Read.Sections["reviews"] = operatortool.ChangeReadPage{Complete: end == len(raw), NextCursor: strconv.Itoa(end)}
+					if start > 0 {
 						switch mode {
 						case "changed digest":
 							page.SHA256 = strings.Repeat("0", 64)
@@ -354,42 +351,35 @@ func TestNativeRetainedChangeReviewBoundaries(t *testing.T) {
 							page.VersionID = "version_other"
 						case "repeated offset":
 							page.Offset = 0
-						case "early end":
-							page.Section = "complete"
+						case "missing fragment":
+							response.Fragment = nil
+						case "head changed":
+							response.Detail.Change.CurrentVersion = "version_new"
+							response.Read.VersionID = "version_new"
 						}
 					}
-					if start == 0 {
-						switch mode {
-						case "corrupt bytes":
+					switch mode {
+					case "unsupported section":
+						page.Section = "unsupported"
+					case "corrupt bytes":
+						if start == 0 {
 							page.Data[0] ^= 1
-						case "foreign item":
-							page.WorkItemID = "wi_other"
-						case "foreign project":
-							page.ProjectID = "prj_other"
-						case "empty fragment":
-							page.Data = nil
 						}
+					case "foreign item":
+						page.WorkItemID = "wi_other"
+					case "foreign project":
+						page.ProjectID = "prj_other"
+					case "empty fragment":
+						page.Data = nil
+					case "oversized fragment":
+						page.Data = append(page.Data, make([]byte, 64<<10)...)
+					case "repeated cursor":
+						response.Read.Sections["reviews"] = operatortool.ChangeReadPage{NextCursor: "0"}
+					case "early end":
+						response.Read.Sections["reviews"] = operatortool.ChangeReadPage{Complete: true}
 					}
-					if mode == "repeated cursor" {
-						page.NextCursor = "1"
-					}
-					response = tracker.NativeRecovery{Continuation: &page}
-				} else {
-					boundedReads++
-					if r.URL.Query().Get("section") == "reviews" {
-						code := "change_record_too_large"
-						if mode == "unsupported refusal" {
-							code = "unsupported_record"
-						}
-						w.WriteHeader(http.StatusUnprocessableEntity)
-						json.NewEncoder(w).Encode(map[string]string{"code": code})
-						return
-					}
-					change := tracker.ChangeRequest{ID: "change_example", OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_item", CurrentVersion: version}
-					if mode == "head changed" && boundedReads > 2 {
-						change.CurrentVersion = "version_new"
-					}
-					response = operatortool.ChangeResult{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_item", Detail: &tracker.ChangeDetail{Change: change}, Read: &operatortool.ChangeRead{VersionID: change.CurrentVersion, Sections: map[string]operatortool.ChangeReadPage{"versions": {Complete: true}, "reviews": {NextCursor: "review_next"}, "checks": {Complete: true}, "discussion": {Complete: true}}}}
+				} else if mode == "duplicate review" {
+					response.Detail.Reviews = []tracker.ChangeReview{want}
 				}
 				body, err := json.Marshal(response)
 				if err != nil {
@@ -400,6 +390,7 @@ func TestNativeRetainedChangeReviewBoundaries(t *testing.T) {
 				if len(body) > operatortool.MaxResultBytes {
 					t.Errorf("transport exceeded byte cap: %d", len(body))
 				}
+				w.Header().Set("Content-Type", "application/json")
 				w.Write(body)
 			}))})
 			if err != nil {
