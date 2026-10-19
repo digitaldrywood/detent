@@ -146,10 +146,6 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	}
 	result, err := (hostedOperatorExecutor{s}).Execute(ctx, operatortool.Call{Name: call.Name, Arguments: call.Arguments})
 	if err != nil {
-		var request *operatortool.RequestError
-		if errors.As(err, &request) {
-			return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: request.Code, Message: request.Message})
-		}
 		if errors.Is(err, operatortool.ErrInvalidArguments) {
 			return invalidAPIRequest(c, err)
 		}

@@ -1,17 +1,13 @@
 package hubserver
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
-	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestEntryKeyCurrentAuthority(t *testing.T) {
@@ -108,55 +104,5 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 				}
 			}
 		}
-	}
-}
-
-func TestEntryKeyCallReportsMoveItemRequestErrors(t *testing.T) {
-	f := newHostedSharedFixture(t)
-	user := f.user(t, "key_owner", "owner", "key-owner@example.test", "write", "")
-	key := apikey.KeyAuthority{ID: "key_move", Kind: "personal", Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: "all"}}
-	mutate := func(claims *cloudassert.Claims) {
-		claims.Key, claims.Subject, claims.ProviderOrganization, claims.Role = &key, user.identity.Subject, "org_provider", "owner"
-	}
-	created := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: f.base + "/work-items", body: "{\"body\":\"\\n## Acceptance criteria\\nComplete the requested work.\\n## Must not break\\nExisting behavior.\\n## How we know it worked\\nRun the project checks.\",\"idempotency_key\":\"move-errors\",\"state\":\"Todo\",\"title\":\"Move error reporting\"}", mutate: mutate})
-	requireNativeStatus(t, created, http.StatusOK)
-	var issue tracker.NativeIssue
-	decodeHubResponse(t, created, &issue)
-	move := func(requestID string, arguments map[string]any) *httptest.ResponseRecorder {
-		t.Helper()
-		arguments["project_id"], arguments["identifier"], arguments["request_id"] = f.project, issue.WorkItemID, requestID
-		encoded, err := json.Marshal(map[string]any{"name": operatortool.MoveItem, "arguments": arguments, "connection_id": "move-errors"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: "/internal/v1/keys/call", body: string(encoded), mutate: mutate})
-	}
-	revision := fmt.Sprint(issue.Revision)
-	for _, test := range []struct {
-		name, code, message string
-		arguments           map[string]any
-	}{
-		{"numeric revision", "invalid_request", "expected_revision: must be a string", map[string]any{"target_state": "Done", "expected_revision": issue.Revision}},
-		{"empty revision", "invalid_request", "expected_revision: must contain at least 1 characters", map[string]any{"target_state": "Done", "expected_revision": ""}},
-		{"status block detail", "invalid_request", "reason_detail: must be plain text without a status block", map[string]any{"target_state": "Done", "expected_revision": revision, "reason_detail": "```detent-status\nstatus: blocked\n```"}},
-		{"same state", "invalid_request", "", map[string]any{"target_state": "Todo", "expected_revision": revision}},
-		{"graph", "transition_not_allowed", "Workflow transition is not allowed", map[string]any{"target_state": "Blocked", "expected_revision": revision}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			response := move("move-errors-"+strings.ReplaceAll(test.name, " ", "-"), test.arguments)
-			failure := requireNativeCode(t, response, http.StatusUnprocessableEntity, test.code)
-			if test.message == "" && !strings.HasPrefix(failure.Message, "move_item cannot resume an item already in the requested state") || test.message != "" && failure.Message != test.message {
-				t.Fatalf("message=%q want %q", failure.Message, test.message)
-			}
-		})
-	}
-	moved := move("move-errors-done", map[string]any{"target_state": "Done", "expected_revision": revision})
-	requireNativeStatus(t, moved, http.StatusOK)
-	var receipt struct {
-		Data tracker.NativeIssue `json:"data"`
-	}
-	decodeHubResponse(t, moved, &receipt)
-	if receipt.Data.State != "Done" {
-		t.Fatalf("state=%q", receipt.Data.State)
 	}
 }
