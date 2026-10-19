@@ -35,7 +35,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	writeWorkflow := func(path, prompt string) {
 		t.Helper()
-		content := "---\ntracker:\n  kind: github\n  github_status_source: label\n  repository: example-org/example-project\n  api_key: fixture-token\n---\n" + prompt + "\n"
+		content := "---\ntracker:\n  kind: github\n  repository: example-org/example-project\n  api_key: fixture-token\n---\n" + prompt + "\n"
 		if err := os.WriteFile(path+".tmp", []byte(content), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -59,7 +59,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				if err := os.WriteFile(workflowPath, []byte("Private workflow instructions\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(root, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: github\n  github_status_source: label\n  repository: example-org/example-project\n  api_key: fixture-token\n"), 0600); err != nil {
+				if err := os.WriteFile(filepath.Join(root, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: github\n  repository: example-org/example-project\n  api_key: fixture-token\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
 				runWorkflowSourceGit(t, root, "add", "detent.yaml")
@@ -142,7 +142,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					t.Fatal(err)
 				}
 				runWorkflowSourceGit(t, root, "add", "WORKFLOW.md")
-				raw := "schema: 1\ntracker:\n  kind: hub_native\n  repository: example/project\n  github_status_source: label\n  api_key: fixture-token\nschedule_ownership:\n  enabled: false\n"
+				raw := "schema: 1\ntracker:\n  kind: hub_native\n  repository: example/project\n  api_key: fixture-token\nschedule_ownership:\n  enabled: false\n"
 				if err := os.WriteFile(filepath.Join(root, "detent.yaml"), []byte(raw), 0600); err != nil {
 					t.Fatal(err)
 				}

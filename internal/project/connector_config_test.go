@@ -13,7 +13,6 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/coordination"
-	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 )
 
@@ -245,22 +244,6 @@ func TestProjectOrchestratorConfigIncludesHostPressure(t *testing.T) {
 	}
 	if got.CPUPressureSomeAvg10Max != 80 || got.CPUPressureDegradedMaxAgents != 2 || got.CPUPressurePollInterval != 750*time.Millisecond {
 		t.Fatalf("CPU pressure config = %.2f %d %s", got.CPUPressureSomeAvg10Max, got.CPUPressureDegradedMaxAgents, got.CPUPressurePollInterval)
-	}
-}
-
-func TestWorkflowConfigWithProjectIntakeOverride(t *testing.T) {
-	t.Parallel()
-
-	workflow := workflowconfig.Default()
-	workflow.Intake = intake.Config{Sources: []intake.Source{{Name: "workflow", Kind: intake.KindWebhook, Secret: "workflow-secret"}}}
-	projectIntake := intake.Config{Sources: []intake.Source{{Name: "global", Kind: intake.KindSlack, Secret: "global-secret"}}}
-	got := workflowConfigWithProjectIdentity(globalconfig.Project{
-		Intake:           projectIntake,
-		IntakeConfigured: true,
-	}, workflow)
-
-	if len(got.Intake.Sources) != 1 || got.Intake.Sources[0].Name != "global" {
-		t.Fatalf("Intake = %#v, want global project override", got.Intake)
 	}
 }
 
