@@ -16,6 +16,7 @@ import (
 type runnerBuildCache struct {
 	cache  *toolcache.Managed
 	root   string
+	native string
 	mu     sync.Mutex
 	report atomic.Pointer[toolcache.Report]
 }
@@ -53,7 +54,7 @@ func newRunnerBuildCache(ctx context.Context, cfg BootConfig) (*runnerBuildCache
 	if err != nil {
 		return nil, err
 	}
-	return &runnerBuildCache{cache: cache, root: root}, nil
+	return &runnerBuildCache{cache: cache, root: root, native: paths.Build}, nil
 }
 
 func (c *runnerBuildCache) observe() *toolcache.Report {
@@ -92,11 +93,18 @@ func (c *runnerBuildCache) trimForVolume(ctx context.Context, policy toolcache.P
 	}
 	report, err := c.cache.Maintain(ctx, policy, now)
 	c.report.Store(&report)
+	var native toolcache.Report
+	if c.native != "" {
+		var nativeErr error
+		native, nativeErr = toolcache.TrimWithReport(ctx, c.native, policy, now)
+		err = errors.Join(err, nativeErr)
+	}
 	if err == nil {
 		freeAfter, _, freeAfterErr := volume(c.root)
 		slog.Info("managed Go build cache maintenance", "path", c.root,
 			"retained_bytes", report.RetainedBytes, "age_expired_bytes", report.AgeExpiredBytes,
-			"size_evicted_bytes", report.SizeEvictedBytes, "pressure_reclaim_bytes", pressureReclaim, "free_bytes_before", freeBefore,
+			"size_evicted_bytes", report.SizeEvictedBytes, "native_path", c.native, "native_age_expired_bytes", native.AgeExpiredBytes,
+			"pressure_reclaim_bytes", pressureReclaim, "free_bytes_before", freeBefore,
 			"free_bytes_after", freeAfter, "disk_observation_error", errors.Join(freeBeforeErr, freeAfterErr))
 	}
 	return err
