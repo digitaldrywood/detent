@@ -137,6 +137,64 @@ func TestNewServerConfiguresHTTPTimeouts(t *testing.T) {
 	}
 }
 
+func TestHealthTracksRegistryConnectorChanges(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	deps.Connector = nil
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, step := range []struct {
+		name      string
+		update    func()
+		connector string
+		check     string
+	}{
+		{name: "before projects start", update: func() {}, check: "missing"},
+		{
+			name: "github project starts",
+			update: func() {
+				mustSetWebGitHubLabelProject(t, deps.Registry, "alpha", "example-org/example-project")
+			},
+			connector: "github", check: "configured",
+		},
+		{
+			name: "native project replaces github",
+			update: func() {
+				trackedProject, err := projectfixture.New(project.Config{
+					Project: globalconfig.Project{ID: "alpha"},
+				}, project.Dependencies{Connector: fakehub.New(fakehub.Config{})})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := deps.Registry.Set(trackedProject); err != nil {
+					t.Fatal(err)
+				}
+			},
+			connector: "hub_native", check: "configured",
+		},
+		{
+			name: "project removed",
+			update: func() {
+				deps.Registry.Delete("alpha")
+			},
+			check: "missing",
+		},
+	} {
+		step.update()
+		payload := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+		if got := payload["connector"]; got != step.connector {
+			t.Fatalf("%s: connector = %v, want %q", step.name, got, step.connector)
+		}
+		if got := payload["checks"].(map[string]any)["connector"]; got != step.check {
+			t.Fatalf("%s: connector check = %v, want %q", step.name, got, step.check)
+		}
+	}
+}
+
 func TestHealthReportsStartupLifecycle(t *testing.T) {
 	t.Parallel()
 

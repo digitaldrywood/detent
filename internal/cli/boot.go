@@ -498,7 +498,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		Hub:                 snapshotHub,
 		Store:               runtimeStore,
 		Registry:            manager.Registry(),
-		Connector:           firstConnector(manager),
 		StartupLifecycle:    startupLifecycle,
 		Refresher:           refresherForRegistry(manager.Registry()),
 		OperatorMoves:       registryRefresher{registry: manager.Registry()},
@@ -1949,15 +1948,6 @@ func parseSlogLevel(level string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
-}
-
-func firstConnector(manager *project.Manager) connector.Connector {
-	for _, project := range manager.Registry().List() {
-		if projectConnector := project.Connector(); projectConnector != nil {
-			return projectConnector
-		}
-	}
-	return nil
 }
 
 func refresherForRegistry(registry *project.Registry) web.Refresher {

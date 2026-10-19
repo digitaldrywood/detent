@@ -113,6 +113,7 @@ test("api keys page creates first key on wildcard bind without token", async ({ 
   const unexpectedAPIResponses = collectUnexpectedAPIResponses(page);
 
   try {
+    await expect.poll(() => rawHTTPStatus(runtime.url, { path: "/health" })).toBe(200);
     const dashboardURL = nonLoopbackDashboardURL(runtime.url);
 
     await page.goto(`${dashboardURL}/api-keys`, { waitUntil: "domcontentloaded" });

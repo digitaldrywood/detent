@@ -1306,7 +1306,7 @@ func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 		"hub":       configuredStatus(s.hub),
 		"store":     configuredStatus(s.store),
 		"registry":  configuredStatus(s.registry),
-		"connector": configuredStatus(s.connector),
+		"connector": configuredStatus(s.currentConnector()),
 	}
 	orphanedProcesses, orphanErr := s.orphanedAgentProcesses(ctx, latestSnapshot, now)
 	if orphanErr != nil {
@@ -1835,10 +1835,23 @@ func configuredStatus(value any) string {
 }
 
 func (s *Server) connectorName() string {
-	if s.connector == nil {
+	conn := s.currentConnector()
+	if conn == nil {
 		return ""
 	}
-	return s.connector.Name()
+	return conn.Name()
+}
+
+func (s *Server) currentConnector() connector.Connector {
+	if s.connector != nil || s.registry == nil {
+		return s.connector
+	}
+	for _, trackedProject := range s.registry.List() {
+		if conn := trackedProject.Connector(); conn != nil {
+			return conn
+		}
+	}
+	return nil
 }
 
 type healthResponse struct {

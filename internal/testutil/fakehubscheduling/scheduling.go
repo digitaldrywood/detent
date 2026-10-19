@@ -2,6 +2,8 @@ package fakehubscheduling
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,7 +44,19 @@ func (s *Source) FetchCandidateIssues(ctx context.Context, request orchestrator.
 	if !ok {
 		return nil, nil
 	}
-	return conn.FetchCandidateIssues(ctx)
+	issues, err := conn.FetchCandidateIssues(ctx)
+	if err != nil || len(request.WorkflowStates) == 0 {
+		return issues, err
+	}
+	filtered := make([]connector.Issue, 0, len(issues))
+	for _, issue := range issues {
+		if slices.ContainsFunc(request.WorkflowStates, func(state string) bool {
+			return strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(state))
+		}) {
+			filtered = append(filtered, issue)
+		}
+	}
+	return filtered, nil
 }
 func (s *Source) AdoptClaim(_ context.Context, issue connector.Issue, now time.Time) (orchestrator.Claimed, error) {
 	s.mu.Lock()
