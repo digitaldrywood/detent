@@ -287,6 +287,18 @@ func applyScheduledRepairContract(ctx context.Context, q nativeQueryer, scope na
 	if !ok || origin.Kind != "doctor" || origin.Instance != "github-actions" || !scheduledRepairOriginMatches(origin.Source, verified.evidence) {
 		return
 	}
+	project, err := readNativeProject(ctx, q, scope)
+	if err != nil {
+		return
+	}
+	eligible := false
+	for _, state := range project.States {
+		eligible = eligible || state.Name == "Todo" && state.Dispatchable && !state.Terminal && !state.OperatorOnly
+	}
+	if !eligible {
+		return
+	}
+	issue.State, issue.Priority = "Todo", new(0)
 	verified.importReason = ""
 	issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(body)
 	issue.IssueContract.RecordedAt = now

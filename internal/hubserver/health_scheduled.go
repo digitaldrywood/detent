@@ -102,7 +102,7 @@ func readHealthScheduled(ctx context.Context, q nativeQueryer, scope nativeScope
 			}
 		}
 		for _, evidence := range gate.ParseScheduledEvidence(body) {
-			if !stamped || origin.Kind != "doctor" || origin.Instance != "github-actions" || origin.Source != evidence.RunURL || !strings.EqualFold(repository, evidence.Repository) {
+			if !stamped || origin.Kind != "doctor" || origin.Instance != "github-actions" || !scheduledRepairOriginMatches(origin.Source, evidence) || !strings.EqualFold(repository, evidence.Repository) {
 				continue
 			}
 			addLegacy(gate.ScheduledValidationReport{RunURL: evidence.RunURL, Conclusion: "failure"})

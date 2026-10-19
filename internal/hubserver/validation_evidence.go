@@ -51,7 +51,7 @@ func readValidationAudit(ctx context.Context, query nativeQueryer, scope nativeS
 			continue
 		}
 		for _, scheduled := range gate.ParseScheduledEvidence(body) {
-			if origin.Source != scheduled.RunURL {
+			if !scheduledRepairOriginMatches(origin.Source, scheduled) {
 				continue
 			}
 			if len(audit.Occurrences) >= 40 {

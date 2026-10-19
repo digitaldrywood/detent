@@ -320,7 +320,8 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 	for _, test := range []struct {
 		name                                                                                                                       string
 		confirmed                                                                                                                  bool
-		delegation, source                                                                                                         string
+		delegation, source, state                                                                                                  string
+		priority                                                                                                                   *int
 		shortContract                                                                                                              bool
 		ordinary                                                                                                                   bool
 		noPolicy, noTemplate, unavailable, foreign, stalePolicy, staleRepository, markerOnly, duplicate, noDispatch, otherCheckout bool
@@ -331,6 +332,8 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 		{name: "verification unavailable", unavailable: true},
 		{name: "foreign repository", foreign: true},
 		{name: "approved generic project", confirmed: true},
+		{name: "delegated lane and priority", confirmed: true, state: "Done", priority: new(3)},
+		{name: "delegated default lane", confirmed: true, state: "Blocked"},
 		{name: "approved three-section project", confirmed: true, shortContract: true},
 		{name: "run origin without attempt", confirmed: true, source: "https://github.com/example-org/example-project/actions/runs/123"},
 		{name: "origin other run", source: "https://github.com/example-org/example-project/actions/runs/124"},
@@ -413,6 +416,10 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 				body += evidence.Stamp()
 			}
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "report"}, Title: "Scheduled CI repair", Body: body, State: "Todo"}
+			if test.state != "" {
+				request.State = test.state
+			}
+			request.Priority = test.priority
 			var original tracker.NativeIssue
 			if test.duplicate {
 				request.State = "Blocked"
@@ -475,6 +482,9 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 					t.Fatalf("duplicate changed human work: %+v", issue)
 				}
 				return
+			}
+			if issue.State != "Todo" || issue.Terminal || issue.Priority == nil || *issue.Priority != 0 {
+				t.Fatalf("delegated lane and priority: %+v", issue)
 			}
 			if (len(issue.IssueContract.ConfirmedSections) == sectionCount) != test.confirmed {
 				t.Fatalf("confirmation=%+v body=%s", issue.IssueContract, issue.Body)
