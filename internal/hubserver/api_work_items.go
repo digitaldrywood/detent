@@ -81,7 +81,7 @@ type timelineCursor struct {
 func (s *Service) listWorkItems(c echo.Context) error {
 	query, err := parseWorkItemListQuery(c)
 	if err != nil {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_query", Message: err.Error()})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_query", err.Error(), apiErrorResponse{Code: "invalid_query", Message: err.Error()})
 	}
 	items, err := s.allWorkItems(c.Request().Context())
 	if err != nil {
@@ -127,11 +127,11 @@ func (s *Service) getWorkItem(c echo.Context) error {
 	}
 	timelineLimit, err := parsePageLimit(c.QueryParam("timeline_limit"))
 	if err != nil {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_query", Message: "timeline_limit must be between 1 and 200"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_query", "timeline_limit must be between 1 and 200", apiErrorResponse{Code: "invalid_query", Message: "timeline_limit must be between 1 and 200"})
 	}
 	cursor, err := decodeTimelineCursor(c.QueryParam("timeline_cursor"))
 	if err != nil {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_cursor", Message: "Timeline cursor is invalid"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_cursor", "Timeline cursor is invalid", apiErrorResponse{Code: "invalid_cursor", Message: "Timeline cursor is invalid"})
 	}
 	workpad, hasWorkpad, err := s.database.latestWorkpad(c.Request().Context(), id)
 	if err != nil {
@@ -294,7 +294,7 @@ func parseWorkItemListQuery(c echo.Context) (workItemListQuery, error) {
 	for _, filter := range validFilters {
 		for value := range filter.values {
 			if !filter.valid[value] {
-				return workItemListQuery{}, fmt.Errorf("%s filter value %q is invalid", filter.name, value)
+				return workItemListQuery{}, fmt.Errorf("%s filter value is invalid", filter.name)
 			}
 		}
 	}

@@ -98,31 +98,54 @@ func TestDecodeAPIJSONCompatibility(t *testing.T) {
 	}
 }
 
-func TestOutboxHealthQueryRefusals(t *testing.T) {
+func TestAPIRefusals(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct{ query, code, reason string }{
-		{"limit=0", "invalid_query", "limit must be between 1 and 200"},
-		{"cursor=private-token", "invalid_cursor", "Outbox cursor is invalid"},
+	for _, test := range []struct {
+		name, path, body, code, reason string
+		status                         int
+		handle                         func(*Service, echo.Context) error
+	}{
+		{"outbox limit", "/api/v1/outbox/health?limit=0", "", "invalid_query", "limit must be between 1 and 200", http.StatusUnprocessableEntity, (*Service).outboxHealth},
+		{"outbox cursor", "/api/v1/outbox/health?cursor=private-token", "", "invalid_cursor", "Outbox cursor is invalid", http.StatusUnprocessableEntity, (*Service).outboxHealth},
+		{"claim ID", "/api/v1/claims", `{"work_item_id":-1}`, "invalid_claim", "work_item_id must be positive when supplied", http.StatusUnprocessableEntity, (*Service).claimWorkItem},
+		{"claim TTL", "/api/v1/claims", `{"ttl_seconds":-1}`, "invalid_claim", "ttl_seconds must be between 1 and 86400", http.StatusUnprocessableEntity, (*Service).claimWorkItem},
+		{"dependency", "/api/v1/work-items/:id/dependencies", `{}`, "invalid_dependency", "Dependency action and a distinct positive blocker_work_item_id are required", http.StatusUnprocessableEntity, (*Service).changeWorkItemDependency},
+		{"order", "/api/v1/work-items/:id/order", `{}`, "invalid_order", "Scope, state, and rank are required", http.StatusUnprocessableEntity, (*Service).changeWorkItemOrder},
+		{"private query", "/api/v1/work-items?priority=private-token", "", "invalid_query", "priority filter value is invalid", http.StatusUnprocessableEntity, (*Service).listWorkItems},
+		{"webhook headers", "/webhooks/github", `{}`, "invalid_headers", "GitHub webhook delivery and event headers are required", http.StatusBadRequest, (*Service).githubWebhook},
+		{"operator writer", "/api/v1/work-items/:id/workflow", "", "idempotency_conflict", "Idempotency key conflicts with an earlier mutation", http.StatusConflict, func(s *Service, c echo.Context) error {
+			return s.operatorAPIError(c, ErrIdempotencyConflict)
+		}},
+		{"hosted writer", nativeBase, "", "forbidden", "Owner access is required", http.StatusForbidden, func(s *Service, c echo.Context) error {
+			return s.hostedJSONError(c, http.StatusForbidden, "Owner access is required")
+		}},
+		{"billing writer", nativeBase + "/billing", "", "billing_conflict", "A billing account is required", http.StatusConflict, func(s *Service, c echo.Context) error {
+			return s.hostedBillingFailure(c, true, http.StatusConflict, "A billing account is required")
+		}},
 	} {
-		t.Run(test.code, func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			var logs bytes.Buffer
-			service := &Service{config: Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))}}
+			service := &Service{config: Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil)), GitHubWebhookSecret: []byte("test-secret")}}
 			recorded := httptest.NewRecorder()
-			c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/api/v1/outbox/health?"+test.query, nil), recorded)
-			c.SetPath("/api/v1/outbox/health")
-			if err := service.outboxHealth(c); err != nil {
+			c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body)), recorded)
+			c.SetPath(strings.SplitN(test.path, "?", 2)[0])
+			c.SetParamNames("id")
+			c.SetParamValues("1")
+			if err := test.handle(service, c); err != nil {
 				t.Fatal(err)
 			}
-			failure := requireNativeCode(t, recorded, http.StatusUnprocessableEntity, test.code)
+			failure := requireNativeCode(t, recorded, test.status, test.code)
 			var entry map[string]any
 			if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
 				t.Fatalf("expected exactly one JSON log entry: %v: %s", err, &logs)
 			}
-			if entry["level"] != "WARN" || entry["refusal_code"] != test.code || entry["reason"] != test.reason || entry["route"] != c.Path() || failure.Message != test.reason {
+			if entry["level"] != "WARN" || entry["refusal_code"] != test.code || entry["reason"] != test.reason || entry["error"] != test.reason || entry["route"] != c.Path() || failure.Message != test.reason {
 				t.Fatalf("refusal = %#v, log = %#v", failure, entry)
 			}
-			if strings.Contains(logs.String(), "private-token") || strings.Contains(recorded.Body.String(), "private-token") {
-				t.Fatal("private cursor escaped")
+			for _, private := range []string{"private-token", "test-secret"} {
+				if strings.Contains(logs.String(), private) || strings.Contains(recorded.Body.String(), private) {
+					t.Fatalf("private context escaped: %s", private)
+				}
 			}
 		})
 	}

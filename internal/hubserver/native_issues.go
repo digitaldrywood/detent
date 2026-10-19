@@ -403,7 +403,7 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if challenge.ChallengeToken != "" {
-		return c.JSON(http.StatusConflict, struct {
+		return s.refusedAPIError(c, http.StatusConflict, "possible_duplicates", "Possible duplicate issues found; use file_issue to confirm whether this is new", struct {
 			apiErrorResponse
 			duplicateChallenge
 		}{apiErrorResponse: apiErrorResponse{Code: "possible_duplicates", Message: "Possible duplicate issues found; use file_issue to confirm whether this is new"}, duplicateChallenge: challenge})

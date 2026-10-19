@@ -105,13 +105,13 @@ func (s *Service) requireConversationOrganization() echo.MiddlewareFunc {
 		return func(c echo.Context) error {
 			credential, status, err := s.authenticateAPIRequest(c)
 			if err != nil {
-				return c.JSON(status, apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
+				return s.refusedAPIError(c, status, "unauthorized", "Valid scoped API token is required", apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
 			}
 			if s.config.Hosted != nil && credential.Hosted == nil {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			if credential.Scope != apiScopeOperator && credential.Scope != apiScopeAdmin {
-				return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
+				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "API token scope does not permit this operation", apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
 			}
 			ctx := c.Request().Context()
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}

@@ -90,9 +90,7 @@ func (s *Service) acceptHostedInvitationJSON(c echo.Context) error {
 	if _, _, err := s.hostedSession(c.Request().Context(), c); err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	if message, denial := s.acceptHostedInvitationToken(c, request.Token); message != "" && !s.hostedInvitationAcceptedBySession(c, request.Token) {
-		denial.Status = http.StatusForbidden
-		auth.LogHostedDenial(s.hostedAuthLogger, c.Response(), c.Request(), denial)
+	if message, _ := s.acceptHostedInvitationToken(c, request.Token); message != "" && !s.hostedInvitationAcceptedBySession(c, request.Token) {
 		return s.hostedJSONError(c, http.StatusForbidden, message)
 	}
 	return c.JSON(http.StatusOK, hostedNextResponse{Next: s.config.Hosted.PublicURL + "/auth/oidc/start"})
@@ -116,7 +114,9 @@ func (s *Service) startHostedSupportJSON(c echo.Context) error {
 	}
 	session, transaction, status, message, reason := s.beginHostedSupport(c)
 	if status != http.StatusOK {
-		auth.LogHostedDenial(s.hostedAuthLogger, c.Response(), c.Request(), auth.HostedDenial{Flow: "support_start", Reason: reason, Status: status, Email: session.Email})
+		if status >= http.StatusInternalServerError {
+			auth.LogHostedDenial(s.hostedAuthLogger, c.Response(), c.Request(), auth.HostedDenial{Flow: "support_start", Reason: reason, Status: status, Email: session.Email})
+		}
 		return s.hostedJSONError(c, status, message)
 	}
 	return c.JSON(http.StatusOK, hostedSupportResponse{Support: hostedSupportView{Actor: session.Email, ExpiresAt: transaction.ExpiresAt.UTC()}})

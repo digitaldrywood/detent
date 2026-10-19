@@ -191,7 +191,7 @@ func (s *Service) advanceGitHubImport(c echo.Context) error {
 			if readErr != nil {
 				return s.nativeAPIError(c, readErr)
 			}
-			return c.JSON(http.StatusTooManyRequests, current)
+			return s.refusedAPIError(c, http.StatusTooManyRequests, failure.Code, "Import retry is not ready", current)
 		}
 		return s.nativeAPIError(c, err)
 	}

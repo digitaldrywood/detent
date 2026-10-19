@@ -109,7 +109,7 @@ func (s *Service) hostedSessionOnly(next echo.HandlerFunc) echo.HandlerFunc {
 			if c.Path() == hostedOrganizationBase+"/projects" && c.Request().Method == http.MethodGet {
 				return s.entryKeyProjects(c)
 			}
-			return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "session_required", Message: "This endpoint requires a hosted browser session"})
+			return s.refusedAPIError(c, http.StatusForbidden, "session_required", "This endpoint requires a hosted browser session", apikey.Refusal{Code: "session_required", Message: "This endpoint requires a hosted browser session"})
 		}
 		if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
 			return s.hostedJSONError(c, http.StatusForbidden, "This endpoint authenticates a hosted session")
@@ -383,7 +383,7 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 		case errors.Is(err, mutation.ErrConflict):
 			return s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: mutation.ErrConflict.Error(), status: http.StatusConflict})
 		case errors.Is(err, mutation.ErrUncertain):
-			return c.JSON(http.StatusConflict, apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
+			return s.refusedAPIError(c, http.StatusConflict, "idempotency_in_progress", mutation.ErrUncertain.Error(), apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
 		case errors.Is(err, operatortool.ErrInvalidArguments):
 			return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 		case errors.As(err, &limit):
@@ -465,7 +465,7 @@ func (s *Service) claimHostedCommand(c echo.Context, command hostedCommand, stat
 		return false, s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: mutation.ErrConflict.Error(), status: http.StatusConflict})
 	}
 	if errors.Is(err, mutation.ErrUncertain) {
-		return false, c.JSON(http.StatusConflict, apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
+		return false, s.refusedAPIError(c, http.StatusConflict, "idempotency_in_progress", mutation.ErrUncertain.Error(), apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
 	}
 	if err != nil {
 		return false, s.nativeAPIError(c, err)
@@ -681,7 +681,7 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 
 // hostedJSONError answers a hosted API failure with the native error shape.
 func (s *Service) hostedJSONError(c echo.Context, status int, message string) error {
-	return c.JSON(status, apiErrorResponse{Code: hostedErrorCode(status), Message: message})
+	return s.refusedAPIError(c, status, hostedErrorCode(status), message, apiErrorResponse{Code: hostedErrorCode(status), Message: message})
 }
 
 func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {

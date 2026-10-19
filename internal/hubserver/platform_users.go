@@ -24,7 +24,7 @@ func (s *Service) hostedPlatformUsers(c echo.Context) error {
 	}
 	query, err := platformusers.Parse(input.Text)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, apiErrorResponse{Code: "invalid_query", Message: "Enter at least three characters"})
+		return s.refusedAPIError(c, http.StatusBadRequest, "invalid_query", "Enter at least three characters", apiErrorResponse{Code: "invalid_query", Message: "Enter at least three characters"})
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()

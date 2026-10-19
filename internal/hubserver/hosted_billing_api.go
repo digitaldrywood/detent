@@ -257,7 +257,7 @@ func (s *Service) hostedBillingFailure(c echo.Context, api bool, status int, mes
 	if code == "" {
 		code = "billing_failed"
 	}
-	return c.JSON(status, apiErrorResponse{Code: code, Message: message})
+	return s.refusedAPIError(c, status, code, message, apiErrorResponse{Code: code, Message: message})
 }
 
 func (s *Service) hostedBillingDestination(c echo.Context, api bool, url string) error {

@@ -269,7 +269,7 @@ func (s *Service) requireInstanceAdmin() echo.MiddlewareFunc {
 		return s.requireAPIScope(apiScopeAdmin)(func(c echo.Context) error {
 			credential, ok := c.Get("hub_api_credential").(apiCredential)
 			if !ok || credential.NativeOnly {
-				return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "insufficient_scope", Message: "Instance administrator is required"})
+				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "Instance administrator is required", apiErrorResponse{Code: "insufficient_scope", Message: "Instance administrator is required"})
 			}
 			return next(c)
 		})

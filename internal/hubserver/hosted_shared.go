@@ -86,10 +86,10 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 		limit := SharedEntryRequestBodyLimit(request.Method, request.URL.Path)
 		body, err := io.ReadAll(io.LimitReader(request.Body, limit+1))
 		if err != nil {
-			return c.JSON(http.StatusBadRequest, apiErrorResponse{Code: "invalid_request", Message: "Request body could not be read"})
+			return s.refusedAPIError(c, http.StatusBadRequest, "invalid_request", "Request body could not be read", apiErrorResponse{Code: "invalid_request", Message: "Request body could not be read"})
 		}
 		if int64(len(body)) > limit {
-			return c.JSON(http.StatusRequestEntityTooLarge, apiErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
+			return s.refusedAPIError(c, http.StatusRequestEntityTooLarge, "payload_too_large", "Request body is too large", apiErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
 		}
 		request.Body = io.NopCloser(bytes.NewReader(body))
 		claims, err := entry.verifier.Verify(request.Header.Get(cloudassert.Header), request.Method, request.URL.RequestURI(), body)
@@ -336,7 +336,7 @@ func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
 	}
 	binding, err := s.database.hostedBillingBinding(c.Request().Context(), cfg)
 	if err != nil || binding.CustomerID != request.CustomerID {
-		return c.JSON(http.StatusConflict, apiErrorResponse{Code: "customer_mismatch", Message: "The event customer is not bound to this organization"})
+		return s.refusedAPIError(c, http.StatusConflict, "customer_mismatch", "The event customer is not bound to this organization", apiErrorResponse{Code: "customer_mismatch", Message: "The event customer is not bound to this organization"})
 	}
 	if _, err := s.database.db.ExecContext(c.Request().Context(), "INSERT INTO hosted_billing_events(event_id,event_type,received_at) VALUES(?,?,?) ON CONFLICT(event_id) DO NOTHING", request.EventID, request.EventType, formatHubTime(s.config.now())); err != nil {
 		return s.internalAPIError(c, "billing_unavailable", "Billing event could not be recorded", err)
@@ -382,15 +382,15 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 		if members == 1 && owner == claims.Subject {
 			return c.NoContent(http.StatusNoContent)
 		}
-		return c.JSON(http.StatusConflict, apiErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
+		return s.refusedAPIError(c, http.StatusConflict, "already_bootstrapped", "This organization already has members", apiErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
 	}
 	provider, err := s.hostedProviderOrganization(ctx)
 	if err != nil || provider == "" {
-		return c.JSON(http.StatusConflict, apiErrorResponse{Code: "unallocated", Message: "The tenant has no provider organization"})
+		return s.refusedAPIError(c, http.StatusConflict, "unallocated", "The tenant has no provider organization", apiErrorResponse{Code: "unallocated", Message: "The tenant has no provider organization"})
 	}
 	membership, err := s.hostedMembership(ctx, &auth.HostedIdentity{Subject: claims.Subject, OrganizationID: provider})
 	if err != nil || membership.Role.Slug != "owner" {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "owner_unverified", Message: "The provider does not report this identity as an owner"})
+		return s.refusedAPIError(c, http.StatusForbidden, "owner_unverified", "The provider does not report this identity as an owner", apiErrorResponse{Code: "owner_unverified", Message: "The provider does not report this identity as an owner"})
 	}
 	if err := s.storeHostedMember(ctx, auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true}, membership, name); err != nil {
 		return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", err)
@@ -469,7 +469,7 @@ func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {
 	}
 	s.hostedMutationMu.Unlock()
 	if err != nil {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "invitation_unavailable", Message: "This invitation is expired, already used, or intended for another account or organization"})
+		return s.refusedAPIError(c, http.StatusForbidden, "invitation_unavailable", "This invitation is expired, already used, or intended for another account or organization", apiErrorResponse{Code: "invitation_unavailable", Message: "This invitation is expired, already used, or intended for another account or organization"})
 	}
 	return c.NoContent(http.StatusNoContent)
 }

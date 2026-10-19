@@ -55,7 +55,7 @@ func (s *Service) getProjectSpriteAllocation(c echo.Context) error {
 func (s *Service) setProjectSpriteAllocation(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	if !canManageProjectSecrets(scope.credential) {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Sprite allocations require owner or admin access"})
+		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Sprite allocations require owner or admin access", apiErrorResponse{Code: "forbidden", Message: "Sprite allocations require owner or admin access"})
 	}
 	var request projectSpriteAllocationRequest
 	if err := decodeAPIJSON(c, &request); err != nil {

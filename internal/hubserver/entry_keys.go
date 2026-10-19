@@ -112,17 +112,17 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	}
 	definition, found := operatortool.Lookup(call.Name)
 	if !found {
-		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "tool_unavailable", Message: "This tool is unavailable in the target organization"})
+		return s.refusedAPIError(c, http.StatusForbidden, "tool_unavailable", "This tool is unavailable in the target organization", apikey.Refusal{Code: "tool_unavailable", Message: "This tool is unavailable in the target organization"})
 	}
 	permission := projectToolScope(call.Name, definition.Annotations.ReadOnly)
 	if operatortool.IsAdministration(call.Name) {
 		permission = operatortool.AdministrationScope(call.Name)
 	}
 	if !hostedKeyAllows(credential.HostedKeyScope, permission) {
-		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "key_permission_denied", Message: "The key permission does not allow this call"})
+		return s.refusedAPIError(c, http.StatusForbidden, "key_permission_denied", "The key permission does not allow this call", apikey.Refusal{Code: "key_permission_denied", Message: "The key permission does not allow this call"})
 	}
 	if !hostedRoleAllows(credential.HostedRole, permission, call.Name) {
-		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "role_denied", Message: "The current organization role does not allow this call"})
+		return s.refusedAPIError(c, http.StatusForbidden, "role_denied", "The current organization role does not allow this call", apikey.Refusal{Code: "role_denied", Message: "The current organization role does not allow this call"})
 	}
 	var selector struct {
 		ProjectID string `json:"project_id"`
@@ -131,7 +131,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
 	if selector.ProjectID != "" && !credential.EntryKey.Allows(selector.ProjectID) {
-		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"})
+		return s.refusedAPIError(c, http.StatusForbidden, "key_project_denied", "The project is outside this key's access context", apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"})
 	}
 	definitions, err := (hostedOperatorExecutor{s}).ListTools(ctx)
 	if err != nil {
@@ -142,7 +142,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		available = available || d.Name == call.Name
 	}
 	if !available {
-		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "tool_unavailable", Message: "The target organization's role or plan does not provide this tool"})
+		return s.refusedAPIError(c, http.StatusForbidden, "tool_unavailable", "The target organization's role or plan does not provide this tool", apikey.Refusal{Code: "tool_unavailable", Message: "The target organization's role or plan does not provide this tool"})
 	}
 	result, err := (hostedOperatorExecutor{s}).Execute(ctx, operatortool.Call{Name: call.Name, Arguments: call.Arguments})
 	if err != nil {
@@ -154,7 +154,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		}
 		var refusal *apikey.Refusal
 		if errors.As(err, &refusal) {
-			return c.JSON(http.StatusForbidden, refusal)
+			return s.nativeAPIError(c, refusal)
 		}
 		return s.nativeAPIError(c, err)
 	}

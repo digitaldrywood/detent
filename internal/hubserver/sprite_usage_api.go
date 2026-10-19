@@ -89,7 +89,7 @@ func (s *Service) organizationMonthlyCosts(c echo.Context) error {
 func (s *Service) ingestSpriteUsage(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	if !canManageProjectSecrets(scope.credential) {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Importing infrastructure usage requires owner or admin access"})
+		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Importing infrastructure usage requires owner or admin access", apiErrorResponse{Code: "forbidden", Message: "Importing infrastructure usage requires owner or admin access"})
 	}
 	scope.requireHostedAdmin = true
 	c.Set("native_scope", scope)

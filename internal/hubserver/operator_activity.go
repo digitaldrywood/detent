@@ -60,7 +60,7 @@ func (s *Service) hostedActivity(c echo.Context) error {
 		return s.nativeAPIError(c, nativePublicInvalid("Invalid activity filters or window"))
 	}
 	if errors.Is(err, operatortool.ErrAccessDenied) {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: err.Error()})
+		return s.refusedAPIError(c, http.StatusForbidden, "access_denied", operatortool.ErrAccessDenied.Error(), apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)

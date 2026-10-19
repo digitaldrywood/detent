@@ -265,7 +265,7 @@ func (s *Service) artifactReadGrant(c echo.Context) error {
 	}
 	result, err := s.artifactReadGrantCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("artifact"), input.Revision, s.config.now())
 	if errors.Is(err, artifact.ErrExpired) {
-		return c.JSON(http.StatusGone, apiErrorResponse{Code: "expired", Message: "Artifact retention has expired"})
+		return s.refusedAPIError(c, http.StatusGone, "expired", "Artifact retention has expired", apiErrorResponse{Code: "expired", Message: "Artifact retention has expired"})
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)

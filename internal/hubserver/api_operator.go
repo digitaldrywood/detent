@@ -71,7 +71,7 @@ func (s *Service) changeWorkItemWorkflow(c echo.Context) error {
 		},
 	})
 	if err != nil {
-		return operatorAPIError(c, err)
+		return s.operatorAPIError(c, err)
 	}
 	return c.JSON(http.StatusAccepted, mutationResponse{WorkItemID: id, Kind: "workflow", Status: "pending", OutboxID: item.ID})
 }
@@ -91,11 +91,11 @@ func (s *Service) changeWorkItemDependency(c echo.Context) error {
 		request.Provenance = "hub"
 	}
 	if request.BlockerWorkItemID <= 0 || request.BlockerWorkItemID == id || (request.Action != "add" && request.Action != "remove") {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_dependency", Message: "Dependency action and a distinct positive blocker_work_item_id are required"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_dependency", "Dependency action and a distinct positive blocker_work_item_id are required", apiErrorResponse{Code: "invalid_dependency", Message: "Dependency action and a distinct positive blocker_work_item_id are required"})
 	}
 	err = s.database.changeDependency(c.Request().Context(), id, request)
 	if err != nil {
-		return operatorAPIError(c, err)
+		return s.operatorAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, mutationResponse{WorkItemID: id, Kind: "dependency", Status: "applied"})
 }
@@ -111,7 +111,7 @@ func (s *Service) changeWorkItemPriority(c echo.Context) error {
 	}
 	result, err := s.workItemPriorityCommand(c.Request().Context(), id, request)
 	if err != nil {
-		return operatorAPIError(c, err)
+		return s.operatorAPIError(c, err)
 	}
 	return c.JSON(http.StatusAccepted, result)
 }
@@ -173,15 +173,15 @@ func (s *Service) changeWorkItemOrder(c echo.Context) error {
 	request.State = strings.TrimSpace(request.State)
 	request.Rank = strings.TrimSpace(request.Rank)
 	if request.Scope == "" || request.State == "" || request.Rank == "" {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_order", Message: "Scope, state, and rank are required"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_order", "Scope, state, and rank are required", apiErrorResponse{Code: "invalid_order", Message: "Scope, state, and rank are required"})
 	}
 	if err := s.database.changeQueueOrder(c.Request().Context(), id, request); err != nil {
-		return operatorAPIError(c, err)
+		return s.operatorAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, mutationResponse{WorkItemID: id, Kind: "order", Status: "applied"})
 }
 
-func operatorAPIError(c echo.Context, err error) error {
+func (s *Service) operatorAPIError(c echo.Context, err error) error {
 	status := http.StatusUnprocessableEntity
 	code := "invalid_mutation"
 	message := "Mutation is invalid"
@@ -193,7 +193,7 @@ func operatorAPIError(c echo.Context, err error) error {
 	case strings.Contains(err.Error(), "not found"):
 		status, code, message = http.StatusNotFound, "mutation_target_not_found", "Mutation target was not found"
 	}
-	return c.JSON(status, apiErrorResponse{Code: code, Message: message})
+	return s.refusedAPIError(c, status, code, message, apiErrorResponse{Code: code, Message: message})
 }
 
 func (d *database) workItemRepositoryID(ctx context.Context, id tracker.WorkItemID) (int64, error) {

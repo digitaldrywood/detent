@@ -120,7 +120,7 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 		return func(c echo.Context) error {
 			credential, status, err := s.authenticateAPIRequest(c)
 			if err != nil {
-				return c.JSON(status, apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
+				return s.refusedAPIError(c, status, "unauthorized", "Valid scoped API token is required", apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
 			}
 			if s.config.Hosted != nil {
 				if credential.Hosted != nil && c.Path() == runnerBase+"/:runner/routing" && c.Request().Method == http.MethodGet {
@@ -138,11 +138,11 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 				return c.NoContent(http.StatusForbidden)
 			}
 			if credential.Runner.RunnerID != "" && !runnerOperationAllowed(c, credential.Runner.Operations) {
-				return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "insufficient_scope", Message: "Runner does not permit this operation"})
+				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "Runner does not permit this operation", apiErrorResponse{Code: "insufficient_scope", Message: "Runner does not permit this operation"})
 			}
 			if strings.HasPrefix(c.Path(), "/api/v1/") {
 				if credential.NativeOnly {
-					return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "native_protocol_required", Message: "Scoped tokens require the native protocol"})
+					return s.refusedAPIError(c, http.StatusForbidden, "native_protocol_required", "Scoped tokens require the native protocol", apiErrorResponse{Code: "native_protocol_required", Message: "Scoped tokens require the native protocol"})
 				}
 				if err := s.requireCompatibilityResource(c); err != nil {
 					return err
@@ -157,7 +157,7 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 					return next(c)
 				}
 			}
-			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
+			return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "API token scope does not permit this operation", apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
 		}
 	}
 }

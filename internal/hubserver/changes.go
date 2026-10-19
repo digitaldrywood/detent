@@ -390,7 +390,7 @@ func (s *Service) getChange(c echo.Context) error {
 		if err != nil {
 			var refusal *operatortool.RequestError
 			if errors.As(err, &refusal) {
-				return c.JSON(http.StatusUnprocessableEntity, refusal)
+				return s.nativeAPIError(c, refusal)
 			}
 			if errors.Is(err, mutation.ErrConflict) {
 				return s.nativeAPIError(c, nativeConflict(0))
@@ -405,7 +405,7 @@ func (s *Service) getChange(c echo.Context) error {
 		}
 		bounded, err := operatortool.BoundedChangeResult(result)
 		if err != nil {
-			return c.JSON(http.StatusUnprocessableEntity, err)
+			return s.nativeAPIError(c, err)
 		}
 		return c.Blob(http.StatusOK, "application/json", bounded.Content)
 	}
