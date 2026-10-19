@@ -106,8 +106,13 @@ describe("Sprite pool setup and attention", () => {
   it.each([false, true])("saves explicit idle sharing from %s", async (initial) => {
     mountPool({ ...emptyPool, share_idle_capacity: initial }, true);
     fireEvent.click(await screen.findByRole("button", { name: "Set up Sprites" }));
-    const checkbox = await screen.findByRole("checkbox", { name: "Share idle project Sprite capacity" });
+    const checkbox = await screen.findByRole("checkbox", { name: "Share idle Sprites with other projects" });
     expect(checkbox.getAttribute("aria-checked")).toBe(String(initial));
+    expect(screen.queryByText(/Off by default. When on, a project Sprite/)).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Help for Share idle Sprites with other projects" }));
+    expect(await screen.findByText(/Off by default. When on, a project Sprite/)).toBeDefined();
+    expect(checkbox.getAttribute("aria-checked")).toBe(String(initial));
+    await userEvent.keyboard("{Escape}");
     await userEvent.click(checkbox);
     fireEvent.click(screen.getByRole("button", { name: "Save pool" }));
     await waitFor(() => {
