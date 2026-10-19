@@ -37,12 +37,13 @@ func TestBoardSnapshotBrowserPreview(t *testing.T) {
 		done <- startRunningWithDependencies(ctx,
 			devRuntimeBootConfig(t.Context(), runtime, "127.0.0.1", defaultOptions(), os.Stdout),
 			startRunningDependencies{
-				startupMaintenance: func(ctx context.Context, _ globalconfig.Config, _ store.Store) {
+				startupMaintenance: func(ctx context.Context, _ globalconfig.Config, _ store.Store) func() {
 					fmt.Println("Startup hydration held")
 					select {
 					case <-release:
 					case <-ctx.Done():
 					}
+					return nil
 				},
 			})
 	}()
