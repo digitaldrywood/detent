@@ -5,7 +5,7 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import React from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 
-import { useConversationSpeech } from "./hooks/useConversationSpeech.ts";
+import { followCreatedConversation, useConversationSpeech } from "./hooks/useConversationSpeech.ts";
 import { chatSlashCommands } from "./adapters/chatPrompts.ts";
 
 import type {
@@ -225,7 +225,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
       attachments.clear();
     }
     setSending(false);
-    speech.followCreatedConversation(result.success.conversation.id);
+    followCreatedConversation(result.success.conversation.id);
     client.drafts.writeOutbox(scope, null);
     client.drafts.writeDraft(scope, "");
     commandKey.current = newCommandKey();

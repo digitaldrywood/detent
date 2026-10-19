@@ -5,6 +5,10 @@ import { deltaText, type ConversationDetail } from "../../runtime/state/conversa
 const STORAGE_KEY = "detent.chat.voice";
 let createdConversation: string | null = null;
 
+export function followCreatedConversation(id: string): void {
+  createdConversation = id;
+}
+
 export interface ConversationSpeech {
   readonly supported: boolean;
   readonly enabled: boolean;
@@ -12,7 +16,6 @@ export interface ConversationSpeech {
   readonly toggle: () => void;
   readonly stop: () => void;
   readonly prepareToSend: () => void;
-  readonly followCreatedConversation: (id: string) => void;
 }
 
 export function useConversationSpeech(
@@ -117,13 +120,9 @@ export function useConversationSpeech(
     }
   }, [conversationId, detail, enabled, supported, stop]);
 
-  const followCreatedConversation = React.useCallback((id: string) => {
-    if (enabled) createdConversation = id;
-  }, [enabled]);
-
   return React.useMemo(() => ({
-    supported, enabled, readingMessageId, toggle, stop, prepareToSend, followCreatedConversation,
-  }), [supported, enabled, readingMessageId, toggle, stop, prepareToSend, followCreatedConversation]);
+    supported, enabled, readingMessageId, toggle, stop, prepareToSend,
+  }), [supported, enabled, readingMessageId, toggle, stop, prepareToSend]);
 }
 
 function speechSegments(text: string, complete: boolean): Array<{ text: string; end: number }> {

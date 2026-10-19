@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Composer } from "../../src/app/components/Composer.tsx";
 import { Timeline } from "../../src/app/components/Timeline.tsx";
-import { useConversationSpeech, type ConversationSpeech } from "../../src/app/hooks/useConversationSpeech.ts";
+import { followCreatedConversation, useConversationSpeech, type ConversationSpeech } from "../../src/app/hooks/useConversationSpeech.ts";
 import { DEFAULT_TURN_PREFERENCES } from "../../src/contracts/index.ts";
 import type { ConversationDetail } from "../../src/runtime/state/conversationState.ts";
 import { assistantMessage, conversation, detail, execution, userMessage } from "./builders.ts";
@@ -156,7 +156,7 @@ describe("conversation speech", () => {
 
   it("reads a fast first reply after creating a chat, but never replays it on a later visit", () => {
     const view = start();
-    act(() => voice.followCreatedConversation("created"));
+    act(() => followCreatedConversation("created"));
     view.rerender(<Harness data={reply("Already finished.", false)} id="created" />);
     expect(said()).toEqual(["Already finished."]);
     view.unmount();
