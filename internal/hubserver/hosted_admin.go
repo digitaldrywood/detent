@@ -83,6 +83,9 @@ func (s *Service) hostedAllUsageGrants(ctx context.Context, credential apiCreden
 }
 
 func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential apiCredential) bool {
+	if s.config.Hosted == nil {
+		return credential.Scope == apiScopeAdmin && !credential.NativeOnly
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	return s.requireHostedRunnerAdministration(ctx, s.database.reader, credential) == nil

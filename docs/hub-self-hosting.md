@@ -75,6 +75,34 @@ headers or request/response bodies at the proxy. Keep private keys readable
 only by the TLS owner. The API continues to enforce scoped bearer auth behind
 the proxy; arbitrary identity headers are not an authentication integration.
 
+## Open the web app without WorkOS
+
+`detent hub serve` serves the existing web app when `--hosted-config` is
+omitted. No WorkOS credentials or separate app flag are needed. For local use,
+start it with a private database and the administrator token environment
+variable described above:
+
+```sh
+detent hub serve --database ./hub.db --github-disabled
+```
+
+The default listener is `127.0.0.1:7777`. Open
+`http://127.0.0.1:7777/work` in a private browser window. In the browser's HTTP
+authentication prompt, use `operator` as the username and the Hub administrator
+token as the password. The app uses the database's local organization and its
+projects. Board, project settings and runner enrollment use the existing app
+screens and APIs. Browser access requires an unrestricted administrator token;
+scoped operator and worker tokens remain API/MCP credentials. Bearer-token API
+and MCP access continue to work without a browser.
+
+The browser caches HTTP authentication for its session; close the private window
+to clear it. Revoking or rotating a token takes effect on subsequent requests.
+Keep tokens out of URLs. Remote access still requires TLS or a trusted TLS
+reverse proxy as described above; do not transmit this password over public
+HTTP. Browser writes require a matching Origin, so a reverse proxy must preserve
+the public Host and provide the original HTTPS scheme when `--trusted-proxy`
+is used. A Hub using `--hosted-config` retains its hosted authentication flow.
+
 ## Durable paths and outbound access
 
 | Location | Owner and recovery treatment |

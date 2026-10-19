@@ -106,6 +106,9 @@ type createNativeProjectRequest struct {
 }
 
 func (s *Service) createNativeProject(c echo.Context) error {
+	if _, _, basic := c.Request().BasicAuth(); basic && s.config.Hosted == nil {
+		return s.localAppCreateProject(c)
+	}
 	var request createNativeProjectRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)

@@ -52,6 +52,8 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 		}
 		e.Use(s.hostedBoundary)
 		s.registerHostedRoutes(e)
+	} else {
+		s.registerLocalAppRoutes(e)
 	}
 	s.registerOperatorTools(e)
 	s.registerNativeRoutes(e)

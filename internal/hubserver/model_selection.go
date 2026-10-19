@@ -45,8 +45,8 @@ func (s *Service) organizationModelSelectionScope(c echo.Context) (nativeScope, 
 		}
 		return nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, nil
 	}
-	credential, _, err := s.hostedCredential(c.Request().Context(), c)
-	return nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}, err
+	credential, _, err := s.appCredential(c)
+	return nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), credential: credential, requireHostedAdmin: true}, err
 }
 
 func (s *Service) getOrganizationModelSelection(c echo.Context) error {
