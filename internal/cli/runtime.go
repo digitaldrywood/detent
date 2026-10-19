@@ -385,7 +385,7 @@ func trackerGitHubToken(ctx context.Context, cfg *globalconfig.Config, deps runt
 	requiresRuntimeToken := false
 	for _, project := range cfg.Projects {
 		workflow, err := loadRuntimeProjectWorkflow(ctx, project, deps)
-		if err != nil || !workflowUsesGitHubToken(workflow.Config) {
+		if err != nil || !trackerUsesGitHubToken(workflow.Config.Tracker.Kind) {
 			continue
 		}
 		if trackerHasGitHubAppCredentials(workflow.Config.Tracker, deps.lookupEnv) {
@@ -400,10 +400,6 @@ func trackerGitHubToken(ctx context.Context, cfg *globalconfig.Config, deps runt
 		requiresRuntimeToken = true
 	}
 	return RuntimeSecret{}, requiresRuntimeToken
-}
-
-func workflowUsesGitHubToken(workflow workflowconfig.Config) bool {
-	return trackerUsesGitHubToken(workflow.Tracker.Kind) || workflow.Release.Enabled
 }
 
 func trackerUsesGitHubToken(kind string) bool {

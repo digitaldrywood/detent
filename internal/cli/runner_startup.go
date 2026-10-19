@@ -14,7 +14,7 @@ import (
 
 func resolveRunnerProjectGitHubToken(ctx context.Context, cfg globalconfig.Config, selected globalconfig.Project, workflow workflowconfig.Config, deps runtimeDeps) (string, error) {
 	deps = deps.withDefaults()
-	if !workflowUsesGitHubToken(workflow) {
+	if !trackerUsesGitHubToken(workflow.Tracker.Kind) {
 		return "", nil
 	}
 	if trackerHasGitHubAppCredentials(workflow.Tracker, deps.lookupEnv) {
