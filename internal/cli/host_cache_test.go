@@ -66,7 +66,24 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 				t.Fatalf("first dispatch: %t %v", acquired, err)
 			}
 			defer gate.Release(first)
-			managed := &runnerBuildCache{cache: cache, root: root}
+			native := t.TempDir()
+			if err := os.WriteFile(filepath.Join(native, "trim.txt"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(native, "00"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			staleNative := filepath.Join(native, "00", strings.Repeat("b", 64)+"-d")
+			freshNative := filepath.Join(native, "00", strings.Repeat("c", 64)+"-d")
+			for _, entry := range []string{staleNative, freshNative} {
+				if err := os.WriteFile(entry, make([]byte, 100), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Chtimes(staleNative, time.Now().Add(-10*24*time.Hour), time.Now().Add(-10*24*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			managed := &runnerBuildCache{cache: cache, root: root, native: native}
 			workspace := root
 			if tt.separateVolume {
 				workspace = filepath.Join(t.TempDir(), "workspace")
@@ -121,6 +138,12 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 				}
 				if _, err := os.Stat(output); os.IsNotExist(err) != (tt.wantEvicted != 0) {
 					t.Fatalf("cache reclamation: stat=%v, want evicted=%d", err, tt.wantEvicted)
+				}
+				if _, err := os.Stat(staleNative); !os.IsNotExist(err) {
+					t.Fatalf("stale native Go cache entry retained: %v", err)
+				}
+				if _, err := os.Stat(freshNative); err != nil {
+					t.Fatalf("fresh native Go cache entry removed: %v", err)
 				}
 			}
 			if got := storageConstraint(); (got == "") != tt.wantAdmission {

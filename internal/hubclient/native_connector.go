@@ -714,6 +714,9 @@ func issueFromNative(native tracker.NativeIssue) connector.Issue {
 	}
 	issue.AuthorID = native.Actor.PrincipalID
 	issue.Closed = native.Terminal
+	if native.Terminal {
+		issue.ClosedAt = cloneTime(native.ClosedAt)
+	}
 	issue.Labels, issue.Assignees = native.Labels, native.Assignees
 	issue.CreatedAt, issue.UpdatedAt = cloneTime(&native.CreatedAt), cloneTime(&native.UpdatedAt)
 	issue.Metadata["hub_organization_id"] = string(native.OrganizationID)
