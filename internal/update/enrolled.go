@@ -61,6 +61,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 					}
 				}
 			}
+			s.restartBehindControlLocked(ctx)
 			s.operationMu.Unlock()
 		}
 		return s.enrolledObservation(running)

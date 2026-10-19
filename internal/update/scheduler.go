@@ -68,6 +68,7 @@ type SchedulerConfig struct {
 func (s *Scheduler) WorkerArtifacts() *WorkerArtifacts { return s.cfg.WorkerArtifacts }
 
 type Scheduler struct {
+	controlRestart     *controlRestart
 	enrolledReceipt    *runnerauth.UpdateReceipt
 	enrolledStateValid bool
 	enrolledDiscovery  string
@@ -75,6 +76,11 @@ type Scheduler struct {
 	operationMu        sync.Mutex
 	mu                 sync.RWMutex
 	status             AutoStatus
+}
+
+type controlRestart struct {
+	installed Status
+	since     time.Time
 }
 
 func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
@@ -445,6 +451,9 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 			releaseIdle()
 		}
 	}
+	if installed, ok := s.installControlLocked(ctx, opts, applied.LatestVersion); ok {
+		applied = installed
+	}
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "applied"
 		status.LastAppliedVersion = applied.LatestVersion
@@ -453,7 +462,69 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 		clearPending(status)
 	})
 	s.recordEnrolledApplied(applied, true)
-	return applied, s.persistCurrentState()
+	persistErr := s.persistCurrentState()
+	s.restartBehindControlLocked(ctx)
+	return applied, persistErr
+}
+
+func (s *Scheduler) installControlLocked(ctx context.Context, opts ApplyOptions, version string) (Status, bool) {
+	s.mu.RLock()
+	pending := s.controlRestart
+	s.mu.RUnlock()
+	if pending != nil && pending.installed.LatestVersion == version {
+		return pending.installed, true
+	}
+	opts.AssumeYes = true
+	opts.Stdout = io.Discard
+	opts.Stderr = io.Discard
+	installed, err := s.cfg.Updater.Apply(ctx, opts)
+	if err != nil || installed.Action != ActionUpdated || installed.LatestVersion != version || !installed.VerifiedRelease || installed.BinarySHA256 == "" || installed.ReplacementPending {
+		attrs := []any{"version", version, "action", installed.Action, "installed_version", installed.LatestVersion}
+		if err != nil {
+			attrs = append(attrs, "error", err)
+		}
+		s.cfg.Logger.Warn("execution release prepared; controller binary not replaced", attrs...)
+		return Status{}, false
+	}
+	s.mu.Lock()
+	s.controlRestart = &controlRestart{installed: installed, since: s.cfg.Now()}
+	s.mu.Unlock()
+	s.cfg.Logger.Info("controller binary replaced; restart deferred until idle", "version", version)
+	return installed, true
+}
+
+func (s *Scheduler) restartBehindControlLocked(ctx context.Context) {
+	s.mu.RLock()
+	pending := s.controlRestart
+	s.mu.RUnlock()
+	if pending == nil || s.cfg.RequestRestart == nil {
+		return
+	}
+	var releaseIdle func()
+	idle := false
+	if s.cfg.ReserveIdle != nil {
+		releaseIdle, idle = s.cfg.ReserveIdle(ctx)
+	}
+	if !idle {
+		if releaseIdle != nil {
+			releaseIdle()
+			releaseIdle = nil
+		}
+		if s.cfg.Now().Before(pending.since.Add(s.cfg.MaxDeferral)) {
+			return
+		}
+	}
+	if !s.cfg.RequestRestart(pending.installed.Binary) {
+		if releaseIdle != nil {
+			releaseIdle()
+		}
+		return
+	}
+	s.mu.Lock()
+	s.controlRestart = nil
+	s.mu.Unlock()
+	s.updateStatus(func(status *AutoStatus) { status.State = "restart_requested" })
+	s.cfg.Logger.Info("controller behind applied release; graceful restart requested", "version", pending.installed.LatestVersion, "idle", idle)
 }
 
 func (s *Scheduler) applyExceptionalWorkerUpdateLocked(ctx context.Context, opts ApplyOptions, err error) (Status, error) {
@@ -579,10 +650,16 @@ func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func
 			status.State = "applied_restart_deferred"
 			status.LastError = "Update restart request was declined"
 		})
+		s.mu.Lock()
+		s.controlRestart = &controlRestart{installed: applied, since: s.cfg.Now()}
+		s.mu.Unlock()
 		s.cfg.Logger.Warn("Detent update applied; restart deferred because shutdown is already in progress or restart is unavailable", "version", applied.LatestVersion)
 		applied.FailureReason = "Update restart request was declined"
 		return applied, persistErr
 	}
+	s.mu.Lock()
+	s.controlRestart = nil
+	s.mu.Unlock()
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "restart_requested"
 	})
