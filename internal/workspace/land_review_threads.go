@@ -25,6 +25,16 @@ const (
 
 var landingReviewThreadSurfaced = regexp.MustCompile(`<!-- detent:surfaced ([0-9a-f]{40}) -->`)
 
+// ReviewConversationsResolvedText records that a Rework resolved the review
+// conversations a landing refusal named, releasing that refusal's landing hold.
+const ReviewConversationsResolvedText = "Rework resolved the review conversations that refused this version's landing."
+
+// ReviewConversationsResolved reports whether a lane transition records that
+// resolution.
+func ReviewConversationsResolved(detail string) bool {
+	return strings.Contains(detail, ReviewConversationsResolvedText)
+}
+
 // ReviewConversationsRefusal reports whether a landing refusal names
 // unresolved review conversations for Rework to address.
 func ReviewConversationsRefusal(reason string) bool {

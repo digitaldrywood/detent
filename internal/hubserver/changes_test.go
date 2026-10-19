@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type changeFixture struct {
@@ -2190,16 +2191,18 @@ func TestReviewConversationRefusalHoldsLandingUntilReleased(t *testing.T) {
 	t.Parallel()
 	refusal := "GitHub requires these review conversations to be resolved before the merge. Address each finding in Rework, then resolve its conversation with evidence of the fix or dismissal.\n- review-bot on internal/app.go:12: handle the empty case"
 	for _, test := range []struct {
-		name    string
-		detail  string
-		reentry string
-		publish bool
-		want    bool
+		name     string
+		detail   string
+		reentry  string
+		publish  bool
+		resolved bool
+		want     bool
 	}{
 		{name: "runner re-entry after a review-conversation refusal is held", detail: refusal, reentry: "runner"},
 		{name: "a human move into Merging releases the refusal", detail: refusal, reentry: "human", want: true},
 		{name: "a newly published version releases the refusal", detail: refusal, reentry: "runner", publish: true, want: true},
 		{name: "other landing refusals keep their retry path", detail: "GitHub refused the pull request operation: Pull Request is still a draft", reentry: "runner", want: true},
+		{name: "a Rework that resolved the conversations releases the refusal", detail: refusal, reentry: "runner", resolved: true, want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -2239,10 +2242,14 @@ func TestReviewConversationRefusalHoldsLandingUntilReleased(t *testing.T) {
 			if test.reentry == "human" {
 				move("Merging", "")
 			} else {
+				reentryDetail := "The run succeeded and opened Change Request change_1. The runner lands it next."
+				if test.resolved {
+					reentryDetail += " " + workspace.ReviewConversationsResolvedText
+				}
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Merging') WHERE native_id=?", f.project.ID, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO collaboration_events (id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) SELECT 'runner-reentry',organization_id,project_id,work_item_id,sequence+1,'workflow.transitioned',1,'{"kind":"runner","principal_id":"runner_landing"}',json_object('from_state','In Progress','to_state','Merging','reason','worker_progress'),recorded_at FROM collaboration_events WHERE work_item_id=? ORDER BY sequence DESC LIMIT 1`, issue.WorkItemID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO collaboration_events (id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) SELECT 'runner-reentry',organization_id,project_id,work_item_id,sequence+1,'workflow.transitioned',1,'{"kind":"runner","principal_id":"runner_landing"}',json_object('from_state','In Progress','to_state','Merging','reason','worker_progress','reason_detail',?),recorded_at FROM collaboration_events WHERE work_item_id=? ORDER BY sequence DESC LIMIT 1`, reentryDetail, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 			}

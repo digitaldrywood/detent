@@ -482,8 +482,9 @@ func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nati
 
 // nativeReviewConversationRefusalStands reports whether GitHub's latest
 // refusal to land this item named unresolved review conversations and nothing
-// has released it since: neither a newly published version nor a human move
-// into Merging. Landing the same version again would be refused again.
+// has released it since: no newly published version, no human move into
+// Merging and no Rework that recorded resolving those conversations. Landing
+// the same version again would be refused again.
 func nativeReviewConversationRefusalStands(ctx context.Context, query *sql.Tx, scope nativeScope, item string) (bool, error) {
 	rows, err := query.QueryContext(ctx, `SELECT type, coalesce(json_extract(actor_json,'$.kind'),''), coalesce(json_extract(data_json,'$.from_state'),''), coalesce(json_extract(data_json,'$.to_state'),''), coalesce(json_extract(data_json,'$.reason_detail'),'')
 FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type IN ('workflow.transitioned','change.version_published') ORDER BY sequence DESC LIMIT 64`, scope.organization, scope.project, item)
@@ -500,7 +501,7 @@ FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item
 			return false, nil
 		}
 		if strings.EqualFold(strings.TrimSpace(to), landingLane) {
-			if actor == "human" {
+			if actor == "human" || workspace.ReviewConversationsResolved(detail) {
 				return false, nil
 			}
 			continue

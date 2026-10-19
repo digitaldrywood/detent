@@ -285,9 +285,14 @@ func (o *Orchestrator) completeNativeChangeRun(
 		o.releaseClaim(state, issueID)
 		return true
 	}
-	unaddressedRefusal := ""
-	if changed && change.Reviewed && !needsReview && !unfinished && event.Result.ReviewThreadsResolved == 0 {
-		unaddressedRefusal = o.nativeReviewConversationRefusal(event, change)
+	unaddressedRefusal, resolvedRefusal := "", false
+	if changed && change.Reviewed && !needsReview && !unfinished {
+		if refusal := o.nativeReviewConversationRefusal(event, change); refusal != "" {
+			unaddressedRefusal, resolvedRefusal = refusal, event.Result.ReviewThreadsResolved > 0
+			if resolvedRefusal {
+				unaddressedRefusal = ""
+			}
+		}
 	}
 	if unaddressedRefusal != "" {
 		target, ok = connector.LandingRefusalLane(states, issue.State, cfg.reviewTargetState(), false)
@@ -330,6 +335,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 			change.ChangeID, shortCommit(change.HeadSHA), displayStateName(issue.State), displayStateName(target), unaddressedRefusal)
 	} else {
 		comment = nativeCompletionComment(change, issue.State, target)
+		if resolvedRefusal {
+			comment += " " + workspace.ReviewConversationsResolvedText
+		}
 	}
 	if needsReview {
 		comment = nativeCompletionReason(comment, report, event.Result.FinalMessage, nil)
