@@ -450,6 +450,28 @@ for the application request contract.
 
 Native `file_issue` also accepts an optional `report_context` object with `url` (at most 2048 bytes) and `app_build`, `browser`, `os`, `viewport` and `captured_at` (at most 256 bytes each), all single-line strings. Unknown keys, oversized or non-string values are refused with `invalid_request`, and the refusal never repeats the submitted values. `work_item` returns the stored context; list and board reads omit it. A Reporter bug whose `report_context` carries `browser` and `app_build` satisfies the template's Environment section. Upload network HAR exports (`.har`) with `detent attach` or the REST attachment upload API, because `upload_attachment` accepts only about 44 KB; use `upload_attachment` for small console log exports (`.log`). Read either back with `read_attachment`.
 
+For acceptance inspection, publish complete diagnostic evidence as UTF-8
+`text/plain`, including JSON diagnostics, within 32768 bytes per attachment.
+Set `content_type: text/plain` for `upload_attachment`; workers using
+`attach_evidence` use a `.log` or `.txt` filename. Larger upload capacity does
+not expand the inspection bound. Split larger documents at UTF-8 boundaries
+into ordered parts of at most 32768 bytes each, preserving every original byte.
+Record part order, byte ranges, original document or attachment identity and
+SHA-256 in the publication, and retain the original references. Preserve source
+identities, hashes, commands, output and provenance limitations; summaries cannot
+replace required observations, and missing historical evidence is never invented.
+
+Acceptance validators obtain their own review-bound inspection receipts by
+reading each complete supported attachment from offset 0. Ordinary implementation
+and Rework reads do not issue these receipts; workers must not manufacture them
+or edit source solely to obtain them. In acceptance validation, unsupported MIME
+such as `application/json` returns `inspection_error` with the supported
+publication path. Oversized text returns an authenticated, bounded preview with
+`truncated: true` and `inspection_error`; full-digest verification does not prove
+complete inspection. Neither response supplies `read_receipt`. Validators inspect
+all required ordered parts and independently assess source applicability before
+claiming complete evidence. Ordinary reads remain bounded base64 transport.
+
 Reporter filings enter Triage and require nonempty sections. Bugs use `Steps to reproduce`, `Expected`, `Actual`, `Where` (screen or URL), and `Environment` (browser/OS and app build; use available context). Change requests use `Current behavior`, `Desired behavior`, and `Why`. Missing or empty sections return `invalid_request` with the missing headings and create no issue. `work_config` returns `reporter_templates`, a map from each type to its effective required headings. It also returns `issue_contract.required_sections`, the effective engineering headings required for executable work. Both come from the same approved project policy, including workflow overrides; callers must not substitute their own default headings. When the approved policy delegates bounded scheduled repair, `issue_contract.scheduled_repair` also exposes its `policy_id`, configured `repository`, `workflow`, authorized `branches`, declared `priority` (0 Urgent, 1 High), generated contract `body`, and `evidence_schema`. Native reports must carry the scheduled evidence stamp and pass independent repository CI verification before that contract can be confirmed. The repair template must match the effective required sections exactly. Configured workflows may authorize an exact branch or explicitly authorize the `release/v*` family; other wildcards are refused. The legacy CI delegation retains `develop` and the `release/v*` prefix family. Origin stamps may retain the corresponding GitHub run URL without an attempt suffix; an explicit attempt must match the independently verified evidence. These reads do not confirm issue criteria or grant permission to dispatch. The New issue form pre-fills these headings when a type is selected.
 
 Projects can override either template in WORKFLOW, using the same list syntax as the engineering issue contract:
