@@ -177,6 +177,22 @@ func (s *Service) internalAPIError(c echo.Context, code string, message string, 
 	return c.JSON(http.StatusInternalServerError, apiErrorResponse{Code: code, Message: message})
 }
 
+func (s *Service) refusedAPIError(c echo.Context, status int, code, reason string, response any) error {
+	if status >= http.StatusBadRequest && status < http.StatusInternalServerError && status != http.StatusUnauthorized && status != http.StatusNotFound {
+		scope := nativeRequestScope(c)
+		organization, project := string(scope.organization), string(scope.project)
+		if organization == "" {
+			organization = c.Param("organization")
+		}
+		if project == "" {
+			project = c.Param("project")
+		}
+		s.config.Logger.Warn("API request refused", "error", reason, "code", code, "reason", reason,
+			"method", c.Request().Method, "route", c.Path(), "organization_id", organization, "project_id", project)
+	}
+	return c.JSON(status, response)
+}
+
 func apiWorkItemID(c echo.Context) (tracker.WorkItemID, error) {
 	value, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
 	if err != nil || value <= 0 {
