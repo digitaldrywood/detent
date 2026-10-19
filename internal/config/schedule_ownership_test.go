@@ -12,7 +12,7 @@ func TestParseWorkflowScheduleOwnership(t *testing.T) {
 	t.Parallel()
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: github
+  kind: hub_native
   api_key: token
   github_status_source: label
   repository: example/issues
@@ -199,7 +199,7 @@ func TestMappedNativeScheduleOwnershipDoesNotInheritGitHubRepository(t *testing.
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: github\n  repository: example/project\nschedule_ownership:\n  enabled: true\n  key: example/production\n" + tt.repository + "---\nPrompt\n"))
+			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  repository: example/project\nschedule_ownership:\n  enabled: true\n  key: example/production\n" + tt.repository + "---\nPrompt\n"))
 			if err != nil {
 				t.Fatal(err)
 			}

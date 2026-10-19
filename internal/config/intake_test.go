@@ -33,7 +33,7 @@ Work the issue.
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
-	if err := workflow.Config.Validate(); err != nil {
+	if err := workflow.Config.Validate(); err == nil || !strings.Contains(err.Error(), "tracker.kind must be hub_native") {
 		t.Fatalf("Validate() error = %v", err)
 	}
 	if len(workflow.Config.Intake.Sources) != 1 {

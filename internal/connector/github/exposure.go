@@ -41,7 +41,7 @@ func (c *Connector) ScanIssueExposure(ctx context.Context, repository string, id
 					MatchedIdentifier: identifier,
 				}
 			}
-			if len(response.Items) == 0 || page*intakeIssueSearchPageSize >= response.TotalCount {
+			if len(response.Items) == 0 || page*100 >= response.TotalCount {
 				break
 			}
 		}
@@ -84,7 +84,7 @@ func normalizedExposureIdentifiers(identifiers []string) []string {
 func restIssueExposureSearchPath(repository string, identifier string, page int) string {
 	values := url.Values{}
 	values.Set("q", "repo:"+repository+" is:issue in:body,comments \""+identifier+"\"")
-	values.Set("per_page", strconv.Itoa(intakeIssueSearchPageSize))
+	values.Set("per_page", strconv.Itoa(100))
 	values.Set("page", strconv.Itoa(page))
 	return "/search/issues?" + values.Encode()
 }

@@ -17,6 +17,7 @@ import (
 )
 
 var closingIssuePattern = regexp.MustCompile(`(?i)(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+(?:([[:alnum:]_.-]+/[[:alnum:]_.-]+))?#([0-9]+)`)
+var nativeReleaseIssuePattern = regexp.MustCompile(`(?m)^Detent-Work-Item:[ \t]*(wi_[[:alnum:]_]+)[ \t]*\r?$`)
 
 const releaseBranch = "main"
 
@@ -202,6 +203,12 @@ func (c *Connector) releaseCommitIssueRefs(ctx context.Context, base string, sha
 	refs := make([]string, 0, len(pulls))
 	repository := pullRequestRepoName(c.repository)
 	for _, pull := range pulls {
+		for _, match := range nativeReleaseIssuePattern.FindAllStringSubmatch(pull.Body, -1) {
+			if _, ok := seen[match[1]]; !ok {
+				seen[match[1]] = struct{}{}
+				refs = append(refs, match[1])
+			}
+		}
 		for _, match := range closingIssuePattern.FindAllStringSubmatch(pull.Body, -1) {
 			if len(match) != 3 {
 				continue
