@@ -812,7 +812,7 @@ func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	if err := json.NewDecoder(body).Decode(&event); err != nil {
 		return response, err
 	}
-	if event.Type != "run.finished" || event.Data.Outcome == "cancelled" {
+	if event.Type != "run.finished" {
 		return response, nil
 	}
 	if event.Data.Outcome == "cancelled" {
