@@ -143,7 +143,7 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 		if view.UnsettledAttempts != 0 {
 			return operatortool.Result{}, policyMismatch("Active leases retain their approved policy; finish or cancel them before approving a different revision")
 		}
-		approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
+		approval, err := requireProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
 		if err != nil || approval.Policy.ID != args.PolicyID || approval.Policy.SourceRevision != args.SourceRevision {
 			return operatortool.Result{}, policyMismatch("Approved policy changed; inspect the current policy and supply its expected_policy_id")
 		}
@@ -378,7 +378,7 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 		return refuse()
 	}
 	if request.Operation == "apply_local_project_policy" {
-		approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
+		approval, err := requireProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
 		if err != nil || approval.Policy.ID != request.PolicyID {
 			return refuse()
 		}

@@ -53,14 +53,12 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 	if err != nil {
 		return result, err
 	}
-	approval, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
-	if err == nil {
+	approval, found, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+	if err != nil {
+		return result, err
+	}
+	if found {
 		result.Policy = &approval
-	} else {
-		var missing *nativeError
-		if !errors.As(err, &missing) || missing.Code != "policy_mismatch" {
-			return result, err
-		}
 	}
 	result.ObservedPolicies, err = readObservedPolicies(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project), approval.Policy, s.config.now())
 	if err != nil {

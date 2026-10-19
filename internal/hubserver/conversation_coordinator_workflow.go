@@ -159,11 +159,9 @@ func (t *coordinatorToolset) workflowTool(ctx context.Context, record conversati
 			Data policy.Approval `json:"data"`
 		}
 		if err != nil {
-			var missing *operatortool.ConflictError
-			if request.Input.ExpectedID != "" || !errors.As(err, &missing) || missing.Code != "policy_mismatch" {
-				return nil, err
-			}
-		} else if err := json.Unmarshal(result.Content, &current); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(result.Content, &current); err != nil {
 			return nil, err
 		}
 		if current.Data.Policy.ID != request.Input.ExpectedID {

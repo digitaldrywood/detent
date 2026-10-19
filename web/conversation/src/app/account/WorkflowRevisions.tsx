@@ -76,7 +76,7 @@ export function WorkflowRevisions({
       repository: entry.repository_source?.repository || repository,
       commit: entry.repository_source?.commit || entry.policy.workflow?.revision || "",
       actor: "",
-      before: policy?.policy,
+      before: policy?.policy ?? undefined,
       after: entry.policy,
       unavailable: false,
       pending: true,

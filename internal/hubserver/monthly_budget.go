@@ -108,7 +108,7 @@ func monthlyClaimExposure(ctx context.Context, q nativeQueryer, scope nativeScop
 	if workspace {
 		return exposure, nil
 	}
-	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	approval, err := requireProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
 		return exposure, err
 	}
