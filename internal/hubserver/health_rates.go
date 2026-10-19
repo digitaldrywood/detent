@@ -64,6 +64,7 @@ type healthRateProject struct {
 	Runners          []healthRunner
 	Candidates       int
 	ResidencePartial bool
+	Archived         map[string]bool
 }
 
 type healthQueueEvidence struct {
@@ -400,7 +401,7 @@ func healthStallFindings(now time.Time, p healthRateProject, b healthRateBaselin
 	}
 	out := []healthFinding{}
 	for _, t := range p.Timelines {
-		if t.issue.partial || !slices.Contains([]string{"In Progress", "Rework", "Merging"}, t.state) {
+		if t.issue.partial || p.Archived[t.issue.id] || !slices.Contains([]string{"In Progress", "Rework", "Merging"}, t.state) {
 			continue
 		}
 		last := t.entered
@@ -533,7 +534,7 @@ func healthThroughputFinding(now time.Time, p healthRateProject, b healthRateBas
 	if b.ThroughputSamples < healthBaselineSamples {
 		waiting := 0
 		for _, t := range p.Timelines {
-			if !t.issue.partial && slices.Contains([]string{"Todo", "In Progress", "Rework", "Merging"}, t.state) && !t.entered.IsZero() && !t.entered.After(now.Add(-healthLongWindow)) {
+			if !t.issue.partial && !p.Archived[t.issue.id] && slices.Contains([]string{"Todo", "In Progress", "Rework", "Merging"}, t.state) && !t.entered.IsZero() && !t.entered.After(now.Add(-healthLongWindow)) {
 				waiting++
 			}
 		}

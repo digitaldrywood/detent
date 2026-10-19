@@ -328,6 +328,14 @@ func TestHealthRateBoundaries(t *testing.T) {
 			*p = healthRateProject{ID: "project"}
 			p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: "gated"}, state: "Todo", entered: now.Add(-healthLongWindow + time.Nanosecond)})
 		}, false},
+		{"stall floor archived item", "stalled_active_item", func(p *healthRateProject) {
+			*p = healthRateProject{ID: "project", Archived: map[string]bool{"active": true}}
+			stalled(p, 24*time.Hour)
+		}, false},
+		{"throughput floor archived work", "throughput_collapse", func(p *healthRateProject) {
+			*p = healthRateProject{ID: "project", Archived: map[string]bool{"gated": true}}
+			p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: "gated"}, state: "Todo", entered: now.Add(-24 * time.Hour)})
+		}, false},
 		{"throughput floor parked work", "throughput_collapse", func(p *healthRateProject) {
 			*p = healthRateProject{ID: "project"}
 			p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: "held"}, state: "Blocked", entered: now.Add(-24 * time.Hour)})

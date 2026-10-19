@@ -831,4 +831,10 @@ func TestHealthSnapshotCloudTransitionDetailAndDependencyHolds(t *testing.T) {
 	if gatedCount, heldCount, blockers, since, err = readHealthDependencyHolds(t.Context(), f.service.database.db, scope); err != nil || gatedCount != 0 || heldCount != 0 || len(blockers) != 0 || !since.IsZero() {
 		t.Fatalf("ignored dependencies gated=%d held=%d blockers=%v since=%v err=%v", gatedCount, heldCount, blockers, since, err)
 	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE native_id IN (?,?)", active.WorkItemID, external.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	if archived, err := readHealthArchivedItems(t.Context(), f.service.database.db, scope); err != nil || !reflect.DeepEqual(archived, map[string]bool{string(active.WorkItemID): true}) {
+		t.Fatalf("archived=%v err=%v", archived, err)
+	}
 }
