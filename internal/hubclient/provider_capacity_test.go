@@ -51,12 +51,15 @@ func TestProviderSchedulerEndToEnd(t *testing.T) {
 
 func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"empty", "candidate", "paused during admission", "empty paused during admission", "stale draining receipt", "operator drain"} {
+	for _, mode := range []string{"empty", "candidate", "paused during admission", "empty paused during admission", "stale draining receipt", "operator drain", "drain pending preview", "drain pending readiness", "drain pending second page", "drain during claim"} {
 		t.Run(mode, func(t *testing.T) {
 			issueID := "wi_test"
 			if mode == "empty" || mode == "empty paused during admission" {
 				issueID = ""
 			}
+			discoveryCtx, cancelDiscovery := context.WithCancel(t.Context())
+			defer cancelDiscovery()
+			previews := 0
 			claims := 0
 			observations := 0
 			requirement := providercapacity.Requirement{Role: runner.RoleCode, Backend: "codex", Model: "sol"}
@@ -66,6 +69,16 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 				case "/api/v2/capabilities":
 					_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeDispatchWaitCapability}})
 				case "/api/v2/organizations/org_test/projects/prj_test/claims/preview":
+					previews++
+					if mode == "drain pending preview" || mode == "drain pending second page" && previews == 2 {
+						cancelDiscovery()
+						<-r.Context().Done()
+						return
+					}
+					if mode == "drain pending second page" {
+						_, _ = w.Write([]byte(`{"items":[{"work_item_id":"wi_test","state":"Todo","title":"test"}],"next":1}`))
+						return
+					}
 					if issueID == "" {
 						_, _ = w.Write([]byte(`{"items":[]}`))
 					} else {
@@ -73,6 +86,16 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 					}
 				case "/api/v2/organizations/org_test/projects/prj_test/claims":
 					claims++
+					if mode == "drain pending second page" || mode == "drain during claim" {
+						if mode == "drain during claim" {
+							cancelDiscovery()
+						}
+						if r.Context().Err() != nil {
+							t.Error("discovery cancellation reached the claim context")
+						}
+						_ = json.NewEncoder(w).Encode(tracker.NativeLease{ID: "lease-test", WorkItemID: "wi_test", FencingToken: 7})
+						return
+					}
 					w.WriteHeader(http.StatusConflict)
 					if issueID == "" {
 						_, _ = w.Write([]byte(`{"code":"no_claimable_work","message":"No work"}`))
@@ -105,13 +128,26 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 					scheduler.SetClaimAdmission(func() (func(), bool) { return func() {}, true })
 				}
 			}
-			request := orchestrator.SchedulingRequest{ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
+			if mode == "drain pending second page" || mode == "drain during claim" {
+				scheduler.providerReports = nil
+			}
+			request := orchestrator.SchedulingRequest{BeginDiscovery: func(context.Context) (context.Context, context.CancelFunc) { return discoveryCtx, func() {} }, CandidateReady: func(ctx context.Context, _ connector.Issue) bool {
+				if mode == "drain pending readiness" {
+					cancelDiscovery()
+					<-ctx.Done()
+					return false
+				}
+				return true
+			}, ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
 				if issueID == "" {
 					t.Error("empty preview should not resolve a model")
 				}
 				return requirement, nil
 			}, CandidateClaimObserved: func(_ context.Context, candidate connector.Issue, allowed bool, predicate string, required *providercapacity.Requirement) {
 				observations++
+				if mode == "drain pending second page" || mode == "drain during claim" {
+					return
+				}
 				if candidate.ID != issueID || allowed || predicate != "hub_claim.provider_capacity" || required == nil || *required != requirement {
 					t.Fatalf("claim observation: issue=%s allowed=%t predicate=%s requirement=%+v", candidate.ID, allowed, predicate, required)
 				}
@@ -141,7 +177,24 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 				}
 				return
 			}
-			_, err = scheduler.claimPreviewCandidates(t.Context(), request, &NativeConnector{client: native}, tracker.NativeClaim{}, 1)
+			limit := 1
+			if mode == "drain pending second page" {
+				limit = 2
+			}
+			leases, err := scheduler.claimPreviewCandidates(t.Context(), request, &NativeConnector{client: native}, tracker.NativeClaim{}, limit)
+			if strings.HasPrefix(mode, "drain pending") || mode == "drain during claim" {
+				wantClaims := 0
+				if mode == "drain pending second page" || mode == "drain during claim" {
+					wantClaims = 1
+				}
+				if err != nil || claims != wantClaims || len(leases) != wantClaims {
+					t.Fatalf("draining preview: claims=%d leases=%+v error=%v", claims, leases, err)
+				}
+				if wantClaims == 1 && (leases[0].ID != "lease-test" || leases[0].WorkItemID != "wi_test" || leases[0].FencingToken != 7) {
+					t.Fatalf("drain lost claim identity: %+v", leases)
+				}
+				return
+			}
 			if mode == "operator drain" {
 				if claims != 0 || observations != 0 || err != nil {
 					t.Fatalf("paused candidate claimed: claims=%d observations=%d err=%v", claims, observations, err)

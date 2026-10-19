@@ -357,7 +357,7 @@ func TestWorkerUsageCancellationDuringDependencyHandoff(t *testing.T) {
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("handoff cancellation=%v", err)
 	}
-	o.dispatchClosed.Store(true)
+	o.BeginDrain()
 	state := newState(normalizeConfig(Config{}))
 	if got := o.dispatchIssueWithOutcome(t.Context(), &state, dispatchTestIssue("child", "Todo"), 0, time.Now(), ""); got.reason != dispatchIssueFailureDraining {
 		t.Fatalf("quiesced dispatch=%+v", got)

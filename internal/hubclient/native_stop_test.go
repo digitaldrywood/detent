@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -40,13 +42,115 @@ func (w *stoppedFinalizationWorkspace) RunReviewCommand(ctx context.Context, inf
 }
 
 func TestNativeStopDuringHostFinalization(t *testing.T) {
+	for _, mode := range []string{"stop", "drain during validation", "drain during publication", "drain during validation with pending status", "drain during publication with pending status", "drain before dispatch with released status", "drain before dispatch with pending status"} {
+		t.Run(mode, func(t *testing.T) { testNativeStopDuringHostFinalization(t, mode) })
+	}
+}
+
+func testNativeDrainBeforeDispatch(t *testing.T, h *nativeChangeHub, issueID string, releaseRead bool) {
+	t.Helper()
+	started := make(chan struct{}, 1)
+	release := make(chan struct{}, 1)
+	defer close(release)
+	var intercepted atomic.Bool
+	var claims atomic.Int32
+	transport := h.native.client.httpClient.Transport
+	h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/claims") {
+			claims.Add(1)
+		}
+		if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/work-items") {
+			h.scheduler.mu.Lock()
+			_, acquired := h.scheduler.nativeClaims[issueID]
+			h.scheduler.mu.Unlock()
+			if acquired && intercepted.CompareAndSwap(false, true) {
+				started <- struct{}{}
+				select {
+				case <-request.Context().Done():
+					return nil, request.Context().Err()
+				case <-release:
+				}
+			}
+		}
+		return transport.RoundTrip(request)
+	})
+	h.native.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "status-refresh", Claimable: true, Reset: true})
+	worker := nativeDependencyRecoveryRunner{started: make(chan runner.RunRequest, 1)}
+	orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked", "In Review"}, TerminalStates: []string{"Done"}}, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: worker, Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- orch.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Error(err)
+		}
+	})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("status discovery did not block after native claim acquisition")
+	}
+	h.scheduler.mu.Lock()
+	original := h.scheduler.nativeClaims[issueID].lease
+	h.scheduler.mu.Unlock()
+	if claims.Load() != 1 || original.ID == "" || original.FencingToken == 0 {
+		t.Fatalf("status discovery has no unique fenced claim: claims=%d lease=%+v", claims.Load(), original)
+	}
+	orch.BeginDrain()
+	if releaseRead {
+		release <- struct{}{}
+	}
+	drainCtx, stopDrain := context.WithTimeout(t.Context(), time.Second)
+	defer stopDrain()
+	if err := orch.Drain(drainCtx); err != nil {
+		t.Fatal(err)
+	}
+	state, err := orch.State(drainCtx)
+	if err != nil || !state.Draining || len(state.Running) != 0 {
+		t.Fatalf("idle drain state=%+v error=%v", state, err)
+	}
+	select {
+	case request := <-worker.started:
+		t.Fatalf("drain dispatched acquired candidate: %+v", request)
+	default:
+	}
+	h.scheduler.mu.Lock()
+	retained := len(h.scheduler.nativeClaims) + len(h.scheduler.claims)
+	h.scheduler.mu.Unlock()
+	if retained != 0 {
+		t.Fatalf("drain retained an undispatched native claim: lease=%+v retained=%d", original, retained)
+	}
+	candidates := h.candidates(t)
+	if len(candidates) != 1 || candidates[0].ID != issueID {
+		t.Fatalf("settled candidate cannot be reclaimed: %+v", candidates)
+	}
+	h.scheduler.mu.Lock()
+	successor := h.scheduler.nativeClaims[issueID].lease
+	h.scheduler.mu.Unlock()
+	if successor.ID == original.ID || successor.FencingToken <= original.FencingToken {
+		t.Fatalf("reclaimed candidate lost fencing: original=%+v successor=%+v", original, successor)
+	}
+	if _, err := h.native.Renew(t.Context(), original, 90); err == nil {
+		t.Fatal("drained lease renewed across its successor's fence")
+	}
+	if err := h.scheduler.ReleaseClaim(t.Context(), issueID, "dispatch_deferred"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
 	isolateNativeChangeGit(t)
 	h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
-		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Blocked"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Merging", "Blocked"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}},
 		{Name: "In Review", Transitions: []string{"In Progress"}},
 		{Name: "Blocked", Transitions: []string{"Todo"}},
 		{Name: "Done", Terminal: true},
@@ -61,11 +165,56 @@ func TestNativeStopDuringHostFinalization(t *testing.T) {
 		t.Fatal(err)
 	}
 	confirmIssueContract(t, h.admin, issue.ID)
+	if strings.HasPrefix(mode, "drain before dispatch") {
+		testNativeDrainBeforeDispatch(t, h, issue.ID, strings.HasSuffix(mode, "released status"))
+		return
+	}
 	change, err := h.admin.CreateChange(t.Context(), current.WorkItemID, tracker.CreateChange{Mutation: nativeMutationKey(), Title: issue.Title})
 	if err != nil {
 		t.Fatal(err)
 	}
 	published := h.publish(t, current.WorkItemID, change.ID, nativeChangeFixtureHead("b"))
+	statusDiscovery := strings.HasSuffix(mode, "with pending status")
+	var blockDiscovery atomic.Bool
+	discoveryStarted := make(chan struct{}, 1)
+	discoveryRelease := make(chan struct{})
+	publicationStarted := make(chan struct{}, 1)
+	publicationRelease := make(chan struct{})
+	defer close(discoveryRelease)
+	defer func() {
+		select {
+		case <-publicationRelease:
+		default:
+			close(publicationRelease)
+		}
+	}()
+	transport := h.native.client.httpClient.Transport
+	h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		discoveryRequest := !statusDiscovery && strings.HasSuffix(request.URL.Path, "/claims/preview") || statusDiscovery && request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/work-items")
+		if discoveryRequest && blockDiscovery.CompareAndSwap(true, false) {
+			select {
+			case discoveryStarted <- struct{}{}:
+			default:
+			}
+			select {
+			case <-request.Context().Done():
+				return nil, request.Context().Err()
+			case <-discoveryRelease:
+			}
+		}
+		if strings.HasPrefix(mode, "drain during publication") && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/versions") {
+			select {
+			case publicationStarted <- struct{}{}:
+			default:
+			}
+			select {
+			case <-request.Context().Done():
+				return nil, request.Context().Err()
+			case <-publicationRelease:
+			}
+		}
+		return transport.RoundTrip(request)
+	})
 	source := nativeChangeSourceRepo(t)
 	remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
 	nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
@@ -98,6 +247,16 @@ func TestNativeStopDuringHostFinalization(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- orch.Run(ctx) }()
 	t.Cleanup(func() {
+		select {
+		case <-backend.resume:
+		default:
+			close(backend.resume)
+		}
+		select {
+		case <-publicationRelease:
+		default:
+			close(publicationRelease)
+		}
 		cancel()
 		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
 			t.Error(err)
@@ -118,6 +277,110 @@ func TestNativeStopDuringHostFinalization(t *testing.T) {
 	state, err := orch.State(t.Context())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if mode != "stop" {
+		h.scheduler.mu.Lock()
+		originalClaim := h.scheduler.nativeClaims[issue.ID]
+		h.scheduler.mu.Unlock()
+		if originalClaim.lease.ID == "" || originalClaim.lease.FencingToken == 0 {
+			t.Fatal("finalization has no fenced native claim")
+		}
+		if strings.HasPrefix(mode, "drain during publication") {
+			close(backend.resume)
+			select {
+			case <-publicationStarted:
+			case <-time.After(10 * time.Second):
+				t.Fatal("publication did not start")
+			}
+		}
+		h.native.slotFreed()
+		if statusDiscovery {
+			h.native.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "status-refresh", Claimable: true, Reset: true})
+		}
+		blockDiscovery.Store(true)
+		if _, err := orch.RequestRefresh(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-discoveryStarted:
+		case <-time.After(time.Second):
+			t.Fatal("native discovery did not block alongside finalization")
+		}
+		drainCtx, stopDrain := context.WithTimeout(t.Context(), time.Second)
+		defer stopDrain()
+		if err := orch.Drain(drainCtx); err != nil {
+			t.Fatal(err)
+		}
+		draining, err := orch.State(drainCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := state.Running[issue.ID]
+		after, active := draining.Running[issue.ID]
+		if !draining.Draining || !active || after.WorkAttemptID != before.WorkAttemptID || after.DetentSessionID != before.DetentSessionID {
+			t.Fatalf("drain lost finalization identity: before=%+v after=%+v", before, after)
+		}
+		h.scheduler.mu.Lock()
+		retainedClaim := h.scheduler.nativeClaims[issue.ID]
+		h.scheduler.mu.Unlock()
+		if retainedClaim.lease.ID != originalClaim.lease.ID || retainedClaim.lease.FencingToken != originalClaim.lease.FencingToken {
+			t.Fatal("discovery drain changed finalization claim custody")
+		}
+		detail, err := h.admin.Change(t.Context(), current.WorkItemID, change.ID)
+		if err != nil || detail.Change.CurrentVersion != published.ID || len(detail.Versions) != 1 {
+			t.Fatalf("drain changed publication before finalization settled: %+v, %v", detail, err)
+		}
+		if strings.HasPrefix(mode, "drain during validation") {
+			close(backend.resume)
+		} else {
+			close(publicationRelease)
+		}
+		deadline, stop := context.WithTimeout(t.Context(), 10*time.Second)
+		defer stop()
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			settled, err := orch.State(deadline)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(settled.Running) == 0 {
+				break
+			}
+			select {
+			case <-ticker.C:
+			case <-deadline.Done():
+				t.Fatal("drained finalization did not finish")
+			}
+		}
+		detail, err = h.admin.Change(t.Context(), current.WorkItemID, change.ID)
+		if err != nil || len(detail.Versions) != 2 || detail.Change.CurrentVersion == published.ID {
+			t.Fatalf("drained source was not published exactly once: %+v, %v", detail, err)
+		}
+		recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil || len(recovery.Attempts) != 1 {
+			t.Fatalf("drained recovery: %+v, %v", recovery, err)
+		}
+		attempt := recovery.Attempts[0]
+		version := detail.Versions[1]
+		if attempt.Outcome != "succeeded" || attempt.LeaseID != originalClaim.lease.ID || attempt.Checkpoint == nil || attempt.Checkpoint.HeadSHA == "" {
+			t.Fatalf("drain lost successful checkpoint or lease: %+v", attempt)
+		}
+		if version.ID != detail.Change.CurrentVersion {
+			version = detail.Versions[0]
+		}
+		if version.HeadSHA != attempt.Checkpoint.HeadSHA || version.Source == nil || version.Source.HeadSHA != version.HeadSHA || version.Source.BundleSHA256 == "" {
+			t.Fatalf("published source differs from finalized checkpoint: version=%+v checkpoint=%+v", version, attempt.Checkpoint)
+		}
+		if runtime := attempt.Runtime; runtime == nil || runtime.Validation == nil || runtime.Validation.ExitCode != 0 || runtime.Validation.HeadSHA != attempt.Checkpoint.HeadSHA {
+			t.Fatalf("drain lost exact-source validation: %+v", runtime)
+		}
+		stale := originalClaim.lease
+		stale.FencingToken++
+		if _, err := h.native.Renew(t.Context(), stale, 90); err == nil {
+			t.Fatal("stale fence renewed the settled claim")
+		}
+		return
 	}
 	running := state.Running[issue.ID]
 	request := orchestrator.StopRunRequest{ProjectID: "local", IssueID: issue.ID, Attempt: running.Attempt, WorkAttemptID: running.WorkAttemptID, DetentSessionID: running.DetentSessionID, ProviderSessionID: running.SessionID, Destination: "Blocked"}
