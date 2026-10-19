@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
 
@@ -122,22 +123,23 @@ type Finding struct {
 }
 
 type CommandResult struct {
-	TimingStage     string            `json:"timing_stage,omitempty"`
-	ReceiptID       string            `json:"receipt_id,omitempty"`
-	Stage           string            `json:"stage,omitempty"`
-	Execution       string            `json:"execution,omitempty"`
-	ReusedReceiptID string            `json:"reused_receipt_id,omitempty"`
-	StartedAt       time.Time         `json:"started_at,omitzero"`
-	FinishedAt      time.Time         `json:"finished_at,omitzero"`
-	Pipeline        *PipelineEvidence `json:"pipeline,omitzero"`
-	Evidence        *CommandEvidence  `json:"evidence,omitempty"`
-	DurationNS      int64             `json:"duration_ns,omitempty"`
-	Command         string            `json:"command"`
-	HeadSHA         string            `json:"head_sha"`
-	TreeSHA         string            `json:"tree_sha"`
-	ExitCode        int               `json:"exit_code"`
-	Output          string            `json:"output"`
-	OutputTruncated bool              `json:"output_truncated,omitempty"`
+	EvidenceArtifact *artifact.Reference `json:"evidence_artifact,omitempty"`
+	TimingStage      string              `json:"timing_stage,omitempty"`
+	ReceiptID        string              `json:"receipt_id,omitempty"`
+	Stage            string              `json:"stage,omitempty"`
+	Execution        string              `json:"execution,omitempty"`
+	ReusedReceiptID  string              `json:"reused_receipt_id,omitempty"`
+	StartedAt        time.Time           `json:"started_at,omitzero"`
+	FinishedAt       time.Time           `json:"finished_at,omitzero"`
+	Pipeline         *PipelineEvidence   `json:"pipeline,omitzero"`
+	Evidence         *CommandEvidence    `json:"evidence,omitempty"`
+	DurationNS       int64               `json:"duration_ns,omitempty"`
+	Command          string              `json:"command"`
+	HeadSHA          string              `json:"head_sha"`
+	TreeSHA          string              `json:"tree_sha"`
+	ExitCode         int                 `json:"exit_code"`
+	Output           string              `json:"output"`
+	OutputTruncated  bool                `json:"output_truncated,omitempty"`
 }
 
 const (
