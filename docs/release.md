@@ -4,9 +4,10 @@
 
 Enrolled runners learn the target version on every heartbeat after its signed
 release assets are published. Compatible releases prepare verified execution
-artifacts while active workers continue and new work remains eligible. Controller
-replacement waits for an idle reservation, then installs the release and requests
-a coordinated restart. Critical security releases, incompatible execution
+artifacts while active workers continue and new work remains eligible. The existing
+controller update owner handles atomic installation and coordinated restart.
+Same-version signature repair waits for an idle reservation before controller
+replacement. Critical security releases, incompatible execution
 protocols and intentional operator maintenance use the existing drain owner.
 A newer release replaces an update that
 was refused or interrupted. Older runners keep taking work during the update: the

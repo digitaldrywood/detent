@@ -468,6 +468,10 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 }
 
 func (s *Scheduler) installControlLocked(ctx context.Context, opts ApplyOptions, version string) (Status, bool) {
+	comparison, err := CompareVersions(version, s.cfg.RunningBuild.Version)
+	if err != nil || comparison <= 0 {
+		return Status{}, false
+	}
 	s.mu.RLock()
 	pending := s.controlRestart
 	s.mu.RUnlock()
