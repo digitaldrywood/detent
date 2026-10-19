@@ -55,7 +55,7 @@ func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization track
 			return snapshot, errHealthReadLimit
 		}
 		p.Candidates = len(candidates)
-		if p.DependencyGated, p.HeldBlockers, err = readHealthDependencyHolds(ctx, q, scope); err != nil {
+		if p.DependencyGated, p.HeldBlockers, p.HoldSince, err = readHealthDependencyHolds(ctx, q, scope); err != nil {
 			return snapshot, err
 		}
 		p.CandidateIDs = make(map[string]bool, len(candidates))
@@ -382,7 +382,7 @@ func readHealthCurrentWaits(ctx context.Context, q nativeQueryer, organization t
 			return errHealthReadLimit
 		}
 		detail = strings.ReplaceAll(strings.TrimSpace(detail), " ", "_")
-		if reason == lifetimeLimitTransitionReason || detail == lifetimeLimitTransitionReason {
+		if reason == lifetimeLimitTransitionReason || actor == "runner" && detail == lifetimeLimitTransitionReason {
 			snapshot.Limits = append(snapshot.Limits, healthLimit{Item: item, Project: project, Event: event, Active: true})
 		}
 		if actor == "runner" && detail == permissionWaitTransitionReason {
@@ -478,37 +478,47 @@ func readHealthRunnerLeasedProjects(ctx context.Context, q nativeQueryer, machin
 	return projects, errors.Join(rows.Err(), rows.Close())
 }
 
-func readHealthDependencyHolds(ctx context.Context, q nativeQueryer, scope nativeScope) (int, []string, error) {
-	rows, err := q.QueryContext(ctx, `SELECT d.native_id,b.native_id,bws.dispatchable
- FROM issues d JOIN workflow_states dws ON dws.id=d.workflow_state_id
+func readHealthDependencyHolds(ctx context.Context, q nativeQueryer, scope nativeScope) (int, []string, time.Time, error) {
+	var since time.Time
+	rows, err := q.QueryContext(ctx, `SELECT d.native_id,b.native_id,bws.dispatchable,
+ max(dep.created_at,coalesce((SELECT e.recorded_at FROM collaboration_events e WHERE e.organization_id=d.organization_id AND e.work_item_id=d.native_id AND e.type='workflow.transitioned' ORDER BY e.sequence DESC LIMIT 1),d.created_at))
+ FROM issues d JOIN projects p ON p.id=d.project_id AND p.organization_id=d.organization_id AND p.require_dependencies=1
+ JOIN workflow_states dws ON dws.id=d.workflow_state_id
  JOIN issue_dependencies dep ON dep.dependent_issue_id=d.id
  JOIN issues b ON b.id=dep.blocker_issue_id JOIN workflow_states bws ON bws.id=b.workflow_state_id
  WHERE d.organization_id=? AND d.project_id=? AND d.archived=0 AND dws.dispatchable=1 AND dws.terminal=0 AND bws.terminal=0
  ORDER BY d.native_id,b.native_id LIMIT ?`, scope.organization, scope.project, healthReadLimit+1)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, since, err
 	}
 	defer rows.Close()
 	gated, held := map[string]bool{}, map[string]bool{}
 	count := 0
 	for rows.Next() {
-		var dependent, blocker string
+		var dependent, blocker, at string
 		var dispatchable bool
-		if err := rows.Scan(&dependent, &blocker, &dispatchable); err != nil {
-			return 0, nil, err
+		if err := rows.Scan(&dependent, &blocker, &dispatchable, &at); err != nil {
+			return 0, nil, since, err
 		}
 		count++
 		if count > healthReadLimit {
-			return 0, nil, errHealthReadLimit
+			return 0, nil, since, errHealthReadLimit
 		}
 		gated[dependent] = true
-		if !dispatchable {
-			held[blocker] = true
+		if dispatchable {
+			continue
+		}
+		held[blocker] = true
+		gatedAt, err := parseTimeValue(at)
+		if err != nil {
+			return 0, nil, since, err
+		}
+		if since.IsZero() || gatedAt.Before(since) {
+			since = gatedAt
 		}
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return 0, nil, err
+		return 0, nil, since, err
 	}
-	blockers := slices.Sorted(maps.Keys(held))
-	return len(gated), blockers, nil
+	return len(gated), slices.Sorted(maps.Keys(held)), since, nil
 }

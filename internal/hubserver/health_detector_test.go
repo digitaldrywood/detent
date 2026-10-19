@@ -344,12 +344,16 @@ func TestHealthReadFailurePreservesFindingsAndTick(t *testing.T) {
 
 func appendTestHealthEvent(t *testing.T, f nativeFixture, item tracker.NativeIssue, kind string, data tracker.CollaborationData, at time.Time) {
 	t.Helper()
+	appendTestHealthEventAs(t, f, tracker.Actor{Kind: "runner", PrincipalID: "runner-health"}, item, kind, data, at)
+}
+
+func appendTestHealthEventAs(t *testing.T, f nativeFixture, actor tracker.Actor, item tracker.NativeIssue, kind string, data tracker.CollaborationData, at time.Time) {
+	t.Helper()
 	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	actor := tracker.Actor{Kind: "runner", PrincipalID: "runner-health"}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, sourceActor: &actor}
 	if err := appendNativeHistory(t.Context(), tx, scope, string(item.WorkItemID), kind, data, at); err != nil {
 		t.Fatal(err)
@@ -754,11 +758,12 @@ func TestHealthSnapshotCloudTransitionDetailAndDependencyHolds(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "cloud-detail-health")
 	addHealthBacklog(t, f)
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
-	waiting, recent, limited := f.create(t, "waiting"), f.create(t, "recent"), f.create(t, "limited")
+	waiting, recent, limited, explained := f.create(t, "waiting"), f.create(t, "recent"), f.create(t, "limited"), f.create(t, "explained")
 	gated, chained, held, active := f.create(t, "gated"), f.create(t, "chained"), f.create(t, "held"), f.create(t, "active")
 	appendTestHealthEvent(t, f, waiting, "workflow.transitioned", tracker.CollaborationData{Reason: "worker_progress", ReasonDetail: "permission wait"}, now.Add(-time.Hour))
 	appendTestHealthEvent(t, f, recent, "workflow.transitioned", tracker.CollaborationData{Reason: "worker_progress", ReasonDetail: "permission wait"}, now.Add(-time.Minute))
 	appendTestHealthEvent(t, f, limited, "workflow.transitioned", tracker.CollaborationData{Reason: "worker_progress", ReasonDetail: "lifetime limit"}, now.Add(-time.Hour))
+	appendTestHealthEventAs(t, f, tracker.Actor{Kind: "human", PrincipalID: "operator"}, explained, "workflow.transitioned", tracker.CollaborationData{Reason: "user_requested", ReasonDetail: "lifetime limit"}, now.Add(-time.Hour))
 	snapshot := healthSnapshot{}
 	if err := readHealthCurrentWaits(t.Context(), f.service.database.db, f.project.OrganizationID, now, &snapshot); err != nil {
 		t.Fatal(err)
@@ -778,11 +783,18 @@ func TestHealthSnapshotCloudTransitionDetailAndDependencyHolds(t *testing.T) {
 		request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprint("edge-", i)}, ExpectedRevision: edge.dependent.Revision, RelatedWorkItemID: edge.blocker.WorkItemID, Operation: "add"}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(edge.dependent.WorkItemID)+"/dependencies", f.token, request), http.StatusOK)
 	}
-	gatedCount, blockers, err := readHealthDependencyHolds(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	gatedCount, blockers, since, err := readHealthDependencyHolds(t.Context(), f.service.database.db, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gatedCount != 2 || !reflect.DeepEqual(blockers, []string{string(held.WorkItemID)}) {
-		t.Fatalf("gated=%d blockers=%v", gatedCount, blockers)
+	if gatedCount != 2 || !reflect.DeepEqual(blockers, []string{string(held.WorkItemID)}) || since.IsZero() {
+		t.Fatalf("gated=%d blockers=%v since=%v", gatedCount, blockers, since)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_dependencies=0 WHERE id=?", f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if gatedCount, blockers, since, err = readHealthDependencyHolds(t.Context(), f.service.database.db, scope); err != nil || gatedCount != 0 || len(blockers) != 0 || !since.IsZero() {
+		t.Fatalf("ignored dependencies gated=%d blockers=%v since=%v err=%v", gatedCount, blockers, since, err)
 	}
 }
