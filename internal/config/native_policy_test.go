@@ -37,6 +37,9 @@ func TestApplyApprovedNativePolicy(t *testing.T) {
 		{"missing runner requirements", func(_ *policy.Descriptor, b map[string]json.RawMessage) {
 			delete(b, "Runners")
 		}},
+		{"missing priority map", func(_ *policy.Descriptor, b map[string]json.RawMessage) {
+			delete(b, "PriorityMap")
+		}},
 		{"older behavior shape", func(d *policy.Descriptor, b map[string]json.RawMessage) {
 			d.SourceRevision = strings.Repeat("b", 64)
 			b["RetiredBehavior"] = json.RawMessage(`{"Enabled":true}`)
@@ -83,9 +86,50 @@ func TestApplyApprovedNativePolicy(t *testing.T) {
 			if applied.Prompt != "Approved instructions." || applied.Config.Plan.Enabled || applied.Config.Runners.Profile != "approved" || !reflect.DeepEqual(applied.Config.Runners.Profiles["approved"], policy.Requirements{RequiredTags: []string{"linux"}}) {
 				t.Fatalf("approved behavior lost: prompt=%q plan=%+v runners=%+v", applied.Prompt, applied.Config.Plan, applied.Config.Runners)
 			}
+			if !reflect.DeepEqual(applied.Config.Tracker.PriorityMap, cfg.Tracker.PriorityMap) {
+				t.Fatalf("default priority map lost: %+v", applied.Config.Tracker.PriorityMap)
+			}
 			resolved, err := ResolvePolicy(applied)
 			if err != nil || resolved.Gates != descriptor.Gates || !reflect.DeepEqual(resolved.Requirements, descriptor.Requirements) {
 				t.Fatalf("approved metadata lost: gates=%+v requirements=%+v error=%v; want gates=%+v requirements=%+v", resolved.Gates, resolved.Requirements, err, descriptor.Gates, descriptor.Requirements)
+			}
+		})
+	}
+}
+
+func TestNativePolicyPriorityMaps(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		priorityMap StringOrMap
+	}{
+		{"partial map", MapValue(map[string]any{"P0": 1, "P1": 2})},
+		{"overridden rank", MapValue(map[string]any{"High": 1})},
+		{"unranked priority", MapValue(map[string]any{"P0": 1, "Unranked": nil})},
+		{"string", StringOrMap{IsString: true, String: "priority"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Default()
+			cfg.Tracker.Kind = TrackerHubNative
+			cfg.Tracker.PriorityMap = test.priorityMap
+			descriptor, err := ResolvePolicy(Workflow{Config: cfg})
+			if err != nil {
+				t.Fatal(err)
+			}
+			applied, err := ApplyNativePolicy(Workflow{Config: Default()}, descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(applied.Config.Tracker.PriorityMap, test.priorityMap) {
+				t.Errorf("applied priority map = %+v; want %+v", applied.Config.Tracker.PriorityMap, test.priorityMap)
+			}
+			resolved, err := ResolveSharedPolicy(descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := resolved.Match(descriptor); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

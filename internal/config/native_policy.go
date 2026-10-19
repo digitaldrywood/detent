@@ -239,8 +239,23 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 }
 
 func applyNativePolicyConfiguration(workflow Workflow, descriptor policy.Descriptor) (Workflow, error) {
-	behavior := nativeProjectBehavior(Default())
-	decoder := json.NewDecoder(bytes.NewReader(descriptor.Configuration.Behavior))
+	defaults, err := json.Marshal(nativeProjectBehavior(Default()))
+	if err != nil {
+		return Workflow{}, fmt.Errorf("encode shared project defaults: %w", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(defaults, &fields); err != nil {
+		return Workflow{}, fmt.Errorf("decode shared project defaults: %w", err)
+	}
+	if err := json.Unmarshal(descriptor.Configuration.Behavior, &fields); err != nil {
+		return Workflow{}, fmt.Errorf("decode shared project behavior: %w", err)
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return Workflow{}, fmt.Errorf("encode shared project behavior: %w", err)
+	}
+	var behavior nativeBehavior
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	if err := decoder.Decode(&behavior); err != nil {
 		return Workflow{}, fmt.Errorf("decode shared project behavior: %w", err)
