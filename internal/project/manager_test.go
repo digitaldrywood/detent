@@ -466,15 +466,13 @@ func TestManagerStartIsolatesProjectDefinitionFailures(t *testing.T) {
 			invalidProject: func(t *testing.T, cfg globalconfig.Project, deps project.Dependencies) (*project.Project, error) {
 				t.Helper()
 				workflowCfg := workflowConfig(workflowconfig.TrackerHubNative)
-				workflowCfg.Routines = []workflowconfig.Routine{{
-					Name: "audit", Schedule: "0 3 * * 1", Prompt: "Inspect.",
-				}}
+				workflowCfg.Agent.MaxTurns = -1
 				return projectfixture.New(project.Config{
 					Project:  cfg,
 					Workflow: workflowconfig.Workflow{Config: workflowCfg},
 				}, deps)
 			},
-			wantError: "schedule_ownership.enabled must be true",
+			wantError: "agent.max_turns",
 		},
 	}
 
@@ -495,7 +493,7 @@ func TestManagerStartIsolatesProjectDefinitionFailures(t *testing.T) {
 					if cfg.ID == "invalid" {
 						return tt.invalidProject(t, cfg, project.Dependencies{
 							Events: events, Runner: blockingRunner{},
-							RoutineStore: &projectRoutineStore{}, ScheduleStore: coordinationStore,
+							ScheduleStore: coordinationStore,
 						})
 					}
 					return newManagerTestProject(t, cfg, events)
