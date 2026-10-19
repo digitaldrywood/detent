@@ -357,9 +357,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			return AgentToolResult{Content: "unsupported tool"}, nil
 		}
 	}
-	reviewThreadsResolved := func() int { return 0 }
-	if tools, handler, resolved := r.nativeReviewThreadTools(req); len(tools) != 0 {
-		reviewThreadsResolved = resolved
+	if tools, handler := r.nativeReviewThreadTools(req); len(tools) != 0 {
 		previous := req.AgentToolHandler
 		req.AgentTools = append(append([]AgentTool(nil), req.AgentTools...), tools...)
 		req.AgentToolHandler = func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
@@ -387,7 +385,9 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	} else {
 		result, runErr = r.run(guarded, req)
 	}
-	result.ReviewThreadsResolved = reviewThreadsResolved()
+	if runErr == nil && result.FinalState == FinalStateCompleted {
+		result.ReviewConversationsCleared = r.nativeReviewConversationsCleared(ctx, req)
+	}
 	if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok && result.TurnStarted {
 		diagnostics.ProviderCompleted(r.now())
 	}

@@ -288,7 +288,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	unaddressedRefusal, resolvedRefusal := "", false
 	if changed && change.Reviewed && !needsReview && !unfinished {
 		if refusal := o.nativeReviewConversationRefusal(event, change); refusal != "" {
-			unaddressedRefusal, resolvedRefusal = refusal, event.Result.ReviewThreadsResolved > 0
+			unaddressedRefusal, resolvedRefusal = refusal, event.Result.ReviewConversationsCleared
 			if resolvedRefusal {
 				unaddressedRefusal = ""
 			}

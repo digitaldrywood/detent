@@ -779,6 +779,51 @@ func (e *landingRunExecution) Guard(ctx context.Context) (context.Context, func(
 	return ctx, func() { e.stopped = true }, nil
 }
 
+func TestNativeReviewConversationsCleared(t *testing.T) {
+	const head = "1111111111111111111111111111111111111111"
+	refusal := workspace.ReviewConversationsRefusalText + " Address each finding in Rework, then resolve its conversation with evidence of the fix or dismissal.\n- example-bot on app.go:3: P2 finding"
+	refused := func(version string) tracker.NativeRecovery {
+		return tracker.NativeRecovery{
+			Change:   &tracker.NativeChangeReference{ChangeID: "change_current", VersionID: "version_current", HeadSHA: head},
+			Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{ChangeID: "change_current", VersionID: version, HeadSHA: head, RefusalKind: workspace.LandRefusalProtected}}}}},
+			History:  []tracker.CollaborationEvent{{Type: "workflow.transitioned", Data: tracker.CollaborationData{FromState: "Merging", ToState: "Rework", ReasonDetail: refusal}}},
+		}
+	}
+	for _, test := range []struct {
+		name       string
+		recovery   tracker.NativeRecovery
+		unresolved bool
+		want       bool
+		wantReads  int
+	}{
+		{name: "conversations resolved on GitHub clear the refusal", recovery: refused("version_current"), want: true, wantReads: 1},
+		{name: "an unresolved conversation keeps the refusal", recovery: refused("version_current"), unresolved: true, wantReads: 1},
+		{name: "a refusal of another version is not consulted", recovery: refused("version_old")},
+		{name: "work without a review refusal reads nothing", recovery: tracker.NativeRecovery{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			execution := &landingRunExecution{testExecution: testExecution{recovery: test.recovery}, landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_current", VersionID: "version_current", Repository: "https://github.com/example/repo", HeadSHA: head, BaseRef: "develop", GitHubPullRequest: true, External: &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/example/repo/pull/7"}}}}
+			r := &Runner{workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Worker: config.Worker{GitHubToken: "worker-test-token"}}}}
+			reads := 0
+			originalClient := http.DefaultClient
+			http.DefaultClient = &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {
+				reads++
+				nodes := ""
+				if test.unresolved {
+					nodes = `{"id":"T1","isResolved":false,"comments":{"nodes":[{"body":"P2 finding","author":{"__typename":"Bot","login":"example-bot"}}]}}`
+				}
+				body := fmt.Sprintf(`{"data":{"repository":{"pullRequest":{"number":7,"headRefOid":%q,"baseRefName":"develop","headRepository":{"nameWithOwner":"example/repo"},"repository":{"nameWithOwner":"example/repo"},"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[%s]}}}}}`, head, nodes)
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}
+			t.Cleanup(func() { http.DefaultClient = originalClient })
+			got := r.nativeReviewConversationsCleared(t.Context(), RunRequest{Execution: execution, Mode: RunModeImplement, Issue: connector.Issue{ID: "wi_current", State: "Rework"}})
+			if got != test.want || reads != test.wantReads {
+				t.Fatalf("cleared = %t after %d GitHub reads, want %t after %d", got, reads, test.want, test.wantReads)
+			}
+		})
+	}
+}
+
 func TestNativeReviewThreadTools(t *testing.T) {
 	const head = "1111111111111111111111111111111111111111"
 	for _, test := range []struct {
@@ -840,7 +885,7 @@ func TestNativeReviewThreadTools(t *testing.T) {
 			if mode == "" {
 				mode = RunModeImplement
 			}
-			tools, handle, resolvedThreads := r.nativeReviewThreadTools(RunRequest{Execution: execution, Mode: mode, Issue: connector.Issue{ID: "wi_current", State: "Rework"}})
+			tools, handle := r.nativeReviewThreadTools(RunRequest{Execution: execution, Mode: mode, Issue: connector.Issue{ID: "wi_current", State: "Rework"}})
 			if (len(tools) != 0) != test.wantTools {
 				t.Fatalf("tools=%v, available=%t", tools, test.wantTools)
 			}
@@ -912,13 +957,6 @@ func TestNativeReviewThreadTools(t *testing.T) {
 			}
 			if result.Success != test.wantSuccess || mutations != test.wantMutations || !strings.Contains(content, test.wantContent) {
 				t.Fatalf("result=%+v err=%v mutations=%d; want success=%t mutations=%d content=%q", result, err, mutations, test.wantSuccess, test.wantMutations, test.wantContent)
-			}
-			wantResolved := 0
-			if resolved {
-				wantResolved = 1
-			}
-			if got := resolvedThreads(); got != wantResolved {
-				t.Fatalf("resolved review threads = %d, want %d", got, wantResolved)
 			}
 		})
 	}

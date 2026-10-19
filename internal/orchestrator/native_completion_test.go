@@ -218,7 +218,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		preProvider   bool
 		wantAuthority bool
 		recovery      *tracker.NativeRecovery
-		resolved      int
+		cleared       bool
 	}{
 		{name: "PLAN ordinary provider failure retains ordinary completion", mode: runpkg.RunModePlan, sourceState: "Todo", states: planRecovery, runErr: errors.New("provider failed"), turnStarted: true, wantOrdinary: true, wantContinue: true},
 		{name: "PLAN post-provider recovery error retains ordinary completion", mode: runpkg.RunModePlan, sourceState: "Todo", states: planRecovery, runErr: runpkg.ErrNativeRecoveryRequired, turnStarted: true, wantOrdinary: true, wantContinue: true},
@@ -412,7 +412,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "completed reviewed Rework reaches landing", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "unchanged Rework after a review-conversation refusal goes to human review", change: accepted, states: rework, sourceState: "Rework", reviewed: &yes, recovery: refusedVersion("version_1"), wantState: "In Review", wantComment: "resolved none of the review conversations"},
 		{name: "unchanged Rework after a review-conversation refusal holds without human review", change: accepted, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, reviewed: &yes, recovery: refusedVersion("version_1"), wantState: "Blocked", wantComment: "internal/app.go:12"},
-		{name: "Rework that resolved the refused conversations lands", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, recovery: refusedVersion("version_1"), resolved: 1, wantState: "Merging", wantComment: "runner lands it next. " + workspace.ReviewConversationsResolvedText},
+		{name: "Rework whose refused conversations are cleared lands", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, recovery: refusedVersion("version_1"), cleared: true, wantState: "Merging", wantComment: "runner lands it next. " + workspace.ReviewConversationsResolvedText},
 		{name: "Rework that published a new version after the refusal lands", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, recovery: refusedVersion("version_0"), wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "refused completed Rework landing retains completion ownership", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", updateErr: errors.New("stale fencing token"), wantState: "Merging", wantDeferred: true, roundTrip: true},
 		{name: "publication outage retries current publisher", reviewed: &yes, republish: true, change: &runpkg.NativeChange{Error: "hub unavailable"}, states: landing, wantDeferred: true},
@@ -637,7 +637,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			event := runpkg.Completion{
 				IssueID: issue.ID, CompletedAt: now, Err: test.runErr,
 				Request: runpkg.RunRequest{Mode: mode, WorkAttemptID: 42, Generation: 7},
-				Result:  runpkg.RunResult{FinalState: finalState, FinalMessage: test.finalMessage, NativeChange: test.change, Tokens: tokens, DiffStats: diffStats, TurnStarted: test.turnStarted || test.wantInstance || test.wantSettled || test.diffStats.Fingerprint != "", ReviewThreadsResolved: test.resolved},
+				Result:  runpkg.RunResult{FinalState: finalState, FinalMessage: test.finalMessage, NativeChange: test.change, Tokens: tokens, DiffStats: diffStats, TurnStarted: test.turnStarted || test.wantInstance || test.wantSettled || test.diffStats.Fingerprint != "", ReviewConversationsCleared: test.cleared},
 			}
 			if test.recovery != nil {
 				event.Request.Execution = &nativeLandingJourneyExecution{recovery: *test.recovery}
