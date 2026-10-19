@@ -174,6 +174,9 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 		{name: "planning-enabled changed configuration reaches session recovery and preserves current version", failure: "recovery", planRecoveryRole: runner.RoleCode, resumeCase: "policy"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.failure != "workspace" {
+				t.Parallel()
+			}
 			testNativePlannerHandoff(t, test.abandon, test.failure, test.planRecoveryRole, test.resumeCase)
 		})
 	}
