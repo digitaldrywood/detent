@@ -26,6 +26,7 @@ func PrepareSSHSource(ctx context.Context, cfg config.Config, workdir, repositor
 	if err := configureWorkerGitHubEnvironment(&turn); err != nil {
 		return err
 	}
+	captureHostGitHubCLIEnvironment()
 	for name, value := range turn.Environment.Variables {
 		if err := os.Setenv(name, value); err != nil {
 			return err
