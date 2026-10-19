@@ -27,7 +27,9 @@ Then inspect this repository (language, build and test commands, CI workflows, e
 - detent.yaml: tracker.kind hub_native, the lanes I want, and a gate whose command is this repository's real check command.
 - WORKFLOW.md: the agent instructions for working in this repository. Do not include GitHub pull request or comment steps; native projects land through Detent.
 
-After I approve the files, walk me through: creating the project in the Hub, enrolling the runner (Settings > Providers & runners > Enroll a runner, then the detent hub runner register command it shows), letting the runner clone the linked repository under its workspace_root, signing in to Codex or Claude Code on the runner, and approving the repository policy the runner reports. Finish by filing one small issue in Todo and watching it land.
+After I approve the files, walk me through: creating the project in the Hub, enrolling the runner (Settings > Providers & runners > Enroll a runner, then the detent hub runner register command it shows), letting the runner clone the linked repository under its workspace_root, signing in to Codex or Claude Code on the runner, and letting the runner report the repository configuration.
+
+Repository configuration reports do not require approval before dispatch. Trusted workflow definitions from the bound repository's default-branch history apply automatically. Explicit approval is required for administrative configuration adoption, such as applying an external local definition or changing local-binding permission. For that approval without the web app, follow docs/api-mcp-setup.md using get_project_policy, get_onboarding and approve_project_policy; Cloud owners and admins can use Settings > Integrations. Finish by filing one small issue in Todo and watching it land.
 
 If I give you a Detent API key (Settings > API & MCP), connect to the Hub's MCP endpoint and use its tools to read state. Ask before every change to the Hub, the repository, or the runner.
 ```
