@@ -2,11 +2,40 @@ package hubclient
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// A runner request refused for its per-minute budget was never admitted to a
+// handler, so the client waits out the window and sends it again instead of
+// failing the caller. The retry count bounds a Hub that keeps refusing.
+const maxRequestBudgetRetries = 3
+
+const requestBudgetCode = "runner_request_budget"
+
+func requestBudgetRefused(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr != nil && apiErr.Status == http.StatusTooManyRequests && apiErr.Code == requestBudgetCode
+}
+
+// retryRequestBudget reports whether a budget refusal should be sent again and
+// makes sure the next send waits: the Hub's budget window is the current
+// minute, so a refusal without a usable Retry-After waits for the next one.
+func (c *Client) retryRequestBudget(err error) bool {
+	if !requestBudgetRefused(err) {
+		return false
+	}
+	now := time.Now()
+	c.requestBudgetMu.Lock()
+	if !c.requestBudgetUntil.After(now) {
+		c.requestBudgetUntil = now.Truncate(time.Minute).Add(time.Minute)
+	}
+	c.requestBudgetMu.Unlock()
+	return true
+}
 
 func (c *Client) waitRequestBudget(ctx context.Context, method, path string) error {
 	path, _, _ = strings.Cut(path, "?")

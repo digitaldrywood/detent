@@ -269,6 +269,16 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	_, streaming := input.(io.Reader)
+	for attempt := 0; ; attempt++ {
+		err := c.requestOnce(ctx, timeout, method, path, headers, input, output)
+		if streaming || attempt >= maxRequestBudgetRetries || !c.retryRequestBudget(err) {
+			return err
+		}
+	}
+}
+
+func (c *Client) requestOnce(ctx context.Context, timeout time.Duration, method string, path string, headers http.Header, input any, output any) error {
 	if err := c.waitRequestBudget(ctx, method, path); err != nil {
 		return err
 	}
@@ -435,6 +445,15 @@ func (c *Client) download(ctx context.Context, target string, limit int64) ([]by
 	if !strings.HasPrefix(target, "/") || strings.HasPrefix(target, "//") {
 		return nil, "", fmt.Errorf("hub download target %q is not a Hub path", target)
 	}
+	for attempt := 0; ; attempt++ {
+		payload, contentType, err := c.downloadOnce(ctx, target, limit)
+		if attempt >= maxRequestBudgetRetries || !c.retryRequestBudget(err) {
+			return payload, contentType, err
+		}
+	}
+}
+
+func (c *Client) downloadOnce(ctx context.Context, target string, limit int64) ([]byte, string, error) {
 	if err := c.waitRequestBudget(ctx, http.MethodGet, target); err != nil {
 		return nil, "", err
 	}
