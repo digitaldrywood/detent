@@ -181,12 +181,21 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 					return nil, intakeInvalid("Label filters must be nonempty and at most 100 bytes")
 				}
 			}
+			if request.ProjectV2 != nil {
+				project, err := readNativeProject(ctx, tx, scope)
+				if err != nil {
+					return nil, err
+				}
+				if err := validateBatchProjectSource(project.States, request.ProjectV2); err != nil {
+					return nil, err
+				}
+			}
 			if s.config.ImportBackend == nil {
 				if err := requireBatchRunner(ctx, tx, scope, request.RunnerID, repository, now); err != nil {
 					return nil, err
 				}
 			}
-			batch = &tracker.GitHubBatch{ID: newNativeID("intake"), Revision: revision, RunnerID: request.RunnerID, Discovery: tracker.GitHubDiscovery{Snapshots: true, Repository: strings.ToLower(repository), Labels: request.Labels, IncludeClosed: request.IncludeClosed}, Status: "discovering", Page: tracker.GitHubDiscoveryPage{Issues: []tracker.GitHubIssuePreview{}}, Items: []tracker.GitHubBatchItem{}, HubOwned: s.config.ImportBackend != nil}
+			batch = &tracker.GitHubBatch{ID: newNativeID("intake"), Revision: revision, RunnerID: request.RunnerID, Discovery: tracker.GitHubDiscovery{ProjectV2: request.ProjectV2, Snapshots: true, Repository: strings.ToLower(repository), Labels: request.Labels, IncludeClosed: request.IncludeClosed}, Status: "discovering", Page: tracker.GitHubDiscoveryPage{Issues: []tracker.GitHubIssuePreview{}}, Items: []tracker.GitHubBatchItem{}, HubOwned: s.config.ImportBackend != nil}
 			actor := scope.actor()
 			batch.RequestedBy = &actor
 			batch.Limit, err = s.githubBatchLimit(ctx, tx, now)
@@ -233,7 +242,7 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 					return nil, intakeInvalid("Selected issue is absent from the preview")
 				}
 				preview := batch.Page.Issues[index]
-				destination, labels, err := batchIssueDestination(project.States, batch, preview.Labels)
+				destination, labels, err := batchIssueDestination(project.States, batch, preview)
 				if err != nil {
 					return nil, err
 				}
@@ -251,7 +260,7 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 				if err != nil {
 					return nil, err
 				}
-				batch.Items = append(batch.Items, tracker.GitHubBatchItem{Number: number, WorkItemID: issue.WorkItemID, Status: "pending"})
+				batch.Items = append(batch.Items, tracker.GitHubBatchItem{Number: number, WorkItemID: issue.WorkItemID, Status: "pending", UnmappedProjectStatus: batchUnmappedProjectStatus(batch, preview)})
 			}
 			batch.Status = "importing"
 			if !batchHasPending(batch) {
@@ -298,7 +307,7 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 					return nil, err
 				}
 			}
-			if request.AllowDispatch || request.Destination != "" || request.LabelLanes != nil {
+			if request.AllowDispatch || request.Destination != "" || request.LabelLanes != nil || request.ProjectV2 != nil {
 				effective := request
 				if effective.Destination == "" {
 					effective.Destination = batch.Destination
@@ -658,16 +667,59 @@ func configureBatchDestination(ctx context.Context, tx *sql.Tx, scope nativeScop
 			return intakeInvalid("Select a destination and explicitly confirm any dispatchable lane")
 		}
 	}
+	source := batch.Discovery.ProjectV2
+	if request.ProjectV2 != nil {
+		if source == nil || source.ID != request.ProjectV2.ID {
+			return intakeInvalid("Select the ProjectV2 source before discovery; routing edits must retain that project ID")
+		}
+		source = request.ProjectV2
+	}
+	if err := validateBatchProjectSource(project.States, source); err != nil {
+		return err
+	}
+	if source != nil {
+		for _, name := range source.StatusLanes {
+			lane, _ := findBatchLane(project.States, name)
+			if lane.Dispatchable && !request.AllowDispatch {
+				return intakeInvalid("Select a destination and explicitly confirm any dispatchable lane")
+			}
+		}
+	}
+	batch.Discovery.ProjectV2 = source
 	batch.Destination, batch.AllowDispatch, batch.LabelLanes, batch.IgnoreLanes = destination, request.AllowDispatch, request.LabelLanes, request.IgnoreLanes
 	return nil
 }
 
-func batchIssueDestination(states []tracker.NativeState, batch *tracker.GitHubBatch, sourceLabels []string) (string, []string, error) {
+func validateBatchProjectSource(states []tracker.NativeState, source *tracker.GitHubProjectV2Source) error {
+	if source == nil {
+		return nil
+	}
+	if strings.TrimSpace(source.ID) == "" || strings.TrimSpace(source.ID) != source.ID || len(source.ID) > 256 || len(source.StatusLanes) == 0 || len(source.StatusLanes) > 100 {
+		return intakeInvalid("Provide a ProjectV2 node ID and 1–100 Status lane mappings")
+	}
+	for status, name := range source.StatusLanes {
+		if _, exists := findBatchLane(states, name); !exists || strings.TrimSpace(status) == "" || len(status) > 100 {
+			return intakeInvalid("Map nonempty ProjectV2 Status values to configured native lanes")
+		}
+	}
+	return nil
+}
+
+func batchUnmappedProjectStatus(batch *tracker.GitHubBatch, preview tracker.GitHubIssuePreview) *string {
+	if source := batch.Discovery.ProjectV2; source != nil {
+		if _, mapped := source.StatusLanes[preview.ProjectStatus]; !mapped {
+			return &preview.ProjectStatus
+		}
+	}
+	return nil
+}
+
+func batchIssueDestination(states []tracker.NativeState, batch *tracker.GitHubBatch, preview tracker.GitHubIssuePreview) (string, []string, error) {
 	destination := batch.Destination
 	labels := []string{}
 	mapped := ""
 	conflict := false
-	for _, label := range sourceLabels {
+	for _, label := range preview.Labels {
 		name, explicit := batch.LabelLanes[label]
 		if batch.IgnoreLanes {
 			name = ""
@@ -696,6 +748,12 @@ func batchIssueDestination(states []tracker.NativeState, batch *tracker.GitHubBa
 	}
 	if mapped != "" && !conflict {
 		destination = mapped
+	}
+	if source := batch.Discovery.ProjectV2; source != nil {
+		destination = batch.Destination
+		if name, mapped := source.StatusLanes[preview.ProjectStatus]; mapped {
+			destination = name
+		}
 	}
 	lane, exists := findBatchLane(states, destination)
 	if !exists || lane.Dispatchable && !batch.AllowDispatch {
@@ -730,7 +788,7 @@ func (s *Service) importBatchItem(ctx context.Context, tx *sql.Tx, scope nativeS
 		if err != nil {
 			return err
 		}
-		destination, labels, err := batchIssueDestination(project.States, batch, preview.Labels)
+		destination, labels, err := batchIssueDestination(project.States, batch, preview)
 		if err != nil {
 			return err
 		}
@@ -750,5 +808,6 @@ func (s *Service) importBatchItem(ctx context.Context, tx *sql.Tx, scope nativeS
 		return err
 	}
 	item.WorkItemID, item.Status = id, status
+	item.UnmappedProjectStatus = batchUnmappedProjectStatus(batch, preview)
 	return nil
 }

@@ -26,7 +26,8 @@ func TestRunnerGitHubBatchReportsOneBoundedStep(t *testing.T) {
 		name      string
 		discovery bool
 		failure   bool
-	}{{name: "discovery", discovery: true}, {name: "complete snapshot"}, {name: "source throttled", failure: true}} {
+		project   bool
+	}{{name: "discovery", discovery: true}, {name: "ProjectV2 discovery", discovery: true, project: true}, {name: "complete snapshot"}, {name: "source throttled", failure: true}} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			reports := 0
@@ -50,6 +51,8 @@ func TestRunnerGitHubBatchReportsOneBoundedStep(t *testing.T) {
 				} else if test.discovery {
 					if result.Page == nil {
 						t.Error("missing preview")
+					} else if test.project && (len(result.Page.Issues) != 1 || result.Page.Issues[0].ProjectStatus != "Ready") {
+						t.Errorf("runner lost ProjectV2 Status: %+v", result.Page)
 					}
 				} else if result.Snapshot == nil || result.Number != 12 {
 					t.Error("missing complete snapshot")
@@ -72,15 +75,24 @@ func TestRunnerGitHubBatchReportsOneBoundedStep(t *testing.T) {
 					return tracker.GitHubIssueSnapshot{}, &githubconnector.StatusError{StatusCode: 429, Err: githubconnector.ErrRateLimited, RetryAfter: time.Hour}
 				}
 				return intakeSnapshot(), nil
-			}, githubDiscovery: func(context.Context, tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error) {
+			}, githubDiscovery: func(_ context.Context, request tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error) {
 				reads++
+				if test.project {
+					if request.ProjectV2 == nil || request.ProjectV2.ID != "PVT_source" || request.ProjectV2.StatusLanes["Ready"] != "Blocked" {
+						t.Fatalf("runner lost ProjectV2 source: %+v", request)
+					}
+					return tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{{Number: 12, ProjectStatus: "Ready"}}}, nil
+				}
 				return tracker.GitHubDiscoveryPage{Total: 1}, nil
 			}}
 			task := tracker.GitHubBatchTask{ProjectID: "prj_test", BatchID: "intake_test", Revision: 4}
 			if test.discovery {
-				task.Discovery = &tracker.GitHubDiscovery{Repository: "acme/orders"}
+				task.Discovery = &tracker.GitHubDiscovery{Repository: "example-org/example-project"}
+				if test.project {
+					task.Discovery.ProjectV2 = &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}
+				}
 			} else {
-				task.Item = &tracker.GitHubIssuePreview{Number: 12, URL: "https://github.com/acme/orders/issues/12"}
+				task.Item = &tracker.GitHubIssuePreview{Number: 12, URL: "https://github.com/example-org/example-project/issues/12"}
 			}
 			if err := scheduler.processGitHubBatch(t.Context(), native, task); err != nil {
 				t.Fatal(err)
