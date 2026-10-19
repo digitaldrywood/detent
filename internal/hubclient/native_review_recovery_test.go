@@ -144,7 +144,7 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+			runtimeStore, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
 			if err != nil {
 				t.Fatal(err)
 			}

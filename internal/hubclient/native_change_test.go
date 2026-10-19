@@ -37,6 +37,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -44,6 +45,10 @@ import (
 )
 
 const nativeChangeAdminToken = "native-change-admin"
+
+var nativeRuntimeDatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
+	return store.Open(ctx, store.Config{Path: path})
+})
 
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
@@ -2253,6 +2258,8 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 	}
 
 	isolateNativeChangeGit(t)
+	sourceSeed := nativeChangeSourceRepo(t)
+	useFastConversationTimings(t)
 	dependencyMessage := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: prj_6d4919bebd73446798e6cd807feda10e#750\n    owner: orchestrator\n    reason: prerequisite remains Backlog\n    predicate:\n      type: issue_state\n      ref: prj_6d4919bebd73446798e6cd807feda10e#750\n      states: [Done]\nhuman_action: null\n```"
 	instanceMessage := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:tool\n    reason: effective host gate lacks a passing current-head receipt\nhuman_action: null\n```"
 	dependencyDisposition := &tracker.NativeDisposition{Status: "blocked", Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: "prj_6d4919bebd73446798e6cd807feda10e#750", Identifier: "prj_6d4919bebd73446798e6cd807feda10e#750", Owner: workpad.BlockerOwnerOrchestrator, Reason: "prerequisite remains Backlog", RecheckInterval: "tick", Predicate: &workpad.Predicate{Type: workpad.PredicateIssueState, Ref: "prj_6d4919bebd73446798e6cd807feda10e#750", Identifier: "prj_6d4919bebd73446798e6cd807feda10e#750", States: []string{"done"}}}}}
@@ -2399,13 +2406,10 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "Rework scoped read failure releases claim before dispatch", rework: true, failDetail: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if !test.enrolled && !test.reconnect && !test.continueMessage {
+			if !test.enrolled {
 				t.Parallel()
 			}
 			genuinePublication := test.publication != "" && test.validator != "" && (test.publicationFault == "" || test.publicationFault == "policy")
-			if test.reconnect || test.continueMessage {
-				useFastConversationTimings(t)
-			}
 			review := "In Review"
 			states := []tracker.NativeState{
 				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
@@ -2524,6 +2528,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if h.scheduler.client.runner == nil {
 					t.Fatal("fixture did not enroll the claim owner")
 				}
+				t.Parallel()
 			}
 			if test.localIntakeOff {
 				local, err := orchestrator.New(orchestrator.Config{LocalIntakeDisabled: true, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}}, orchestrator.Dependencies{Connector: fakehub.New(fakehub.Config{Issues: []connector.Issue{{ID: "local-queued", State: "Todo"}}}), Runner: orchestrator.FakeRunner{}})
@@ -2565,7 +2570,10 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			} else {
 				issue = h.createInProgress(t, "Update the README")
 			}
-			source := nativeChangeSourceRepo(t)
+			source := nativeChangeTempDir(t)
+			if err := os.CopyFS(source, os.DirFS(sourceSeed)); err != nil {
+				t.Fatal(err)
+			}
 			fixtures := map[string]string{}
 			credential := "ghp_" + strings.Repeat("Z", 36)
 			if test.sourceFixture != "" {
@@ -2997,7 +3005,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			}
 			var runtimeStore store.Store
 			if test.validator != "" || test.summaryFailure {
-				runtimeStore, err = store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+				runtimeStore, err = store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -3030,6 +3038,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				Workflow:     config.Workflow{Config: config.Config{Gate: gate.Config{Run: validationCommand, AutomatedReview: automatedReview, Validator: gate.ValidatorConfig{Enabled: test.validator != ""}}}, Prompt: "Complete the issue"},
 				Workspace:    backend,
 				AgentBackend: provider,
+				ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) {
+					return 0, nil
+				},
 			}
 			agent, err := runner.NewRunner(dependencies)
 			if err != nil {
