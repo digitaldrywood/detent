@@ -148,6 +148,7 @@ Set up:
 - [Cloud onboarding](docs/cloud-onboarding.md): organizations, projects, workflow definitions, runner enrollment, and GitHub.
 - [Project delivery](docs/project-delivery.md): reliable validation, test ownership, capacity and releases as agent concurrency grows.
 - [Self-hosted Hub operations](docs/hub-self-hosting.md): install, authentication, backup, and recovery.
+- [Local board migration](docs/hub-local-migration.md): preserve the old board, move a pilot project to a local Hub, verify, and roll back.
 - [Sprite runners](docs/sprite-runners.md): runners on Fly Sprites that wake when work arrives.
 - [Configuration reference](docs/config.md): every `detent.yaml` and runner setting.
 

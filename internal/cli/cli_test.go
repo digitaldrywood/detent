@@ -49,22 +49,44 @@ func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 func TestCommandHelpLeadsWithExample(t *testing.T) {
 	t.Parallel()
 
-	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
-	var stdout bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"pause", "--help"})
+	for _, test := range []struct {
+		name    string
+		args    []string
+		example string
+		flags   []string
+	}{
+		{name: "pause", args: []string{"pause"}, example: "detent pause api", flags: []string{"--config", "--reason"}},
+		{name: "migration Hub", args: []string{"hub", "serve"}, example: "detent hub serve", flags: []string{"--database", "--listen", "--github-disabled"}},
+		{name: "migration backup", args: []string{"hub", "backup"}, example: "detent hub backup", flags: []string{"--database", "--output"}},
+		{name: "migration verification", args: []string{"hub", "verify"}, example: "detent hub verify", flags: []string{"--database"}},
+		{name: "migration registration", args: []string{"hub", "runner", "register"}, example: "detent hub runner register", flags: []string{"--url", "--organization", "--name", "--capacity", "--config", "--workspace-root"}},
+		{name: "migration foreground runner", example: "detent", flags: []string{"--config", "--headless"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(append(test.args, "--help"))
 
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
 
-	output := stdout.String()
-	if !strings.HasPrefix(output, "Examples:\ndetent pause api") {
-		t.Fatalf("pause help does not lead with its runnable example:\n%s", output)
-	}
-	if strings.Count(output, "Examples:") != 1 {
-		t.Fatalf("pause help examples count = %d, want 1:\n%s", strings.Count(output, "Examples:"), output)
+			output := stdout.String()
+			if !strings.HasPrefix(output, "Examples:\n"+test.example) {
+				t.Fatalf("help does not lead with its runnable example:\n%s", output)
+			}
+			if strings.Count(output, "Examples:") != 1 {
+				t.Fatalf("help examples count = %d, want 1:\n%s", strings.Count(output, "Examples:"), output)
+			}
+			for _, flag := range test.flags {
+				if !strings.Contains(output, flag+" ") && !strings.Contains(output, flag+"\n") {
+					t.Errorf("help missing documented flag %s:\n%s", flag, output)
+				}
+			}
+		})
 	}
 }
 

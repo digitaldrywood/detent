@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	hubSelfHostingURL     = "https://github.com/digitaldrywood/detent/blob/develop/docs/hub-self-hosting.md"
+	hubLocalMigrationURL  = "https://github.com/digitaldrywood/detent/blob/develop/docs/hub-local-migration.md"
 	standaloneDeprecation = "Running Detent without client.hub_url is deprecated; the standalone local board is no longer supported."
-	hubMigrationHint      = "Run a self-hosted Hub (detent hub serve) and enroll a runner, then configure client.hub_url. See " + hubSelfHostingURL
+	hubMigrationHint      = "Run a self-hosted Hub (detent hub serve) and enroll a runner, then configure client.hub_url. See " + hubLocalMigrationURL
 )
 
 func checkDoctorHubConnection(cfg globalconfig.Config) doctorCheck {

@@ -1,5 +1,9 @@
 # Self-hosted Hub operations
 
+Moving an existing standalone board? Start with the
+[local board to local Hub migration runbook](hub-local-migration.md) for backups,
+pilot cutover, import prerequisites and rollback before replacing its service.
+
 One customer-controlled Linux host or ordinary VM, one Hub process, and local
 durable storage are the supported deployment described here. Use the released
 Detent binary and systemd, with a TLS reverse proxy. This is single-host operation

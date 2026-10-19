@@ -64,7 +64,7 @@ func TestHubStartupRequirement(t *testing.T) {
 				if problem.Code != "validation" || problem.ExitCode != ExitValidation {
 					t.Fatalf("startup problem = %#v, want validation failure", problem)
 				}
-				for _, want := range []string{"self-hosted Hub", "enroll a runner", "docs/hub-self-hosting.md"} {
+				for _, want := range []string{"self-hosted Hub", "enroll a runner", "docs/hub-local-migration.md"} {
 					if !strings.Contains(problem.SuggestedFix, want) {
 						t.Errorf("startup hint = %q, want %q", problem.SuggestedFix, want)
 					}
@@ -137,7 +137,7 @@ func TestDoctorReportsHubRequirement(t *testing.T) {
 			assertDoctorCheck(t, report, "Hub connection", test.status, test.text)
 			if test.status == doctorWarn {
 				check := doctorCheckByName(t, report, "Hub connection")
-				for _, want := range []string{"self-hosted Hub", "enroll a runner", "docs/hub-self-hosting.md"} {
+				for _, want := range []string{"self-hosted Hub", "enroll a runner", "docs/hub-local-migration.md"} {
 					if !strings.Contains(check.Hint, want) {
 						t.Errorf("doctor hint = %q, want %q", check.Hint, want)
 					}
