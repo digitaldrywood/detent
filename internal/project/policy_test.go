@@ -167,7 +167,7 @@ func TestMappedNativeStartupUsesInspectedPolicy(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := globalconfig.Project{ID: "orders", Workdir: t.TempDir()}
-			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"))
+			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  repository: acme/orders\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -211,7 +211,7 @@ func TestMappedNativeStartupUsesInspectedPolicy(t *testing.T) {
 
 func TestMappedNativeReloadRetainsPolicySchedulingSource(t *testing.T) {
 	t.Parallel()
-	updated, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\nintake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n---\nPrompt\n"))
+	updated, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  repository: acme/orders\n  api_key: test-token\nintake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n---\nPrompt\n"))
 	if err != nil {
 		t.Fatal(err)
 	}

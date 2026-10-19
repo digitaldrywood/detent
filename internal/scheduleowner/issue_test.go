@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issuefiling"
 )
 
 func TestIssueCoordinatorCreateRacePostsOnce(t *testing.T) {
@@ -23,7 +23,7 @@ func TestIssueCoordinatorCreateRacePostsOnce(t *testing.T) {
 	}
 	alpha := newTestIssueCoordinator(t, testConfig(), "alpha", store, clock)
 	beta := newTestIssueCoordinator(t, testConfig(), "beta", store, clock)
-	draft := intake.IssueDraft{Title: "One", Body: "body\n\n" + backend.marker}
+	draft := issuefiling.IssueDraft{Title: "One", Body: "body\n\n" + backend.marker}
 
 	results := make(chan ensureResult, 2)
 	go func() {
@@ -67,7 +67,7 @@ func TestIssueCoordinatorDoesNotStealUncertainCreate(t *testing.T) {
 	clock.Advance(config.LeaseTTL() + config.MaxClockSkew() + time.Second)
 	coordinator := newTestIssueCoordinator(t, config, "successor", store, clock)
 	backend := &blockingIssueBackend{marker: marker}
-	if _, _, err := coordinator.Ensure(t.Context(), marker, intake.IssueDraft{Title: "Uncertain"}, backend); !errors.Is(err, ErrIssueCreateUncertain) {
+	if _, _, err := coordinator.Ensure(t.Context(), marker, issuefiling.IssueDraft{Title: "Uncertain"}, backend); !errors.Is(err, ErrIssueCreateUncertain) {
 		t.Fatalf("Ensure() error = %v, want ErrIssueCreateUncertain", err)
 	}
 	if got := backend.CreateCount(); got != 0 {
@@ -84,12 +84,12 @@ func TestIssueCoordinatorCompletesAfterCreateContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	backend := &cancelingIssueBackend{cancel: cancel, marker: marker}
 
-	issue, created, err := coordinator.Ensure(ctx, marker, intake.IssueDraft{Title: "One", Body: marker}, backend)
+	issue, created, err := coordinator.Ensure(ctx, marker, issuefiling.IssueDraft{Title: "One", Body: marker}, backend)
 	if err != nil || !created || issue.ID != "issue-1" {
 		t.Fatalf("Ensure() = %#v, %t, %v", issue, created, err)
 	}
 	second := newTestIssueCoordinator(t, testConfig(), "beta", store, clock)
-	issue, created, err = second.Ensure(t.Context(), marker, intake.IssueDraft{Title: "One", Body: marker}, backend)
+	issue, created, err = second.Ensure(t.Context(), marker, issuefiling.IssueDraft{Title: "One", Body: marker}, backend)
 	if err != nil || created || issue.ID != "issue-1" {
 		t.Fatalf("second Ensure() = %#v, %t, %v", issue, created, err)
 	}
@@ -102,7 +102,7 @@ func TestIssueCoordinatorRecurringIssueReplacesClosedCompletion(t *testing.T) {
 	coordinator := newTestIssueCoordinator(t, testConfig(), "alpha", store, clock)
 	marker := "<!-- detent-routine:recurring -->"
 	backend := &blockingIssueBackend{marker: marker}
-	draft := intake.IssueDraft{Title: "Recurring", Body: marker}
+	draft := issuefiling.IssueDraft{Title: "Recurring", Body: marker}
 
 	first, created, err := coordinator.EnsureRecurring(t.Context(), marker, draft, backend)
 	if err != nil || !created || first.ID != "issue-1" {
@@ -123,7 +123,7 @@ func TestIssueCoordinatorRecurringIssueReplacesClosedCompletion(t *testing.T) {
 }
 
 type ensureResult struct {
-	issue   intake.Issue
+	issue   issuefiling.Issue
 	created bool
 	err     error
 }
@@ -131,7 +131,7 @@ type ensureResult struct {
 type blockingIssueBackend struct {
 	mu            sync.Mutex
 	marker        string
-	issue         intake.Issue
+	issue         issuefiling.Issue
 	creates       int
 	createStarted chan struct{}
 	createRelease chan struct{}
@@ -141,32 +141,32 @@ type blockingIssueBackend struct {
 type cancelingIssueBackend struct {
 	cancel context.CancelFunc
 	marker string
-	issue  intake.Issue
+	issue  issuefiling.Issue
 }
 
-func (b *cancelingIssueBackend) FindIntakeIssue(_ context.Context, marker string) (intake.Issue, bool, error) {
+func (b *cancelingIssueBackend) FindIntakeIssue(_ context.Context, marker string) (issuefiling.Issue, bool, error) {
 	return b.issue, marker == b.marker && b.issue.ID != "", nil
 }
 
-func (b *cancelingIssueBackend) CreateIntakeIssue(_ context.Context, draft intake.IssueDraft) (intake.Issue, error) {
-	b.issue = intake.Issue{ID: "issue-1", Identifier: "example#1", Body: draft.Body}
+func (b *cancelingIssueBackend) CreateIntakeIssue(_ context.Context, draft issuefiling.IssueDraft) (issuefiling.Issue, error) {
+	b.issue = issuefiling.Issue{ID: "issue-1", Identifier: "example#1", Body: draft.Body}
 	b.cancel()
 	return b.issue, nil
 }
 
-func (b *blockingIssueBackend) FindIntakeIssue(_ context.Context, marker string) (intake.Issue, bool, error) {
+func (b *blockingIssueBackend) FindIntakeIssue(_ context.Context, marker string) (issuefiling.Issue, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if marker != b.marker || b.issue.ID == "" {
-		return intake.Issue{}, false, nil
+		return issuefiling.Issue{}, false, nil
 	}
 	return b.issue, true, nil
 }
 
-func (b *blockingIssueBackend) CreateIntakeIssue(ctx context.Context, draft intake.IssueDraft) (intake.Issue, error) {
+func (b *blockingIssueBackend) CreateIntakeIssue(ctx context.Context, draft issuefiling.IssueDraft) (issuefiling.Issue, error) {
 	b.mu.Lock()
 	b.creates++
-	b.issue = intake.Issue{ID: fmt.Sprintf("issue-%d", b.creates), Identifier: fmt.Sprintf("example#%d", b.creates), Body: draft.Body}
+	b.issue = issuefiling.Issue{ID: fmt.Sprintf("issue-%d", b.creates), Identifier: fmt.Sprintf("example#%d", b.creates), Body: draft.Body}
 	issue := b.issue
 	b.mu.Unlock()
 	if b.createStarted != nil {
@@ -175,7 +175,7 @@ func (b *blockingIssueBackend) CreateIntakeIssue(ctx context.Context, draft inta
 	if b.createRelease != nil {
 		select {
 		case <-ctx.Done():
-			return intake.Issue{}, ctx.Err()
+			return issuefiling.Issue{}, ctx.Err()
 		case <-b.createRelease:
 		}
 	}

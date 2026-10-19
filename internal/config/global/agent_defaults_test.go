@@ -67,7 +67,7 @@ func TestWorkerLocalBindingDefaults(t *testing.T) {
 			if tt.global != "" {
 				raw += "  " + tt.global + "\n"
 			}
-			raw += "projects: []\n"
+			raw += ""
 			global, err := Parse([]byte(raw), "", WithHome(t.TempDir()))
 			if err != nil {
 				t.Fatal(err)

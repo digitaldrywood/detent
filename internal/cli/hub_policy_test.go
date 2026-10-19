@@ -30,7 +30,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	workflowPath := filepath.Join(root, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/orders\n---\nPRIVATE WORKFLOW\n"), 0o600); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n  api_key: fixture-token\n  repository: example-org/orders\n---\nPRIVATE WORKFLOW\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(root, "global.yaml")
@@ -166,7 +166,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 			t.Fatalf("enrolled doctor policy = %#v", check)
 		}
 	})
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/orders\ngate:\n  kind: artifact\n---\nChanged instructions\n"), 0o600); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n  api_key: fixture-token\n  repository: example-org/orders\ngate:\n  kind: artifact\n---\nChanged instructions\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	check = checkDoctorHubPolicy(t.Context(), loaded, loaded.Projects[0], doctorDeps{lookupEnv: func(string) string { return "fixture-admin" }})
@@ -186,7 +186,7 @@ func TestHubPolicyInspectRejectsMappedNativeUnsupportedWork(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
-			raw := "---\ntracker:\n  kind: hub_native\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"
+			raw := "---\ntracker:\n  kind: hub_native\n  repository: acme/orders\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"
 			if err := os.WriteFile(workflowPath, []byte(raw), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -216,7 +216,7 @@ func TestHubPolicyInspectUsesNativeStartupTracker(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	workflowPath := filepath.Join(root, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\n---\nPrompt\n"), 0o600); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n  repository: acme/orders\n  api_key: test-token\n---\nPrompt\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(root, "global.yaml")

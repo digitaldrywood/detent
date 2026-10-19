@@ -1373,7 +1373,6 @@ func validWorkflowContent() string {
 tracker:
   kind: github
   api_key: fixture-token
-  project_slug: fixture-project
   repository: example-org/example-project
 ---
 Test workflow prompt.
@@ -1385,7 +1384,6 @@ func workflowContentWithServer(host string, port int) string {
 tracker:
   kind: github
   api_key: fixture-token
-  project_slug: fixture-project
   repository: example-org/example-project
 server:
   host: %s
@@ -1429,6 +1427,14 @@ func writeGlobalConfig(t *testing.T, path string, projects []globalconfig.Projec
 	}
 	if err := globalconfig.Write(path, cfg); err != nil {
 		t.Fatalf("Write() error = %v", err)
+	}
+	backend, err := store.Open(context.Background(), store.Config{Path: filepath.Join(filepath.Dir(path), "detent.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	if _, err := backend.InitializeLocalConfiguration(context.Background(), cfg, nil); err != nil {
+		t.Fatal(err)
 	}
 }
 
