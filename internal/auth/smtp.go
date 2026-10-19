@@ -90,7 +90,14 @@ func (s *smtpSender) SendEmail(ctx context.Context, message EmailMessage) (err e
 		deadline = contextDeadline
 	}
 	dialer := net.Dialer{Deadline: deadline}
-	connection, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(s.host, strconv.Itoa(s.port)))
+	address := net.JoinHostPort(s.host, strconv.Itoa(s.port))
+	var connection net.Conn
+	if s.port == 465 {
+		tlsDialer := tls.Dialer{NetDialer: &dialer, Config: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: s.host}}
+		connection, err = tlsDialer.DialContext(ctx, "tcp", address)
+	} else {
+		connection, err = dialer.DialContext(ctx, "tcp", address)
+	}
 	if err != nil {
 		return fmt.Errorf("connect smtp server: %w", err)
 	}
@@ -107,7 +114,7 @@ func (s *smtpSender) SendEmail(ctx context.Context, message EmailMessage) (err e
 		}
 	}()
 
-	if ok, _ := client.Extension("STARTTLS"); ok {
+	if ok, _ := client.Extension("STARTTLS"); ok && s.port != 465 {
 		if err := client.StartTLS(&tls.Config{MinVersion: tls.VersionTLS12, ServerName: s.host}); err != nil {
 			return fmt.Errorf("start smtp tls: %w", err)
 		}

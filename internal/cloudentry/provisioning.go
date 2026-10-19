@@ -491,7 +491,23 @@ func (s *Service) recordIntent(ctx context.Context, session accountSession, key,
 	if _, err := tx.ExecContext(ctx, "INSERT INTO organization_intents(subject,idempotency_key,fingerprint,organization_id,created_at) VALUES (?,?,?,?,?)", session.Subject, key, fingerprint, id, now); err != nil {
 		return "", err
 	}
-	return id, tx.Commit()
+	if s.notifications != nil {
+		plan := "free"
+		for _, configured := range s.allocationPrices() {
+			if configured.PriceID == price {
+				plan = configured.Plan.ID
+				break
+			}
+		}
+		if err := enqueuePlatformNotification(ctx, tx, "organization", id, session.Email, name, plan, now); err != nil {
+			return "", err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	s.wakePlatformNotifications()
+	return id, nil
 }
 
 func (s *Service) canCreate(_ context.Context, session accountSession) (bool, error) {
