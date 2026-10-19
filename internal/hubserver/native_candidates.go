@@ -419,17 +419,57 @@ func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.Wo
 				return tracker.NativeAnsweredExclusion{}, nil
 			}
 		}
-		for _, finding := range detail.Reviews {
-			if finding.VersionID == finalization.VersionID && finding.Decision == "changes_requested" && !finding.CreatedAt.Before(started) {
-				return tracker.NativeAnsweredExclusion{}, nil
-			}
-		}
-		for _, check := range detail.Checks {
-			if check.VersionID == finalization.VersionID && check.Conclusion != "success" && !check.ReceivedAt.Before(started) {
-				return tracker.NativeAnsweredExclusion{}, nil
-			}
+		if newReworkFeedback(detail, finalization.VersionID, started) {
+			return tracker.NativeAnsweredExclusion{}, nil
 		}
 		return tracker.NativeAnsweredExclusion{Kind: string(gate.ReasonValidatorRework), AttemptID: attempt}, nil
 	}
 	return tracker.NativeAnsweredExclusion{Kind: string(gate.ReasonAutomatedReviewMissing), AttemptID: attempt}, nil
+}
+
+// newReworkFeedback reports whether the version received rework feedback at or
+// after started that it had not already received before started. Automated
+// reviewers re-evaluate an unchanged head on every attempt, so their verdict is
+// identified by reviewer kind and decision rather than by its record time.
+func newReworkFeedback(detail tracker.ChangeDetail, versionID string, started time.Time) bool {
+	prior := map[string]bool{}
+	var recent []string
+	for _, review := range detail.Reviews {
+		if review.VersionID != versionID || review.Decision != "changes_requested" {
+			continue
+		}
+		if key := reviewFeedbackKey(review); review.CreatedAt.Before(started) {
+			prior[key] = true
+		} else {
+			recent = append(recent, key)
+		}
+	}
+	for _, check := range detail.Checks {
+		if check.VersionID != versionID || check.Conclusion == "success" {
+			continue
+		}
+		if key := "check\x00" + check.Source + "\x00" + check.WorkflowID + "\x00" + check.Conclusion; check.ReceivedAt.Before(started) {
+			prior[key] = true
+		} else {
+			recent = append(recent, key)
+		}
+	}
+	for _, key := range recent {
+		if !prior[key] {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewFeedbackKey(review tracker.ChangeReview) string {
+	switch {
+	case review.Validator != nil:
+		return "validator\x00" + review.Decision
+	case review.ImplementationReview != nil:
+		return "implementation_review\x00" + review.Decision
+	case review.SecurityAudit != nil:
+		return "security_audit\x00" + review.Decision
+	}
+	return "review\x00" + review.Decision + "\x00" + review.Body
 }
