@@ -31,8 +31,22 @@ func TestNativeChangeLargeValidationFinalization(t *testing.T) {
 	}
 	h := newNativeChangeHub(t)
 	store, publisher := changeEvidenceArtifactService(t, h)
-	for _, name := range []string{"first", "second"} {
-		t.Run(name, func(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		inline bool
+	}{
+		{name: "first"},
+		{name: "second"},
+		{name: "medium receipt without artifact service", inline: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			timings, lines := 1024, 20000
+			if test.inline {
+				serviceID := h.scheduler.client.artifactServiceID
+				t.Cleanup(func() { h.scheduler.client.artifactServiceID = serviceID })
+				h.scheduler.client.artifactServiceID = ""
+				timings, lines = 180, 1
+			}
 			issue := h.createInProgress(t, "Large validated change")
 			h.claim(t, issue.ID)
 			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
@@ -53,7 +67,7 @@ func TestNativeChangeLargeValidationFinalization(t *testing.T) {
 			if err := e.PrepareArtifacts(ctx, directory); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(directory, "README.md"), []byte(strings.Repeat("validated change 世界\n", 20000)), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(directory, "README.md"), []byte(strings.Repeat("validated change 世界\n", lines)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			nativeChangeGit(t, directory, "add", "README.md")
@@ -75,14 +89,14 @@ func TestNativeChangeLargeValidationFinalization(t *testing.T) {
 				t.Fatal(err)
 			}
 			validation := gate.CommandResult{Command: "make check-land", HeadSHA: head, TreeSHA: strings.Repeat("d", 40), DurationNS: 1, Evidence: &gate.CommandEvidence{}, Output: strings.Repeat("validation passed 世界\n", 2000), Pipeline: &gate.PipelineEvidence{}}
-			for i := range 1024 {
+			for i := range timings {
 				timing := gate.PipelineTiming{Stage: "finalization", Command: "go test -short -timeout=60s ./internal/example", HeadSHA: head, TreeSHA: validation.TreeSHA, StartedAt: time.Unix(1, int64(i)).UTC(), FinishedAt: time.Unix(2, int64(i)).UTC(), ExitCode: new(0), Execution: "executed"}
 				timing.ReceiptID = timing.ID()
 				validation.Pipeline.Timings = append(validation.Pipeline.Timings, timing)
 			}
 			raw, err := json.Marshal(tracker.PublicGateResult(validation))
-			if err != nil || len(raw) <= operatortool.MaxResultBytes || !validation.Pipeline.Valid() {
-				t.Fatalf("fixture must exceed the result budget with valid evidence: bytes=%d error=%v", len(raw), err)
+			if err != nil || len(raw) <= 64<<10 || !validation.Pipeline.Valid() || (len(raw) > operatortool.MaxResultBytes) == test.inline {
+				t.Fatalf("fixture has incorrect evidence size or validity: inline=%v bytes=%d error=%v", test.inline, len(raw), err)
 			}
 			e.validation = &validation
 			if err := e.FinalizeArtifacts(ctx, directory); err != nil {
@@ -102,7 +116,19 @@ func TestNativeChangeLargeValidationFinalization(t *testing.T) {
 			if len(detail.Versions) != 1 || detail.Versions[0].ID != change.VersionID || detail.Versions[0].Validation == nil {
 				t.Fatal("lost immutable version identity")
 			}
+			previous := change.VersionID
+			if err := e.Finish(ctx, "succeeded"); err != nil || e.NativeChange().VersionID != previous {
+				t.Fatalf("finalization replay changed identity: %v", err)
+			}
 			compact := detail.Versions[0].Validation
+			if test.inline {
+				expected := tracker.PublicGateResult(validation)
+				if !reflect.DeepEqual(*compact, expected) {
+					t.Fatal("inline receipt lost validation evidence")
+				}
+				h.complete(t, issue.ID, change)
+				return
+			}
 			reference := compact.EvidenceArtifact
 			if reference == nil || compact.Pipeline != nil || compact.Command != validation.Command || compact.HeadSHA != head || compact.ExitCode != 0 || !reflect.DeepEqual(compact.Evidence, validation.Evidence) {
 				t.Fatalf("lost validation identity or artifact: %+v", compact)
@@ -133,10 +159,6 @@ func TestNativeChangeLargeValidationFinalization(t *testing.T) {
 			}
 			if !bytes.Equal(retained, fullRaw) {
 				t.Fatal("validation artifact lost complete evidence bytes")
-			}
-			previous := change.VersionID
-			if err := e.Finish(ctx, "succeeded"); err != nil || e.NativeChange().VersionID != previous {
-				t.Fatalf("finalization replay changed identity: %v", err)
 			}
 			input := detail.Versions[0].ChangeVersionInput
 			for _, field := range []string{"item", "attempt", "digest"} {
