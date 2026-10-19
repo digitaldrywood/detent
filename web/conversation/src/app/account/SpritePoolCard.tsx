@@ -3,6 +3,8 @@ import React from "react";
 import { Button } from "../../components/ui/button.tsx";
 import { Alert, AlertTitle, AlertDescription } from "../../components/ui/alert.tsx";
 import { Dialog, DialogTrigger, DialogPopup, DialogHeader, DialogTitle, DialogDescription, DialogPanel } from "../../components/ui/dialog.tsx";
+import { Checkbox } from "../../components/ui/checkbox.tsx";
+import { setupKey, retireKey } from "./idempotency.ts";
 import { Input } from "../../components/ui/input.tsx";
 import { SettingsRow, SettingsWarning } from "../settings/settingsLayout.tsx";
 import { AccountError } from "./api.ts";
@@ -23,6 +25,8 @@ export function SpritePoolCard({ projectId, canManage, compact = false, attentio
   const [floor, setFloor] = React.useState(0);
   const [ceiling, setCeiling] = React.useState(0);
   const [idle, setIdle] = React.useState(300);
+  const [shareIdleCapacity, setShareIdleCapacity] = React.useState(false);
+  const sharingDescription = React.useId();
   const [bootstrap, setBootstrap] = React.useState("");
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState<AccountError | null>(null);
@@ -37,6 +41,7 @@ export function SpritePoolCard({ projectId, canManage, compact = false, attentio
     setCeiling(pool.value.max_runners);
     setIdle(pool.value.idle_seconds);
     setBootstrap(pool.value.bootstrap);
+    setShareIdleCapacity(pool.value.share_idle_capacity ?? false);
   }, [pool.value, readOnly]);
 
   async function reload(): Promise<void> {
@@ -49,7 +54,10 @@ export function SpritePoolCard({ projectId, canManage, compact = false, attentio
     setPending(true);
     setError(null);
     try {
-      pool.set(await api.setSpritePool({ min_runners: floor, max_runners: ceiling, idle_seconds: idle, bootstrap, revision: pool.value.revision }));
+      const settings = { min_runners: floor, max_runners: ceiling, idle_seconds: idle, bootstrap, share_idle_capacity: shareIdleCapacity, revision: pool.value.revision };
+      const command = await setupKey(`${account?.base_path ?? ""}/sprite-pool`, settings);
+      pool.set(await api.setSpritePool({ ...settings, idempotency_key: command.key }));
+      retireKey(command.storageKey);
     } catch (cause) {
       setError(cause instanceof AccountError ? cause : new AccountError({ status: 0, code: "network", message: "Could not save the pool." }));
     } finally {
@@ -86,6 +94,13 @@ export function SpritePoolCard({ projectId, canManage, compact = false, attentio
           <label className="space-y-1 text-sm">Minimum runners<Input type="number" min={0} required value={floor} disabled={pending || pool.loading || readOnly} onChange={(event) => setFloor(Number(event.target.value))} /></label>
           <label className="space-y-1 text-sm">Maximum runners<Input type="number" min={floor} required value={ceiling} disabled={pending || pool.loading || readOnly} onChange={(event) => setCeiling(Number(event.target.value))} /></label>
           <label className="space-y-1 text-sm">Idle seconds<Input type="number" min={30} max={86400} required value={idle} disabled={pending || pool.loading || readOnly} onChange={(event) => setIdle(Number(event.target.value))} /></label>
+        </div>
+        <div className="space-y-1">
+          <label className="flex min-h-11 items-center gap-2 text-sm">
+            <Checkbox checked={shareIdleCapacity} onCheckedChange={setShareIdleCapacity} aria-describedby={sharingDescription} disabled={pending || pool.loading || readOnly} />
+            Share idle project Sprite capacity
+          </label>
+          <p id={sharingDescription} className="text-xs text-muted-foreground">Allow project Sprites to use paid capacity for other granted projects when their own project has no ready work. Their own project comes first on the next job. Off by default; project grants still apply.</p>
         </div>
         <label className="block space-y-1 text-sm">Extra bootstrap (optional)
           <textarea className="min-h-32 w-full rounded-md border border-border bg-background p-2 font-mono text-xs" value={bootstrap} maxLength={65536} disabled={pending || pool.loading || readOnly} onChange={(event) => setBootstrap(event.target.value)} />

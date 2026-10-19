@@ -21,13 +21,22 @@ import (
 const spriteSandboxUnavailableReason = "Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support."
 
 type spritePoolSettings struct {
-	IsolationTier string            `json:"isolation_tier"`
-	Placement     *policy.Placement `json:"placement,omitempty"`
-	MinRunners    int               `json:"min_runners"`
-	MaxRunners    int               `json:"max_runners"`
-	IdleSeconds   int               `json:"idle_seconds"`
-	Bootstrap     string            `json:"bootstrap"`
-	Revision      int64             `json:"revision"`
+	ShareIdleCapacity bool              `json:"share_idle_capacity"`
+	IsolationTier     string            `json:"isolation_tier"`
+	Placement         *policy.Placement `json:"placement,omitempty"`
+	MinRunners        int               `json:"min_runners"`
+	MaxRunners        int               `json:"max_runners"`
+	IdleSeconds       int               `json:"idle_seconds"`
+	Bootstrap         string            `json:"bootstrap"`
+	Revision          int64             `json:"revision"`
+}
+
+type spritePoolCommand struct {
+	tracker.Mutation
+	spritePoolSettings
+	Bootstrap         *string `json:"bootstrap"`
+	IsolationTier     *string `json:"isolation_tier"`
+	ShareIdleCapacity *bool   `json:"share_idle_capacity"`
 }
 
 type spritePoolMember struct {
@@ -120,7 +129,7 @@ func (s *Service) readSpritePool(ctx context.Context, scope nativeScope) (sprite
 	defer cancel()
 	view := spritePoolView{spritePoolSettings: spritePoolSettings{IsolationTier: isolation.NativeTrusted, IdleSeconds: 300, Placement: &policy.Placement{Mode: "blended"}}, Members: []spritePoolMember{}}
 	var placement string
-	err := s.database.reader.QueryRowContext(ctx, `SELECT min_runners,max_runners,idle_seconds,bootstrap,revision,placement_json,isolation_tier FROM organization_sprite_pools WHERE organization_id=?`, scope.organization).Scan(&view.MinRunners, &view.MaxRunners, &view.IdleSeconds, &view.Bootstrap, &view.Revision, &placement, &view.IsolationTier)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT min_runners,max_runners,idle_seconds,bootstrap,revision,placement_json,isolation_tier,share_idle_capacity FROM organization_sprite_pools WHERE organization_id=?`, scope.organization).Scan(&view.MinRunners, &view.MaxRunners, &view.IdleSeconds, &view.Bootstrap, &view.Revision, &placement, &view.IsolationTier, &view.ShareIdleCapacity)
 	if errors.Is(err, sql.ErrNoRows) {
 		return view, nil
 	}
@@ -160,7 +169,7 @@ func (s *Service) setSpritePool(c echo.Context) error {
 	if !canManageProjectSecrets(scope.credential) {
 		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Sprite pool settings require owner or admin access"})
 	}
-	var input spritePoolChange
+	var input spritePoolCommand
 	if err := decodeAPIJSON(c, &input); err != nil {
 		return invalidAPIRequest(c, err)
 	}
@@ -172,19 +181,21 @@ func (s *Service) setSpritePool(c echo.Context) error {
 	return c.JSON(http.StatusOK, view)
 }
 
-type spritePoolChange struct {
-	spritePoolSettings
-	Bootstrap     *string `json:"bootstrap"`
-	IsolationTier *string `json:"isolation_tier"`
-}
-
-func (s *Service) setSpritePoolCommand(ctx context.Context, scope nativeScope, input spritePoolChange) (spritePoolView, error) {
+func (s *Service) setSpritePoolCommand(ctx context.Context, scope nativeScope, input spritePoolCommand) (spritePoolView, error) {
+	if input.ShareIdleCapacity != nil || input.IdempotencyKey != "" {
+		if err := s.executeSpritePoolCommand(ctx, scope, input); err != nil {
+			return spritePoolView{}, err
+		}
+		s.startSpritePoolForQueue(scope)
+		return s.spritePoolResponse(ctx, scope)
+	}
 	settings := input.spritePoolSettings
 	view, err := s.readSpritePool(ctx, scope)
 	if err != nil {
 		return view, err
 	}
 	settings.IsolationTier = view.IsolationTier
+	settings.ShareIdleCapacity = view.ShareIdleCapacity
 	if input.Bootstrap != nil {
 		settings.Bootstrap = *input.Bootstrap
 	} else {
@@ -195,6 +206,27 @@ func (s *Service) setSpritePoolCommand(ctx context.Context, scope nativeScope, i
 	}
 	s.startSpritePoolForQueue(scope)
 	return s.spritePoolResponse(ctx, scope)
+}
+
+func (s *Service) executeSpritePoolCommand(ctx context.Context, scope nativeScope, command spritePoolCommand) error {
+	scope.project = ""
+	scope.requireHostedAdmin = true
+	_, err := s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: "set_sprite_pool", Feature: "collaboration"}, command.Mutation, command, func(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) (any, error) {
+		settings := command.spritePoolSettings
+		settings.IsolationTier = isolation.NativeTrusted
+		err := tx.QueryRowContext(ctx, `SELECT bootstrap,isolation_tier,share_idle_capacity FROM organization_sprite_pools WHERE organization_id=?`, scope.organization).Scan(&settings.Bootstrap, &settings.IsolationTier, &settings.ShareIdleCapacity)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		if command.Bootstrap != nil {
+			settings.Bootstrap = *command.Bootstrap
+		}
+		if command.ShareIdleCapacity != nil {
+			settings.ShareIdleCapacity = *command.ShareIdleCapacity
+		}
+		return true, s.updateSpritePoolInTx(ctx, tx, scope, settings, command.IsolationTier)
+	})
+	return err
 }
 
 func validateSpritePoolAccess(tier *string) error {
@@ -228,6 +260,14 @@ func validateSpritePoolSettings(settings *spritePoolSettings) error {
 }
 
 func (s *Service) updateSpritePool(ctx context.Context, scope nativeScope, settings spritePoolSettings, tier *string) error {
+	scope.project = ""
+	scope.requireHostedAdmin = true
+	return s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
+		return s.updateSpritePoolInTx(ctx, tx, scope, settings, tier)
+	})
+}
+
+func (s *Service) updateSpritePoolInTx(ctx context.Context, tx *sql.Tx, scope nativeScope, settings spritePoolSettings, tier *string) error {
 	if err := validateSpritePoolAccess(tier); err != nil {
 		return err
 	}
@@ -243,35 +283,31 @@ func (s *Service) updateSpritePool(ctx context.Context, scope nativeScope, setti
 	if settings.MaxRunners > 0 && (s.config.SecretKeys == nil || s.config.Hosted == nil) {
 		return spritePoolInvalid("Sprite pools require hosted configuration and the project secret store")
 	}
-	scope.project = ""
-	scope.requireHostedAdmin = true
-	return s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
-		if err := requireCredentialAuthority(ctx, tx, scope.credential, s.config.now()); err != nil {
-			return err
-		}
-		actor := scope.credential.ID
-		if scope.credential.HostedPrincipal != "" {
-			actor = scope.credential.HostedPrincipal
-		}
-		var revision int64
-		currentPlacement := `{"mode":"blended"}`
-		err := tx.QueryRowContext(ctx, `SELECT revision,placement_json FROM organization_sprite_pools WHERE organization_id=?`, scope.organization).Scan(&revision, &currentPlacement)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if revision != settings.Revision {
-			return nativeConflict(tracker.Revision(revision))
-		}
-		if settings.Placement != nil {
-			raw, err := json.Marshal(settings.Placement)
-			if err != nil {
-				return err
-			}
-			currentPlacement = string(raw)
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO organization_sprite_pools(organization_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by,placement_json,isolation_tier,revision) VALUES(?,?,?,?,?,?,?,?,1) ON CONFLICT(organization_id) DO UPDATE SET min_runners=excluded.min_runners,max_runners=excluded.max_runners,idle_seconds=excluded.idle_seconds,bootstrap=excluded.bootstrap,configured_by=excluded.configured_by,placement_json=excluded.placement_json,isolation_tier=excluded.isolation_tier,revision=organization_sprite_pools.revision+1`, scope.organization, settings.MinRunners, settings.MaxRunners, settings.IdleSeconds, settings.Bootstrap, actor, currentPlacement, settings.IsolationTier)
+	if err := requireCredentialAuthority(ctx, tx, scope.credential, s.config.now()); err != nil {
 		return err
-	})
+	}
+	actor := scope.credential.ID
+	if scope.credential.HostedPrincipal != "" {
+		actor = scope.credential.HostedPrincipal
+	}
+	var revision int64
+	currentPlacement := `{"mode":"blended"}`
+	err := tx.QueryRowContext(ctx, `SELECT revision,placement_json FROM organization_sprite_pools WHERE organization_id=?`, scope.organization).Scan(&revision, &currentPlacement)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if revision != settings.Revision {
+		return nativeConflict(tracker.Revision(revision))
+	}
+	if settings.Placement != nil {
+		raw, err := json.Marshal(settings.Placement)
+		if err != nil {
+			return err
+		}
+		currentPlacement = string(raw)
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO organization_sprite_pools(organization_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by,placement_json,isolation_tier,share_idle_capacity,revision) VALUES(?,?,?,?,?,?,?,?,?,1) ON CONFLICT(organization_id) DO UPDATE SET min_runners=excluded.min_runners,max_runners=excluded.max_runners,idle_seconds=excluded.idle_seconds,bootstrap=excluded.bootstrap,configured_by=excluded.configured_by,placement_json=excluded.placement_json,isolation_tier=excluded.isolation_tier,share_idle_capacity=excluded.share_idle_capacity,revision=organization_sprite_pools.revision+1`, scope.organization, settings.MinRunners, settings.MaxRunners, settings.IdleSeconds, settings.Bootstrap, actor, currentPlacement, settings.IsolationTier, settings.ShareIdleCapacity)
+	return err
 }
 
 func (s *Service) spritePoolAuthority(ctx context.Context, query nativeQueryer, scope nativeScope) (string, error) {
