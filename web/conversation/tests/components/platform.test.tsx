@@ -929,6 +929,71 @@ describe("complimentary plans", () => {
     await waitFor(() => expect(api.platformEntitlements).toHaveBeenCalledTimes(3));
   });
 
+  it.each([
+    {
+      name: "a legacy grant stays offered as the current plan",
+      grant: { id: "growth", version: 1 },
+      options: ["Starter$19/mo", "Team$49/mo", "Growth$99/mo", "ScaleContact us", "Growth (legacy)Current$79/mo", "InternalContact us"],
+      other: ["Growth (legacy)", "Internal"],
+    },
+    {
+      name: "only the latest version of each plan is offered",
+      grant: null,
+      options: ["Starter$19/mo", "Team$49/mo", "Growth$99/mo", "ScaleContact us", "InternalContact us"],
+      other: ["Internal"],
+    },
+    {
+      name: "a current grant on the latest version is marked in place",
+      grant: { id: "growth", version: 2 },
+      options: ["Starter$19/mo", "Team$49/mo", "GrowthCurrent$99/mo", "ScaleContact us", "InternalContact us"],
+      other: ["Internal"],
+    },
+  ])("orders grantable plans by tier: $name", async ({ grant, options, other }) => {
+    const plan = (id: string, version: number, name: string, cents: number | undefined, slots: number, features = ["collaboration", "github_integration", "hosted_artifacts", "native_execution"]) =>
+      ({ id, version, name, ...(cents === undefined ? {} : { monthly_usd_cents: cents }), features, allowances: { concurrent_work: slots } });
+    const api = fakeApi({
+      platformOrganizations: vi.fn(async () => administrator),
+      platformEntitlements: vi.fn(async () => ({
+        ...entitlements,
+        base: { id: "free", version: 1 },
+        effective_base: { id: "free", version: 1 },
+        grants: grant === null ? [] : [{ ...entitlements.grants[0]!, plan: grant }],
+        plans: [
+          plan("internal", 1, "Internal", undefined, 50, ["collaboration", "model_choice"]),
+          plan("scale", 2, "Scale", undefined, 25),
+          plan("growth", 1, "Growth (legacy)", 7900, 8),
+          plan("growth", 2, "Growth", 9900, 10),
+          plan("team", 1, "Team (legacy)", 2900, 3),
+          plan("team", 2, "Team", 4900, 5),
+          plan("free", 1, "Free", 0, 1, ["collaboration"]),
+          plan("starter", 1, "Starter", 1900, 2),
+          ...entitlements.plans,
+        ],
+      })),
+    });
+    const user = userEvent.setup();
+    await renderPlatform(api, "/platform/tenants/org_alpha");
+    const region = await screen.findByRole("region", { name: "Plan for Alpha" });
+    fireEvent.click(await within(region).findByRole("button", { name: "Change plan" }));
+    const dialog = await screen.findByRole("dialog", { name: /^Grant / });
+    const facts = () => within(within(dialog).getByLabelText("Selected plan")).getAllByRole("definition").map((fact) => fact.textContent);
+    const features = ["Collaboration", "GitHub", "Artifact storage", "Runner work"];
+    expect(facts()).toEqual(["$19/mo", "2 runner slots", ...features]);
+    await user.click(within(dialog).getByRole("combobox", { name: "Plan" }));
+    expect((await screen.findAllByRole("option")).map((option) => option.textContent)).toEqual(options);
+    expect(within(screen.getByRole("group", { name: "Other" })).getAllByRole("option").map((option) => option.textContent?.replace(/Current|Contact us|\$\d+\/mo/g, ""))).toEqual(other);
+    await user.click(screen.getByRole("option", { name: /^Scale/ }));
+    expect(facts()).toEqual(["Contact us", "25 runner slots", ...features]);
+    if (grant?.version === 1) {
+      await user.click(within(dialog).getByRole("combobox", { name: "Plan" }));
+      await user.click(await screen.findByRole("option", { name: /^Growth \(legacy\)/ }));
+      expect(facts()).toEqual(["$79/mo", "8 runner slots", "Current plan", ...features]);
+      fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "extend pilot" } });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Grant" }));
+      await waitFor(() => expect(vi.mocked(api.changePlatformEntitlement).mock.calls[0]![0].change).toMatchObject({ plan: { id: "growth", version: 1 } }));
+    }
+  });
+
   it("grants model choice without selecting a plan and disables the control after reload", async () => {
     let enabled = false;
     const api = fakeApi({
