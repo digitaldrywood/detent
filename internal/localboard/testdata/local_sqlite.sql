@@ -46,3 +46,5 @@ INSERT INTO detent_work_item_events (project_id,item_id,event_kind,body,payload_
 INSERT INTO detent_work_item_events (project_id,item_id,event_kind,body,payload_json,created_at) VALUES ('default','a-second','comment_edit','Edited comment','{"comment_id":"1"}','2026-01-02T00:00:00Z');
 INSERT INTO detent_work_item_events (project_id,item_id,event_kind,body,payload_json,created_at) VALUES ('default','a-second','comment','Deleted comment','{}','2026-01-01T00:00:00Z');
 INSERT INTO detent_work_item_events (project_id,item_id,event_kind,body,payload_json,created_at) VALUES ('default','a-second','comment_delete','','{"comment_id":"3"}','2026-01-02T00:00:00Z');
+
+UPDATE detent_work_items SET priority=2 WHERE project_id='default' AND id='z-first';
