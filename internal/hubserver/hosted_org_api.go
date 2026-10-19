@@ -128,12 +128,12 @@ func (r hostedIdempotent) validate(required bool) error {
 	key := strings.TrimSpace(r.IdempotencyKey)
 	if key == "" {
 		if required {
-			return nativeInvalid("An idempotency key of at most 128 bytes is required")
+			return nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 		}
 		return nil
 	}
 	if len(r.IdempotencyKey) > 128 {
-		return nativeInvalid("An idempotency key of at most 128 bytes is required")
+		return nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	return nil
 }
@@ -340,7 +340,7 @@ func (s *Service) editHostedInvitationJSON(c echo.Context) error {
 		Grants []hostedMemberGrant `json:"grants"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
@@ -364,7 +364,7 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 		Grants []hostedMemberGrant `json:"grants"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(true); err != nil {
 		return s.nativeAPIError(c, err)
@@ -529,7 +529,7 @@ func (s *Service) changeHostedRoleJSON(c echo.Context) error {
 		Role string `json:"role"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
@@ -557,7 +557,7 @@ func (s *Service) changeHostedGrantJSON(c echo.Context) error {
 		Revoke    bool   `json:"revoke"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
@@ -640,7 +640,7 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 		States      []tracker.NativeState `json:"states,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(true); err != nil {
 		return s.nativeAPIError(c, err)
@@ -688,7 +688,7 @@ func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {
 	var request hostedIdempotent
 	if c.Request().ContentLength != 0 {
 		if err := decodeAPIJSON(c, &request); err != nil {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 	}
 	if err := request.validate(false); err != nil {
@@ -709,7 +709,7 @@ func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {
 func (s *Service) resendHostedInvitationJSON(c echo.Context) error {
 	var request hostedIdempotent
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)

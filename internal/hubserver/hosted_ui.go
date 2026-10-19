@@ -247,7 +247,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	var boardSequence int64
 	if board {
 		if workspaceID != "" || workItemID != "" {
-			return s.nativeAPIError(c, nativeInvalid("board stream cannot include a workspace or item"))
+			return s.nativeAPIError(c, nativePublicInvalid("board stream cannot include a workspace or item"))
 		}
 		value := c.Request().Header.Get("Last-Event-ID")
 		if value == "" {
@@ -256,7 +256,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 		if value != "" {
 			boardSequence, err = strconv.ParseInt(value, 10, 64)
 			if err != nil || boardSequence < 0 {
-				return s.nativeAPIError(c, nativeInvalid("Stream sequence is invalid"))
+				return s.nativeAPIError(c, nativePublicInvalid("Stream sequence is invalid"))
 			}
 		}
 		params := c.QueryParams()

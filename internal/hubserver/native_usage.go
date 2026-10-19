@@ -39,7 +39,7 @@ func validateNativeRunUsage(request tracker.NativeRunEvent) error {
 		return nil
 	}
 	if request.Type == "run.started" {
-		return nativeInvalid("Usage requires a checkpoint or a finished run")
+		return nativePublicInvalid("Usage requires a checkpoint or a finished run")
 	}
 	if len(usage) > maxNativeUsageEntries {
 		return nativeInvalid(fmt.Sprintf("A run event carries at most %d usage entries", maxNativeUsageEntries))
@@ -49,7 +49,7 @@ func validateNativeRunUsage(request tracker.NativeRunEvent) error {
 		provider := strings.TrimSpace(entry.Provider)
 		model := strings.TrimSpace(entry.Model)
 		if provider == "" || model == "" || len(provider) > maxNativeUsageNameBytes || len(model) > maxNativeUsageNameBytes {
-			return nativeInvalid("Usage requires a provider and a model of at most 128 bytes each")
+			return nativePublicInvalid("Usage requires a provider and a model of at most 128 bytes each")
 		}
 		key := tracker.UsageProviderID(provider) + "\x00" + model
 		if entry.UsageKind == "incremental" {
@@ -63,7 +63,7 @@ func validateNativeRunUsage(request tracker.NativeRunEvent) error {
 		}
 		seen[key] = true
 		if entry.Input < 0 || entry.CachedInput < 0 || entry.Output < 0 || entry.CostEstimate < 0 {
-			return nativeInvalid("Usage counts and cost cannot be negative")
+			return nativePublicInvalid("Usage counts and cost cannot be negative")
 		}
 	}
 	return nil

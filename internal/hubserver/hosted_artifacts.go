@@ -22,7 +22,7 @@ func (s *Service) hostedArtifactAllowances(c echo.Context) error {
 	}
 	var usage artifact.Usage
 	if err := decodeAPIJSON(c, &usage); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	ctx := c.Request().Context()
 	tx, err := s.database.db.BeginTx(ctx, nil)
@@ -55,11 +55,11 @@ func (s *Service) hostedArtifactAllowances(c echo.Context) error {
 	}
 	for _, amount := range []int64{usage.RetainedBytes, usage.ReservedBytes, usage.RelayBytes, usage.StorageRequests} {
 		if amount < 0 || amount > 1<<50 {
-			return s.nativeAPIError(c, nativeInvalid("Artifact usage is invalid"))
+			return s.nativeAPIError(c, nativePublicInvalid("Artifact usage is invalid"))
 		}
 	}
 	if usage.ObservedAt.After(now.Add(time.Minute)) {
-		return s.nativeAPIError(c, nativeInvalid("Artifact usage clock is invalid"))
+		return s.nativeAPIError(c, nativePublicInvalid("Artifact usage clock is invalid"))
 	}
 	if !usage.ObservedAt.IsZero() && usage.ObservedAt.UnixNano() > observed {
 		raw, err := json.Marshal(usage)

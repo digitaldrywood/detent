@@ -97,10 +97,10 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		ConnectionID string          `json:"connection_id"`
 	}
 	if err := decodeAPIJSON(c, &call); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if call.ConnectionID == "" || len(call.ConnectionID) > 256 {
-		return invalidAPIRequest(c, operatortool.ErrInvalidArguments)
+		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
 	ctx := operatortool.BindConnection(c.Request().Context(), call.ConnectionID, "shared-entry")
 	if err := (hostedOperatorExecutor{s}).OpenConnection(ctx); err != nil {
@@ -128,7 +128,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		ProjectID string `json:"project_id"`
 	}
 	if json.Unmarshal(call.Arguments, &selector) != nil {
-		return invalidAPIRequest(c, operatortool.ErrInvalidArguments)
+		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
 	if selector.ProjectID != "" && !credential.EntryKey.Allows(selector.ProjectID) {
 		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"})
@@ -147,7 +147,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	result, err := (hostedOperatorExecutor{s}).Execute(ctx, operatortool.Call{Name: call.Name, Arguments: call.Arguments})
 	if err != nil {
 		if errors.Is(err, operatortool.ErrInvalidArguments) {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 		if errors.Is(err, chat.ErrActionNotFound) {
 			return s.nativeAPIError(c, nativeNotFound())
@@ -207,10 +207,10 @@ func (s *Service) entryKeyAudit(c echo.Context) error {
 		Event string `json:"event"`
 	}
 	if err := decodeAPIJSON(c, &event); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if len(event.KeyID) > 256 || event.Owner == "" || len(event.Owner) > 256 || event.Event == "" || len(event.Event) > 128 {
-		return invalidAPIRequest(c, operatortool.ErrInvalidArguments)
+		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService {

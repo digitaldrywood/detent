@@ -89,7 +89,7 @@ func (s *Service) createNativeOrganization(c echo.Context) error {
 		Name string `json:"name"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.createNativeOrganizationFor(c.Request().Context(), request.Name)
 	if err != nil {
@@ -108,7 +108,7 @@ type createNativeProjectRequest struct {
 func (s *Service) createNativeProject(c echo.Context) error {
 	var request createNativeProjectRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok {
@@ -122,7 +122,7 @@ func (s *Service) createNativeProject(c echo.Context) error {
 func (s *Service) createNativeProjectOperation(request createNativeProjectRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
 	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		if strings.TrimSpace(request.Name) == "" || len(request.Name) > 200 {
-			return nil, nativeInvalid("Project name is required and limited to 200 bytes")
+			return nil, nativePublicInvalid("Project name is required and limited to 200 bytes")
 		}
 		if err := validateNativeStates(request.States); err != nil {
 			return nil, err
@@ -180,7 +180,7 @@ func (s *Service) grantNativeToken(c echo.Context) error {
 		ProjectID      tracker.ProjectID      `json:"project_id"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := s.grantNativeTokenFor(c.Request().Context(), c.Param("id"), string(request.OrganizationID), string(request.ProjectID)); err != nil {
 		return s.nativeAPIError(c, err)
@@ -259,7 +259,7 @@ func applyNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope
 		return err
 	}
 	if project.Profile != "native" {
-		return nativeInvalid("Compatibility project workflow is externally owned")
+		return nativePublicInvalid("Compatibility project workflow is externally owned")
 	}
 	states = nativeTriageStates(states)
 	if err := validateNativeStates(states); err != nil {

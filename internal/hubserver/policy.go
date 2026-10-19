@@ -77,7 +77,7 @@ func (s *Service) getProjectPolicy(c echo.Context) error {
 func (s *Service) approveProjectPolicy(c echo.Context) error {
 	var change policy.Change
 	if err := decodeAPIJSON(c, &change); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if change.ObservedPolicyID == "" {
 		if err := change.Policy.Validate(); err != nil {
@@ -102,7 +102,7 @@ func (s *Service) approveProjectPolicy(c echo.Context) error {
 func (s *Service) observeProjectPolicy(c echo.Context) error {
 	var observation policy.Observation
 	if err := decodeAPIJSON(c, &observation); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	descriptor, err := workflowconfig.ResolveSharedPolicy(observation.Descriptor)
 	if err != nil {
@@ -206,7 +206,7 @@ func (s *Service) revokeProjectPolicy(c echo.Context) error {
 		ExpectedID string `json:"expected_policy_id"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	scope, err := s.policyScope(c)
 	if err != nil {
@@ -242,7 +242,7 @@ func (d *database) approvePolicy(ctx context.Context, scope, actor string, chang
 func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor string, change policy.Change, landing policyLanding) (result policy.Approval, resultErr error) {
 	if change.ObservedPolicyID != "" {
 		if !reflect.ValueOf(change.Policy).IsZero() {
-			return result, nativeInvalid("Supply either observed_policy_id or policy, not both")
+			return result, nativePublicInvalid("Supply either observed_policy_id or policy, not both")
 		}
 		now, err := d.currentTime()
 		if err != nil {
@@ -259,7 +259,7 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 			}
 		}
 		if change.Policy.ID == "" {
-			return result, nativeInvalid("observed_policy_id does not identify a current authorized observation in this project")
+			return result, nativePublicInvalid("observed_policy_id does not identify a current authorized observation in this project")
 		}
 	}
 	resolved, err := workflowconfig.ResolveSharedPolicy(change.Policy)
@@ -511,7 +511,7 @@ func validateClaimPolicy(ctx context.Context, tx *sql.Tx, query claimCandidateQu
 	var raw string
 	if err := tx.QueryRowContext(ctx, "SELECT metadata_json FROM policy_revisions WHERE scope = ? AND policy_id = ?", scope, query.PolicyID).Scan(&raw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", nativeInvalid("Claim configuration has not been reported for this project")
+			return "", nativePublicInvalid("Claim configuration has not been reported for this project")
 		}
 		return "", err
 	}

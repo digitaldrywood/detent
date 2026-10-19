@@ -43,7 +43,7 @@ type CutoverReceipt struct {
 func (s *Service) cutoverProject(c echo.Context) error {
 	var request CutoverRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, s.cutoverProjectOperation(request))
 }
@@ -60,12 +60,12 @@ func (s *Service) cutoverProjectOperation(request CutoverRequest) func(context.C
 			}
 		}
 		if !initialFound {
-			return nil, nativeInvalid("Initial state must be a configured native workflow state")
+			return nil, nativePublicInvalid("Initial state must be a configured native workflow state")
 		}
 		if request.CloseSource {
 			destination, err := url.Parse(request.DestinationURL)
 			if err != nil || destination.Host == "" || destination.User != nil || (destination.Scheme != "https" && destination.Scheme != "http") {
-				return nil, nativeInvalid("Link-and-close requires an absolute Detent destination URL")
+				return nil, nativePublicInvalid("Link-and-close requires an absolute Detent destination URL")
 			}
 		}
 		receipt, err := inspectCutover(ctx, tx, scope, request, now)
@@ -79,10 +79,10 @@ func (s *Service) cutoverProjectOperation(request CutoverRequest) func(context.C
 			return nil, nativeInvalid(strings.Join(receipt.Blockers, "; "))
 		}
 		if request.Checkpoint == "" || receipt.Checkpoint != request.Checkpoint {
-			return nil, nativeInvalid("Cutover checkpoint changed; repeat the dry run and review its receipt")
+			return nil, nativePublicInvalid("Cutover checkpoint changed; repeat the dry run and review its receipt")
 		}
 		if request.CloseSource && s.config.OutboxBackend == nil {
-			return nil, nativeInvalid("Link-and-close requires configured GitHub transport")
+			return nil, nativePublicInvalid("Link-and-close requires configured GitHub transport")
 		}
 		if err := applyCutover(ctx, tx, scope, request, now); err != nil {
 			return nil, err
@@ -305,7 +305,7 @@ func preserveCutoverPolicy(ctx context.Context, tx *sql.Tx, scope nativeScope) e
 		return err
 	}
 	if conflicts != 0 {
-		return nativeInvalid("Native and repository policy approvals differ; reconcile trusted approvals before cutover")
+		return nativePublicInvalid("Native and repository policy approvals differ; reconcile trusted approvals before cutover")
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) SELECT ?, r.policy_id, r.metadata_json, r.approved_by, r.approved_at FROM policy_revisions r JOIN project_policies p ON p.scope = r.scope AND p.policy_id = r.policy_id WHERE p.scope = ? ON CONFLICT DO NOTHING`, native, legacy)
 	if err != nil {
@@ -323,7 +323,7 @@ type projectNativeSummaryRequest struct {
 func (s *Service) projectNativeSummary(c echo.Context) error {
 	var request projectNativeSummaryRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, s.projectNativeSummaryOperation(request, c.Param("item")))
 }
@@ -335,14 +335,14 @@ func (s *Service) projectNativeSummaryOperation(request projectNativeSummaryRequ
 			return nil, err
 		}
 		if integration.Profile != "native" || integration.Projection != "summary" {
-			return nil, nativeInvalid("Native summary projection is not enabled")
+			return nil, nativePublicInvalid("Native summary projection is not enabled")
 		}
 		var linked int
 		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM linked_issue_sources WHERE work_item_id = ?", item).Scan(&linked); err != nil {
 			return nil, err
 		}
 		if linked != 0 {
-			return nil, nativeInvalid("Linked source comments are private to Cloud")
+			return nil, nativePublicInvalid("Linked source comments are private to Cloud")
 		}
 		if err := enqueueNativeSummary(ctx, tx, scope, item, request.IdempotencyKey, request.Body, false, now); err != nil {
 			return nil, err
@@ -359,7 +359,7 @@ func enqueueNativeSummary(ctx context.Context, tx *sql.Tx, scope nativeScope, it
 
 func enqueueNativeSourceSummary(ctx context.Context, tx *sql.Tx, scope nativeScope, item, key, body string, closeSource bool, stateReason string, now time.Time) error {
 	if strings.TrimSpace(body) == "" || len(body) > 60<<10 {
-		return nativeInvalid("Summary must contain 1 byte to 60 KiB")
+		return nativePublicInvalid("Summary must contain 1 byte to 60 KiB")
 	}
 	var issueID, repositoryID int64
 	var sourceNumber int
@@ -382,7 +382,7 @@ func enqueueNativeSourceSummary(ctx context.Context, tx *sql.Tx, scope nativeSco
 		}
 	}
 	if repositoryID == 0 || sourceNumber == 0 {
-		return nativeInvalid("Issue has no GitHub source")
+		return nativePublicInvalid("Issue has no GitHub source")
 	}
 	marker := "<!-- detent-summary:" + item + " -->"
 	if key == "intake" || strings.HasPrefix(key, "cancelled:") {

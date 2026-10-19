@@ -99,7 +99,7 @@ func (s *Service) waitNativeCandidates(c echo.Context) error {
 	if value := c.QueryParam("wait"); value != "" {
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed < 1 || parsed > 30 {
-			return s.nativeAPIError(c, nativeInvalid("Wait must be between 1 and 30 seconds"))
+			return s.nativeAPIError(c, nativePublicInvalid("Wait must be between 1 and 30 seconds"))
 		}
 		wait = parsed
 	}

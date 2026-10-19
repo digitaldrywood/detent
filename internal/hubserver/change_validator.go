@@ -26,7 +26,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		return err
 	}
 	if implementationReview && request.Validator != nil || audit && (implementationReview || request.Validator != nil) {
-		return "", nativeInvalid("implementation review and acceptance validation must be separate results")
+		return "", nativePublicInvalid("implementation review and acceptance validation must be separate results")
 	}
 	if request.Validator == nil && !implementationReview && !audit {
 		if worker {
@@ -49,13 +49,13 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		if audit {
 			switch {
 			case result.SessionID <= 0:
-				return "", nativeInvalid("security audit evidence is incomplete: session_id is missing or invalid")
+				return "", nativePublicInvalid("security audit evidence is incomplete: session_id is missing or invalid")
 			case result.Repository != version.Repository:
-				return "", nativeInvalid("security audit evidence is incomplete: run.repository differs from the immutable version")
+				return "", nativePublicInvalid("security audit evidence is incomplete: run.repository differs from the immutable version")
 			case !landingAudit && result.BaseSHA != version.BaseSHA:
-				return "", nativeInvalid("security audit evidence is incomplete: run.base_sha differs from the immutable version")
+				return "", nativePublicInvalid("security audit evidence is incomplete: run.base_sha differs from the immutable version")
 			case !landingAudit && result.HeadSHA != version.HeadSHA:
-				return "", nativeInvalid("security audit evidence is incomplete: run.head_sha differs from the immutable version")
+				return "", nativePublicInvalid("security audit evidence is incomplete: run.head_sha differs from the immutable version")
 			}
 		}
 		field := "review"
@@ -101,13 +101,13 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		run := request.SecurityAudit.Run
 		switch {
 		case run.ID <= 0:
-			return "", nativeInvalid("security audit evidence is incomplete: missing: run.id is missing or invalid")
+			return "", nativePublicInvalid("security audit evidence is incomplete: missing: run.id is missing or invalid")
 		case run.IssueID != string(change.WorkItemID):
-			return "", nativeInvalid("security audit identity differs from the work item: run.issue_id")
+			return "", nativePublicInvalid("security audit identity differs from the work item: run.issue_id")
 		case run.ProjectID != string(scope.project):
-			return "", nativeInvalid("security audit identity differs from the work item: run.project_id")
+			return "", nativePublicInvalid("security audit identity differs from the work item: run.project_id")
 		case run.ID != result.SessionID:
-			return "", nativeInvalid("security audit identity differs from the work item: run.id differs from session_id")
+			return "", nativePublicInvalid("security audit identity differs from the work item: run.id differs from session_id")
 		}
 		evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: string(scope.project), Repository: version.Repository, PRNumber: run.PRNumber, BaseSHA: result.BaseSHA, HeadSHA: result.HeadSHA}, "", workflow.Config.Gate.SecurityAudit.BlockOn)
 		verdict := gate.ValidatorVerdictPass
@@ -117,7 +117,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 			return "", nativeInvalid("security audit evidence is incomplete: " + evaluation.Diagnostic())
 		}
 		if result.Verdict != verdict {
-			return "", nativeInvalid("security audit verdict differs from the configured gate")
+			return "", nativePublicInvalid("security audit verdict differs from the configured gate")
 		}
 	}
 	originalVerdict := result.Verdict
@@ -185,7 +185,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 			other = review.Validator
 		}
 		if audit && review.Validator != nil && review.SessionMachineID == current.MachineID && review.Validator.SessionID == result.SessionID {
-			return "", nativeInvalid("security audit requires a separate session")
+			return "", nativePublicInvalid("security audit requires a separate session")
 		}
 		if other != nil && review.SessionMachineID == current.MachineID && other.SessionID == result.SessionID {
 			return "", invalid("implementation review and acceptance validation require separate sessions", "validator.session_id")

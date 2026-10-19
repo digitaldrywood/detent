@@ -43,17 +43,17 @@ func (s *Service) createAPITokenFor(ctx context.Context, request tokenRequest) (
 			kind = "personal"
 		}
 		if kind != "personal" && kind != "service" {
-			return tokenResponse{}, nativeInvalid("Choose a personal or service key")
+			return tokenResponse{}, nativePublicInvalid("Choose a personal or service key")
 		}
 		issuer := *request.Issuer
 		if s.config.Hosted == nil || issuer.Hosted == nil || issuer.Hosted.SupportActor != "" || issuer.HostedKeyScope != "" {
-			return tokenResponse{}, nativeInvalid("Sign in as an organization member to create an API key")
+			return tokenResponse{}, nativePublicInvalid("Sign in as an organization member to create an API key")
 		}
 		if request.Scope != apiScopeOperator && request.Scope != apiScopeAdmin || (request.Scope == apiScopeAdmin) != (request.KeyScope == apikey.ScopeAdmin) || !hostedRoleAllows(issuer.HostedRole, request.KeyScope, "credentials") {
-			return tokenResponse{}, nativeInvalid("Select a scope allowed by your current role")
+			return tokenResponse{}, nativePublicInvalid("Select a scope allowed by your current role")
 		}
 		if request.ExpiresAt != nil && (!request.ExpiresAt.After(now) || request.ExpiresAt.After(now.Add(90*24*time.Hour))) {
-			return tokenResponse{}, nativeInvalid("Select no expiry or an expiry within 90 days")
+			return tokenResponse{}, nativePublicInvalid("Select no expiry or an expiry within 90 days")
 		}
 		var message string
 		request.ProjectAccess, message = resolveHostedProjectAccess(request.ProjectAccess, request.ProjectIDs)
@@ -172,7 +172,7 @@ func (s *Service) revokeAPITokenFor(ctx context.Context, id string) error {
 
 func (s *Service) grantNativeTokenFor(ctx context.Context, id, organization, project string) error {
 	if id == bootstrapTokenID {
-		return nativeInvalid("Bootstrap administrator cannot be converted to a project token")
+		return nativePublicInvalid("Bootstrap administrator cannot be converted to a project token")
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -184,7 +184,7 @@ func (s *Service) grantNativeTokenFor(ctx context.Context, id, organization, pro
 		return err
 	}
 	if runnerCount != 0 {
-		return nativeInvalid("Runner grants are fixed at enrollment")
+		return nativePublicInvalid("Runner grants are fixed at enrollment")
 	}
 	var projectCount int
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE organization_id=? AND id=? AND deleted_at IS NULL", organization, project).Scan(&projectCount); err != nil {
@@ -208,7 +208,7 @@ func (s *Service) grantNativeTokenFor(ctx context.Context, id, organization, pro
 
 func (s *Service) createNativeOrganizationFor(ctx context.Context, name string) (nativeOrganization, error) {
 	if strings.TrimSpace(name) == "" || len(name) > 200 {
-		return nativeOrganization{}, nativeInvalid("Organization name is required")
+		return nativeOrganization{}, nativePublicInvalid("Organization name is required")
 	}
 	organization := nativeOrganization{ID: tracker.OrganizationID(newNativeID("org")), Name: name}
 	_, err := s.database.db.ExecContext(ctx, "INSERT INTO organizations(id,name,created_at) VALUES(?,?,?)", organization.ID, organization.Name, formatHubTime(s.config.now()))

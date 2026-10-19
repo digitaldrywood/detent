@@ -147,7 +147,7 @@ func (s *Service) changeHostedGrantFor(ctx context.Context, credential apiCreden
 		return hostedMemberView{}, nativeNotFound()
 	}
 	if !hostedSafeID(member.UserID) || !hostedSafeID(project) {
-		return hostedMemberView{}, nativeInvalid("Select a member and project")
+		return hostedMemberView{}, nativePublicInvalid("Select a member and project")
 	}
 	if err := s.hostedGrant(ctx, credential, member.UserID, project, write, runner, revoke); err != nil {
 		return hostedMemberView{}, err
@@ -295,7 +295,7 @@ func (s *Service) validateHostedGrants(ctx context.Context, query nativeQueryer,
 	seen := map[string]bool{}
 	for _, grant := range grants {
 		if !hostedSafeID(grant.ProjectID) || seen[grant.ProjectID] {
-			return nativeInvalid("Select each project only once")
+			return nativePublicInvalid("Select each project only once")
 		}
 		seen[grant.ProjectID] = true
 		if credential.HostedKeyScope != "" {

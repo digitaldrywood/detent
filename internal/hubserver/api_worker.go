@@ -129,7 +129,7 @@ type machineResponse struct {
 func (s *Service) claimWorkItem(c echo.Context) error {
 	var request claimAPIRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if request.WorkItemID < 0 {
 		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_claim", Message: "work_item_id must be positive when supplied"})
@@ -169,7 +169,7 @@ func (s *Service) renewLease(c echo.Context) error {
 	}
 	var request renewLeaseAPIRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	ttl, err := apiTTL(request.TTLSeconds)
 	if err != nil {
@@ -193,7 +193,7 @@ func (s *Service) releaseLease(c echo.Context) error {
 	}
 	var request releaseLeaseAPIRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	err = s.tracker.Release(c.Request().Context(), tracker.ReleaseRequest{LeaseID: leaseID, FencingToken: request.FencingToken, Reason: request.Reason})
 	if err != nil {
@@ -209,7 +209,7 @@ func (s *Service) appendWorkItemEvent(c echo.Context) error {
 	}
 	var request workEventAPIRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if request.Kind != "progress" || request.Payload != nil && !slices.Contains([]string{"plan", "implement", "test", "review", "complete"}, request.Payload.Step) {
 		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_event", Message: "Legacy progress requires an allowlisted step; use v2 for native events"})
@@ -991,7 +991,7 @@ func setContainsAll(haystack map[string]struct{}, needles map[string]struct{}) b
 func (s *Service) registerMachine(c echo.Context) error {
 	var request machineRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	request.ID = tracker.MachineID(strings.TrimSpace(string(request.ID)))
 	request.Hostname = strings.TrimSpace(request.Hostname)
@@ -1046,7 +1046,7 @@ func (s *Service) heartbeatMachine(c echo.Context) error {
 	}
 	var request machineHeartbeatRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if request.Capacity != nil && *request.Capacity < 0 {
 		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_machine", Message: "Machine capacity must be non-negative"})

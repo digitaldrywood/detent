@@ -129,7 +129,7 @@ func (s *Service) listProjectActions(c echo.Context) error {
 func (s *Service) createProjectAction(c echo.Context) error {
 	var request projectActionRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandCreateAction(c.Request().Context(), nativeRequestScope(c), request)
 	if err != nil {
@@ -142,7 +142,7 @@ func (s *Service) createProjectAction(c echo.Context) error {
 func (s *Service) patchProjectAction(c echo.Context) error {
 	var request projectActionPatch
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandPatchAction(c.Request().Context(), nativeRequestScope(c), c.Param("action"), request)
 	if err != nil {
@@ -167,7 +167,7 @@ func (s *Service) deleteProjectAction(c echo.Context) error {
 func (s *Service) createProjectActionRun(c echo.Context) error {
 	var request projectActionRunRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandRunAction(c.Request().Context(), nativeRequestScope(c), c.Param("action"), request)
 	if err != nil {
@@ -237,7 +237,7 @@ func (s *Service) listProjectActionRuns(c echo.Context) error {
 	}
 	limit, err := parsePageLimit(c.QueryParam("limit"))
 	if err != nil {
-		return s.nativeAPIError(c, nativeInvalid("Page limit is invalid"))
+		return s.nativeAPIError(c, nativePublicInvalid("Page limit is invalid"))
 	}
 	value, err := s.readActionRuns(c.Request().Context(), nativeRequestScope(c), c.Param("action"), limit)
 	if err != nil {
@@ -495,7 +495,7 @@ func (s *Service) applyPatchProjectAction(ctx context.Context, tx *sql.Tx, scope
 		return nil, err
 	}
 	if request.ExpectedRevision <= 0 {
-		return nil, nativeInvalid("Expected revision must be positive")
+		return nil, nativePublicInvalid("Expected revision must be positive")
 	}
 	if record.Revision != int64(request.ExpectedRevision) {
 		return nil, nativeConflict(tracker.Revision(record.Revision))

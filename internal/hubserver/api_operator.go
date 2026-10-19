@@ -54,7 +54,7 @@ func (s *Service) changeWorkItemWorkflow(c echo.Context) error {
 	}
 	var request workflowMutationRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	repositoryID, err := s.database.workItemRepositoryID(c.Request().Context(), id)
 	if err != nil {
@@ -83,7 +83,7 @@ func (s *Service) changeWorkItemDependency(c echo.Context) error {
 	}
 	var request dependencyMutationRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	request.Action = strings.ToLower(strings.TrimSpace(request.Action))
 	request.Provenance = strings.TrimSpace(request.Provenance)
@@ -107,7 +107,7 @@ func (s *Service) changeWorkItemPriority(c echo.Context) error {
 	}
 	var request priorityMutationRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.workItemPriorityCommand(c.Request().Context(), id, request)
 	if err != nil {
@@ -130,7 +130,7 @@ func (s *Service) workItemPriorityCommand(ctx context.Context, id tracker.WorkIt
 		priority = &level
 	}
 	if request.Scope == "" || request.State == "" || (!ok && !removing) {
-		return mutationResponse{}, nativeInvalid("Scope, state, and a valid priority are required")
+		return mutationResponse{}, nativePublicInvalid("Scope, state, and a valid priority are required")
 	}
 	repositoryID, err := s.database.workItemRepositoryID(ctx, id)
 	if err != nil {
@@ -167,7 +167,7 @@ func (s *Service) changeWorkItemOrder(c echo.Context) error {
 	}
 	var request orderMutationRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	request.Scope = strings.TrimSpace(request.Scope)
 	request.State = strings.TrimSpace(request.State)

@@ -62,6 +62,10 @@ func nativeInvalid(message string) error {
 	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity}
 }
 
+func nativePublicInvalid(message string) error {
+	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
+}
+
 func nativeRejection(err error, category, field string) error {
 	var failure *nativeError
 	rejection := runnerauth.PublicationRejection{Category: category, Field: field}
@@ -130,7 +134,9 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 			}
 			return s.refusedAPIError(c, failure.status, failure.Code, message, apiErrorResponse{Code: failure.Code, Message: message})
 		}
-		return s.refusedAPIError(c, failure.status, failure.Code, message, failure)
+		response := *failure
+		response.Message = message
+		return s.refusedAPIError(c, failure.status, failure.Code, message, &response)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return s.nativeAPIError(c, nativeNotFound())
@@ -447,7 +453,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		ctx = mutation.WithContext(ctx, mutation.Metadata{PrincipalID: actor.PrincipalID, ActorKind: actor.Kind, ViaKey: actor.ViaKey, OrganizationID: string(scope.organization), ProjectID: string(scope.project), ResourceID: options.Item, Action: options.OperationID, Source: "api", Confirmation: "none", CorrelationID: newNativeID("api")})
 	}
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
-		return nil, nativeInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	requestHash, err := nativeCommandHash(input)
 	if err != nil {
@@ -620,7 +626,7 @@ func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, op
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if strings.TrimSpace(key) == "" || len(key) > 128 {
-		return nil, false, nativeInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, false, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	hash, err := nativeCommandHash(input)
 	if err != nil {

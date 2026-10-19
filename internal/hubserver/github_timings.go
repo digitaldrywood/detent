@@ -12,12 +12,12 @@ import (
 func (s *Service) getNativeGitHubTimings(c echo.Context) error {
 	for key, values := range c.QueryParams() {
 		if key != "native_attempt_id" && key != "runner_id" || len(values) != 1 {
-			return s.nativeAPIError(c, nativeInvalid("Unsupported GitHub timing selector"))
+			return s.nativeAPIError(c, nativePublicInvalid("Unsupported GitHub timing selector"))
 		}
 	}
 	attempt, runner := c.QueryParam("native_attempt_id"), c.QueryParam("runner_id")
 	if !validNativeID(attempt, "attempt") || !validNativeID(runner, "runner") {
-		return s.nativeAPIError(c, nativeInvalid("Select a native attempt and registered runner"))
+		return s.nativeAPIError(c, nativePublicInvalid("Select a native attempt and registered runner"))
 	}
 	scope := nativeRequestScope(c)
 	if scope.credential.Runner.RunnerID != "" && scope.credential.Runner.RunnerID != runner {
@@ -39,7 +39,7 @@ func validateNativeGitHubScope(scope *tracker.NativeGitHubScope) error {
 		return nil
 	}
 	if scope.Scope != "native_landing" || scope.StartedAt.IsZero() || scope.ObservedAt.Before(scope.StartedAt) || len(scope.RESTCounts) > tracker.NativeGitHubAggregateLimit || len(scope.Timings) > tracker.NativeGitHubAggregateLimit || scope.CountsDropped < 0 || scope.TimingsDropped < 0 || scope.WallElapsedNS != nil && *scope.WallElapsedNS < 0 || scope.SubStepElapsedNS != nil {
-		return nativeInvalid("Invalid bounded GitHub scope observation")
+		return nativePublicInvalid("Invalid bounded GitHub scope observation")
 	}
 	scope.Coverage = "selected_client_completed_attempts; sub_steps_subprocesses_other_clients_unavailable"
 	scope.ElapsedSemantics = "http_sums_can_exceed_wall; token_resolution_inclusive_can_contain_installation_http"
@@ -52,7 +52,7 @@ func validateNativeGitHubScope(scope *tracker.NativeGitHubScope) error {
 	}
 	for _, count := range scope.RESTCounts {
 		if !validKey(count.NativeGitHubKey) || count.EndpointFamily == "graphql" || count.Count <= 0 {
-			return nativeInvalid("Invalid GitHub request count")
+			return nativePublicInvalid("Invalid GitHub request count")
 		}
 	}
 	for _, timing := range scope.Timings {
@@ -62,14 +62,14 @@ func validateNativeGitHubScope(scope *tracker.NativeGitHubScope) error {
 		}
 		purposeValid := protocol == "rest" && timing.QueryPurpose == "" || protocol == "graphql" && slices.Contains([]string{"fetch_issues_by_status_label", "fetch_repository_issues", "hydrate_issue", "hydrate_issue_comments", "hydrate_issue_dependencies", "hydrate_issue_fields", "hydrate_pull_request", "hydrate_pull_request_reviews", "hydrate_pull_request_checks", "hydrate_pull_request_statuses", "search_issue_metadata", "mutate_github_state", "workflow_runs", "check_run_annotations", "other", "graphql", "authenticate", "candidate_issues", "observed_status", "running_states", "epic_children", "issue_parents", "pull_requests", "pull_request_review_threads", "blocked_reasons", "issue_lookup", "project_item", "project_metadata", "assignees", "create_comment", "close_issue", "set_assignee", "remove_assignees", "update_project_field", "remove_project_item", "add_project_item", "merge_queue", "enqueue_pull_request", "dequeue_pull_request", "rate_limit_probe", "lane_signal_status", "onboarding_issue_discovery", "linked_issue_intake"}, timing.QueryPurpose)
 		if !validKey(timing.NativeGitHubKey) || timing.Protocol != protocol || !slices.Contains([]string{"http_transport", "token_resolution_inclusive"}, timing.Boundary) || !purposeValid || timing.AttemptCount <= 0 || timing.TimedCount < 0 || timing.TimedCount > timing.AttemptCount || timing.FirstObservedAt.IsZero() || timing.LastObservedAt.Before(timing.FirstObservedAt) || timing.FirstObservedAt.Before(scope.StartedAt) || timing.LastObservedAt.After(scope.ObservedAt) {
-			return nativeInvalid("Invalid fixed-key GitHub timing")
+			return nativePublicInvalid("Invalid fixed-key GitHub timing")
 		}
 		if timing.TimedCount == 0 {
 			if timing.ElapsedSumNS != nil || timing.ElapsedMaxNS != nil {
-				return nativeInvalid("Unobserved GitHub duration must be null")
+				return nativePublicInvalid("Unobserved GitHub duration must be null")
 			}
 		} else if timing.ElapsedSumNS == nil || timing.ElapsedMaxNS == nil || *timing.ElapsedSumNS < 0 || *timing.ElapsedMaxNS < 0 || *timing.ElapsedMaxNS > *timing.ElapsedSumNS {
-			return nativeInvalid("Invalid observed GitHub duration")
+			return nativePublicInvalid("Invalid observed GitHub duration")
 		}
 	}
 	return nil

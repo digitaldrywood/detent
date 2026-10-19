@@ -141,7 +141,7 @@ func (s *Service) hostedReports(c echo.Context) error {
 	project := params.Get("project")
 	scope := params.Get("scope")
 	if scope != "" && (scope != "organization" || project != reportsAllProjects) {
-		return s.nativeAPIError(c, nativeInvalid("Organization report scope requires all projects"))
+		return s.nativeAPIError(c, nativePublicInvalid("Organization report scope requires all projects"))
 	}
 	selected, found, err := s.reportsReadableProjects(ctx, credential, project)
 	if err != nil {
@@ -160,15 +160,15 @@ func (s *Service) hostedReports(c echo.Context) error {
 	}
 	compare := params.Get("compare")
 	if compare != "" && compare != "prior" && compare != "off" {
-		return s.nativeAPIError(c, nativeInvalid("compare must be prior or off"))
+		return s.nativeAPIError(c, nativePublicInvalid("compare must be prior or off"))
 	}
 	if scope == "organization" {
 		if !w.From.Equal(w.From.Truncate(time.Hour)) || !w.To.Equal(w.To.Truncate(time.Hour)) {
-			return s.nativeAPIError(c, nativeInvalid("Organization report windows use complete UTC hours"))
+			return s.nativeAPIError(c, nativePublicInvalid("Organization report windows use complete UTC hours"))
 		}
 		projectFilter := reportsQueryValues(params, "projects")
 		if len(projectFilter) > reportsMaxFilterValues || len(strings.Join(projectFilter, "\x00")) > 4096 {
-			return s.nativeAPIError(c, nativeInvalid("Report project filter accepts at most 32 values"))
+			return s.nativeAPIError(c, nativePublicInvalid("Report project filter accepts at most 32 values"))
 		}
 		selected = filterProductivityProjects(selected, projectFilter)
 		report, err := s.readOrganizationProductivity(ctx, selected, w, filter)

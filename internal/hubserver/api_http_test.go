@@ -1,7 +1,9 @@
 package hubserver
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,20 +21,25 @@ func TestDecodeAPIJSONCompatibility(t *testing.T) {
 		wantErr bool
 		project string
 		path    string
-		field   string
+		reason  string
+		status  int
+		code    string
 	}{
 		{name: "worker future heartbeat field", scope: apiScopeWorker, body: `{"version":"develop-040e7195c","future_observation":true}`},
 		{name: "worker newer project configuration", scope: apiScopeWorker, body: `{"version":"develop-040e7195c","project_configuration":{"project_id":"project","policy_mismatch":false}}`, project: "project"},
-		{name: "operator unknown field", scope: apiScopeOperator, body: `{"runner_version":"test"}`, wantErr: true, field: "runner_version"},
-		{name: "admin nested unknown field", scope: apiScopeAdmin, body: `{"project_configuration":{"project_name":"project"}}`, wantErr: true, field: "project_name"},
-		{name: "policy extra retry key", scope: apiScopeAdmin, path: nativeBase + "/onboarding/policy", body: `{"idempotency_key":"private value"}`, wantErr: true, field: "idempotency_key"},
-		{name: "unauthenticated unknown field", body: `{"future_observation":true}`, wantErr: true},
-		{name: "worker invalid known field", scope: apiScopeWorker, body: `{"version":42}`, wantErr: true, field: "version"},
-		{name: "worker unknown run event field", scope: apiScopeWorker, path: nativeBase + "/work-items/:item/events", body: `{"version":"develop-040e7195c","prompt":"private prompt"}`, wantErr: true},
-		{name: "worker multiple values", scope: apiScopeWorker, body: `{"version":"test"} {}`, wantErr: true},
-		{name: "worker malformed JSON", scope: apiScopeWorker, body: `{"version":`, wantErr: true},
+		{name: "operator unknown field", scope: apiScopeOperator, body: `{"runner_version":"test"}`, wantErr: true, reason: "Request body contains an unknown field"},
+		{name: "admin nested unknown field", scope: apiScopeAdmin, body: `{"project_configuration":{"project_name":"project"}}`, wantErr: true, reason: "Request body contains an unknown field"},
+		{name: "policy extra retry key", scope: apiScopeAdmin, path: nativeBase + "/onboarding/policy", body: `{"idempotency_key":"private value"}`, wantErr: true, reason: "Request body contains an unknown field"},
+		{name: "unauthenticated unknown field", body: `{"private-token@example.test":true}`, wantErr: true, reason: "Request body contains an unknown field"},
+		{name: "worker invalid known field", scope: apiScopeWorker, body: `{"version":42}`, wantErr: true, reason: "Request body contains an invalid field type"},
+		{name: "worker unknown run event field", scope: apiScopeWorker, path: nativeBase + "/work-items/:item/events", body: `{"version":"develop-040e7195c","prompt":"private prompt"}`, wantErr: true, reason: "Request body contains an unknown field"},
+		{name: "worker multiple values", scope: apiScopeWorker, body: `{"version":"test"} {}`, wantErr: true, reason: "Malformed JSON request body"},
+		{name: "worker malformed JSON", scope: apiScopeWorker, body: `{"version":`, wantErr: true, reason: "Malformed JSON request body"},
+		{name: "oversized body", body: strings.Repeat(" ", maxAPIRequestBodyBytes+1) + `{}`, wantErr: true, reason: "Request body is too large", status: http.StatusRequestEntityTooLarge, code: "payload_too_large"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			service := &Service{config: Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))}}
 			recorder := httptest.NewRecorder()
 			c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(test.body)), recorder)
 			path := test.path
@@ -53,16 +60,32 @@ func TestDecodeAPIJSONCompatibility(t *testing.T) {
 			if (err != nil) != test.wantErr {
 				t.Fatalf("decode error = %v, want error %t", err, test.wantErr)
 			}
-			if test.field != "" {
-				if err := invalidAPIRequest(c, err); err != nil {
+			if test.wantErr {
+				if err := service.invalidAPIRequest(c, err); err != nil {
 					t.Fatal(err)
 				}
 				var response apiErrorResponse
 				if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 					t.Fatal(err)
 				}
-				if recorder.Code != http.StatusUnprocessableEntity || response.Code != "invalid_request" || !strings.Contains(response.Message, test.field) || strings.Contains(response.Message, "private value") {
+				status, code := test.status, test.code
+				if status == 0 {
+					status, code = http.StatusUnprocessableEntity, "invalid_request"
+				}
+				if recorder.Code != status || response.Code != code || response.Message != test.reason {
 					t.Fatalf("invalid body response = %d %+v", recorder.Code, response)
+				}
+				var entry map[string]any
+				if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
+					t.Fatalf("expected exactly one JSON log entry: %v: %s", err, &logs)
+				}
+				if entry["level"] != "WARN" || entry["reason"] != test.reason || entry["error"] != test.reason || entry["refusal_code"] != code || entry["route"] != path {
+					t.Fatalf("refusal log = %#v", entry)
+				}
+				for _, private := range []string{"private-token@example.test", "private value", "private prompt"} {
+					if strings.Contains(logs.String(), private) || strings.Contains(recorder.Body.String(), private) {
+						t.Fatalf("private context escaped: %s", private)
+					}
 				}
 			}
 			if !test.wantErr && heartbeat.Version != "develop-040e7195c" {
@@ -70,6 +93,36 @@ func TestDecodeAPIJSONCompatibility(t *testing.T) {
 			}
 			if !test.wantErr && heartbeat.ProjectConfiguration.ProjectID != test.project {
 				t.Fatalf("project ID = %q", heartbeat.ProjectConfiguration.ProjectID)
+			}
+		})
+	}
+}
+
+func TestOutboxHealthQueryRefusals(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ query, code, reason string }{
+		{"limit=0", "invalid_query", "limit must be between 1 and 200"},
+		{"cursor=private-token", "invalid_cursor", "Outbox cursor is invalid"},
+	} {
+		t.Run(test.code, func(t *testing.T) {
+			var logs bytes.Buffer
+			service := &Service{config: Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))}}
+			recorded := httptest.NewRecorder()
+			c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/api/v1/outbox/health?"+test.query, nil), recorded)
+			c.SetPath("/api/v1/outbox/health")
+			if err := service.outboxHealth(c); err != nil {
+				t.Fatal(err)
+			}
+			failure := requireNativeCode(t, recorded, http.StatusUnprocessableEntity, test.code)
+			var entry map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
+				t.Fatalf("expected exactly one JSON log entry: %v: %s", err, &logs)
+			}
+			if entry["level"] != "WARN" || entry["refusal_code"] != test.code || entry["reason"] != test.reason || entry["route"] != c.Path() || failure.Message != test.reason {
+				t.Fatalf("refusal = %#v, log = %#v", failure, entry)
+			}
+			if strings.Contains(logs.String(), "private-token") || strings.Contains(recorded.Body.String(), "private-token") {
+				t.Fatal("private cursor escaped")
 			}
 		})
 	}

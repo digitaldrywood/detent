@@ -274,6 +274,8 @@ func TestNativeAPIError(t *testing.T) {
 		{"expired session", "access_denied", "Access is no longer available", "WARN", auth.ErrInvalidSession, http.StatusForbidden},
 		{"allowance", "allowance_exhausted", "Hosted active_runners allowance reached (2 of 2). Existing data, reading, export and billing remain available.", "WARN", &hostedLimitError{Resource: "active_runners", Allowance: 2, Consumption: 2}, http.StatusTooManyRequests},
 		{"request refusal", "invalid_request", "A project is required", "WARN", &operatortool.RequestError{Code: "invalid_request", Message: "A project is required"}, http.StatusUnprocessableEntity},
+		{"credential rotation", "invalid_request", "Rotation requires a different credential", "WARN", nativePublicInvalid("Rotation requires a different credential"), http.StatusUnprocessableEntity},
+		{"workspace isolation", "invalid_request", "Workspace isolation must be sandbox, container or user", "WARN", nativePublicInvalid("Workspace isolation must be sandbox, container or user"), http.StatusUnprocessableEntity},
 		{"private validation", "invalid_request", "Unprocessable Entity: invalid request", "WARN", nativeInvalid("private-context"), http.StatusUnprocessableEntity},
 		{"publication rejection", "invalid_request", "Publication rejected: version_validation (source)", "WARN", nativeRejection(nativeInvalid("private-context"), "version_validation", "source"), http.StatusUnprocessableEntity},
 		{"lease conflict", "lease_conflict", "Work item is already leased", "WARN", tracker.ErrLeaseConflict, http.StatusConflict},
@@ -284,9 +286,6 @@ func TestNativeAPIError(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			for _, hosted := range []bool{false, true} {
-				if test.name == "private validation" && !hosted {
-					continue
-				}
 				t.Run(fmt.Sprintf("hosted=%t", hosted), func(t *testing.T) {
 					var logs bytes.Buffer
 					service := &Service{config: Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))}}
@@ -324,7 +323,7 @@ func TestNativeAPIError(t *testing.T) {
 						t.Fatalf("log = %#v", entry)
 					}
 					if test.level == "WARN" {
-						for key, want := range map[string]any{"code": test.code, "reason": test.reason, "route": nativeBase + "/runners/:runner", "organization_id": "org_example", "project_id": "prj_example", "method": http.MethodDelete} {
+						for key, want := range map[string]any{"refusal_code": test.code, "reason": test.reason, "route": nativeBase + "/runners/:runner", "organization_id": "org_example", "project_id": "prj_example", "method": http.MethodDelete} {
 							if entry[key] != want {
 								t.Errorf("log %s = %v, want %v", key, entry[key], want)
 							}

@@ -76,7 +76,7 @@ func relayedRequires(requires []string) []string {
 func (s *Service) createWorkspace(c echo.Context) error {
 	var request workspaceRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandCreateWorkspace(c.Request().Context(), nativeRequestScope(c), request)
 	if err != nil {
@@ -96,7 +96,7 @@ func (w *workspaceService) openWorkspace(ctx context.Context, tx *sql.Tx, scope 
 			return workspaceRecord{}, err
 		}
 		if item != "" && item != resolved {
-			return workspaceRecord{}, nativeInvalid("attempt_id belongs to a different work item")
+			return workspaceRecord{}, nativePublicInvalid("attempt_id belongs to a different work item")
 		}
 		item = resolved
 	}
@@ -316,13 +316,13 @@ func normalizeWorkspaceRequest(request workspaceRequest) (workspaceRequest, erro
 	}
 	request.Requires = relayedRequires(requires)
 	if len(request.Ref) > maxWorkspaceRefBytes {
-		return workspaceRequest{}, nativeInvalid("ref is too long")
+		return workspaceRequest{}, nativePublicInvalid("ref is too long")
 	}
 	if request.WorkItemID == "" && request.AttemptID == "" {
-		return workspaceRequest{}, nativeInvalid("A work item or an attempt is required")
+		return workspaceRequest{}, nativePublicInvalid("A work item or an attempt is required")
 	}
 	if request.AttemptID != "" && !validNativeID(request.AttemptID, "attempt") {
-		return workspaceRequest{}, nativeInvalid("attempt_id must be a typed attempt identifier")
+		return workspaceRequest{}, nativePublicInvalid("attempt_id must be a typed attempt identifier")
 	}
 	return request, nil
 }
@@ -364,7 +364,7 @@ func (s *Service) readWorkspaces(ctx context.Context, scope nativeScope, item, s
 	}
 	state = strings.TrimSpace(state)
 	if state != "" && !workspacesession.ValidState(state) {
-		return nil, nativeInvalid("state names no workspace state")
+		return nil, nativePublicInvalid("state names no workspace state")
 	}
 	item = strings.TrimSpace(item)
 	if item != "" {

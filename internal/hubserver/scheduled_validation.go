@@ -20,7 +20,7 @@ type scheduledValidationRecord struct {
 func (s *Service) recordScheduledValidation(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
 	report := request.ScheduledValidation
 	if report == nil || !report.Valid() || request.Type != "" || request.ReportContext != nil || request.Title != "" || request.Body != "" || request.State != "" || request.Priority != nil || len(request.Labels) != 0 || len(request.Assignees) != 0 || request.Provenance != nil || request.GitHubIssueURL != "" {
-		return nil, nativeInvalid("Invalid scheduled validation report")
+		return nil, nativePublicInvalid("Invalid scheduled validation report")
 	}
 	if scope.credential.Scope == apiScopeWorker {
 		return nil, &nativeError{Code: "insufficient_scope", Message: "Scheduled reporting requires operator authority", status: http.StatusForbidden}
@@ -32,7 +32,7 @@ func (s *Service) recordScheduledValidation(ctx context.Context, scope nativeSco
 			return nil, err
 		}
 		if !strings.EqualFold(repository, report.Repository) {
-			return nil, nativeInvalid("Scheduled validation repository does not match the project")
+			return nil, nativePublicInvalid("Scheduled validation repository does not match the project")
 		}
 		raw, err := json.Marshal(report)
 		if err != nil {
@@ -47,7 +47,7 @@ func (s *Service) recordScheduledValidation(ctx context.Context, scope nativeSco
 			return nil, err
 		}
 		if retained != string(raw) {
-			return nil, nativeInvalid("Scheduled validation run already has a different report")
+			return nil, nativePublicInvalid("Scheduled validation run already has a different report")
 		}
 		recordedAt, err := parseTimeValue(at)
 		return scheduledValidationRecord{ScheduledValidationReport: *report, RecordedAt: recordedAt}, err

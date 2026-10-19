@@ -162,7 +162,7 @@ func (s *Service) setSpritePool(c echo.Context) error {
 	}
 	var input spritePoolChange
 	if err := decodeAPIJSON(c, &input); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	view, err := s.setSpritePoolCommand(c.Request().Context(), scope, input)
 	if err != nil {

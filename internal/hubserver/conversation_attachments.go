@@ -362,7 +362,7 @@ func readConversationAttachmentUpload(c echo.Context) (conversationAttachmentUpl
 	request.Body = http.MaxBytesReader(c.Response(), request.Body, conversationAttachmentRequestBytes)
 	reader, err := request.MultipartReader()
 	if err != nil {
-		return conversationAttachmentUpload{}, nativeInvalid("A multipart upload with a file part is required")
+		return conversationAttachmentUpload{}, nativePublicInvalid("A multipart upload with a file part is required")
 	}
 	var upload conversationAttachmentUpload
 	seenFile := false
@@ -401,7 +401,7 @@ func readConversationAttachmentUpload(c echo.Context) (conversationAttachmentUpl
 		}
 	}
 	if !seenFile {
-		return conversationAttachmentUpload{}, nativeInvalid("A file part is required")
+		return conversationAttachmentUpload{}, nativePublicInvalid("A file part is required")
 	}
 	if upload.key == "" || len(upload.key) > conversation.MaxCommandKeyBytes {
 		return conversationAttachmentUpload{}, nativeInvalid(fmt.Sprintf("An idempotency key of at most %d bytes is required", conversation.MaxCommandKeyBytes))
@@ -439,7 +439,7 @@ func conversationAttachmentBodyError(err error) error {
 	if errors.As(err, &tooLarge) {
 		return conversationAttachmentTooLarge()
 	}
-	return nativeInvalid("The upload could not be read")
+	return nativePublicInvalid("The upload could not be read")
 }
 
 // uploadConversationAttachment implements POST

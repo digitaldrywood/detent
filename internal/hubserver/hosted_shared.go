@@ -285,7 +285,7 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 		result.CustomerID = binding.CustomerID
 		var query hostedSharedBillingQuery
 		if err := decodeAPIJSON(c, &query); err != nil {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 		if query.Reconcile && binding.CustomerID != "" && s.billing != nil {
 			s.billing.mu.Lock()
@@ -332,7 +332,7 @@ func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
 	cfg := s.hostedBillingConfig()
 	var request hostedSharedBillingEventRequest
 	if err := decodeAPIJSON(c, &request); err != nil || cfg == nil || !strings.HasPrefix(request.EventID, "evt_") || !hostedSafeID(request.EventID) || request.EventType == "" || len(request.EventType) > 128 {
-		return invalidAPIRequest(c, errors.New("invalid billing event"))
+		return s.invalidAPIRequest(c, errors.New("invalid billing event"))
 	}
 	binding, err := s.database.hostedBillingBinding(c.Request().Context(), cfg)
 	if err != nil || binding.CustomerID != request.CustomerID {
@@ -366,7 +366,7 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 		name = strings.TrimSpace(request.OrganizationName)
 	}
 	if claims.Subject == "" || claims.Email == "" || name == "" || len(name) > 120 {
-		return invalidAPIRequest(c, errors.New("invalid owner bootstrap"))
+		return s.invalidAPIRequest(c, errors.New("invalid owner bootstrap"))
 	}
 	ctx := c.Request().Context()
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
@@ -408,13 +408,13 @@ func (s *Service) revokeHostedSharedSessions(c echo.Context) error {
 	}
 	var request hostedSharedRevocation
 	if err := decodeAPIJSON(c, &request); err != nil || len(request.Bindings) == 0 || len(request.Bindings) > 100 {
-		return invalidAPIRequest(c, errors.New("invalid revocation"))
+		return s.invalidAPIRequest(c, errors.New("invalid revocation"))
 	}
 	ctx := c.Request().Context()
 	now := formatHubTime(s.config.now())
 	for _, binding := range request.Bindings {
 		if len(binding) != 64 {
-			return invalidAPIRequest(c, errors.New("invalid binding"))
+			return s.invalidAPIRequest(c, errors.New("invalid binding"))
 		}
 		if err := s.revokeHostedSharedBinding(ctx, binding, now); err != nil {
 			return s.internalAPIError(c, "revocation_unavailable", "Sessions could not be revoked", err)
@@ -455,7 +455,7 @@ func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {
 	}
 	var request hostedSharedInvitation
 	if err := decodeAPIJSON(c, &request); err != nil || claims.Subject == "" || claims.Email == "" {
-		return invalidAPIRequest(c, errors.New("invalid invitation"))
+		return s.invalidAPIRequest(c, errors.New("invalid invitation"))
 	}
 	identity := auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: claims.Subject, SessionID: claims.ProviderSession}}
 	s.hostedMutationMu.Lock()

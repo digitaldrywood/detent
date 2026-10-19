@@ -261,7 +261,7 @@ func usageRangeWindow(value string, now time.Time) (usageWindow, error) {
 	name := strings.TrimSpace(value)
 	if strings.HasPrefix(name, "month:") {
 		if name == "month:" {
-			return usageWindow{}, nativeInvalid("Month must be YYYY-MM in UTC")
+			return usageWindow{}, nativePublicInvalid("Month must be YYYY-MM in UTC")
 		}
 		return costMonth(strings.TrimPrefix(name, "month:"), now)
 	}
@@ -270,7 +270,7 @@ func usageRangeWindow(value string, now time.Time) (usageWindow, error) {
 	}
 	span, known := usageRanges[name]
 	if !known {
-		return usageWindow{}, nativeInvalid("Range must be 24h, 7d, 30d, 90d or month:YYYY-MM in UTC")
+		return usageWindow{}, nativePublicInvalid("Range must be 24h, 7d, 30d, 90d or month:YYYY-MM in UTC")
 	}
 	// Usage is stored per UTC hour, so the window starts on an hour boundary:
 	// the current partial hour plus the full hours before it, span in all.

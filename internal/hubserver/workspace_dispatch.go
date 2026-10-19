@@ -111,7 +111,7 @@ func (w *workspaceService) ensureWorkspaceItem(ctx context.Context, tx *sql.Tx, 
 	}
 	state, found := firstDispatchableState(project)
 	if !found {
-		return "", nativeInvalid("The project has no dispatchable workflow state for a workspace session")
+		return "", nativePublicInvalid("The project has no dispatchable workflow state for a workspace session")
 	}
 	issue, err := createNativeIssueTx(allowWorkspaceLabel(ctx), tx, scope, tracker.CreateIssue{
 		Title:  workspaceItemTitle(record.ID),

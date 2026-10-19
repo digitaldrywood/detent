@@ -33,7 +33,7 @@ func (s *Service) getMonthlyBudget(c echo.Context) error {
 func (s *Service) updateMonthlyBudget(c echo.Context) error {
 	var request monthlyBudgetRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
 	if !canManageProjectSecrets(scope.credential) {

@@ -304,7 +304,7 @@ func apiBearerToken(c echo.Context) (string, error) {
 func (s *Service) createAPIToken(c echo.Context) error {
 	var request tokenRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	response, err := s.createAPITokenFor(c.Request().Context(), request)
 	if err != nil {

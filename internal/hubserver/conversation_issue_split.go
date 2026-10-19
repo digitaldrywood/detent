@@ -40,30 +40,30 @@ func (t *coordinatorToolset) loadSplitIssueSkill(raw json.RawMessage) (any, erro
 
 func validateCoordinatorIssueSplit(split chat.IssueSplit) error {
 	if !strings.HasPrefix(split.ParentID, "wi_") || len(split.ParentID) > 256 {
-		return nativeInvalid("A native parent work item is required")
+		return nativePublicInvalid("A native parent work item is required")
 	}
 	if len(split.Children) < 1 || len(split.Children) > coordinatorSplitMaxChildren {
-		return nativeInvalid("A split must contain 1 to 10 children")
+		return nativePublicInvalid("A split must contain 1 to 10 children")
 	}
 	for _, child := range split.Children {
 		if strings.TrimSpace(child.Title) == "" || len(child.Title) > coordinatorProposalTitleBytes || strings.TrimSpace(child.Description) == "" || utf8.RuneCountInString(child.Description) > coordinatorProposalBodyRunes || strings.TrimSpace(child.State) == "" || len(child.State) > 256 {
-			return nativeInvalid("Each child requires a bounded title, description and target state")
+			return nativePublicInvalid("Each child requires a bounded title, description and target state")
 		}
 		if child.Priority != nil && (*child.Priority < 0 || *child.Priority > 3) {
-			return nativeInvalid("Child priority must be 0 through 3")
+			return nativePublicInvalid("Child priority must be 0 through 3")
 		}
 	}
 	if len(split.Edges) > 100 {
-		return nativeInvalid("A split may contain at most 100 dependency edges")
+		return nativePublicInvalid("A split may contain at most 100 dependency edges")
 	}
 	graph := make([][]int, len(split.Children)+1)
 	seen := map[chat.IssueSplitEdge]bool{}
 	for _, edge := range split.Edges {
 		if edge.Dependent < 0 || edge.Dependent > len(split.Children) || edge.Blocker < 0 || edge.Blocker > len(split.Children) {
-			return nativeInvalid("Dependency edge references an unknown child")
+			return nativePublicInvalid("Dependency edge references an unknown child")
 		}
 		if seen[edge] {
-			return nativeInvalid("Dependency edges must be unique")
+			return nativePublicInvalid("Dependency edges must be unique")
 		}
 		seen[edge] = true
 		graph[edge.Dependent] = append(graph[edge.Dependent], edge.Blocker)
@@ -88,7 +88,7 @@ func validateCoordinatorIssueSplit(split chat.IssueSplit) error {
 	}
 	for node := range graph {
 		if !visit(node) {
-			return nativeInvalid("Dependencies cannot form a cycle")
+			return nativePublicInvalid("Dependencies cannot form a cycle")
 		}
 	}
 	return nil
@@ -118,7 +118,7 @@ func validateCoordinatorSplitDrafts(ctx context.Context, tx *sql.Tx, scope nativ
 			}
 		}
 		if !found {
-			return tracker.NativeIssue{}, nativeInvalid("Workflow state does not exist")
+			return tracker.NativeIssue{}, nativePublicInvalid("Workflow state does not exist")
 		}
 	}
 	return parent, nil

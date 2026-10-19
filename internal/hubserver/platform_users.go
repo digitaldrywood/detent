@@ -20,7 +20,7 @@ func (s *Service) hostedPlatformUsers(c echo.Context) error {
 	}
 	var input platformusers.Query
 	if err := decodeAPIJSON(c, &input); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	query, err := platformusers.Parse(input.Text)
 	if err != nil {

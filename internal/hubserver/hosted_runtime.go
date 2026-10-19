@@ -101,7 +101,7 @@ func (s *Service) reloadHostedRuntime(c echo.Context) error {
 	}
 	var update HostedRuntimeUpdate
 	if err := decodeAPIJSON(c, &update); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := s.applyHostedRuntime(c.Request().Context(), &update); err != nil {
 		return s.nativeAPIError(c, err)
@@ -129,7 +129,7 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
 	if update.Reason == "" || len(update.Reason) > 500 {
-		return nativeInvalid("A bounded reload reason is required")
+		return nativePublicInvalid("A bounded reload reason is required")
 	}
 	plans := defaultHostedPlans(s.config.Hosted)
 	if !update.Plans.IsZero() {
@@ -142,7 +142,7 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 		}
 	}
 	if err := plans.validate(); err != nil {
-		return nativeInvalid("Reloaded entitlement configuration is invalid")
+		return nativePublicInvalid("Reloaded entitlement configuration is invalid")
 	}
 	var config *HostedBillingConfig
 	if current := s.hostedBillingConfig(); current != nil {
@@ -150,10 +150,10 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 		next.Prices = slices.Clone(update.Prices)
 		config = &next
 		if err := config.validate(&plans); err != nil {
-			return nativeInvalid("Reloaded billing prices are invalid")
+			return nativePublicInvalid("Reloaded billing prices are invalid")
 		}
 	} else if len(update.Prices) != 0 {
-		return nativeInvalid("Enabling billing requires a restart")
+		return nativePublicInvalid("Enabling billing requires a restart")
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -163,7 +163,7 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 	actor := s.config.Hosted.EntitlementAdministrator
 	if update.StageID != "" {
 		if _, err := uuid.Parse(update.StageID); err != nil || !s.hostedShared() {
-			return nativeInvalid("Runtime preparation requires a shared entry and a publication identity")
+			return nativePublicInvalid("Runtime preparation requires a shared entry and a publication identity")
 		}
 	}
 	if err := s.database.seedHostedPlans(ctx, tx, plans, actor, update.Reason, update.StageID); err != nil {

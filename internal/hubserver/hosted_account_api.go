@@ -58,7 +58,7 @@ func (s *Service) switchHostedOrganizationJSON(c echo.Context) error {
 		Organization string `json:"organization"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
@@ -82,7 +82,7 @@ func (s *Service) acceptHostedInvitationJSON(c echo.Context) error {
 		Token string `json:"token"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
@@ -105,7 +105,7 @@ func (s *Service) startHostedSupportJSON(c echo.Context) error {
 	var request hostedIdempotent
 	if c.Request().ContentLength != 0 {
 		if err := decodeAPIJSON(c, &request); err != nil {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 	}
 	if err := request.validate(false); err != nil {

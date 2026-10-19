@@ -23,14 +23,14 @@ func spriteCostMetrics() []string {
 
 func validateSpriteCostObservation(o *costObservation, now time.Time) error {
 	if o.Provider != "fly_sprites" || o.Bucket != spriteCostBucket {
-		return nativeInvalid("Sprite usage requires the fly_sprites provider and sprite_infrastructure bucket")
+		return nativePublicInvalid("Sprite usage requires the fly_sprites provider and sprite_infrastructure bucket")
 	}
 	unit := "GB-hour"
 	if o.Metric == "cpu" {
 		unit = "CPU-hour"
 	}
 	if !slices.Contains(spriteCostMetrics(), o.Metric) || o.Unit != unit {
-		return nativeInvalid("Sprite quantities use cpu in CPU-hour or ram, storage_hot, storage_cold in GB-hour")
+		return nativePublicInvalid("Sprite quantities use cpu in CPU-hour or ram, storage_hot, storage_cold in GB-hour")
 	}
 	return normalizeCostObservation(o, now)
 }
@@ -95,7 +95,7 @@ func (s *Service) ingestSpriteUsage(c echo.Context) error {
 	c.Set("native_scope", scope)
 	var request spriteUsageRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.nativeAPIError(c, nativeInvalid("Enter sanitized Sprite usage observations"))
+		return s.nativeAPIError(c, nativePublicInvalid("Enter sanitized Sprite usage observations"))
 	}
 	result, err := s.importSpriteUsageCommand(c.Request().Context(), scope, request)
 	if err != nil {
@@ -131,7 +131,7 @@ func (s *Service) importSpriteUsageCommand(ctx context.Context, scope nativeScop
 
 func validateSpriteUsageRequest(request *spriteUsageRequest, now time.Time) error {
 	if len(request.Observations) == 0 || len(request.Observations) > 128 {
-		return nativeInvalid("Import between 1 and 128 Sprite usage observations")
+		return nativePublicInvalid("Import between 1 and 128 Sprite usage observations")
 	}
 	for index := range request.Observations {
 		if err := validateSpriteCostObservation(&request.Observations[index], now); err != nil {

@@ -59,7 +59,7 @@ func (s *Service) setProjectSpriteAllocation(c echo.Context) error {
 	}
 	var request projectSpriteAllocationRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	scope.requireHostedAdmin = true
 	result, err := s.executeNativeMutation(c.Request().Context(), scope, nativeCommandOptions{OperationID: "PUT " + c.Request().URL.EscapedPath(), Feature: "collaboration"}, request.Mutation, request, updateProjectSpriteAllocation(request))

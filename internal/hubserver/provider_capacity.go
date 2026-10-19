@@ -24,12 +24,12 @@ func isProviderWait(err error) bool {
 
 func validateProviderCandidates(candidates []tracker.NativeCapacityCandidate) error {
 	if len(candidates) > 100 {
-		return nativeInvalid("Provider selection is limited to 100 candidates per page")
+		return nativePublicInvalid("Provider selection is limited to 100 candidates per page")
 	}
 	seen := make(map[tracker.NativeWorkItemID]bool)
 	for _, candidate := range candidates {
 		if candidate.WorkItemID == "" || candidate.Revision <= 0 || seen[candidate.WorkItemID] {
-			return nativeInvalid("Provider candidates require distinct work items and positive revisions")
+			return nativePublicInvalid("Provider candidates require distinct work items and positive revisions")
 		}
 		if err := candidate.Requirement.Validate(); err != nil {
 			return nativeInvalid(err.Error())
@@ -47,7 +47,7 @@ func updateProviderReports(ctx context.Context, tx *sql.Tx, scope nativeScope, r
 		return nativeInvalid(err.Error())
 	}
 	if len(reports) == 0 {
-		return nativeInvalid("An enabled provider reporter must retain at least one backend")
+		return nativePublicInvalid("An enabled provider reporter must retain at least one backend")
 	}
 	previous, err := readProviderReports(ctx, tx, scope.credential.Runner.RunnerID)
 	if err != nil {
@@ -274,7 +274,7 @@ func providerConcurrencyLimit(a, b int) int {
 func selectProviderCapacity(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, id tracker.WorkItemID, now time.Time) (providercapacity.Reservation, bool, error) {
 	if query.NativeScope == nil || query.NativeScope.credential.Runner.RunnerID == "" {
 		if len(query.ProviderCandidates) != 0 {
-			return providercapacity.Reservation{}, false, nativeInvalid("Provider selection requires an enrolled runner")
+			return providercapacity.Reservation{}, false, nativePublicInvalid("Provider selection requires an enrolled runner")
 		}
 		return providercapacity.Reservation{}, false, nil
 	}
