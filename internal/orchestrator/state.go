@@ -318,6 +318,7 @@ type MergeTiming struct {
 }
 
 type Retry struct {
+	Policy             policy.Descriptor
 	RecoveryAttemptID  int64
 	Issue              connector.Issue
 	Attempt            int

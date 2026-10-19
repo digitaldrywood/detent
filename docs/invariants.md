@@ -381,6 +381,9 @@ Removing a forbidden symbol from a list does not authorize its resurrection.
 `TestMutationDocuments` in `internal/invariants` reject retired identifiers,
 assembled constants and GraphQL mutation budget queries, including aliases
 and fragments. INV-2's behavioral checks preserve infrastructure attribution.
+`TestAttemptRecoveryAfterPolicyChange` and
+`TestOrphanRecoveryRetainsPolicyAcrossHubTransition` in `internal/orchestrator`
+preserve retry availability and pinned continuation identity after policy changes.
 Review covers novel names, reflection and generated semantic equivalents.
 
 ## INV-10 — Priority only picks the next job

@@ -23,7 +23,7 @@ func TestDispatchLoopStartPersistence(t *testing.T) {
 		workAttempts: attempts,
 	}
 	state := newState(orch.cfg)
-	if _, ok := orch.startDurableWorkAttempt(t.Context(), &state, issue, 1, time.Now(), "local", runpkg.RunModeImplement, start); !ok {
+	if _, ok := orch.startDurableWorkAttempt(t.Context(), &state, issue, 1, time.Now(), "local", runpkg.RunModeImplement, start, orch.cfg.Policy); !ok {
 		t.Fatal("startDurableWorkAttempt() = false")
 	}
 	if len(attempts.starts) != 1 {
