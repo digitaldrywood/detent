@@ -35,6 +35,11 @@ func refuseBudget(response *httptest.ResponseRecorder, retryAfter string) {
 	response.WriteString(`{"code":"runner_request_budget","message":"Runner request budget exceeded; retry after the current minute"}`)
 }
 
+func isBudgetRefusal(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr != nil && apiErr.Status == http.StatusTooManyRequests && apiErr.Code == requestBudgetCode
+}
+
 func TestClientWaitsOutRequestBudgetRefusal(t *testing.T) {
 	for _, test := range []struct {
 		name, method, path string
@@ -96,7 +101,7 @@ func TestClientRequestBudgetRetriesAreBounded(t *testing.T) {
 		client, calls := budgetClient(t, func(_ int, response *httptest.ResponseRecorder) { refuseBudget(response, "60") })
 		start := time.Now()
 		err := client.request(t.Context(), http.MethodGet, "/items", nil, nil)
-		if !requestBudgetRefused(err) || *calls != maxRequestBudgetRetries+1 {
+		if !isBudgetRefusal(err) || *calls != maxRequestBudgetRetries+1 {
 			t.Fatalf("calls=%d err=%v", *calls, err)
 		}
 		if elapsed := time.Since(start); elapsed != maxRequestBudgetRetries*time.Minute {
@@ -116,7 +121,12 @@ func TestClientFailsFastOnOtherRefusals(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				client, calls := budgetClient(t, func(_ int, response *httptest.ResponseRecorder) {
+				client, calls := budgetClient(t, func(call int, response *httptest.ResponseRecorder) {
+					if call > 1 {
+						response.WriteHeader(http.StatusNoContent)
+						return
+					}
+					response.Header().Set("Retry-After", "60")
 					response.WriteHeader(test.status)
 					response.WriteString(test.body)
 				})
@@ -126,19 +136,44 @@ func TestClientFailsFastOnOtherRefusals(t *testing.T) {
 				if !errors.As(err, &apiErr) || apiErr.Status != test.status || *calls != 1 {
 					t.Fatalf("calls=%d err=%v", *calls, err)
 				}
+				if err := client.request(t.Context(), http.MethodGet, "/other", nil, nil); err != nil || *calls != 2 {
+					t.Fatalf("later request calls=%d err=%v", *calls, err)
+				}
 				if elapsed := time.Since(start); elapsed != 0 {
-					t.Fatalf("elapsed=%s", elapsed)
+					t.Fatalf("a non-budget refusal braked later requests: elapsed=%s", elapsed)
 				}
 			})
 		})
 	}
 }
 
+func TestClientBudgetRefusalBrakesLaterRequests(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client, calls := budgetClient(t, func(call int, response *httptest.ResponseRecorder) {
+			if call == 1 {
+				refuseBudget(response, "60")
+				return
+			}
+			response.WriteHeader(http.StatusNoContent)
+		})
+		if err := client.request(t.Context(), http.MethodPost, "/items", strings.NewReader("stream"), nil); !isBudgetRefusal(err) {
+			t.Fatalf("streaming err=%v", err)
+		}
+		start := time.Now()
+		if err := client.request(t.Context(), http.MethodGet, "/other", nil, nil); err != nil || *calls != 2 {
+			t.Fatalf("calls=%d err=%v", *calls, err)
+		}
+		if elapsed := time.Since(start); elapsed != time.Minute {
+			t.Fatalf("elapsed=%s want=%s", elapsed, time.Minute)
+		}
+	})
+}
+
 func TestClientDoesNotReplayStreamingBodyAfterBudgetRefusal(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		client, calls := budgetClient(t, func(_ int, response *httptest.ResponseRecorder) { refuseBudget(response, "60") })
 		err := client.request(t.Context(), http.MethodPost, "/items", strings.NewReader("stream"), nil)
-		if !requestBudgetRefused(err) || *calls != 1 {
+		if !isBudgetRefusal(err) || *calls != 1 {
 			t.Fatalf("calls=%d err=%v", *calls, err)
 		}
 	})

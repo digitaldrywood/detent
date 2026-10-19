@@ -153,6 +153,7 @@ type APIError struct {
 	Message         string
 	CurrentRevision tracker.Revision
 	Rejection       *runnerauth.PublicationRejection
+	retryAfter      time.Time
 }
 
 func (e *APIError) Error() string {
@@ -270,18 +271,12 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 		ctx = context.Background()
 	}
 	_, streaming := input.(io.Reader)
-	for attempt := 0; ; attempt++ {
-		err := c.requestOnce(ctx, timeout, method, path, headers, input, output)
-		if streaming || attempt >= maxRequestBudgetRetries || !c.retryRequestBudget(err) {
-			return err
-		}
-	}
+	return c.withinRequestBudget(ctx, method, path, !streaming, func() error {
+		return c.requestOnce(ctx, timeout, method, path, headers, input, output)
+	})
 }
 
 func (c *Client) requestOnce(ctx context.Context, timeout time.Duration, method string, path string, headers http.Header, input any, output any) error {
-	if err := c.waitRequestBudget(ctx, method, path); err != nil {
-		return err
-	}
 	if method != http.MethodGet {
 		c.reads.forget(path)
 		defer c.reads.forget(path)
@@ -344,7 +339,6 @@ func (c *Client) requestWithToken(ctx context.Context, httpClient *http.Client, 
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
-	c.observeRequestBudget(response)
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
@@ -354,7 +348,7 @@ func (c *Client) requestWithToken(ctx context.Context, httpClient *http.Client, 
 		return &responseSizeError{status: response.StatusCode}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		apiErr := &APIError{Status: response.StatusCode}
+		apiErr := &APIError{Status: response.StatusCode, retryAfter: parseRetryAfter(response.Header.Get("Retry-After"))}
 		if len(payload) > 0 {
 			if err := json.Unmarshal(payload, apiErr); err != nil {
 				return errors.Join(apiErr, fmt.Errorf("%w: decode error response: %w", ErrUnavailable, err))
@@ -445,18 +439,17 @@ func (c *Client) download(ctx context.Context, target string, limit int64) ([]by
 	if !strings.HasPrefix(target, "/") || strings.HasPrefix(target, "//") {
 		return nil, "", fmt.Errorf("hub download target %q is not a Hub path", target)
 	}
-	for attempt := 0; ; attempt++ {
-		payload, contentType, err := c.downloadOnce(ctx, target, limit)
-		if attempt >= maxRequestBudgetRetries || !c.retryRequestBudget(err) {
-			return payload, contentType, err
-		}
-	}
+	var payload []byte
+	var contentType string
+	err := c.withinRequestBudget(ctx, http.MethodGet, target, true, func() error {
+		var err error
+		payload, contentType, err = c.downloadOnce(ctx, target, limit)
+		return err
+	})
+	return payload, contentType, err
 }
 
 func (c *Client) downloadOnce(ctx context.Context, target string, limit int64) ([]byte, string, error) {
-	if err := c.waitRequestBudget(ctx, http.MethodGet, target); err != nil {
-		return nil, "", err
-	}
 	endpoint := *c.baseURL
 	requestPath, requestQuery, _ := strings.Cut(target, "?")
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + requestPath
@@ -474,7 +467,6 @@ func (c *Client) downloadOnce(ctx context.Context, target string, limit int64) (
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
-	c.observeRequestBudget(response)
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
@@ -484,7 +476,7 @@ func (c *Client) downloadOnce(ctx context.Context, target string, limit int64) (
 		return nil, "", fmt.Errorf("%w: download exceeds %d bytes", ErrUnavailable, limit)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		apiErr := &APIError{Status: response.StatusCode}
+		apiErr := &APIError{Status: response.StatusCode, retryAfter: parseRetryAfter(response.Header.Get("Retry-After"))}
 		if len(payload) > 0 && strings.HasPrefix(response.Header.Get("Content-Type"), "application/json") {
 			if err := json.Unmarshal(payload, apiErr); err != nil {
 				return nil, "", fmt.Errorf("%w: decode error response: %w", ErrUnavailable, err)
