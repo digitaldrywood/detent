@@ -13,6 +13,7 @@ import { ComposerContextAttachment } from "../components/ComposerContextAttachme
 import { Composer } from "../components/Composer.tsx";
 import { ConversationView } from "../ChatRoutes.tsx";
 import { newCommandKey, useClient } from "../client.ts";
+import { followCreatedConversation } from "../hooks/useConversationSpeech.ts";
 import { useWorkspacePanel } from "../components/ChatWorkspace.tsx";
 
 import { chatSlashCommands, ISSUE_QUESTIONS } from "../adapters/chatPrompts.ts";
@@ -129,6 +130,7 @@ export function useIssueAsk(
           return false;
         }
         const conversation = result.success.conversation;
+        followCreatedConversation(conversation.id);
         if (!attachIssue) {
           intent.current = null;
           await navigate({ to: "/chat/c/$conversationId", params: { conversationId: conversation.id } });

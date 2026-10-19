@@ -5,6 +5,7 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import React from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 
+import { followCreatedConversation, useConversationSpeech } from "./hooks/useConversationSpeech.ts";
 import { chatSlashCommands } from "./adapters/chatPrompts.ts";
 
 import type {
@@ -94,6 +95,7 @@ function generalChatPreferences(preferences: TurnPreferences, choices: Preferenc
   };
 }
 export function NewChat({ projectId }: { projectId?: string }): React.ReactElement {
+  const speech = useConversationSpeech("draft");
   const client = useClient();
   const shell = useShell();
   const navigate = useNavigate();
@@ -166,6 +168,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
   };
 
   const send = async (prompt?: string) => {
+    speech.prepareToSend();
     const messageText = prompt ?? draft;
     if (project === undefined || (subjectId !== null && subject === null)) return;
     if (project.can_write === false) {
@@ -222,6 +225,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
       attachments.clear();
     }
     setSending(false);
+    followCreatedConversation(result.success.conversation.id);
     client.drafts.writeOutbox(scope, null);
     client.drafts.writeDraft(scope, "");
     commandKey.current = newCommandKey();
@@ -278,6 +282,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
             </div>
           )}
           <Composer
+            speech={speech}
             value={draft}
             onChange={onChange}
             onSend={() => void send()}
@@ -462,6 +467,7 @@ export function ConversationView({
 
   const value = Option.getOrUndefined(AsyncResult.value(state));
   const detail = value === undefined ? undefined : Option.getOrUndefined(value.data);
+  const speech = useConversationSpeech(conversationId, detail);
 
   const scope = {
     accountKey: accountKey(client),
@@ -511,6 +517,7 @@ export function ConversationView({
   }, []);
 
   const send = async (prompt?: string) => {
+    speech.prepareToSend();
     const messageText = prompt ?? draft;
     const files = attachments.ids;
     // A message is text, files, or both (decisions.md §17.1): a drop with no
@@ -864,6 +871,7 @@ export function ConversationView({
 
         <div className="flex min-h-0 flex-1 flex-col" ref={thread}>
           <Timeline
+            speech={speech}
             detail={detail}
             listRef={timelineList}
             onIsAtEndChange={setFollowing}
@@ -968,6 +976,7 @@ export function ConversationView({
               />
             ) : null}
             <Composer
+              speech={speech}
               value={draft}
               onChange={(next) => {
                 setDraft(next);

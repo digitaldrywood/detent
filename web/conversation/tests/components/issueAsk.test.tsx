@@ -2,6 +2,7 @@ import {
   cleanup,
   fireEvent,
   render,
+  renderHook,
   screen,
   waitFor,
   within,
@@ -10,6 +11,8 @@ import * as Effect from "effect/Effect";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { composerText, typeInComposer } from "./composerInput.ts";
+import { assistantMessage, detail } from "./builders.ts";
+import { useConversationSpeech } from "../../src/app/hooks/useConversationSpeech.ts";
 
 import fixture from "../../src/contracts/fixtures/conversation-private.json";
 import type {
@@ -66,7 +69,7 @@ function View() {
   const ask = useIssueAsk("project", "wi_subject");
   return <IssueAskPanel ask={ask} projectId="project" identifier="#28" title="Renew the lease before the handoff completes" canWrite />;
 }
-afterEach(cleanup);
+afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); });
 beforeEach(() => {
   vi.clearAllMocks();
   mock.list.mockImplementation(() =>
@@ -196,7 +199,13 @@ it("restores suggestions for a fresh question while keeping prior threads select
   await waitFor(() => expect(screen.getByTestId("selected-chat").textContent).toBe("conv_old"));
 });
 
-it.each([false, true])("sends finding evidence only while attached (removed=%s)", async (removed) => {
+it.each([false, true])("sends finding evidence only while attached and speaks a fast first reply (removed=%s)", async (removed) => {
+  localStorage.setItem("detent.chat.voice", "on");
+  const speak = vi.fn();
+  vi.stubGlobal("speechSynthesis", { speak, cancel: vi.fn() });
+  vi.stubGlobal("SpeechSynthesisUtterance", class {
+    constructor(public text: string) {}
+  });
   const project = Schema.decodeUnknownSync(BootstrapProject)({ id: "prj_example", name: "Example project", can_write: true });
   const finding = {
     id: "finding_no_landing", class: "flow", severity: "attention",
@@ -230,4 +239,10 @@ it.each([false, true])("sends finding evidence only while attached (removed=%s)"
     });
   }
   expect(mock.list).not.toHaveBeenCalled();
+  const reply = detail({ messages: [assistantMessage({ text: "Already finished.", delivery: "completed" })] });
+  const voice = renderHook(() => useConversationSpeech("conv_new", reply));
+  expect(speak.mock.calls.map(([utterance]) => utterance.text)).toEqual(["Already finished."]);
+  voice.unmount();
+  renderHook(() => useConversationSpeech("conv_new", reply));
+  expect(speak).toHaveBeenCalledOnce();
 });
