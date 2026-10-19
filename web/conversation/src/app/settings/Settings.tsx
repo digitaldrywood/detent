@@ -29,7 +29,7 @@ import {
   WorkspaceBreadcrumbSeparator,
 } from "../../components/WorkspaceBreadcrumb.tsx";
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
-import type { BillingReport, BillingUsageReport, PlanReport, ProjectsResponse } from "../../contracts/account.ts";
+import type { BillingReport, BillingUsageReport, ComparisonPlan, PlanReport, ProjectsResponse } from "../../contracts/account.ts";
 import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { PLATFORM } from "../entry/api.ts";
@@ -68,6 +68,11 @@ export function allowanceLabel(name: string): string {
   return name.replace(/^api_/, "API ").replaceAll("_", " ");
 }
 
+function concurrentWorkText(plan: Pick<ComparisonPlan, "allowances">): string {
+  const limit = plan.allowances.concurrent_work;
+  return limit === undefined ? "unlimited concurrent work" : `${formatCount(limit)} concurrent work slots`;
+}
+
 /** An allowance row's three facts: consumed, allowed, and whether it is over. */
 export interface AllowanceRow {
   readonly name: string;
@@ -101,7 +106,7 @@ export function AllowanceList({ rows }: { readonly rows: readonly AllowanceRow[]
           >
             {row.used.toLocaleString()} / {row.limit.toLocaleString()}
             {row.overLimit ? <span className="ps-1.5 text-xs">over limit</span> : null}
-            {row.name === "projects" || row.name === "unarchived_issues" ? <span className="ps-1.5 text-xs">{Math.max(0, row.limit - row.used).toLocaleString()} remaining</span> : null}
+            {row.name === "concurrent_work" || row.name === "unarchived_issues" ? <span className="ps-1.5 text-xs">{Math.max(0, row.limit - row.used).toLocaleString()} remaining</span> : null}
           </span>
         </li>
       ))}
@@ -417,10 +422,10 @@ export function PlanSettings(): React.ReactElement {
           <AlertTitle>Approaching your {planName} limits</AlertTitle>
           <AlertDescription>
             <p>{warnings.map((row) => row.label).join(", ")} {warnings.length === 1 ? "is" : "are"} approaching or at the limit.
-              {warnings.some((row) => row.name === "unarchived_issues") ? " Archive finished issues to free capacity." : ""}
+              {warnings.some((row) => row.name === "unarchived_issues") ? " Finish or archive open issues to free capacity." : ""}
               {nextPlan === undefined
                 ? usage === undefined ? " Compare plans when billing usage is available." : " No larger listed plan provides more headroom for all current usage."
-                : ` Move to ${nextPlan.name ?? nextPlan.id} for ${nextPlan.allowances.projects === undefined ? "unlimited" : formatCount(nextPlan.allowances.projects)} projects and ${nextPlan.allowances.unarchived_issues === undefined ? "unlimited" : formatCount(nextPlan.allowances.unarchived_issues)} open issues.`}
+                : ` Move to ${nextPlan.name ?? nextPlan.id} for ${concurrentWorkText(nextPlan)}.`}
             </p>
             <div><Button size="sm" onClick={comparePlans}>Compare plans</Button></div>
           </AlertDescription>
@@ -509,17 +514,17 @@ export function PlanSettings(): React.ReactElement {
         {billing.loading && billing.value === undefined ? <SettingsRow title="Loading plans" />
           : billing.error !== null ? <SettingsRow title="Plans are not available" description={billing.error.message} />
           : comparisons.length === 0 ? <SettingsRow title="No comparison plans are available" /> : (
-            <div className="grid grid-cols-1 sm:grid-cols-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
               {comparisons.map((candidate) => {
                 const current = candidate.id === report?.effective_base.id && candidate.version === report?.effective_base.version;
                 const label = candidate.name ?? candidate.id;
                 return (
                   <SettingsRow key={`${candidate.id}-${candidate.version}`} title={<>{label} {current ? <Badge variant="outline" size="sm">Current</Badge> : null}</>}>
                     <div className="space-y-3 pb-3 text-sm">
-                      <p>{candidate.monthly_usd_cents == null ? "Custom price" : formatUsd(candidate.monthly_usd_cents / 100)}<br />
-                        {candidate.allowances.projects === undefined ? "Unlimited projects" : `${formatCount(candidate.allowances.projects)} projects`}<br />
-                        {candidate.allowances.unarchived_issues === undefined ? "Unlimited open issues" : `${formatCount(candidate.allowances.unarchived_issues)} open issues`}</p>
-                      {!current && canBill ? <Button size="sm" variant={candidate.id === nextPlan?.id && candidate.version === nextPlan?.version ? "default" : "outline"} disabled={!canCheckout || usage?.checkout_pending === true || candidate.price_id === "" || checkout.pending} onClick={() => void checkout.call(candidate.price_id)}>{checkout.pending ? "Opening…" : `Move to ${label}`}</Button> : null}
+                      <p>{candidate.monthly_usd_cents == null ? "Contact us" : formatUsd(candidate.monthly_usd_cents / 100)}<br />
+                        {candidate.monthly_usd_cents == null ? "Custom concurrent work" : concurrentWorkText(candidate)}<br />
+                        Unlimited projects</p>
+                      {!current && canBill && candidate.monthly_usd_cents != null ? <Button size="sm" variant={candidate.id === nextPlan?.id && candidate.version === nextPlan?.version ? "default" : "outline"} disabled={!canCheckout || usage?.checkout_pending === true || candidate.price_id === "" || checkout.pending} onClick={() => void checkout.call(candidate.price_id)}>{checkout.pending ? "Opening…" : `Move to ${label}`}</Button> : null}
                     </div>
                   </SettingsRow>
                 );
@@ -672,8 +677,8 @@ export function BillingSettings(): React.ReactElement {
         ) : billing.value === undefined || status === null ? null : (
           <>
             <SettingsRow title={billing.value.entitlement.name ?? billing.value.entitlement.effective_base.id} status={planPriceText(billing.value.entitlement)} description="Detent subscriptions cover hosting. Model-provider charges remain separate; no AI-dollar allowance is included." />
-            <SettingsRow title="Capacity" description="Archive issues to free capacity; existing data, reading and exports remain available.">
-              <AllowanceList rows={allowanceRows(billing.value.entitlement).filter((row) => row.name === "projects" || row.name === "unarchived_issues")} />
+            <SettingsRow title="Capacity" description="Work beyond the concurrent limit waits for a free slot; existing data, reading and exports remain available.">
+              <AllowanceList rows={allowanceRows(billing.value.entitlement).filter((row) => row.name === "concurrent_work" || row.name === "unarchived_issues")} />
             </SettingsRow>
             <SettingsRow
               title={status.title}

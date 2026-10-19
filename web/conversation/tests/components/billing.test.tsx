@@ -131,7 +131,7 @@ describe("billing screen", () => {
 
   it("shows capacity, remaining space and contextual downgrade limits", async () => {
     const base = report();
-    renderBilling(fakeApi(report({}, { entitlement: { ...base.entitlement, name: "Free", monthly_usd_cents: 0, allowances: { projects: 1, unarchived_issues: 200 }, usage: { projects: 2, unarchived_issues: 190 } } })));
+    renderBilling(fakeApi(report({}, { entitlement: { ...base.entitlement, name: "Free", monthly_usd_cents: 0, allowances: { concurrent_work: 2, unarchived_issues: 200 }, usage: { concurrent_work: 3, unarchived_issues: 190 } } })));
     expect(await screen.findByText("$0 per organization/month · no card required")).toBeTruthy();
     expect(screen.getByText("over limit")).toBeTruthy();
     expect(screen.getByText("0 remaining")).toBeTruthy();

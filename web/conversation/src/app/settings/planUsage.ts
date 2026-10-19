@@ -2,8 +2,9 @@ import type { ComparisonPlan, PlanReport } from "../../contracts/account.ts";
 import { usageMeterState, type UsageUnit } from "../../components/ui/usage-meter.tsx";
 
 const ALLOWANCES: Readonly<Record<string, { label: string; group: string; unit?: UsageUnit; description?: string; limitOnly?: boolean }>> = {
+  concurrent_work: { label: "Concurrent work", group: "Capacity", description: "Running attempts across the organization. More work waits for a free slot." },
+  unarchived_issues: { label: "Open issues", group: "Capacity", description: "Done, cancelled and archived issues do not count." },
   projects: { label: "Projects", group: "Capacity" },
-  unarchived_issues: { label: "Open issues", group: "Capacity", description: "Archived issues do not count." },
   collaboration_bytes: { label: "Workspace data", group: "Storage", unit: "bytes", description: "Issues, comments, conversations and attachment metadata." },
   history_records: { label: "History", group: "Storage", unit: "records", description: "Run and activity history after compaction." },
   artifact_retained_bytes: { label: "Artifact storage", group: "Storage", unit: "bytes", description: "Retained build outputs and uploads." },
@@ -18,7 +19,6 @@ const ALLOWANCES: Readonly<Record<string, { label: string; group: string; unit?:
   repositories: { label: "Repositories", group: "Capacity" },
   registered_runners: { label: "Registered runners", group: "Capacity" },
   connected_runners: { label: "Connected runners", group: "Capacity" },
-  concurrent_work: { label: "Concurrent work", group: "Capacity" },
 };
 
 export function planUsageRows(plan: Pick<PlanReport, "allowances" | "usage">) {

@@ -503,7 +503,7 @@ func routingDeferred(err error) bool {
 		return false
 	}
 	switch failure.Code {
-	case "provider_capacity", "provider_incompatible", "provider_candidate_changed", "selector_no_match", "runner_disabled", "runner_draining", "runner_offline", "runner_capacity", "host_capacity", "project_access_denied", "claim_not_permitted":
+	case "provider_capacity", "provider_incompatible", "provider_candidate_changed", "selector_no_match", "runner_disabled", "runner_draining", "runner_offline", "runner_capacity", "host_capacity", "plan_capacity", "project_access_denied", "claim_not_permitted":
 		return true
 	default:
 		return false

@@ -210,7 +210,7 @@ func diagnosticErrorCode(err error) string {
 		return "no_claimable_work"
 	}
 	code := hubErrorCode(err)
-	if slices.Contains([]string{"lease_conflict", "lease_lost", "provider_capacity", "provider_incompatible", "provider_candidate_changed", "runner_capacity", "host_capacity", "policy_mismatch", "invalid_request", "unauthorized", "forbidden", "not_found", "collaboration_bytes", "budget_exhausted", "no_claimable_work"}, code) {
+	if slices.Contains([]string{"lease_conflict", "lease_lost", "provider_capacity", "provider_incompatible", "provider_candidate_changed", "runner_capacity", "host_capacity", "plan_capacity", "policy_mismatch", "invalid_request", "unauthorized", "forbidden", "not_found", "collaboration_bytes", "budget_exhausted", "no_claimable_work"}, code) {
 		return code
 	}
 	return "unavailable"

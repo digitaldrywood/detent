@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -121,9 +120,14 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 	data := templates.HostedPageData{Mode: "billing", Title: "Organization billing", CanManage: true, CanManageOwnership: true}
 	data.PlanName = report.Entitlement.Name
 	data.PlanPrice = hostedPlanPrice(report.Entitlement.MonthlyUSDCents)
-	for _, name := range []string{"projects", "unarchived_issues"} {
-		used, limit := report.Entitlement.Usage[name], report.Entitlement.Allowances[name]
-		data.Allowances = append(data.Allowances, templates.HostedAllowanceRow{Label: strings.ReplaceAll(name, "_", " "), Consumption: strconv.FormatInt(used, 10), Allowance: strconv.FormatInt(limit, 10), Remaining: strconv.FormatInt(max(limit-used, 0), 10), OverLimit: used > limit})
+	for _, row := range [][2]string{{"concurrent_work", "concurrent work"}, {"unarchived_issues", "open issues"}} {
+		name, label := row[0], row[1]
+		limit, limited := report.Entitlement.Allowances[name]
+		if !limited {
+			continue
+		}
+		used := report.Entitlement.Usage[name]
+		data.Allowances = append(data.Allowances, templates.HostedAllowanceRow{Label: label, Consumption: strconv.FormatInt(used, 10), Allowance: strconv.FormatInt(limit, 10), Remaining: strconv.FormatInt(max(limit-used, 0), 10), OverLimit: used > limit})
 	}
 	if credits := report.AICredits; credits != nil {
 		data.AICredits = &templates.HostedAICredits{Returned: c.QueryParam("credits") == "returned", Balance: fmt.Sprintf("$%.6f USD", float64(credits.BalanceMicros)/1000000), Enabled: credits.AutoEnabled, Threshold: strconv.FormatInt(credits.ThresholdCents, 10), PriceID: credits.PriceID, Failure: credits.Failure, InFlight: credits.InFlight, CanAutoFund: credits.CanAutoFund}
@@ -313,7 +317,7 @@ func (s *Service) readBillingView(ctx context.Context) (hostedBillingView, error
 	view.ComparisonPlans = []hostedComparisonPlan{}
 	if runtimePlans := s.database.plans(); runtimePlans != nil {
 		for _, configured := range runtimePlans.Plans {
-			if !slices.Contains([]string{"starter", "growth", "scale"}, configured.ID) {
+			if tier, ok := hostedTierFor(configured.PlanReference); !ok || !tier.offered || tier.ID == "free" {
 				continue
 			}
 			plan, err := s.database.readHostedPlan(ctx, s.database.reader, configured.PlanReference)

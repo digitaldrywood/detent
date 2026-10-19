@@ -710,7 +710,7 @@ func TestGitHubBatchUsesCatalogJobCap(t *testing.T) {
 		plan    string
 		cap     int
 		refused bool
-	}{{plan: "free", cap: 200, refused: true}, {plan: "starter", cap: 2000}} {
+	}{{plan: "free", cap: 10000}, {plan: "starter", cap: 10000}} {
 		t.Run(test.plan, func(t *testing.T) {
 			t.Parallel()
 			f := newBatchFixture(t)

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"net/http"
 	"slices"
 	"time"
 )
@@ -31,7 +33,7 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 		"artifact_reserved_bytes": "SELECT coalesce(sum(json_extract(usage_json,'$.reserved_bytes')),0) FROM hosted_artifact_usage",
 		"members":                 "SELECT count(*) FROM hosted_members WHERE active = 1",
 		"projects":                "SELECT count(*) FROM projects WHERE deleted_at IS NULL",
-		"unarchived_issues":       "SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.organization_id = ? AND p.deleted_at IS NULL AND p.profile = 'native' AND i.archived = 0",
+		"unarchived_issues":       "SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.organization_id = ? AND p.deleted_at IS NULL AND p.profile = 'native' AND i.archived = 0 AND coalesce(ws.terminal, 0) = 0",
 		"repositories":            "SELECT count(*) FROM repositories",
 		"registered_runners":      `SELECT (SELECT count(*) FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE t.revoked_at IS NULL) + (SELECT count(*) FROM machines m JOIN api_tokens t ON t.id = m.token_id WHERE t.revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_identities r WHERE r.machine_id = m.id))`,
 		"history_records":         "SELECT value FROM hosted_usage_counters WHERE name = 'history_records'",
@@ -180,15 +182,24 @@ func (d *database) checkHostedClaim(ctx context.Context, tx *sql.Tx, now time.Ti
 	if runtimePlans == nil {
 		return nil
 	}
-	if err := d.requireHostedFeature(ctx, tx, "native_execution", now); err != nil {
-		return err
-	}
-	if ctx.Value(runnerRequestBudgetContext{}) == true {
-		return nil
-	}
 	entitlement, err := d.hostedEntitlement(ctx, tx, now)
 	if err != nil {
 		return err
+	}
+	if !slices.Contains(entitlement.Features, "native_execution") {
+		return &hostedLimitError{Resource: "native_execution"}
+	}
+	if limit, limited := entitlement.Allowances["concurrent_work"]; limited {
+		usage, err := d.hostedConsumption(ctx, tx, now, "concurrent_work")
+		if err != nil {
+			return err
+		}
+		if usage["concurrent_work"] >= limit {
+			return &nativeError{Code: "plan_capacity", Message: fmt.Sprintf("The plan's concurrent work limit is reached (%d of %d); work stays queued until a slot frees", usage["concurrent_work"], limit), status: http.StatusConflict, publicMessage: true}
+		}
+	}
+	if ctx.Value(runnerRequestBudgetContext{}) == true {
+		return nil
 	}
 	window := now.Unix() / runtimePlans.WindowSeconds * runtimePlans.WindowSeconds
 	var used int64

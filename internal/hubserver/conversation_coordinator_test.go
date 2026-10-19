@@ -1244,7 +1244,7 @@ func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 		{name: "revoked choice", hosted: true, granted: true, revoked: true, model: "gpt-6-astra", effort: "high", wantModel: "gpt-6-astra", wantEffort: "high"},
 		{name: "ungranted unknown", hosted: true, model: "unknown-model", wantFailure: "not one of the available choices"},
 		{name: "granted unknown", hosted: true, granted: true, model: "unknown-model", wantFailure: "not one of the available choices"},
-		{name: "granted without execution", hosted: true, granted: true, free: true, model: "gpt-6-astra", wantFailure: "Upgrade"},
+		{name: "granted on Free", hosted: true, granted: true, free: true, model: "gpt-6-astra", effort: "high", wantModel: "gpt-6-astra", wantEffort: "high"},
 		{name: "granted with exhausted credits", hosted: true, granted: true, credits: true, model: "gpt-6-astra", wantFailure: "AI credits are exhausted"},
 		{name: "complimentary credits resume Luna", hosted: true, credits: true, adjust: true, wantModel: genkitbackend.Model, wantEffort: "low"},
 		{name: "granted with purchased credits", hosted: true, granted: true, free: true, credits: true, balance: 1000000, model: "gpt-6-astra", effort: "high", wantModel: "gpt-6-astra", wantEffort: "high"},
@@ -1799,7 +1799,7 @@ func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 		wantCalls    int
 		want, hidden string
 	}{
-		{name: "Free without credits", want: "Upgrade", hidden: "Auto-fund"},
+		{name: "Free without credit accounting", wantCalls: 1},
 		{name: "purchased credits permit chat", credits: true, balance: 1000000, wantCalls: 1},
 		{name: "marked-up turn overruns then refuses", credits: true, balance: 120000, overrun: true, wantBalance: -30000, wantCalls: 1},
 		{name: "exact charged balance exhausts then refuses", credits: true, balance: 150000, overrun: true, wantBalance: 0, wantCalls: 1},

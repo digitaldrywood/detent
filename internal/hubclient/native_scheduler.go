@@ -613,7 +613,7 @@ func nativeAdmissionCapacityFull(err error) bool {
 		return false
 	}
 	switch failure.Code {
-	case "provider_capacity", "runner_capacity", "host_capacity":
+	case "provider_capacity", "runner_capacity", "host_capacity", "plan_capacity":
 		return true
 	default:
 		return false

@@ -117,13 +117,13 @@ func hostedBilling(data HostedPageData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			if row.OverLimit {
-				if row.Label == "unarchived issues" {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<dd class=\"text-warn\">Over limit. Upgrade or archive issues to free capacity.</dd>")
+				if row.Label == "open issues" {
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<dd class=\"text-warn\">Over limit. Finish or archive issues to free capacity.</dd>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				} else {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "<dd class=\"text-warn\">Over limit. Upgrade to increase project capacity.</dd>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "<dd class=\"text-warn\">Over limit. New work waits for a free slot; upgrade to run more at once.</dd>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}

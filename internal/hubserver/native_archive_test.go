@@ -176,21 +176,23 @@ func TestNativeArchiveActiveWork(t *testing.T) {
 
 func TestHostedIssueAllowanceBoundaries(t *testing.T) {
 	t.Parallel()
-	for _, count := range []int{199, 200, 201} {
+	for _, count := range []int{2, 3, 4} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
 			t.Parallel()
 			f := newHostedSecurityFixture(t)
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
+			hostedTestPlans(t, f.service, map[string]int64{"unarchived_issues": 3})
 			scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
-			seedArchiveIssues(t, f.service, scope, count, "Done")
+			seedArchiveIssues(t, f.service, scope, count, "Todo")
+			seedArchiveIssues(t, f.service, scope, 2, "Done")
 			response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "create"}, Title: "Allocation", State: "Todo"})
 			want := http.StatusTooManyRequests
-			if count == 199 {
+			if count == 2 {
 				want = http.StatusOK
 			}
 			requireNativeStatus(t, response, want)
 			if want == http.StatusTooManyRequests {
-				for _, text := range []string{`"resource":"unarchived_issues"`, `"allowance":200`, fmt.Sprintf(`"consumption":%d`, count)} {
+				for _, text := range []string{`"resource":"unarchived_issues"`, `"allowance":3`, fmt.Sprintf(`"consumption":%d`, count)} {
 					if !strings.Contains(response.Body.String(), text) {
 						t.Fatalf("missing contextual count: %s", response.Body.String())
 					}
@@ -200,7 +202,7 @@ func TestHostedIssueAllowanceBoundaries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if usage.Usage["unarchived_issues"] != int64(max(count, 200)) {
+			if usage.Usage["unarchived_issues"] != int64(max(count, 3)) {
 				t.Fatalf("usage=%v", usage.Usage)
 			}
 		})
@@ -213,7 +215,7 @@ func TestHostedIssueArchiveAndDowngrade(t *testing.T) {
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 	config := hostedTestPlans(t, f.service, map[string]int64{"unarchived_issues": 2})
 	scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
-	issues := seedArchiveIssues(t, f.service, scope, 2, "Done")
+	issues := seedArchiveIssues(t, f.service, scope, 2, "Todo")
 	issuePath := func(issue tracker.NativeIssue) string { return f.base + "/work-items/" + string(issue.WorkItemID) }
 	action := func(issue tracker.NativeIssue, op, key string, want int) tracker.NativeIssue {
 		t.Helper()
@@ -267,8 +269,9 @@ func TestHostedIssueConcurrentAllocation(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
+	hostedTestPlans(t, f.service, map[string]int64{"unarchived_issues": 5})
 	scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
-	issues := seedArchiveIssues(t, f.service, scope, 199, "Done")
+	issues := seedArchiveIssues(t, f.service, scope, 4, "Todo")
 	response := f.request(t, owner, http.MethodPost, f.base+"/work-items/"+string(issues[0].WorkItemID)+"/archive", archiveRequest(issues[0], "archive"))
 	requireNativeStatus(t, response, http.StatusOK)
 	var archived tracker.NativeIssue
@@ -302,7 +305,7 @@ func TestHostedIssueConcurrentAllocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if usage.Usage["unarchived_issues"] != 200 {
+	if usage.Usage["unarchived_issues"] != 5 {
 		t.Fatalf("concurrent usage=%v", usage.Usage)
 	}
 }
@@ -373,7 +376,15 @@ func TestHostedIssueAllowanceAcrossProjects(t *testing.T) {
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 	hostedTestPlans(t, f.service, map[string]int64{"unarchived_issues": 1})
 	scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
-	first := seedArchiveIssues(t, f.service, scope, 1, "Done")[0]
+	seedArchiveIssues(t, f.service, scope, 2, "Done")
+	usage, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Usage["unarchived_issues"] != 0 {
+		t.Fatalf("terminal issues counted as open: %v", usage.Usage["unarchived_issues"])
+	}
+	first := seedArchiveIssues(t, f.service, scope, 1, "Todo")[0]
 	response := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/projects", map[string]any{"idempotency_key": "second-project", "name": "Second project", "grant_access": true})
 	requireNativeStatus(t, response, http.StatusCreated)
 	var created struct {
@@ -400,7 +411,7 @@ func TestHostedIssueAllowanceCatalog(t *testing.T) {
 		configured *int64
 		want       int64
 	}{
-		{"legacy default", nil, 200},
+		{"legacy default", nil, 10000},
 		{"explicit zero", new(int64(0)), 0},
 		{"explicit paid allowance", new(int64(1000)), 1000},
 	} {
