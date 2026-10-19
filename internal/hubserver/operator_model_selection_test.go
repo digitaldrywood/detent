@@ -311,6 +311,27 @@ func TestNativeModelSelectionTools(t *testing.T) {
 	if action.Status != chatpkg.ActionSucceeded || saved.Revision != 2 || saved.Effective.Model("normal") != "native-model" {
 		t.Fatalf("saved=%+v action=%+v", saved, action)
 	}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "organization-operator", "scope": "operator"})
+	requireNativeStatus(t, response, http.StatusCreated)
+	var operator tokenResponse
+	decodeHubResponse(t, response, &operator)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, operator.Token, nil), http.StatusOK)
+	ctx = <-contexts
+	if err := executor.OpenConnection(ctx); err != nil {
+		t.Fatal(err)
+	}
+	definitions, err = executor.ListTools(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, definition := range operatortool.ModelSelectionCatalog() {
+		if operatortool.IsOrganizationModelSelection(definition.Name) && !slices.ContainsFunc(definitions, func(d operatortool.Definition) bool { return d.Name == definition.Name }) {
+			t.Fatalf("organization operator missing model selection operation %s", definition.Name)
+		}
+	}
+	if _, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.GetProjectModelSelection, Arguments: json.RawMessage(`{"project_id":"` + string(f.project.ID) + `"}`)}); err == nil {
+		t.Fatal("organization operator accessed project without a grant")
+	}
 	readCall := operatortool.Call{Name: operatortool.GetOrganizationModelSelection, Arguments: json.RawMessage(`{}`)}
 	result, err = executor.Execute(ctx, readCall)
 	if err != nil {
@@ -338,7 +359,7 @@ func TestNativeModelSelectionTools(t *testing.T) {
 	if action.Status != chatpkg.ActionSucceeded || saved.Revision != organization.Data.Revision+1 || saved.Effective.Model("normal") != "organization-model" {
 		t.Fatalf("organization saved=%+v action=%+v", saved, action)
 	}
-	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/model-selection", f.token, nil)
+	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/model-selection", f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &saved)
 	if saved.Effective.Model("normal") != "native-model" {
