@@ -252,8 +252,8 @@ func (l *LocalGit) fetchCheckpointRef(ctx context.Context, checkpoint *Checkpoin
 		return errors.New("checkpoint reference is incomplete")
 	}
 	if _, err := l.runGit(ctx, "cat-file", "-e", checkpoint.CommitSHA+"^{commit}"); err != nil {
-		if _, err := l.runGit(ctx, "fetch", "--no-tags", "--no-write-fetch-head", defaultGitRemote, checkpoint.CommitSHA); err != nil {
-			if _, refErr := l.runGit(ctx, "fetch", "--no-tags", "--no-write-fetch-head", defaultGitRemote, "+"+checkpoint.Ref+":"+checkpoint.Ref); refErr != nil {
+		if _, err := l.runGit(ctx, remoteGitArgs("fetch", "--no-tags", "--no-write-fetch-head", defaultGitRemote, checkpoint.CommitSHA)...); err != nil {
+			if _, refErr := l.runGit(ctx, remoteGitArgs("fetch", "--no-tags", "--no-write-fetch-head", defaultGitRemote, "+"+checkpoint.Ref+":"+checkpoint.Ref)...); refErr != nil {
 				return fmt.Errorf("fetch checkpoint %s: %w", checkpoint.Ref, errors.Join(err, refErr))
 			}
 		}

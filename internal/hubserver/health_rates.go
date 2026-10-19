@@ -22,6 +22,7 @@ const (
 	healthBaselineQuantile   = 0.9
 	healthMedianQuantile     = 0.5
 	healthRetryCount         = 5
+	healthSetupFailureCount  = 3
 	healthRetryRatio         = 0.3
 	healthRecoveryCount      = 3
 	healthRecoveryWindow     = 30 * time.Minute
@@ -37,11 +38,11 @@ const (
 )
 
 type healthRateAttempt struct {
-	ID, Item, Status, Signature, Recovery, LandingKey string
-	At, Heartbeat                                     time.Time
-	Cost                                              float64
-	Landing, Conflict, Landed                         bool
-	LandingAt                                         time.Time
+	ID, Item, Status, Signature, Recovery, LandingKey, Runner string
+	At, Heartbeat                                             time.Time
+	Cost                                                      float64
+	Landing, Conflict, Landed, InstanceSetupFailure           bool
+	LandingAt                                                 time.Time
 }
 
 type healthItemCost struct {
@@ -253,7 +254,7 @@ func evaluateHealthRates(now time.Time, projects []healthRateProject) []healthFi
 			out = append(out, f)
 		}
 	}
-	return out
+	return append(out, healthRunnerSetupFindings(now, projects)...)
 }
 
 func healthRetryFindings(now time.Time, p healthRateProject, b healthRateBaseline) []healthFinding {
@@ -309,6 +310,48 @@ func healthRetryFindings(now time.Time, p healthRateProject, b healthRateBaselin
 		evidence.Values["retry_ratio_1h"], evidence.Values["retry_ratio_6h"] = short, long
 		evidence.Counts = map[string]int{"failures_1h": failures[0], "failures_6h": failures[1]}
 		out = append(out, newHealthFinding("retry_storm", "instance", "work_item", item, "Repeated failed attempts are wasting work on this item.", "The runner operator inspects the repeated failure signatures and attempts.", []string{p.ID}, evidence))
+	}
+	return out
+}
+
+// healthRunnerSetupFindings reports a runner whose workspace setup keeps
+// failing before the provider starts, counting its failures across every
+// project it serves. These failures are attributed to the instance and held by
+// the instance cooldown, so they need no baseline: any runner repeating them is
+// unhealthy until its operator repairs the host.
+func healthRunnerSetupFindings(now time.Time, projects []healthRateProject) []healthFinding {
+	attempts, served := map[string][]healthRateAttempt{}, map[string][]string{}
+	runners := []string{}
+	for _, p := range projects {
+		for _, a := range p.Attempts {
+			if !a.InstanceSetupFailure || a.Runner == "" || !healthInWindow(a.At, now.Add(-healthShortWindow), now) {
+				continue
+			}
+			if _, seen := attempts[a.Runner]; !seen {
+				runners = append(runners, a.Runner)
+			}
+			attempts[a.Runner] = append(attempts[a.Runner], a)
+			if !slices.Contains(served[a.Runner], p.ID) {
+				served[a.Runner] = append(served[a.Runner], p.ID)
+			}
+		}
+	}
+	out := []healthFinding{}
+	for _, runner := range runners {
+		failed := attempts[runner]
+		if len(failed) < healthSetupFailureCount {
+			continue
+		}
+		evidence := healthEvidence{Counts: map[string]int{"failures_1h": len(failed)}}
+		for _, a := range failed {
+			evidence.AttemptIDs = append(evidence.AttemptIDs, a.ID)
+			if a.Signature != "" {
+				evidence.Signatures = append(evidence.Signatures, a.Signature)
+			}
+		}
+		slices.Sort(evidence.Signatures)
+		evidence.Signatures = slices.Compact(evidence.Signatures)
+		out = append(out, newHealthFinding("runner_setup_failures", "instance", "runner", runner, "Workspace setup on this runner keeps failing before the provider starts.", "The runner operator checks the workspace hook output and the runner's repository credential.", served[runner], evidence))
 	}
 	return out
 }
