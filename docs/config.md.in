@@ -941,6 +941,14 @@ optional OTLP export. `budget` is the project-wide spend policy;
 `agent.budget` can further constrain agent sessions. `release` enables
 release-readiness automation after merged work accumulates.
 
+Release automation requires `tracker.kind: github`, `tracker.repository: owner/repository`,
+and `release.enabled: true`. It is unavailable for `hub_native` with either
+plain git delivery (`deliverable.github_pull_request: false`, the default) or
+GitHub pull request delivery (`deliverable.github_pull_request: true`). Config
+validation rejects `release.enabled: true` for native projects and reports a
+validation warning; leave `release.enabled: false` when migrating to `hub_native`.
+Opting into GitHub pull requests does not enable release automation.
+
 `observability.stranded_active_threshold_seconds` controls when Health and
 `detent doctor` report an issue that remains in `In Progress` without a live
 worker and when Detent recovers it automatically. Issues with an open pull
@@ -1161,6 +1169,13 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 reviews each immutable base/head before merge. P1/P2 findings send the change to
 Rework; non-blocking findings remain recorded on the Change or pull request.
 Backend and runner failures are instance failures and do not become findings.
+
+For `tracker.kind: hub_native`, audits run for both plain git delivery
+(`deliverable.github_pull_request: false`, the default) and GitHub pull request
+delivery (`deliverable.github_pull_request: true`). Migrating to the native
+tracker requires no audit opt-in: keep the default or explicitly set
+`gate.security_audit.enabled: true` in the approved project policy. GitHub pull
+request delivery is not required for the audit.
 
 The effective model selection's `stages.security_audit` selects the backend,
 model and effort. Codex and Claude use their ordinary authentication, including

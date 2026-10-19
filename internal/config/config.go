@@ -601,6 +601,9 @@ func (c Config) USDBrakes() USDBrakes {
 func (c Config) ValidationWarnings() []string {
 	var warnings []string
 	warnings = append(warnings, c.Agents.ModelSelectionWarnings()...)
+	if c.Release.Enabled && c.Tracker.Kind == TrackerHubNative {
+		warnings = append(warnings, "release.enabled: release automation is unavailable for tracker.kind hub_native, including deliverable.github_pull_request: true; requires tracker.kind github")
+	}
 	if c.Workspace.legacyCacheStrategy {
 		warnings = append(warnings, "workspace.cache_strategy is unknown and ignored; remove it before the next release, which will reject it")
 	}
