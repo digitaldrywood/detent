@@ -392,6 +392,26 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			if test.tool == "approve_project_policy" && test.name != "first approval" && test.name != "approve authored policy" && !strings.Contains(action.Description, "gates.github_pull_request: false → true") {
 				t.Fatalf("missing diff: %s", action.Description)
 			}
+			if test.tool == "apply_local_project_policy" && !strings.Contains(action.Description, "Application is pending until this runner reports it applied") {
+				t.Fatalf("application preview does not state pending adoption: %s", action.Description)
+			}
+			readPolicy := func() policy.Descriptor {
+				t.Helper()
+				response := f.request(t, owner, http.MethodGet, f.base+"/policy", nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var read struct {
+					Policy policy.Descriptor `json:"policy"`
+				}
+				decodeHubResponse(t, response, &read)
+				return read.Policy
+			}
+			previewed := current
+			if test.tool == "apply_local_project_policy" {
+				previewed = selected
+			}
+			if test.name != "first approval" && test.tool != "update_project_integration" && readPolicy().ID != previewed.ID {
+				t.Fatal("preview changed the approved policy before confirmation")
+			}
 			switch test.name {
 			case "selected policy changes after preview":
 				newSelected := selected
@@ -468,6 +488,9 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				approval, err := readProjectPolicy(t.Context(), f.service.database.db, scope)
 				if err != nil || !reflect.DeepEqual(approval.Policy, selected) {
 					t.Fatalf("approval=%+v %v", approval, err)
+				}
+				if persisted := readPolicy(); persisted.ID != selected.ID || persisted.Gates != selected.Gates {
+					t.Fatalf("approved policy not served after approval: %+v", persisted)
 				}
 				read, err := tools.handle(t.Context(), runner.AgentToolCall{Name: operatortool.LocalProjectConfiguration, Arguments: json.RawMessage(`{}`)})
 				if err != nil {
