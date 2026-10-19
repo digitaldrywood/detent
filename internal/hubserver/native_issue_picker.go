@@ -72,7 +72,7 @@ func readNativeIssuePickerRows(ctx context.Context, query nativeQueryer, scope n
 	for _, item := range items {
 		args = append(args, item.ID)
 	}
-	rows, err := query.QueryContext(ctx, `SELECT i.native_id, i.number, i.title, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), COALESCE(ws.dispatchable, 0), q.priority_override
+	rows, err := query.QueryContext(ctx, `SELECT i.native_id, i.number, i.title, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override
 FROM issues i
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN queue_entries q ON q.id = (SELECT id FROM queue_entries WHERE issue_id = i.id ORDER BY id LIMIT 1)
@@ -86,7 +86,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id IN (`+placehold
 		var issue tracker.NativeIssue
 		var id string
 		var priority sql.NullInt64
-		if err := rows.Scan(&id, &issue.Number, &issue.Title, &issue.State, &issue.Terminal, &issue.Dispatchable, &priority); err != nil {
+		if err := rows.Scan(&id, &issue.Number, &issue.Title, &issue.State, &issue.Terminal, &priority); err != nil {
 			return nil, fmt.Errorf("scan picker row: %w", err)
 		}
 		issue.WorkItemID = tracker.NativeWorkItemID(id)

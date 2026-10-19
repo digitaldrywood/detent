@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -93,7 +94,19 @@ func nativeActorDisplayName(principal, organization string) string {
 }
 
 func readNativeIssue(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (tracker.NativeIssue, tracker.WorkItemID, error) {
-	return readNativeIssueProjection(ctx, query, scope, id, false)
+	issue, internalID, err := readNativeIssueProjection(ctx, query, scope, id, false)
+	if err != nil || scope.credential.Runner.RunnerID == "" || !slices.Contains(scope.credential.Runner.Operations, runnerauth.Claim) {
+		return issue, internalID, err
+	}
+	var eligible bool
+	err = query.QueryRowContext(ctx, `SELECT i.archived = 0 AND ws.dispatchable = 1 AND ws.terminal = 0 AND `+nativeCandidateDependenciesSatisfied+`
+FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
+JOIN workflow_states ws ON ws.id = i.workflow_state_id
+WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, internalID, scope.organization, scope.project).Scan(&eligible)
+	if err == nil {
+		issue.SchedulingEligible = &eligible
+	}
+	return issue, internalID, err
 }
 
 func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope nativeScope, id string, compact bool) (tracker.NativeIssue, tracker.WorkItemID, error) {
@@ -112,7 +125,7 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
 	visibility, args := scope.issueVisibilitySQL("i")
 	args = append([]any{scope.organization, scope.project, id}, args...)
 	err := query.QueryRowContext(ctx, `SELECT o.slug, p.slug, i.id, i.native_id, i.organization_id, i.project_id, i.number, i.revision, p.profile,
- i.issue_type, i.report_context_json, i.verification_state, i.verified_by_json, i.verified_at, i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), COALESCE(ws.dispatchable, 0), q.priority_override, i.labels_json, i.assignees_json,
+ i.issue_type, i.report_context_json, i.verification_state, i.verified_by_json, i.verified_at, i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
  i.actor_json, `+nativeActorDisplayName("json_extract(i.actor_json, '$.principal_id')", "i.organization_id")+`, i.issue_contract_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
  i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived,
  COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0), i.url,
@@ -137,7 +150,7 @@ LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN queue_entries q ON q.id = (SELECT id FROM queue_entries WHERE issue_id = i.id ORDER BY id LIMIT 1)
 WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visibility+`)`, args...).Scan(
 		&organizationSlug, &projectSlug, &internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
-		&issueType, &reportContext, &verificationState, &verifiedBy, &verifiedAt, &issue.Title, &issue.Body, &issue.State, &issue.Terminal, &issue.Dispatchable, &priority, &labels, &assignees, &actor, &displayName, &contractJSON, &provenance, &created, &updated, &activity, &externalID,
+		&issueType, &reportContext, &verificationState, &verifiedBy, &verifiedAt, &issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &displayName, &contractJSON, &provenance, &created, &updated, &activity, &externalID,
 		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived,
 		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL, &closedAt, &listChange, &pullRequest)
 	if err != nil {
@@ -539,7 +552,7 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 			if state.OperatorOnly && scope.credential.Scope == apiScopeWorker && !machineIntake {
 				return tracker.NativeIssue{}, nativeInvalid("Workflow target requires an operator")
 			}
-			issue.Terminal, issue.Dispatchable = state.Terminal, state.Dispatchable
+			issue.Terminal = state.Terminal
 		}
 	}
 	if issue.Labels == nil {
@@ -675,7 +688,7 @@ func persistNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, issu
 			return issue, err
 		}
 	}
-	if err := tx.QueryRowContext(ctx, "SELECT terminal, dispatchable FROM workflow_states WHERE project_id = ? AND detent_state = ?", scope.project, issue.State).Scan(&issue.Terminal, &issue.Dispatchable); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT terminal FROM workflow_states WHERE project_id = ? AND detent_state = ?", scope.project, issue.State).Scan(&issue.Terminal); err != nil {
 		return issue, err
 	}
 	issue.Revision++

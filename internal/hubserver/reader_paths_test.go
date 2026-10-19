@@ -401,7 +401,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"processSlackDelivery":              "Claims and records a Slack delivery attempt.",
 		"Claim":                             "Claims the work item and reserves its fenced lease.",
 		"renew":                             "Renews the fenced work lease.",
-		"Release":                           "Releases the fenced work lease.",
+		"releaseLease":                      "Releases the fenced work lease and, when requested, cancels its owned attempt atomically.",
 		"appendEvent":                       "Writes the worker event and resulting work state.",
 		"applyObservedDefaultBranchPolicy":  "Persists the observed default-branch policy and approval.",
 		"tenantRequestMetrics.write":        "Persists request metrics in their independent database.",

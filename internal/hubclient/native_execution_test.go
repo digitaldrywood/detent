@@ -619,7 +619,7 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 			transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 				var payload any = policy.Approval{Policy: descriptor}
 				if request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/work-items/") {
-					payload = tracker.NativeIssue{Dispatchable: true, DependencyReady: true}
+					payload = tracker.NativeIssue{SchedulingEligible: new(true), DependencyReady: true}
 				}
 				if strings.HasSuffix(request.URL.Path, "/events") {
 					var event tracker.NativeRunEvent

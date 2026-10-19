@@ -290,7 +290,7 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/validate"):
 					_ = json.NewEncoder(w).Encode(map[string]any{})
 				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/work-items/"):
-					_ = json.NewEncoder(w).Encode(tracker.NativeIssue{Dispatchable: true, DependencyReady: true})
+					_ = json.NewEncoder(w).Encode(tracker.NativeIssue{SchedulingEligible: new(true), DependencyReady: true})
 				default:
 					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 				}

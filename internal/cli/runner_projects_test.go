@@ -546,7 +546,7 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 					case strings.HasSuffix(r.URL.Path, "/leases/lease_example/validate"):
 						_ = json.NewEncoder(w).Encode(runnerauth.Runner{})
 					case strings.HasSuffix(r.URL.Path, "/work-items/wi_example"):
-						issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_orders", WorkItemID: "wi_example"}, State: "Todo", Dispatchable: true, DependencyReady: true}
+						issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_orders", WorkItemID: "wi_example"}, State: "Todo", SchedulingEligible: new(true), DependencyReady: true}
 						if r.URL.Query().Get("view") == "recovery" {
 							_ = json.NewEncoder(w).Encode(tracker.NativeRecovery{Issue: issue})
 						} else {

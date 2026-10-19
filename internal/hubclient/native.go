@@ -352,7 +352,11 @@ func (c *NativeClient) renew(ctx context.Context, lease tracker.NativeLease, ttl
 }
 
 func (c *NativeClient) Release(ctx context.Context, lease tracker.NativeLease, reason string) error {
-	err := c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/release", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: reason}, nil)
+	return c.release(ctx, lease, reason, false)
+}
+
+func (c *NativeClient) release(ctx context.Context, lease tracker.NativeLease, reason string, cancelAttempt bool) error {
+	err := c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/release", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: reason, CancelAttempt: cancelAttempt}, nil)
 	if (err == nil || claimLost(err)) && c.client.runner != nil {
 		c.client.runner.claimSlot(lease, false)
 		c.slotFreed()

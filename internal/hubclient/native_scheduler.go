@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -590,11 +591,11 @@ func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request orchestra
 			return nil, err
 		}
 		if !renewable {
-			if err := source.client.Release(ctx, tracker.NativeLease{ID: held.ID, FencingToken: held.FencingToken}, "released"); err != nil && !nativeLeaseLost(err) {
+			if err := source.client.release(ctx, tracker.NativeLease{ID: held.ID, FencingToken: held.FencingToken}, "cancelled", recovery.Issue.SchedulingEligible != nil); err != nil && !nativeLeaseLost(err) {
 				return nil, err
 			}
 			for _, attempt := range recovery.Attempts {
-				if attempt.LeaseID == held.ID && attempt.FencingToken == held.FencingToken && (attempt.Status == "running" || attempt.Status == "interrupted") && attempt.Identity != nil {
+				if recovery.Issue.SchedulingEligible == nil && attempt.LeaseID == held.ID && attempt.FencingToken == held.FencingToken && (attempt.Status == "running" || attempt.Status == "interrupted") && attempt.Identity != nil {
 					if err := cancelNativeReleasedAttempt(ctx, source.client, held.WorkItemID, attempt); err != nil {
 						return nil, err
 					}
@@ -706,8 +707,28 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 	if err != nil {
 		return false, err
 	}
-	if issue.Terminal || issue.Archived || !issue.DependencyReady || !issue.Dispatchable {
-		return false, nil
+	if issue.SchedulingEligible != nil {
+		if !*issue.SchedulingEligible {
+			return false, nil
+		}
+	} else {
+		if issue.Terminal || issue.Archived || !issue.DependencyReady {
+			return false, nil
+		}
+		project, err := claim.source.client.Project(ctx)
+		if err != nil {
+			return false, err
+		}
+		dispatchable := false
+		for _, state := range project.States {
+			if strings.EqualFold(state.Name, issue.State) {
+				dispatchable = state.Dispatchable && !state.Terminal && !state.OperatorOnly
+				break
+			}
+		}
+		if !dispatchable {
+			return false, nil
+		}
 	}
 	if observation == nil || observation.LocalAttemptID == 0 || observation.Generation == 0 {
 		return true, nil

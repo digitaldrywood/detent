@@ -659,3 +659,35 @@ func readNativeAttemptRecord(ctx context.Context, q nativeQueryer, scope nativeS
 	}
 	return scanNativeAttempt(rows, now)
 }
+
+func cancelNativeLeaseAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, lease leaseRecord, now time.Time) error {
+	var raw string
+	var item tracker.NativeWorkItemID
+	var revision tracker.Revision
+	err := tx.QueryRowContext(ctx, `SELECT a.data_json, a.work_item_id, i.revision FROM native_attempts a
+JOIN issues i ON i.native_id = a.work_item_id AND i.project_id = a.project_id AND i.organization_id = a.organization_id
+WHERE a.lease_id = ? AND a.fencing_token = ? AND a.organization_id = ? AND a.project_id = ? AND a.status IN ('running', 'interrupted')`, lease.session.ID, lease.session.FencingToken, scope.organization, scope.project).Scan(&raw, &item, &revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var previous tracker.NativeRunData
+	if err := json.Unmarshal([]byte(raw), &previous); err != nil {
+		return err
+	}
+	if previous.Identity == nil {
+		return nil
+	}
+	data := tracker.NativeRunData{AttemptID: previous.AttemptID, RunID: previous.RunID, LeaseID: previous.LeaseID,
+		FencingToken: previous.FencingToken, PolicyID: previous.PolicyID, Identity: previous.Identity,
+		MachineID: previous.MachineID, SessionID: previous.SessionID, RunnerID: previous.RunnerID,
+		Sequence: previous.Sequence + 1, Outcome: "cancelled"}
+	event := tracker.NativeRunEvent{Type: "run.finished", SchemaVersion: 1, Data: data}
+	_, history, err := recordNativeAttempt(ctx, tx, scope, item, &event, now, true)
+	if err != nil || !history {
+		return err
+	}
+	return appendNativeHistory(ctx, tx, scope, string(item), event.Type, tracker.CollaborationData{Run: &event.Data, Revision: revision}, now)
+}
