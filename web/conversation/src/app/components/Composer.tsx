@@ -1,6 +1,6 @@
 // Composes the conversation editor, attachments, pending questions, and turn controls.
 // Commands and delivery state come from the hub adapters.
-import { MicIcon, PaperclipIcon, PlugZapIcon, SquareIcon, Volume2Icon, XIcon } from "lucide-react";
+import { HeadphonesIcon, MicIcon, PaperclipIcon, PlugZapIcon, SquareIcon, Volume2Icon, XIcon } from "lucide-react";
 import React from "react";
 
 import type { ServerProviderSkill } from "../../contracts/ui.ts";
@@ -68,6 +68,7 @@ import {
   type SlashMenuKey,
 } from "./ComposerPromptEditor.tsx";
 import { SlashCommandMenu, slashOptionId } from "./SlashCommandMenu.tsx";
+import { useHandsFreeConversation } from "../hooks/useHandsFreeConversation.ts";
 import { useVoiceInput } from "./useVoiceInput.ts";
 
 import type { ConversationSpeech } from "../hooks/useConversationSpeech.ts";
@@ -77,6 +78,7 @@ export type ComposerBannerEntry = ComposerBannerStackItem | ComposerBannerStackC
 
 export interface ComposerProps {
   readonly speech?: ConversationSpeech;
+  readonly onVoiceSend?: (text: string) => Promise<void> | void;
   readonly value: string;
   readonly onChange: (value: string) => void;
   readonly onSend: () => void;
@@ -173,7 +175,16 @@ export function Composer(props: ComposerProps): React.ReactElement {
   const attachingBlocked = attachControl === "none" || (attachments === undefined && props.onFiles === undefined) || disabled;
   const fileInput = React.useRef<HTMLInputElement>(null);
   const formRef = React.useRef<HTMLFormElement>(null);
-  const voice = useVoiceInput(disabled || props.sending || props.pendingQuestion != null, (text) => {
+  const handsFreeUnavailable = disabled || props.blockedReason != null || props.pendingQuestion != null ||
+    props.value.trim().length > 0 || staged.length > 0 || props.uploadingFiles === true || attachments?.uploading === true;
+  const handsFree = useHandsFreeConversation({
+    speech: props.speech,
+    unavailable: handsFreeUnavailable,
+    sending: props.sending,
+    streaming: props.streaming,
+    onSend: props.onVoiceSend,
+  });
+  const voice = useVoiceInput(handsFree.active || disabled || props.sending || props.pendingQuestion != null, (text) => {
     const separator = props.value.length > 0 && !/\s$/.test(props.value) ? " " : "";
     props.onChange(`${props.value}${separator}${text}`);
   });
@@ -200,6 +211,12 @@ export function Composer(props: ComposerProps): React.ReactElement {
     const rail = props.banners ?? NO_BANNERS;
     const reason = props.blockedReason;
     const notices: ComposerBannerEntry[] = [...rail];
+    if (handsFree.error) notices.push({ id: "composer-hands-free", variant: "error", content: (
+      <ComposerBanner.Row role="alert">
+        <ComposerBanner.Icon><MicIcon /></ComposerBanner.Icon>
+        <ComposerBanner.Content>{handsFree.error}</ComposerBanner.Content>
+      </ComposerBanner.Row>
+    ) });
     if (voice.error || voice.notice) notices.push({
       id: "composer-voice",
       variant: voice.error ? "error" : "info",
@@ -223,7 +240,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
         title: reason,
       },
     ];
-  }, [disabled, props.banners, props.blockedReason, voice.error, voice.notice]);
+  }, [disabled, props.banners, props.blockedReason, voice.error, voice.notice, handsFree.error]);
 
   const [footerWidth, setFooterWidth] = React.useState<number | null>(null);
   React.useEffect(() => {
@@ -288,7 +305,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
       resetComposerScrollGesture(gesture);
     };
   }, [scrollElement]);
-  const controlsHidden = scrollCollapsed;
+  const controlsHidden = scrollCollapsed && !handsFree.active;
 
   const historyEntries = React.useMemo(
     () => buildComposerPromptHistoryEntries(props.history ?? NO_HISTORY),
@@ -710,6 +727,12 @@ export function Composer(props: ComposerProps): React.ReactElement {
                     )}
 
                     {props.promptContext}
+                    {handsFree.status ? (
+                      <div className="mb-2 flex min-w-0 items-center gap-2 text-muted-foreground text-xs" role="status">
+                        <HeadphonesIcon className="size-4 shrink-0" aria-hidden="true" />
+                        {handsFree.status}
+                      </div>
+                    ) : null}
                     {voice.busy ? (
                       <div className="mb-2 flex min-w-0 items-center gap-2 text-muted-foreground text-xs">
                         {voice.phase === "recording" ? (
@@ -773,7 +796,12 @@ export function Composer(props: ComposerProps): React.ReactElement {
                         controlsHidden && "invisible",
                       )}
                     >
-                      <div className="flex min-w-0 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                      <div
+                        role="group"
+                        aria-label="Turn preferences"
+                        tabIndex={disabled ? 0 : undefined}
+                        className="flex min-w-0 items-center gap-1 overflow-x-auto focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                      >
                         {props.footerLeading}
                         {footerControls === "none" ? null : (
                           <ComposerPreferenceControls
@@ -794,6 +822,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
                           size={compactFooter ? "xs" : "sm"}
                           aria-pressed={props.speech.enabled}
                           data-pressed={props.speech.enabled ? "" : undefined}
+                          disabled={handsFree.active}
                           onClick={props.speech.toggle}
                         >
                           <ComposerControlIcon icon={Volume2Icon} size={compactFooter ? "xs" : "sm"} />
@@ -878,13 +907,28 @@ export function Composer(props: ComposerProps): React.ReactElement {
                           </Tooltip>
                         </>
                       )}
+                      {handsFree.supported ? (
+                        <Tooltip>
+                          <TooltipTrigger render={
+                            <Button type="button" variant="ghost" size="icon-sm"
+                              disabled={!handsFree.active && (handsFreeUnavailable || voice.busy || props.sending)}
+                              aria-label={handsFree.active ? "End hands-free voice" : "Start hands-free voice"}
+                              aria-pressed={handsFree.active}
+                              onPointerDown={(event) => event.preventDefault()}
+                              onClick={handsFree.toggle} />
+                          }>
+                            {handsFree.active ? <SquareIcon /> : <HeadphonesIcon />}
+                          </TooltipTrigger>
+                          <TooltipPopup>{handsFree.active ? "End hands-free voice" : "Hands-free voice"}</TooltipPopup>
+                        </Tooltip>
+                      ) : null}
                       <Tooltip>
                         <TooltipTrigger render={
                           <Button
                             type="button"
                             variant="ghost"
                             size="icon-sm"
-                            disabled={disabled || props.sending || pending !== null}
+                            disabled={handsFree.active || disabled || props.sending || pending !== null}
                             aria-label={voice.phase === "recording" ? "Stop recording" : voice.busy ? "Cancel voice input" : "Start voice input"}
                             aria-pressed={voice.busy}
                             onPointerDown={(event) => event.preventDefault()}
