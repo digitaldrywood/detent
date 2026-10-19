@@ -3,10 +3,14 @@ package configdoc
 import (
 	"bytes"
 	"errors"
+	"go/scanner"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -71,6 +75,52 @@ func TestPolicyApprovalDocumentation(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestHubGitHubDocumentation(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	doc, err := os.ReadFile(filepath.Join(root, "docs", "hub-self-hosting.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, found := strings.Cut(string(doc), "\n## GitHub modes\n")
+	if !found {
+		t.Fatal("self-hosting documentation is missing GitHub modes")
+	}
+	section, _, _ = strings.Cut(section, "\n## ")
+	source, err := os.ReadFile(filepath.Join(root, "internal", "cli", "hub.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileSet := token.NewFileSet()
+	file := fileSet.AddFile("hub.go", -1, len(source))
+	var lexer scanner.Scanner
+	lexer.Init(file, source, func(position token.Position, message string) {
+		t.Errorf("%s: %s", position, message)
+	}, 0)
+	literals := make(map[string]bool)
+	for {
+		_, kind, literal := lexer.Scan()
+		if kind == token.EOF {
+			break
+		}
+		if kind == token.STRING {
+			value, err := strconv.Unquote(literal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			literals[value] = true
+		}
+	}
+	names := regexp.MustCompile(`\bDETENT_HUB_[A-Z_]+\b|--[a-z][a-z-]*`).FindAllString(section, -1)
+	if len(names) == 0 {
+		t.Fatal("GitHub modes contains no environment variables or flags to check")
+	}
+	for _, name := range names {
+		if !literals[strings.TrimPrefix(name, "--")] {
+			t.Errorf("documented option %s does not exist in internal/cli/hub.go", name)
+		}
+	}
 }
 
 func TestConfigDocumentation(t *testing.T) {
