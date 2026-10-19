@@ -163,6 +163,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		newerChange    bool
 		expiredLease   bool
 		reviewOutcome  string
+		priorFindings  bool
 		publication    string
 		terminal       bool
 		readAdmission  bool
@@ -237,6 +238,8 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "expired review wait leaves promotion to orchestrator", expiredLease: true, reviewOutcome: "approved", finalMessage: completeReport, retainedSource: true, publication: "owned", exclusion: "automated_review_missing"},
 		{name: "published version resumes implementation for actionable findings", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "changes_requested"},
 		{name: "published version retries implementation after failed validation", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "failed_check", wantCandidate: true},
+		{name: "completed rework does not repeat existing findings on the same head", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "changes_requested", priorFindings: true, readAdmission: true, exclusion: "validator_rework"},
+		{name: "completed rework does not repeat an existing failed check", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "failed_check", priorFindings: true, readAdmission: true, exclusion: "validator_rework"},
 		{name: "published version review preserves active claim owner", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "active"},
 		{name: "aged published current version still waits for review", finalMessage: completeReport, retainedSource: true, publication: "owned", aged: true, readAdmission: true, exclusion: "automated_review_missing"},
 		{name: "legacy complete with genuine publication stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "owned"},
@@ -391,6 +394,18 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 						t.Fatal("review stole the active completion owner's lane")
 					}
 				}
+			}
+			if test.priorFindings {
+				if test.reviewOutcome == "changes_requested" {
+					request := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "existing-findings"}, Decision: "changes_requested", Body: "Resolve the existing findings"}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/reviews", f.token, request), http.StatusOK)
+				}
+				f.advance(time.Second)
+				started := f.now
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET started_at=?, updated_at=? WHERE id=?", formatHubTime(started), formatHubTime(started.Add(time.Nanosecond)), f.attempt); err != nil {
+					t.Fatal(err)
+				}
+				f.advance(time.Second)
 			}
 			if test.terminal {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET terminal=1 WHERE project_id=? AND detent_state='Fixing'", f.project.ID); err != nil {
@@ -589,12 +604,29 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				if current := f.reload(t); current.State != want {
 					t.Fatalf("review result lane=%s want=%s", current.State, want)
 				}
-				if got := f.candidate(t); got != (decision == "changes_requested" || test.reviewOutcome == "failed_check") {
+				if got := f.candidate(t); got != (decision == "changes_requested" || test.reviewOutcome == "failed_check" && !test.priorFindings) {
 					t.Fatalf("review result candidate=%t lane=%s", got, want)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/reviews", f.token, request), http.StatusOK)
 				if current := f.reload(t); current.State != want {
 					t.Fatal("review replay changed lane")
+				}
+				if test.priorFindings && test.reviewOutcome == "failed_check" {
+					check := changeTestResult(published)
+					check.IdempotencyKey = "new-failed-check"
+					check.Conclusion = "failure"
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/checks", f.token, check), http.StatusOK)
+					if f.candidate(t) {
+						t.Fatal("replaying an existing failed check admitted unchanged rework")
+					}
+					input := published.ChangeVersionInput
+					input.BaseSHA, input.MergeBaseSHA = strings.Repeat("c", 40), strings.Repeat("c", 40)
+					path := strings.TrimSuffix(changePath, "/versions/"+published.ID) + "/versions"
+					request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "moved-base"}, ExpectedVersionID: published.ID, ChangeVersionInput: input}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, request), http.StatusOK)
+					if !f.candidate(t) {
+						t.Fatal("a moved source base did not admit rework")
+					}
 				}
 			}
 		})
