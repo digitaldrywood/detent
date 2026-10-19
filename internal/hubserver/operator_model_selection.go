@@ -19,7 +19,7 @@ func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, proje
 	if write {
 		permission = apikey.ScopeWrite
 	}
-	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: permission, ProjectID: project})
+	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: permission, ProjectID: project, OrganizationWide: operatortool.IsOrganizationModelSelection(name)})
 	if err != nil {
 		return nativeScope{}, err
 	}
@@ -30,7 +30,7 @@ func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, proje
 	scope.project = tracker.ProjectID(project)
 	scope.requireHostedAdmin = write
 	if operatortool.IsOrganizationModelSelection(name) {
-		if project != "" || e.service.config.Hosted == nil || scope.credential.Hosted == nil || scope.credential.SessionHash == "" || scope.credential.HostedKeyScope != "" || scope.credential.HostedRole == "account" || string(scope.organization) != e.service.config.Hosted.OrganizationID {
+		if project != "" || e.service.config.Hosted != nil && (scope.credential.Hosted == nil || scope.credential.SessionHash == "" || scope.credential.HostedKeyScope != "" || scope.credential.HostedRole == "account" || string(scope.organization) != e.service.config.Hosted.OrganizationID) {
 			return scope, operatortool.ErrAccessDenied
 		}
 	} else if project == "" {
@@ -108,8 +108,14 @@ func (e hubProjectExecutor) modelSelectionCatalogAllowed(ctx context.Context, de
 		return false
 	}
 	credential := catalog.credential
-	if operatortool.IsOrganizationModelSelection(definition.Name) && (e.service.config.Hosted == nil || credential.Hosted == nil || credential.SessionHash == "" || credential.HostedKeyScope != "" || credential.HostedRole == "account") {
-		return false
+	if operatortool.IsOrganizationModelSelection(definition.Name) {
+		if e.service.config.Hosted == nil {
+			if credential.NativeOnly {
+				return false
+			}
+		} else if credential.Hosted == nil || credential.SessionHash == "" || credential.HostedKeyScope != "" || credential.HostedRole == "account" {
+			return false
+		}
 	}
 	if !definition.Annotations.ReadOnly && (credential.Scope != apiScopeOperator && credential.Scope != apiScopeAdmin || credential.Hosted != nil && (credential.HostedRole != "owner" && credential.HostedRole != "admin" || credential.HostedKeyScope != "" && !hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeAdmin))) {
 		return false
