@@ -205,12 +205,16 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		turnStarted   bool
 		mode          string
 		preProvider   bool
+		preInstance   bool
 		wantAuthority bool
 	}{
 		{name: "PLAN ordinary provider failure retains ordinary completion", mode: runpkg.RunModePlan, sourceState: "Todo", states: planRecovery, runErr: errors.New("provider failed"), turnStarted: true, wantOrdinary: true, wantContinue: true},
 		{name: "PLAN post-provider recovery error retains ordinary completion", mode: runpkg.RunModePlan, sourceState: "Todo", states: planRecovery, runErr: runpkg.ErrNativeRecoveryRequired, turnStarted: true, wantOrdinary: true, wantContinue: true},
 		{name: "PLAN recovery refusal settles Blocked before release", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: planRecovery, runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), wantState: "Blocked", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
 		{name: "CODE pre-provider recovery refusal settles Blocked before release", preProvider: true, states: planRecovery, humanReview: &no, runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), wantState: "Blocked", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "CODE pre_provider external effect uncertainty retries the instance", preProvider: true, states: planRecovery, humanReview: &no, runErr: fmt.Errorf("%w: external_effect_uncertain", runpkg.ErrNativeRecoveryRequired), preInstance: true},
+		{name: "PLAN pre_provider external effect uncertainty replays as instance failure", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: planRecovery, runErr: fmt.Errorf("%w: external_effect_uncertain", runpkg.ErrNativeRecoveryRequired), preInstance: true, roundTrip: true},
+		{name: "CODE post-provider external effect uncertainty retains recovery refusal", states: planRecovery, humanReview: &yes, turnStarted: true, runErr: fmt.Errorf("%w: external_effect_uncertain", runpkg.ErrNativeRecoveryRequired), wantState: "Blocked", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
 		{name: "PLAN persisted policy refusal settles Blocked", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: planRecovery, runErr: fmt.Errorf("%w: policy_mismatch", runpkg.ErrNativeRecoveryRequired), wantState: "Blocked", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
 		{name: "PLAN recovery refusal denied lane remains deferred after replay", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: planRecovery, updateErr: connector.ErrStateUpdateBlocked, runErr: fmt.Errorf("%w: session_restart_required", runpkg.ErrNativeRecoveryRequired), wantDeferred: true, roundTrip: true},
 		{name: "PLAN recovery refusal unavailable workflow remains deferred", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: planRecovery, statesErr: errors.New("native workflow unavailable"), runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), wantDeferred: true},
@@ -714,6 +718,20 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if test.preProvider {
 				if len(state.Completed) != 0 || len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 || state.FailureBreaker.Count != 0 {
 					t.Fatal("pre-provider native refusal consumed issue failures or acceptance")
+				}
+				if test.preInstance {
+					retry, retried := state.Retry[issue.ID]
+					if tick.stateIssues[0].State != issue.State || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || !retried || retry.Attempt != 2 || !retry.DueAt.After(now) || !dispatchableState(test.states, retry.Issue.State) || len(state.FailureBreaker.Failures) != 0 {
+						t.Fatalf("pre-provider recovery did not retry the instance in its lane: updates=%v retry=%+v releases=%d", tick.updates, retry, scheduling.releases)
+					}
+					if len(attempts.completions) != 1 {
+						t.Fatalf("instance completion receipts = %v", attempts.completions)
+					}
+					receipt := attempts.completions[0]
+					if receipt.TerminalState != store.WorkAttemptTerminalFailure || receipt.ErrorClass != workAttemptErrorWorkspace || !strings.Contains(receipt.ErrorMessage, "external_effect_uncertain") || !allowanceInfrastructureAttempt(store.WorkAttempt{TerminalState: receipt.TerminalState, ErrorClass: receipt.ErrorClass, MetricsJSON: receipt.MetricsJSON, WorkerMetadataJSON: receipt.WorkerMetadataJSON}) {
+						t.Fatalf("pre-provider recovery lost infrastructure attribution: %+v", receipt)
+					}
+					return
 				}
 				if test.wantAuthority {
 					if tick.stateIssues[0].State != issue.State || len(tick.comments) != 0 || len(state.deferredCompletions) != 0 || len(state.Retry) != 0 || len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalAbandoned {
