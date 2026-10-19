@@ -33,7 +33,7 @@ func projectToolScope(name string, read bool) apikey.Scope {
 		return apikey.ScopeRead
 	}
 	switch name {
-	case "apply_local_project_policy", "resume_local_project", "drain_local_project", "detach_local_project", "command_git_hub_batch", "create_native_project", "create_hosted_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret", "import_sprite_usage":
+	case "apply_local_project_policy", "resume_local_project", "drain_local_project", "detach_local_project", "command_git_hub_batch", "create_native_project", "create_hosted_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret", "import_sprite_usage", operatortool.UpdateSpritePool, operatortool.UpdateProjectSpriteAllocation:
 		return apikey.ScopeAdmin
 	}
 	return apikey.ScopeWrite
@@ -152,7 +152,7 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 	if len(selector.Input) == 0 || selector.Input[0] != '{' {
 		return result, &operatortool.RequestError{Code: "invalid_request", Message: "input: must be an object"}
 	}
-	if strings.TrimSpace(selector.ProjectID) == "" && call.Name != "create_native_project" && call.Name != "create_hosted_project" && !operatortool.IsOrganizationModelSelection(call.Name) {
+	if strings.TrimSpace(selector.ProjectID) == "" && call.Name != "create_native_project" && call.Name != "create_hosted_project" && !operatortool.IsOrganizationModelSelection(call.Name) && call.Name != operatortool.UpdateSpritePool {
 		return result, &operatortool.RequestError{Code: "invalid_request", Message: "project_id: is required"}
 	}
 	if (call.Name == "create_native_project" || call.Name == "create_hosted_project") && selector.ProjectID != "" {
@@ -359,6 +359,50 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			return raw, err
 		}
 		return s.importSpriteUsageCommand(ctx, scope, request)
+	case operatortool.UpdateSpritePool:
+		r, err := projectCommandInput[operatortool.SpritePoolInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		if !canManageProjectSecrets(scope.credential) {
+			return nil, operatortool.ErrAccessDenied
+		}
+		if mode != projectCommandExecute {
+			return nil, nil
+		}
+		scope.project = tracker.ProjectID(r.ProjectID)
+		view, err := s.setSpritePoolCommand(ctx, scope, spritePoolChange{
+			spritePoolSettings: spritePoolSettings{Placement: r.Input.Placement, MinRunners: r.Input.MinRunners, MaxRunners: r.Input.MaxRunners, IdleSeconds: r.Input.IdleSeconds, Revision: r.Input.Revision},
+			Bootstrap:          r.Input.Bootstrap, IsolationTier: r.Input.IsolationTier,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(view)
+	case operatortool.UpdateProjectSpriteAllocation:
+		r, err := projectCommandInput[operatortool.SpriteAllocationInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		if !canManageProjectSecrets(scope.credential) {
+			return nil, operatortool.ErrAccessDenied
+		}
+		if mode == projectCommandPreview {
+			return nil, nil
+		}
+		scope.project, scope.requireHostedAdmin = tracker.ProjectID(r.ProjectID), true
+		request := projectSpriteAllocationRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedRevision: r.Input.ExpectedRevision, DesiredCount: r.Input.DesiredCount}
+		options := nativeCommandOptions{OperationID: projectOperationID(scope, "PUT", "/sprite-pool/allocation"), Feature: "collaboration"}
+		if mode == projectCommandReplay {
+			raw, _, err := s.nativeCommandReplay(ctx, scope, options.OperationID, r.RequestID, request)
+			return raw, err
+		}
+		raw, err := s.executeNativeMutation(ctx, scope, options, request.Mutation, request, updateProjectSpriteAllocation(request))
+		if err != nil {
+			return nil, err
+		}
+		s.startSpritePoolForQueue(scope)
+		return raw, nil
 	case "create_native_project":
 		if s.config.Hosted != nil {
 			return nil, errProjectServiceUnavailable

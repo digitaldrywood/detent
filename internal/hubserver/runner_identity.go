@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -158,6 +160,10 @@ func (s *Service) revokeRunnerIdentity(c echo.Context) error {
 		return s.nativeAPIError(c, runnerUnauthorized())
 	}
 	_, err := s.revokeRunnerIdentityCommand(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, c.Param("runner"))
+	var refusal *nativeError
+	if errors.As(err, &refusal) {
+		s.config.Logger.WarnContext(c.Request().Context(), "runner removal refused", "organization_id", c.Param("organization"), "runner_id", c.Param("runner"), "code", refusal.Code, "error", fmt.Errorf("revoke runner identity: %s", refusal.Message))
+	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -178,12 +184,11 @@ func (s *Service) revokeRunnerIdentityCommand(ctx context.Context, scope nativeS
 		var busy bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
 SELECT 1 FROM leases l JOIN lease_runners lr ON lr.lease_id = l.lease_id
-LEFT JOIN native_attempts a ON a.lease_id = l.lease_id
-WHERE lr.runner_id = ? AND (a.status = 'running' OR (l.released_at IS NULL AND julianday(l.expires_at) > julianday(?))))`, resource, formatHubTime(now)).Scan(&busy); err != nil {
+WHERE lr.runner_id = ? AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(?))`, resource, formatHubTime(now)).Scan(&busy); err != nil {
 			return nil, err
 		}
 		if busy {
-			return nil, nativeInvalid("This runner has active work. Drain it and wait for its attempts to finish before removing it.")
+			return nil, &nativeError{Code: "invalid_request", Message: "This runner has active work. Drain it and wait for its leases to finish or expire before removing it.", status: http.StatusUnprocessableEntity, publicMessage: true}
 		}
 		var revoked bool
 		if err := tx.QueryRowContext(ctx, "SELECT revoked_at IS NOT NULL FROM api_tokens WHERE id = ?", token).Scan(&revoked); err != nil {

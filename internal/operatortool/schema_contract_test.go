@@ -100,6 +100,8 @@ func TestCatalogDecoderContract(t *testing.T) {
 		"project_native_summary":         reflect.TypeFor[ProjectRequest[SummaryInput]](),
 		"remove_project_secret":          reflect.TypeFor[ProjectRequest[struct{}]](),
 		"import_sprite_usage":            reflect.TypeFor[ProjectRequest[SpriteUsageInput]](),
+		UpdateSpritePool:                 reflect.TypeFor[ProjectRequest[SpritePoolInput]](),
+		UpdateProjectSpriteAllocation:    reflect.TypeFor[ProjectRequest[SpriteAllocationInput]](),
 		GetOrganizationModelSelection:    reflect.TypeFor[ModelSelectionReadRequest](),
 		GetProjectModelSelection:         reflect.TypeFor[ModelSelectionReadRequest](),
 		UpdateOrganizationModelSelection: reflect.TypeFor[ProjectRequest[ModelSelectionInput]](),

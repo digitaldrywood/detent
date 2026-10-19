@@ -26,10 +26,10 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 	if operatortool.DecodeProjectArguments(call.Arguments, &r) != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
-	if r.ProjectID == "" && call.Name != "list_projects" && call.Name != "project_setup" {
+	if r.ProjectID == "" && call.Name != "list_projects" && call.Name != "project_setup" && call.Name != operatortool.GetSpritePool {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
-	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: r.ProjectID})
+	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: r.ProjectID, OrganizationWide: call.Name == operatortool.GetSpritePool && r.ProjectID == ""})
 	if err != nil {
 		return operatortool.Result{}, err
 	}
@@ -45,6 +45,10 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		value, err = s.operatorProjectList(ctx, scope, r)
 	case "get_native_project":
 		value, err = readNativeProject(ctx, s.database.reader, scope)
+	case operatortool.GetSpritePool:
+		value, err = s.spritePoolResponse(ctx, scope)
+	case operatortool.GetProjectSpriteAllocation:
+		value, err = readProjectSpriteAllocation(ctx, s.database.reader, scope)
 	case "get_onboarding":
 		value, err = s.projectOnboarding(ctx, scope)
 	case "get_git_hub_batch":

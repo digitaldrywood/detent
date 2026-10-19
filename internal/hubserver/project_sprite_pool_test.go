@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,9 +16,13 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/budget"
+	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -861,6 +866,97 @@ func TestProjectSpriteAllocationCommands(t *testing.T) {
 				t.Fatalf("allocation = %+v", allocation)
 			}
 		})
+	}
+}
+
+func TestSpritePoolOperatorTools(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	captured := make(chan context.Context, 1)
+	f.service.echo.GET("/api/v2/organizations/:organization/sprite-tools-test", func(c echo.Context) error {
+		captured <- c.Request().Context()
+		return c.NoContent(http.StatusOK)
+	}, f.service.operatorAuthority)
+	executor := hubProjectExecutor{f.service}
+	contexts := map[string]context.Context{}
+	for name, token := range map[string]string{"admin": testHubAdminToken, "operator": f.token} {
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/sprite-tools-test", token, nil), http.StatusOK)
+		contexts[name] = operatortool.BindConnection(<-captured, "sprite-tools-"+name, "sprite fixture")
+		if err := executor.OpenConnection(contexts[name]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	project := string(f.project.ID)
+	for _, test := range []struct {
+		name, caller, tool, arguments string
+		refusal                       error
+		message                       string
+		revision                      int64
+		desired                       int
+	}{
+		{name: "organization pool read", caller: "admin", tool: operatortool.GetSpritePool, arguments: `{}`},
+		{name: "operator cannot configure", caller: "operator", tool: operatortool.UpdateSpritePool, arguments: `{"project_id":"` + project + `","request_id":"operator","input":{"min_runners":0,"max_runners":0,"revision":0}}`, refusal: operatortool.ErrAccessDenied},
+		{name: "sandbox refused with reason", caller: "admin", tool: operatortool.UpdateSpritePool, arguments: `{"request_id":"sandbox","input":{"min_runners":0,"max_runners":0,"revision":0,"isolation_tier":"sandbox"}}`, message: spriteSandboxUnavailableReason},
+		{name: "configure organization pool", caller: "admin", tool: operatortool.UpdateSpritePool, arguments: `{"request_id":"configure","input":{"min_runners":0,"max_runners":0,"idle_seconds":600,"revision":0}}`, revision: 1},
+		{name: "stale pool revision", caller: "admin", tool: operatortool.UpdateSpritePool, arguments: `{"request_id":"stale","input":{"min_runners":0,"max_runners":0,"revision":0}}`, refusal: mutation.ErrConflict},
+		{name: "project pool read", caller: "operator", tool: operatortool.GetSpritePool, arguments: `{"project_id":"` + project + `"}`, revision: 1},
+		{name: "operator cannot allocate", caller: "operator", tool: operatortool.UpdateProjectSpriteAllocation, arguments: `{"project_id":"` + project + `","request_id":"operator","input":{"expected_revision":"0","desired_count":2}}`, refusal: operatortool.ErrAccessDenied},
+		{name: "allocate project Sprites", caller: "admin", tool: operatortool.UpdateProjectSpriteAllocation, arguments: `{"project_id":"` + project + `","request_id":"allocate","input":{"expected_revision":"0","desired_count":2}}`, revision: 1, desired: 2},
+		{name: "project allocation read", caller: "operator", tool: operatortool.GetProjectSpriteAllocation, arguments: `{"project_id":"` + project + `"}`, revision: 1, desired: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := executor.Execute(contexts[test.caller], operatortool.Call{Name: test.tool, Arguments: json.RawMessage(test.arguments)})
+			var request *operatortool.RequestError
+			switch {
+			case test.refusal != nil:
+				if !errors.Is(err, test.refusal) {
+					t.Fatalf("error = %v, want %v", err, test.refusal)
+				}
+				return
+			case test.message != "":
+				if !errors.As(err, &request) || request.Message != test.message {
+					t.Fatalf("error = %v, want %q", err, test.message)
+				}
+				return
+			case err != nil:
+				t.Fatal(err)
+			}
+			raw := result.Content
+			if test.tool == operatortool.UpdateSpritePool || test.tool == operatortool.UpdateProjectSpriteAllocation {
+				var action chatpkg.Action
+				if err := json.Unmarshal(raw, &action); err != nil || action.Status != chatpkg.ActionSucceeded {
+					t.Fatalf("action = %s, %v", raw, err)
+				}
+				raw = json.RawMessage(action.Result)
+			} else {
+				var page struct {
+					Data json.RawMessage `json:"data"`
+				}
+				if err := json.Unmarshal(raw, &page); err != nil {
+					t.Fatal(err)
+				}
+				raw = page.Data
+			}
+			var got struct {
+				Revision     json.Number `json:"revision"`
+				DesiredCount int         `json:"desired_count"`
+				IdleSeconds  int         `json:"idle_seconds"`
+				Members      []any       `json:"members"`
+			}
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Revision.String() != fmt.Sprint(test.revision) || got.DesiredCount != test.desired {
+				t.Fatalf("%s = %s", test.tool, raw)
+			}
+			if test.tool == operatortool.GetSpritePool && test.revision == 1 && (got.IdleSeconds != 600 || got.Members == nil) {
+				t.Fatalf("pool read did not return the saved settings view: %s", raw)
+			}
+		})
+	}
+	var browser spritePoolView
+	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/sprite-pool", testHubAdminToken, nil), &browser)
+	if browser.Revision != 1 || browser.IdleSeconds != 600 {
+		t.Fatalf("Settings view after MCP update = %+v", browser.spritePoolSettings)
 	}
 }
 

@@ -88,26 +88,31 @@ func (s *Service) registerSpritePoolRoutes(e *echo.Echo) {
 }
 
 func (s *Service) getSpritePool(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
-	view, err := s.readSpritePool(ctx, nativeRequestScope(c))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	decision, err := readOrganizationPlacementSnapshot(ctx, s.database.reader, nativeRequestScope(c), s.config.now())
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	view.Decision = &decision.placementDecision
-	if err := s.describeSpritePoolMembers(ctx, nativeRequestScope(c), view.Members); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	view.RunnerSetupDeclared, err = s.projectRunnerSetupDeclaration(ctx, nativeRequestScope(c))
+	view, err := s.spritePoolResponse(c.Request().Context(), nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	return c.JSON(http.StatusOK, view)
+}
+
+func (s *Service) spritePoolResponse(ctx context.Context, scope nativeScope) (spritePoolView, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	view, err := s.readSpritePool(ctx, scope)
+	if err != nil {
+		return view, err
+	}
+	decision, err := readOrganizationPlacementSnapshot(ctx, s.database.reader, scope, s.config.now())
+	if err != nil {
+		return view, err
+	}
+	view.Decision = &decision.placementDecision
+	if err := s.describeSpritePoolMembers(ctx, scope, view.Members); err != nil {
+		return view, err
+	}
+	view.RunnerSetupDeclared, err = s.projectRunnerSetupDeclaration(ctx, scope)
+	return view, err
 }
 
 func (s *Service) readSpritePool(ctx context.Context, scope nativeScope) (spritePoolView, error) {
@@ -155,18 +160,29 @@ func (s *Service) setSpritePool(c echo.Context) error {
 	if !canManageProjectSecrets(scope.credential) {
 		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Sprite pool settings require owner or admin access"})
 	}
-	var input struct {
-		spritePoolSettings
-		Bootstrap     *string `json:"bootstrap"`
-		IsolationTier *string `json:"isolation_tier"`
-	}
+	var input spritePoolChange
 	if err := decodeAPIJSON(c, &input); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	settings := input.spritePoolSettings
-	view, err := s.readSpritePool(c.Request().Context(), scope)
+	view, err := s.setSpritePoolCommand(c.Request().Context(), scope, input)
 	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	c.Response().Header().Set("Cache-Control", "no-store")
+	return c.JSON(http.StatusOK, view)
+}
+
+type spritePoolChange struct {
+	spritePoolSettings
+	Bootstrap     *string `json:"bootstrap"`
+	IsolationTier *string `json:"isolation_tier"`
+}
+
+func (s *Service) setSpritePoolCommand(ctx context.Context, scope nativeScope, input spritePoolChange) (spritePoolView, error) {
+	settings := input.spritePoolSettings
+	view, err := s.readSpritePool(ctx, scope)
+	if err != nil {
+		return view, err
 	}
 	settings.IsolationTier = view.IsolationTier
 	if input.Bootstrap != nil {
@@ -174,16 +190,16 @@ func (s *Service) setSpritePool(c echo.Context) error {
 	} else {
 		settings.Bootstrap = view.Bootstrap
 	}
-	if err := s.updateSpritePool(c.Request().Context(), scope, settings, input.IsolationTier); err != nil {
-		return s.nativeAPIError(c, err)
+	if err := s.updateSpritePool(ctx, scope, settings, input.IsolationTier); err != nil {
+		return view, err
 	}
 	s.startSpritePoolForQueue(scope)
-	return s.getSpritePool(c)
+	return s.spritePoolResponse(ctx, scope)
 }
 
 func validateSpritePoolAccess(tier *string) error {
 	if tier != nil && *tier == isolation.Sandbox {
-		return nativeInvalid(spriteSandboxUnavailableReason)
+		return spritePoolInvalid(spriteSandboxUnavailableReason)
 	}
 	return nil
 }
@@ -193,12 +209,12 @@ func validateSpritePoolSettings(settings *spritePoolSettings) error {
 		settings.IsolationTier = isolation.NativeTrusted
 	}
 	if settings.IsolationTier != isolation.Sandbox && settings.IsolationTier != isolation.NativeTrusted {
-		return nativeInvalid("Sprite pool access must be sandbox or native-trusted")
+		return spritePoolInvalid("Sprite pool access must be sandbox or native-trusted")
 	}
 	if settings.Placement != nil {
 		resolved := settings.Placement.Resolved()
 		if err := resolved.Validate(); err != nil {
-			return nativeInvalid(err.Error())
+			return spritePoolInvalid(err.Error())
 		}
 		settings.Placement = &resolved
 	}
@@ -206,7 +222,7 @@ func validateSpritePoolSettings(settings *spritePoolSettings) error {
 		settings.IdleSeconds = 300
 	}
 	if settings.MinRunners < 0 || settings.MaxRunners < settings.MinRunners || settings.IdleSeconds < 30 || settings.IdleSeconds > 86400 || len(settings.Bootstrap) > 65536 || settings.Revision < 0 {
-		return nativeInvalid("Sprite pools require 0 <= min_runners <= max_runners, an idle threshold of 30 to 86400 seconds, optional bootstrap of at most 65536 bytes, and a nonnegative revision")
+		return spritePoolInvalid("Sprite pools require 0 <= min_runners <= max_runners, an idle threshold of 30 to 86400 seconds, optional bootstrap of at most 65536 bytes, and a nonnegative revision")
 	}
 	return nil
 }
@@ -219,13 +235,13 @@ func (s *Service) updateSpritePool(ctx context.Context, scope nativeScope, setti
 		settings.IsolationTier = *tier
 	}
 	if !canManageProjectSecrets(scope.credential) {
-		return nativeInvalid("Sprite pool settings require owner or admin access")
+		return spritePoolInvalid("Sprite pool settings require owner or admin access")
 	}
 	if err := validateSpritePoolSettings(&settings); err != nil {
 		return err
 	}
 	if settings.MaxRunners > 0 && (s.config.SecretKeys == nil || s.config.Hosted == nil) {
-		return nativeInvalid("Sprite pools require hosted configuration and the project secret store")
+		return spritePoolInvalid("Sprite pools require hosted configuration and the project secret store")
 	}
 	scope.project = ""
 	scope.requireHostedAdmin = true
@@ -598,4 +614,8 @@ func spriteLoginSteps(checks runnerauth.LocalChecks, observed bool, problems []r
 		steps = append(steps, spriteLoginStep{Check: "github", Command: "gh auth login"}, spriteLoginStep{Check: "github", Command: "gh auth setup-git"})
 	}
 	return steps
+}
+
+func spritePoolInvalid(message string) error {
+	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
 }
