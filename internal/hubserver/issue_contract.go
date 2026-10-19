@@ -84,6 +84,11 @@ func evaluateNativeIssueContract(ctx context.Context, q nativeQueryer, scope nat
 	if err != nil {
 		return nativeContractEvaluation{}, err
 	}
+	if valid, err := releaseDeliveryContractCurrent(ctx, q, scope, issue, contract); err != nil {
+		return nativeContractEvaluation{}, err
+	} else if !valid {
+		return nativeContractEvaluation{ReasonCode: "issue_contract_unsatisfied", Reason: "The verified release delivery contract changed; current approved policy and exact associated delivery are required"}, nil
+	}
 	evaluation := contract.Evaluate(nativeContractIssue(issue))
 	var reasons []string
 	if len(evaluation.Missing) > 0 {

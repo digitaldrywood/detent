@@ -270,6 +270,7 @@ func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScop
 				issue.IssueContract = &issuecontract.State{}
 			}
 			if scope.actor().Kind == "human" && scope.credential.HostedRole != "reporter" {
+				issue.IssueContract.ReleaseDelivery = nil
 				issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(issue.Body)
 				issue.IssueContract.RecordedAt = now
 			}
