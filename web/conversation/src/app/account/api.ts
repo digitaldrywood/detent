@@ -350,7 +350,7 @@ export function makeAccountApi(options: AccountApiOptions) {
         expected_revision: input.revision,
         idempotency_key: input.key,
       }),
-    setSpritePool: (settings: { min_runners: number; max_runners: number; idle_seconds: number; bootstrap: string; revision: number }) =>
+    setSpritePool: (settings: { min_runners: number; max_runners: number; idle_seconds: number; bootstrap: string; share_idle_capacity: boolean; idempotency_key: string; revision: number }) =>
       send(SpritePool, "PUT", `${base}/sprite-pool`, settings),
     setSpritesSecret: (projectId: string, token: string) =>
       send(ProjectSecretStatus, "PUT", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`, { token }),

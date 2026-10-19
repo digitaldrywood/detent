@@ -100,6 +100,7 @@ describe("Sprite pool settings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reload pool" }));
     await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
     expect((screen.getByLabelText("Maximum runners") as HTMLInputElement).value).toBe("3");
+    expect(screen.getByRole("checkbox", { name: "Share idle Sprites with other projects" }).getAttribute("aria-disabled")).toBe("true");
   });
 
   it.each([409, 503])("reloads saved settings after a failed PUT returning %s", async (status) => {
@@ -118,7 +119,7 @@ describe("Sprite pool settings", () => {
     await waitFor(() => expect((screen.getByLabelText("Maximum runners") as HTMLInputElement).value).toBe("3"));
     fireEvent.click(screen.getByRole("button", { name: "Save pool" }));
     await waitFor(() => expect(writes.length).toBe(2));
-    expect(JSON.parse(String(writes[1]!.body))).toEqual({ min_runners: 1, max_runners: 3, idle_seconds: 600, bootstrap: "printf saved", revision: 7 });
+    expect(JSON.parse(String(writes[1]!.body))).toEqual({ min_runners: 1, max_runners: 3, idle_seconds: 600, bootstrap: "printf saved", revision: 7, share_idle_capacity: false, idempotency_key: expect.any(String) });
     await waitFor(() => expect(screen.getByRole("button", { name: "Save pool" }).hasAttribute("disabled")).toBe(false));
   });
 
@@ -181,7 +182,7 @@ describe("Sprite pool settings", () => {
     expect((screen.getByLabelText("Extra bootstrap (optional)") as HTMLTextAreaElement).required).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Save pool" }));
     await waitFor(() => expect(writes.length).toBe(1));
-    expect(JSON.parse(String(writes[0]!.body))).toEqual({ min_runners: 2, max_runners: 2, idle_seconds: 300, bootstrap, revision: 0 });
+    expect(JSON.parse(String(writes[0]!.body))).toEqual({ min_runners: 2, max_runners: 2, idle_seconds: 300, bootstrap, revision: 0, share_idle_capacity: false, idempotency_key: expect.any(String) });
     await waitFor(() => expect(screen.getByRole("button", { name: "Save pool" }).hasAttribute("disabled")).toBe(false));
   });
 });

@@ -930,6 +930,7 @@ export const decodePolicy = Schema.decodeUnknownSync(PolicyApproval);
 export { ApiError };
 
 export const SpritePool = Schema.Struct({
+  share_idle_capacity: Schema.optional(Schema.Boolean),
   min_runners: Schema.Number,
   max_runners: Schema.Number,
   idle_seconds: Schema.Number,
