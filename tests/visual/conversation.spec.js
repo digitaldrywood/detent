@@ -1151,7 +1151,13 @@ test.describe("decisions.md §10 corrections", () => {
     await expect(page.getByTestId("execution-strip").getByRole("button")).toHaveCount(0);
 
     await expectOneHeadingOne(page, "Renew the lease before the handoff completes");
-    await expectNoSeriousAxeViolations(page, "a read-only viewer");
+    for (const width of [1440, 1000, 390]) {
+      await page.setViewportSize({ width, height: 1100 });
+      const preferences = surface.getByRole("group", { name: "Turn preferences" });
+      await preferences.focus();
+      await expect(preferences).toBeFocused();
+      await expectNoSeriousAxeViolations(page, `a read-only viewer at ${width}px`);
+    }
     expect(errors).toEqual([]);
   });
 

@@ -796,7 +796,12 @@ export function Composer(props: ComposerProps): React.ReactElement {
                         controlsHidden && "invisible",
                       )}
                     >
-                      <div className="flex min-w-0 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                      <div
+                        role="group"
+                        aria-label="Turn preferences"
+                        tabIndex={disabled ? 0 : undefined}
+                        className="flex min-w-0 items-center gap-1 overflow-x-auto focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                      >
                         {props.footerLeading}
                         {footerControls === "none" ? null : (
                           <ComposerPreferenceControls
