@@ -245,6 +245,9 @@ func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 			if hydrated.Title != title || hydrated.Body != body || hydrated.LinkedSource.Snapshot.Body != request.Snapshot.Body {
 				t.Fatalf("later GitHub edit = %#v", hydrated)
 			}
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id = ? AND type = 'github.imported'", issue.WorkItemID).Scan(&count); err != nil || count != 2 {
+				t.Fatalf("import events = %d, error = %v", count, err)
+			}
 		})
 	}
 }
