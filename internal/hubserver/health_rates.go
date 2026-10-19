@@ -223,20 +223,10 @@ func healthBaselineGaps(p healthRateProject, b healthRateBaseline) []healthBasel
 
 func evaluateHealthRates(now time.Time, projects []healthRateProject) []healthFinding {
 	out := []healthFinding{}
-	capacity, setup := map[string]int{}, map[string]int{}
+	capacity := map[string]int{}
 	for _, p := range projects {
 		b := buildHealthRateBaseline(now, p)
 		out = append(out, healthRetryFindings(now, p, b)...)
-		for _, f := range healthRunnerSetupFindings(now, p) {
-			if index, ok := setup[f.Fingerprint]; ok && index < len(out) {
-				existing := &out[index]
-				existing.Projects = append(existing.Projects, p.ID)
-				existing.Evidence.Counts["failures_1h"] += f.Evidence.Counts["failures_1h"]
-			} else {
-				setup[f.Fingerprint] = len(out)
-				out = append(out, f)
-			}
-		}
 		out = append(out, healthRecoveryFindings(now, p, b)...)
 		out = append(out, healthStallFindings(now, p, b)...)
 		out = append(out, healthCostFindings(p, b)...)
@@ -264,7 +254,7 @@ func evaluateHealthRates(now time.Time, projects []healthRateProject) []healthFi
 			out = append(out, f)
 		}
 	}
-	return out
+	return append(out, healthRunnerSetupFindings(now, projects)...)
 }
 
 func healthRetryFindings(now time.Time, p healthRateProject, b healthRateBaseline) []healthFinding {
@@ -325,23 +315,35 @@ func healthRetryFindings(now time.Time, p healthRateProject, b healthRateBaselin
 }
 
 // healthRunnerSetupFindings reports a runner whose workspace setup keeps
-// failing before the provider starts. These failures are attributed to the
-// instance and held by the instance cooldown, so they need no baseline: any
-// runner repeating them is unhealthy until its operator repairs the host.
-func healthRunnerSetupFindings(now time.Time, p healthRateProject) []healthFinding {
-	byRunner := map[string][]healthRateAttempt{}
-	for _, a := range p.Attempts {
-		if a.InstanceSetupFailure && a.Runner != "" && healthInWindow(a.At, now.Add(-healthShortWindow), now) {
-			byRunner[a.Runner] = append(byRunner[a.Runner], a)
+// failing before the provider starts, counting its failures across every
+// project it serves. These failures are attributed to the instance and held by
+// the instance cooldown, so they need no baseline: any runner repeating them is
+// unhealthy until its operator repairs the host.
+func healthRunnerSetupFindings(now time.Time, projects []healthRateProject) []healthFinding {
+	attempts, served := map[string][]healthRateAttempt{}, map[string][]string{}
+	runners := []string{}
+	for _, p := range projects {
+		for _, a := range p.Attempts {
+			if !a.InstanceSetupFailure || a.Runner == "" || !healthInWindow(a.At, now.Add(-healthShortWindow), now) {
+				continue
+			}
+			if _, seen := attempts[a.Runner]; !seen {
+				runners = append(runners, a.Runner)
+			}
+			attempts[a.Runner] = append(attempts[a.Runner], a)
+			if !slices.Contains(served[a.Runner], p.ID) {
+				served[a.Runner] = append(served[a.Runner], p.ID)
+			}
 		}
 	}
 	out := []healthFinding{}
-	for runner, attempts := range byRunner {
-		if len(attempts) < healthSetupFailureCount {
+	for _, runner := range runners {
+		failed := attempts[runner]
+		if len(failed) < healthSetupFailureCount {
 			continue
 		}
-		evidence := healthEvidence{Counts: map[string]int{"failures_1h": len(attempts)}}
-		for _, a := range attempts {
+		evidence := healthEvidence{Counts: map[string]int{"failures_1h": len(failed)}}
+		for _, a := range failed {
 			evidence.AttemptIDs = append(evidence.AttemptIDs, a.ID)
 			if a.Signature != "" {
 				evidence.Signatures = append(evidence.Signatures, a.Signature)
@@ -349,7 +351,7 @@ func healthRunnerSetupFindings(now time.Time, p healthRateProject) []healthFindi
 		}
 		slices.Sort(evidence.Signatures)
 		evidence.Signatures = slices.Compact(evidence.Signatures)
-		out = append(out, newHealthFinding("runner_setup_failures", "instance", "runner", runner, "Workspace setup on this runner keeps failing before the provider starts.", "The runner operator checks the workspace hook output and the runner's repository credential.", []string{p.ID}, evidence))
+		out = append(out, newHealthFinding("runner_setup_failures", "instance", "runner", runner, "Workspace setup on this runner keeps failing before the provider starts.", "The runner operator checks the workspace hook output and the runner's repository credential.", served[runner], evidence))
 	}
 	return out
 }

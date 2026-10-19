@@ -50,6 +50,20 @@ func TestHealthRunnerSetupFindings(t *testing.T) {
 		})
 	}
 
+	t.Run("failures below threshold in each project aggregate per runner", func(t *testing.T) {
+		t.Parallel()
+		findings := evaluateHealthRates(now, []healthRateProject{{ID: "first", Attempts: setup("runner-air", 10*time.Minute, 2, true)}, {ID: "second", Attempts: setup("runner-air", 20*time.Minute, 2, true)}, {ID: "third", Attempts: setup("runner-mini", 10*time.Minute, 2, true)}})
+		got := map[string]string{}
+		for _, f := range findings {
+			if f.Signal == "runner_setup_failures" {
+				got[f.Subject.ID] = fmt.Sprint(f.Projects, f.Evidence.Counts["failures_1h"])
+			}
+		}
+		if fmt.Sprint(got) != "map[runner-air:[first second] 4]" {
+			t.Fatalf("runner setup findings = %v, want only runner-air across first and second with 4 failures", got)
+		}
+	})
+
 	t.Run("one finding per runner across projects", func(t *testing.T) {
 		t.Parallel()
 		findings := evaluateHealthRates(now, []healthRateProject{{ID: "first", Attempts: setup("runner-air", 10*time.Minute, 3, true)}, {ID: "second", Attempts: setup("runner-air", 10*time.Minute, 4, true)}})
