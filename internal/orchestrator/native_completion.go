@@ -215,8 +215,10 @@ func (o *Orchestrator) completeNativeChangeRun(
 				validatorRework = true
 			} else {
 				event.Result.FinalState = runpkg.FinalStateNeedsHumanAttention
-				event.Result.FinalMessage = "Rewrite each of these acceptance criteria as a pre-merge check or remove it; no repository change can satisfy them before merge:\n- " + strings.Join(criteria, "\n- ")
-				return o.handlePermissionWaitCompletion(ctx, state, event, running)
+				if !permissionWaitCompletionAllowed(event) {
+					return false
+				}
+				return o.parkPermissionWait(ctx, state, event, running, unsatisfiableCriteriaWait(criteria))
 			}
 		}
 	}

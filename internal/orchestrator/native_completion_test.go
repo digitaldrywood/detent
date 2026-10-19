@@ -1024,8 +1024,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				if metadata.PermissionWait.WorkAttemptID != 42 || metadata.PermissionWait.SessionID != "native-session" || metadata.PermissionWait.Question == "" {
 					t.Fatalf("human outcome provenance = %#v", metadata.PermissionWait)
 				}
-				if test.wantQuestion != "" && (metadata.PermissionWait.Question != test.wantQuestion || blocked.Recovery.OperatorRemedy != "Record direction for this question, then move the issue to Rework: "+test.wantQuestion) {
-					t.Fatalf("criterion human action = %q, remedy = %q, want %q", metadata.PermissionWait.Question, blocked.Recovery.OperatorRemedy, test.wantQuestion)
+				if test.wantQuestion != "" && (metadata.PermissionWait.Question != test.wantQuestion || metadata.PermissionWait.Kind != permissionWaitCriteriaUnsatisfiable || metadata.PermissionWait.Source != "acceptance_validator" || len(metadata.PermissionWait.Criteria) == 0 || blocked.Recovery.OperatorRemedy != test.wantQuestion+"\nThen move the issue to Rework.") {
+					t.Fatalf("criterion wait = %#v, remedy = %q, want %q", metadata.PermissionWait, blocked.Recovery.OperatorRemedy, test.wantQuestion)
+				}
+				if test.wantQuestion == "" && metadata.PermissionWait.Kind == permissionWaitCriteriaUnsatisfiable {
+					t.Fatalf("worker permission wait recorded as criteria gate: %#v", metadata.PermissionWait)
 				}
 				if state.TokenTotals.TotalTokens != 42 || state.DiffStats[issue.ID].HeadSHA != head {
 					t.Fatalf("telemetry lost: tokens = %#v, diff = %#v", state.TokenTotals, state.DiffStats[issue.ID])
