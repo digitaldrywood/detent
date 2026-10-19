@@ -2239,6 +2239,11 @@ func TestReviewConversationRefusalHoldsLandingUntilReleased(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "move-" + state}, ExpectedRevision: current.Revision, State: state, Reason: "user_requested", ReasonDetail: detail}), http.StatusOK)
 			}
 			move("In Progress", test.detail)
+			var recovery tracker.NativeRecovery
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path[:len(path)-len("/workflow")]+"?view=recovery", f.token, nil), &recovery)
+			if len(recovery.History) != 1 || recovery.History[0].Data.FromState != "Merging" || recovery.History[0].Data.ReasonDetail != test.detail {
+				t.Fatalf("recovery omitted the landing exit: %+v", recovery.History)
+			}
 			if test.reentry == "human" {
 				move("Merging", "")
 			} else {
