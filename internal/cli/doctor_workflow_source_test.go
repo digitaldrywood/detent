@@ -438,7 +438,7 @@ func initDoctorWorkflowSourceRepository(t *testing.T) (string, string) {
 func writeDoctorWorkflowSourceValidationDrift(t *testing.T, repo string) {
 	t.Helper()
 
-	invalid := "schema: 1\ntracker:\n  kind: hub_native\n  api_key: token\n  github_status_source: label\n  repository: example/issues\nroutines:\n  - name: audit\n    schedule: 0 * * * *\n    prompt: Inspect.\n"
+	invalid := "schema: 1\ntracker:\n  kind: hub_native\n  api_key: token\n  repository: example/issues\nroutines:\n  - name: audit\n    schedule: 0 * * * *\n    prompt: Inspect.\n"
 	writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), invalid)
 	runDoctorWorkflowSourceGit(t, repo, "add", "detent.yaml")
 	runDoctorWorkflowSourceGit(t, repo, "commit", "-m", "add scheduled routine")

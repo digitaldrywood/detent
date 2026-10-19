@@ -29,12 +29,6 @@ auth:
 global:
   max_concurrent_agents: 8
   scheduling: weighted
-projects:
-  - id: detent
-    workflow: ` + paths.workflow + `
-    workdir: ` + paths.workdir + `
-    weight: 1
-    priority: 0
 `
 	cfg, err := Parse([]byte(raw), filepath.Join(paths.root, "global.yaml"), WithHome(paths.home))
 	if err != nil {
@@ -75,12 +69,6 @@ auth:
 global:
   max_concurrent_agents: 8
   scheduling: weighted
-projects:
-  - id: detent
-    workflow: ` + paths.workflow + `
-    workdir: ` + paths.workdir + `
-    weight: 1
-    priority: 0
 `
 	cfg, err := Parse([]byte(raw), filepath.Join(paths.root, "global.yaml"), WithHome(paths.home))
 	if err != nil {

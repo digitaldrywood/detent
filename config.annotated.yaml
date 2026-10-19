@@ -1,9 +1,7 @@
 tracker:
   kind: hub_native
   api_key: replace-with-a-github-token
-  github_status_source: label
   repository: example/example
-  status_label_prefix: "detent:"
   lanes:
     - name: Backlog
       role: holding
