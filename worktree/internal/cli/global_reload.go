@@ -1,0 +1,553 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"reflect"
+	"strings"
+	"time"
+
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/store"
+)
+
+var errMissingGlobalConfigManager = errors.New("global config reload manager is required")
+
+const globalConfigReconcileInterval = 30 * time.Second
+
+type globalConfigManager interface {
+	Reconcile(context.Context, project.ManagerConfig) (project.ReconcileResult, error)
+}
+
+type globalConfigReloader struct {
+	current            globalconfig.Config
+	manager            globalConfigManager
+	logger             *slog.Logger
+	githubToken        *runtimeGitHubTokenState
+	resolveGitHubToken func(context.Context, globalconfig.Config) (string, error)
+	applyRuntime       func(globalconfig.Config) error
+	onReload           func(globalconfig.Config)
+	settings           store.LocalConfigurationStore
+}
+
+type globalConfigChange struct {
+	Field           string
+	RequiresRestart bool
+	Old             any
+	New             any
+}
+
+func startGlobalConfigWatcher(
+	ctx context.Context,
+	current globalconfig.Config,
+	manager globalConfigManager,
+	logger *slog.Logger,
+	githubToken *runtimeGitHubTokenState,
+	applyRuntime func(globalconfig.Config) error,
+	onReload func(globalconfig.Config),
+	settings ...store.LocalConfigurationStore,
+) <-chan struct{} {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	path := strings.TrimSpace(current.Path)
+	if path == "" {
+		logger.Warn("global config watcher skipped", "error", "global config path is empty")
+		return nil
+	}
+
+	watcher, err := configwatcher.NewFile(path, func(path string) (globalconfig.Config, error) { return readRunnerConfiguration(path) }, configwatcher.WithFileLogger(logger))
+	if err != nil {
+		logger.Warn("create global config watcher failed", "path", path, "error", err)
+		return nil
+	}
+	updates, err := watcher.Watch(ctx)
+	if err != nil {
+		logger.Warn("watch global config failed", "path", path, "error", err)
+		return nil
+	}
+
+	done := make(chan struct{})
+	reloader := &globalConfigReloader{
+		current:      current,
+		manager:      manager,
+		logger:       logger,
+		githubToken:  githubToken,
+		applyRuntime: applyRuntime,
+		onReload:     onReload,
+	}
+	if len(settings) > 0 && !current.Client.Configured() {
+		reloader.settings = settings[0]
+	}
+	syncLatestGlobalConfig(ctx, path, reloader)
+	go func() {
+		defer close(done)
+		reconcile := time.NewTicker(globalConfigReconcileInterval)
+		defer reconcile.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-reconcile.C:
+				syncLatestGlobalConfig(ctx, path, reloader)
+			case update, ok := <-updates:
+				if !ok {
+					return
+				}
+				reloader.handle(ctx, update)
+			}
+		}
+	}()
+	return done
+}
+
+func syncLatestGlobalConfig(ctx context.Context, path string, reloader *globalConfigReloader) {
+	if reloader == nil {
+		return
+	}
+	latest, err := readRunnerConfiguration(path)
+	if reloader.settings != nil {
+		latest, err = readRuntimeConfiguration(ctx, reloader.settings, path, reloader.current)
+	}
+	update := configwatcher.FileUpdate[globalconfig.Config]{
+		Path:  path,
+		Value: latest,
+		Err:   err,
+		At:    time.Now(),
+	}
+	if err == nil && reflect.DeepEqual(reloader.current, latest) {
+		return
+	}
+	reloader.handle(ctx, update)
+}
+
+func waitGlobalConfigWatcher(done <-chan struct{}) {
+	if done != nil {
+		<-done
+	}
+}
+
+func (r *globalConfigReloader) handle(ctx context.Context, update configwatcher.FileUpdate[globalconfig.Config]) {
+	logger := r.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	previous := r.current
+	update = latestGlobalConfigUpdate(update)
+	logger.Info("global config reconciliation started",
+		"path", update.Path,
+		"configured_projects", globalProjectIDs(update.Value.Projects),
+	)
+	var result project.ReconcileResult
+	var drainedSessions []project.ReconcileSession
+	applied := false
+	for {
+		var err error
+		candidate := update.Value
+		result, err = r.applyCandidate(ctx, update)
+		if err != nil {
+			if applied {
+				r.publishReload()
+			}
+			logger.Warn("global config reconciliation failed", "path", update.Path, "error", err)
+			return
+		}
+		applied = true
+		drainedSessions = appendUniqueReconcileSessions(drainedSessions, result.DrainedSessions)
+
+		latest := latestGlobalConfigUpdate(configwatcher.FileUpdate[globalconfig.Config]{
+			Path:  update.Path,
+			Value: candidate,
+			At:    time.Now(),
+		})
+		if r.settings != nil {
+			candidate = r.current
+			latest.Value, latest.Err = readRuntimeConfiguration(ctx, r.settings, update.Path, r.current)
+			if latest.Err != nil {
+				logger.Warn("local configuration reload failed", "error", latest.Err)
+				return
+			}
+		}
+		if reflect.DeepEqual(candidate, latest.Value) {
+			break
+		}
+		logger.Info("global config reconciliation superseded",
+			"path", update.Path,
+			"configured_projects", globalProjectIDs(latest.Value.Projects),
+		)
+		update = latest
+	}
+
+	result.DrainedSessions = drainedSessions
+	r.publishReload()
+	logGlobalConfigChanges(logger, previous, r.current)
+	logger.Info("global config reconciliation completed",
+		"path", update.Path,
+		"added_projects", projectIDs(result.Added),
+		"removed_projects", projectIDs(result.Removed),
+		"changed_projects", projectIDs(result.Changed),
+		"unchanged_projects", projectIDs(result.Unchanged),
+		"drained_sessions", result.DrainedSessions,
+	)
+	logger.Info("global config reloaded",
+		"path", update.Path,
+		"added_projects", projectIDs(result.Added),
+		"removed_projects", projectIDs(result.Removed),
+		"changed_projects", projectIDs(result.Changed),
+		"unchanged_projects", projectIDs(result.Unchanged),
+		"drained_sessions", result.DrainedSessions,
+	)
+}
+
+func appendUniqueReconcileSessions(current []project.ReconcileSession, additions []project.ReconcileSession) []project.ReconcileSession {
+	seen := make(map[project.ReconcileSession]struct{}, len(current)+len(additions))
+	for _, session := range current {
+		seen[session] = struct{}{}
+	}
+	for _, session := range additions {
+		if _, ok := seen[session]; ok {
+			continue
+		}
+		seen[session] = struct{}{}
+		current = append(current, session)
+	}
+	return current
+}
+
+func latestGlobalConfigUpdate(update configwatcher.FileUpdate[globalconfig.Config]) configwatcher.FileUpdate[globalconfig.Config] {
+	if update.WatcherErr || strings.TrimSpace(update.Path) == "" {
+		return update
+	}
+	latest, err := readRunnerConfiguration(update.Path)
+	if err != nil {
+		if update.Err != nil {
+			return update
+		}
+		latest = update.Value
+	}
+	update.Value, update.Err = latest, nil
+	return update
+}
+
+func (r *globalConfigReloader) apply(
+	ctx context.Context,
+	update configwatcher.FileUpdate[globalconfig.Config],
+) (project.ReconcileResult, error) {
+	result, err := r.applyCandidate(ctx, update)
+	if err == nil {
+		r.publishReload()
+	}
+	return result, err
+}
+
+func (r *globalConfigReloader) applyCandidate(
+	ctx context.Context,
+	update configwatcher.FileUpdate[globalconfig.Config],
+) (project.ReconcileResult, error) {
+	if r.settings != nil {
+		latest, err := readRuntimeConfiguration(ctx, r.settings, update.Path, r.current)
+		if err != nil {
+			return project.ReconcileResult{}, err
+		}
+		update.Value, update.Err = latest, nil
+	}
+	if update.Err != nil {
+		return project.ReconcileResult{}, update.Err
+	}
+	if r.manager == nil {
+		return project.ReconcileResult{}, errMissingGlobalConfigManager
+	}
+	if r.settings == nil {
+		resolved, err := resolveRunnerProjects(ctx, update.Value, r.current)
+		if err != nil {
+			return project.ReconcileResult{}, err
+		}
+		update.Value = resolved
+	}
+
+	previousGitHubToken := ""
+	nextGitHubToken := ""
+	if r.githubToken != nil {
+		resolvedGitHubToken, err := r.runtimeGitHubToken(ctx, update.Value)
+		if err != nil {
+			return project.ReconcileResult{}, err
+		}
+		nextGitHubToken = resolvedGitHubToken
+		previousGitHubToken = r.githubToken.get()
+		r.githubToken.set(nextGitHubToken)
+	}
+
+	managerConfig := managerConfigWithRuntimeGitHubToken(update.Value, nextGitHubToken)
+	if r.applyRuntime != nil {
+		if err := r.applyRuntime(update.Value); err != nil {
+			if r.githubToken != nil {
+				r.githubToken.set(previousGitHubToken)
+			}
+			return project.ReconcileResult{}, err
+		}
+	}
+	result, err := r.manager.Reconcile(ctx, managerConfig)
+	if err != nil {
+		if r.applyRuntime != nil {
+			err = errors.Join(err, r.applyRuntime(r.current))
+		}
+		if r.githubToken != nil {
+			r.githubToken.set(previousGitHubToken)
+		}
+		return result, err
+	}
+
+	r.current = update.Value
+	return result, nil
+}
+
+func (r *globalConfigReloader) publishReload() {
+	if r.onReload != nil {
+		r.onReload(r.current)
+	}
+}
+
+func (r *globalConfigReloader) runtimeGitHubToken(ctx context.Context, cfg globalconfig.Config) (string, error) {
+	if r.resolveGitHubToken != nil {
+		return r.resolveGitHubToken(ctx, cfg)
+	}
+	return resolveGlobalRuntimeGitHubToken(ctx, cfg)
+}
+
+func resolveGlobalRuntimeGitHubToken(ctx context.Context, cfg globalconfig.Config) (string, error) {
+	return resolveGlobalRuntimeGitHubTokenWithCommandContext(ctx, cfg, context.WithTimeout)
+}
+
+func resolveGlobalRuntimeGitHubTokenWithCommandContext(
+	ctx context.Context,
+	cfg globalconfig.Config,
+	commandContext runtimeCommandContextFactory,
+) (string, error) {
+	deps := runtimeDeps{}.withDefaults()
+	if strings.TrimSpace(cfg.GitHubToken) != "" {
+		deps.lookupEnv = withoutRuntimeGitHubTokenEnv(deps.lookupEnv)
+		if githubTokenSentinel(cfg.GitHubToken) {
+			deps.ghAuthToken = func(ctx context.Context) (string, error) {
+				return runGHAuthTokenWithCommandContext(
+					ctx,
+					environmentWithoutKeys([]string{"GITHUB_TOKEN"}),
+					commandContext,
+				)
+			}
+		}
+	}
+	token, _, err := resolveRuntimeGitHubToken(ctx, &cfg, deps)
+	if err != nil {
+		return "", err
+	}
+	return runtimeGlobalGitHubToken(token), nil
+}
+
+func withoutRuntimeGitHubTokenEnv(lookupEnv func(string) string) func(string) string {
+	return func(key string) string {
+		if key == "GITHUB_TOKEN" {
+			return ""
+		}
+		return lookupEnv(key)
+	}
+}
+
+const startupTokenRefreshTimeout = 30 * time.Second
+
+func startupManagerConfig(ctx context.Context, cfg globalconfig.Config, token *runtimeGitHubTokenState, refresh func(context.Context) (string, error), timeout time.Duration) (project.ManagerConfig, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := refresh(ctx)
+		done <- err
+	}()
+	var err error
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		err = fmt.Errorf("refresh runtime GitHub token: %w", ctx.Err())
+	}
+	return managerConfigWithRuntimeGitHubToken(cfg, token.get()), err
+}
+
+func managerConfigWithRuntimeGitHubToken(cfg globalconfig.Config, token string) project.ManagerConfig {
+	managerConfig := project.ManagerConfigFromGlobal(cfg)
+	managerConfig.RuntimeCredentialVersion = runtimeGitHubTokenVersion(token)
+	return managerConfig
+}
+
+func logGlobalConfigChanges(logger *slog.Logger, previous globalconfig.Config, next globalconfig.Config) {
+	for _, change := range changedGlobalConfigFields(previous, next) {
+		if change.RequiresRestart {
+			logger.Warn("global config setting change requires restart", "field", change.Field)
+			continue
+		}
+		logger.Info("global config setting reloaded", "field", change.Field, "old", change.Old, "new", change.New)
+	}
+}
+
+func changedGlobalConfigFields(previous globalconfig.Config, next globalconfig.Config) []globalConfigChange {
+	fields := []globalConfigChange{}
+	if previous.Env != next.Env {
+		fields = append(fields, globalConfigChange{Field: "env", RequiresRestart: true, Old: previous.Env, New: next.Env})
+	}
+	if previous.LogLevel != next.LogLevel {
+		fields = append(fields, globalConfigChange{Field: "log_level", Old: previous.LogLevel, New: next.LogLevel})
+	}
+	if !sameOptionalInt(previous.LogMaxSizeBytes, next.LogMaxSizeBytes) {
+		fields = append(fields, globalConfigChange{Field: "log_max_size_bytes", RequiresRestart: true})
+	}
+	if !sameOptionalInt(previous.LogMaxBackups, next.LogMaxBackups) {
+		fields = append(fields, globalConfigChange{Field: "log_max_backups", RequiresRestart: true})
+	}
+	if previous.GitHubToken != next.GitHubToken {
+		fields = append(fields, globalConfigChange{Field: "github_token", Old: "<redacted>", New: "<redacted>"})
+	}
+	if previous.TrustLoopbackPeerRead != next.TrustLoopbackPeerRead {
+		fields = append(fields, globalConfigChange{Field: "trust_loopback_peer_read", Old: previous.TrustLoopbackPeerRead, New: next.TrustLoopbackPeerRead})
+	}
+	if previous.DashboardAccess.Mode != next.DashboardAccess.Mode {
+		fields = append(fields, globalConfigChange{Field: "dashboard_access.mode", Old: previous.DashboardAccess.Mode, New: next.DashboardAccess.Mode})
+	}
+	if previous.DashboardAccess.Token != next.DashboardAccess.Token {
+		fields = append(fields, globalConfigChange{Field: "dashboard_access.token", Old: "<redacted>", New: "<redacted>"})
+	}
+	if previous.DashboardAccess.AllowWrite != next.DashboardAccess.AllowWrite {
+		fields = append(fields, globalConfigChange{Field: "dashboard_access.allow_write", Old: previous.DashboardAccess.AllowWrite, New: next.DashboardAccess.AllowWrite})
+	}
+	if !sameOptionalInt(previous.Port, next.Port) {
+		fields = append(fields, globalConfigChange{Field: "port", RequiresRestart: true})
+	}
+	if previous.InstanceName != next.InstanceName {
+		fields = append(fields, globalConfigChange{Field: "instance_name", RequiresRestart: true})
+	}
+	if !reflect.DeepEqual(previous.Notifications, next.Notifications) {
+		fields = append(fields, globalConfigChange{Field: "notifications", RequiresRestart: true})
+	}
+	if previous.Profiling != next.Profiling {
+		fields = append(fields, globalConfigChange{Field: "profiling", Old: previous.Profiling, New: next.Profiling})
+	}
+	if !reflect.DeepEqual(previous.Auth, next.Auth) {
+		fields = append(fields, globalConfigChange{Field: "auth", RequiresRestart: true})
+	}
+	if !reflect.DeepEqual(previous.Ops, next.Ops) {
+		fields = append(fields, globalConfigChange{Field: "ops.tmux_window_status", RequiresRestart: true})
+	}
+	if !reflect.DeepEqual(previous.Projects, next.Projects) {
+		fields = append(fields, globalConfigChange{Field: "projects", Old: globalProjectIDs(previous.Projects), New: globalProjectIDs(next.Projects)})
+	}
+	fields = append(fields, changedGlobalSettings(previous.Global, next.Global)...)
+	return fields
+}
+
+func changedGlobalSettings(previous globalconfig.Settings, next globalconfig.Settings) []globalConfigChange {
+	fields := []globalConfigChange{}
+	if !reflect.DeepEqual(previous.LocalIntakeEnabled, next.LocalIntakeEnabled) {
+		fields = append(fields, globalConfigChange{Field: "global.local_intake_enabled", Old: previous.LocalIntakeEnabled, New: next.LocalIntakeEnabled})
+	}
+	if previous.MaxConcurrentAgents != next.MaxConcurrentAgents {
+		fields = append(fields, globalConfigChange{Field: "global.max_concurrent_agents", Old: previous.MaxConcurrentAgents, New: next.MaxConcurrentAgents})
+	}
+	if previous.Scheduling != next.Scheduling {
+		fields = append(fields, globalConfigChange{Field: "global.scheduling", Old: previous.Scheduling, New: next.Scheduling})
+	}
+	if previous.RateWindowPacing != next.RateWindowPacing {
+		fields = append(fields, globalConfigChange{Field: "global.rate_window_pacing", Old: previous.RateWindowPacing, New: next.RateWindowPacing})
+	}
+	if !reflect.DeepEqual(previous.AgentPools, next.AgentPools) {
+		fields = append(fields, globalConfigChange{Field: "global.agent_pools", Old: previous.AgentPools, New: next.AgentPools})
+	}
+	if !reflect.DeepEqual(previous.ActiveHours, next.ActiveHours) {
+		fields = append(fields, globalConfigChange{Field: "global.active_hours", Old: previous.ActiveHours, New: next.ActiveHours})
+	}
+	if !reflect.DeepEqual(previous.Identity, next.Identity) {
+		fields = append(fields, globalConfigChange{Field: "global.identity", RequiresRestart: true})
+	}
+	if !reflect.DeepEqual(previous.FairShare, next.FairShare) {
+		fields = append(fields, globalConfigChange{Field: "global.fair_share", Old: previous.FairShare, New: next.FairShare})
+	}
+	if !reflect.DeepEqual(previous.Startup, next.Startup) {
+		fields = append(fields, globalConfigChange{Field: "global.startup", Old: previous.Startup, New: next.Startup})
+	}
+	if previous.Memory.MaxAgentRSSBytes != next.Memory.MaxAgentRSSBytes {
+		fields = append(fields, globalConfigChange{Field: "global.memory.max_agent_rss_bytes", Old: previous.Memory.MaxAgentRSSBytes, New: next.Memory.MaxAgentRSSBytes})
+	}
+	if previous.Memory.PressureSomeAvg60Threshold != next.Memory.PressureSomeAvg60Threshold {
+		fields = append(fields, globalConfigChange{Field: "global.memory.pressure_some_avg60_threshold", Old: previous.Memory.PressureSomeAvg60Threshold, New: next.Memory.PressureSomeAvg60Threshold})
+	}
+	if previous.Memory.PollIntervalMS != next.Memory.PollIntervalMS {
+		fields = append(fields, globalConfigChange{Field: "global.memory.poll_interval_ms", Old: previous.Memory.PollIntervalMS, New: next.Memory.PollIntervalMS})
+	}
+	if previous.IO.PressureFullAvg10Threshold != next.IO.PressureFullAvg10Threshold {
+		fields = append(fields, globalConfigChange{Field: "global.io.pressure_full_avg10_threshold", Old: previous.IO.PressureFullAvg10Threshold, New: next.IO.PressureFullAvg10Threshold})
+	}
+	if previous.IO.DegradedMaxConcurrentAgents != next.IO.DegradedMaxConcurrentAgents {
+		fields = append(fields, globalConfigChange{Field: "global.io.degraded_max_concurrent_agents", Old: previous.IO.DegradedMaxConcurrentAgents, New: next.IO.DegradedMaxConcurrentAgents})
+	}
+	if previous.IO.PollIntervalMS != next.IO.PollIntervalMS {
+		fields = append(fields, globalConfigChange{Field: "global.io.poll_interval_ms", Old: previous.IO.PollIntervalMS, New: next.IO.PollIntervalMS})
+	}
+	if previous.CPU.PressureSomeAvg10Threshold != next.CPU.PressureSomeAvg10Threshold {
+		fields = append(fields, globalConfigChange{Field: "global.cpu.pressure_some_avg10_threshold", Old: previous.CPU.PressureSomeAvg10Threshold, New: next.CPU.PressureSomeAvg10Threshold})
+	}
+	if previous.CPU.DegradedMaxConcurrentAgents != next.CPU.DegradedMaxConcurrentAgents {
+		fields = append(fields, globalConfigChange{Field: "global.cpu.degraded_max_concurrent_agents", Old: previous.CPU.DegradedMaxConcurrentAgents, New: next.CPU.DegradedMaxConcurrentAgents})
+	}
+	if previous.CPU.PollIntervalMS != next.CPU.PollIntervalMS {
+		fields = append(fields, globalConfigChange{Field: "global.cpu.poll_interval_ms", Old: previous.CPU.PollIntervalMS, New: next.CPU.PollIntervalMS})
+	}
+	if previous.CPU.GoBuildBudget != next.CPU.GoBuildBudget {
+		fields = append(fields, globalConfigChange{Field: "global.cpu.go_build_budget", RequiresRestart: true, Old: previous.CPU.GoBuildBudget, New: next.CPU.GoBuildBudget})
+	}
+	return fields
+}
+
+func globalProjectIDs(projects []globalconfig.Project) []string {
+	ids := make([]string, 0, len(projects))
+	for _, cfg := range projects {
+		ids = append(ids, cfg.ID)
+	}
+	return ids
+}
+
+func sameOptionalInt(left *int, right *int) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
+}
+
+func projectIDs(ids []project.ID) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, string(id))
+	}
+	return out
+}
+
+func environmentWithoutKeys(keys []string) []string {
+	remove := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		remove[key] = true
+	}
+	env := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && remove[key] {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return env
+}

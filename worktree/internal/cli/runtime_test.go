@@ -1,0 +1,1038 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+)
+
+func TestResolveRuntimeSettingsPrecedence(t *testing.T) {
+	t.Parallel()
+
+	configPort := 4100
+	tests := []struct {
+		name         string
+		flags        runtimeFlags
+		env          map[string]string
+		cfg          *globalconfig.Config
+		wantEnv      RuntimeValue
+		wantLogLevel RuntimeValue
+		wantPort     RuntimeIntValue
+	}{
+		{
+			name: "flags win",
+			flags: runtimeFlags{
+				Env:      runtimeStringFlag{Value: "flag-env", Set: true},
+				LogLevel: runtimeStringFlag{Value: "debug", Set: true},
+				Port:     runtimeIntFlag{Value: 0, Set: true},
+			},
+			env: map[string]string{
+				"ENV":       "env-env",
+				"LOG_LEVEL": "error",
+				"PORT":      "4200",
+			},
+			cfg:          &globalconfig.Config{Env: "config-env", LogLevel: "warn", Port: &configPort},
+			wantEnv:      RuntimeValue{Value: "flag-env", Source: runtimeSourceFlag},
+			wantLogLevel: RuntimeValue{Value: "debug", Source: runtimeSourceFlag},
+			wantPort:     RuntimeIntValue{Value: 0, Source: runtimeSourceFlag},
+		},
+		{
+			name: "env wins after flags",
+			env: map[string]string{
+				"ENV":       "env-env",
+				"LOG_LEVEL": "error",
+				"PORT":      "4200",
+			},
+			cfg:          &globalconfig.Config{Env: "config-env", LogLevel: "warn", Port: &configPort},
+			wantEnv:      RuntimeValue{Value: "env-env", Source: "ENV"},
+			wantLogLevel: RuntimeValue{Value: "error", Source: "LOG_LEVEL"},
+			wantPort:     RuntimeIntValue{Value: 4200, Source: "PORT"},
+		},
+		{
+			name: "deprecated env fallbacks win before config",
+			env: map[string]string{
+				"DETENT_ENV":       "detent-env",
+				"DETENT_LOG_LEVEL": "debug",
+			},
+			cfg:          &globalconfig.Config{Env: "config-env", LogLevel: "warn", Port: &configPort},
+			wantEnv:      RuntimeValue{Value: "detent-env", Source: "DETENT_ENV"},
+			wantLogLevel: RuntimeValue{Value: "debug", Source: "DETENT_LOG_LEVEL"},
+			wantPort:     RuntimeIntValue{Value: 4100, Source: runtimeSourceConfig},
+		},
+		{
+			name:         "config wins before defaults",
+			cfg:          &globalconfig.Config{Env: "config-env", LogLevel: "warn", Port: &configPort},
+			wantEnv:      RuntimeValue{Value: "config-env", Source: runtimeSourceConfig},
+			wantLogLevel: RuntimeValue{Value: "warn", Source: runtimeSourceConfig},
+			wantPort:     RuntimeIntValue{Value: 4100, Source: runtimeSourceConfig},
+		},
+		{
+			name:         "defaults are last",
+			cfg:          &globalconfig.Config{},
+			wantEnv:      RuntimeValue{Value: defaultRuntimeEnv, Source: runtimeSourceDefault},
+			wantLogLevel: RuntimeValue{Value: defaultRuntimeLogLevel, Source: runtimeSourceDefault},
+			wantPort:     RuntimeIntValue{Value: defaultWebPort, Source: runtimeSourceDefault},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := resolveRuntimeSettings(context.Background(), runtimeInput{
+				Config: tt.cfg,
+				Flags:  tt.flags,
+			}, runtimeDeps{
+				lookupEnv: mapLookup(tt.env),
+			})
+			if err != nil {
+				t.Fatalf("resolveRuntimeSettings() error = %v", err)
+			}
+
+			if got.Env != tt.wantEnv {
+				t.Fatalf("Env = %#v, want %#v", got.Env, tt.wantEnv)
+			}
+			if got.LogLevel != tt.wantLogLevel {
+				t.Fatalf("LogLevel = %#v, want %#v", got.LogLevel, tt.wantLogLevel)
+			}
+			if got.Port != tt.wantPort {
+				t.Fatalf("Port = %#v, want %#v", got.Port, tt.wantPort)
+			}
+		})
+	}
+}
+
+func TestResolveRuntimeSettingsLogRotation(t *testing.T) {
+	t.Parallel()
+
+	configSize := 4096
+	configBackups := 3
+	tests := []struct {
+		name           string
+		env            map[string]string
+		cfg            *globalconfig.Config
+		wantMaxSize    RuntimeIntValue
+		wantMaxBackups RuntimeIntValue
+	}{
+		{
+			name: "env wins before config",
+			env: map[string]string{
+				"LOG_MAX_SIZE_BYTES": "2048",
+				"LOG_MAX_BACKUPS":    "2",
+			},
+			cfg: &globalconfig.Config{
+				LogMaxSizeBytes: &configSize,
+				LogMaxBackups:   &configBackups,
+			},
+			wantMaxSize:    RuntimeIntValue{Value: 2048, Source: "LOG_MAX_SIZE_BYTES"},
+			wantMaxBackups: RuntimeIntValue{Value: 2, Source: "LOG_MAX_BACKUPS"},
+		},
+		{
+			name: "deprecated env fallbacks win before config",
+			env: map[string]string{
+				"DETENT_LOG_MAX_SIZE_BYTES": "1024",
+				"DETENT_LOG_MAX_BACKUPS":    "1",
+			},
+			cfg: &globalconfig.Config{
+				LogMaxSizeBytes: &configSize,
+				LogMaxBackups:   &configBackups,
+			},
+			wantMaxSize:    RuntimeIntValue{Value: 1024, Source: "DETENT_LOG_MAX_SIZE_BYTES"},
+			wantMaxBackups: RuntimeIntValue{Value: 1, Source: "DETENT_LOG_MAX_BACKUPS"},
+		},
+		{
+			name: "config wins before default",
+			cfg: &globalconfig.Config{
+				LogMaxSizeBytes: &configSize,
+				LogMaxBackups:   &configBackups,
+			},
+			wantMaxSize:    RuntimeIntValue{Value: configSize, Source: runtimeSourceConfig},
+			wantMaxBackups: RuntimeIntValue{Value: configBackups, Source: runtimeSourceConfig},
+		},
+		{
+			name:           "defaults are enabled",
+			cfg:            &globalconfig.Config{},
+			wantMaxSize:    RuntimeIntValue{Value: defaultRuntimeLogMaxSizeBytes, Source: runtimeSourceDefault},
+			wantMaxBackups: RuntimeIntValue{Value: defaultRuntimeLogMaxBackups, Source: runtimeSourceDefault},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := resolveRuntimeSettings(context.Background(), runtimeInput{
+				Config: tt.cfg,
+			}, runtimeDeps{
+				lookupEnv: mapLookup(tt.env),
+			})
+			if err != nil {
+				t.Fatalf("resolveRuntimeSettings() error = %v", err)
+			}
+
+			if got.LogMaxSizeBytes != tt.wantMaxSize {
+				t.Fatalf("LogMaxSizeBytes = %#v, want %#v", got.LogMaxSizeBytes, tt.wantMaxSize)
+			}
+			if got.LogMaxBackups != tt.wantMaxBackups {
+				t.Fatalf("LogMaxBackups = %#v, want %#v", got.LogMaxBackups, tt.wantMaxBackups)
+			}
+		})
+	}
+}
+
+func TestResolveRuntimeSettingsRejectsInvalidLogRotationEnv(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{name: "invalid size", env: map[string]string{"LOG_MAX_SIZE_BYTES": "large"}, want: "LOG_MAX_SIZE_BYTES"},
+		{name: "negative backups", env: map[string]string{"LOG_MAX_BACKUPS": "-1"}, want: "LOG_MAX_BACKUPS"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := resolveRuntimeSettings(context.Background(), runtimeInput{}, runtimeDeps{
+				lookupEnv: mapLookup(tt.env),
+			})
+			if err == nil {
+				t.Fatal("resolveRuntimeSettings() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("resolveRuntimeSettings() error = %v, want containing %s", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveRuntimeSettingsUsesWorkflowRefForServerPort(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	repo := initRuntimeWorkflowRepo(t)
+	writeRuntimeWorkflow(t, filepath.Join(repo, "WORKFLOW.md"), 4109)
+	commitRuntimeWorkflowRepo(t, repo, "initial workflow")
+	updateRuntimeWorkflowRef(t, repo, "origin/main", "HEAD")
+	writeRuntimeWorkflow(t, filepath.Join(repo, "WORKFLOW.md"), 4999)
+
+	cfg := globalconfig.Config{
+		Global: globalconfig.Settings{
+			MaxConcurrentAgents: 1,
+			Scheduling:          globalconfig.SchedulingWeighted,
+		},
+		Projects: []globalconfig.Project{
+			{
+				ID:          "detent",
+				Workflow:    "WORKFLOW.md",
+				WorkflowRef: "origin/main",
+				Workdir:     repo,
+				Weight:      1,
+			},
+		},
+	}
+
+	got, err := resolveRuntimeSettings(context.Background(), runtimeInput{
+		Config: &cfg,
+	}, runtimeDeps{lookupEnv: mapLookup(nil)})
+	if err != nil {
+		t.Fatalf("resolveRuntimeSettings() error = %v", err)
+	}
+
+	if got.Port.Value != 4109 {
+		t.Fatalf("Port.Value = %d, want 4109", got.Port.Value)
+	}
+	if got.Port.Source != runtimeSourceWorkflow {
+		t.Fatalf("Port.Source = %q, want %q", got.Port.Source, runtimeSourceWorkflow)
+	}
+}
+
+func TestResolveRuntimePortUsesOnlyFirstGlobalProjectWorkflowPort(t *testing.T) {
+	t.Parallel()
+
+	secondPort := 4555
+	firstWorkflow := workflowconfig.Default()
+	firstWorkflow.Server.Port = nil
+	secondWorkflow := workflowconfig.Default()
+	secondWorkflow.Server.Port = &secondPort
+	calls := []string{}
+
+	cfg := globalconfig.Config{
+		Global: globalconfig.Settings{
+			MaxConcurrentAgents: 1,
+			Scheduling:          globalconfig.SchedulingWeighted,
+		},
+		Projects: []globalconfig.Project{
+			{ID: "first", Workflow: "first.md", Weight: 1},
+			{ID: "second", Workflow: "second.md", Weight: 1},
+		},
+	}
+
+	got, err := resolveRuntimePort(context.Background(), runtimeInput{
+		Config: &cfg,
+	}, runtimeDeps{
+		lookupEnv: mapLookup(nil),
+		loadWorkflow: func(path string) (workflowconfig.Workflow, error) {
+			calls = append(calls, path)
+			switch path {
+			case "first.md":
+				return workflowconfig.Workflow{Config: firstWorkflow}, nil
+			case "second.md":
+				return workflowconfig.Workflow{Config: secondWorkflow}, nil
+			default:
+				return workflowconfig.Workflow{}, errors.New("unexpected workflow path")
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolveRuntimePort() error = %v", err)
+	}
+	if got.Value != defaultWebPort {
+		t.Fatalf("Port.Value = %d, want %d", got.Value, defaultWebPort)
+	}
+	if got.Source != runtimeSourceDefault {
+		t.Fatalf("Port.Source = %q, want %q", got.Source, runtimeSourceDefault)
+	}
+	if strings.Join(calls, ",") != "first.md" {
+		t.Fatalf("loadWorkflow calls = %#v, want [first.md]", calls)
+	}
+}
+
+func TestResolveRuntimeSettingsGitHubTokenPrecedence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		env           map[string]string
+		cfg           globalconfig.Config
+		workflow      workflowconfig.Config
+		ghToken       string
+		wantToken     string
+		wantSource    string
+		wantVia       string
+		wantGhCalls   int
+		deferProjects bool
+	}{
+		{
+			name:          "runner startup resolves configured gh authentication",
+			cfg:           githubRuntimeConfig("gh"),
+			workflow:      workflowconfig.Config{Tracker: workflowconfig.Tracker{Kind: "github"}},
+			ghToken:       "gh-token",
+			wantToken:     "gh-token",
+			wantSource:    "github_token",
+			wantVia:       "gh",
+			wantGhCalls:   1,
+			deferProjects: true,
+		},
+		{
+			name:          "runner startup does not require project authentication",
+			cfg:           githubRuntimeConfig(""),
+			workflow:      githubWorkflow("$UNAVAILABLE_PROJECT_TOKEN"),
+			deferProjects: true,
+		},
+		{
+			name: "environment wins before config and tracker",
+			env: map[string]string{
+				"GITHUB_TOKEN":  "env-token",
+				"PROJECT_TOKEN": "tracker-token",
+			},
+			cfg:         githubRuntimeConfig("gh"),
+			workflow:    githubWorkflow("$PROJECT_TOKEN"),
+			ghToken:     "gh-token",
+			wantToken:   "env-token",
+			wantSource:  "GITHUB_TOKEN",
+			wantGhCalls: 0,
+		},
+		{
+			name:        "config literal wins before tracker",
+			env:         map[string]string{"PROJECT_TOKEN": "tracker-token"},
+			cfg:         githubRuntimeConfig("config-token"),
+			workflow:    githubWorkflow("$PROJECT_TOKEN"),
+			wantToken:   "config-token",
+			wantSource:  "github_token",
+			wantGhCalls: 0,
+		},
+		{
+			name:        "config sentinel resolves through gh auth token",
+			cfg:         githubRuntimeConfig("${gh auth token}"),
+			workflow:    githubWorkflow("tracker-token"),
+			ghToken:     "gh-token",
+			wantToken:   "gh-token",
+			wantSource:  "github_token",
+			wantVia:     "gh",
+			wantGhCalls: 1,
+		},
+		{
+			name:        "tracker api key is final fallback",
+			env:         map[string]string{"PROJECT_TOKEN": "tracker-token"},
+			cfg:         githubRuntimeConfig(""),
+			workflow:    githubWorkflow("$PROJECT_TOKEN"),
+			wantToken:   "tracker-token",
+			wantSource:  "PROJECT_TOKEN",
+			wantGhCalls: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ghCalls := 0
+			got, err := resolveRuntimeSettings(context.Background(), runtimeInput{
+				Config:                 &tt.cfg,
+				DeferProjectValidation: tt.deferProjects,
+				Flags:                  runtimeFlags{Port: runtimeIntFlag{Set: true}},
+			}, runtimeDeps{
+				lookupEnv: mapLookup(tt.env),
+				ghAuthToken: func(context.Context) (string, error) {
+					ghCalls++
+					return tt.ghToken, nil
+				},
+				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+					if tt.deferProjects {
+						t.Fatal("deferred startup loaded project workflow for authentication")
+					}
+					return workflowconfig.Workflow{Config: tt.workflow}, nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("resolveRuntimeSettings() error = %v", err)
+			}
+			if got.GitHubToken.Value != tt.wantToken {
+				t.Fatalf("GitHubToken.Value = %q, want %q", got.GitHubToken.Value, tt.wantToken)
+			}
+			if got.GitHubToken.Source != tt.wantSource {
+				t.Fatalf("GitHubToken.Source = %q, want %q", got.GitHubToken.Source, tt.wantSource)
+			}
+			if got.GitHubToken.ResolvedVia != tt.wantVia {
+				t.Fatalf("GitHubToken.ResolvedVia = %q, want %q", got.GitHubToken.ResolvedVia, tt.wantVia)
+			}
+			if ghCalls != tt.wantGhCalls {
+				t.Fatalf("gh calls = %d, want %d", ghCalls, tt.wantGhCalls)
+			}
+		})
+	}
+}
+
+func TestResolveRuntimeSettingsGitHubTokenErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		cfg      globalconfig.Config
+		ghErr    error
+		wantErr  string
+		wantHint string
+	}{
+		{
+			name:     "sentinel failure includes gh auth guidance",
+			cfg:      githubRuntimeConfig("gh"),
+			ghErr:    errors.New("not logged in"),
+			wantErr:  "not logged in",
+			wantHint: "gh auth login",
+		},
+		{
+			name:     "github projects require token",
+			cfg:      githubRuntimeConfig(""),
+			wantErr:  "GITHUB_TOKEN",
+			wantHint: "gh auth login",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := resolveRuntimeSettings(context.Background(), runtimeInput{
+				Config: &tt.cfg,
+			}, runtimeDeps{
+				lookupEnv: mapLookup(nil),
+				ghAuthToken: func(context.Context) (string, error) {
+					return "", tt.ghErr
+				},
+				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+					return workflowconfig.Workflow{Config: githubWorkflow("")}, nil
+				},
+			})
+			if err == nil {
+				t.Fatal("resolveRuntimeSettings() error = nil, want error")
+			}
+			if !errors.Is(err, ErrGitHubAuth) {
+				t.Fatalf("resolveRuntimeSettings() error = %v, want %v", err, ErrGitHubAuth)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
+			}
+			hint, _, ok := HintFor(err)
+			if !ok {
+				t.Fatalf("HintFor(%v) ok = false, want true", err)
+			}
+			if !strings.Contains(hint, tt.wantHint) {
+				t.Fatalf("hint = %q, want containing %q", hint, tt.wantHint)
+			}
+		})
+	}
+}
+
+func TestResolveRuntimeSettingsDoesNotRequireTokenForGitHubApp(t *testing.T) {
+	t.Parallel()
+
+	got, err := resolveRuntimeSettings(context.Background(), runtimeInput{
+		Config: new(githubRuntimeConfig("")),
+	}, runtimeDeps{
+		lookupEnv: mapLookup(map[string]string{
+			"APP_ID":           "12345",
+			"INSTALLATION_ID":  "67890",
+			"PRIVATE_KEY_PATH": ".detent/github-app.pem",
+		}),
+		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+			return workflowconfig.Workflow{Config: githubAppWorkflow()}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolveRuntimeSettings() error = %v", err)
+	}
+	if got.GitHubToken.Required {
+		t.Fatalf("GitHubToken.Required = true, want false")
+	}
+	if got.GitHubToken.Value != "" {
+		t.Fatalf("GitHubToken.Value = %q, want empty", got.GitHubToken.Value)
+	}
+}
+
+func TestResolveRuntimeSettingsResolvesGlobalTokenForWorkers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		workflow workflowconfig.Config
+		env      map[string]string
+	}{
+		{
+			name:     "non github tracker",
+			workflow: nonGitHubWorkflow(),
+		},
+		{
+			name:     "github app tracker",
+			workflow: githubAppWorkflow(),
+			env: map[string]string{
+				"APP_ID":           "12345",
+				"INSTALLATION_ID":  "67890",
+				"PRIVATE_KEY_PATH": ".detent/github-app.pem",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ghCalls := 0
+			got, err := resolveRuntimeSettings(context.Background(), runtimeInput{
+				Config: new(githubRuntimeConfig("gh")),
+			}, runtimeDeps{
+				lookupEnv: mapLookup(tt.env),
+				ghAuthToken: func(context.Context) (string, error) {
+					ghCalls++
+					return "global-worker-token", nil
+				},
+				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+					return workflowconfig.Workflow{Config: tt.workflow}, nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("resolveRuntimeSettings() error = %v", err)
+			}
+			if ghCalls != 1 {
+				t.Fatalf("gh calls = %d, want 1", ghCalls)
+			}
+			if !got.GitHubToken.Required {
+				t.Fatalf("GitHubToken.Required = false, want true")
+			}
+			if got.GitHubToken.Value != "global-worker-token" {
+				t.Fatalf("GitHubToken.Value = %q, want global-worker-token", got.GitHubToken.Value)
+			}
+		})
+	}
+}
+
+func TestResolveRuntimeSettingsRequiresTokenForMissingGitHubAppEnvRefs(t *testing.T) {
+	t.Parallel()
+
+	_, err := resolveRuntimeSettings(context.Background(), runtimeInput{
+		Config: new(githubRuntimeConfig("")),
+	}, runtimeDeps{
+		lookupEnv: mapLookup(nil),
+		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+			return workflowconfig.Workflow{Config: githubAppWorkflow()}, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("resolveRuntimeSettings() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "GITHUB_TOKEN") {
+		t.Fatalf("error = %v, want containing GITHUB_TOKEN", err)
+	}
+}
+
+func TestRuntimeSettingsDetailRedactsGitHubToken(t *testing.T) {
+	t.Parallel()
+
+	settings := RuntimeSettings{
+		ConfigPath:  RuntimeValue{Value: "/tmp/global.yaml", Source: string(globalconfig.PathRuleFlag)},
+		Env:         RuntimeValue{Value: "dev", Source: "ENV"},
+		LogLevel:    RuntimeValue{Value: "debug", Source: "LOG_LEVEL"},
+		Port:        RuntimeIntValue{Value: 4000, Source: runtimeSourceConfig},
+		GitHubToken: RuntimeSecret{Value: "ghp_secret", Source: "GITHUB_TOKEN"},
+	}
+
+	detail := runtimeSettingsDetail(settings)
+	if strings.Contains(detail, "ghp_secret") {
+		t.Fatalf("runtime detail leaked token: %s", detail)
+	}
+	for _, want := range []string{
+		"config_path=/tmp/global.yaml (--config)",
+		"env=dev (ENV)",
+		"log_level=debug (LOG_LEVEL)",
+		"port=4000 (config)",
+		"github_token=redacted (GITHUB_TOKEN)",
+	} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("runtime detail missing %q:\n%s", want, detail)
+		}
+	}
+
+	settings.GitHubToken.ResolvedVia = "gh"
+	detail = runtimeSettingsDetail(settings)
+	if !strings.Contains(detail, "github_token=resolved via gh") {
+		t.Fatalf("runtime detail missing gh sentinel source:\n%s", detail)
+	}
+}
+
+func TestRuntimeGlobalGitHubTokenSources(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		token RuntimeSecret
+		want  string
+	}{
+		{
+			name:  "environment token is global",
+			token: RuntimeSecret{Value: "env-token", Source: "GITHUB_TOKEN"},
+			want:  "env-token",
+		},
+		{
+			name:  "config token is global",
+			token: RuntimeSecret{Value: "config-token", Source: "github_token"},
+			want:  "config-token",
+		},
+		{
+			name:  "literal tracker token stays workflow local",
+			token: RuntimeSecret{Value: "tracker-token", Source: "tracker.api_key"},
+			want:  "",
+		},
+		{
+			name:  "tracker env token stays workflow local",
+			token: RuntimeSecret{Value: "tracker-token", Source: "PROJECT_TOKEN"},
+			want:  "",
+		},
+		{
+			name:  "empty token",
+			token: RuntimeSecret{},
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := runtimeGlobalGitHubToken(tt.token); got != tt.want {
+				t.Fatalf("runtimeGlobalGitHubToken() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRuntimeGitHubTokenRefresherUsesCurrentGlobalConfig(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "actions-token")
+
+	workflowPath := filepath.Join(t.TempDir(), "workflow.md")
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n---\nPrompt\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	globalState := newGlobalConfigState(globalconfig.Config{})
+	tokenState := newRuntimeGitHubTokenState("")
+	refresh := runtimeGitHubTokenRefresher(globalState, tokenState)
+
+	globalState.set(globalconfig.Config{
+		GitHubToken: "next-token",
+		Projects: []globalconfig.Project{{
+			ID:       "detent",
+			Workflow: workflowPath,
+			Workdir:  ".",
+		}},
+	})
+	got, err := refresh(context.Background())
+	if err != nil {
+		t.Fatalf("refresh() error = %v", err)
+	}
+	if got != "next-token" {
+		t.Fatalf("refresh() = %q, want next-token", got)
+	}
+	if tokenState.get() != "next-token" {
+		t.Fatalf("runtime token state = %q, want next-token", tokenState.get())
+	}
+}
+
+func TestRuntimeGitHubTokenRefresherResolvesConfiguredGHSentinelWithoutActionsToken(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
+	tests := []struct {
+		name      string
+		expire    bool
+		wantToken string
+		wantErr   error
+	}{
+		{
+			name:      "command completes before deadline",
+			wantToken: "gh-token",
+		},
+		{
+			name:    "production deadline expires before command",
+			expire:  true,
+			wantErr: context.DeadlineExceeded,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GITHUB_TOKEN", "actions-token")
+			fakeGHDir := t.TempDir()
+			writeFakeGHAuthToken(t, fakeGHDir)
+			t.Setenv("PATH", fakeGHDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			workflowPath := filepath.Join(t.TempDir(), "workflow.md")
+			if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n---\nPrompt\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			globalState := newGlobalConfigState(globalconfig.Config{})
+			tokenState := newRuntimeGitHubTokenState("")
+			commandContexts := newControlledRuntimeCommandContexts()
+			t.Cleanup(commandContexts.AllowCommand)
+			refresh := runtimeGitHubTokenRefresherWithCommandContext(globalState, tokenState, commandContexts.New)
+
+			globalState.set(globalconfig.Config{
+				GitHubToken: "gh",
+				Projects: []globalconfig.Project{{
+					ID:       "detent",
+					Workflow: workflowPath,
+					Workdir:  ".",
+				}},
+			})
+			type refreshResult struct {
+				token string
+				err   error
+			}
+			result := make(chan refreshResult, 1)
+			go func() {
+				token, err := refresh(context.Background())
+				result <- refreshResult{token: token, err: err}
+			}()
+
+			select {
+			case timeout := <-commandContexts.ready:
+				if timeout != runtimeCommandTimeout {
+					t.Fatalf("command timeout = %s, want %s", timeout, runtimeCommandTimeout)
+				}
+			case <-time.After(runtimeCommandTestDeadlockGuard):
+				t.Fatal("timed out waiting for command context")
+			}
+			if _, ok := commandContexts.commandContext.Deadline(); !ok {
+				t.Fatal("command context has no deadline")
+			}
+			if tt.expire {
+				commandContexts.Expire()
+			}
+			commandContexts.AllowCommand()
+
+			var got refreshResult
+			select {
+			case got = <-result:
+			case <-time.After(runtimeCommandTestDeadlockGuard):
+				t.Fatal("timed out waiting for token refresh")
+			}
+			if !errors.Is(got.err, tt.wantErr) {
+				t.Fatalf("refresh() error = %v, want %v", got.err, tt.wantErr)
+			}
+			if got.token != tt.wantToken {
+				t.Fatalf("refresh() = %q, want %q", got.token, tt.wantToken)
+			}
+			if tokenState.get() != tt.wantToken {
+				t.Fatalf("runtime token state = %q, want %q", tokenState.get(), tt.wantToken)
+			}
+		})
+	}
+}
+
+func githubRuntimeConfig(token string) globalconfig.Config {
+	return globalconfig.Config{
+		GitHubToken: token,
+		Projects: []globalconfig.Project{
+			{ID: "detent", Workflow: "WORKFLOW.md", Workdir: ".", Weight: 1},
+		},
+	}
+}
+
+func githubWorkflow(apiKey string) workflowconfig.Config {
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	cfg.Tracker.APIKey = apiKey
+	return cfg
+}
+
+func nonGitHubWorkflow() workflowconfig.Config {
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	return cfg
+}
+
+func githubAppWorkflow() workflowconfig.Config {
+	cfg := githubWorkflow("")
+	cfg.Tracker.GitHubAppID = "$APP_ID"
+	cfg.Tracker.GitHubAppInstallationID = "$INSTALLATION_ID"
+	cfg.Tracker.GitHubAppPrivateKeyPath = "$PRIVATE_KEY_PATH"
+	return cfg
+}
+
+func initRuntimeWorkflowRepo(t *testing.T) string {
+	t.Helper()
+
+	root := t.TempDir()
+	runRuntimeWorkflowCommand(t, "", "git", "init", root)
+	runRuntimeWorkflowGit(t, root, "config", "user.email", "detent@example.com")
+	runRuntimeWorkflowGit(t, root, "config", "user.name", "Detent Test")
+	return root
+}
+
+func writeRuntimeWorkflow(t *testing.T, path string, port int) {
+	t.Helper()
+
+	content := `---
+tracker:
+  kind: hub_native
+server:
+  port: ` + strconv.Itoa(port) + `
+---
+Runtime workflow.
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+}
+
+func commitRuntimeWorkflowRepo(t *testing.T, repo string, message string) {
+	t.Helper()
+
+	runRuntimeWorkflowGit(t, repo, "add", "WORKFLOW.md")
+	runRuntimeWorkflowGit(t, repo, "commit", "-m", message)
+}
+
+func updateRuntimeWorkflowRef(t *testing.T, repo string, ref string, value string) {
+	t.Helper()
+
+	runRuntimeWorkflowGit(t, repo, "update-ref", "refs/remotes/"+ref, value)
+}
+
+func runRuntimeWorkflowGit(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+
+	return runRuntimeWorkflowCommand(t, repo, "git", args...)
+}
+
+func runRuntimeWorkflowCommand(t *testing.T, dir string, name string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.CommandContext(t.Context(), name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %s error = %v\n%s", name, strings.Join(args, " "), err, output)
+	}
+	return string(output)
+}
+
+func writeFakeGHAuthToken(t *testing.T, dir string) {
+	t.Helper()
+
+	name := "gh"
+	body := "#!/bin/sh\nif [ \"$GITHUB_TOKEN\" = \"actions-token\" ]; then printf %s actions-token; else printf %s gh-token; fi\n"
+	if runtime.GOOS == "windows" {
+		name = "gh.bat"
+		body = "@echo off\r\nif \"%GITHUB_TOKEN%\"==\"actions-token\" (\r\n  echo actions-token\r\n) else (\r\n  echo gh-token\r\n)\r\n"
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", path, err)
+	}
+}
+
+const runtimeCommandTestDeadlockGuard = 30 * time.Second
+
+type controlledRuntimeCommandContexts struct {
+	ready          chan time.Duration
+	release        chan struct{}
+	releaseOnce    sync.Once
+	commandContext *controlledRuntimeCommandContext
+}
+
+func newControlledRuntimeCommandContexts() *controlledRuntimeCommandContexts {
+	return &controlledRuntimeCommandContexts{
+		ready:   make(chan time.Duration, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (c *controlledRuntimeCommandContexts) New(
+	ctx context.Context,
+	timeout time.Duration,
+) (context.Context, context.CancelFunc) {
+	commandContext := &controlledRuntimeCommandContext{
+		deadline: time.Now().Add(timeout),
+		done:     make(chan struct{}),
+		value:    ctx.Value,
+	}
+	c.commandContext = commandContext
+	c.ready <- timeout
+	<-c.release
+	return commandContext, func() {
+		commandContext.cancel(context.Canceled)
+	}
+}
+
+func (c *controlledRuntimeCommandContexts) Expire() {
+	c.commandContext.cancel(context.DeadlineExceeded)
+}
+
+func (c *controlledRuntimeCommandContexts) AllowCommand() {
+	c.releaseOnce.Do(func() {
+		close(c.release)
+	})
+}
+
+type controlledRuntimeCommandContext struct {
+	deadline time.Time
+	done     chan struct{}
+	value    func(any) any
+	once     sync.Once
+	mu       sync.RWMutex
+	err      error
+}
+
+func (c *controlledRuntimeCommandContext) Deadline() (time.Time, bool) {
+	return c.deadline, true
+}
+
+func (c *controlledRuntimeCommandContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *controlledRuntimeCommandContext) Err() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.err
+}
+
+func (c *controlledRuntimeCommandContext) Value(key any) any {
+	return c.value(key)
+}
+
+func (c *controlledRuntimeCommandContext) cancel(err error) {
+	c.once.Do(func() {
+		c.mu.Lock()
+		c.err = err
+		c.mu.Unlock()
+		close(c.done)
+	})
+}
+
+func mapLookup(values map[string]string) func(string) string {
+	return func(key string) string {
+		return values[key]
+	}
+}
+
+func TestGlobalGitHubTokenDefaultsWorkerCredential(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, override, want string }{
+		{name: "global gh default", want: "resolved-global-token"},
+		{name: "project override", override: "$WORKER_TOKEN", want: "$WORKER_TOKEN"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := workflowconfig.Default()
+			cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+			cfg.Worker.GitHubToken = tc.override
+			calls := 0
+			token, _, err := resolveRuntimeGitHubToken(t.Context(), &globalconfig.Config{
+				GitHubToken: "gh", Projects: []globalconfig.Project{{ID: "example", Workflow: "WORKFLOW.md"}},
+			}, runtimeDeps{
+				lookupEnv:    func(string) string { return "" },
+				loadWorkflow: func(string) (workflowconfig.Workflow, error) { return workflowconfig.Workflow{Config: cfg}, nil },
+				ghAuthToken:  func(context.Context) (string, error) { calls++; return " resolved-global-token\n", nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("gh auth token calls = %d, want 1", calls)
+			}
+			effective := doctorWorkflowConfigWithRuntimeGitHubToken(cfg, runtimeGlobalGitHubToken(token))
+			if effective.Worker.GitHubToken != tc.want {
+				t.Fatal("effective worker credential does not match expected source")
+			}
+		})
+	}
+}
+
+func TestGHAuthFailureOmitsCommandOutput(t *testing.T) {
+	for _, stage := range []string{"status", "token"} {
+		t.Run(stage, func(t *testing.T) {
+			dir := t.TempDir()
+			name := "gh"
+			body := "#!/bin/sh\nif [ \"$2\" = \"" + stage + "\" ]; then printf private-token; printf private-token >&2; exit 1; fi\n"
+			if runtime.GOOS == "windows" {
+				name = "gh.bat"
+				body = "@echo off\r\nif \"%2\"==\"" + stage + "\" (\r\n echo private-token\r\n echo private-token 1>&2\r\n exit /b 1\r\n)\r\n"
+			}
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			token, err := runGHAuthToken(t.Context(), nil)
+			if err == nil || token != "" || strings.Contains(err.Error(), "private-token") || !strings.Contains(err.Error(), "gh auth "+stage+" failed") {
+				t.Fatalf("authentication failure leaked output or lost its stage: %v", err)
+			}
+		})
+	}
+}
