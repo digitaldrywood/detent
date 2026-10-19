@@ -146,6 +146,55 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 func boundedProjectPolicyHistory(approval projectPolicyRead, budget int) (projectPolicyRead, error) {
 	history, next := approval.History, approval.HistoryNext
 	approval.History, approval.HistoryNext = nil, ""
+	if len(history) > 0 {
+		entry := history[0]
+		entry.PreviousDefinition, entry.Definition = nil, nil
+		approval.History = []policy.WorkflowApply{entry}
+		approval.HistoryNext = next
+		if len(history) > 1 {
+			approval.HistoryNext = strconv.FormatInt(entry.ID, 10)
+		}
+	}
+	raw, err := json.Marshal(approval)
+	if err != nil {
+		return approval, err
+	}
+	if len(raw) > budget && len(approval.ObservedPolicies) > 0 {
+		approval.ObservedPolicyDetailsOmitted = true
+		observations := make([]policy.ObservedPolicy, len(approval.ObservedPolicies))
+		for i, observed := range approval.ObservedPolicies {
+			observations[i] = observed
+			observations[i].Policy = policy.Descriptor{
+				Schema: observed.Policy.Schema, ID: observed.Policy.ID,
+				SourceRevision: observed.Policy.SourceRevision, SourceDigest: observed.Policy.SourceDigest, ConfigDigest: observed.Policy.ConfigDigest,
+			}
+		}
+		low, high := 0, len(observations)
+		for low < high {
+			count := low + (high-low+1)/2
+			approval.ObservedPolicies = observations[:count]
+			approval.ObservedPoliciesOmitted = len(observations) - count
+			raw, err = json.Marshal(approval)
+			if err != nil {
+				return approval, err
+			}
+			if len(raw) <= budget {
+				low = count
+			} else {
+				high = count - 1
+			}
+		}
+		approval.ObservedPolicies = observations[:low]
+		approval.ObservedPoliciesOmitted = len(observations) - low
+		raw, err = json.Marshal(approval)
+		if err != nil {
+			return approval, err
+		}
+	}
+	if len(raw) > budget {
+		return approval, errProjectServiceUnavailable
+	}
+	approval.History, approval.HistoryNext = nil, ""
 	for i, entry := range history {
 		entry.PreviousDefinition, entry.Definition = nil, nil
 		previousNext := approval.HistoryNext

@@ -678,3 +678,72 @@ func TestProjectImportToolReceipts(t *testing.T) {
 		t.Fatal("foreign project import disclosed")
 	}
 }
+
+func TestBoundedProjectPolicyObservations(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		count       int
+		promptBytes int
+		withHistory bool
+	}{
+		{name: "single oversized descriptor", count: 1, promptBytes: operatortool.MaxResultBytes},
+		{name: "several descriptors", count: 4, promptBytes: operatortool.MaxResultBytes / 3},
+		{name: "too many summaries", count: 1000, promptBytes: 1},
+		{name: "history with oversized descriptor", count: 1, promptBytes: operatortool.MaxResultBytes, withHistory: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			full := projectPolicyRead{}
+			if test.withHistory {
+				descriptor := hubTestPolicy()
+				full.Policy = &descriptor
+				full.ApprovedBy = "administrator"
+				full.History = []policy.WorkflowApply{{ID: 42, Definition: &descriptor}}
+			}
+			for i := range test.count {
+				descriptor := hubTestPolicy()
+				descriptor.Configuration = &policy.Configuration{Prompt: strings.Repeat("x", test.promptBytes), Behavior: json.RawMessage(`{}`)}
+				descriptor.SourceDigest = policy.Digest([]byte(strconv.Itoa(i)))
+				descriptor = descriptor.WithID()
+				full.ObservedPolicies = append(full.ObservedPolicies, policy.ObservedPolicy{Policy: descriptor, RunnerID: "runner_example"})
+			}
+			before, err := json.Marshal(full)
+			if err != nil {
+				t.Fatal(err)
+			}
+			page, err := boundedProjectPolicyHistory(full, operatortool.MaxResultBytes-1024)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(page)
+			if err != nil || len(raw) > operatortool.MaxResultBytes-1024 {
+				t.Fatalf("observations exceed response budget: bytes=%d, %v", len(raw), err)
+			}
+			var view struct {
+				DetailsOmitted bool `json:"observed_policy_details_omitted"`
+				Omitted        int  `json:"observed_policies_omitted"`
+			}
+			if err := json.Unmarshal(raw, &view); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(page.Policy, full.Policy) || len(page.History) != len(full.History) || len(page.ObservedPolicies) == 0 || !view.DetailsOmitted || len(page.ObservedPolicies)+view.Omitted != test.count {
+				t.Fatalf("missing observation identity or omission metadata: %s", raw)
+			}
+			if test.count == 1000 && view.Omitted == 0 {
+				t.Fatal("oversized summary list was not bounded")
+			}
+			if test.withHistory && (page.History[0].ID != 42 || page.History[0].Definition != nil || page.ApprovedBy != "administrator") {
+				t.Fatal("observation compaction changed approval or history")
+			}
+			for i, observation := range page.ObservedPolicies {
+				if observation.Policy.ID != full.ObservedPolicies[i].Policy.ID || observation.RunnerID != "runner_example" {
+					t.Fatal("candidate identity or provenance changed")
+				}
+			}
+			after, err := json.Marshal(full)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatal("MCP projection mutated REST observations")
+			}
+		})
+	}
+}
