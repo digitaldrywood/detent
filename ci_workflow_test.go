@@ -1,13 +1,17 @@
 package detent_test
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
@@ -80,20 +84,115 @@ func TestMakeTestTargetsIsolateAPIToken(t *testing.T) {
 func TestCIPreflightDeduplicatesOnlySuccessfulRuns(t *testing.T) {
 	t.Parallel()
 
-	preflight := workflowBetween(t, readNormalizedFile(t, ".github/workflows/ci.yml"), "  preflight:", "\n  invariants:")
+	if runtime.GOOS == "windows" {
+		t.Skip("CI preflight runs under bash on GitHub's Linux runner")
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				ID  string `yaml:"id"`
+				Run string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(readNormalizedFile(t, ".github/workflows/ci.yml")), &workflow); err != nil {
+		t.Fatalf("parse CI workflow: %v", err)
+	}
+	var script string
+	for _, step := range workflow.Jobs["preflight"].Steps {
+		if step.ID == "scope" {
+			script = step.Run
+		}
+	}
+	if script == "" {
+		t.Fatal("CI preflight scope script is missing")
+	}
+
 	for _, test := range []struct {
-		name string
-		want string
+		name       string
+		conclusion string
+		event      string
+		branch     string
+		currentRun bool
+		force      bool
+		failJob    string
+		release    bool
+		wantRun    bool
 	}{
-		{name: "successful prior run", want: `and .conclusion == "success"`},
-		{name: "exclude current run", want: `(.id | tostring) != $current_run_id`},
-		{name: "force and release bypass", want: `if [[ "$force" == true || -n "$release_branch" ]]; then`},
-		{name: "failure injection forces run", want: "if [[ \"$FAIL_JOB\" != none ]]; then\n            force=true"},
+		{name: "no prior run", wantRun: true},
+		{name: "successful scheduled run", conclusion: "success"},
+		{name: "successful manual run", conclusion: "success", event: "workflow_dispatch"},
+		{name: "failed run", conclusion: "failure", wantRun: true},
+		{name: "timed out run", conclusion: "timed_out", wantRun: true},
+		{name: "startup failure", conclusion: "startup_failure", wantRun: true},
+		{name: "cancelled run", conclusion: "cancelled", wantRun: true},
+		{name: "current run excluded", conclusion: "success", currentRun: true, wantRun: true},
+		{name: "other event excluded", conclusion: "success", event: "push", wantRun: true},
+		{name: "other branch excluded", conclusion: "success", branch: "release/v1.2", wantRun: true},
+		{name: "force dispatch", conclusion: "success", force: true, wantRun: true},
+		{name: "failure injection dispatch", conclusion: "success", failJob: "verify-fast", wantRun: true},
+		{name: "release dispatch", conclusion: "success", release: true, wantRun: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			if !strings.Contains(preflight, test.want) {
-				t.Fatalf("CI preflight missing %q", test.want)
+
+			event, branch, runID := "schedule", "develop", 100
+			if test.event != "" {
+				event = test.event
+			}
+			if test.branch != "" {
+				branch = test.branch
+			}
+			if test.currentRun {
+				runID = 200
+			}
+			runs := []map[string]any{}
+			if test.conclusion != "" {
+				runs = append(runs, map[string]any{
+					"id": runID, "head_branch": branch, "event": event, "conclusion": test.conclusion,
+				})
+			}
+			pages, err := json.Marshal([]map[string]any{{"workflow_runs": runs}})
+			if err != nil {
+				t.Fatalf("marshal run history: %v", err)
+			}
+			ref, releaseBranch := "refs/heads/develop", ""
+			if test.release {
+				releaseBranch = "release/v1.2"
+				ref = "refs/heads/" + releaseBranch
+			}
+			failJob := "none"
+			if test.failJob != "" {
+				failJob = test.failJob
+			}
+			outputPath := filepath.Join(t.TempDir(), "output")
+			cmd := exec.CommandContext(t.Context(), "bash", "--noprofile", "--norc", "-c", `gh() { printf '%s\n' "$TEST_CI_RUNS"; }
+`+script)
+			cmd.Env = append(os.Environ(),
+				"BASH_ENV=", "GH_TOKEN=fixture", "TEST_CI_RUNS="+string(pages),
+				"GITHUB_REPOSITORY=example-org/example-project", "GITHUB_RUN_ID=200",
+				"GITHUB_REF="+ref, "GITHUB_SHA=fixture-sha", "GITHUB_OUTPUT="+outputPath,
+				"FORCE="+strconv.FormatBool(test.force), "FAIL_JOB="+failJob,
+			)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("run preflight: %v\n%s", err, output)
+			}
+			output, err := os.ReadFile(outputPath)
+			if err != nil {
+				t.Fatalf("read preflight output: %v", err)
+			}
+			values := make(map[string]string)
+			for line := range strings.Lines(string(output)) {
+				key, value, _ := strings.Cut(strings.TrimSpace(line), "=")
+				values[key] = value
+			}
+			for key, want := range map[string]string{
+				"should_run":  strconv.FormatBool(test.wantRun),
+				"develop_sha": "fixture-sha", "release_branch": releaseBranch,
+			} {
+				if got := values[key]; got != want {
+					t.Errorf("preflight %s = %q, want %q", key, got, want)
+				}
 			}
 		})
 	}

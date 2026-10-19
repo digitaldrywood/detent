@@ -163,8 +163,9 @@ branch back into develop or land new features on it.
 ### Validate and tag
 
 The hourly scheduled workflow continues to validate pinned develop commits.
-Each develop SHA receives a full suite once across scheduled and manual runs;
-preflight skips completed non-cancelled runs regardless of conclusion. Set
+Preflight skips a develop SHA only after a completed successful scheduled or
+manual run. Failed, timed-out, startup-failed and cancelled runs do not suppress
+the next suite. Set
 `force: true` or select a non-`none` `fail_job` to rerun. Green develop evidence
 is published as `develop-full-ci`, helps select the next cut and does not
 publish a stable release.

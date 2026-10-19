@@ -25,9 +25,9 @@ coordinate with its running service, install the signed release using the
 
 ## Validation and promotion
 
-GitHub Actions validates pinned `develop` commits hourly. Each new SHA receives
-the full suite once across scheduled and manual dispatch runs; preflight skips
-completed non-cancelled runs regardless of conclusion. A manual dispatch with
+GitHub Actions validates pinned `develop` commits hourly. Preflight skips a SHA
+only after a completed successful scheduled or manual dispatch run. Failed,
+timed-out, startup-failed and cancelled runs do not suppress the next suite. A manual dispatch with
 `force: true`, or a non-`none` `fail_job`, runs it again. The workflow does not run
 on pull requests. Green develop validation posts `develop-full-ci` evidence for
 selecting a release snapshot; it does not publish a stable tag or deploy staging.
