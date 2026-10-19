@@ -48,7 +48,7 @@ func (s *Service) readableOrganizationRoot(c echo.Context, id string) error {
 	if status, _, err := s.browserClaims(c, organization, &claims); err != nil {
 		return s.readableSignIn(c, organization, status)
 	}
-	target := s.organizationHome(organization)
+	target := s.organizationRoleHome(organization, claims.Role)
 	if query := c.Request().URL.RawQuery; query != "" {
 		target += "?" + query
 	}

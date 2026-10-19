@@ -1,4 +1,5 @@
 import { dependencyLabel } from "./lib/dependencies.ts";
+import { ReporterIssue } from "../reporter/ReporterIssue.tsx";
 import { DependencyPanels } from "./components/DependencyDetails.tsx";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
@@ -230,6 +231,11 @@ interface ConversationBridge {
 }
 
 export function IssuePage(): React.ReactElement {
+  const account = useAccountBootstrap();
+  return account?.actor.role === "reporter" ? <ReporterIssue /> : <FullIssuePage />;
+}
+
+function FullIssuePage(): React.ReactElement {
   const params = useParams({ strict: false }) as { workItemId?: string };
  const context = useRouteContext({ strict: false }) as { resolvedWorkItemId?: string };
  const workItemId = context.resolvedWorkItemId ?? params.workItemId ?? "";

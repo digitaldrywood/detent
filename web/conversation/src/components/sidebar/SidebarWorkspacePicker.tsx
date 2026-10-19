@@ -12,6 +12,7 @@ import {
   useSharedOrganizations,
 } from "../../app/entry/shared";
 import type { AccountBootstrap } from "../../contracts/account";
+import { signInPath } from "../../runtime/basePath";
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
@@ -21,6 +22,7 @@ import { SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 type Workspace = {
   readonly id: string;
   readonly name: string;
+  readonly role?: string;
 };
 
 function WorkspaceBadge({ name }: { name: string }) {
@@ -47,6 +49,7 @@ export function WorkspacePicker({
   loading = false,
   error = null,
   signInHref,
+  onSignOut,
 }: {
   readonly current: Workspace;
   readonly organizations: readonly Workspace[];
@@ -57,6 +60,7 @@ export function WorkspacePicker({
   readonly loading?: boolean;
   readonly error?: string | null;
   readonly signInHref?: string;
+  readonly onSignOut?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -64,7 +68,7 @@ export function WorkspacePicker({
   const trigger = useRef<HTMLButtonElement>(null);
   const popup = useRef<HTMLDivElement>(null);
   const workspaces = organizations.some((workspace) => workspace.id === current.id)
-    ? organizations
+    ? organizations.map((workspace) => workspace.id === current.id ? { ...workspace, role: workspace.role ?? current.role } : workspace)
     : [current, ...organizations];
   const filtered = workspaces.filter((workspace) =>
     workspace.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
@@ -95,6 +99,7 @@ export function WorkspacePicker({
             >
               <WorkspaceBadge name={current.name} />
               <ChevronUpIcon className="size-3" />
+              {current.role === "reporter" ? <span className="truncate text-xs text-muted-foreground">{current.name}</span> : null}
             </SidebarMenuButton>
           }
         />
@@ -134,6 +139,8 @@ export function WorkspacePicker({
           {filtered.map((workspace) => (
             <MenuItem
               key={workspace.id}
+              aria-label={workspace.name}
+              aria-description={workspace.role}
               aria-current={workspace.id === current.id ? true : undefined}
               title={workspace.name}
               className={cn(
@@ -148,6 +155,7 @@ export function WorkspacePicker({
             >
               <WorkspaceBadge name={workspace.name} />
               <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
+              {workspace.role ? <span className="text-xs capitalize text-muted-foreground">{workspace.role}</span> : null}
               {workspace.id === current.id ? <CheckIcon aria-hidden className="size-3.5" /> : null}
             </MenuItem>
           ))}
@@ -182,6 +190,7 @@ export function WorkspacePicker({
               Platform console
             </MenuItem>
           ) : null}
+          {onSignOut ? <><MenuSeparator /><MenuItem disabled={pending} onClick={onSignOut}>Sign out</MenuItem></> : null}
         </MenuPopup>
       </Menu>
     </SidebarMenuItem>
@@ -208,15 +217,20 @@ function AccountWorkspacePicker({ account }: { readonly account: AccountBootstra
     globalThis.location.assign(result.next);
     return result;
   });
+  const signOut = useMutation(async () => {
+    await api.logout();
+    globalThis.location.assign(signInPath());
+  });
 
   return (
     <WorkspacePicker
-      current={account.organization}
+      current={{ ...account.organization, role: account.actor.role }}
       organizations={isShared ? shared.value ?? [] : account.organizations}
       onSelect={(id) => void switchTo.call(id)}
-      pending={switchTo.pending}
+      pending={switchTo.pending || signOut.pending}
       loading={isShared && shared.loading}
-      error={listingError ?? switchTo.error?.message ?? null}
+      error={listingError ?? switchTo.error?.message ?? signOut.error?.message ?? null}
+      onSignOut={account.actor.role === "reporter" ? () => void signOut.call() : undefined}
       signInHref={sessionEnded ? SIGN_IN_ORGANIZATIONS : undefined}
       addHref={isShared ? ENTRY_CREATE_ORGANIZATION : "/organization"}
       platformHref={account.actor.platform_role ? PLATFORM : undefined}

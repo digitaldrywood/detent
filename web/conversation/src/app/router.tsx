@@ -25,6 +25,7 @@ import { accountRoutes } from "./routes.account.tsx";
 import { SupportRoute } from "./account/Support.tsx";
 import { routerBasePath, withoutBasePath } from "../runtime/basePath.ts";
 import { plainSearchOptions } from "./lib/searchParams.ts";
+import { lastAccountBootstrap } from "../runtime/bootstrap.ts";
 
 // --- Design system (dev builds only) ----------------------------------------
 //
@@ -75,6 +76,18 @@ const ReadableProjectBoard = lazyRouteComponent(() => import("./work/WorkRoutes.
 const ChangesPage = lazyRouteComponent(() => import("./work/ChangesPage.tsx"), "ChangesPage");
 const IssuePage = lazyRouteComponent(() => import("./work/IssuePage.tsx"), "IssuePage");
 const ChangeRequestPage = lazyRouteComponent(() => import("./work/ChangeRequestPage.tsx"), "ChangeRequestPage");
+const MyIssues = lazyRouteComponent(() => import("./reporter/MyIssues.tsx"), "MyIssues");
+const ConnectAI = lazyRouteComponent(() => import("./reporter/ConnectAI.tsx"), "ConnectAI");
+const ReporterLanding = lazyRouteComponent(() => import("./reporter/ReporterShell.tsx"), "ReporterLanding");
+const reporterRoutes = [
+  createRoute({ getParentRoute: () => rootRoute, path: "/my-issues", component: MyIssues, beforeLoad: requireReporter }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/connect-ai", component: ConnectAI, beforeLoad: requireReporter }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/reporter", component: ReporterLanding, beforeLoad: requireReporter }),
+];
+
+function requireReporter() {
+  if (lastAccountBootstrap()?.actor.role !== "reporter") throw redirect({ to: "/work", replace: true });
+}
 
 // `/` is not a screen of its own: Work is the application's home (§12, "the
 // hub redirects a successful sign-in to /work"), so the root sends the reader
@@ -83,7 +96,7 @@ const homeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   beforeLoad: () => {
-    throw redirect({ to: "/work" });
+    throw redirect({ to: lastAccountBootstrap()?.actor.role === "reporter" ? "/reporter" : "/work" });
   },
 });
 
@@ -200,6 +213,7 @@ const readableIssueRoute = createRoute({ getParentRoute: () => rootRoute, path: 
 const readableChangeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/$projectSlug/issues/$number/changes/$changeId", component: ChangeRequestPage, beforeLoad: ({ params }) => resolveReadable(params.projectSlug, params.number) });
 
 const routeTree = rootRoute.addChildren([
+  ...reporterRoutes,
   readableProjectRoute, readableIssueRoute, readableChangeRoute,
   homeRoute,
   newChatRoute,
