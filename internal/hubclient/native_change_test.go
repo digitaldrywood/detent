@@ -2399,6 +2399,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "Rework scoped read failure releases claim before dispatch", rework: true, failDetail: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if !test.enrolled && !test.reconnect && !test.continueMessage {
+				t.Parallel()
+			}
 			genuinePublication := test.publication != "" && test.validator != "" && (test.publicationFault == "" || test.publicationFault == "policy")
 			if test.reconnect || test.continueMessage {
 				useFastConversationTimings(t)
