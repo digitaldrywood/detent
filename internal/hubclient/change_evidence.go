@@ -52,10 +52,17 @@ func (e *nativeExecution) retainChangeValidation(ctx context.Context, input *tra
 		return fmt.Errorf("reserve Change validation: %w", err)
 	}
 	if upload.State != "complete" {
+		partBytes := 64 << 10
+		if upload.PartLimit > 0 {
+			partBytes = int(min(int64(partBytes), upload.PartLimit))
+		}
 		for sequence, offset := 0, 0; offset < len(raw); sequence++ {
-			end := min(offset+(64<<10), len(raw))
-			for end < len(raw) && !utf8.RuneStart(raw[end]) {
+			end := min(offset+partBytes, len(raw))
+			for end < len(raw) && end > offset && !utf8.RuneStart(raw[end]) {
 				end--
+			}
+			if end == offset {
+				return fmt.Errorf("store Change validation: %w", artifact.ErrQuota)
 			}
 			part := artifact.Part{Sequence: sequence, MediaType: "text/plain; charset=utf-8", Data: raw[offset:end], SHA256: artifact.Digest(raw[offset:end])}
 			if _, err := a.client.Append(ctx, upload.ArtifactID, part); err != nil {

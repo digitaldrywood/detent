@@ -1,12 +1,17 @@
 package hubclient
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -52,4 +57,57 @@ func TestRetainChangeValidationWithoutArtifactClient(t *testing.T) {
 			t.Fatalf("oversized receipt without artifact service: error=%v replaced=%t", err, input.Validation != &validation)
 		}
 	})
+}
+
+func TestRetainChangeValidationHonorsUploadPartLimit(t *testing.T) {
+	const partLimit = 16 << 10
+	head := strings.Repeat("a", 40)
+	validation := gate.CommandResult{Command: "make check-land", HeadSHA: head, TreeSHA: strings.Repeat("d", 40), DurationNS: 1, Evidence: &gate.CommandEvidence{}, Output: "ok", Pipeline: &gate.PipelineEvidence{}}
+	for i := range 1024 {
+		timing := gate.PipelineTiming{Stage: "finalization", Command: "go test -short ./internal/世界", HeadSHA: head, TreeSHA: validation.TreeSHA, StartedAt: time.Unix(1, int64(i)).UTC(), FinishedAt: time.Unix(2, int64(i)).UTC(), ExitCode: new(0), Execution: "executed"}
+		timing.ReceiptID = timing.ID()
+		validation.Pipeline.Timings = append(validation.Pipeline.Timings, timing)
+	}
+	var parts []artifact.Part
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/uploads":
+			_ = json.NewEncoder(w).Encode(artifact.Upload{ArtifactID: "artifact_" + strings.Repeat("a", 32), State: "uploading", PartLimit: partLimit})
+		case strings.HasSuffix(r.URL.Path, "/parts"):
+			var p artifact.Part
+			if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+				t.Error(err)
+			}
+			if len(p.Data) > partLimit {
+				w.WriteHeader(http.StatusRequestEntityTooLarge)
+				_, _ = w.Write([]byte(`{"code":"quota_exceeded"}`))
+				return
+			}
+			parts = append(parts, p)
+			_ = json.NewEncoder(w).Encode(artifact.Object{})
+		default:
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"code":"storage_unreachable"}`))
+		}
+	}))
+	defer server.Close()
+	e := &nativeExecution{artifacts: nativeArtifacts{client: &artifact.Client{Origin: server.URL, Token: func(context.Context) (string, error) { return "worker", nil }}, reservation: artifact.Reservation{Bytes: 4 << 20}}}
+	input := tracker.ChangeVersionInput{Validation: &validation}
+	if err := e.retainChangeValidation(t.Context(), &input); !errors.Is(err, artifact.ErrStorage) {
+		t.Fatalf("finalize outage = %v", err)
+	}
+	full, err := json.Marshal(validation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []byte
+	for index, p := range parts {
+		if p.Sequence != index || len(p.Data) == 0 || len(p.Data) > partLimit || !utf8.Valid(p.Data) {
+			t.Fatalf("part %d: sequence=%d bytes=%d", index, p.Sequence, len(p.Data))
+		}
+		got = append(got, p.Data...)
+	}
+	if len(parts) < 2 || !bytes.Equal(got, full) {
+		t.Fatalf("parts=%d lost receipt bytes", len(parts))
+	}
 }
