@@ -373,16 +373,31 @@ func (s *Service) admit(ctx context.Context, id string) error {
 	return nil
 }
 
+type signupAllowlist struct {
+	emails  []string
+	domains []string
+}
+
+func (s *Service) currentSignupAllowlist() signupAllowlist {
+	if allowlist := s.allowlist.Load(); allowlist != nil {
+		return *allowlist
+	}
+	if allocation := s.config.Allocation; allocation != nil {
+		return signupAllowlist{emails: allocation.AllowedEmails, domains: allocation.AllowedDomains}
+	}
+	return signupAllowlist{}
+}
+
 func (s *Service) signupAllowed(email string) bool {
-	allocation := s.config.Allocation
-	if len(allocation.AllowedEmails) == 0 && len(allocation.AllowedDomains) == 0 {
+	allowlist := s.currentSignupAllowlist()
+	if len(allowlist.emails) == 0 && len(allowlist.domains) == 0 {
 		return true
 	}
-	if listed(allocation.AllowedEmails, email) {
+	if listed(allowlist.emails, email) {
 		return true
 	}
 	_, domain, ok := strings.Cut(strings.ToLower(email), "@")
-	return ok && listed(allocation.AllowedDomains, domain)
+	return ok && listed(allowlist.domains, domain)
 }
 
 func (s *Service) newOrganizationPage(c echo.Context) error {

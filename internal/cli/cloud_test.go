@@ -593,6 +593,16 @@ func TestCloudReloadValidatesFileAndPreservesLaunchIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	write(strings.Replace(body, "allocation:\n", "allocation:\n  allowed_emails: [member@example.test]\n  allowed_domains: [example.org]\n", 1))
+	allowlisted, err := config.Reload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(config.RestartSettings, allowlisted.RestartSettings) ||
+		!reflect.DeepEqual(allowlisted.Allocation.AllowedEmails, []string{"member@example.test"}) ||
+		!reflect.DeepEqual(allowlisted.Allocation.AllowedDomains, []string{"example.org"}) {
+		t.Fatal("allowlist reload lost values or changed restart-only settings")
+	}
 	for _, invalid := range []string{body + "unknown_key: true\n", body + "---\npublic_url: https://other.example.test\n", strings.Replace(body, "connected_seconds: 90", "connected_seconds: 0", 1), strings.Replace(body, "client_id: client_example", "client_id: ''", 1)} {
 		write(invalid)
 		if _, err := config.Reload(); err == nil {

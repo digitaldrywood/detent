@@ -189,14 +189,15 @@ func (s *Service) platformAllowlistJSON(c echo.Context) error {
 		"self_service": s.config.Allocation != nil, "allowed_emails": []string{}, "allowed_domains": []string{},
 		"source": map[string]any{"file": s.config.ConfigPath, "keys": []string{"allocation.allowed_emails", "allocation.allowed_domains"}},
 	}
-	if allocation := s.config.Allocation; allocation != nil {
-		if allocation.AllowedEmails != nil {
-			result["allowed_emails"] = allocation.AllowedEmails
+	if s.config.Allocation != nil {
+		allowlist := s.currentSignupAllowlist()
+		if allowlist.emails != nil {
+			result["allowed_emails"] = allowlist.emails
 		}
-		if allocation.AllowedDomains != nil {
-			result["allowed_domains"] = allocation.AllowedDomains
+		if allowlist.domains != nil {
+			result["allowed_domains"] = allowlist.domains
 		}
-		result["open"] = len(allocation.AllowedEmails) == 0 && len(allocation.AllowedDomains) == 0
+		result["open"] = len(allowlist.emails) == 0 && len(allowlist.domains) == 0
 	}
 	return c.JSON(http.StatusOK, result)
 }
