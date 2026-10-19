@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -44,9 +45,23 @@ func (d *database) backup(ctx context.Context, destination string) (resultErr er
 		resultErr = errors.Join(resultErr, removeErr)
 	}()
 
-	connection, err := d.db.Conn(ctx)
+	connection, err := d.reader.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire hub backup connection: %w", err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, connection.Close()) }()
+	transaction, err := connection.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("start hub backup read transaction: %w", err)
+	}
+	defer func() {
+		if err := transaction.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
+	var applicationID int64
+	if err := transaction.QueryRowContext(ctx, "PRAGMA application_id").Scan(&applicationID); err != nil {
+		return fmt.Errorf("establish hub backup snapshot: %w", err)
 	}
 	backupErr := connection.Raw(func(driverConnection any) error {
 		backuper, ok := driverConnection.(onlineBackuper)
@@ -58,7 +73,7 @@ func (d *database) backup(ctx context.Context, destination string) (resultErr er
 			return fmt.Errorf("start hub online backup: %w", err)
 		}
 		var stepErr error
-		for more := true; more; {
+		for more := true; more && stepErr == nil; {
 			if err := ctx.Err(); err != nil {
 				stepErr = err
 				break
@@ -67,9 +82,8 @@ func (d *database) backup(ctx context.Context, destination string) (resultErr er
 		}
 		return errors.Join(stepErr, backup.Finish())
 	})
-	closeErr := connection.Close()
-	if err := errors.Join(backupErr, closeErr); err != nil {
-		return fmt.Errorf("create hub online backup: %w", err)
+	if backupErr != nil {
+		return fmt.Errorf("create hub online backup: %w", backupErr)
 	}
 	complete = true
 	return nil
