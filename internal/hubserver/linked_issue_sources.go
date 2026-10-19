@@ -95,15 +95,7 @@ AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope
 	if verified := scope.scheduledRepair; verified != nil && verified.importURL == canonical && verified.importReason == "" && !titleSupplied && !bodySupplied && request.Priority == nil {
 		candidate := tracker.NativeIssue{Body: verified.importBody, IssueContract: &issuecontract.State{}}
 		applyScheduledRepairContract(ctx, tx, scope, &candidate, now)
-		project, err := readNativeProject(ctx, tx, scope)
-		if err != nil {
-			return tracker.NativeIssue{}, err
-		}
-		eligible := false
-		for _, state := range project.States {
-			eligible = eligible || state.Name == "Todo" && state.Dispatchable && !state.Terminal && !state.OperatorOnly
-		}
-		if len(candidate.IssueContract.ConfirmedSections) != 0 && eligible {
+		if len(candidate.IssueContract.ConfirmedSections) != 0 {
 			matches, err := resolveNativeDuplicatesTx(ctx, tx, scope, tracker.CreateIssue{Title: request.Title, Body: verified.importBody}, now, true)
 			if err != nil {
 				return tracker.NativeIssue{}, err

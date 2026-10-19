@@ -204,7 +204,7 @@ func TestHealthScheduledReporterHistory(t *testing.T) {
 			if step.run != "" {
 				runURL := "https://github.com/example-org/example-project/actions/runs/" + step.run + "/attempts/1"
 				evidence := gate.ScheduledEvidence{Schema: 1, Repository: "example-org/example-project", OccurrenceKey: strings.Repeat("a", 64), RunID: step.run, RunAttempt: "1", JobID: "1", HeadSHA: strings.Repeat("a", 40), Conclusion: "failure", RunURL: runURL}
-				body := issueorigin.Stamp("Recorded failure", issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: runURL, Fingerprint: "scheduled-job"}) + evidence.Stamp()
+				body := issueorigin.Stamp("Recorded failure", issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: strings.TrimSuffix(runURL, "/attempts/1"), Fingerprint: "scheduled-job"}) + evidence.Stamp()
 				if step.green {
 					body = "Scheduled full validation passed for development commit `" + strings.Repeat("a", 40) + "`.\n\nRun: " + runURL + "\n\nThis is scheduled validation evidence only."
 				}

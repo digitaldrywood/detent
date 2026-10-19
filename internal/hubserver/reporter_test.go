@@ -729,23 +729,38 @@ func TestNativeProjectCreationWorkflowBounds(t *testing.T) {
 }
 
 func TestReporterWorkflowTemplates(t *testing.T) {
+	const repairBody = "## Acceptance criteria\nRepair the verified failure.\n\n## Must not break\nPreserve authority.\n\n## How we know it worked\nRun make check-land.\n\n## Invariants touched\nPreserve INV-3.\n\n## Safety regression\nPreserve regression tables."
+	const repairDefinition = "## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n- Invariants touched\n- Safety regression\n## Scheduled CI repair contract\nNew verified GitHub Actions CI repair reports from `.github/workflows/verify.yaml` on `release/v2.0` enter Todo with Urgent priority.\n"
 	for _, test := range []struct {
 		name, prompt, body string
 		want               config.ReporterContracts
 		required           []string
+		repair             bool
+		shortContract      bool
 	}{
-		{"default", "", reporterBugSections, config.ReporterContracts{"bug": {"Steps to reproduce", "Expected", "Actual", "Where", "Environment"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}, nil},
-		{"override", "## Issue Contract\n- Finish\n- Preserve\n- Prove\n\n## Reporter Contract\n### bug\n- Reproduction\n- Outcome\n### change_request\n- Motivation", "## Reproduction\nOpen settings.\n## Outcome\nSaving fails.", config.ReporterContracts{"bug": {"Reproduction", "Outcome"}, "change_request": {"Motivation"}}, []string{"Finish", "Preserve", "Prove"}},
-		{"engineering overlap", "## Reporter Contract\n### bug\n- Acceptance criteria\n- Must not break\n- How we know it worked", issueContractTestSections, config.ReporterContracts{"bug": {"Acceptance criteria", "Must not break", "How we know it worked"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}, nil},
+		{"default", "", reporterBugSections, config.ReporterContracts{"bug": {"Steps to reproduce", "Expected", "Actual", "Where", "Environment"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}, nil, false, false},
+		{"override", "## Issue Contract\n- Finish\n- Preserve\n- Prove\n\n## Reporter Contract\n### bug\n- Reproduction\n- Outcome\n### change_request\n- Motivation", "## Reproduction\nOpen settings.\n## Outcome\nSaving fails.", config.ReporterContracts{"bug": {"Reproduction", "Outcome"}, "change_request": {"Motivation"}}, []string{"Finish", "Preserve", "Prove"}, false, false},
+		{"engineering overlap", "## Reporter Contract\n### bug\n- Acceptance criteria\n- Must not break\n- How we know it worked", issueContractTestSections, config.ReporterContracts{"bug": {"Acceptance criteria", "Must not break", "How we know it worked"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}, nil, false, false},
+		{"scheduled repair discovery", repairDefinition + strings.ReplaceAll(repairBody, "## ", "### "), reporterBugSections, config.ReporterContracts{"bug": {"Steps to reproduce", "Expected", "Actual", "Where", "Environment"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}, []string{"Acceptance criteria", "Must not break", "How we know it worked", "Invariants touched", "Safety regression"}, true, false},
+		{"scheduled three-section release family", repairDefinition + strings.ReplaceAll(repairBody, "## ", "### "), reporterBugSections, config.ReporterContracts{"bug": {"Steps to reproduce", "Expected", "Actual", "Where", "Environment"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}, nil, true, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			prompt := test.prompt
+			expectedRepairBody, branch := repairBody, "release/v2.0"
+			if test.shortContract {
+				expectedRepairBody, _, _ = strings.Cut(repairBody, "\n\n## Invariants touched")
+				prompt = strings.Replace(repairDefinition, "- Invariants touched\n- Safety regression\n", "", 1) + strings.ReplaceAll(expectedRepairBody, "## ", "### ")
+				prompt = strings.Replace(prompt, "`release/v2.0`", "`release/v*`", 1)
+				prompt = strings.Replace(prompt, "Urgent priority", "High priority", 1)
+				branch = "release/v*"
+			}
 			required := test.required
 			if required == nil {
 				required = []string{"Acceptance criteria", "Must not break", "How we know it worked"}
 			}
 			f, ctx := newHostedKeyMCPFixture(t, "dedicated", "reporter")
 			definition, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{
-				Workflow:  []byte(test.prompt),
+				Workflow:  []byte(prompt),
 				Config:    []byte("schema: 1\ntracker:\n  kind: hub_native\n  lanes:\n    - {name: Todo, role: active}\n    - {name: In Progress, role: active}\n    - {name: Blocked, role: holding}\n    - {name: Done, role: terminal}\n"),
 				HasConfig: true, ConfigPath: "detent.yaml",
 			})
@@ -756,6 +771,11 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 			descriptor, err := config.ResolvePolicy(definition)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.repair {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository='example-org/example-project', github_repository_enabled=0 WHERE id=?", f.project); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if _, err := f.service.database.approvePolicy(t.Context(), "org_security/"+string(f.project), "test-owner", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}); err != nil {
 				t.Fatal(err)
@@ -772,9 +792,7 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 			var read struct {
 				Data struct {
 					Templates     config.ReporterContracts `json:"reporter_templates"`
-					IssueContract struct {
-						RequiredSections []string `json:"required_sections"`
-					} `json:"issue_contract"`
+					IssueContract nativeWorkIssueContract  `json:"issue_contract"`
 				} `json:"data"`
 			}
 			if err := json.Unmarshal(result.Content, &read); err != nil || !reflect.DeepEqual(read.Data.Templates, test.want) {
@@ -782,6 +800,18 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 			}
 			if !reflect.DeepEqual(read.Data.IssueContract.RequiredSections, required) {
 				t.Fatalf("work_config required sections=%v, want %v", read.Data.IssueContract.RequiredSections, required)
+			}
+			if test.repair {
+				priority := 0
+				if test.shortContract {
+					priority = 1
+				}
+				want := &nativeWorkScheduledRepair{PolicyID: descriptor.ID, Repository: "example-org/example-project", Workflow: ".github/workflows/verify.yaml", Branches: []string{branch}, Body: expectedRepairBody, EvidenceSchema: 1, Priority: priority}
+				if !reflect.DeepEqual(read.Data.IssueContract.ScheduledRepair, want) {
+					t.Fatalf("scheduled repair=%+v want=%+v", read.Data.IssueContract.ScheduledRepair, want)
+				}
+			} else if read.Data.IssueContract.ScheduledRepair != nil {
+				t.Fatalf("unapproved scheduled repair=%+v", read.Data.IssueContract.ScheduledRepair)
 			}
 			response := f.request(t, f.user, http.MethodGet, f.base, nil)
 			requireNativeStatus(t, response, http.StatusOK)

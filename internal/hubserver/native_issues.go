@@ -508,13 +508,17 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 			return tracker.NativeIssue{}, err
 		}
 	}
-	var workflowID int64
-	if err := tx.QueryRowContext(ctx, "SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = ?", scope.project, request.State).Scan(&workflowID); err != nil {
-		return tracker.NativeIssue{}, nativeInvalid("Workflow state does not exist")
-	}
 	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Revision: 1, Profile: "native"},
 		Type: request.Type, ReportContext: request.ReportContext, Title: request.Title, Body: request.Body, State: request.State, Priority: request.Priority, Labels: request.Labels, Assignees: request.Assignees,
 		Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, Dependencies: []tracker.NativeWorkItemID{}}
+	issue.IssueContract = &issuecontract.State{Exempt: workspaceLabelAllowed(ctx)}
+	if (machineIntake || scope.scheduledRepair != nil && scope.scheduledRepair.importURL != "") && issue.Provenance == nil {
+		applyScheduledRepairContract(ctx, tx, scope, &issue, now)
+	}
+	var workflowID int64
+	if err := tx.QueryRowContext(ctx, "SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = ?", scope.project, issue.State).Scan(&workflowID); err != nil {
+		return tracker.NativeIssue{}, nativeInvalid("Workflow state does not exist")
+	}
 	issue.Blockers = []tracker.NativeDependency{}
 	issue.IgnoreDependencies = !project.RequireDependencies
 	var importedURL string
@@ -566,10 +570,6 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 	author := issue.Actor.PrincipalID
 	if issue.Provenance != nil {
 		author = issue.Provenance.AuthorID
-	}
-	issue.IssueContract = &issuecontract.State{Exempt: workspaceLabelAllowed(ctx)}
-	if (machineIntake || scope.scheduledRepair != nil && scope.scheduledRepair.importURL != "") && issue.Provenance == nil {
-		applyScheduledRepairContract(ctx, tx, scope, &issue, now)
 	}
 	_, machineOrigin := issueorigin.Parse(issue.Body)
 	if scope.credential.HostedRole != "reporter" && issue.Actor.Kind == "human" && !machineOrigin && !machineIntake && issue.Provenance == nil {
