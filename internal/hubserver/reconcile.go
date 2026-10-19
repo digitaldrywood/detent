@@ -78,6 +78,9 @@ type IssueSource struct {
 }
 
 type PullRequestSource struct {
+	MergeSHA   string
+	MergedAt   time.Time
+	MergedBy   string
 	NodeID     string
 	DatabaseID *int64
 	Number     int
