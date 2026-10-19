@@ -370,8 +370,7 @@ type Orchestrator struct {
 	capacityClearMu         sync.Mutex
 	dispatchStarts          int
 	dispatchStartsDone      chan struct{}
-	dispatchDiscoveryCancel context.CancelFunc
-	dispatchClosed          atomic.Bool
+	dispatchDone            chan struct{}
 	localIntakeDisabled     atomic.Bool
 	projectID               string
 	dispatchGateSampleMu    sync.Mutex
@@ -1468,12 +1467,13 @@ func (o *Orchestrator) BeginDrain() {
 	}
 
 	o.dispatchLifecycleMu.Lock()
-	if o.dispatchClosed.Swap(true) {
+	done := o.dispatchDoneLocked()
+	select {
+	case <-done:
 		o.dispatchLifecycleMu.Unlock()
 		return
-	}
-	if o.dispatchDiscoveryCancel != nil {
-		o.dispatchDiscoveryCancel()
+	default:
+		close(done)
 	}
 	o.dispatchLifecycleMu.Unlock()
 	if o.globalDispatchGate != nil {
@@ -1481,20 +1481,31 @@ func (o *Orchestrator) BeginDrain() {
 	}
 }
 
+func (o *Orchestrator) dispatchDoneLocked() chan struct{} {
+	if o.dispatchDone == nil {
+		o.dispatchDone = make(chan struct{})
+	}
+	return o.dispatchDone
+}
+
 func (o *Orchestrator) beginDispatchDiscovery(ctx context.Context) (context.Context, context.CancelFunc) {
-	discoveryCtx, cancel := context.WithCancel(ctx)
 	o.dispatchLifecycleMu.Lock()
-	if o.dispatchQuiesced() {
-		cancel()
-	}
-	o.dispatchDiscoveryCancel = cancel
+	done := o.dispatchDoneLocked()
 	o.dispatchLifecycleMu.Unlock()
-	return discoveryCtx, func() {
+	discoveryCtx, cancel := context.WithCancel(ctx)
+	select {
+	case <-done:
 		cancel()
-		o.dispatchLifecycleMu.Lock()
-		o.dispatchDiscoveryCancel = nil
-		o.dispatchLifecycleMu.Unlock()
+	default:
+		go func() {
+			select {
+			case <-done:
+				cancel()
+			case <-discoveryCtx.Done():
+			}
+		}()
 	}
+	return discoveryCtx, cancel
 }
 
 func (o *Orchestrator) WaitForDispatchQuiesced(ctx context.Context) error {
@@ -1523,8 +1534,10 @@ func (o *Orchestrator) WaitForDispatchQuiesced(ctx context.Context) error {
 func (o *Orchestrator) beginDispatchStart() bool {
 	o.dispatchLifecycleMu.Lock()
 	defer o.dispatchLifecycleMu.Unlock()
-	if o.dispatchQuiesced() {
+	select {
+	case <-o.dispatchDone:
 		return false
+	default:
 	}
 	if o.dispatchStarts == 0 {
 		o.dispatchStartsDone = make(chan struct{})
@@ -1544,7 +1557,17 @@ func (o *Orchestrator) finishDispatchStart() {
 }
 
 func (o *Orchestrator) dispatchQuiesced() bool {
-	return o == nil || o.dispatchClosed.Load()
+	if o == nil {
+		return true
+	}
+	o.dispatchLifecycleMu.Lock()
+	defer o.dispatchLifecycleMu.Unlock()
+	select {
+	case <-o.dispatchDone:
+		return true
+	default:
+		return false
+	}
 }
 
 func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ticker *time.Ticker) {

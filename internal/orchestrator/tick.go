@@ -511,9 +511,11 @@ func (o *Orchestrator) fetchTickIssues(
 	if scanner, ok := o.connector.(connector.RefreshScanSerializer); ok {
 		timing.step("wait_for_scan")
 		finishWait := o.tickWatchdog.excludeScanWait()
-		release, err := scanner.BeginRefreshScan(ctx)
+		scanCtx, finishScan := o.beginDispatchDiscovery(ctx)
+		defer finishScan()
+		release, err := scanner.BeginRefreshScan(scanCtx)
 		wait := finishWait()
-		if ctx.Err() != nil {
+		if scanCtx.Err() != nil {
 			if release != nil {
 				release()
 			}

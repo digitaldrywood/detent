@@ -804,6 +804,8 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 		{name: "pending status read", blockStates: true},
 		{name: "pending combined read", combined: true},
 		{name: "pending serialized scan", blockScan: true},
+		{name: "released scheduled serialized scan", blockScan: true, native: true, releaseRead: true},
+		{name: "pending scheduled serialized scan", blockScan: true, native: true},
 		{name: "released native preview", native: true, releaseRead: true},
 		{name: "pending native preview", native: true},
 		{name: "released native status read", native: true, blockStates: true, releaseRead: true},

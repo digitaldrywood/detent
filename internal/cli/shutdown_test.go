@@ -947,6 +947,7 @@ func TestRunWithShutdownPublishesDrainStatusDuringBlockedConnectorRefresh(t *tes
 		updateRestart bool
 		native        bool
 		blockStates   bool
+		blockScan     bool
 	}{
 		{name: "released read", releaseRead: true},
 		{name: "pending read"},
@@ -957,11 +958,14 @@ func TestRunWithShutdownPublishesDrainStatusDuringBlockedConnectorRefresh(t *tes
 		{name: "released native status read", native: true, blockStates: true, releaseRead: true},
 		{name: "pending native status read", native: true, blockStates: true},
 		{name: "update restart with pending native status read", native: true, blockStates: true, updateRestart: true},
+		{name: "released scheduled scan", native: true, blockScan: true, releaseRead: true},
+		{name: "pending scheduled scan", native: true, blockScan: true},
+		{name: "update restart with pending scheduled scan", native: true, blockScan: true, updateRestart: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			refreshStarted := make(chan struct{}, 1)
 			releaseRefresh := make(chan struct{})
-			backend := shutdownBlockingConnector{started: refreshStarted, release: releaseRefresh, blockStates: tc.blockStates}
+			backend := shutdownBlockingConnector{started: refreshStarted, release: releaseRefresh, blockStates: tc.blockStates, blockScan: tc.blockScan}
 			var project *projectpkg.Project
 			if tc.native {
 				cfg := workflowconfig.Default()
@@ -1532,6 +1536,7 @@ func (s shutdownBlockingScheduling) FetchCandidateIssues(ctx context.Context, re
 }
 
 type shutdownBlockingConnector struct {
+	blockScan   bool
 	blockStates bool
 	started     chan<- struct{}
 	release     <-chan struct{}
@@ -1539,6 +1544,15 @@ type shutdownBlockingConnector struct {
 
 func (c shutdownBlockingConnector) Name() string {
 	return "blocking"
+}
+
+func (c shutdownBlockingConnector) BeginRefreshScan(ctx context.Context) (func(), error) {
+	if c.blockScan {
+		if _, err := c.FetchCandidateIssues(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return func() {}, nil
 }
 
 func (c shutdownBlockingConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
