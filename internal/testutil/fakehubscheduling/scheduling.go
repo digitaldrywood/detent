@@ -44,7 +44,16 @@ func (s *Source) FetchCandidateIssues(ctx context.Context, request orchestrator.
 	if !ok {
 		return nil, nil
 	}
-	issues, err := conn.FetchCandidateIssues(ctx)
+	discoveryCtx := ctx
+	if request.BeginDiscovery != nil {
+		var finish context.CancelFunc
+		discoveryCtx, finish = request.BeginDiscovery(ctx)
+		defer finish()
+	}
+	issues, err := conn.FetchCandidateIssues(discoveryCtx)
+	if discoveryCtx.Err() != nil && ctx.Err() == nil {
+		return nil, nil
+	}
 	if err != nil || len(request.WorkflowStates) == 0 {
 		return issues, err
 	}
