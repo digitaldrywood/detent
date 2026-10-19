@@ -1751,6 +1751,12 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 	}{
 		{name: "hosted template lands", states: HostedProjectStates(), from: "Human Review", want: "Merging"},
 		{name: "provider candidate lands", states: HostedProjectStates(), from: "Human Review", want: "Merging", provider: true},
+		{name: "operator hold stays", states: []tracker.NativeState{
+			{Name: "Blocked", Transitions: []string{"In Progress", "Merging"}},
+			{Name: "In Progress", Dispatchable: true, Transitions: []string{"Blocked"}},
+			{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}},
+			{Name: "Done", Terminal: true},
+		}, from: "Blocked", want: "Blocked"},
 		{name: "no landing lane stays", states: []tracker.NativeState{
 			{Name: "Todo", Dispatchable: true, Transitions: []string{"Review"}},
 			{Name: "Review", Transitions: []string{"Done"}},
@@ -1983,6 +1989,8 @@ func TestRequestChangesReturnsToWork(t *testing.T) {
 		{name: "review returns to In Progress", from: "Human Review", want: "In Progress", wantComment: true},
 		{name: "landing lane returns to In Progress", from: "Merging", want: "In Progress", wantComment: true},
 		{name: "a working item stays where it is", from: "In Progress", want: "In Progress", wantComment: true},
+		{name: "an operator hold stays where it is", from: "Blocked", want: "Blocked", wantComment: true},
+		{name: "an intake item stays where it is", from: "Backlog", want: "Backlog", wantComment: true},
 		{name: "a finished item is untouched", from: "Done", want: "Done", wantComment: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -2005,7 +2013,7 @@ func TestRequestChangesReturnsToWork(t *testing.T) {
 				}
 			}
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Rework me", State: test.from})
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "work"}, Title: "Rework me", Body: issueContractTestSections, State: test.from})
 			requireNativeStatus(t, response, http.StatusOK)
 			var issue tracker.NativeIssue
 			decodeHubResponse(t, response, &issue)

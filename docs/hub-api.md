@@ -1111,6 +1111,19 @@ clients negotiate major 2 and schema 1. A native claim supplies `protocol_major:
 and `capabilities: ["native_issues", "scoped_collaboration"]`. Incompatible
 negotiation fails without switching tracker or scheduler.
 
+Runner issue detail and recovery reads with `claim` permission include optional
+`scheduling_eligible`. It combines the current lane, archive status and the Hub's
+authoritative dependency predicate, including dependencies outside the runner's
+read grants. Dependency details and public `dependency_ready` retain their normal
+visibility filtering. A false value refuses recovery or renewal; an absent value
+uses the existing project workflow and visible dependency projection for older
+Hubs. The field also advertises support for `cancel_attempt: true` on a lease
+release with reason `cancelled`. Recovery uses this only after rejecting a
+retained execution: the Hub releases the lease and records attempt cancellation
+in the same transaction. Ordinary releases leave attempt settlement with the
+execution controller so live worker cleanup and source publication retain their
+existing ordering.
+
 A person-filed native issue that enters Done gets `verification: {"state": "pending"}`, and its filer's issue email asks them to verify it. Worker, service-key, imported and origin-stamped issues never enter `pending`. The filer, or a member and above, answers with `POST /work-items/{id}/verification` or MCP `verify_fix`; a Reporter may answer only on issues they filed, which is a Reporter's only path out of Done. `verified` records `verified_by` and `verified_at` and keeps the issue in Done. `not_fixed` adds the required comment and moves the issue from Done to Todo with reason `user_requested`, so quality analytics count the reopen exactly as a manual one. Leaving Done clears the state. `GET /work-items` accepts `verification=pending` or `verified`. Verification never dispatches, blocks or lands work.
 
 Native issue `type` is required when a Reporter files and optional for other roles, including workers and machine reports. Untyped issues omit the field in reads. Members may edit the type. Reporters may edit only the title, body and attachment references on their own issues while in Triage; labels, priority, assignees, state and type remain refused. Once an issue leaves Triage, the response explains that it is already with the team and a comment can add details. Reporter edits do not confirm engineering issue-contract sections. Type edits appear in issue history, and labels remain independent of the type.
@@ -1144,7 +1157,7 @@ events require worker scope. Instance administrators can perform these operation
 | `POST /machines/register` | `id`, `hostname`, `display_name`, `capacity`, `version`; registration also refreshes heartbeat |
 | `POST /claims` | Approved `policy_id`, `machine_id`, unique `session_id`, `ttl_seconds`, protocol negotiation, optional `work_item_id`, workflow and author/assignee/label filters |
 | `POST /leases/{lease_id}/renew` | `fencing_token`, `ttl_seconds` |
-| `POST /leases/{lease_id}/release` | `fencing_token`, typed `reason` |
+| `POST /leases/{lease_id}/release` | `fencing_token`, typed `reason`; optional `cancel_attempt` for rejected recovery after the Hub advertises `scheduling_eligible` |
 | `POST /work-items/{id}/events` | Idempotent, versioned run fact with current lease and typed references |
 
 Dependency summaries include reader-scoped blocker and dependent numbers, titles,

@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -93,7 +94,19 @@ func nativeActorDisplayName(principal, organization string) string {
 }
 
 func readNativeIssue(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (tracker.NativeIssue, tracker.WorkItemID, error) {
-	return readNativeIssueProjection(ctx, query, scope, id, false)
+	issue, internalID, err := readNativeIssueProjection(ctx, query, scope, id, false)
+	if err != nil || scope.credential.Runner.RunnerID == "" || !slices.Contains(scope.credential.Runner.Operations, runnerauth.Claim) {
+		return issue, internalID, err
+	}
+	var eligible bool
+	err = query.QueryRowContext(ctx, `SELECT i.archived = 0 AND ws.dispatchable = 1 AND ws.terminal = 0 AND `+nativeCandidateDependenciesSatisfied+`
+FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
+JOIN workflow_states ws ON ws.id = i.workflow_state_id
+WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, internalID, scope.organization, scope.project).Scan(&eligible)
+	if err == nil {
+		issue.SchedulingEligible = &eligible
+	}
+	return issue, internalID, err
 }
 
 func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope nativeScope, id string, compact bool) (tracker.NativeIssue, tracker.WorkItemID, error) {

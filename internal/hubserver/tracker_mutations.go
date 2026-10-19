@@ -246,7 +246,11 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 	return leaseFromRecord(record), nil
 }
 
-func (d *database) Release(ctx context.Context, request tracker.ReleaseRequest) (resultErr error) {
+func (d *database) Release(ctx context.Context, request tracker.ReleaseRequest) error {
+	return d.releaseLease(ctx, request, false)
+}
+
+func (d *database) releaseLease(ctx context.Context, request tracker.ReleaseRequest, cancelAttempt bool, scopes ...nativeScope) (resultErr error) {
 	request, err := normalizeReleaseRequest(request)
 	if err != nil {
 		return err
@@ -278,6 +282,13 @@ func (d *database) Release(ctx context.Context, request tracker.ReleaseRequest) 
 
 	if err := releaseLeaseRow(ctx, tx, record, request.Reason, now); err != nil {
 		return err
+	}
+	if cancelAttempt {
+		for _, scope := range scopes {
+			if err := cancelNativeLeaseAttempt(ctx, tx, scope, record, now); err != nil {
+				return err
+			}
+		}
 	}
 	if err := heartbeatMachine(ctx, tx, record.session.Machine.ID, now); err != nil {
 		return err

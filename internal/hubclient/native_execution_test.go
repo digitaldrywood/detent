@@ -403,6 +403,8 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 		phase        string
 		age          time.Duration
 		terminal     bool
+		lane         string
+		dependency   bool
 		pending      bool
 		controller   bool
 		stopped      bool
@@ -427,13 +429,21 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 		{name: "terminal work item retains running worker cleanup", phase: "implementation", terminal: true, localWorker: true, wantRetained: true},
 		{name: "recovered completed worker", phase: "completed", recovered: true},
 		{name: "recovered stale worker", phase: "implementation", age: 90 * time.Second, recovered: true},
+		{name: "recovered operator hold", phase: "implementation", lane: "Blocked", recovered: true},
+		{name: "recovered custom hold", phase: "implementation", lane: "Waiting", recovered: true},
+		{name: "recovered unmet dependency", phase: "implementation", dependency: true, recovered: true},
+		{name: "recovered rework", phase: "implementation", lane: "Rework", recovered: true, wantRenewed: true},
+		{name: "live operator hold retains cleanup", phase: "implementation", lane: "Blocked", localWorker: true, wantRetained: true},
 		{name: "host finalization retains ownership", phase: "completed", age: 2 * time.Minute, pending: true, wantRenewed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
-				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+			h := newNativeChangeHubDependencies(t, "In Review", []tracker.NativeState{
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done", "Blocked", "Waiting", "Rework"}},
+				{Name: "Blocked", Transitions: []string{"In Progress"}},
+				{Name: "Waiting", Transitions: []string{"In Progress"}},
+				{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress"}},
 				{Name: "Done", Terminal: true},
-			}, true)
+			}, true, true)
 			issue := h.createInProgress(t, test.name)
 			h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
@@ -478,6 +488,28 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 			}
 			if test.terminal {
 				if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Done"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.lane != "" {
+				current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: test.lane, Reason: "user_requested"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.dependency {
+				blocker, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Prerequisite", State: "In Progress"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.admin.Dependency(t.Context(), current.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -586,6 +618,9 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 			var releaseCalls, finishedEvents int
 			transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 				var payload any = policy.Approval{Policy: descriptor}
+				if request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/work-items/") {
+					payload = tracker.NativeIssue{SchedulingEligible: new(true), DependencyReady: true}
+				}
 				if strings.HasSuffix(request.URL.Path, "/events") {
 					var event tracker.NativeRunEvent
 					if err := json.NewDecoder(request.Body).Decode(&event); err != nil {

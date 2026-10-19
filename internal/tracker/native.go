@@ -109,6 +109,7 @@ type NativeIssue struct {
 	ReporterStatus     string              `json:"reporter_status,omitempty"`
 	Archived           bool                `json:"archived"`
 	Terminal           bool                `json:"terminal"`
+	SchedulingEligible *bool               `json:"scheduling_eligible,omitempty"`
 	Priority           *int                `json:"priority,omitempty"`
 	Labels             []string            `json:"labels"`
 	Assignees          []string            `json:"assignees"`
@@ -574,6 +575,7 @@ type NativeCapacityPage struct {
 }
 
 type NativeLeaseMutation struct {
+	CancelAttempt   bool         `json:"cancel_attempt,omitempty"`
 	LandingCapacity int          `json:"landing_capacity,omitempty"`
 	FencingToken    FencingToken `json:"fencing_token,string"`
 	TTLSeconds      int64        `json:"ttl_seconds,omitempty"`

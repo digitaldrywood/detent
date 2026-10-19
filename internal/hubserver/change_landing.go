@@ -76,6 +76,13 @@ func promoteReviewedChange(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 	if err != nil {
 		return err
 	}
+	reviewSource, err := nativeChangeReviewSource(ctx, tx, scope, issue.State)
+	if err != nil {
+		return err
+	}
+	if issue.Archived || issue.Terminal || !issue.DependencyReady || !reviewSource {
+		return nil
+	}
 	project, err := readNativeProject(ctx, tx, scope)
 	if err != nil {
 		return err
@@ -142,6 +149,13 @@ func returnChangeForRework(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 	if err := appendReviewInstructions(ctx, tx, scope, issue, change, review, now); err != nil {
 		return err
 	}
+	reviewSource, err := nativeChangeReviewSource(ctx, tx, scope, issue.State)
+	if err != nil {
+		return err
+	}
+	if issue.Archived || !issue.DependencyReady || !reviewSource && !strings.EqualFold(issue.State, landingLane) {
+		return nil
+	}
 	project, err := readNativeProject(ctx, tx, scope)
 	if err != nil {
 		return err
@@ -161,6 +175,21 @@ func returnChangeForRework(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 	issue.State = target
 	_, err = persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: target, Reason: "user_requested"}, now)
 	return err
+}
+
+func nativeChangeReviewSource(ctx context.Context, q nativeQueryer, scope nativeScope, state string) (bool, error) {
+	cfg, err := nativeIssueContractConfig(ctx, q, scope)
+	if err != nil {
+		return false, err
+	}
+	if strings.EqualFold(state, cfg.Agent.AutoPromote.SourceState) {
+		return true, nil
+	}
+	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	if err != nil {
+		return false, err
+	}
+	return approval.Policy.Configuration == nil && approval.Policy.Authored == nil && (strings.EqualFold(state, "In Review") || strings.EqualFold(state, "Review")), nil
 }
 
 // appendReviewInstructions puts the review text on the primary issue as a
