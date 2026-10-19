@@ -55,7 +55,7 @@ func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization track
 			return snapshot, errHealthReadLimit
 		}
 		p.Candidates = len(candidates)
-		if p.DependencyGated, p.HeldBlockers, p.HoldSince, err = readHealthDependencyHolds(ctx, q, scope); err != nil {
+		if p.DependencyGated, p.HeldCount, p.HeldBlockers, p.HoldSince, err = readHealthDependencyHolds(ctx, q, scope); err != nil {
 			return snapshot, err
 		}
 		p.CandidateIDs = make(map[string]bool, len(candidates))
@@ -478,10 +478,12 @@ func readHealthRunnerLeasedProjects(ctx context.Context, q nativeQueryer, machin
 	return projects, errors.Join(rows.Err(), rows.Close())
 }
 
-func readHealthDependencyHolds(ctx context.Context, q nativeQueryer, scope nativeScope) (int, []string, time.Time, error) {
+func readHealthDependencyHolds(ctx context.Context, q nativeQueryer, scope nativeScope) (int, int, []string, time.Time, error) {
 	var since time.Time
-	rows, err := q.QueryContext(ctx, `SELECT d.native_id,b.native_id,bws.dispatchable,
- max(dep.created_at,coalesce((SELECT e.recorded_at FROM collaboration_events e WHERE e.organization_id=d.organization_id AND e.work_item_id=d.native_id AND e.type='workflow.transitioned' ORDER BY e.sequence DESC LIMIT 1),d.created_at))
+	rows, err := q.QueryContext(ctx, `SELECT d.native_id,b.native_id,b.project_id=d.project_id,bws.dispatchable,
+ max(dep.created_at,
+  coalesce((SELECT e.recorded_at FROM collaboration_events e WHERE e.organization_id=d.organization_id AND e.work_item_id=d.native_id AND e.type='workflow.transitioned' ORDER BY e.sequence DESC LIMIT 1),d.created_at),
+  coalesce((SELECT e.recorded_at FROM collaboration_events e WHERE e.organization_id=b.organization_id AND e.work_item_id=b.native_id AND e.type='workflow.transitioned' ORDER BY e.sequence DESC LIMIT 1),b.created_at))
  FROM issues d JOIN projects p ON p.id=d.project_id AND p.organization_id=d.organization_id AND p.require_dependencies=1
  JOIN workflow_states dws ON dws.id=d.workflow_state_id
  JOIN issue_dependencies dep ON dep.dependent_issue_id=d.id
@@ -489,36 +491,39 @@ func readHealthDependencyHolds(ctx context.Context, q nativeQueryer, scope nativ
  WHERE d.organization_id=? AND d.project_id=? AND d.archived=0 AND dws.dispatchable=1 AND dws.terminal=0 AND bws.terminal=0
  ORDER BY d.native_id,b.native_id LIMIT ?`, scope.organization, scope.project, healthReadLimit+1)
 	if err != nil {
-		return 0, nil, since, err
+		return 0, 0, nil, since, err
 	}
 	defer rows.Close()
-	gated, held := map[string]bool{}, map[string]bool{}
+	gated, held, listed := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	count := 0
 	for rows.Next() {
 		var dependent, blocker, at string
-		var dispatchable bool
-		if err := rows.Scan(&dependent, &blocker, &dispatchable, &at); err != nil {
-			return 0, nil, since, err
+		var sameProject, dispatchable bool
+		if err := rows.Scan(&dependent, &blocker, &sameProject, &dispatchable, &at); err != nil {
+			return 0, 0, nil, since, err
 		}
 		count++
 		if count > healthReadLimit {
-			return 0, nil, since, errHealthReadLimit
+			return 0, 0, nil, since, errHealthReadLimit
 		}
 		gated[dependent] = true
 		if dispatchable {
 			continue
 		}
 		held[blocker] = true
+		if sameProject {
+			listed[blocker] = true
+		}
 		gatedAt, err := parseTimeValue(at)
 		if err != nil {
-			return 0, nil, since, err
+			return 0, 0, nil, since, err
 		}
 		if since.IsZero() || gatedAt.Before(since) {
 			since = gatedAt
 		}
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return 0, nil, since, err
+		return 0, 0, nil, since, err
 	}
-	return len(gated), slices.Sorted(maps.Keys(held)), since, nil
+	return len(gated), len(held), slices.Sorted(maps.Keys(listed)), since, nil
 }

@@ -130,6 +130,7 @@ type healthProject struct {
 	RefusalEvents   []string
 	Claims          int
 	DependencyGated int
+	HeldCount       int
 	HeldBlockers    []string
 	HoldSince       time.Time
 }
@@ -224,8 +225,8 @@ func deadManFinding(now time.Time, p healthProject) (healthFinding, bool) {
 }
 
 func dependencyHoldFinding(now time.Time, p healthProject) (healthFinding, bool) {
-	active := p.Candidates == 0 && p.DependencyGated > 0 && len(p.HeldBlockers) > 0 && p.FreeSlots > 0 && !p.HoldSince.IsZero() && now.Sub(p.HoldSince) >= healthFlowWindow && (p.LastLanding.IsZero() || now.Sub(p.LastLanding) >= healthFlowWindow)
-	evidence := healthEvidence{Counts: map[string]int{"dependency_gated": p.DependencyGated, "held_blockers": len(p.HeldBlockers), "free_slots": p.FreeSlots}, WorkItemIDs: p.HeldBlockers}
+	active := p.Candidates == 0 && p.DependencyGated > 0 && p.HeldCount > 0 && p.FreeSlots > 0 && !p.HoldSince.IsZero() && now.Sub(p.HoldSince) >= healthFlowWindow && (p.LastLanding.IsZero() || now.Sub(p.LastLanding) >= healthFlowWindow)
+	evidence := healthEvidence{Counts: map[string]int{"dependency_gated": p.DependencyGated, "held_blockers": p.HeldCount, "free_slots": p.FreeSlots}, WorkItemIDs: p.HeldBlockers}
 	summary := fmt.Sprintf("Delivery stalled. %d dispatchable items wait on dependencies held in non-dispatchable lanes while runner slots are free.", p.DependencyGated)
 	return newHealthFinding("dependency_hold", "flow", "project", p.ID, summary, "The project operator moves, finishes or removes the held blocking items listed in the evidence.", []string{p.ID}, evidence), active
 }
