@@ -384,6 +384,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 }
 
 func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorDeps) doctorReport {
+	hostOS := runtime.GOOS
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -670,6 +671,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			Name: "git binary",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorGit(jobCtx, deps, binaryEnvironment)}
+			},
+		},
+		doctorCheckJob{
+			Name: "Hook shell",
+			Run: func(context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorHookShell("", hostOS, deps, binaryEnvironment)}
 			},
 		},
 	)

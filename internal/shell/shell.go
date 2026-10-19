@@ -2,8 +2,10 @@ package shell
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -18,10 +20,7 @@ func Default() string {
 }
 
 func DefaultForOS(goos string) string {
-	if goos == "windows" {
-		return "cmd"
-	}
-	return "sh"
+	return NormalizeForOS("", goos)
 }
 
 func Normalize(name string) string {
@@ -29,11 +28,34 @@ func Normalize(name string) string {
 }
 
 func NormalizeForOS(name string, goos string) string {
+	return ResolveForOS(name, goos, exec.LookPath)
+}
+
+func ResolveForOS(name string, goos string, lookPath func(string) (string, error)) string {
 	name = strings.TrimSpace(name)
-	if name == "" {
-		return DefaultForOS(goos)
+	if name != "" {
+		return name
 	}
-	return name
+	if goos != "windows" {
+		return "sh"
+	}
+	git, err := lookPath("git")
+	if err != nil {
+		return "cmd"
+	}
+	dir := filepath.Dir(git)
+	if !strings.EqualFold(filepath.Base(dir), "cmd") && !strings.EqualFold(filepath.Base(dir), "bin") {
+		return "cmd"
+	}
+	root := filepath.Dir(dir)
+	if strings.EqualFold(filepath.Base(root), "mingw64") || strings.EqualFold(filepath.Base(root), "mingw32") {
+		root = filepath.Dir(root)
+	}
+	bash := filepath.Join(root, "bin", "bash.exe")
+	if info, err := os.Stat(bash); err == nil && info.Mode().IsRegular() {
+		return bash
+	}
+	return "cmd"
 }
 
 func Command(ctx context.Context, command string, shellName string) *exec.Cmd {

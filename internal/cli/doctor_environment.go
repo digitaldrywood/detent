@@ -627,6 +627,17 @@ func checkDoctorGit(ctx context.Context, deps doctorDeps, environment doctorBina
 	return checkDoctorBinary(ctx, deps, environment, "git", "git binary", "--version", "Install git and ensure git --version succeeds.")
 }
 
+func checkDoctorHookShell(shellName string, goos string, deps doctorDeps, environment doctorBinaryEnvironment) doctorCheck {
+	resolved := commandshell.ResolveForOS(shellName, goos, func(binary string) (string, error) {
+		return deps.resolveCommandOnPath(environment.CheckedPath, binary)
+	})
+	return doctorBinaryCheck(environment, doctorCheck{
+		Name:   "Hook shell",
+		Status: doctorOK,
+		Detail: resolved,
+	})
+}
+
 func checkDoctorBinary(ctx context.Context, deps doctorDeps, environment doctorBinaryEnvironment, binary string, name string, arg string, hint string) doctorCheck {
 	path, err := resolveDoctorBinary(ctx, deps, environment, binary)
 	if err != nil {
