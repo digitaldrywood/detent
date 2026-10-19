@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -877,14 +878,15 @@ func TestSpritePoolOperatorTools(t *testing.T) {
 		return c.NoContent(http.StatusOK)
 	}, f.service.operatorAuthority)
 	executor := hubProjectExecutor{f.service}
-	contexts := map[string]context.Context{}
-	for name, token := range map[string]string{"admin": testHubAdminToken, "operator": f.token} {
+	connect := func(name, token string) context.Context {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/sprite-tools-test", token, nil), http.StatusOK)
-		contexts[name] = operatortool.BindConnection(<-captured, "sprite-tools-"+name, "sprite fixture")
-		if err := executor.OpenConnection(contexts[name]); err != nil {
+		ctx := operatortool.BindConnection(<-captured, "sprite-tools-"+name, "sprite fixture")
+		if err := executor.OpenConnection(ctx); err != nil {
 			t.Fatal(err)
 		}
+		return ctx
 	}
+	contexts := map[string]context.Context{"admin": connect("admin", testHubAdminToken), "operator": connect("operator", f.token)}
 	project := string(f.project.ID)
 	for _, test := range []struct {
 		name, caller, tool, arguments string
@@ -945,7 +947,7 @@ func TestSpritePoolOperatorTools(t *testing.T) {
 			if err := json.Unmarshal(raw, &got); err != nil {
 				t.Fatal(err)
 			}
-			if got.Revision.String() != fmt.Sprint(test.revision) || got.DesiredCount != test.desired {
+			if got.Revision.String() != strconv.FormatInt(test.revision, 10) || got.DesiredCount != test.desired {
 				t.Fatalf("%s = %s", test.tool, raw)
 			}
 			if test.tool == operatortool.GetSpritePool && test.revision == 1 && (got.IdleSeconds != 600 || got.Members == nil) {
