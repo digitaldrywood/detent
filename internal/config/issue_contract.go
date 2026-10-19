@@ -122,14 +122,25 @@ func (c IssueContract) ScheduledImportBody() string {
 
 var scheduledImportWorkflow = regexp.MustCompile("^New verified GitHub Actions CI repair reports from `(\\.github/workflows/[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ya?ml)` on `([A-Za-z0-9_][A-Za-z0-9_./-]*)` enter Todo with Urgent priority\\.$")
 
+func (c IssueContract) ScheduledRepairWorkflow() (string, string, bool) {
+	if c.ScheduledRepairBody() == "" {
+		return "", "", false
+	}
+	return c.scheduledWorkflow(true)
+}
+
 func (c IssueContract) ScheduledImportWorkflow() (string, string, bool) {
+	return c.scheduledWorkflow(false)
+}
+
+func (c IssueContract) scheduledWorkflow(allowLegacy bool) (string, string, bool) {
 	_, template, err := resolveAdmissionSection(c.Context, "Scheduled CI repair contract", "scheduled repair", BacklogAdmissionEffortFileWorkflow)
 	if err != nil {
 		return "", "", false
 	}
 	preamble, _, _ := strings.Cut(template, "### ")
 	preamble = strings.TrimSpace(preamble)
-	if preamble == "New verified GitHub Actions CI repair reports enter Todo with Urgent priority." {
+	if preamble == "New verified GitHub Actions CI repair reports enter Todo with Urgent priority." || allowLegacy && preamble == "" {
 		return ".github/workflows/ci.yml", "", true
 	}
 	if match := scheduledImportWorkflow.FindStringSubmatch(preamble); len(match) > 0 {

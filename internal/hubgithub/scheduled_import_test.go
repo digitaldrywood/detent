@@ -33,7 +33,13 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 	for _, test := range []struct {
 		name, workflow, branch, state, delegation, sourceRepository, headRepository, runRepository string
 		reportIdentity                                                                             bool
+		native                                                                                     bool
 	}{
+		{name: "native approved project", native: true, workflow: ".github/workflows/ci.yml", branch: "develop", state: "Todo"},
+		{name: "native exact release branch", native: true, workflow: ".github/workflows/ci.yaml", branch: "release/v2.0", state: "Todo", delegation: "New verified GitHub Actions CI repair reports from `.github/workflows/ci.yaml` on `release/v2.0` enter Todo with Urgent priority."},
+		{name: "native unapproved workflow", native: true, workflow: ".github/workflows/other.yml", branch: "develop", state: "Triage"},
+		{name: "native unapproved branch", native: true, workflow: ".github/workflows/ci.yaml", branch: "release/v2.0", state: "Triage", delegation: alternate},
+		{name: "native report identity cannot authorize", native: true, workflow: ".github/workflows/ci.yaml", branch: "dev", state: "Triage", reportIdentity: true},
 		{name: "authorized CI", workflow: ".github/workflows/ci.yml", branch: "develop", state: "Todo"},
 		{name: "mixed case source URL", workflow: ".github/workflows/ci.yml", branch: "develop", state: "Todo", sourceRepository: "Example-Org/Example-Project"},
 		{name: "authorized release CI", workflow: ".github/workflows/ci.yml", branch: "release/v1.0", state: "Todo"},
@@ -133,23 +139,45 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 				t.Fatal(err)
 			}
 			api(http.MethodPut, base+"/policy", policy.Change{Policy: descriptor}, nil)
-			payload, err := json.Marshal(map[string]any{"action": "opened", "repository": map[string]any{"node_id": "R_example", "name": name, "full_name": repository, "owner": map[string]string{"login": owner}}, "issue": map[string]any{"node_id": "I_report", "number": 12, "title": "Scheduled Verify failure", "body": body, "html_url": "https://github.com/" + sourceRepository + "/issues/12", "state": "open", "user": map[string]string{"login": "github-actions[bot]"}, "labels": []map[string]string{{"name": "hotfix"}, {"name": "detent:todo"}}, "assignees": []string{}, "created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-01T00:00:00Z"}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			signature := hmac.New(sha256.New, []byte(secret))
-			if _, err := signature.Write(payload); err != nil {
-				t.Fatal(err)
-			}
-			request := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", bytes.NewReader(payload))
-			request.Header.Set("X-GitHub-Delivery", "scheduled-import")
-			request.Header.Set("X-GitHub-Event", "issues")
-			request.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(signature.Sum(nil)))
-			request.Header.Set("Content-Type", "application/json")
-			response := httptest.NewRecorder()
-			service.Handler().ServeHTTP(response, request)
-			if response.Code != http.StatusAccepted {
-				t.Fatalf("webhook: %d %s", response.Code, response.Body.String())
+			if test.native {
+				raw, err := json.Marshal(tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "native-report"}, Title: "Scheduled Verify failure", Body: strings.Replace(body, criteria, "Failure diagnostic", 1), State: "Todo"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := httptest.NewRequest(http.MethodPost, base+"/work-items", bytes.NewReader(raw))
+				request.Header.Set("Authorization", "Bearer "+token)
+				request.Header.Set("Content-Type", "application/json")
+				response := httptest.NewRecorder()
+				service.Handler().ServeHTTP(response, request)
+				if test.state != "Todo" {
+					if response.Code != http.StatusUnprocessableEntity {
+						t.Fatalf("unauthorized native report: %d %s", response.Code, response.Body.String())
+					}
+					client.assertDone()
+					return
+				}
+				if response.Code != http.StatusOK {
+					t.Fatalf("native report: %d %s", response.Code, response.Body.String())
+				}
+			} else {
+				payload, err := json.Marshal(map[string]any{"action": "opened", "repository": map[string]any{"node_id": "R_example", "name": name, "full_name": repository, "owner": map[string]string{"login": owner}}, "issue": map[string]any{"node_id": "I_report", "number": 12, "title": "Scheduled Verify failure", "body": body, "html_url": "https://github.com/" + sourceRepository + "/issues/12", "state": "open", "user": map[string]string{"login": "github-actions[bot]"}, "labels": []map[string]string{{"name": "hotfix"}, {"name": "detent:todo"}}, "assignees": []string{}, "created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-01T00:00:00Z"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				signature := hmac.New(sha256.New, []byte(secret))
+				if _, err := signature.Write(payload); err != nil {
+					t.Fatal(err)
+				}
+				request := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", bytes.NewReader(payload))
+				request.Header.Set("X-GitHub-Delivery", "scheduled-import")
+				request.Header.Set("X-GitHub-Event", "issues")
+				request.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(signature.Sum(nil)))
+				request.Header.Set("Content-Type", "application/json")
+				response := httptest.NewRecorder()
+				service.Handler().ServeHTTP(response, request)
+				if response.Code != http.StatusAccepted {
+					t.Fatalf("webhook: %d %s", response.Code, response.Body.String())
+				}
 			}
 			var issues tracker.Page[tracker.NativeIssue]
 			api(http.MethodGet, base+"/work-items", nil, &issues)
@@ -162,7 +190,7 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 				t.Fatalf("lane=%s want=%s", issue.State, test.state)
 			}
 			if test.state == "Todo" {
-				if issue.Priority == nil || *issue.Priority != 0 || len(issue.IssueContract.ConfirmedSections) != 5 {
+				if (!test.native && (issue.Priority == nil || *issue.Priority != 0)) || len(issue.IssueContract.ConfirmedSections) != 5 {
 					t.Fatalf("admission=%+v", issue)
 				}
 				contract, err := config.ResolvePolicyIssueContract(descriptor)

@@ -139,6 +139,15 @@ func TestScheduledRepairContract(t *testing.T) {
 			if workflow, branch, authorized := contract.ScheduledImportWorkflow(); test.importBody != "" && (!authorized || workflow != test.workflow || branch != test.branch) {
 				t.Fatalf("import workflow = %q branch = %q authorized = %t", workflow, branch, authorized)
 			}
+			wantAuthorized := test.importBody != "" || test.name == "approved literal sections"
+			workflow, branch, authorized := contract.ScheduledRepairWorkflow()
+			wantWorkflow := test.workflow
+			if test.name == "approved literal sections" {
+				wantWorkflow = ".github/workflows/ci.yml"
+			}
+			if authorized != wantAuthorized || authorized && (workflow != wantWorkflow || branch != test.branch) {
+				t.Fatalf("repair workflow = %q branch = %q authorized = %t", workflow, branch, authorized)
+			}
 		})
 	}
 }

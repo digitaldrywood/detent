@@ -223,7 +223,7 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 
 func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope, request tracker.CreateIssue) *nativeScheduledRepair {
 	origin, machine := issueorigin.Parse(request.Body)
-	if string(scope.project) != issueorigin.DetentCloudProjectID || !machine || origin.Kind != "doctor" || origin.Instance != "github-actions" || scope.credential.Scope == apiScopeWorker || request.GitHubIssueURL != "" || request.Provenance != nil || s.config.ImportBackend == nil {
+	if !machine || origin.Kind != "doctor" || origin.Instance != "github-actions" || scope.credential.Scope == apiScopeWorker || request.GitHubIssueURL != "" || request.Provenance != nil || s.config.ImportBackend == nil {
 		return nil
 	}
 	evidence := gate.ParseScheduledEvidence(request.Body)
@@ -239,10 +239,14 @@ func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope,
 		return nil
 	}
 	repository, err := policyRepository(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
-	if err != nil || !strings.EqualFold(repository, "digitaldrywood/detent") || !strings.EqualFold(repository, evidence[0].Repository) {
+	if err != nil || !strings.EqualFold(repository, evidence[0].Repository) {
 		return nil
 	}
-	page, err := s.config.ImportBackend.FetchImportPage(ctx, GitHubImportRequest{Profile: "native", Repository: evidence[0].Repository, Stage: "scheduled", Scheduled: &evidence[0]})
+	workflow, branch, authorized := contract.ScheduledRepairWorkflow()
+	if !authorized {
+		return nil
+	}
+	page, err := s.config.ImportBackend.FetchImportPage(ctx, GitHubImportRequest{Profile: "native", Repository: repository, Stage: "scheduled", Scheduled: &evidence[0], ScheduledWorkflow: workflow, ScheduledBranch: branch})
 	if err != nil || page.Scheduled == nil {
 		return nil
 	}
@@ -262,7 +266,7 @@ func applyScheduledRepairContract(ctx context.Context, q nativeQueryer, scope na
 		return
 	}
 	repository, err := policyRepository(ctx, q, string(scope.organization)+"/"+string(scope.project))
-	if err != nil || (verified.importURL == "" && !strings.EqualFold(repository, "digitaldrywood/detent")) || !strings.EqualFold(repository, verified.evidence.Repository) {
+	if err != nil || !strings.EqualFold(repository, verified.evidence.Repository) {
 		return
 	}
 	contract, err := config.ResolvePolicyIssueContract(approval.Policy)
