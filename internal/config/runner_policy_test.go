@@ -586,6 +586,8 @@ func TestNativeSharedPolicy(t *testing.T) {
 				}
 				if _, err := ApplyNativePolicy(pro, candidate); err == nil {
 					t.Fatal("applied changed authored source with copied digest")
+				} else if !strings.Contains(err.Error(), "authored inputs do not match their digests") {
+					t.Fatalf("authored integrity refusal = %v", err)
 				}
 				return
 			}

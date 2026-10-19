@@ -204,9 +204,8 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 	if descriptor.Configuration == nil {
 		return workflow, nil
 	}
-	var behavior nativeBehavior
+	behavior := nativeProjectBehavior(Default())
 	decoder := json.NewDecoder(bytes.NewReader(descriptor.Configuration.Behavior))
-	decoder.DisallowUnknownFields()
 	decoder.UseNumber()
 	if err := decoder.Decode(&behavior); err != nil {
 		return Workflow{}, fmt.Errorf("decode shared project behavior: %w", err)
@@ -232,16 +231,6 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 	} else if descriptor.Configuration.DefinitionDigest != "" {
 		workflow.Definition.Layout = ProjectDefinitionCloud
 		workflow.SourceHash = descriptor.Configuration.DefinitionDigest
-	}
-	resolved, err := ResolvePolicy(workflow)
-	if err != nil {
-		return Workflow{}, err
-	}
-	if !reflect.DeepEqual(resolved.Gates, descriptor.Gates) || !reflect.DeepEqual(resolved.Requirements, descriptor.Requirements) || resolved.Profile != descriptor.Profile || !reflect.DeepEqual(resolved.Workflow, descriptor.Workflow) {
-		return Workflow{}, errors.New("policy_mismatch: runtime metadata differs from shared configuration")
-	}
-	if err := resolved.Match(descriptor); err != nil {
-		return Workflow{}, err
 	}
 	return workflow, nil
 }
@@ -327,6 +316,16 @@ func ResolveSharedPolicy(descriptor policy.Descriptor) (policy.Descriptor, error
 		return policy.Descriptor{}, err
 	}
 	if err := ValidateWorkflowAdmission(workflow); err != nil {
+		return policy.Descriptor{}, err
+	}
+	resolved, err := ResolvePolicy(workflow)
+	if err != nil {
+		return policy.Descriptor{}, err
+	}
+	if !reflect.DeepEqual(resolved.Gates, descriptor.Gates) || !reflect.DeepEqual(resolved.Requirements, descriptor.Requirements) || resolved.Profile != descriptor.Profile || !reflect.DeepEqual(resolved.Workflow, descriptor.Workflow) {
+		return policy.Descriptor{}, errors.New("policy_mismatch: runtime metadata differs from shared configuration")
+	}
+	if err := resolved.Match(descriptor); err != nil {
 		return policy.Descriptor{}, err
 	}
 	return descriptor, nil
