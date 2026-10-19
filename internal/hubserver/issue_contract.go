@@ -17,12 +17,9 @@ import (
 )
 
 func nativeIssueContract(ctx context.Context, q nativeQueryer, scope nativeScope) (config.IssueContract, error) {
-	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	approval, _, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
-		var nativeErr *nativeError
-		if !errors.As(err, &nativeErr) || nativeErr.Code != "policy_mismatch" {
-			return config.IssueContract{}, err
-		}
+		return config.IssueContract{}, err
 	}
 	return config.ResolvePolicyIssueContract(approval.Policy)
 }
@@ -40,12 +37,12 @@ func nativeContractIssue(issue tracker.NativeIssue) connector.Issue {
 }
 
 func nativeIssueContractConfig(ctx context.Context, q nativeQueryer, scope nativeScope) (config.Config, error) {
-	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
-	if errors.Is(err, errNoApprovedRepositoryPolicy) {
-		return config.Default(), nil
-	}
+	approval, found, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
 		return config.Config{}, err
+	}
+	if !found {
+		return config.Default(), nil
 	}
 	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, approval.Policy)
 	if err != nil {
@@ -192,8 +189,8 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 	if snapshot.Provenance.Provider != "github" || snapshot.Provenance.AuthorID != "github-actions[bot]" || strings.Contains(strings.ToLower(snapshot.Body), "detent:no-dispatch") || s.config.ImportBackend == nil {
 		return result
 	}
-	approval, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
-	if err != nil || approval.Policy.Authored == nil {
+	approval, found, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+	if err != nil || !found || approval.Policy.Authored == nil {
 		return result
 	}
 	contract, err := config.ResolvePolicyIssueContract(approval.Policy)
@@ -235,8 +232,8 @@ func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope,
 	if len(evidence) != 1 || !scheduledRepairOriginMatches(origin.Source, evidence[0]) {
 		return nil
 	}
-	approval, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
-	if err != nil || approval.Policy.Authored == nil {
+	approval, found, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+	if err != nil || !found || approval.Policy.Authored == nil {
 		return nil
 	}
 	contract, err := config.ResolvePolicyIssueContract(approval.Policy)
@@ -266,8 +263,8 @@ func applyScheduledRepairContract(ctx context.Context, q nativeQueryer, scope na
 	if verified.importURL != "" {
 		verified.importReason = "Scheduled CI import authorization changed before creation or Todo is not dispatchable"
 	}
-	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
-	if err != nil || approval.Policy.ID != verified.policyID || approval.Policy.Authored == nil {
+	approval, found, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	if err != nil || !found || approval.Policy.ID != verified.policyID || approval.Policy.Authored == nil {
 		return
 	}
 	repository, err := policyRepository(ctx, q, string(scope.organization)+"/"+string(scope.project))

@@ -113,7 +113,7 @@ func TestNativeReleaseDeliveryAssociation(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "audit-review"}, ExpectedID: f.rules.ID, Policy: rules}), http.StatusOK)
 		}},
 		{name: "no independent review", status: http.StatusUnprocessableEntity, edit: func(t *testing.T, f *releaseDeliveryFixture) {
-			approval, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+			approval, _, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -259,7 +259,7 @@ func TestNativeReleaseDeliveryReviewAndLanding(t *testing.T) {
 			f.verifier.input = f.request.ReleasePickInput
 			d := f.associate(t, f.request)
 			path := f.itemPath + "/changes/" + d.ChangeID
-			descriptor, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+			descriptor, _, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -9,6 +9,7 @@ import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
 import { SettingsHelp } from "../../src/app/settings/SettingsHelp.tsx";
 import type { FleetResponse, ProjectIntegration, RunnerRouting, PolicyApproval } from "../../src/contracts/account.ts";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
+import emptyPolicyFixture from "../../src/contracts/fixtures/account-policy-empty.json";
 import policyFixture from "../../src/contracts/fixtures/account-policy.json";
 import integrationFixture from "../../src/contracts/fixtures/account-integration.json";
 
@@ -91,7 +92,7 @@ describe("settings help interactions", () => {
   it.each(["conflict", "historical", "resolved"] as const)("shows shared policy %s without another approval action", async (state) => {
     const policy: PolicyApproval = { ...policyFixture, policy: { ...policyFixture.policy, configuration: { behavior: {}, prompt: "Run the work." } } };
     renderProject(true, { tab: "workflow", policy, observedPolicies: state === "resolved" ? [] : [{
-      policy: { ...policy.policy, policy_id: "policy_old" }, runner_id: "runner_air", runner_ids: ["runner_air", "runner_pro"], observed_at: "2026-10-05T17:00:00Z",
+      policy: { ...policy.policy!, policy_id: "policy_old" }, runner_id: "runner_air", runner_ids: ["runner_air", "runner_pro"], observed_at: "2026-10-05T17:00:00Z",
       conflict: state === "conflict", previously_approved: state === "historical",
     }] });
     await screen.findByText("Reported");
@@ -257,8 +258,8 @@ describe("project settings help", () => {
     const policy = policyFixture as PolicyApproval;
     renderProject(canManage, {
       tab: "workflow",
-      policy: state === "missing" ? null : policy,
-      observedPolicies: state === "pending" ? [{ policy: { ...policy.policy, policy_id: "pol_updated" }, runner_id: "runner_example", observed_at: "2026-10-05T00:00:00Z" }] : [],
+      policy: state === "missing" ? emptyPolicyFixture : policy,
+      observedPolicies: state === "pending" ? [{ policy: { ...policy.policy!, policy_id: "pol_updated" }, runner_id: "runner_example", observed_at: "2026-10-05T00:00:00Z" }] : [],
     });
     expect(await screen.findByText(state === "missing" ? "Waiting for runner" : "Reported")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Approve|Paste policy/ })).toBeNull();

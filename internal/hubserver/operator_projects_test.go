@@ -169,7 +169,11 @@ func TestBindNativeRepositoryToolReceipts(t *testing.T) {
 
 func TestBoundedProjectPolicyHistory(t *testing.T) {
 	descriptor := hubTestPolicy()
-	full := policy.Approval{Policy: descriptor, ApprovedBy: "administrator", ApprovedAt: "2026-10-06T21:12:49Z", HistoryNext: "10"}
+	full := projectPolicyRead{
+		Approval:         policy.Approval{Policy: descriptor, ApprovedBy: "administrator", ApprovedAt: "2026-10-06T21:12:49Z", HistoryNext: "10"},
+		Policy:           &descriptor,
+		ObservedPolicies: []policy.ObservedPolicy{{Policy: descriptor, RunnerID: "runner_example", ObservedAt: "2026-10-06T21:12:49Z"}},
+	}
 	for _, id := range []int64{30, 20, 10} {
 		full.History = append(full.History, policy.WorkflowApply{ID: id, AppliedBy: strings.Repeat("承認者", 100), PreviousDefinition: &descriptor, Definition: &descriptor})
 	}
@@ -204,7 +208,7 @@ func TestBoundedProjectPolicyHistory(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || len(page.History) != test.count || page.HistoryNext != test.next || !reflect.DeepEqual(page.Policy, full.Policy) || page.ApprovedBy != full.ApprovedBy || page.ApprovedAt != full.ApprovedAt {
+			if err != nil || len(page.History) != test.count || page.HistoryNext != test.next || !reflect.DeepEqual(page.Policy, full.Policy) || !reflect.DeepEqual(page.ObservedPolicies, full.ObservedPolicies) || page.ApprovedBy != full.ApprovedBy || page.ApprovedAt != full.ApprovedAt {
 				t.Fatalf("bounded policy lost descriptor, provenance or cursor: %v", err)
 			}
 			encoded, err := json.Marshal(page)
@@ -265,7 +269,6 @@ func TestHostedProjectTools(t *testing.T) {
 					for _, missing := range []struct{ name, code, message string }{
 						{"get_cutover_receipt", "not_found", "No cutover receipt exists for this project"},
 						{operatortool.GetChangeReviewPolicy, "not_found", "No approved Change review policy exists for this project"},
-						{"get_project_policy", "policy_mismatch", "No approved repository policy exists for this project"},
 					} {
 						reply := call("tools/call", missing.name, map[string]any{"project_id": id})
 						var result struct {
@@ -286,7 +289,7 @@ func TestHostedProjectTools(t *testing.T) {
 				})
 			}
 			operatorSQL(t, f, "INSERT INTO github_cutovers(project_id,checkpoint,receipt_json,actor_id,created_at) VALUES (?,?,?,?,?)", id, "stored-cutover", `{"checkpoint":"stored-cutover","applied":true}`, owner.identity.Subject, formatHubTime(f.service.config.now()))
-			for _, name := range []string{operatortool.LocalProjectConfiguration, "list_projects", "get_native_project", "get_onboarding", "get_project_integration", "project_secret_metadata", "project_setup", "get_cutover_receipt"} {
+			for _, name := range []string{"get_project_policy", operatortool.LocalProjectConfiguration, "list_projects", "get_native_project", "get_onboarding", "get_project_integration", "project_secret_metadata", "project_setup", "get_cutover_receipt"} {
 				result, err := e.Execute(ctx, read(name))
 				if err != nil || !strings.Contains(string(result.Content), `"observed_at"`) {
 					t.Fatalf("%s=%s %v", name, result.Content, err)
@@ -448,7 +451,7 @@ func TestHostedProjectTools(t *testing.T) {
 				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE command_key IN ('quota-comment','quota-approve-stdio','quota-approve-http')").Scan(&receipts); err != nil || receipts != 0 {
 					t.Fatalf("refused writes persisted receipts=%d err=%v", receipts, err)
 				}
-				unchanged, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+				unchanged, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 				if err != nil || !reflect.DeepEqual(unchanged.Policy, previous.Policy) {
 					t.Fatalf("refused approval changed policy=%+v err=%v", unchanged, err)
 				}
@@ -502,7 +505,7 @@ func TestHostedProjectTools(t *testing.T) {
 			if _, err := e.Execute(ctx, stalePolicy); !errors.Is(err, mutation.ErrConflict) {
 				t.Fatalf("stale expected policy = %v", err)
 			}
-			unchanged, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+			unchanged, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 			if err != nil || !reflect.DeepEqual(unchanged.Policy, candidate) {
 				t.Fatalf("stale approval changed policy = %+v, %v", unchanged, err)
 			}

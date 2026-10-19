@@ -151,7 +151,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				}
 				historyCount++
 				var err error
-				initialApproval, err = readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+				initialApproval, _, err = readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -464,7 +464,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				}
 			}
 			if test.adopt {
-				approval, err := readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+				approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
 				if err != nil || approval.Policy.ID != candidate.ID {
 					t.Fatalf("repository report was not applied: %+v %v", approval, err)
 				}
@@ -484,7 +484,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), http.StatusNoContent)
 			}
 			if test.humanApproval {
-				approval, err := readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+				approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
 				if err != nil || approval.Policy.ID != original.ID || strings.HasPrefix(approval.ApprovedBy, "runner_") {
 					t.Fatalf("runner replaced administrator approval: %+v %v", approval, err)
 				}
@@ -493,7 +493,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, Policy: candidate}), http.StatusOK)
 			}
 			if test.forge != "" && !test.applied {
-				approval, err := readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+				approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
 				if err != nil || approval.Policy.ID != original.ID || !reflect.DeepEqual(approval.Policy.Gates, original.Gates) || !reflect.DeepEqual(approval.Policy.Requirements, original.Requirements) || approval.Policy.Profile != original.Profile {
 					t.Fatalf("forgery changed approval: %+v %v", approval, err)
 				}
@@ -743,7 +743,7 @@ func TestObservedCloudWorkflowGuidanceAdoptsSameContract(t *testing.T) {
 				t.Fatal(err)
 			}
 			selected := resolve(test.selected)
-			prior, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+			prior, _, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -753,7 +753,7 @@ func TestObservedCloudWorkflowGuidanceAdoptsSameContract(t *testing.T) {
 				want = http.StatusConflict
 			}
 			requireNativeStatus(t, response, want)
-			after, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+			after, _, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
 			if err != nil {
 				t.Fatal(err)
 			}
