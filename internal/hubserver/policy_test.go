@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -12,7 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -38,6 +42,19 @@ func TestCompatibilityPolicyUpgradeAndRevocation(t *testing.T) {
 				if state == "revoked" {
 					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, "/api/v1/repositories/digitaldrywood/detent/policy", testHubAdminToken, map[string]string{"expected_policy_id": descriptor.ID}), http.StatusGone)
 				}
+			}
+			response := performHubAPIRequest(t, service, http.MethodGet, "/api/v1/repositories/digitaldrywood/detent/policy", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var current struct {
+				Policy *policy.Descriptor `json:"policy"`
+			}
+			decodeHubResponse(t, response, &current)
+			if state != "legacy" {
+				if current.Policy == nil || !reflect.DeepEqual(*current.Policy, hubTestPolicy()) {
+					t.Fatalf("approved repository policy: %s", response.Body)
+				}
+			} else if current.Policy != nil || !strings.Contains(response.Body.String(), `"policy":null`) {
+				t.Fatalf("absent repository policy: %s", response.Body)
 			}
 			wantRenew, wantEvent := http.StatusOK, http.StatusCreated
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, "/api/v1/leases/"+string(lease.ID)+"/renew", testHubAdminToken, map[string]any{"fencing_token": lease.FencingToken, "ttl_seconds": 90}), wantRenew)
@@ -334,7 +351,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 			if succeeded && test.mutation == "" {
 				wantPolicy = next.ID
 			}
-			approval, err := readProjectPolicy(t.Context(), f.service.database.db, string(scope.organization)+"/"+string(scope.project))
+			approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, string(scope.organization)+"/"+string(scope.project))
 			if err != nil || approval.Policy.ID != wantPolicy {
 				t.Fatalf("configuration = %+v, error = %v, want %s", approval, err, wantPolicy)
 			}
@@ -651,5 +668,85 @@ func clearNativeFixturePolicy(t *testing.T, f nativeFixture) {
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM policy_revisions WHERE scope=? AND approved_by='fixture'", scope); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
+	t.Parallel()
+	for _, approved := range []bool{false, true} {
+		t.Run(fmt.Sprintf("approved=%t", approved), func(t *testing.T) {
+			t.Parallel()
+			f := newNativeFixture(t, nil, "", "policy-read")
+			scope := string(f.project.OrganizationID) + "/" + string(f.project.ID)
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", scope); err != nil {
+				t.Fatal(err)
+			}
+			descriptor := hubTestPolicy()
+			if approved {
+				approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+			}
+			candidate := descriptor
+			candidate.Gates.AutoPromote = true
+			candidate = candidate.WithID()
+			worker := f.worker(t, "policy-reader")
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", worker, policy.Observation{Descriptor: candidate}), http.StatusNoContent)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "policy_read_machine", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
+			_, err := monthlyClaimExposure(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, "policy_read_machine", false)
+			if approved && err != nil {
+				t.Fatal(err)
+			}
+			if !approved {
+				var refusal *nativeError
+				if !errors.As(err, &refusal) || refusal.Code != "policy_not_approved" {
+					t.Fatalf("unapproved claim exposure: %v", err)
+				}
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/policy", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var rest struct {
+				Policy     *policy.Descriptor      `json:"policy"`
+				ApprovedBy string                  `json:"approved_by"`
+				ApprovedAt string                  `json:"approved_at"`
+				Observed   []policy.ObservedPolicy `json:"observed_policies"`
+				History    []policy.WorkflowApply  `json:"history"`
+			}
+			decodeHubResponse(t, response, &rest)
+			if approved {
+				if rest.Policy == nil || !reflect.DeepEqual(*rest.Policy, descriptor) || rest.ApprovedBy == "" || rest.ApprovedAt == "" {
+					t.Fatalf("approved payload changed: %s", response.Body)
+				}
+			} else if rest.Policy != nil || !strings.Contains(response.Body.String(), `"policy":null`) || rest.ApprovedBy != "" || rest.ApprovedAt != "" || len(rest.History) != 0 {
+				t.Fatalf("missing approval: %s", response.Body)
+			}
+			if len(rest.Observed) != 1 || !reflect.DeepEqual(rest.Observed[0].Policy, candidate) {
+				t.Fatalf("observed candidates: %s", response.Body)
+			}
+			captured := make(chan context.Context, 1)
+			f.service.echo.GET("/api/v2/organizations/:organization/policy-read-test", func(c echo.Context) error { captured <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/policy-read-test", testHubAdminToken, nil), http.StatusOK)
+			ctx := operatortool.BindConnection(<-captured, "policy-read", "policy fixture")
+			executor := hubProjectExecutor{f.service}
+			if err := executor.OpenConnection(ctx); err != nil {
+				t.Fatal(err)
+			}
+			for _, transport := range []string{"stdio", "http"} {
+				call := hostedContextProtocol(t, f.service, ctx, transport)
+				reply := call("tools/call", "get_project_policy", map[string]any{"project_id": string(f.project.ID)})
+				var result struct {
+					IsError    bool `json:"isError"`
+					Structured struct {
+						Data json.RawMessage `json:"data"`
+					} `json:"structuredContent"`
+				}
+				if err := json.Unmarshal(reply.Result, &result); err != nil {
+					t.Fatal(err)
+				}
+				var data any
+				var expected any
+				if result.IsError || json.Unmarshal(result.Structured.Data, &data) != nil || json.Unmarshal(response.Body.Bytes(), &expected) != nil || !reflect.DeepEqual(data, expected) {
+					t.Fatalf("%s policy differs from REST: %s; REST %s", transport, reply.Result, response.Body)
+				}
+			}
+		})
 	}
 }

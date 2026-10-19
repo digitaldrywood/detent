@@ -95,8 +95,11 @@ func newWorkspaceLaneTestScheduler(t *testing.T, projects map[string]string) orc
 			_, _ = response.WriteString(`{}`)
 			return response.Result(), nil
 		}
-		response.WriteHeader(http.StatusConflict)
-		_, _ = response.WriteString(`{"code":"policy_mismatch","message":"No approved project policy"}`)
+		if request.Method == http.MethodGet && request.URL.Path == "/api/v2/organizations/org_test/projects/prj_test/policy" {
+			_, _ = response.WriteString(`{"policy":null}`)
+			return response.Result(), nil
+		}
+		response.WriteHeader(http.StatusNotFound)
 		return response.Result(), nil
 	})
 	client, err := hubclient.New(hubclient.Config{URL: "https://hub.test", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: transport}})
