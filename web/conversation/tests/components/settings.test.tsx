@@ -1007,9 +1007,10 @@ const usageFixture: BillingUsageReport = {
     packs: [{ price_id: "credit_25", label: "$25 credit pack", usd_cents: 2500 }],
   },
   comparison_plans: [
-    { id: "starter", version: 1, name: "Starter", monthly_usd_cents: 4900, features: ["hosted_artifacts"], allowances: { projects: 5, unarchived_issues: 2000, collaboration_bytes: 1073741824 }, price_id: "price_starter" },
-    { id: "growth", version: 1, name: "Growth", monthly_usd_cents: 14900, features: ["hosted_artifacts"], allowances: { projects: 25, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "price_growth" },
-    { id: "scale", version: 1, name: "Scale", monthly_usd_cents: 39900, features: ["hosted_artifacts"], allowances: { projects: 100, unarchived_issues: 50000, collaboration_bytes: 1073741824 }, price_id: "price_scale" },
+    { id: "starter", version: 1, name: "Starter", monthly_usd_cents: 4900, features: ["hosted_artifacts"], allowances: { concurrent_work: 8, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "price_starter" },
+    { id: "team", version: 2, name: "Team", monthly_usd_cents: 9900, features: ["hosted_artifacts"], allowances: { concurrent_work: 20, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "price_team" },
+    { id: "growth", version: 2, name: "Growth", monthly_usd_cents: 24900, features: ["hosted_artifacts"], allowances: { concurrent_work: 50, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "price_growth" },
+    { id: "scale", version: 2, name: "Scale", features: ["hosted_artifacts"], allowances: { concurrent_work: 100, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "" },
   ],
   can_checkout: true, can_manage: true, can_buy_credits: true, checkout_pending: false,
 };
@@ -1018,8 +1019,8 @@ const planFixture: PlanReport = {
   organization_id: "org_a", name: "Starter", monthly_usd_cents: 4900,
   base: { id: "starter", version: 1 }, effective_base: { id: "starter", version: 1 },
   source: "subscription", revision: 1, features: ["hosted_artifacts"],
-  allowances: { projects: 5, unarchived_issues: 2000, collaboration_bytes: 1073741824, history_records: 2000000, api_mutations: 20000, ingested_events: 20000 },
-  usage: { projects: 4, unarchived_issues: 1742, collaboration_bytes: 431227904, history_records: 1240000, api_mutations: 3120, ingested_events: 20000 },
+  allowances: { concurrent_work: 8, unarchived_issues: 10000, collaboration_bytes: 1073741824, history_records: 2000000, api_mutations: 20000, ingested_events: 20000 },
+  usage: { concurrent_work: 8, unarchived_issues: 1742, collaboration_bytes: 431227904, history_records: 1240000, api_mutations: 3120, ingested_events: 20000 },
   window_ends_at: "2026-10-09T14:00:00Z",
 };
 
@@ -1123,7 +1124,7 @@ describe("plan billing usage", () => {
     const starter = usageFixture.comparison_plans[0]!;
     const nextStarter = {
       ...starter, version: 2, monthly_usd_cents: 6900,
-      allowances: { ...starter.allowances, projects: 10, unarchived_issues: 4000 },
+      allowances: { ...starter.allowances, concurrent_work: 12 },
       price_id: "price_starter_v2",
     };
     const fetch = mockPlanUsage({
@@ -1135,7 +1136,7 @@ describe("plan billing usage", () => {
     renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
     const move = await screen.findByRole("button", { name: "Move to Starter" });
     expect(screen.getAllByText("Current")).toHaveLength(1);
-    expect(screen.getByRole("alert").textContent).toContain("Move to Starter for 10 projects and 4,000 open issues");
+    expect(screen.getByRole("alert").textContent).toContain("Move to Starter for 12 concurrent work slots");
     expect(move.hasAttribute("disabled")).toBe(false);
     fireEvent.click(move);
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.stripe.com/test"));
@@ -1157,12 +1158,14 @@ describe("plan billing usage", () => {
     expect(screen.getByText("3.90M input · 600K cached · 300K output")).toBeTruthy();
     expect(screen.getByText("Auto top-up: $25.00 below $5.00")).toBeTruthy();
     expect(screen.getByText("2026-10-08 – 2026-11-08")).toBeTruthy();
-    for (const name of ["Upgrade", "Manage billing", "Buy credits", "Move to Growth", "Move to Scale"]) {
+    for (const name of ["Upgrade", "Manage billing", "Buy credits", "Move to Team", "Move to Growth"]) {
       expect(screen.queryByRole("button", { name }) !== null).toBe(role === "owner");
     }
+    expect(screen.queryByRole("button", { name: "Move to Scale" })).toBeNull();
+    expect(screen.getByText(/Contact us/)).toBeTruthy();
     expect(screen.getByText("Current")).toBeTruthy();
-    expect(screen.getByRole("alert").textContent).toContain("Move to Growth for 25 projects and 10,000 open issues");
-    expect(screen.getByRole("alert").textContent).toContain("Open issues");
+    expect(screen.getByRole("alert").textContent).toContain("Move to Team for 20 concurrent work slots");
+    expect(screen.getByRole("alert").textContent).toContain("Concurrent work");
     expect(screen.getByRole("alert").textContent).not.toContain("Events received");
   });
 

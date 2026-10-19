@@ -7,30 +7,43 @@ for the permanent Free base plan. Model-provider charges remain separate from ho
 
 ## Capacity catalog
 
-| Plan | USD per organization/month | Projects | Unarchived issues |
+| Plan | Version | USD per organization/month | Concurrent work |
 | --- | ---: | ---: | ---: |
-| Free | 0 | 1 | 200 |
-| Starter | 49 | 5 | 2,000 |
-| Growth | 149 | 25 | 10,000 |
-| Scale | 399 | 100 | 50,000 |
+| Free | 1 | 0 | 2 |
+| Starter | 1 | 49 | 8 |
+| Team | 2 | 99 | 20 |
+| Growth | 2 | 249 | 50 |
+| Scale | 2 | Contact us | Custom |
 
-Omitted or empty `entitlements` selects this catalog with immutable version-1
-IDs `free`, `starter`, `growth`, and `scale`. Enterprise is custom and has no
-self-serve price. Free signup needs no card, Stripe customer, or subscription.
-Free permits project/issue exploration and refuses AI execution, including
-ordinary Luna coordinator chat and issue-linked runner claims. Paid hosting
-contains no bundled AI-dollar allowance; customer-provider funding still applies.
-An explicitly scoped execution grant can authorize complimentary execution.
+Omitted or empty `entitlements` selects this catalog. `team` uses version 2
+because version 1 is a legacy paid mapping. Growth and Scale moved to version 2
+with the new prices; their version-1 records keep their stored prices for
+existing subscriptions and resolve with Growth and Scale concurrent work. Scale
+has no self-serve price; operators grant it, or a custom plan, as complimentary
+access. Free signup needs no card, Stripe customer, or subscription.
 
-Quotas count stored projects and unarchived native issues across the organization.
-Issue creation, imports, and restore use the existing atomic mutation transaction.
-At or above a downgraded quota, existing data, reading, export, billing, archiving,
-and safe in-flight completion remain available. Archiving frees capacity without
-deleting history. New allocations and restore must fit the current capacity.
-Membership and concurrent-work quantities are measured but never tier admission
-limits, including on legacy plans. Runner, host, policy, and provider safety limits
-continue to apply independently. Other service-protection limits are common to
-the approved tiers rather than paid concurrency or seat entitlements.
+Concurrent work counts the organization's live claims: every running attempt,
+whatever its stage. A claim at the limit is refused with `plan_capacity`; the
+runner treats it like full capacity, the item stays in its lane, and it becomes
+claimable when a slot frees. Nothing is refused at filing time. Every tier,
+Free included, has native execution; paid tiers add hosted artifacts. No tier
+limits projects, members, repositories or runners.
+
+Issues keep an abuse guard of 10,000 open issues across the organization,
+reported as `unarchived_issues`. Issues in a terminal lane (Done, Cancelled) and
+archived issues do not count. Issue creation, imports, restore and moves out of
+a terminal lane use the existing atomic mutation transaction. Luna chat and
+hosted AI are gated by AI credits and the monthly budget, not by tier. Runner,
+host, policy and provider safety limits continue to apply independently.
+
+Capacity tier records resolve their concurrent-work allowance, open-issue guard,
+execution feature and unlimited projects from this catalog when read, so
+existing assignments and grants follow it without new versions; their stored
+names and prices remain authoritative. A grant of a capacity tier carries that
+tier's concurrent work and open-issue guard whatever its recorded scope.
+Legacy `pilot_free` and `comp_team` have no concurrent-work or project limit
+once the capacity catalog is installed. In any other plan, a configured
+`concurrent_work` is enforced and an omitted one is unlimited.
 
 ## Configuration and plan versions
 
@@ -83,8 +96,8 @@ every organization starts on `pilot_free`, and `comp_team` exists only to be
 granted as complimentary access. `comp_team` doubles the `pilot_free` allowances
 and adds `hosted_artifacts`; its artifact allowances stay zero until an operator
 configures them (see below). Both sets of numbers are provisional.
-Within an explicit plan, omitted allowances are zero and omitted features are
-disabled. Negative values, unknown names and unsupported configuration bounds
+Within an explicit plan, omitted allowances other than `concurrent_work` are
+zero and omitted features are disabled. Negative values, unknown names and unsupported configuration bounds
 are rejected. Windows are whole multiples of 60 seconds, at most one day;
 telemetry retains at most 720 windows and 30 days. Invitation reservations last
 between one minute and seven days. These are validation bounds, not recommended
@@ -333,11 +346,10 @@ WorkOS, enable a production artifact service or launch paid billing.
 Starting with the capacity catalog retains existing base assignments, grants,
 subscription deadlines, stored plan JSON, and Stripe price-to-plan bindings.
 Legacy `pilot_free` and `comp_team` versions remain available. Once the capacity
-catalog is installed, their resolved capacity includes at least Starter's 2,000
-unarchived issues and retains any larger legacy project quota. Their stored
-records and paid-price bindings stay immutable; plan runner/repository count
-ceilings are removed in this compatibility view. Existing pilot organizations
-keep complimentary execution access and are labeled as legacy access.
+catalog is installed, they resolve with the open-issue guard and without
+project, concurrent-work, runner or repository limits. Their stored records and
+paid-price bindings stay immutable. Existing pilot organizations keep
+complimentary execution access and are labeled as legacy access.
 Changing catalogs does not purchase, cancel, or change a subscription. Never
 repoint the existing $49 test price: retain its exact versioned-plan mapping.
 Existing custom catalogs must include their historical referenced versions when

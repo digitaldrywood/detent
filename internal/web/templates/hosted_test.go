@@ -13,13 +13,13 @@ func TestHostedBillingOverLimitRemedy(t *testing.T) {
 	for _, test := range []struct {
 		label, remedy string
 		archive       bool
-	}{{"projects", "Upgrade to increase project capacity.", false}, {"unarchived issues", "Upgrade or archive issues to free capacity.", true}} {
+	}{{"concurrent work", "New work waits for a free slot; upgrade to run more at once.", false}, {"open issues", "Finish or archive issues to free capacity.", true}} {
 		t.Run(test.label, func(t *testing.T) {
 			t.Parallel()
 			data := hostedTestData("billing")
 			data.Allowances = []HostedAllowanceRow{{Label: test.label, OverLimit: true}}
 			html := renderSSEFingerprintComponent(t, hostedBilling(data))
-			if !strings.Contains(html, test.remedy) || strings.Contains(html, "Upgrade or archive") != test.archive {
+			if !strings.Contains(html, test.remedy) || strings.Contains(html, "Finish or archive") != test.archive {
 				t.Fatalf("over-limit remedy = %s", html)
 			}
 		})

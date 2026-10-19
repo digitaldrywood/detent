@@ -16,23 +16,26 @@ flag's WorkOS/policy coupling is follow-up work, not a shipped auth-mode switch.
 
 ## Capacity prices in Stripe test mode
 
-The default catalog offers Free ($0), Starter ($49), Growth ($149), and Scale
-($399) per organization per month. Enterprise remains custom. Free has no
-sponsored AI, including Luna general chat; paid subscriptions cover hosting and
-include no model-provider usage or bundled allowance.
+The default catalog offers Free ($0), Starter ($49), Team ($99) and Growth
+($249) per organization per month, metered on concurrent work (2, 8, 20 and 50
+running attempts). Scale is contact-us with a custom allowance and no
+self-serve price. Every tier includes native execution; Luna chat and hosted AI
+draw on AI credits, and paid subscriptions cover hosting with no bundled
+model-provider usage.
 
 With the default catalog, retain approved price IDs in the existing `prices`
-mapping and use `{id: starter, version: 1}`, `{id: growth, version: 1}`, and
-`{id: scale, version: 1}` for new test-mode prices. Use one fixed USD monthly
-licensed price with quantity one per organization. Configure only verified test
-prices for $49/$149/$399. IDs are operator supplied; Detent does not create or
-modify Stripe products or prices. This change performs no live-mode operations.
+mapping and use `{id: starter, version: 1}`, `{id: team, version: 2}` and
+`{id: growth, version: 2}` for self-serve prices. Do not map a price to Scale.
+Use one fixed USD monthly licensed price with quantity one per organization.
+Configure only verified prices for $49/$99/$249. IDs are operator supplied;
+Detent does not create or modify Stripe products or prices. Existing prices
+mapped to `growth` or `scale` version 1 keep their mapping and paid access.
 The existing $49 test price keeps its original plan/version mapping and paid
 access deadline; retain its catalog record and mapping alongside new prices.
 Do not repoint it to Starter or replace its subscription to migrate capacity.
 Audited base assignments and scoped complimentary grants preserve legacy access.
 
-The billing/plan screens show price, project and unarchived-issue consumption,
+The billing/plan screens show price, concurrent-work and open-issue consumption,
 remaining capacity, contextual over-limit state, and owner upgrade/portal actions.
 Changing plans through the portal reuses authoritative reconciliation and existing
 grace rules. Downgrades preserve data and in-flight completion. Archived issues

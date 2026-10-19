@@ -383,12 +383,12 @@ func TestHostedConcurrentClaimsDowngradeRelease(t *testing.T) {
 			winners++
 			continue
 		}
-		var limit *hostedLimitError
-		if !errors.As(result.err, &limit) || limit.Resource != "concurrent_work" {
+		var refusal *nativeError
+		if !errors.As(result.err, &refusal) || refusal.Code != "plan_capacity" {
 			t.Errorf("claim error: %v", result.err)
 		}
 	}
-	if winners != contenders {
+	if winners != 1 {
 		t.Fatalf("got %d winners", winners)
 	}
 	again, err := f.service.Tracker().Claim(t.Context(), requests[winner.index])
@@ -896,19 +896,34 @@ func TestCapacityCatalog(t *testing.T) {
 	cfg.Hosted = &hosted
 	f.service = openTestService(t, cfg)
 	for _, test := range []struct {
-		id               string
-		projects, issues int64
-		execution        bool
+		ref        PlanReference
+		cents      int64
+		priced     bool
+		concurrent int64
 	}{
-		{"free", 1, 200, false}, {"starter", 5, 2000, true}, {"growth", 25, 10000, true}, {"scale", 100, 50000, true},
+		{PlanReference{ID: "free", Version: 1}, 0, true, 2},
+		{PlanReference{ID: "starter", Version: 1}, 4900, true, 8},
+		{PlanReference{ID: "team", Version: 2}, 9900, true, 20},
+		{PlanReference{ID: "growth", Version: 2}, 24900, true, 50},
+		{PlanReference{ID: "scale", Version: 2}, 0, false, 100},
+		{PlanReference{ID: "growth", Version: 1}, 14900, true, 50},
+		{PlanReference{ID: "scale", Version: 1}, 39900, true, 100},
 	} {
-		t.Run(test.id, func(t *testing.T) {
-			plan, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, PlanReference{ID: test.id, Version: 1})
+		t.Run(fmt.Sprintf("%s v%d", test.ref.ID, test.ref.Version), func(t *testing.T) {
+			plan, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, test.ref)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if plan.Allowances["projects"] != test.projects || plan.Allowances["unarchived_issues"] != test.issues || slices.Contains(plan.Features, "native_execution") != test.execution || slices.Contains(plan.Features, "model_choice") {
+			if (plan.MonthlyUSDCents != nil) != test.priced || test.priced && *plan.MonthlyUSDCents != test.cents {
+				t.Fatalf("price = %v", plan.MonthlyUSDCents)
+			}
+			if plan.Allowances["concurrent_work"] != test.concurrent || plan.Allowances["unarchived_issues"] != 10000 || !slices.Contains(plan.Features, "native_execution") || slices.Contains(plan.Features, "model_choice") {
 				t.Fatalf("catalog = %#v", plan)
+			}
+			for _, name := range []string{"projects", "members", "repositories"} {
+				if _, limited := plan.Allowances[name]; limited {
+					t.Fatalf("tier limits %s", name)
+				}
 			}
 		})
 	}
@@ -930,7 +945,7 @@ func TestCapacityCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"members", "repositories", "registered_runners", "connected_runners", "concurrent_work"} {
+	for _, name := range []string{"members", "projects", "repositories", "registered_runners", "connected_runners"} {
 		if _, present := entitlement.Usage[name]; !present {
 			t.Fatalf("full plan usage omitted unrestricted metric %s", name)
 		}
@@ -938,7 +953,7 @@ func TestCapacityCatalog(t *testing.T) {
 			t.Fatalf("unrestricted fleet allowance %s reported a limit", name)
 		}
 	}
-	if fleetUsage.Allowances["projects"].Limit != 1 || fleetUsage.Allowances["unarchived_issues"].Limit != 200 {
+	if fleetUsage.Allowances["concurrent_work"].Limit != 2 || fleetUsage.Allowances["unarchived_issues"].Limit != 10000 {
 		t.Fatalf("fleet capacity = %#v", fleetUsage.Allowances)
 	}
 	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
@@ -952,8 +967,8 @@ func TestCapacityCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if err := f.service.database.checkHostedClaim(t.Context(), tx, time.Now()); err == nil || !strings.Contains(err.Error(), "Free") {
-		t.Fatalf("Free claim refusal = %v", err)
+	if err := f.service.database.checkHostedClaim(t.Context(), tx, time.Now()); err != nil {
+		t.Fatalf("Free claim = %v", err)
 	}
 }
 
@@ -978,10 +993,10 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if retained != original || entitlement.Base.ID != "pilot_free" || len(entitlement.Grants) != 1 || entitlement.Allowances["projects"] != 20 || entitlement.Allowances["unarchived_issues"] != 2000 || !slices.Contains(entitlement.Features, "native_execution") {
+	if retained != original || entitlement.Base.ID != "pilot_free" || len(entitlement.Grants) != 1 || entitlement.Allowances["unarchived_issues"] != 10000 || !slices.Contains(entitlement.Features, "native_execution") {
 		t.Fatalf("legacy migration = %#v", entitlement)
 	}
-	for _, resource := range []string{"members", "concurrent_work"} {
+	for _, resource := range []string{"members", "projects", "concurrent_work"} {
 		if _, limited := entitlement.Allowances[resource]; limited {
 			t.Fatalf("legacy still limits %s", resource)
 		}
@@ -1045,7 +1060,7 @@ func TestCapacityCostDriversUnknownInputs(t *testing.T) {
 func TestCapacityGrantPreservesUnrestrictedResources(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	config := capacityHostedPlans()
-	grant := HostedPlan{PlanReference: PlanReference{ID: "capacity_grant", Version: 1}, Allowances: map[string]int64{"projects": 9, "repositories": 1, "registered_runners": 1, "connected_runners": 1}}
+	grant := HostedPlan{PlanReference: PlanReference{ID: "capacity_grant", Version: 1}, Allowances: map[string]int64{"concurrent_work": 9, "projects": 1, "repositories": 1, "registered_runners": 1, "connected_runners": 1}}
 	config.Plans = append(config.Plans, grant)
 	d := f.service.database
 	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &config}); err != nil {
@@ -1054,20 +1069,30 @@ func TestCapacityGrantPreservesUnrestrictedResources(t *testing.T) {
 	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "capacity-base", Action: "base", ExpectedRevision: 1, Plan: config.Base, Reason: "capacity access"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "capacity-grant", Action: "grant", ExpectedRevision: 2, GrantID: "capacity", Plan: grant.PlanReference, Scope: []string{"projects", "repositories", "registered_runners", "connected_runners"}, Reason: "additional capacity"}); err != nil {
+	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "capacity-grant", Action: "grant", ExpectedRevision: 2, GrantID: "capacity", Plan: grant.PlanReference, Scope: []string{"concurrent_work", "projects", "repositories", "registered_runners", "connected_runners"}, Reason: "additional capacity"}); err != nil {
 		t.Fatal(err)
 	}
 	entitlement, err := d.hostedPlanUsage(t.Context(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entitlement.Allowances["projects"] != 9 {
-		t.Fatalf("project grant = %#v", entitlement.Allowances)
+	if entitlement.Allowances["concurrent_work"] != 9 {
+		t.Fatalf("concurrent work grant = %#v", entitlement.Allowances)
 	}
-	for _, resource := range []string{"repositories", "registered_runners", "connected_runners"} {
+	for _, resource := range []string{"projects", "repositories", "registered_runners", "connected_runners"} {
 		if _, limited := entitlement.Allowances[resource]; limited {
 			t.Fatalf("grant introduced a %s restriction", resource)
 		}
+	}
+	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "tier-grant", Action: "grant", ExpectedRevision: 3, GrantID: "tier", Plan: PlanReference{ID: "team", Version: 2}, Scope: []string{"projects"}, Reason: "Team access"}); err != nil {
+		t.Fatal(err)
+	}
+	entitlement, err = d.hostedPlanUsage(t.Context(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entitlement.Allowances["concurrent_work"] != 20 {
+		t.Fatalf("tier grant concurrent work = %d", entitlement.Allowances["concurrent_work"])
 	}
 }
 
@@ -1090,28 +1115,50 @@ func TestCapacityLegacyMetadataKeepsImmutablePlan(t *testing.T) {
 	}
 }
 
-func TestCapacityFreeNativeClaimRefusal(t *testing.T) {
+func TestCapacityFreeConcurrentWorkQueues(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	issue := f.create(t, "Free exploration")
 	worker := f.worker(t, "free-worker")
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "free-machine", "hostname": "free-machine", "version": "test", "capacity": 1}), http.StatusOK)
 	d := f.service.database
 	d.hostedOrganization = f.project.OrganizationID
 	if err := d.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
 		t.Fatal(err)
 	}
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: "free-machine", SessionID: "free-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
-	requireNativeStatus(t, response, http.StatusTooManyRequests)
-	if !strings.Contains(response.Body.String(), "Free") || !strings.Contains(response.Body.String(), "Upgrade") {
-		t.Fatalf("claim refusal=%s", response.Body.String())
+	claim := func(issue tracker.NativeIssue, machine string) *httptest.ResponseRecorder {
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": machine, "hostname": machine, "version": "test", "capacity": 1}), http.StatusOK)
+		return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: tracker.MachineID(machine), SessionID: "session-" + machine, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
 	}
-	var leases int
-	if err := d.db.QueryRowContext(t.Context(), "SELECT count(*) FROM leases").Scan(&leases); err != nil {
-		t.Fatal(err)
+	var leases [2]tracker.NativeLease
+	for i := range leases {
+		response := claim(f.create(t, fmt.Sprintf("Free work %d", i)), fmt.Sprintf("free-machine-%d", i))
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &leases[i])
 	}
-	if leases != 0 {
-		t.Fatal("Free dispatch allocated a lease")
+	queued := f.create(t, "Free queued work")
+	for _, test := range []struct {
+		name    string
+		release bool
+		status  int
+	}{
+		{"refused at the concurrent limit", false, http.StatusConflict},
+		{"claimable after a slot frees", true, http.StatusOK},
+	} {
+		if test.release {
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(leases[0].ID)+"/release", worker, map[string]any{"fencing_token": fmt.Sprint(leases[0].FencingToken), "reason": "completed"}), http.StatusNoContent)
+		}
+		response := claim(queued, "free-machine-queued")
+		requireNativeStatus(t, response, test.status)
+		if test.status == http.StatusConflict && !strings.Contains(response.Body.String(), `"code":"plan_capacity"`) {
+			t.Fatalf("%s: refusal=%s", test.name, response.Body.String())
+		}
+		item := readWorkItem(t, f, queued.WorkItemID, "")
+		var leased int
+		if err := d.db.QueryRowContext(t.Context(), "SELECT count(*) FROM leases l JOIN issues i ON i.id = l.issue_id WHERE i.native_id = ? AND l.released_at IS NULL", item.WorkItemID).Scan(&leased); err != nil {
+			t.Fatal(err)
+		}
+		if item.State != "Todo" || item.Archived || (leased == 1) != (test.status == http.StatusOK) {
+			t.Fatalf("%s: state=%s archived=%v leases=%d", test.name, item.State, item.Archived, leased)
+		}
 	}
 }
 
@@ -1194,7 +1241,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 			queries    int
 		}{
 			{"limited retained data", map[string]int64{"collaboration_bytes": 1 << 30, "history_records": 10000, "api_mutations": 10000, "ingested_events": 10000}, 0, 7},
-			{"unlimited retained data", map[string]int64{"api_mutations": 0, "ingested_events": 0, "members": 10, "concurrent_work": 5}, 0, 5},
+			{"unlimited retained data", map[string]int64{"api_mutations": 0, "ingested_events": 0, "members": 10}, 0, 5},
 			{"next usage window", map[string]int64{"api_mutations": 0, "ingested_events": 0}, time.Duration(plans.WindowSeconds) * time.Second, 5},
 			{"window overrides gauge", map[string]int64{"projects": 10}, 0, 6},
 		} {

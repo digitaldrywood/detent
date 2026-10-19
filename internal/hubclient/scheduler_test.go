@@ -622,6 +622,7 @@ func TestSchedulerRoutingDeferralsRemainQueued(t *testing.T) {
 		{"runner_offline", true},
 		{"runner_capacity", true},
 		{"host_capacity", true},
+		{"plan_capacity", true},
 		{"project_access_denied", true},
 		{"claim_not_permitted", true},
 		{"invalid_request", false},

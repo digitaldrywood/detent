@@ -208,11 +208,11 @@ func TestHostedBillingUsageJSON(t *testing.T) {
 	configureTestCredits(t, f, provider)
 	cfg := f.service.config.Hosted
 	cfg.Plans.Plans = append(cfg.Plans.Plans, capacityHostedPlans().Plans[1:4]...)
-	cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_growth", Plan: PlanReference{ID: "growth", Version: 1}})
+	cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_growth", Plan: PlanReference{ID: "growth", Version: 2}})
 	if err := f.service.database.configureHostedPlans(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plans SET record_json=json_set(record_json,'$.allowances.projects',31,'$.monthly_usd_cents',15900) WHERE id='growth' AND version=1"); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plans SET record_json=json_set(record_json,'$.allowances.history_records',31,'$.monthly_usd_cents',15900) WHERE id='growth' AND version=2"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'live',0)", cfg.OrganizationID); err != nil {
@@ -256,8 +256,8 @@ func TestHostedBillingUsageJSON(t *testing.T) {
 			if view.ChargedAIMicros != 90000 || view.AICredits == nil || len(view.AICredits.History) != 0 || len(view.ComparisonPlans) != 3 {
 				t.Fatalf("usage view=%+v", view)
 			}
-			if view.ComparisonPlans[1].Allowances["projects"] != 31 || view.ComparisonPlans[1].MonthlyUSDCents == nil || *view.ComparisonPlans[1].MonthlyUSDCents != 15900 || view.ComparisonPlans[1].PriceID != "price_growth" {
-				t.Fatalf("comparison plan did not read authoritative catalog: %+v", view.ComparisonPlans[1])
+			if view.ComparisonPlans[2].Allowances["history_records"] != 31 || view.ComparisonPlans[2].MonthlyUSDCents == nil || *view.ComparisonPlans[2].MonthlyUSDCents != 15900 || view.ComparisonPlans[2].PriceID != "price_growth" {
+				t.Fatalf("comparison plan did not read authoritative catalog: %+v", view.ComparisonPlans[2])
 			}
 			if view.CanCheckout != (role == "owner") || view.CanBuyCredits != (role == "owner") || view.CanManage != (role == "owner") {
 				t.Fatalf("incorrect purchase authority: %+v", view)
