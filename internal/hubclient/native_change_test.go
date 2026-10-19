@@ -3771,7 +3771,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				result.NativeChange = owner.NativeChange()
 				if genuinePublication && test.publication != "confirmed" {
 					var refusal *APIError
-					if !errors.As(err, &refusal) || refusal.Status != http.StatusUnprocessableEntity || refusal.Rejection == nil || refusal.Rejection.Field != "validator.session_id" || provider.calls != callsBefore+1 || owner.publication == nil || forgeCreates != 1 {
+					if !errors.As(err, &refusal) || refusal.Status != http.StatusUnprocessableEntity || refusal.Rejection == nil || refusal.Rejection.Category != "acceptance_validation" || refusal.Rejection.Field != "validator.session_id" || provider.calls != callsBefore+1 || owner.publication == nil || forgeCreates != 1 {
 						t.Fatalf("publication-only retry bypassed validator session authority: calls=%d error=%v", provider.calls-callsBefore, err)
 					}
 					detail, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
