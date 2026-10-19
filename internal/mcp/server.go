@@ -402,7 +402,11 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 		return s.writeError(message.ID, codeInvalidParams, "Invalid tools/call parameters", nil)
 	}
 	params.Name = strings.TrimSpace(params.Name)
-	if _, ok := operatortool.Lookup(params.Name); !ok {
+	_, known := operatortool.Lookup(params.Name)
+	if scoped, ok := s.executor.(*ConnectionExecutor); ok {
+		known = scoped.hasTool(params.Name)
+	}
+	if !known {
 		return s.writeError(message.ID, codeInvalidParams, "Unknown tool", nil)
 	}
 	if len(params.Arguments) == 0 {

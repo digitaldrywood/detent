@@ -12,15 +12,20 @@ import (
 	"image"
 	"image/png"
 	"io"
+	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/claudecode"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -50,8 +55,11 @@ func TestNativeAgentEvidence(t *testing.T) {
 	var previousIssue tracker.NativeIssue
 	var previousAttempt string
 	var previousUploads []attachment.Metadata
-	for index, completion := range []string{strings.Repeat("x", 64<<10), ""} {
-		t.Run(fmt.Sprintf("item-%d", index), func(t *testing.T) {
+	for index, test := range []struct {
+		completion, tier string
+	}{{strings.Repeat("x", 64<<10), isolation.NativeTrusted}, {"", isolation.Sandbox}} {
+		t.Run(test.tier, func(t *testing.T) {
+			completion := test.completion
 			request := func(method, path string, body io.Reader, headers map[string]string) pilotResponse {
 				r := attachmentRequest(t, owner, method, path, body, headers)
 				return pilotResponse{status: r.Code, body: r.Body.String(), header: r.Header()}
@@ -71,7 +79,7 @@ func TestNativeAgentEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "evidence-runner", DisplayName: "evidence-runner", Capacity: 1, Version: "test", OS: "linux", Architecture: "amd64"}
+			redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}, "claude": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "evidence-runner", DisplayName: "evidence-runner", Capacity: 1, Version: "test", OS: "linux", Architecture: "amd64"}
 			pilotStatus(t, "redemption", machine(http.MethodPost, o.api()+"/runner-enrollments/redeem", issued.Token, redemption), http.StatusCreated)
 			descriptor := pilotPolicy()
 			pilotStatus(t, "policy", ownerJSON(http.MethodPut, o.projectAPI()+"/onboarding/policy", o.ownerCSRF, policy.Change{Policy: descriptor}), http.StatusOK)
@@ -110,15 +118,27 @@ func TestNativeAgentEvidence(t *testing.T) {
 				t.Fatalf("claim: %+v, %v", items, err)
 			}
 			execution := scheduler.RunExecution(items[0].ID)
-			if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "merge", Backend: "git", Model: "none"}); err != nil {
+			if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "design", Backend: "claude", Model: "fable"}); err != nil {
 				t.Fatal(err)
 			}
 			var pixels bytes.Buffer
-			if err := png.Encode(&pixels, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+			canvas := image.NewRGBA(image.Rect(0, 0, 128, 128))
+			noise := rand.New(rand.NewPCG(1, 2))
+			for i := range canvas.Pix {
+				canvas.Pix[i] = byte(noise.Uint32())
+			}
+			if err := png.Encode(&pixels, canvas); err != nil {
 				t.Fatal(err)
+			}
+			if pixels.Len() <= operatortool.MaxArgumentBytes {
+				t.Fatal("PNG does not exercise publication beyond the MCP argument limit")
 			}
 			workspace := t.TempDir()
 			if err := os.WriteFile(filepath.Join(workspace, "page.png"), pixels.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			indexContent := "Screen: example page\nState: default\nArtifact: page.png\nDecision: awaiting human design approval\n"
+			if err := os.WriteFile(filepath.Join(workspace, "index.txt"), []byte(indexContent), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			execution.(runner.EvidenceSourceExecution).SetEvidenceSource(func(_ context.Context, path string) (runner.ValidationEvidence, error) {
@@ -130,9 +150,26 @@ func TestNativeAgentEvidence(t *testing.T) {
 					return runner.ValidationEvidence{Name: "large.log", ContentType: "text/plain", Content: bytes.Repeat([]byte("x"), size)}, nil
 				}
 				content, err := os.ReadFile(filepath.Join(workspace, path))
-				return runner.ValidationEvidence{Name: "page.png", ContentType: "image/png", Content: content}, err
+				media := "image/png"
+				if path == "index.txt" {
+					media = "text/plain"
+				}
+				return runner.ValidationEvidence{Name: path, ContentType: media, Content: content}, err
 			})
 			tools, handler := execution.(runner.ToolExecution).AgentTools()
+			backend, err := claudecode.NewAgentBackend(claudecode.Options{IsolationPolicy: func() (isolation.Policy, error) {
+				return isolation.Policy{Tier: test.tier}, nil
+			}, CommandFactoryWithArgs: func(ctx context.Context, args []string) *exec.Cmd {
+				cmd := exec.CommandContext(ctx, os.Args[0], append([]string{"-test.run=^TestClaudeEvidenceWorkerProcess$", "--"}, args...)...)
+				cmd.Env = append(os.Environ(), "DETENT_CLAUDE_EVIDENCE_HELPER=1")
+				return cmd
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := any(backend).(runner.AgentToolBackend); !ok {
+				t.Fatal("official Claude backend drops the native worker evidence catalog")
+			}
 			for _, tool := range tools {
 				if operatortool.IsAttachmentTool(tool.Name) && tool.Name != operatortool.ReadAttachment && tool.Name != operatortool.ReadAttachmentMetadata {
 					t.Fatalf("worker gained attachment mutation %s", tool.Name)
@@ -283,6 +320,24 @@ func TestNativeAgentEvidence(t *testing.T) {
 					t.Fatalf("upload replay: %+v, %v", replay, err)
 				}
 			}
+			call := runner.AgentToolCall{Name: "attach_evidence", Arguments: json.RawMessage(`{"path":"page.png","caption":"Page rendered correctly"}`)}
+			var result runner.AgentToolResult
+			var indexUpload attachment.Metadata
+			_, err = backend.RunTurnWithTools(t.Context(), runner.AgentTurnRequest{Workspace: workspace, TempDir: t.TempDir(), Prompt: "Publish the page for human design review."}, tools, func(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
+				response, callErr := handler(ctx, call)
+				if response.Success && strings.Contains(string(call.Arguments), "index.txt") {
+					if decodeErr := json.Unmarshal([]byte(response.Content), &indexUpload); decodeErr != nil {
+						return runner.AgentToolResult{}, decodeErr
+					}
+				} else {
+					result = response
+				}
+				return response, callErr
+			}, nil)
+			var uploaded attachment.Metadata
+			if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &uploaded) != nil || uploaded.Reference != uploaded.Markdown(o.id) {
+				t.Fatalf("tool: %+v, %v", result, err)
+			}
 			for _, refusal := range []struct {
 				path, message string
 			}{
@@ -301,13 +356,13 @@ func TestNativeAgentEvidence(t *testing.T) {
 					t.Fatalf("%s refusal: %+v, %v", refusal.path, result, err)
 				}
 			}
-			uploaded := uploads[0]
+			published := append(slices.Clone(uploads), uploaded, indexUpload)
 			native, ok := scheduler.NativeClient("local")
 			if !ok {
 				t.Fatal("native client unavailable")
 			}
 			pending, err := native.RuntimeEvidence(t.Context(), issue.WorkItemID, "")
-			if err != nil || pending.Attempt == nil || len(pending.Attempt.Evidence) != 12 || pending.Attempt.Evidence[0].AttachmentID != uploaded.ID {
+			if err != nil || pending.Attempt == nil || len(pending.Attempt.Evidence) != len(published) || pending.Attempt.Evidence[0].AttachmentID != uploads[0].ID {
 				t.Fatalf("authenticated upload unavailable before finish: %+v, %v", pending.Attempt, err)
 			}
 			allComments := func() []tracker.NativeComment {
@@ -327,8 +382,18 @@ func TestNativeAgentEvidence(t *testing.T) {
 				}
 			}
 			before := allComments()
-			if len(before) != 13 {
+			if len(before) != len(published)+1 {
 				t.Fatalf("published upload comments: got %d", len(before))
+			}
+			for _, design := range []struct {
+				file    attachment.Metadata
+				caption string
+			}{{uploaded, "Page rendered correctly"}, {indexUpload, "Screen and state index; awaiting human approval"}} {
+				if design.file.Reference == "" || !slices.ContainsFunc(before, func(comment tracker.NativeComment) bool {
+					return strings.Contains(comment.Body, design.file.Reference) && strings.Contains(comment.Body, design.caption)
+				}) {
+					t.Fatalf("design evidence was not published immediately: %+v", design)
+				}
 			}
 			for _, file := range previousUploads {
 				for _, comment := range before {
@@ -366,6 +431,30 @@ func TestNativeAgentEvidence(t *testing.T) {
 					t.Fatalf("%s: %+v", refusal.name, response)
 				}
 			}
+			_, organizationPage := owner.get("/organizations/" + o.id + "/organization")
+			other := owner.do(http.MethodPost, "/organizations/"+o.id+"/projects", url.Values{"name": {fmt.Sprintf("Other evidence project %d", index)}, "grant_access": {"true"}, "csrf": {csrfFrom(t, organizationPage)}}, nil)
+			if other.StatusCode != http.StatusSeeOther {
+				t.Fatalf("other project: %d", other.StatusCode)
+			}
+			foreignProject := strings.TrimPrefix(other.Header.Get("Location"), "/organizations/"+o.id+"/projects/")
+			for _, test := range []struct {
+				name, project, token string
+				fence                tracker.FencingToken
+				status               int
+			}{
+				{"cross-project", foreignProject, credential, lease.FencingToken, http.StatusNotFound},
+				{"unauthorized", o.project, "invalid-worker-token", lease.FencingToken, http.StatusUnauthorized},
+			} {
+				authority := attachment.EvidenceRequest{Mutation: tracker.Mutation{IdempotencyKey: test.name, LeaseID: lease.ID, FencingToken: test.fence}, AttemptID: pending.Attempt.AttemptID, WorkItemID: issue.WorkItemID, Caption: "Refused evidence"}
+				raw, err := json.Marshal(authority)
+				if err != nil {
+					t.Fatal(err)
+				}
+				refusal := request(http.MethodPost, "/organizations/"+o.id+"/api/v2/projects/"+test.project+"/attempts/"+authority.AttemptID+"/evidence", bytes.NewReader(pixels.Bytes()), map[string]string{"Authorization": "Bearer " + test.token, "Content-Type": "image/png", "X-Attachment-Name": "page.png", "Idempotency-Key": test.name, "X-Detent-Evidence": base64.RawURLEncoding.EncodeToString(raw)})
+				if refusal.status != test.status {
+					t.Fatalf("%s publication refusal: %+v", test.name, refusal)
+				}
+			}
 			if err := execution.Checkpoint(t.Context(), tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", ExternalEffect: "none", EffectState: "none"}); err != nil {
 				t.Fatal(err)
 			}
@@ -377,11 +466,15 @@ func TestNativeAgentEvidence(t *testing.T) {
 			if err := execution.Finish(t.Context(), "failed"); err != nil {
 				t.Fatal(err)
 			}
+			refused, refusalErr := handler(t.Context(), call)
+			if refusalErr == nil || refused.Success || strings.Contains(refused.Content, uploaded.Reference) {
+				t.Fatalf("finished worker retained publication authority: %+v, %v", refused, refusalErr)
+			}
 			if err := execution.Finish(t.Context(), "failed"); err != nil {
 				t.Fatal(err)
 			}
 			comments := allComments()
-			wantComments := 13
+			wantComments := len(published) + 1
 			if completion != "" {
 				wantComments++
 			}
@@ -403,10 +496,10 @@ func TestNativeAgentEvidence(t *testing.T) {
 				}
 			}
 			attempts, err := native.Attempts(t.Context(), issue.WorkItemID, "")
-			if err != nil || len(attempts.Items) != 1 || len(attempts.Items[0].Evidence) != 12 || attempts.Items[0].Evidence[0].AttachmentID != uploaded.ID {
+			if err != nil || len(attempts.Items) != 1 || len(attempts.Items[0].Evidence) != len(published) || attempts.Items[0].Evidence[0].AttachmentID != uploads[0].ID {
 				t.Fatalf("attempt evidence: %+v, %v", attempts, err)
 			}
-			for _, file := range uploads {
+			for _, file := range published {
 				found := false
 				for _, evidence := range attempts.Items[0].Evidence {
 					if evidence.AttachmentID == file.ID && evidence.Reference == file.Reference {
@@ -418,9 +511,18 @@ func TestNativeAgentEvidence(t *testing.T) {
 				}
 			}
 			read := request(http.MethodGet, strings.TrimSuffix(uploaded.Reference, ")")[strings.Index(uploaded.Reference, "(")+1:], nil, nil)
-			if read.status != http.StatusOK {
+			if read.status != http.StatusOK || !bytes.Equal([]byte(read.body), pixels.Bytes()) {
 				t.Fatalf("operator attachment read: %+v", read)
 			}
+			readIndex := request(http.MethodGet, strings.TrimSuffix(indexUpload.Reference, ")")[strings.Index(indexUpload.Reference, "(")+1:], nil, nil)
+			if readIndex.status != http.StatusOK || readIndex.body != indexContent {
+				t.Fatal("screen/state index was not retrievable")
+			}
+			current, err := native.Issue(t.Context(), issue.WorkItemID)
+			if err != nil || current.State != issue.State {
+				t.Fatalf("publication changed the workflow state: %+v, %v", current, err)
+			}
+			lease = execution.Recovery().Lease
 			lease.FencingToken++
 			authority, err := json.Marshal(attachment.EvidenceRequest{Mutation: tracker.Mutation{IdempotencyKey: "stale-evidence", LeaseID: lease.ID, FencingToken: lease.FencingToken}, AttemptID: attempts.Items[0].AttemptID, WorkItemID: issue.WorkItemID, Caption: "Stale screenshot"})
 			if err != nil {
@@ -433,10 +535,170 @@ func TestNativeAgentEvidence(t *testing.T) {
 			store.mu.Lock()
 			objects := len(store.objects)
 			store.mu.Unlock()
-			if objects != (index+1)*12 {
+			if objects != (index+1)*14 {
 				t.Fatalf("replay or stale upload created extra storage objects: %d", objects)
 			}
-			previousIssue, previousAttempt, previousUploads = issue, pending.Attempt.AttemptID, uploads
+			previousIssue, previousAttempt, previousUploads = issue, pending.Attempt.AttemptID, published
 		})
 	}
+}
+
+func TestClaudeEvidenceWorkerProcess(t *testing.T) {
+	if os.Getenv("DETENT_CLAUDE_EVIDENCE_HELPER") != "1" {
+		return
+	}
+	var settings struct {
+		Sandbox struct {
+			Enabled bool `json:"enabled"`
+			Network struct {
+				AllowedDomains    []string `json:"allowedDomains"`
+				AllowLocalBinding bool     `json:"allowLocalBinding"`
+				StrictAllowlist   bool     `json:"strictAllowlist"`
+			} `json:"network"`
+		} `json:"sandbox"`
+	}
+	var effective json.RawMessage
+	var config struct {
+		Servers map[string]struct {
+			Type    string            `json:"type"`
+			URL     string            `json:"url"`
+			Headers map[string]string `json:"headers"`
+		} `json:"mcpServers"`
+	}
+	for i, arg := range os.Args {
+		if arg == "--mcp-config" && i+1 < len(os.Args) {
+			raw, err := os.ReadFile(os.Args[i+1])
+			if err != nil || json.Unmarshal(raw, &config) != nil {
+				t.Fatalf("MCP configuration: %v", err)
+			}
+		}
+		if arg == "--settings" && i+1 < len(os.Args) {
+			effective = json.RawMessage(os.Args[i+1])
+			if err := json.Unmarshal(effective, &settings); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	server, ok := config.Servers["detent"]
+	if !ok || len(config.Servers) != 1 || server.Type != "http" {
+		t.Fatal("Claude did not receive the scoped HTTP MCP server")
+	}
+	if settings.Sandbox.Enabled {
+		address, err := url.Parse(server.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		network := settings.Sandbox.Network
+		if !network.StrictAllowlist || network.AllowLocalBinding || !slices.Contains(network.AllowedDomains, address.Host) {
+			t.Fatal("sandbox did not authorize the worker MCP endpoint")
+		}
+		if len(network.AllowedDomains) != len(isolation.Domains())+1 {
+			t.Fatal("sandbox gained network access beyond the worker MCP endpoint")
+		}
+		decoder := json.NewDecoder(os.Stdin)
+		for _, subtype := range []string{"initialize", "get_settings"} {
+			var control struct {
+				Type      string `json:"type"`
+				RequestID string `json:"request_id"`
+				Request   struct {
+					Subtype string `json:"subtype"`
+				} `json:"request"`
+			}
+			if err := decoder.Decode(&control); err != nil || control.Type != "control_request" || control.Request.Subtype != subtype {
+				t.Fatalf("sandbox handshake %s: %+v, %v", subtype, control, err)
+			}
+			response := map[string]any{}
+			if subtype == "get_settings" {
+				response["effective"] = effective
+			}
+			if err := json.NewEncoder(os.Stdout).Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": control.RequestID, "response": response}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var prompt struct {
+			Type string `json:"type"`
+		}
+		if err := decoder.Decode(&prompt); err != nil || prompt.Type != "user" {
+			t.Fatalf("sandbox prompt: %+v, %v", prompt, err)
+		}
+	} else if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	session := ""
+	request := func(body string, authorized bool) (int, []byte) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if authorized {
+			for name, value := range server.Headers {
+				req.Header.Set(name, value)
+			}
+		}
+		if session != "" {
+			req.Header.Set("Mcp-Session-Id", session)
+		}
+		response, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		content, err := io.ReadAll(response.Body)
+		if closeErr := response.Body.Close(); err != nil || closeErr != nil {
+			t.Fatal(errors.Join(err, closeErr))
+		}
+		if id := response.Header.Get("Mcp-Session-Id"); id != "" {
+			session = id
+		}
+		return response.StatusCode, content
+	}
+	initialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"claude-fixture","version":"test"}}}`
+	if status, _ := request(initialize, false); status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated connection: %d", status)
+	}
+	if status, body := request(initialize, true); status != http.StatusOK || session == "" {
+		t.Fatalf("initialize: %d %s", status, body)
+	}
+	if status, body := request(`{"jsonrpc":"2.0","method":"notifications/initialized"}`, true); status != http.StatusAccepted {
+		t.Fatalf("initialized: %d %s", status, body)
+	}
+	if status, body := request(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`, true); status != http.StatusOK || !bytes.Contains(body, []byte(`"name":"attach_evidence"`)) || bytes.Contains(body, []byte(`"name":"delete_attachment"`)) {
+		t.Fatalf("worker catalog: %d %s", status, body)
+	}
+	for _, test := range []struct {
+		name, arguments string
+		refused         bool
+	}{
+		{"delete_attachment", `{}`, true},
+		{"attach_evidence", `{"path":"page.png","caption":"Page rendered correctly","project_id":"prj_foreign"}`, true},
+		{"attach_evidence", `{"path":"page.png","caption":"Page rendered correctly"}`, false},
+		{"attach_evidence", `{"path":"index.txt","caption":"Screen and state index; awaiting human approval"}`, false},
+	} {
+		raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": map[string]any{"name": test.name, "arguments": json.RawMessage(test.arguments)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, body := request(string(raw), true)
+		var response struct {
+			Error  json.RawMessage `json:"error"`
+			Result struct {
+				IsError bool `json:"isError"`
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"result"`
+		}
+		if status != http.StatusOK || json.Unmarshal(body, &response) != nil || (len(response.Error) > 0 || response.Result.IsError) != test.refused {
+			t.Fatalf("worker call %s: %d %s", test.name, status, body)
+		}
+		if !test.refused && (len(response.Result.Content) != 1 || !strings.Contains(response.Result.Content[0].Text, "/attachments/att_")) {
+			t.Fatalf("worker did not receive durable attachment reference: %s", body)
+		}
+	}
+	fmt.Fprintln(os.Stdout, `{"type":"system","subtype":"init","session_id":"claude-evidence","model":"fable"}`)
+	fmt.Fprintln(os.Stdout, `{"type":"result","subtype":"success","session_id":"claude-evidence"}`)
+	os.Exit(0)
 }
