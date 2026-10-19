@@ -91,6 +91,7 @@ export const FIXTURE_SCHEMAS: Readonly<Record<string, FixtureSchema>> = {
   "account-organization-created.json": CreateOrganizationResponse,
   "account-plan.json": PlanReport,
   "account-policy.json": PolicyApproval,
+  "account-policy-empty.json": PolicyApproval,
   "account-projects.json": ProjectsResponse,
   "account-runner-enrollment.json": RunnerEnrollment,
   "account-support.json": SupportResponse,

@@ -71,10 +71,6 @@ export function conflictingPolicies(observed: readonly ObservedPolicy[]): boolea
   return observed.some((entry) => entry.conflict || entry.previously_approved) || new Set(observed.map((entry) => entry.policy.policy_id)).size > 1;
 }
 
-export function noApprovedPolicy(error: AccountError): boolean {
-  return error.status === 404 || error.code === "policy_mismatch";
-}
-
 export function saveMessage(error: AccountError | null): string | null {
   if (error === null) return null;
   if (error.isConflict) {
@@ -203,7 +199,7 @@ export function PolicyRow({
     <SettingsRow
       title="Repository configuration"
       description="The runner reads detent.yaml and WORKFLOW.md from the repository."
-      status={policy === null && observed.length === 0 ? "Waiting for runner configuration" : "Configuration reported"}
+      status={policy?.policy == null && observed.length === 0 ? "Waiting for runner configuration" : "Configuration reported"}
     />
   );
 }
@@ -477,14 +473,7 @@ export function ProjectSettingsRoute({
     () => api.integration(projectId),
     [api, projectId],
   );
-  const policy = useResource<PolicyApproval | null>(
-    () =>
-      api.policy(projectId).catch((cause: unknown) => {
-        if (cause instanceof AccountError && noApprovedPolicy(cause)) return null;
-        throw cause;
-      }),
-    [api, projectId],
-  );
+  const policy = useResource(() => api.policy(projectId), [api, projectId]);
 
   const [draft, setDraft] = React.useState<IntegrationDraft | null>(null);
   React.useEffect(() => {
@@ -540,12 +529,12 @@ export function ProjectSettingsRoute({
   });
 
   const setup = useResource(() => api.onboarding(projectId), [api, projectId]);
-  const observed = setup.value?.observed_policies ?? [];
+  const observed = policy.value?.observed_policies ?? setup.value?.observed_policies ?? [];
   const loadOlder = useMutation(async () => {
     const current = policy.value;
     if (!current?.history_next) return null;
     const page = await api.policy(projectId, current.history_next);
-    if (page.policy.policy_id !== current.policy.policy_id) {
+    if (page.policy?.policy_id !== current.policy?.policy_id) {
       await policy.refresh();
       return null;
     }
