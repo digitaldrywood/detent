@@ -50,7 +50,7 @@ func (r *Runner) SSHHosts() []string {
 func NewSSHRunRequest(request RunRequest) SSHRunRequest {
 	wire := SSHRunRequest{IsolationPolicy: request.Issue.IsolationPolicy, Request: request, BatchedLanding: request.LandingBatch != nil}
 	callbacks := map[string]bool{
-		"usage": request.OnUsageUpdate != nil, "activity": request.OnActivityUpdate != nil,
+		"usage": true, "activity": request.OnActivityUpdate != nil,
 		"override": request.OnOverrideRejected != nil, "progress": request.ProgressProbe != nil,
 		"checkpoint": request.CheckpointValidate != nil, "tools": request.AgentToolHandler != nil,
 		"model_permit": request.AcquireModelPermit != nil,

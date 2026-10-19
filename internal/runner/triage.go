@@ -140,7 +140,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 		}
 		applyAgentUpdate(&result, update)
 		if req.OnUsageUpdate != nil {
-			if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, SessionID: update.ProviderSessionID, WorkerProcess: update.WorkerProcess, WorkspacePath: path, LastEventAt: r.now().UTC(), LastEvent: string(update.Type), TurnCount: turnCount, Tokens: result.Tokens, RuntimeIdentity: result.RuntimeIdentity}); err != nil {
+			if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, SessionID: update.ProviderSessionID, WorkerProcess: update.WorkerProcess, WorkspacePath: path, LastEventAt: r.now().UTC(), LastEvent: string(update.Type), TurnCount: turnCount, Tokens: result.Tokens, RuntimeIdentity: result.RuntimeIdentity, RateLimits: result.RateLimits}); err != nil {
 				return err
 			}
 		}
