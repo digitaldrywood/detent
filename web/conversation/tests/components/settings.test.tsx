@@ -488,10 +488,29 @@ describe("personal keys and org controls", () => {
     });
     renderSidebarNav("/settings/mcp", { ...client, account: { ...account, actor: { ...account.actor, can_manage: canManage, role } } } as ConversationClient, <SettingsRoute section="mcp" />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Create key" })).toHaveProperty("disabled", false));
-    for (const title of ["API keys & MCP", "Which key do I need?", "Your personal keys", "Connect"]) expect(screen.getByRole("heading", { name: title })).toBeTruthy();
+    for (const title of ["API keys & MCP", "Your personal keys", "Connect an agent"]) expect(screen.getByRole("heading", { name: title })).toBeTruthy();
     for (const title of ["Organization service keys", "Member keys"]) expect(Boolean(screen.queryByRole("heading", { name: title }))).toBe(canManage);
     expect(screen.getAllByRole("button", { name: "Create key" })).toHaveLength(1);
     expect(screen.getAllByRole("textbox", { name: "MCP endpoint value" })).toHaveLength(1);
+    expect(screen.queryByRole("heading", { name: "Which key do I need?" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Connect" })).toBeNull();
+    expect(screen.queryByText("API and MCP access")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copy MCP endpoint" }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(context.mcp_endpoint));
+    for (const [transport, label] of [["mcp", "MCP"], ["rest", "REST"]]) {
+      fireEvent.click(screen.getByRole("button", { name: transport === "mcp" ? "MCP" : "REST API" }));
+      fireEvent.click(screen.getByRole("button", { name: `Copy ${label} setup prompt` }));
+      await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(keySetupPrompt(context.mcp_endpoint, transport === "rest")));
+      const previewButton = screen.getByRole("button", { name: `Preview ${label} setup prompt` });
+      fireEvent.click(previewButton);
+      expect(screen.getByLabelText(`${label} setup prompt preview`).textContent).toBe(writeText.mock.lastCall![0]);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(previewButton.getAttribute("aria-expanded")).toBe("true");
+      fireEvent.click(previewButton);
+      expect(screen.queryByLabelText(`${label} setup prompt preview`)).toBeNull();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "MCP" }));
     fireEvent.click(screen.getByRole("button", { name: "Create key" }));
     const dialog = within(screen.getByRole("dialog"));
     expect(dialog.getByRole("radio", { name: "You" }).getAttribute("aria-checked")).toBe("true");
@@ -557,6 +576,69 @@ describe("personal keys and org controls", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalled());
     expect(writeText.mock.lastCall![0]).toContain("Settings → API keys & MCP");
     expect(writeText.mock.lastCall![0]).not.toContain("private-new-key");
+  });
+
+  it.each([
+    ["personal", true, "Example Member"],
+    ["personal", false, "member@example.test"],
+    ["service", true, `${account.organization.name} (service)`],
+    ["service", false, `${account.organization.name} (service)`],
+  ])("connects an existing %s key with used=%s without revealing or requesting a token", async (kind, used, actor) => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const path = String(url);
+      if (path.endsWith("key-context")) return new Response(JSON.stringify(context));
+      if (path.endsWith("key-policy")) return new Response(JSON.stringify({ personal_keys: "allowed" }));
+      if (path.endsWith("members")) return new Response(JSON.stringify({ members: [{ id: "membership1", user_id: key.owner, email: key.owner_email, name: used ? "Example Member" : "", role: "member", status: "active", grants: [] }], invitations: [] }));
+      const ownList = kind === "personal" ? path.endsWith("/account/api-keys") : path.endsWith("/service-keys");
+      return new Response(JSON.stringify({ keys: ownList ? [
+        { ...key, kind, last_used_at: used ? new Date(Date.now() - 120_000).toISOString() : null, token: "must-never-render" },
+        { ...key, id: "second", kind, name: "Other agent" },
+        { ...key, id: "expired", kind, name: "Expired agent", expires_at: "2020-01-01T00:00:00Z" },
+        { ...key, id: "revoked", kind, name: "Revoked agent", revoked_at: "2020-01-01T00:00:00Z" },
+      ] : [] }));
+    });
+    renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect My agent" }));
+    const dialogElement = screen.getByRole("dialog");
+    const dialog = within(dialogElement);
+    expect(dialog.getByRole("heading", { name: "Connect My agent" })).toBeTruthy();
+    expect(dialog.getByText(kind === "personal" ? "Personal · acts as you" : "Service · acts as the organization")).toBeTruthy();
+    expect(dialog.getByRole("heading", { name: "Use the key you saved" })).toBeTruthy();
+    expect(dialog.getByText(/The token was shown once/).textContent).toContain("DETENT_API_KEY");
+    expect(dialog.queryByLabelText("New API key")).toBeNull();
+    expect(dialog.queryByRole("button", { name: "Reveal" })).toBeNull();
+    expect(dialog.queryByRole("button", { name: "Copy key" })).toBeNull();
+    expect(dialogElement.outerHTML).not.toContain("must-never-render");
+    if (used) {
+      await waitFor(() => expect(dialog.getByText(/Last call/).textContent).toContain(`2m ago · acting as ${actor}`));
+    } else {
+      expect(dialog.getByText("Waiting for the first call…")).toBeTruthy();
+    }
+    for (const [transport, label] of [["mcp", "MCP"], ["rest", "REST"]]) {
+      fireEvent.click(dialog.getByRole("button", { name: transport === "mcp" ? "MCP" : "REST API" }));
+      fireEvent.click(dialog.getByRole("button", { name: `Copy ${label} setup prompt` }));
+      await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(keySetupPrompt(context.mcp_endpoint, transport === "rest", kind as "personal" | "service")));
+      expect(dialog.getByLabelText(`${label} setup prompt preview`).textContent).toBe(writeText.mock.lastCall![0]);
+      expect(writeText.mock.lastCall![0]).not.toContain("must-never-render");
+    }
+    if (kind === "service") {
+      expect(dialog.getByText("The token was shown once, when the key was created. Your agent reads it from DETENT_API_KEY. Lost it? Create a replacement key.")).toBeTruthy();
+      expect(dialog.queryByRole("button", { name: "Rotate this key" })).toBeNull();
+    }
+    fireEvent.click(dialog.getByRole("button", { name: "Done" }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect Other agent" }));
+    expect(screen.getByRole("heading", { name: "Connect Other agent" })).toBeTruthy();
+    expect(within(screen.getByRole("dialog")).getByText("Waiting for the first call…")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    const section = screen.getByRole("heading", { name: kind === "personal" ? "Your personal keys" : "Organization service keys" }).closest("section")!;
+    fireEvent.click(within(section).getByRole("button", { name: "Show revoked and expired keys" }));
+    expect(within(section).getByText("Expired agent")).toBeTruthy();
+    expect(within(section).getByText("Revoked agent")).toBeTruthy();
+    expect(within(section).queryByRole("button", { name: /Connect/ })).toBeNull();
+    expect(fetch.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+    expect(fetch.mock.calls.filter(([url]) => /api-keys|service-keys/.test(String(url))).map(([url]) => String(url))).toEqual(["/api/cloud/account/api-keys", `${account.api_base.replace("/api/v2", "/api/cloud")}/service-keys`]);
   });
 
   it.each([undefined, "personal", "service"] as const)("checks connection identity for %s MCP prompts without changing REST setup", (kind) => {
@@ -668,7 +750,9 @@ describe("personal keys and org controls", () => {
     });
     renderSidebarNav("/settings/api-keys", client, <SettingsRoute section="api-keys" />);
     if (kind === "personal") {
-      fireEvent.click(await screen.findByRole("button", { name: "Rotate My agent" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Connect My agent" }));
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Rotate this key" }));
+      expect(screen.getByRole("alertdialog")).toBeTruthy();
       expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
       fireEvent.click(screen.getByRole("button", { name: "Rotate key" }));
       await screen.findByLabelText("New API key");
