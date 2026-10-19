@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -22,15 +23,18 @@ func (e *nativeExecution) retainChangeValidation(ctx context.Context, input *tra
 	if len(raw) <= 64<<10 {
 		return nil
 	}
-	raw, err = json.Marshal(input.Validation)
-	if err != nil {
-		return err
-	}
 	a := &e.artifacts
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.client == nil {
+		if len(raw) <= operatortool.MaxResultBytes {
+			return nil
+		}
 		return fmt.Errorf("retain Change validation: %w", artifact.ErrMissing)
+	}
+	raw, err = json.Marshal(input.Validation)
+	if err != nil {
+		return err
 	}
 	reservation := a.reservation
 	reservation.Kind = "log"
