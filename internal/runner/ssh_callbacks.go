@@ -269,6 +269,14 @@ func (r *Runner) SSHWorkflow(ctx context.Context) (config.Workflow, bool, bool, 
 
 func (r *Runner) SSHCallbackHandler(request RunRequest) func(context.Context, string, []json.RawMessage) (any, error) {
 	_, _, checker, estimator := r.runtimeSnapshot()
+	forward := request.OnUsageUpdate
+	request.OnUsageUpdate = func(update UsageUpdate) error {
+		r.providerUsage.Observe(update.RuntimeIdentity.BackendID, update.RateLimits)
+		if forward == nil {
+			return nil
+		}
+		return forward(update)
+	}
 	return NewSSHCallbackHandler(request, r.store, checker, estimator)
 }
 

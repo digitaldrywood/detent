@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"sync/atomic"
@@ -9,6 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -232,6 +234,43 @@ func TestProviderUsageRetainsWindowObservations(t *testing.T) {
 	}
 	if now.Sub(windows[1].ObservedAt) <= providercapacity.MaxAge || len(usage.Windows("unknown")) != 0 {
 		t.Fatal("observation age or backend isolation changed")
+	}
+}
+
+func TestWorkerUsageCallbackObservesProviderWindows(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	percent := 72.0
+	update := UsageUpdate{RuntimeIdentity: agentidentity.Identity{BackendID: "codex"}, RateLimits: &telemetry.RateLimits{Primary: &telemetry.RateLimitBucket{WindowKind: "weekly", PercentUsed: &percent, ObservedAt: &now}}}
+	raw, err := json.Marshal(update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name    string
+		forward bool
+	}{
+		{name: "forwarded to the run", forward: true},
+		{name: "run does not consume usage"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := &Runner{providerUsage: &ProviderUsage{}}
+			var forwarded int
+			request := RunRequest{}
+			if test.forward {
+				request.OnUsageUpdate = func(UsageUpdate) error { forwarded++; return nil }
+			}
+			if _, err := r.SSHCallbackHandler(request)(t.Context(), "usage", []json.RawMessage{raw}); err != nil {
+				t.Fatal(err)
+			}
+			windows := r.providerUsage.Windows("codex")
+			if len(windows) != 1 || windows[0].Kind != "weekly" || windows[0].PercentUsed == nil || *windows[0].PercentUsed != 72 {
+				t.Fatalf("windows = %+v", windows)
+			}
+			if test.forward && forwarded != 1 {
+				t.Fatalf("forwarded %d updates", forwarded)
+			}
+		})
 	}
 }
 
