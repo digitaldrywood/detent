@@ -471,7 +471,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			if err != nil {
 				return nil, err
 			}
-			return s.database.approvePolicyInTx(ctx, tx, policyScope, scope.credential.ID, policy.Change{ExpectedID: r.Input.ExpectedID, ObservedPolicyID: r.Input.ObservedPolicyID, Policy: r.Input.Policy})
+			return s.database.approvePolicyInTx(ctx, tx, policyScope, scope.credential.ID, policy.Change{ExpectedID: r.Input.ExpectedID, ObservedPolicyID: r.Input.ObservedPolicyID, Policy: r.Input.Policy}, policyLanding{})
 		}
 	case "revoke_project_policy":
 		r, err := projectCommandInput[operatortool.PolicyRevokeInput](call.Arguments)

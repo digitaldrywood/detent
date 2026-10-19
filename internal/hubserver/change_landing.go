@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -297,6 +298,9 @@ func (s *Service) landChange(c echo.Context) error {
 		}
 		if _, err := tx.ExecContext(ctx, "UPDATE change_requests SET record_json = ? WHERE id = ?", raw, change.ID); err != nil {
 			return nil, err
+		}
+		if err := recordPolicyLandingProvenance(ctx, tx, string(scope.organization)+"/"+string(scope.project), 0, validationRepository(version.Repository), request.MergeSHA, policyLanding{ChangeID: change.ID}); err != nil {
+			return nil, fmt.Errorf("record change policy landing: %w", err)
 		}
 		issue, _, err := readNativeIssue(ctx, tx, scope, string(change.WorkItemID))
 		if err != nil {

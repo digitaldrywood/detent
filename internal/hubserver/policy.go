@@ -163,7 +163,7 @@ WHERE i.removed_at IS NULL
 SELECT o.descriptor_json, o.source_json, o.runner_id, o.observed_at, o.policy_id,
 EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = o.scope AND r.policy_id = o.policy_id AND r.approved_by <> 'runner-report'),
 (SELECT count(DISTINCT policy_id) FROM current_reports WHERE scope = o.scope),
-EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = o.scope AND r.policy_id = ? AND r.approved_by = 'repository-default-branch')
+EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = o.scope AND r.policy_id = ? AND (r.approved_by = 'repository-default-branch' OR EXISTS (SELECT 1 FROM project_workflow_applies a WHERE a.scope = r.scope AND a.definition_digest = json_extract(r.metadata_json, '$.source_digest') AND a.source_commit = json_extract(r.metadata_json, '$.workflow.revision') AND (a.change_id <> '' OR a.pull_request_url <> ''))))
 FROM current_reports o WHERE o.scope = ? AND o.policy_id <> ? ORDER BY o.observed_at DESC, o.runner_id`, formatHubTime(now), approved.ID, scope, approved.ID)
 	if err != nil {
 		return nil, err
@@ -233,13 +233,13 @@ func (d *database) approvePolicy(ctx context.Context, scope, actor string, chang
 			resultErr = errors.Join(resultErr, tx.Rollback())
 		}
 	}()
-	result, err = d.approvePolicyInTx(ctx, tx, scope, actor, change)
+	result, err = d.approvePolicyInTx(ctx, tx, scope, actor, change, policyLanding{})
 	if err != nil {
 		return result, err
 	}
 	return result, d.commit(ctx, tx)
 }
-func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor string, change policy.Change) (result policy.Approval, resultErr error) {
+func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor string, change policy.Change, landing policyLanding) (result policy.Approval, resultErr error) {
 	if change.ObservedPolicyID != "" {
 		if !reflect.ValueOf(change.Policy).IsZero() {
 			return result, nativeInvalid("Supply either observed_policy_id or policy, not both")
@@ -318,7 +318,7 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 		}
 	}
 	if current != change.Policy.ID && (change.Policy.Workflow != nil || carryover) {
-		if err := recordWorkflowApply(ctx, tx, scope, actor, current, change.Policy, now); err != nil {
+		if err := recordWorkflowApply(ctx, tx, scope, actor, current, change.Policy, now, landing); err != nil {
 			return result, err
 		}
 	}

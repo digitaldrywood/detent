@@ -120,6 +120,8 @@ type Observation struct {
 }
 
 type WorkflowApply struct {
+	ChangeID                 string      `json:"change_id,omitempty"`
+	PullRequestURL           string      `json:"pull_request_url,omitempty"`
 	PreviousDefinition       *Descriptor `json:"previous_definition,omitempty"`
 	Definition               *Descriptor `json:"definition,omitempty"`
 	ID                       int64       `json:"id,string"`

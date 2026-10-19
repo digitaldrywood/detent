@@ -834,7 +834,7 @@ func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
 	defer tx.Rollback()
 	for _, project := range projects {
 		scope := string(project.fixture.project.OrganizationID) + "/" + string(project.fixture.project.ID)
-		if _, err := service.database.approvePolicyInTx(t.Context(), tx, scope, "test-owner", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: project.policy}); err != nil {
+		if _, err := service.database.approvePolicyInTx(t.Context(), tx, scope, "test-owner", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: project.policy}, policyLanding{}); err != nil {
 			t.Fatal(err)
 		}
 	}
