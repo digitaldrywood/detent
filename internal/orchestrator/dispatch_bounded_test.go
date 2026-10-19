@@ -1,19 +1,15 @@
 package orchestrator
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
+
 	"slices"
-	"strconv"
-	"strings"
-	"sync"
+
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/github"
+
 	"github.com/digitaldrywood/detent/internal/gate"
 )
 
@@ -73,99 +69,6 @@ func TestDispatchPlannerBoundsCandidateEvaluation(t *testing.T) {
 				t.Fatalf("unexpected dispatches: %+v", plan.Dispatches)
 			}
 		})
-	}
-}
-
-func TestDispatchPlannerBoundsGitHubIssueReads(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
-	t.Parallel()
-	var mu sync.Mutex
-	var reads []int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.Method == http.MethodGet {
-			number, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/repos/fixture/dispatch/issues/"))
-			if err != nil {
-				t.Error(err)
-				http.Error(w, `{"message":"unexpected request"}`, http.StatusBadRequest)
-				return
-			}
-			mu.Lock()
-			reads = append(reads, number)
-			mu.Unlock()
-			http.Error(w, `{"message":"issue hydration unavailable"}`, http.StatusBadRequest)
-			return
-		}
-		var request struct {
-			Variables struct {
-				IDs []string `json:"issueIds"`
-			} `json:"variables"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Error(err)
-			return
-		}
-		var nodes []map[string]any
-		for _, id := range request.Variables.IDs {
-			number, err := strconv.Atoi(strings.TrimPrefix(id, "I_"))
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			nodes = append(nodes, map[string]any{"__typename": "Issue", "id": id, "number": number, "repository": map[string]string{"nameWithOwner": "fixture/dispatch"}})
-		}
-		if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"nodes": nodes}}); err != nil {
-			t.Error(err)
-		}
-	}))
-	defer server.Close()
-	tracker, err := github.NewConnector(github.Config{Endpoint: server.URL + "/graphql", Repository: "fixture/dispatch", GitHubStatusSource: github.GitHubStatusSourceLabel, TokenSource: github.StaticTokenSource("fixture"), HTTPClient: server.Client(), ActiveStates: []string{"Todo"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
-	state := newState(cfg)
-	now := time.Date(2026, 9, 29, 0, 0, 0, 0, time.UTC)
-	var candidates []connector.Issue
-	for i := 150; i > 0; i-- {
-		candidates = append(candidates, connector.Issue{
-			ID: fmt.Sprintf("I_%03d", i), Identifier: fmt.Sprintf("fixture/dispatch#%d", i),
-			URL:   fmt.Sprintf("https://github.test/fixture/dispatch/issues/%d", i),
-			Title: "candidate", State: "Todo", AssignedToWorker: true,
-			CreatedAt: new(now.Add(time.Duration(i) * time.Second)),
-			PRNumber:  new(900 + i), PRRepository: "fixture/dispatch",
-			PullRequest: &connector.PullRequest{Number: 900 + i, HeadSHA: fmt.Sprintf("head-%d", i)},
-		})
-	}
-	orch := Orchestrator{cfg: cfg, connector: tracker}
-	decisions := 0
-	plan := newDispatchPlanner(cfg).plan(&state, candidates, now, dispatchPlanHooks{
-		hydrate: func(issue connector.Issue) (connector.Issue, bool) {
-			return orch.hydrateDispatchIssue(t.Context(), &state, issue, now)
-		},
-		decision: func(decision dispatchPlanDecision) {
-			decisions++
-			number := decisions
-			issue := decision.Issue
-			if decision.SkipReason != dispatchSkipHydrationFailed || decision.Selected ||
-				issue.ID != fmt.Sprintf("I_%03d", number) || issue.Identifier != fmt.Sprintf("fixture/dispatch#%d", number) ||
-				issue.URL != fmt.Sprintf("https://github.test/fixture/dispatch/issues/%d", number) || issue.State != "Todo" ||
-				issue.PRRepository != "fixture/dispatch" || issue.PRNumber == nil || *issue.PRNumber != 900+number ||
-				issue.PullRequest == nil || issue.PullRequest.Number != 900+number || issue.PullRequest.HeadSHA != fmt.Sprintf("head-%d", number) {
-				t.Errorf("failed hydration lost candidate evidence or became selected: %+v", decision)
-			}
-		},
-	})
-	if len(plan.Dispatches) != 0 || decisions != 10 {
-		t.Fatalf("failed hydration dispatches=%d decisions=%d; want 0 and 10", len(plan.Dispatches), decisions)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if !slices.Equal(reads, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}) {
-		t.Fatalf("GitHub issue reads = %v; want top ten candidates", reads)
 	}
 }
 

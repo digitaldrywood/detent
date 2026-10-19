@@ -32,7 +32,7 @@ func TestDefaultDoctorWorkflowSourcePolicy(t *testing.T) {
 			name: "drift present",
 			mutate: func(t *testing.T, repo string, _ string, _ *globalconfig.Project) {
 				runDoctorWorkflowSourceGit(t, repo, "checkout", "-b", "feature")
-				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\ntracker:\n  kind: github\n")
+				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\ntracker:\n  kind: hub_native\n")
 			},
 			wantStatus: doctorFail,
 			wantDetail: []string{"project alpha", "omits workflow_ref", "branch feature differs from default branch main", "effective detent.yaml differs from origin/main"},
@@ -55,7 +55,7 @@ func TestDefaultDoctorWorkflowSourcePolicy(t *testing.T) {
 			mutate: func(t *testing.T, repo string, _ string, project *globalconfig.Project) {
 				project.WorkflowRef = "origin/main"
 				runDoctorWorkflowSourceGit(t, repo, "checkout", "-b", "feature")
-				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\ntracker:\n  kind: github\n")
+				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\ntracker:\n  kind: hub_native\n")
 			},
 			wantStatus: doctorOK,
 			wantDetail: []string{"project alpha", "workflow_ref origin/main is fresh", "ignores the working-tree branch"},
@@ -101,7 +101,7 @@ func TestDefaultDoctorWorkflowSourcePolicy(t *testing.T) {
 				runDoctorWorkflowSourceGit(t, "", "clone", remote, updater)
 				runDoctorWorkflowSourceGit(t, updater, "config", "user.name", "Detent Test")
 				runDoctorWorkflowSourceGit(t, updater, "config", "user.email", "detent@example.com")
-				writeDoctorWorkflowSourceFile(t, filepath.Join(updater, "detent.yaml"), "schema: 1\ntracker:\n  kind: github\n")
+				writeDoctorWorkflowSourceFile(t, filepath.Join(updater, "detent.yaml"), "schema: 1\ntracker:\n  kind: hub_native\n")
 				runDoctorWorkflowSourceGit(t, updater, "add", "detent.yaml")
 				runDoctorWorkflowSourceGit(t, updater, "commit", "-m", "advance workflow policy")
 				runDoctorWorkflowSourceGit(t, updater, "push", "origin", "main")
@@ -438,7 +438,7 @@ func initDoctorWorkflowSourceRepository(t *testing.T) (string, string) {
 func writeDoctorWorkflowSourceValidationDrift(t *testing.T, repo string) {
 	t.Helper()
 
-	invalid := "schema: 1\ntracker:\n  kind: github\n  api_key: token\n  github_status_source: label\n  repository: example/issues\nroutines:\n  - name: audit\n    schedule: 0 * * * *\n    prompt: Inspect.\n"
+	invalid := "schema: 1\ntracker:\n  kind: hub_native\n  api_key: token\n  github_status_source: label\n  repository: example/issues\nroutines:\n  - name: audit\n    schedule: 0 * * * *\n    prompt: Inspect.\n"
 	writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), invalid)
 	runDoctorWorkflowSourceGit(t, repo, "add", "detent.yaml")
 	runDoctorWorkflowSourceGit(t, repo, "commit", "-m", "add scheduled routine")

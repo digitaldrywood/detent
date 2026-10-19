@@ -322,11 +322,7 @@ and scheduled job origin stamps.
 **Enforcement:** `TestMachineIssueTool` in `internal/orchestrator`;
 `TestNativeMachineDefectOccurrences` and `TestNativeReleaseStabilizationOccurrences` in `internal/hubserver` and
 `TestDefectFingerprint` in `internal/issueorigin`;
-`TestMachineIssueDuplicate`, `TestMachineIssueSeparateConnectors`,
-`TestMachineOriginSurvivesBodyUpdates`,
-`TestConnectorFindIntakeIssueSearchesDurableMarker`, and
-`TestConnectorFindIntakeIssuePrefersOpenDuplicate` in
-`internal/connector/github`; `TestManagerPreservesClosedFinding` in
+`TestManagerPreservesClosedFinding` in
 `internal/intake`; `TestNativeMachineIntakeAuthorityAndFingerprint` in
 `internal/hubclient`; `TestParseProblems`, `TestReport`, and `TestCloudReport`
 in `tools/cifailure`. Review checks fingerprint stability.

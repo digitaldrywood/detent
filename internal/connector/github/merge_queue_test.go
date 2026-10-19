@@ -228,43 +228,6 @@ func mergeQueueTestTime(value string) *time.Time {
 	return &parsed
 }
 
-func TestConnectorMergeQueueHeadFence(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name         string
-		head         string
-		node         string
-		response     string
-		wantError    string
-		wantRequests int
-	}{
-		{name: "missing head", node: "PR_42", wantError: "missing expected head sha"},
-		{name: "changed head on restart", head: "reviewed", response: `{"data":{"repository":{"pullRequest":{"id":"PR_42","headRefOid":"unreviewed","mergeQueueEntry":{"id":"MQE_42"}}}}}`, wantError: "head changed", wantRequests: 1},
-		{name: "same head on restart", head: "reviewed", response: `{"data":{"repository":{"pullRequest":{"id":"PR_42","headRefOid":"reviewed","mergeQueueEntry":{"id":"MQE_42"}}}}}`, wantRequests: 1},
-		{name: "head changes during enqueue", head: "reviewed", node: "PR_42", response: `{"errors":[{"message":"expected head does not match"}]}`, wantError: "expected head does not match", wantRequests: 1},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			server := newGraphQLTestServer(t, []graphqlTestResponse{{body: tt.response}})
-			client := newGitHubTestConnector(t, server, Config{})
-			entry, err := client.EnqueuePullRequest(context.Background(), connector.Issue{
-				PRRepository: "example/repo",
-				PullRequest:  &connector.PullRequest{Number: 42, NodeID: tt.node, HeadSHA: tt.head},
-			})
-			if tt.wantError != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
-					t.Fatalf("error = %v, want %q", err, tt.wantError)
-				}
-			} else if err != nil || entry.ID != "MQE_42" {
-				t.Fatalf("entry = %#v, error = %v", entry, err)
-			}
-			if got := len(server.requests()); got != tt.wantRequests {
-				t.Fatalf("requests = %d, want %d", got, tt.wantRequests)
-			}
-		})
-	}
-}
-
 func TestConnectorInspectChangedQueueHeadAllowsCleanup(t *testing.T) {
 	t.Parallel()
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{body: mergeQueueFixture(t, "removed_entry.json")}})

@@ -1013,7 +1013,8 @@ identity:
   ownership_mode: field
   owner_field: Owner
 tracker:
-  kind: github
+  kind: hub_native
+  endpoint: https://api.github.com/graphql
   api_key: $GITHUB_TOKEN
   project_slug: "PVT_project"
   write_probe_issue: " digitaldrywood/detent#1 "
@@ -1240,8 +1241,8 @@ Ticket prompt {{ issue.title }}
 	if workflow.Prompt != "Ticket prompt {{ issue.title }}\n" {
 		t.Fatalf("Prompt = %q", workflow.Prompt)
 	}
-	if cfg.Tracker.Kind != TrackerGitHub {
-		t.Fatalf("Tracker.Kind = %q, want %q", cfg.Tracker.Kind, TrackerGitHub)
+	if cfg.Tracker.Kind != TrackerHubNative {
+		t.Fatalf("Tracker.Kind = %q, want %q", cfg.Tracker.Kind, TrackerHubNative)
 	}
 	if cfg.Identity.Name != "release-captain" {
 		t.Fatalf("Identity.Name = %q, want release-captain", cfg.Identity.Name)
@@ -1528,183 +1529,12 @@ Prompt
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
-	if err := workflow.Config.Validate(); err != nil {
+	if err := workflow.Config.Validate(); err == nil || !strings.Contains(err.Error(), "tracker.kind must be hub_native") {
 		t.Fatalf("Validate() error = %v", err)
 	}
 	retro := workflow.Config.Retro
 	if !retro.Enabled || !retro.AllowPublicCrossProjectDetails || retro.DailyIssueCap != 3 || retro.LookbackDays != 7 || retro.MinOccurrences != 2 || retro.ProductRepository != "digitaldrywood/detent" || !reflect.DeepEqual(retro.Labels, []string{"retro"}) {
 		t.Fatalf("Retro = %#v", retro)
-	}
-}
-
-func TestParseWorkflowGitHubIssueFieldTracker(t *testing.T) {
-	t.Parallel()
-
-	raw := []byte(`---
-tracker:
-  kind: github
-  api_key: $GITHUB_TOKEN
-  github_status_source: issue_field
-  repository: digitaldrywood/detent
-  lanes:
-    - name: Backlog
-      role: holding
-    - name: Human Review
-      role: holding
-    - name: Blocked
-      role: holding
-    - name: Todo
-      role: active
-    - name: Closed
-      role: terminal
-    - name: Cancelled
-      role: terminal
-    - name: Canceled
-      role: terminal
-    - name: Duplicate
-      role: terminal
-    - name: Done
-      role: terminal
----
-Prompt
-`)
-
-	workflow, err := ParseWorkflow(raw)
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
-	}
-	cfg := workflow.Config
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() error = %v", err)
-	}
-	if cfg.Tracker.GitHubStatusSource != GitHubStatusSourceIssueField {
-		t.Fatalf("GitHubStatusSource = %q, want %q", cfg.Tracker.GitHubStatusSource, GitHubStatusSourceIssueField)
-	}
-	if cfg.Tracker.Repository != "digitaldrywood/detent" {
-		t.Fatalf("Repository = %q, want digitaldrywood/detent", cfg.Tracker.Repository)
-	}
-	if cfg.Tracker.StatusField != "Status" {
-		t.Fatalf("StatusField = %q, want Status", cfg.Tracker.StatusField)
-	}
-	if cfg.Tracker.ProjectSlug != "" {
-		t.Fatalf("ProjectSlug = %q, want empty for issue_field source", cfg.Tracker.ProjectSlug)
-	}
-}
-
-func TestParseWorkflowGitHubLabelTracker(t *testing.T) {
-	t.Parallel()
-
-	raw := []byte(`---
-tracker:
-  kind: github
-  api_key: $GITHUB_TOKEN
-  github_status_source: label
-  repository: digitaldrywood/detent
-  status_label_prefix: "detent:"
-  lanes:
-    - name: Backlog
-      role: holding
-    - name: Human Review
-      role: holding
-    - name: Blocked
-      role: holding
-    - name: Todo
-      role: active
-    - name: Closed
-      role: terminal
-    - name: Cancelled
-      role: terminal
-    - name: Canceled
-      role: terminal
-    - name: Duplicate
-      role: terminal
-    - name: Done
-      role: terminal
----
-Prompt
-`)
-
-	workflow, err := ParseWorkflow(raw)
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
-	}
-	cfg := workflow.Config
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() error = %v", err)
-	}
-	if cfg.Tracker.GitHubStatusSource != GitHubStatusSourceLabel {
-		t.Fatalf("GitHubStatusSource = %q, want %q", cfg.Tracker.GitHubStatusSource, GitHubStatusSourceLabel)
-	}
-	if cfg.Tracker.Repository != "digitaldrywood/detent" {
-		t.Fatalf("Repository = %q, want digitaldrywood/detent", cfg.Tracker.Repository)
-	}
-	if cfg.Tracker.StatusLabelPrefix != "detent:" {
-		t.Fatalf("StatusLabelPrefix = %q, want detent:", cfg.Tracker.StatusLabelPrefix)
-	}
-	if cfg.Tracker.ProjectSlug != "" {
-		t.Fatalf("ProjectSlug = %q, want empty for label source", cfg.Tracker.ProjectSlug)
-	}
-}
-
-func TestValidateGitHubProjectV2StillRequiresProjectSlug(t *testing.T) {
-	t.Parallel()
-
-	cfg := Default()
-	cfg.Tracker.Kind = TrackerGitHub
-	cfg.Tracker.APIKey = "token"
-	cfg.Tracker.ProjectSlug = ""
-
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "tracker.project_slug") {
-		t.Fatalf("Validate() error = %v, want project_slug requirement", err)
-	}
-}
-
-func TestValidateGitHubIssueFieldRequiresRepository(t *testing.T) {
-	t.Parallel()
-
-	cfg := Default()
-	cfg.Tracker.Kind = TrackerGitHub
-	cfg.Tracker.APIKey = "token"
-	cfg.Tracker.GitHubStatusSource = GitHubStatusSourceIssueField
-	cfg.Tracker.ProjectSlug = ""
-	cfg.Tracker.Repository = ""
-
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "tracker.repository") {
-		t.Fatalf("Validate() error = %v, want repository requirement", err)
-	}
-	if strings.Contains(err.Error(), "tracker.project_slug") {
-		t.Fatalf("Validate() error = %v, want no project_slug requirement in issue_field mode", err)
-	}
-}
-
-func TestValidateGitHubLabelRequiresRepository(t *testing.T) {
-	t.Parallel()
-
-	cfg := Default()
-	cfg.Tracker.Kind = TrackerGitHub
-	cfg.Tracker.APIKey = "token"
-	cfg.Tracker.GitHubStatusSource = GitHubStatusSourceLabel
-	cfg.Tracker.ProjectSlug = ""
-	cfg.Tracker.Repository = ""
-
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "tracker.repository") {
-		t.Fatalf("Validate() error = %v, want repository requirement", err)
-	}
-	if strings.Contains(err.Error(), "tracker.project_slug") {
-		t.Fatalf("Validate() error = %v, want no project_slug requirement in label mode", err)
-	}
-}
-
-func TestNormalizeGitHubLabelStatusSourceAliases(t *testing.T) {
-	t.Parallel()
-
-	for _, value := range []string{"label", "labels", "issue_label", "issue_labels"} {
-		if got := normalizeGitHubStatusSource(value); got != GitHubStatusSourceLabel {
-			t.Fatalf("normalizeGitHubStatusSource(%q) = %q, want %q", value, got, GitHubStatusSourceLabel)
-		}
 	}
 }
 
@@ -3452,28 +3282,6 @@ Prompt
 	}
 }
 
-func TestConfigValidateAcceptsGitHubAppCredentials(t *testing.T) {
-	t.Parallel()
-
-	workflow, err := ParseWorkflow([]byte(`---
-tracker:
-  kind: github
-  project_slug: PVT_project
-  github_app_id: 12345
-  github_app_private_key_path: .detent/github-app.pem
-  github_app_installation_id: 67890
----
-Prompt
-`))
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
-	}
-
-	if err := workflow.Config.Validate(); err != nil {
-		t.Fatalf("Validate() error = %v", err)
-	}
-}
-
 func TestStringOrMapFieldsAcceptScalarOrMapping(t *testing.T) {
 	t.Parallel()
 
@@ -3722,42 +3530,45 @@ func TestConfigValidateReportsInvalidSettings(t *testing.T) {
 		{
 			name: "unsupported tracker kind",
 			raw:  "---\ntracker:\n  kind: jira\n---\nPrompt\n",
-			want: []string{"tracker.kind must be one of"},
+			want: []string{"tracker.kind must be hub_native"},
 		},
 		{
 			name: "retired linear tracker",
 			raw:  "---\ntracker:\n  kind: linear\n---\nPrompt\n",
-			want: []string{"tracker.kind must be one of github, hub_native"},
+			want: []string{"tracker.kind must be hub_native"},
 		},
 		{
 			name: "retired memory tracker",
 			raw:  "---\ntracker:\n  kind: memory\n---\nPrompt\n",
-			want: []string{"tracker.kind must be one of github, hub_native"},
+			want: []string{"tracker.kind must be hub_native"},
 		},
 		{
 			name: "retired local_sqlite tracker",
 			raw:  "---\ntracker:\n  kind: local_sqlite\n---\nPrompt\n",
-			want: []string{"tracker.kind must be one of github, hub_native"},
+			want: []string{"tracker.kind must be hub_native"},
 		},
 		{
 			name: "retired local tracker",
 			raw:  "---\ntracker:\n  kind: local\n---\nPrompt\n",
-			want: []string{"tracker.kind must be one of github, hub_native"},
+			want: []string{"tracker.kind must be hub_native"},
 		},
 		{
 			name: "retired github_local tracker",
 			raw:  "---\ntracker:\n  kind: github_local\n---\nPrompt\n",
-			want: []string{"tracker.kind must be one of github, hub_native"},
+			want: []string{"tracker.kind must be hub_native"},
 		},
 		{
 			name: "retired githublocal tracker",
 			raw:  "---\ntracker:\n  kind: githublocal\n---\nPrompt\n",
-			want: []string{"tracker.kind must be one of github, hub_native"},
+			want: []string{"tracker.kind must be hub_native"},
 		},
+		{name: "retired configured github project_v2", raw: "---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project\n  github_status_source: project_v2\n---\nPrompt\n", want: []string{"tracker.kind must be hub_native"}},
+		{name: "retired configured github issue_field", raw: "---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project\n  github_status_source: issue_field\n---\nPrompt\n", want: []string{"tracker.kind must be hub_native"}},
+		{name: "retired configured github label", raw: "---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project\n  github_status_source: label\n---\nPrompt\n", want: []string{"tracker.kind must be hub_native"}},
 		{
 			name: "github credentials",
 			raw:  "---\ntracker:\n  kind: github\n---\nPrompt\n",
-			want: []string{"tracker.api_key or GitHub App credentials are required for github", "tracker.project_slug is required for github"},
+			want: []string{"tracker.kind must be hub_native"},
 		},
 		{
 			name: "dependency source",
@@ -3775,8 +3586,7 @@ tracker:
 Prompt
 `,
 			want: []string{
-				"tracker.github_app_installation_id is required for github app",
-				"tracker.github_app_private_key or tracker.github_app_private_key_path is required for github app",
+				"tracker.kind must be hub_native",
 			},
 		},
 		{
@@ -4499,7 +4309,8 @@ func TestReleaseConfigValidation(t *testing.T) {
 		want   string
 	}{
 		{
-			name: "valid github policy",
+			name: "retired github policy",
+			want: "tracker.kind must be hub_native",
 			change: func(cfg *Config) {
 				cfg.Tracker.Kind = TrackerGitHub
 				cfg.Tracker.APIKey = "token"
@@ -4509,17 +4320,22 @@ func TestReleaseConfigValidation(t *testing.T) {
 			},
 		},
 		{
-			name: "requires github tracker",
+			name: "native release policy",
 			change: func(cfg *Config) {
 				cfg.Tracker.Kind = TrackerHubNative
+				cfg.Tracker.Repository = "example-org/example-project"
 				cfg.Release.Enabled = true
 			},
-			want: "release.enabled requires tracker.kind github",
+		},
+		{
+			name:   "native release requires repository",
+			change: func(cfg *Config) { cfg.Tracker.Kind = TrackerHubNative; cfg.Release.Enabled = true },
+			want:   "tracker.repository must be owner/name",
 		},
 		{
 			name: "green ci cannot be waived",
 			change: func(cfg *Config) {
-				cfg.Tracker.Kind = TrackerGitHub
+				cfg.Tracker.Kind = TrackerHubNative
 				cfg.Tracker.APIKey = "token"
 				cfg.Tracker.GitHubStatusSource = GitHubStatusSourceLabel
 				cfg.Tracker.Repository = "example/repo"
@@ -4531,7 +4347,7 @@ func TestReleaseConfigValidation(t *testing.T) {
 		{
 			name: "flaky rerun requires allowlist",
 			change: func(cfg *Config) {
-				cfg.Tracker.Kind = TrackerGitHub
+				cfg.Tracker.Kind = TrackerHubNative
 				cfg.Tracker.APIKey = "token"
 				cfg.Tracker.GitHubStatusSource = GitHubStatusSourceLabel
 				cfg.Tracker.Repository = "example/repo"

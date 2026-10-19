@@ -15,7 +15,7 @@ func TestManagerReloadsLocalIntakeWithoutRestart(t *testing.T) {
 	created := 0
 	manager, err := projectfixture.NewManager(project.ManagerConfigFromGlobal(global), project.ManagerDependencies{ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 		created++
-		return projectfixture.New(project.Config{Project: cfg, Workflow: workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerGitHub)}}, project.Dependencies{Runner: blockingRunner{}})
+		return projectfixture.New(project.Config{Project: cfg, Workflow: workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerHubNative)}}, project.Dependencies{Runner: blockingRunner{}})
 	}})
 	if err != nil {
 		t.Fatal(err)

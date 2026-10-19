@@ -1,6 +1,8 @@
 package projectfixture
 
 import (
+	"fmt"
+
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -29,11 +31,14 @@ func New(cfg project.Config, deps project.Dependencies) (*project.Project, error
 				var err error
 				conn, err = deps.ConnectorFactory(cfg.Workflow.Config)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("%w: create project connector: %w", project.ErrConnectorCreation, err)
 				}
 			} else {
 				conn = fakehub.New(fakehub.Config{Issues: cfg.Workflow.Config.Tracker.Issues})
 			}
+		}
+		if conn == nil {
+			return nil, project.ErrMissingConnector
 		}
 		deps.Scheduling = &fakehubscheduling.Source{Connector: conn}
 	}
