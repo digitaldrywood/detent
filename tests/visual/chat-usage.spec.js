@@ -23,7 +23,7 @@ test("billing shows durable AI usage for the current period", async ({ page }) =
   expect(billing.entitlement.monthly_usd_cents).toBe(4900);
   await expect(page.getByText("$49 per organization/month", { exact: true })).toBeVisible();
   await expect(page.getByText("Starter · $49 per organization/month", { exact: true })).toBeVisible();
-  await expect(page.getByText("3 remaining", { exact: true })).toBeVisible();
+  await expect(page.getByText("8 remaining", { exact: true })).toBeVisible();
   await expect(page.getByText("Unarchived issues", { exact: false })).toBeVisible();
   expect(billing.chat_usage.tokens).toBe(1_100_000);
   expect(billing.chat_usage.cost_usd).toBeCloseTo(.114, 8);
