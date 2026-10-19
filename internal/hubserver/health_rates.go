@@ -22,6 +22,7 @@ const (
 	healthBaselineQuantile   = 0.9
 	healthMedianQuantile     = 0.5
 	healthRetryCount         = 5
+	healthSetupFailureCount  = 3
 	healthRetryRatio         = 0.3
 	healthRecoveryCount      = 3
 	healthRecoveryWindow     = 30 * time.Minute
@@ -37,11 +38,11 @@ const (
 )
 
 type healthRateAttempt struct {
-	ID, Item, Status, Signature, Recovery, LandingKey string
-	At, Heartbeat                                     time.Time
-	Cost                                              float64
-	Landing, Conflict, Landed                         bool
-	LandingAt                                         time.Time
+	ID, Item, Status, Signature, Recovery, LandingKey, Runner string
+	At, Heartbeat                                             time.Time
+	Cost                                                      float64
+	Landing, Conflict, Landed, InstanceSetupFailure           bool
+	LandingAt                                                 time.Time
 }
 
 type healthItemCost struct {
@@ -222,10 +223,20 @@ func healthBaselineGaps(p healthRateProject, b healthRateBaseline) []healthBasel
 
 func evaluateHealthRates(now time.Time, projects []healthRateProject) []healthFinding {
 	out := []healthFinding{}
-	capacity := map[string]int{}
+	capacity, setup := map[string]int{}, map[string]int{}
 	for _, p := range projects {
 		b := buildHealthRateBaseline(now, p)
 		out = append(out, healthRetryFindings(now, p, b)...)
+		for _, f := range healthRunnerSetupFindings(now, p) {
+			if index, ok := setup[f.Fingerprint]; ok && index < len(out) {
+				existing := &out[index]
+				existing.Projects = append(existing.Projects, p.ID)
+				existing.Evidence.Counts["failures_1h"] += f.Evidence.Counts["failures_1h"]
+			} else {
+				setup[f.Fingerprint] = len(out)
+				out = append(out, f)
+			}
+		}
 		out = append(out, healthRecoveryFindings(now, p, b)...)
 		out = append(out, healthStallFindings(now, p, b)...)
 		out = append(out, healthCostFindings(p, b)...)
@@ -309,6 +320,36 @@ func healthRetryFindings(now time.Time, p healthRateProject, b healthRateBaselin
 		evidence.Values["retry_ratio_1h"], evidence.Values["retry_ratio_6h"] = short, long
 		evidence.Counts = map[string]int{"failures_1h": failures[0], "failures_6h": failures[1]}
 		out = append(out, newHealthFinding("retry_storm", "instance", "work_item", item, "Repeated failed attempts are wasting work on this item.", "The runner operator inspects the repeated failure signatures and attempts.", []string{p.ID}, evidence))
+	}
+	return out
+}
+
+// healthRunnerSetupFindings reports a runner whose workspace setup keeps
+// failing before the provider starts. These failures are attributed to the
+// instance and held by the instance cooldown, so they need no baseline: any
+// runner repeating them is unhealthy until its operator repairs the host.
+func healthRunnerSetupFindings(now time.Time, p healthRateProject) []healthFinding {
+	byRunner := map[string][]healthRateAttempt{}
+	for _, a := range p.Attempts {
+		if a.InstanceSetupFailure && a.Runner != "" && healthInWindow(a.At, now.Add(-healthShortWindow), now) {
+			byRunner[a.Runner] = append(byRunner[a.Runner], a)
+		}
+	}
+	out := []healthFinding{}
+	for runner, attempts := range byRunner {
+		if len(attempts) < healthSetupFailureCount {
+			continue
+		}
+		evidence := healthEvidence{Counts: map[string]int{"failures_1h": len(attempts)}}
+		for _, a := range attempts {
+			evidence.AttemptIDs = append(evidence.AttemptIDs, a.ID)
+			if a.Signature != "" {
+				evidence.Signatures = append(evidence.Signatures, a.Signature)
+			}
+		}
+		slices.Sort(evidence.Signatures)
+		evidence.Signatures = slices.Compact(evidence.Signatures)
+		out = append(out, newHealthFinding("runner_setup_failures", "instance", "runner", runner, "Workspace setup on this runner keeps failing before the provider starts.", "The runner operator checks the workspace hook output and the runner's repository credential.", []string{p.ID}, evidence))
 	}
 	return out
 }

@@ -753,7 +753,8 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 // A human-owned answer holds the item until the item changes: a human action,
 // a permission wait, recorded acceptance, or a blocker the instance does not
 // own. An instance-owned answer (an instance blocker, an instance reason code,
-// or an attempt without a typed disposition) holds it for 30 minutes and then
+// an attempt without a typed disposition, or a pre-provider failure the runner
+// attributed to the instance) holds it for 30 minutes and then
 // lets the next attempt retry, so a dispatchable item never waits forever on an
 // answer no human owns. A forge publication without a disposition never holds:
 // the next attempt continues from the published source.
@@ -763,6 +764,8 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 // projection whose writes never bump revision, so the clause would strand an
 // item whose lane moved on GitHub.
 const nativeAnsweredClassification = `CASE
+ WHEN answered.status = 'failed' THEN CASE WHEN julianday(answered.updated_at) > julianday('now', '-30 minutes')
+   THEN 'instance_cooldown' ELSE '' END
  WHEN COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 0) <> 0 THEN 'human_action'
  WHEN COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') = 'permission_wait' THEN 'permission_wait'
  WHEN COALESCE(json_extract(answered.data_json, '$.runtime.completion.acceptance_recorded'), 0) = 1 THEN 'recorded_acceptance'
@@ -782,7 +785,9 @@ const nativeAnsweredAttemptFrom = `FROM native_attempts answered
  WHERE answered.organization_id = i.organization_id
    AND answered.project_id = i.project_id
    AND answered.work_item_id = i.native_id
-   AND answered.status = 'succeeded'
+   AND (answered.status = 'succeeded' OR answered.status = 'failed'
+     AND json_extract(answered.data_json, '$.terminal_failure.stage') = 'pre_provider'
+     AND json_extract(answered.data_json, '$.terminal_failure.attribution') = 'instance')
    AND (` + nativeAnsweredClassification + `) <> ''
    AND NOT (json_type(answered.data_json, '$.disposition') IS NULL
      AND COALESCE(json_extract(answered.checkpoint_json, '$.external_effect'), '') IN ('git_push', 'pr_create'))

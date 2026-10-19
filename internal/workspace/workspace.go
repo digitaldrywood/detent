@@ -1371,7 +1371,7 @@ func (l *LocalGit) newBranchStartRef(ctx context.Context, branch string) (string
 		}
 		if exists {
 			ref := "refs/remotes/" + defaultGitRemote + "/" + branch
-			if _, err := l.runGit(ctx, "fetch", defaultGitRemote, "+refs/heads/"+branch+":"+ref); err != nil {
+			if _, err := l.runGit(ctx, remoteGitArgs("fetch", defaultGitRemote, "+refs/heads/"+branch+":"+ref)...); err != nil {
 				return "", fmt.Errorf("fetch published workspace branch: %w", err)
 			}
 			return ref, nil
@@ -1395,7 +1395,7 @@ func (l *LocalGit) newBranchBaseRef(ctx context.Context) (string, error) {
 	}
 	remoteRef := defaultGitRemote + "/" + branch
 	refspec := "+refs/heads/" + branch + ":refs/remotes/" + remoteRef
-	if _, err := l.runGit(ctx, "fetch", defaultGitRemote, refspec); err != nil {
+	if _, err := l.runGit(ctx, remoteGitArgs("fetch", defaultGitRemote, refspec)...); err != nil {
 		return "", fmt.Errorf("fetch remote default branch %s: %w", remoteRef, err)
 	}
 	return remoteRef, nil

@@ -97,7 +97,11 @@ comparisons. Human and permission holds retain their authority.
 `TestNativeLandingRunCompletion` and `TestNativeChangeRunCompletion`
 in `internal/orchestrator`;
 `TestNativeExecutionSettlesFinishedRun` in `internal/hubclient`;
-`TestClaimCandidatesRequireUnansweredWorkItem` in `internal/hubserver`;
+`TestClaimCandidatesRequireUnansweredWorkItem`,
+`TestClaimCandidatesCoolDownInstancePreProviderFailures` and
+`TestHealthRunnerSetupFindings` in `internal/hubserver`;
+`TestLocalGitCreateReadsPublishedBranchWithRepositoryCredential` in
+`internal/workspace`;
 `TestNativeExecutionLandsReviewedVersion` in `internal/hubclient`;
 `TestNativeRunnerOpensChangeAndLeavesDispatch` in `internal/hubclient`;
 `TestLocalGitLandChangeViaGitHub` in `internal/workspace`;

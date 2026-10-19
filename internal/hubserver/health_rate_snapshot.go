@@ -71,6 +71,7 @@ func readHealthRates(ctx context.Context, q nativeQueryer, organization tracker.
 
 func readHealthRateAttempts(ctx context.Context, q nativeQueryer, scope nativeScope, window operatortool.AnalyticsWindow) ([]healthRateAttempt, error) {
 	rows, err := q.QueryContext(ctx, `SELECT a.id,a.work_item_id,a.status,a.updated_at,
+ COALESCE((SELECT lr.runner_id FROM lease_runners lr WHERE lr.lease_id=a.lease_id),''),
  json_object('terminal_failure',json_extract(a.data_json,'$.terminal_failure'),'finalization',json_extract(a.data_json,'$.finalization'),'runtime',json_object('heartbeat_at',json_extract(a.data_json,'$.runtime.heartbeat_at'),'landing',json_extract(a.data_json,'$.runtime.landing'))),
  (SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id AND u.currency='USD' AND julianday(u.updated_at)<=julianday(?))
  FROM native_attempts a JOIN projects p ON p.id=a.project_id
@@ -89,7 +90,7 @@ func readHealthRateAttempts(ctx context.Context, q nativeQueryer, scope nativeSc
 		}
 		var a healthRateAttempt
 		var at, raw string
-		if err := rows.Scan(&a.ID, &a.Item, &a.Status, &at, &raw, &a.Cost); err != nil {
+		if err := rows.Scan(&a.ID, &a.Item, &a.Status, &at, &a.Runner, &raw, &a.Cost); err != nil {
 			return nil, err
 		}
 		if a.At, err = parseTimeValue(at); err != nil {
@@ -98,6 +99,9 @@ func readHealthRateAttempts(ctx context.Context, q nativeQueryer, scope nativeSc
 		var data tracker.NativeRunData
 		if err := json.Unmarshal([]byte(raw), &data); err != nil {
 			return nil, err
+		}
+		if f := data.TerminalFailure; a.Status == "failed" && f != nil && f.Stage == "pre_provider" && f.Attribution == "instance" {
+			a.InstanceSetupFailure = true
 		}
 		text, _ := failureFromAttempt(data, a.Status)
 		a.Recovery = healthRecoveryReason(text)
