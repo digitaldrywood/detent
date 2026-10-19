@@ -946,6 +946,7 @@ func TestRunWithShutdownPublishesDrainStatusDuringBlockedConnectorRefresh(t *tes
 		releaseRead   bool
 		updateRestart bool
 		native        bool
+		blockStates   bool
 	}{
 		{name: "released read", releaseRead: true},
 		{name: "pending read"},
@@ -953,15 +954,18 @@ func TestRunWithShutdownPublishesDrainStatusDuringBlockedConnectorRefresh(t *tes
 		{name: "released native preview", native: true, releaseRead: true},
 		{name: "pending native preview", native: true},
 		{name: "update restart with pending native preview", native: true, updateRestart: true},
+		{name: "released native status read", native: true, blockStates: true, releaseRead: true},
+		{name: "pending native status read", native: true, blockStates: true},
+		{name: "update restart with pending native status read", native: true, blockStates: true, updateRestart: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			refreshStarted := make(chan struct{}, 1)
 			releaseRefresh := make(chan struct{})
-			backend := shutdownBlockingConnector{started: refreshStarted, release: releaseRefresh}
+			backend := shutdownBlockingConnector{started: refreshStarted, release: releaseRefresh, blockStates: tc.blockStates}
 			var project *projectpkg.Project
 			if tc.native {
 				cfg := workflowconfig.Default()
-				cfg.Tracker.Kind = workflowconfig.TrackerMemory
+				cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 				cfg.Polling.IntervalMS = 60000
 				var err error
 				project, err = projectpkg.New(projectpkg.Config{Project: globalconfig.Project{ID: "selected", Workdir: t.TempDir()}, Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."}}, projectpkg.Dependencies{Connector: backend, Scheduling: shutdownBlockingScheduling{backend: backend}, Runner: orchestrator.FakeRunner{}})
@@ -1510,9 +1514,16 @@ type shutdownBlockingScheduling struct {
 
 func (shutdownBlockingScheduling) HeartbeatInterval() time.Duration { return time.Hour }
 
+func (s shutdownBlockingScheduling) ConnectorForProject(string) (connector.Connector, bool) {
+	return s.backend, true
+}
+
 func (s shutdownBlockingScheduling) FetchCandidateIssues(ctx context.Context, request orchestrator.SchedulingRequest) ([]connector.Issue, error) {
 	discoveryCtx, finish := request.BeginDiscovery(ctx)
 	defer finish()
+	if s.backend.blockStates {
+		return nil, nil
+	}
 	_, err := s.backend.FetchCandidateIssues(discoveryCtx)
 	if discoveryCtx.Err() != nil && ctx.Err() == nil {
 		return nil, nil
@@ -1521,8 +1532,9 @@ func (s shutdownBlockingScheduling) FetchCandidateIssues(ctx context.Context, re
 }
 
 type shutdownBlockingConnector struct {
-	started chan<- struct{}
-	release <-chan struct{}
+	blockStates bool
+	started     chan<- struct{}
+	release     <-chan struct{}
 }
 
 func (c shutdownBlockingConnector) Name() string {
@@ -1542,7 +1554,10 @@ func (c shutdownBlockingConnector) FetchCandidateIssues(ctx context.Context) ([]
 	}
 }
 
-func (shutdownBlockingConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+func (c shutdownBlockingConnector) FetchIssuesByStates(ctx context.Context, _ []string) ([]connector.Issue, error) {
+	if c.blockStates {
+		return c.FetchCandidateIssues(ctx)
+	}
 	return nil, nil
 }
 

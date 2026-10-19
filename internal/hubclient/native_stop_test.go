@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -41,7 +42,7 @@ func (w *stoppedFinalizationWorkspace) RunReviewCommand(ctx context.Context, inf
 }
 
 func TestNativeStopDuringHostFinalization(t *testing.T) {
-	for _, mode := range []string{"stop", "drain during validation", "drain during publication"} {
+	for _, mode := range []string{"stop", "drain during validation", "drain during publication", "drain during validation with pending status", "drain during publication with pending status"} {
 		t.Run(mode, func(t *testing.T) { testNativeStopDuringHostFinalization(t, mode) })
 	}
 }
@@ -74,12 +75,13 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		t.Fatal(err)
 	}
 	published := h.publish(t, current.WorkItemID, change.ID, nativeChangeFixtureHead("b"))
-	var blockPreview atomic.Bool
-	previewStarted := make(chan struct{}, 1)
-	previewRelease := make(chan struct{})
+	statusDiscovery := strings.HasSuffix(mode, "with pending status")
+	var blockDiscovery atomic.Bool
+	discoveryStarted := make(chan struct{}, 1)
+	discoveryRelease := make(chan struct{})
 	publicationStarted := make(chan struct{}, 1)
 	publicationRelease := make(chan struct{})
-	defer close(previewRelease)
+	defer close(discoveryRelease)
 	defer func() {
 		select {
 		case <-publicationRelease:
@@ -89,18 +91,19 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	}()
 	transport := h.native.client.httpClient.Transport
 	h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
-		if blockPreview.Load() && strings.HasSuffix(request.URL.Path, "/claims/preview") {
+		discoveryRequest := !statusDiscovery && strings.HasSuffix(request.URL.Path, "/claims/preview") || statusDiscovery && request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/work-items")
+		if discoveryRequest && blockDiscovery.CompareAndSwap(true, false) {
 			select {
-			case previewStarted <- struct{}{}:
+			case discoveryStarted <- struct{}{}:
 			default:
 			}
 			select {
 			case <-request.Context().Done():
 				return nil, request.Context().Err()
-			case <-previewRelease:
+			case <-discoveryRelease:
 			}
 		}
-		if mode == "drain during publication" && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/versions") {
+		if strings.HasPrefix(mode, "drain during publication") && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/versions") {
 			select {
 			case publicationStarted <- struct{}{}:
 			default:
@@ -183,7 +186,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		if originalClaim.lease.ID == "" || originalClaim.lease.FencingToken == 0 {
 			t.Fatal("finalization has no fenced native claim")
 		}
-		if mode == "drain during publication" {
+		if strings.HasPrefix(mode, "drain during publication") {
 			close(backend.resume)
 			select {
 			case <-publicationStarted:
@@ -192,12 +195,15 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 			}
 		}
 		h.native.slotFreed()
-		blockPreview.Store(true)
+		if statusDiscovery {
+			h.native.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "status-refresh", Claimable: true, Reset: true})
+		}
+		blockDiscovery.Store(true)
 		if _, err := orch.RequestRefresh(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		select {
-		case <-previewStarted:
+		case <-discoveryStarted:
 		case <-time.After(time.Second):
 			t.Fatal("native discovery did not block alongside finalization")
 		}
@@ -225,7 +231,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		if err != nil || detail.Change.CurrentVersion != published.ID || len(detail.Versions) != 1 {
 			t.Fatalf("drain changed publication before finalization settled: %+v, %v", detail, err)
 		}
-		if mode == "drain during validation" {
+		if strings.HasPrefix(mode, "drain during validation") {
 			close(backend.resume)
 		} else {
 			close(publicationRelease)

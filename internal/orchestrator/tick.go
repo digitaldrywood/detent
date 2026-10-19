@@ -575,6 +575,11 @@ func (o *Orchestrator) fetchTickIssues(
 		)
 		return fetched, true
 	}
+	if o.scheduling != nil {
+		discoveryCtx, finish := o.beginDispatchDiscovery(ctx)
+		defer finish()
+		ctx = discoveryCtx
+	}
 	if !canRefresh && !tickHasActiveWork(state, candidateIssues) {
 		timing.step("probe_observed_work")
 		exists, probeErr := o.observedWorkExists(ctx, observedStates)

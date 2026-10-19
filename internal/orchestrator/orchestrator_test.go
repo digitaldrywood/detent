@@ -806,6 +806,8 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 		{name: "pending serialized scan", blockScan: true},
 		{name: "released native preview", native: true, releaseRead: true},
 		{name: "pending native preview", native: true},
+		{name: "released native status read", native: true, blockStates: true, releaseRead: true},
+		{name: "pending native status read", native: true, blockStates: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issue := testIssue("issue-pending-shutdown", "owner/repository#1546", "Merging")
@@ -3194,6 +3196,9 @@ func (s pendingDispatchScheduling) HeartbeatInterval() time.Duration { return ti
 func (s pendingDispatchScheduling) FetchCandidateIssues(ctx context.Context, request orchestrator.SchedulingRequest) ([]connector.Issue, error) {
 	discoveryCtx, finish := request.BeginDiscovery(ctx)
 	defer finish()
+	if s.tracker.blockStates {
+		return nil, nil
+	}
 	_, err := s.tracker.waitForRead(discoveryCtx)
 	if discoveryCtx.Err() != nil && ctx.Err() == nil {
 		return nil, nil
