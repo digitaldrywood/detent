@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -130,6 +131,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	waiting := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Files: 2}
 	accepted := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: head, Files: 2}
 	validatorRework := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Files: 2, Validator: &gate.ValidatorResult{VersionID: "version_1", Submitted: true, Verdict: gate.ValidatorVerdictRework, Score: 1}}
+	auditRework := *waiting
+	auditRework.SecurityAudit = &tracker.SecurityAuditReview{Verdict: "rework", Run: securityaudit.Run{Findings: []securityaudit.Finding{{ID: "audit-finding-1", Severity: "p1", Body: "Handle missing authority"}, {ID: "audit-finding-2", Severity: "p2", Body: "Preserve the request boundary"}, {ID: "resolved-finding", Status: "resolved"}}}}
 	sourceWait := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Files: 2, ImplementationReview: &gate.ValidatorResult{VersionID: "version_1", HeadSHA: head, Verdict: "wait", Commands: []gate.CommandResult{{Command: "unavailable-host-tool", HeadSHA: head, ExitCode: 127}}}}
 	chatGPTCriterion := "a real ChatGPT custom connector signs in against production"
 	claudeCriterion := "a real Claude connector signs in against production"
@@ -156,6 +159,14 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		gate.ApplyCriterionPolicy(gate.ValidatorConfig{}, change.Validator)
 		return change
 	}
+	standingReviews := &tracker.NativeRecovery{ChangeDetail: &tracker.ChangeDetail{
+		Change: tracker.ChangeRequest{ID: "change_1", CurrentVersion: "version_1"},
+		Reviews: []tracker.ChangeReview{
+			{ID: "finding-1", VersionID: "version_1", Decision: "changes_requested"},
+			{ID: "finding-2", VersionID: "version_1", Decision: "changes_requested"},
+			{ID: "old-finding", VersionID: "version_0", Decision: "changes_requested"},
+		},
+	}}
 	reviewConversations := workspace.ReviewConversationsRefusalText + " Address each finding in Rework, then resolve its conversation with evidence of the fix or dismissal.\n- review-bot on internal/app.go:12: handle the empty case"
 	refusedVersion := func(version string) *tracker.NativeRecovery {
 		return &tracker.NativeRecovery{
@@ -195,6 +206,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		wantOrdinary  bool
 		wantInstance  bool
 		wantSettled   bool
+		wantParked    bool
+		wantFindings  bool
+		auditFindings bool
 		humanReview   *bool
 		wantState     string
 		wantComment   string
@@ -247,9 +261,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "blocked unchanged Rework preserves unmet prerequisite without Change", states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: prerequisiteReport, blockerState: "Backlog", diffStats: checkpoint, wantState: "Blocked", wantComment: "detent-status blocked", roundTrip: true},
 		{name: "instance blocker lane refusal still retries", states: blockedLanding, humanReview: &no, finalMessage: instanceReport, updateErr: connector.ErrStateUpdateBlocked, wantInstance: true},
 		{name: "instance blocker without Blocked lane retries", states: fourLanes, humanReview: &no, finalMessage: instanceReport, wantInstance: true},
-		{name: "Rework completion leaving requested changes on its starting head has no work product", change: waiting, startHead: head, reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true}, states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\\nschema: 1\\nstatus: complete\\nblockers: []\\nhuman_action: null\\n```", wantSettled: true, wantState: "Todo"},
-		{name: "Rework completion leaving a validator rework verdict on its starting head has no work product", change: validatorRework, startHead: head, states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\\nschema: 1\\nstatus: complete\\nblockers: []\\nhuman_action: null\\n```", wantSettled: true, wantState: "Todo"},
-		{name: "standing native findings take the retry brake before a review-conversation refusal", change: validatorRework, startHead: head, recovery: refusedVersion("version_1"), states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantSettled: true, wantState: "Todo"},
+		{name: "Rework completion leaving requested changes on its starting head has no work product", change: waiting, recovery: standingReviews, wantFindings: true, startHead: head, reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true}, states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\\nschema: 1\\nstatus: complete\\nblockers: []\\nhuman_action: null\\n```", wantSettled: true, wantParked: true, wantState: "Blocked"},
+		{name: "Rework completion leaving a validator rework verdict on its starting head has no work product", change: validatorRework, startHead: head, states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\\nschema: 1\\nstatus: complete\\nblockers: []\\nhuman_action: null\\n```", wantSettled: true, wantParked: true, wantState: "Blocked"},
+		{name: "unchanged audited Rework parks without an allowed Todo retry", change: &auditRework, startHead: head, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantSettled: true, wantParked: true, auditFindings: true, wantState: "Blocked"},
+		{name: "Rework publishing a new head with standing findings remains in Rework", change: validatorRework, startHead: strings.Repeat("d", 40), states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Rework", wantSameState: true, wantComment: "validator requested changes"},
+		{name: "standing native findings take the retry brake before a review-conversation refusal", change: validatorRework, startHead: head, recovery: refusedVersion("version_1"), states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantSettled: true, wantParked: true, wantState: "Blocked"},
 		{name: "an unchanged reviewed head with only a review-conversation refusal holds for review", change: accepted, startHead: head, recovery: refusedVersion("version_1"), states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Blocked", wantComment: "resolved none of the review conversations"},
 		{name: "Rework completion with new commits under requested changes stays in Rework", change: waiting, startHead: strings.Repeat("e", 40), reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true}, states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\\nschema: 1\\nstatus: complete\\nblockers: []\\nhuman_action: null\\n```", wantState: "Rework", wantSameState: true},
 		{name: "unfinished source free completion with checkpoint returns to Rework", states: unfinishedWorkflow, change: &runpkg.NativeChange{}, humanReview: &no, diffStats: checkpoint, wantSettled: true, wantState: "Rework"},
@@ -880,8 +896,20 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				if test.wantState != "" {
 					wantTransitions = 1
 				}
-				if len(tick.updates) != wantTransitions || test.wantState != "" && tick.stateIssues[0].State != test.wantState || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Completed) != 0 || len(state.Retry) != 0 || len(state.deferredCompletions) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || len(attempts.completions) != 1 {
+				if len(tick.updates) != wantTransitions || test.wantState != "" && tick.stateIssues[0].State != test.wantState || (!test.wantParked && (len(tick.comments) != 0 || len(state.Blocked) != 0)) || len(state.Completed) != 0 || len(state.Retry) != 0 || len(state.deferredCompletions) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || len(attempts.completions) != 1 {
 					t.Fatalf("native settlement accepted, relaned, or replayed immutable outcome: updates=%v completed=%v retry=%v releases=%d attempts=%v", tick.updates, state.Completed, state.Retry, scheduling.releases, attempts.completions)
+				}
+				if test.wantParked {
+					park := state.Blocked[issue.ID]
+					if park.Reason != terminalAttemptRetryLimitCause || park.Recovery == nil || park.Recovery.Owner != blockedRecoveryOwnerOperator || !strings.Contains(park.Recovery.OperatorRemedy, head) {
+						t.Fatalf("unchanged Rework lost its durable operator hold: %+v", park)
+					}
+					if test.wantFindings && (!strings.Contains(park.Recovery.OperatorRemedy, "finding-1") || !strings.Contains(park.Recovery.OperatorRemedy, "finding-2") || strings.Contains(park.Recovery.OperatorRemedy, "old-finding")) {
+						t.Fatalf("park named the wrong standing findings: %s", park.Recovery.OperatorRemedy)
+					}
+					if test.auditFindings && (!strings.Contains(park.Recovery.OperatorRemedy, "audit-finding-1") || !strings.Contains(park.Recovery.OperatorRemedy, "audit-finding-2") || strings.Contains(park.Recovery.OperatorRemedy, "resolved-finding")) {
+						t.Fatalf("park named the wrong standing audit findings: %s", park.Recovery.OperatorRemedy)
+					}
 				}
 				wantTerminal := test.wantTerminal
 				if wantTerminal == "" {

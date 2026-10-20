@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
@@ -1835,7 +1836,7 @@ func TestConfiguredTerminalRetryAfterStoreRestart(t *testing.T) {
 			at := now.Add(24 * time.Hour)
 			if tt.legacyPark {
 				o.workflowMetrics = db
-				parked, ok := o.parkRetryCycleLimit(ctx, &state, issue, RunModeImplement, DiffStats{}, terminalAttemptRetryLimitCause, 3, telemetryWorkAttempt(latest, at), at)
+				parked, ok := o.parkRetryCycleLimit(ctx, &state, issue, RunModeImplement, DiffStats{}, terminalAttemptRetryLimitCause, 3, telemetryWorkAttempt(latest, at), at, "")
 				if !ok {
 					t.Fatal("cannot reproduce durable legacy terminal park")
 				}
@@ -2173,12 +2174,40 @@ func TestTerminalAttemptRetryLimitReachedParksNoWorkProductCycles(t *testing.T) 
 		return attempts
 	}
 	tests := []struct {
-		name       string
-		state      string
-		prior      int
-		pushedAt   int
-		wantParked bool
+		name        string
+		state       string
+		prior       int
+		pushedAt    int
+		wantParked  bool
+		humanAction bool
+		current     func(*telemetry.WorkAttempt)
+		wantReset   bool
+		priorPlan   bool
 	}{
+		{name: "first unchanged Rework against findings parks", state: "Rework", pushedAt: -1, humanAction: true, wantParked: true},
+		{name: "unchanged Rework after planning parks immediately", state: "Rework", priorPlan: true, pushedAt: -1, humanAction: true, wantParked: true},
+		{name: "planning with standing findings is not counted", state: "Rework", pushedAt: -1, humanAction: true, wantReset: true, current: func(attempt *telemetry.WorkAttempt) {
+			attempt.WorkerMetadataJSON = `{"run_mode":"plan"}`
+		}},
+		{name: "pushed Rework resets the count", state: "Rework", prior: limit - 1, pushedAt: -1, humanAction: true, wantReset: true, current: func(attempt *telemetry.WorkAttempt) {
+			attempt.WorkerMetadataJSON = `{"run_mode":"implement","work_product_pushed":true}`
+		}},
+		{name: "instance failure is not counted", state: "Rework", pushedAt: -1, humanAction: true, wantReset: true, current: func(attempt *telemetry.WorkAttempt) {
+			attempt.TerminalState = string(store.WorkAttemptTerminalFailure)
+			attempt.ErrorClass = backendcapacity.StartupFailureErrorClass
+		}},
+		{name: "authority loss is not counted", state: "Rework", pushedAt: -1, humanAction: true, wantReset: true, current: func(attempt *telemetry.WorkAttempt) {
+			attempt.TerminalState = string(store.WorkAttemptTerminalAbandoned)
+			attempt.ErrorClass = "service_restart"
+		}},
+		{name: "other terminal failures keep retrying below three", state: "Rework", prior: 1, pushedAt: -1, current: func(attempt *telemetry.WorkAttempt) {
+			attempt.TerminalState = string(store.WorkAttemptTerminalFailure)
+			attempt.ErrorClass = workAttemptErrorRunner
+		}},
+		{name: "other terminal failures park on three", state: "Rework", prior: 2, pushedAt: -1, wantParked: true, current: func(attempt *telemetry.WorkAttempt) {
+			attempt.TerminalState = string(store.WorkAttemptTerminalFailure)
+			attempt.ErrorClass = workAttemptErrorRunner
+		}},
 		{name: "Rework cycles alternating with plans park at the limit", state: "Rework", prior: limit - 1, pushedAt: -1, wantParked: true},
 		{name: "In Progress cycles park at the limit", state: "In Progress", prior: limit - 1, pushedAt: -1, wantParked: true},
 		{name: "below the limit keeps retrying", state: "Rework", prior: limit - 2, pushedAt: -1},
@@ -2193,8 +2222,19 @@ func TestTerminalAttemptRetryLimitReachedParksNoWorkProductCycles(t *testing.T) 
 			o := &Orchestrator{cfg: cfg, connector: tracker}
 			state := newState(cfg)
 			state.WorkAttempts = history(issue.ID, tt.prior, tt.pushedAt)
+			if tt.priorPlan {
+				state.WorkAttempts = append(state.WorkAttempts, plan(issue.ID, 101, now.Add(-time.Hour)))
+			}
+			historyCount := len(state.WorkAttempts)
 			current := noProduct(issue.ID, 200, now)
-			parked, ok := o.terminalAttemptRetryLimitReached(t.Context(), &state, issue, terminalAttemptRetryLimitCause, true, RunModeImplement, DiffStats{}, now, current)
+			if tt.current != nil {
+				tt.current(&current)
+			}
+			humanAction := ""
+			if tt.humanAction {
+				humanAction = "Review findings [finding-1; finding-2] on unchanged head abc123 and move the issue to Todo to authorize further work."
+			}
+			parked, ok := o.terminalAttemptRetryLimitReached(t.Context(), &state, issue, terminalAttemptRetryLimitCause, true, RunModeImplement, DiffStats{}, now, humanAction, current)
 			if ok != tt.wantParked {
 				t.Fatalf("parked = %v, want %v (limit %d)", ok, tt.wantParked, limit)
 			}
@@ -2205,7 +2245,28 @@ func TestTerminalAttemptRetryLimitReachedParksNoWorkProductCycles(t *testing.T) 
 			if !tt.wantParked && (held || len(tracker.transitionStates()) != 0) {
 				t.Fatalf("below-limit cycle moved the issue: blocked = %#v, transitions = %v", blocked, tracker.transitionStates())
 			}
-			if len(state.WorkAttempts) != 2*tt.prior {
+			if tt.wantParked && tt.humanAction {
+				if blocked.Recovery == nil || blocked.Recovery.Owner != blockedRecoveryOwnerOperator || blocked.Recovery.OperatorRemedy != humanAction || blocked.RecoveryIntentResumable || len(state.Claimed) != 0 || len(state.Retry) != 0 {
+					t.Fatalf("unchanged Rework lost its hold or remedy: %+v", blocked)
+				}
+				var found bool
+				for _, comment := range tracker.comments {
+					if signal, ok := workpad.SignalFromComment(comment, "", ""); ok && signal != nil && signal.HumanAction == humanAction && signal.Status == workpad.StatusBlocked {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("tracker did not retain the findings and head in human_action: %v", tracker.comments)
+				}
+			}
+			if tt.wantReset {
+				view := state
+				view.WorkAttempts = append([]telemetry.WorkAttempt{current}, state.WorkAttempts...)
+				if count, _, known := o.consecutiveRetryCycleCount(t.Context(), &view, issue, terminalAttemptRetryLimitCause, now); !known || count != 0 {
+					t.Fatalf("current attempt consumed retry allowance: count=%d known=%t", count, known)
+				}
+			}
+			if len(state.WorkAttempts) != historyCount {
 				t.Fatal("the current attempt evidence was persisted into state before completion")
 			}
 		})

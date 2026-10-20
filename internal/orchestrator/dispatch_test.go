@@ -4394,3 +4394,59 @@ func TestTimedOutWorkerProbeDoesNotHoldDispatch(t *testing.T) {
 		})
 	}
 }
+
+func TestDispatchPlannerHoldsUnchangedRework(t *testing.T) {
+	t.Parallel()
+	for _, resume := range []string{"Todo", "Rework"} {
+		t.Run(resume, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}})
+			issue := terminalRetryTestIssue("unchanged-rework")
+			issue.State = "Rework"
+			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: issue}}
+			attempts := &recordingWorkAttemptStore{}
+			var logs strings.Builder
+			o := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+			state := newState(cfg)
+			current := telemetry.WorkAttempt{AttemptID: 42, IssueID: issue.ID, Status: string(store.WorkAttemptStatusTerminal), TerminalState: string(store.WorkAttemptTerminalSuccess), ErrorClass: terminalAttemptWithoutWorkProductReason, CompletedAt: timePointer(now)}
+			parked, ok := o.terminalAttemptRetryLimitReached(t.Context(), &state, issue, terminalAttemptRetryLimitCause, true, RunModeImplement, DiffStats{HeadSHA: "head-1"}, now, "Review finding-1 on unchanged head head-1", current)
+			if !ok {
+				t.Fatal("first unchanged Rework did not park")
+			}
+			planAttempt := current
+			planAttempt.AttemptID++
+			planAttempt.WorkerMetadataJSON = `{"run_mode":"plan"}`
+			if _, parkedAgain := o.terminalAttemptRetryLimitReached(t.Context(), &state, parked, terminalAttemptRetryLimitCause, true, RunModePlan, DiffStats{}, now.Add(time.Hour), "", planAttempt); parkedAgain {
+				t.Fatal("planning consumed the retry allowance")
+			}
+			if o.recoverCauseBlockedIssue(t.Context(), &state, parked, now.Add(24*time.Hour)) {
+				t.Fatal("cooldown resumed the unchanged head without authorization")
+			}
+			planner := newDispatchPlanner(cfg)
+			var refusal dispatchPlanDecision
+			plan := planner.plan(&state, []connector.Issue{issue}, now.Add(24*time.Hour), dispatchPlanHooks{decision: func(decision dispatchPlanDecision) {
+				refusal = decision
+				o.logDispatchPlanDecision(t.Context(), &state, now.Add(24*time.Hour), decision)
+			}})
+			if len(plan.Dispatches) != 0 || len(state.Claimed) != 0 || len(attempts.decisions) != 1 || attempts.decisions[0].Reason != dispatchSkipBlocked || attempts.decisions[0].Result != store.SchedulerDecisionResultSkipped {
+				t.Fatalf("parked head admitted another claim or lost its scheduler refusal: plan=%+v claims=%v decisions=%+v", plan, state.Claimed, attempts.decisions)
+			}
+			if !strings.Contains(logs.String(), "scheduler_dispatch_decision") || !strings.Contains(logs.String(), "skip_reason=blocked") {
+				t.Fatalf("scheduler.decision refusal missing: %s", logs.String())
+			}
+			for _, evidence := range []string{terminalAttemptRetryLimitCause, "finding-1", "head-1"} {
+				if !strings.Contains(refusal.SkipDetail, evidence) {
+					t.Fatalf("scheduler refusal omitted %q: %+v", evidence, refusal)
+				}
+			}
+			issue.State = resume
+			issue.UpdatedAt = timePointer(now.Add(25 * time.Hour))
+			o.trackCandidateBlockedStatusIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(25*time.Hour))
+			plan = planner.plan(&state, []connector.Issue{issue}, now.Add(25*time.Hour), dispatchPlanHooks{})
+			if len(plan.Dispatches) != 1 {
+				t.Fatalf("authorized lane move did not release the hold: %+v", plan)
+			}
+		})
+	}
+}
