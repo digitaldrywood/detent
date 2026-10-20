@@ -75,7 +75,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
-		if (preProvider || errors.Is(event.Err, runpkg.ErrValidatorInfrastructure)) && !recoveryRequired && o.handlePreTurnFailure(ctx, state, event, running) {
+		if (preProvider || errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) || errors.Is(event.Err, runpkg.ErrReviewConversationsUnavailable)) && !recoveryRequired && o.handlePreTurnFailure(ctx, state, event, running) {
 			return true
 		}
 		states, err := reader.WorkflowStates(ctx)
@@ -285,7 +285,21 @@ func (o *Orchestrator) completeNativeChangeRun(
 		o.releaseClaim(state, issueID)
 		return true
 	}
-	if changed && change.Reviewed && !needsReview && !unfinished && !autoPromoteOptoutLabel(issue, cfg) {
+	unaddressedRefusal, resolvedRefusal := "", false
+	if changed && change.Reviewed && !needsReview && !unfinished {
+		if refusal := o.nativeReviewConversationRefusal(event, change); refusal != "" {
+			unaddressedRefusal, resolvedRefusal = refusal, event.Result.ReviewConversationsCleared
+			if resolvedRefusal {
+				unaddressedRefusal = ""
+			}
+		}
+	}
+	if unaddressedRefusal != "" {
+		target, ok = connector.LandingRefusalLane(states, issue.State, review, false)
+		if !ok {
+			return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", strings.TrimSpace(issue.State), review))
+		}
+	} else if changed && change.Reviewed && !needsReview && !unfinished && !autoPromoteOptoutLabel(issue, cfg) {
 		if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); direct && dispatchableState(states, landing) {
 			target, ok = landing, true
 		} else if _, allowed := connector.CompletionLane(states, issue.State, "", false); allowed {
@@ -316,8 +330,14 @@ func (o *Orchestrator) completeNativeChangeRun(
 		if unfinished && normalizeState(target) == normalizeState(cfg.ReworkState) {
 			comment = fmt.Sprintf("The provider turn completed with %s and no reported blocker or human action. Implementation remains unfinished in %s; the completed turn and any genuine source version are preserved for further work, but issue acceptance is not recorded.", disposition, displayStateName(target))
 		}
+	} else if unaddressedRefusal != "" {
+		comment = fmt.Sprintf("Rework returned Change Request %s (head %s) unchanged and resolved none of the review conversations that blocked its landing, so it was not sent back to Merging. Moved from %s to %s. Address or dismiss each conversation on the pull request, then move the item to Merging.\n\n%s",
+			change.ChangeID, shortCommit(change.HeadSHA), displayStateName(issue.State), displayStateName(target), unaddressedRefusal)
 	} else {
 		comment = nativeCompletionComment(change, issue.State, target)
+		if resolvedRefusal {
+			comment += " " + workspace.ReviewConversationsResolvedText
+		}
 	}
 	if needsReview {
 		comment = nativeCompletionReason(comment, report, event.Result.FinalMessage, nil)
@@ -379,6 +399,25 @@ func (o *Orchestrator) completeNativeChangeRun(
 			"changed", changed, "change_id", changeID)
 	}
 	return true
+}
+
+// nativeReviewConversationRefusal returns the review-conversation landing
+// refusal recorded for exactly the version this run returned.
+func (o *Orchestrator) nativeReviewConversationRefusal(event runpkg.Completion, change *runpkg.NativeChange) string {
+	execution := event.Request.Execution
+	if execution == nil {
+		if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
+			execution = source.RunExecution(event.IssueID)
+		}
+	}
+	if execution == nil || change == nil {
+		return ""
+	}
+	recovery := execution.Recovery()
+	if recovery.Change == nil || recovery.Change.ChangeID != change.ChangeID || recovery.Change.VersionID != change.VersionID || recovery.Change.HeadSHA != change.HeadSHA {
+		return ""
+	}
+	return runpkg.NativeReviewConversationRefusal(recovery)
 }
 
 func (o *Orchestrator) observeNativeCompletion(ctx context.Context, event runpkg.Completion, accepted bool) {

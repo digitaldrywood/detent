@@ -66,6 +66,7 @@ type PromptOptions struct {
 	AvailableSkills           []skills.Skill
 	PriorAttempt              PriorAttempt
 	RecoveryState             *workspace.RecoveryState
+	ReviewConversationRefusal string
 }
 
 type ValidatorPromptOptions struct {
@@ -138,6 +139,9 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 			followups.Enabled = false
 		}
 		rendered = appendFollowupsBlock(rendered, followups)
+		if !opts.PlanOnly {
+			rendered = appendReviewConversationRefusalBlock(rendered, opts.ReviewConversationRefusal)
+		}
 		return appendNativeCompletionContract(rendered), nil
 	}
 	if promptDeliverableKind(workflow.Config.Deliverable) != config.DeliverablePullRequest {
@@ -154,6 +158,20 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		}
 	}
 	return rendered, nil
+}
+
+func appendReviewConversationRefusalBlock(prompt, refusal string) string {
+	refusal = strings.TrimSpace(refusal)
+	if refusal == "" {
+		return prompt
+	}
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Landing refused: unresolved review conversations\n\n" +
+		"This Rework exists because GitHub refused to land the current published head until the review conversations below are resolved. Landing the same head again fails the same way.\n\n" +
+		"- Call detent_read_review_threads first and read each conversation in full against the published head.\n" +
+		"- When a finding needs a source change, stage the fix and report complete; resolve its conversation on a later Rework turn, after the host publishes the fixed head.\n" +
+		"- When the published head already addresses a finding, or the finding does not apply, call detent_resolve_review_thread with that head, disposition fixed or dismissed, and concrete source or test evidence.\n" +
+		"- A turn that stages no change and resolves no conversation is not complete: Detent sends the item to human review instead of landing it.\n\n" +
+		boundedMergeContext(refusal, 8*1024) + "\n"
 }
 
 func appendHumanReviewPolicyBlock(prompt string, cfg config.Config) string {

@@ -486,6 +486,15 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			result.NativeChange.ImplementationReviewError = reviewErr.Error()
 		}
 	}
+	if runErr == nil && result.FinalState == FinalStateCompleted {
+		readCtx, readCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
+		cleared, err := r.nativeReviewConversationsCleared(readCtx, req, result.NativeChange)
+		readCancel()
+		if err != nil {
+			runErr = fmt.Errorf("%w: read the review conversations that refused landing: %w", ErrReviewConversationsUnavailable, err)
+		}
+		result.ReviewConversationsCleared = cleared
+	}
 	return result, runErr
 }
 
@@ -728,6 +737,27 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 func nativeLandingRework(recovery tracker.NativeRecovery) bool {
 	landing := nativeRecoveryLanding(recovery)
 	return landing != nil && !landing.Landed && (landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == workspace.LandRefusalBaseMoved && landing.BaseSHA != "")
+}
+
+// NativeReviewConversationRefusal returns the refusal detail when GitHub
+// refused to land the recovered Change version because review conversations
+// are unresolved and the item has not left that refusal through Merging since.
+func NativeReviewConversationRefusal(recovery tracker.NativeRecovery) string {
+	landing := nativeRecoveryLanding(recovery)
+	if recovery.Change == nil || landing == nil || landing.Landed || landing.RefusalKind != workspace.LandRefusalProtected {
+		return ""
+	}
+	for i := len(recovery.History) - 1; i >= 0; i-- {
+		event := recovery.History[i]
+		if event.Type != "workflow.transitioned" || !strings.EqualFold(strings.TrimSpace(event.Data.FromState), "Merging") {
+			continue
+		}
+		if workspace.ReviewConversationsRefusal(event.Data.ReasonDetail) {
+			return strings.TrimSpace(event.Data.ReasonDetail)
+		}
+		return ""
+	}
+	return ""
 }
 
 func nativeRecoveryLanding(recovery tracker.NativeRecovery) *tracker.NativeLandingReceipt {

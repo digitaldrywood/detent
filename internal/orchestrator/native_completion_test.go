@@ -156,6 +156,14 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		gate.ApplyCriterionPolicy(gate.ValidatorConfig{}, change.Validator)
 		return change
 	}
+	reviewConversations := workspace.ReviewConversationsRefusalText + " Address each finding in Rework, then resolve its conversation with evidence of the fix or dismissal.\n- review-bot on internal/app.go:12: handle the empty case"
+	refusedVersion := func(version string) *tracker.NativeRecovery {
+		return &tracker.NativeRecovery{
+			Change:   &tracker.NativeChangeReference{ChangeID: "change_1", VersionID: version, HeadSHA: head},
+			Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{ChangeID: "change_1", VersionID: version, HeadSHA: head, RefusalKind: workspace.LandRefusalProtected}}}}},
+			History:  []tracker.CollaborationEvent{{Type: "workflow.transitioned", Data: tracker.CollaborationData{FromState: "Merging", ToState: "Rework", ReasonDetail: reviewConversations}}},
+		}
+	}
 	connectorAction := "Rewrite each of these acceptance criteria as a pre-merge check or remove it; no repository change can satisfy them before merge:\n- " + chatGPTCriterion + "\n- " + claudeCriterion
 	deliveryErr := &runpkg.DeliverableRecoveryError{Err: &runpkg.DeliverableCommandError{OperationClass: "pull_request", Message: "pull request publication failed"}}
 	for _, test := range []struct {
@@ -209,6 +217,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		mode          string
 		preProvider   bool
 		wantAuthority bool
+		recovery      *tracker.NativeRecovery
+		cleared       bool
 	}{
 		{name: "PLAN ordinary provider failure retains ordinary completion", mode: runpkg.RunModePlan, sourceState: "Todo", states: planRecovery, runErr: errors.New("provider failed"), turnStarted: true, wantOrdinary: true, wantContinue: true},
 		{name: "PLAN post-provider recovery error retains ordinary completion", mode: runpkg.RunModePlan, sourceState: "Todo", states: planRecovery, runErr: runpkg.ErrNativeRecoveryRequired, turnStarted: true, wantOrdinary: true, wantContinue: true},
@@ -239,6 +249,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "instance blocker without Blocked lane retries", states: fourLanes, humanReview: &no, finalMessage: instanceReport, wantInstance: true},
 		{name: "Rework completion leaving requested changes on its starting head has no work product", change: waiting, startHead: head, reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true}, states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\\nschema: 1\\nstatus: complete\\nblockers: []\\nhuman_action: null\\n```", wantSettled: true, wantState: "Todo"},
 		{name: "Rework completion leaving a validator rework verdict on its starting head has no work product", change: validatorRework, startHead: head, states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\\nschema: 1\\nstatus: complete\\nblockers: []\\nhuman_action: null\\n```", wantSettled: true, wantState: "Todo"},
+		{name: "standing native findings take the retry brake before a review-conversation refusal", change: validatorRework, startHead: head, recovery: refusedVersion("version_1"), states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantSettled: true, wantState: "Todo"},
+		{name: "an unchanged reviewed head with only a review-conversation refusal holds for review", change: accepted, startHead: head, recovery: refusedVersion("version_1"), states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Blocked", wantComment: "resolved none of the review conversations"},
 		{name: "Rework completion with new commits under requested changes stays in Rework", change: waiting, startHead: strings.Repeat("e", 40), reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true}, states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\\nschema: 1\\nstatus: complete\\nblockers: []\\nhuman_action: null\\n```", wantState: "Rework", wantSameState: true},
 		{name: "unfinished source free completion with checkpoint returns to Rework", states: unfinishedWorkflow, change: &runpkg.NativeChange{}, humanReview: &no, diffStats: checkpoint, wantSettled: true, wantState: "Rework"},
 		{name: "recorded failed completion with retained checkpoint returns to Rework", states: unfinishedWorkflow, humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, turnStarted: true, wantState: "Rework", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
@@ -400,6 +412,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "malformed published report cannot auto land", change: accepted, states: landing, finalMessage: "```detent-status\nschema: 99\nstatus: complete\n```", wantState: "In Review", wantComment: "no valid complete detent-status disposition"},
 		{name: "typed accepted current version lands normally", change: accepted, states: landing, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "completed reviewed Rework reaches landing", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Merging", wantComment: "runner lands it next"},
+		{name: "unchanged Rework after a review-conversation refusal goes to human review", change: accepted, states: rework, sourceState: "Rework", reviewed: &yes, recovery: refusedVersion("version_1"), wantState: "In Review", wantComment: "resolved none of the review conversations"},
+		{name: "unchanged Rework after a review-conversation refusal holds without human review", change: accepted, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, reviewed: &yes, recovery: refusedVersion("version_1"), wantState: "Blocked", wantComment: "internal/app.go:12"},
+		{name: "opted-out unchanged Rework after a review-conversation refusal keeps its review lane", change: accepted, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, optout: true, reviewed: &yes, recovery: refusedVersion("version_1"), wantState: "In Review", wantComment: "resolved none of the review conversations"},
+		{name: "Rework whose refused conversations are cleared lands", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, recovery: refusedVersion("version_1"), cleared: true, wantState: "Merging", wantComment: "runner lands it next. " + workspace.ReviewConversationsResolvedText},
+		{name: "unreadable review conversation state retries as an instance failure", change: accepted, states: rework, sourceState: "Rework", reviewed: &yes, recovery: refusedVersion("version_1"), runErr: fmt.Errorf("%w: bad gateway", runpkg.ErrReviewConversationsUnavailable), turnStarted: true, wantSameState: true, wantContinue: true},
+		{name: "Rework that published a new version after the refusal lands", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, recovery: refusedVersion("version_0"), wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "refused completed Rework landing retains completion ownership", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", updateErr: errors.New("stale fencing token"), wantState: "Merging", wantDeferred: true, roundTrip: true},
 		{name: "publication outage retries current publisher", reviewed: &yes, republish: true, change: &runpkg.NativeChange{Error: "hub unavailable"}, states: landing, wantDeferred: true},
 		{name: "an unopened change is handed off, not reviewed", change: &runpkg.NativeChange{Changed: true, Error: "hub unavailable", HeadSHA: head, Files: 1}, states: workflow, wantDeferred: true},
@@ -623,7 +641,10 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			event := runpkg.Completion{
 				IssueID: issue.ID, CompletedAt: now, Err: test.runErr,
 				Request: runpkg.RunRequest{Mode: mode, WorkAttemptID: 42, Generation: 7},
-				Result:  runpkg.RunResult{FinalState: finalState, FinalMessage: test.finalMessage, NativeChange: test.change, Tokens: tokens, DiffStats: diffStats, TurnStarted: test.turnStarted || test.wantInstance || test.wantSettled || test.diffStats.Fingerprint != ""},
+				Result:  runpkg.RunResult{FinalState: finalState, FinalMessage: test.finalMessage, NativeChange: test.change, Tokens: tokens, DiffStats: diffStats, TurnStarted: test.turnStarted || test.wantInstance || test.wantSettled || test.diffStats.Fingerprint != "", ReviewConversationsCleared: test.cleared},
+			}
+			if test.recovery != nil {
+				event.Request.Execution = &nativeLandingJourneyExecution{recovery: *test.recovery}
 			}
 			if test.wantDirect {
 				change := *test.change
@@ -1069,6 +1090,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					receipt := attempts.completions[0]
 					if allowanceInfrastructureAttempt(store.WorkAttempt{TerminalState: receipt.TerminalState, ErrorClass: receipt.ErrorClass, MetricsJSON: `{"turns":1,"total_tokens":42}`}) || !terminalAttemptRetryableFailure(telemetry.WorkAttempt{TerminalState: string(receipt.TerminalState), ErrorClass: receipt.ErrorClass}) {
 						t.Fatal("unresolved model conflict escaped genuine failure accounting")
+					}
+				}
+				if errors.Is(test.runErr, runpkg.ErrReviewConversationsUnavailable) {
+					if _, retried := state.Retry[issue.ID]; attempts.completions[0].ErrorClass != workAttemptErrorRunner || len(tick.updates) != 0 || !retried {
+						t.Fatalf("unreadable review conversations did not retry as an instance failure: class=%s updates=%v", attempts.completions[0].ErrorClass, tick.updates)
 					}
 				}
 				if errors.Is(test.runErr, runpkg.ErrWorkerProcessReap) || errors.Is(test.runErr, runpkg.ErrWorkspacePreparation) {

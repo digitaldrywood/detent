@@ -272,6 +272,7 @@ func (j *nativeLandingJourney) run(t *testing.T) (runpkg.RunResult, error) {
 
 type nativeLandingJourneyExecution struct {
 	target   runpkg.NativeLandingTarget
+	recovery tracker.NativeRecovery
 	started  int
 	recorded []runpkg.NativeLanding
 }
@@ -288,8 +289,8 @@ func (*nativeLandingJourneyExecution) Checkpoint(context.Context, tracker.Native
 	return nil
 }
 func (*nativeLandingJourneyExecution) Finish(context.Context, string) error { return nil }
-func (*nativeLandingJourneyExecution) Recovery() tracker.NativeRecovery {
-	return tracker.NativeRecovery{}
+func (e *nativeLandingJourneyExecution) Recovery() tracker.NativeRecovery {
+	return e.recovery
 }
 func (e *nativeLandingJourneyExecution) StartLanding(context.Context, int64, uint64) error {
 	e.started++

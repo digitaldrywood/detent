@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type changeFixture struct {
@@ -2182,6 +2183,93 @@ func TestRetiredLandingBarrierEndpoints(t *testing.T) {
 	for _, method := range []string{http.MethodGet, http.MethodPost} {
 		t.Run(method, func(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, method, f.base+"/landing-barrier", f.token, nil), http.StatusNotFound)
+		})
+	}
+}
+
+func TestReviewConversationRefusalHoldsLandingUntilReleased(t *testing.T) {
+	t.Parallel()
+	refusal := "GitHub requires these review conversations to be resolved before the merge. Address each finding in Rework, then resolve its conversation with evidence of the fix or dismissal.\n- review-bot on internal/app.go:12: handle the empty case"
+	for _, test := range []struct {
+		name     string
+		detail   string
+		reentry  string
+		publish  bool
+		resolved bool
+		want     bool
+	}{
+		{name: "runner re-entry after a review-conversation refusal is held", detail: refusal, reentry: "runner"},
+		{name: "a human move into Merging releases the refusal", detail: refusal, reentry: "human", want: true},
+		{name: "a newly published version releases the refusal", detail: refusal, reentry: "runner", publish: true, want: true},
+		{name: "other landing refusals keep their retry path", detail: "GitHub refused the pull request operation: Pull Request is still a draft", reentry: "runner", want: true},
+		{name: "a Rework that resolved the conversations releases the refusal", detail: refusal, reentry: "runner", resolved: true, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newLandingCapacityFixture(t, nil, "review-refusal", true)
+			issue := f.ready(t, "refused change")
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			ready := func() bool {
+				t.Helper()
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				var id tracker.WorkItemID
+				if err := tx.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id = ?", issue.WorkItemID).Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+				ready, evaluated, _, err := nativeLandingCandidateReady(t.Context(), tx, &scope, id, "machine_landing", 0, f.service.config.now())
+				if err != nil || !evaluated {
+					t.Fatalf("landing eligibility evaluated = %t, error = %v", evaluated, err)
+				}
+				return ready
+			}
+			if !ready() {
+				t.Fatal("reviewed version was not ready before any refusal")
+			}
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/workflow"
+			move := func(state, detail string) {
+				t.Helper()
+				current, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(issue.WorkItemID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "move-" + state}, ExpectedRevision: current.Revision, State: state, Reason: "user_requested", ReasonDetail: detail}), http.StatusOK)
+			}
+			move("In Progress", test.detail)
+			var recovery tracker.NativeRecovery
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path[:len(path)-len("/workflow")]+"?view=recovery", f.token, nil), &recovery)
+			if len(recovery.History) != 1 || recovery.History[0].Data.FromState != "Merging" || recovery.History[0].Data.ReasonDetail != test.detail {
+				t.Fatalf("recovery omitted the landing exit: %+v", recovery.History)
+			}
+			if test.reentry == "human" {
+				move("Merging", "")
+			} else {
+				reentryDetail := "The run succeeded and opened Change Request change_1. The runner lands it next."
+				if test.resolved {
+					reentryDetail += " " + workspace.ReviewConversationsResolvedText
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Merging') WHERE native_id=?", f.project.ID, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO collaboration_events (id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) SELECT 'runner-reentry',organization_id,project_id,work_item_id,sequence+1,'workflow.transitioned',1,'{"kind":"runner","principal_id":"runner_landing"}',json_object('from_state','In Progress','to_state','Merging','reason','worker_progress','reason_detail',?),recorded_at FROM collaboration_events WHERE work_item_id=? ORDER BY sequence DESC LIMIT 1`, reentryDetail, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var actor string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT json_extract(actor_json,'$.kind') FROM collaboration_events WHERE work_item_id=? AND type='workflow.transitioned' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&actor); err != nil || actor != test.reentry {
+				t.Fatalf("re-entry actor = %q, error = %v, want %s", actor, err, test.reentry)
+			}
+			if test.publish {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO collaboration_events (id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) SELECT 'republished',organization_id,project_id,work_item_id,sequence+1,'change.version_published',1,actor_json,'{}',recorded_at FROM collaboration_events WHERE work_item_id=? ORDER BY sequence DESC LIMIT 1`, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := ready(); got != test.want {
+				t.Fatalf("landing ready = %t, want %t", got, test.want)
+			}
 		})
 	}
 }

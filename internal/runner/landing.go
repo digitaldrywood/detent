@@ -430,3 +430,35 @@ func (r *Runner) nativeReviewThreadTools(req RunRequest) ([]AgentTool, AgentTool
 		return AgentToolResult{Content: "Recorded disposition and resolved the bot conversation at published head " + target.HeadSHA, Success: true}, nil
 	}
 }
+
+// nativeReviewConversationsCleared reports whether the pull request of a
+// version refused for unresolved review conversations now has none. GitHub
+// owns that state, so a resolution made by an earlier attempt counts too. It
+// answers only for a run that returned the refused version unchanged, and a
+// failed read is an error rather than an unresolved answer.
+func (r *Runner) nativeReviewConversationsCleared(ctx context.Context, req RunRequest, change *NativeChange) (bool, error) {
+	landing, ok := req.Execution.(LandingExecution)
+	if !ok || req.Execution == nil || change == nil || normalizeRunMode(req.Mode) != RunModeImplement {
+		return false, nil
+	}
+	recovery := req.Execution.Recovery()
+	if recovery.Change == nil || recovery.Change.VersionID != change.VersionID || recovery.Change.HeadSHA != change.HeadSHA || NativeReviewConversationRefusal(recovery) == "" {
+		return false, nil
+	}
+	target, err := landing.LandingTarget(ctx)
+	if err != nil && !errors.Is(err, ErrLandingNotReviewed) {
+		return false, err
+	}
+	if !target.GitHubPullRequest || target.External == nil {
+		return false, nil
+	}
+	client, _, err := r.nativeLandingGitHubClient(ctx, req, workerGitHubPolicy{})
+	if err != nil {
+		return false, err
+	}
+	threads, err := workspace.ReadReviewConversations(ctx, client, workspace.LandOptions{Repository: target.Repository, External: target.External, HeadSHA: target.HeadSHA, TargetBranch: target.BaseRef})
+	if err != nil {
+		return false, err
+	}
+	return len(threads) == 0, nil
+}

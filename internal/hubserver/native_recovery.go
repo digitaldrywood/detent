@@ -153,6 +153,11 @@ ORDER BY a.fencing_token LIMIT 5`, scope.organization, scope.project, item, sour
 	if err := rows.Close(); err != nil {
 		return result, err
 	}
+	if exit, found, err := readLatestLandingExit(ctx, tx, scope, item); err != nil {
+		return result, err
+	} else if found {
+		result.History = []tracker.CollaborationEvent{exit}
+	}
 	if bounded {
 		slices.Reverse(result.Discussion)
 		if err := projectNativeRecovery(&result); err != nil {
@@ -681,4 +686,28 @@ func boundedRecoveryReviews(reviews []tracker.ChangeReview, budget int) ([]track
 		}
 	}
 	return result, len(result) != len(reviews), nil
+}
+
+// readLatestLandingExit returns the item's latest move out of Merging. Its
+// reason records why landing stopped, which the next attempt acts on.
+func readLatestLandingExit(ctx context.Context, tx *sql.Tx, scope nativeScope, item string) (tracker.CollaborationEvent, bool, error) {
+	event := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "work_item", AggregateID: tracker.NativeWorkItemID(item)}
+	var actor, data, at string
+	err := tx.QueryRowContext(ctx, `SELECT id, sequence, type, actor_json, data_json, recorded_at FROM collaboration_events
+WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND type = 'workflow.transitioned' AND lower(json_extract(data_json, '$.from_state')) = 'merging'
+ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&event.ID, &event.AggregateSequence, &event.Type, &actor, &data, &at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return event, false, nil
+	}
+	if err != nil {
+		return event, false, err
+	}
+	if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
+		return event, false, err
+	}
+	if err := json.Unmarshal([]byte(data), &event.Data); err != nil {
+		return event, false, err
+	}
+	event.RecordedAt, err = parseTimeValue(at)
+	return event, err == nil, err
 }

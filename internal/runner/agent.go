@@ -55,6 +55,9 @@ var (
 	ErrMissingWorkspace        = errors.New("runner workspace backend is required")
 	ErrMissingAgentBackend     = errors.New("runner agent backend is required")
 	ErrValidatorInfrastructure = errors.New("validator infrastructure failure")
+	// ErrReviewConversationsUnavailable reports that the host could not read
+	// whether the review conversations that refused a landing are resolved.
+	ErrReviewConversationsUnavailable = errors.New("review conversation state unavailable")
 )
 
 type SessionStore interface {
@@ -1847,6 +1850,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		AvailableSkills:           availableSkills,
 		PriorAttempt:              req.PriorAttempt,
 		RecoveryState:             promptRecoveryState,
+	}
+	if mode == RunModeImplement && req.Execution != nil {
+		promptOptions.ReviewConversationRefusal = NativeReviewConversationRefusal(req.Execution.Recovery())
 	}
 	role := runRole(req.Mode, req.Issue)
 	routeRole := agentRuntime.effectiveRunRole(role)

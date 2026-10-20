@@ -808,36 +808,37 @@ type SecurityAuditExecution struct {
 }
 
 type RunResult struct {
-	BillingMode             string
-	ReportedCostMicros      *int64
-	CostSource              string
-	GitHubScope             *tracker.NativeGitHubScope
-	GitHubRESTUsage         *connector.RESTRateLimitUsage
-	GitHubRESTConsumer      string
-	Compute                 *compute.Usage
-	TokenUSD                float64
-	Checkpoint              *workspace.CheckpointRecord
-	FinalState              string
-	Output                  string
-	FinalMessage            string
-	Model                   string
-	TurnStarted             bool
-	TurnStartRefused        bool
-	TurnCount               int
-	RuntimeIdentity         agentidentity.Identity
-	Tokens                  TokenTotals
-	DiffStats               DiffStats
-	ArtifactEvidence        ArtifactProgressEvidence
-	RateLimits              *telemetry.RateLimits
-	BudgetRefusal           *BudgetRefusal
-	SkillDraftProposed      bool
-	PullRequestUpdated      bool
-	PullRequestHeadPushed   bool
-	CITriggerLabelReapplied bool
-	ForgeWriteCompleted     bool
-	DeliverableCommands     []DeliverableCommandEvidence
-	WorkspaceBranch         string
-	MergePrecheck           *MergePrecheck
+	BillingMode                string
+	ReportedCostMicros         *int64
+	CostSource                 string
+	GitHubScope                *tracker.NativeGitHubScope
+	GitHubRESTUsage            *connector.RESTRateLimitUsage
+	GitHubRESTConsumer         string
+	Compute                    *compute.Usage
+	TokenUSD                   float64
+	Checkpoint                 *workspace.CheckpointRecord
+	FinalState                 string
+	Output                     string
+	FinalMessage               string
+	Model                      string
+	TurnStarted                bool
+	TurnStartRefused           bool
+	TurnCount                  int
+	ReviewConversationsCleared bool
+	RuntimeIdentity            agentidentity.Identity
+	Tokens                     TokenTotals
+	DiffStats                  DiffStats
+	ArtifactEvidence           ArtifactProgressEvidence
+	RateLimits                 *telemetry.RateLimits
+	BudgetRefusal              *BudgetRefusal
+	SkillDraftProposed         bool
+	PullRequestUpdated         bool
+	PullRequestHeadPushed      bool
+	CITriggerLabelReapplied    bool
+	ForgeWriteCompleted        bool
+	DeliverableCommands        []DeliverableCommandEvidence
+	WorkspaceBranch            string
+	MergePrecheck              *MergePrecheck
 	// GateValidatedHead is the pull request head on which Detent itself ran
 	// the configured command gate and saw it pass. Empty when it did not.
 	GateValidatedHead string
