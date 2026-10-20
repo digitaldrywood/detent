@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  pull_request:
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
@@ -26,6 +27,7 @@ concurrency:
 
 jobs:
   preflight:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -80,7 +82,7 @@ jobs:
 
   invariants:
     needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
     name: Invariant Gate
     runs-on: ubuntu-latest
     steps:
@@ -100,7 +102,7 @@ jobs:
 
   lint:
     needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
     name: Lint
     runs-on: ubuntu-latest
     steps:
@@ -136,14 +138,14 @@ jobs:
 
   verify-fast:
     needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.preflight.outputs.should_run == 'true') }}
     name: Verify build and vet
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.preflight.outputs.develop_sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.sha || needs.preflight.outputs.develop_sha }}
           fetch-depth: 0
 
       - uses: ./.github/actions/prepare-conversation
@@ -153,6 +155,7 @@ jobs:
           key: verify-fast
 
       - name: Build
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           source scripts/check-evidence.sh
@@ -162,9 +165,16 @@ jobs:
         shell: bash
         run: |
           source scripts/check-evidence.sh
-          check_with_evidence vet make vet
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            check_with_evidence windows-build-amd64 env GOOS=windows GOARCH=amd64 go build ./...
+            check_with_evidence windows-vet env GOOS=windows GOARCH=amd64 go vet ./...
+            check_with_evidence windows-build-arm64 env GOOS=windows GOARCH=arm64 go build ./...
+          else
+            check_with_evidence vet make vet
+          fi
 
       - name: Audit all Go packages with NilAway and the reviewed baseline
+        if: github.event_name != 'pull_request'
         env:
           TMPDIR: ${{ runner.temp }}
         run: |
@@ -173,6 +183,7 @@ jobs:
           check_with_evidence nilaway-changed make nilaway-changed
 
       - name: Verify landing gate concurrency and failure propagation
+        if: github.event_name != 'pull_request'
         env:
           TMPDIR: ${{ runner.temp }}
         run: python3 -m unittest scripts/check_land_test.py
@@ -183,7 +194,7 @@ jobs:
 
   generated:
     needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
     name: Generated sources
     timeout-minutes: 15
     runs-on: ubuntu-latest
@@ -213,7 +224,7 @@ jobs:
 
   app:
     needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
     name: Cloud client
     timeout-minutes: 15
     runs-on: ubuntu-latest
@@ -236,7 +247,7 @@ jobs:
 
   verify-race:
     needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
     name: Verify race (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -273,7 +284,7 @@ jobs:
 
   test-cover:
     needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
     name: Test Coverage (${{ matrix.name }})
     runs-on: ubuntu-latest
     strategy:
@@ -318,7 +329,7 @@ jobs:
 
   security:
     needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
     name: Security
     runs-on: ubuntu-latest
     steps:
@@ -340,7 +351,7 @@ jobs:
 
   browser-visual-shard:
     needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
     name: Browser Visual (${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -410,7 +421,7 @@ jobs:
 
   installer-smoke:
     needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
     name: Installer Smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -458,7 +469,7 @@ jobs:
 
   goreleaser-snapshot:
     needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
     name: GoReleaser Snapshot
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -496,7 +507,7 @@ jobs:
 
   release-prebuild:
     needs: preflight
-    if: needs.preflight.outputs.should_run == 'true'
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
     name: Release prebuild (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -542,7 +553,7 @@ jobs:
     name: Finalize scheduled validation
     timeout-minutes: 5
     needs: [preflight, invariants, lint, verify-fast, generated, app, verify-race, test-cover, security, browser-visual-shard, installer-smoke, goreleaser-snapshot, release-prebuild]
-    if: always() && !cancelled() && (needs.preflight.result == 'success' || needs.preflight.result == 'failure')
+    if: github.event_name != 'pull_request' && always() && !cancelled() && (needs.preflight.result == 'success' || needs.preflight.result == 'failure')
     runs-on: ubuntu-latest
     permissions:
       actions: write

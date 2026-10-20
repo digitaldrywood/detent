@@ -112,36 +112,15 @@ walking host toolchain caches. Scheduled race and coverage targets use
 `-count=1`, preserving fresh scheduled evidence.
 Build and module caches retain their native locations.
 
-Scheduled Windows portability runs the Hub suite through
-`make test-hub-portability`, reusing the same three exhaustive, disjoint
-partitions as the race targets with four parallel tests and a ten-minute budget
-per partition. The remaining package selection excludes Hubserver and workspace,
-which have already run separately. Evidence for each Hub partition is included
-in the existing Windows test artifact. Test selection and individual deadlines
-remain unchanged.
-
-Portability Stress is a manually dispatched macOS/Windows diagnostic workflow.
-Its suites run on separate hosted runners through
-`bash scripts/portability-stress.sh <suite>`, with `GOMAXPROCS=4`, bounded test
-parallelism, and evidence under the supplied `TMPDIR`, `TMP`, or `TEMP`.
-The CLI, runner, and checklock suites retain ten race repetitions; the other
-suites retain the complete race package selection, including one more run of
-those three packages. Windows also retains twenty SQLite lifecycle repetitions.
-Hubserver uses the same three disjoint test partitions as the Makefile, with
-two parallel tests per partition. Orchestrator and workspace run separately;
-the remaining packages run one at a time through the existing evidence tool.
-
-The Windows diagnostic job in run `36678733180` took 4933.681 seconds for ten
-CLI repetitions and 1205.368 seconds for checklock. Their package budgets are
-120 and 45 minutes, with job budgets of 150 and 60 minutes respectively.
-Runner has a 45-minute package budget. Hubserver partitions have 45-minute
-budgets after the unpartitioned suite exceeded 30 minutes on both platforms;
-orchestrator and remaining packages have 30-minute budgets, and workspace
-retains its existing 15-minute budget. Job budgets leave time for setup and
-evidence upload. These bound cumulative suite work; individual production
-deadlines and test workloads remain unchanged. Hosted resource contention is
-still a hypothesis. Uploaded JSON events include run/pause/cont timestamps for
-diagnosing queue time separately from execution time.
+Every pull request guards Windows portability by cross-compilation in the existing Linux
+`verify-fast` job's Vet step in `.github/workflows/ci.yml`. It runs
+`GOOS=windows GOARCH=amd64 go build ./...`,
+`GOOS=windows GOARCH=amd64 go vet ./...`, and
+`GOOS=windows GOARCH=arm64 go build ./...`, covering Windows-only sources
+without a Windows VM or a separate job. PR runs check out the PR merge commit
+and run only this job, with its broader checks disabled. The Windows commands
+do not run in the scheduled or manual full suite. Required status checks and
+the landing gates are unchanged.
 
 Packages that own transport, hub, watcher, orchestrator, and runner goroutines
 also run `go.uber.org/goleak` from package-level tests, so `go test ./...`,

@@ -5,9 +5,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
@@ -116,6 +119,102 @@ func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
 	for _, forbidden := range []string{"~/go/bin/golangci-lint", "cmd/golangci-lint@"} {
 		if strings.Contains(workflow, forbidden) {
 			t.Fatalf("CI lint job bypasses the Makefile pin with %q", forbidden)
+		}
+	}
+}
+
+func TestCIWindowsChecksUseExistingLinuxVetStep(t *testing.T) {
+	t.Parallel()
+
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
+	if !strings.Contains(triggers, "\n  pull_request:\n") {
+		t.Fatal("Windows checks must run on pull requests")
+	}
+	job := workflowBetween(t, workflow, "\n  verify-fast:\n", "\n  generated:")
+	if !strings.Contains(job, "    runs-on: ubuntu-latest\n") {
+		t.Fatal("Windows checks must reuse the existing Linux verify-fast job")
+	}
+	for _, want := range []string{
+		"    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.preflight.outputs.should_run == 'true') }}\n",
+		"          ref: ${{ github.event_name == 'pull_request' && github.sha || needs.preflight.outputs.develop_sha }}\n",
+	} {
+		if !strings.Contains(job, want) {
+			t.Fatalf("Windows checks must run on the PR merge commit even when scheduled preflight is skipped: missing %q", want)
+		}
+	}
+	for _, name := range []string{"Build", "Audit all Go packages with NilAway and the reviewed baseline", "Verify landing gate concurrency and failure propagation"} {
+		if !strings.Contains(job, "      - name: "+name+"\n        if: github.event_name != 'pull_request'\n") {
+			t.Errorf("%s must stay outside the PR guard", name)
+		}
+	}
+	var parsed struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				If  string `yaml:"if"`
+				Run string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(workflow), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	goRecorder := `#!/bin/sh
+if [ "$1" = env ]; then exit 0; fi
+operation=$1
+shift
+for target do
+    case "$target" in
+        -*) ;;
+        [0-9]*) ;;
+        *) printf '%s %s %s %s\n' "$GOOS" "$GOARCH" "$operation" "$target" >> "$CI_GO_CALLS" ;;
+    esac
+done
+`
+	if err := os.WriteFile(filepath.Join(root, "go"), []byte(goRecorder), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []string{"pull_request", "schedule", "workflow_dispatch"} {
+		t.Run(event, func(t *testing.T) {
+			calls := filepath.Join(t.TempDir(), "go-calls")
+			for _, step := range parsed.Jobs["verify-fast"].Steps {
+				if step.Run == "" || step.If != "" {
+					continue
+				}
+				cmd := exec.CommandContext(t.Context(), "bash", "-e", "-c", step.Run)
+				cmd.Env = append(os.Environ(),
+					"GITHUB_EVENT_NAME="+event,
+					"PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"),
+					"GOOS=linux", "GOARCH=amd64", "CI_GO_CALLS="+calls,
+				)
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("workflow script: %v\n%s", err, output)
+				}
+			}
+			data, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Split(strings.TrimSpace(string(data)), "\n")
+			want := []string{"linux amd64 vet ./..."}
+			if event == "pull_request" {
+				want = []string{"windows amd64 build ./...", "windows amd64 vet ./...", "windows arm64 build ./..."}
+			}
+			slices.Sort(got)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Fatalf("Go operations = %q, want %q", got, want)
+			}
+		})
+	}
+	workflows, err := filepath.Glob(".github/workflows/*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range workflows {
+		if strings.Contains(readNormalizedFile(t, path), "windows-latest") {
+			t.Errorf("%s must not add a Windows runner", path)
 		}
 	}
 }
