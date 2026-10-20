@@ -441,7 +441,6 @@ describe("shared host capacity", () => {
     ["uncertain update with zero account limit", { health: "needs_attention", capacity_health: "online", update: { status: "uncertain", desired: { version: "1.2.4" } }, provider_capacity: [{ ...FLEET.runners[0]!.provider_capacity[0]!, max_concurrent: 0, state: "unknown" }] }, 7],
     ["claim refused", { claim_refusal_reason: "Too old to take work" }, 0],
     ["reported limit", { reported_capacity: 3 }, 2],
-    ["routing limit", { capacity_limit: 2 }, 1],
     ["default provider report", { provider_capacity: [{ ...FLEET.runners[0]!.provider_capacity[0]!, max_concurrent: undefined, state: "unknown", used: 12 }] }, 7],
     ["zero account limit", { provider_capacity: [{ ...FLEET.runners[0]!.provider_capacity[0]!, max_concurrent: 0, state: "unknown" }] }, 7],
     ["bounded provider full", { provider_capacity: [{ ...FLEET.runners[0]!.provider_capacity[0]!, max_concurrent: 2, used: 2 }] }, 0],
@@ -457,6 +456,26 @@ describe("shared host capacity", () => {
     } else {
       expect(screen.queryByText(/slots can't take work/)).toBeNull();
     }
+  });
+
+  it("counts a runner limit below the host ceiling as its slots, not as slots that can't take work", () => {
+    renderSection({ ...FLEET, runners: [{ ...active, capacity_limit: 2 }] });
+    const host = screen.getByTestId("runner-capacity");
+    expect(screen.getByText("1 of 2 slots occupied")).toBeTruthy();
+    expect(screen.queryByText(/slots can't take work/)).toBeNull();
+    expect(host.querySelectorAll('[data-slot-state="free"]')).toHaveLength(1);
+    expect(host.querySelectorAll('[data-slot-state="unavailable"]')).toHaveLength(0);
+  });
+
+  it("counts only offline runner slots as unable to take work across a mixed fleet", () => {
+    renderSection({ ...FLEET, runners: [
+      { ...active, capacity_limit: 1, reported_capacity: 1 },
+      { ...active, id: "runner_mini", machine_id: "machine_mini", host_capacity: 4, host_used: 0, capacity_limit: 2, reported_capacity: 2, leases: [] },
+      { ...active, id: "runner_hosted", machine_id: "machine_hosted", state: "draining", health: "offline", connection_health: "offline", host_capacity: 1, host_used: 0, capacity_limit: 1, reported_capacity: 1, leases: [] },
+    ] });
+    expect(screen.getByText("1 of 4 slots occupied")).toBeTruthy();
+    expect(screen.getByText("2 free")).toBeTruthy();
+    expect(screen.getByText("1 slots can't take work")).toBeTruthy();
   });
 
   it("uses only an active sibling's remaining allowance while another drains", () => {

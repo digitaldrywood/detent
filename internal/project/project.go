@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/publication"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	"github.com/digitaldrywood/detent/internal/retro"
@@ -1511,7 +1512,7 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 	workflow.Config = WithMappedNativeTracker(workflow.Config, scheduling, normalizeProjectID(ID(projectConfig.ID)))
 	if workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative {
 		if err := configureProjectPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
-			return p.workflowReloadError("repository policy reload rejected", workflowSourceDisplayPath(projectConfig), err)
+			return p.workflowReloadError(policyReloadFailure(err), workflowSourceDisplayPath(projectConfig), err)
 		}
 	}
 	policyChanged := workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative && workflow.Config.Policy.ID != loadedPolicy.ID
@@ -1559,7 +1560,7 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 	workflow.Config = applyProjectAgentDefaults(workflow.Config, projectConfig)
 	workflow.Config = WithMappedNativeTracker(workflow.Config, scheduling, normalizeProjectID(ID(projectConfig.ID)))
 	if err := configureProjectPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
-		return p.workflowReloadError("repository policy reload rejected", update.Path, err)
+		return p.workflowReloadError(policyReloadFailure(err), update.Path, err)
 	}
 	if managed && update.Workflow.Config.Policy.ID != "" && (workflow.Config.Policy.ID != update.Workflow.Config.Policy.ID || workflow.Config.Policy.SourceRevision != update.Workflow.Config.Policy.SourceRevision) {
 		return p.workflowReloadError("repository policy reload rejected", update.Path, errors.New("the approved policy changed during application; read the current policy before retrying"))
@@ -1774,6 +1775,24 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 		})
 	}
 	return nil
+}
+
+const ProviderStartupFailed = "agent provider startup failed"
+
+func IsProviderStartupFailure(message string) bool {
+	for line := range strings.SplitSeq(message, "\n") {
+		if strings.HasPrefix(line, ProviderStartupFailed+": ") {
+			return true
+		}
+	}
+	return false
+}
+
+func policyReloadFailure(err error) string {
+	if errors.Is(err, providercapacity.ErrCatalogUnavailable) {
+		return ProviderStartupFailed
+	}
+	return "repository policy reload rejected"
 }
 
 func (p *Project) workflowReloadError(message, path string, err error) error {

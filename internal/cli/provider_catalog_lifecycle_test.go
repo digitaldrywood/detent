@@ -91,6 +91,9 @@ func TestRunnerProviderCatalogStartupRecovery(t *testing.T) {
 	if !ok || pending.RetryStopped || manager.Registry().Len() != 0 {
 		t.Fatalf("catalog failure did not leave recoverable registration: %+v", pending)
 	}
+	if problems := runnerStartupProblems(manager.Registry()); len(problems) != 1 || problems[0].Code != "backend_probe_failed" {
+		t.Fatalf("catalog startup failure was not reported as a backend probe failure: %+v", problems)
+	}
 	reports, err := source()
 	if err == nil || len(reports) != 0 || !strings.Contains(err.Error(), "authentication required") {
 		t.Fatalf("failed catalog became provider report: %+v %v", reports, err)

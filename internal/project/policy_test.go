@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -510,9 +511,10 @@ func TestNativeSharedPolicyReloadsRunningProject(t *testing.T) {
 	scheduling.approved = upgradedPolicy
 	scheduling.mu.Unlock()
 	for _, tick := range []struct {
-		name    string
-		pending bool
+		name             string
+		pending, catalog bool
 	}{
+		{name: "provider catalog unavailable", catalog: true},
 		{name: "first rejection", pending: true},
 		{name: "still pending", pending: true},
 		{name: "approved"},
@@ -523,12 +525,20 @@ func TestNativeSharedPolicyReloadsRunningProject(t *testing.T) {
 			if tick.pending {
 				scheduling.checkError = &hubclient.APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: "repository policy approval pending"}
 			}
+			if tick.catalog {
+				scheduling.checkError = errors.Join(orchestrator.ErrSchedulingUnavailable, fmt.Errorf("%w: provider models for backend codex: wait for initialize response: context deadline exceeded", providercapacity.ErrCatalogUnavailable))
+			}
 			scheduling.mu.Unlock()
 			err := p.reconcileWorkflow(t.Context())
-			if tick.pending {
+			reloadError := p.WorkflowSourceStatus().LastReloadError
+			if tick.catalog {
+				if !errors.Is(err, providercapacity.ErrCatalogUnavailable) || !strings.HasPrefix(reloadError, ProviderStartupFailed+": ") || strings.Contains(reloadError, "repository policy reload rejected") || p.Workflow().Config.Policy.ID != approved.ID {
+					t.Fatalf("provider startup failure was reported as a policy rejection: %q, %v", reloadError, err)
+				}
+			} else if tick.pending {
 				var failure *hubclient.APIError
-				if !errors.As(err, &failure) || failure.Status != http.StatusConflict || failure.Code != "policy_mismatch" || p.Workflow().Config.Policy.ID != approved.ID {
-					t.Fatalf("pending approval changed effective policy: %s, %v", p.Workflow().Config.Policy.ID, err)
+				if !errors.As(err, &failure) || failure.Status != http.StatusConflict || failure.Code != "policy_mismatch" || p.Workflow().Config.Policy.ID != approved.ID || !strings.HasPrefix(reloadError, "repository policy reload rejected: ") {
+					t.Fatalf("pending approval changed effective policy: %s, %q, %v", p.Workflow().Config.Policy.ID, reloadError, err)
 				}
 			} else if err != nil || p.Workflow().Config.Policy.ID != upgradedPolicy.ID || p.WorkflowSourceStatus().LastReloadError != "" {
 				t.Fatalf("approved unchanged selection was not applied on the next tick: %s, %v", p.Workflow().Config.Policy.ID, err)

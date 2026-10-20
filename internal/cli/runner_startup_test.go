@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -213,4 +214,28 @@ func (*startupNativeScheduling) HeartbeatInterval() time.Duration { return time.
 
 func (*startupNativeScheduling) FetchCandidateIssues(context.Context, orchestrator.SchedulingRequest) ([]connector.Issue, error) {
 	return nil, nil
+}
+
+func TestRunnerStartupProblemsSeparateProviderStartupFromSettings(t *testing.T) {
+	t.Parallel()
+	registry := project.NewRegistry()
+	for id, message := range map[string]string{
+		"provider": project.ProviderStartupFailed + ": scheduling source unavailable\nagent provider model catalog unavailable: provider models for backend codex: wait for initialize response: context deadline exceeded",
+		"startup":  "project definition failed\n" + project.ProviderStartupFailed + ": scheduling source unavailable\nagent provider model catalog unavailable: provider models for backend codex: authentication required",
+		"policy":   "repository policy reload rejected: policy_mismatch",
+	} {
+		if err := registry.SetPending(globalconfig.Project{ID: id}, project.RuntimeError{Message: message}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	codes := map[string]string{}
+	for _, problem := range runnerStartupProblems(registry) {
+		codes[problem.ProjectID] = problem.Code
+	}
+	if want := map[string]string{"provider": "backend_probe_failed", "startup": "backend_probe_failed", "policy": "settings_invalid"}; !reflect.DeepEqual(codes, want) {
+		t.Fatalf("startup problem codes = %v, want %v", codes, want)
+	}
+	if err := runnerauth.ValidateReportedProblems(runnerStartupProblems(registry)); err != nil {
+		t.Fatal(err)
+	}
 }

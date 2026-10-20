@@ -100,7 +100,7 @@ func TestRunnerProviderReports(t *testing.T) {
 			for range 6 {
 				reports, err := source()
 				if test.missing || test.fail {
-					if err == nil || test.fail && !errors.Is(err, catalogFailure) {
+					if err == nil || test.fail && (!errors.Is(err, catalogFailure) || !errors.Is(err, providercapacity.ErrCatalogUnavailable)) {
 						t.Fatalf("source error=%v", err)
 					}
 					return

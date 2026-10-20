@@ -93,7 +93,10 @@ it("puts shared host totals and every runner before grouped typed findings witho
   expect(within(live).getByText("Finishing work before updating")).toBeTruthy();
   const settings = within(attention).getByText("Project settings could not be loaded").closest("article")!;
   expect(within(settings).getByText("Optional project", { exact: false })).toBeTruthy();
-  expect(within(settings).getAllByRole("link").map((link) => link.textContent)).toEqual(["Example desktop", "Example build host"]);
+  expect(within(settings).getAllByRole("link").map((link) => link.textContent)).toEqual(["Example desktop"]);
+  const draining = within(attention).getByText("Not taking work because project settings could not be loaded").closest("article")!;
+  expect(within(draining).getAllByRole("link").map((link) => link.textContent)).toEqual(["Example build host"]);
+  expect(within(draining).getByText("This runner is draining. This runner cannot prepare work with these settings.")).toBeTruthy();
   expect(within(attention).getByRole("link", { name: "Review policy" }).getAttribute("href")).toBe("/settings/integrations?project=prj_main");
   expect(within(attention).getByText("Example project", { exact: false })).toBeTruthy();
   for (const text of ["policy_digest", "git error_output", "Instrumentation coverage", "Configuration that shapes these numbers", "Check local workflow"]) expect(view.container.textContent).not.toContain(text);
@@ -181,16 +184,18 @@ it("keeps read-only policy review with its administrator and does not group unre
 });
 
 it.each([
-  ["disabled", "online", false],
-  ["draining", "online", false],
-  ["active", "offline", false],
-  ["active", "unknown", false],
-  ["active", "online", true],
-] as const)("shows current runner checks for %s/%s only", (state, connection, visible) => {
+  ["disabled", "online", "Not taking work because project settings could not be loaded", "This runner is disabled. "],
+  ["draining", "online", "Not taking work because project settings could not be loaded", "This runner is draining. "],
+  ["draining", "offline", "Not taking work because project settings could not be loaded", "This runner is offline and draining. "],
+  ["active", "offline", "Not taking work because project settings could not be loaded", "This runner is offline. "],
+  ["active", "unknown", "Not taking work because project settings could not be loaded", "This runner is offline. "],
+  ["active", "online", "Project settings could not be loaded", ""],
+] as const)("shows runner checks for %s/%s with why it is not taking work", (state, connection, summary, prefix) => {
   const runner = { ...runners[0]!, state, connection_health: connection, leases: [], host_used: 0 };
   const view = render(<DiagnosticsView {...viewProps} runners={[runner]} />);
   const attention = screen.getByRole("region", { name: "Needs attention" });
-  expect(within(attention).queryByText("Project settings could not be loaded") !== null).toBe(visible);
+  expect(within(attention).getByText(summary)).toBeTruthy();
+  expect(within(attention).getByText(`${prefix}This runner cannot prepare work with these settings.`)).toBeTruthy();
   expect(within(screen.getByRole("region", { name: "Capacity right now" })).getByText(runner.display_name)).toBeTruthy();
   view.rerender(<DiagnosticsView {...viewProps} runners={[{ ...runner, state: "active", connection_health: "online", problems: [] }]} />);
   expect(within(attention).queryByText("Project settings could not be loaded")).toBeNull();

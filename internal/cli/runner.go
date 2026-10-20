@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
@@ -135,7 +136,11 @@ func withRunnerFactoryWithProjectTokens(
 			PrepareProject(context.Context, string) error
 		}); ok {
 			if err := preparation.PrepareProject(ctx, cfg.ID); err != nil {
-				return nil, errors.Join(project.ErrProjectDefinition, connector.NewRetryableError(err.Error()))
+				message := err.Error()
+				if errors.Is(err, providercapacity.ErrCatalogUnavailable) {
+					message = project.ProviderStartupFailed + ": " + message
+				}
+				return nil, errors.Join(project.ErrProjectDefinition, connector.NewRetryableError(message))
 			}
 		}
 		workflow, err := project.LoadWorkflowContext(ctx, cfg)
