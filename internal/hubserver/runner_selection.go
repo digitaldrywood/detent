@@ -7,6 +7,10 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -37,6 +41,11 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 		probe.LandingCapacity = nativeLandingCapacityUnknown
 	}
 	probe.Limit = 100
+	preferred, err := spriteAllocationRunnerProject(ctx, tx, scope, r.MachineID)
+	if err != nil {
+		return 0, false, err
+	}
+	var preferredHead tracker.WorkItemID
 	var heads []tracker.WorkItemID
 	var contractRefusal error
 projects:
@@ -63,6 +72,18 @@ projects:
 		}
 		if len(r.Exclusions(project, approval.Policy.Requirements, false)) > 0 {
 			continue projects
+		}
+		var resolver *runner.BoardIdentityResolver
+		if preferred != "" && project != query.NativeScope.project && len(query.ProviderCandidates) > 0 {
+			workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, approval.Policy)
+			if err != nil {
+				continue projects
+			}
+			workflow.Config.Plan.Enabled = approval.Policy.Gates.PlanEnabled
+			resolver, err = readProjectIdentityResolver(ctx, tx, projectScope, workflow.Config)
+			if err != nil {
+				return 0, false, err
+			}
 		}
 		for {
 			projectIDs, err := claimCandidateIDs(ctx, tx, projectQuery, query.RepositoryIDs, normalizedQueryStrings(query.Repositories), states, normalizedQueryStrings(query.Authors), normalizedQueryStrings(query.Assignees), normalizedQueryStrings(query.LabelInclude), normalizedQueryStrings(query.LabelExclude), nil)
@@ -113,7 +134,24 @@ projects:
 				if id == query.WorkItemID {
 					joining = query.LandingBatchGroup
 				}
-				allowed, reason, err := placementClaimAllowed(ctx, tx, candidateScope, r.MachineID, id, now, query.ProviderCandidates, joining)
+				capacityQuery := query
+				if resolver != nil {
+					var native tracker.NativeWorkItemID
+					if err := tx.QueryRowContext(ctx, `SELECT native_id FROM issues WHERE id=?`, id).Scan(&native); err != nil {
+						return 0, false, err
+					}
+					issue, _, err := readNativeIssue(ctx, tx, candidateScope, string(native))
+					if err != nil {
+						return 0, false, err
+					}
+					identity, err := resolver.Identity(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels, State: issue.State})
+					if err != nil {
+						continue
+					}
+					capacityQuery.NativeScope = &candidateScope
+					capacityQuery.ProviderCandidates = []tracker.NativeCapacityCandidate{{WorkItemID: native, Revision: issue.Revision, Requirement: providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendKind, Model: identity.RequestedModel.Value}}}
+				}
+				allowed, reason, err := placementClaimAllowed(ctx, tx, candidateScope, r.MachineID, id, now, capacityQuery.ProviderCandidates, joining)
 				if err != nil {
 					return 0, false, err
 				}
@@ -134,11 +172,14 @@ projects:
 					}
 					continue
 				}
-				if _, _, err := selectProviderCapacity(ctx, tx, query, id, now); err != nil {
+				if _, _, err := selectProviderCapacity(ctx, tx, capacityQuery, id, now); err != nil {
 					if errors.Is(err, ErrNoClaimableWork) || isProviderWait(err) {
 						continue
 					}
 					return 0, false, err
+				}
+				if project == preferred {
+					preferredHead = id
 				}
 				heads = append(heads, id)
 				continue projects
@@ -148,6 +189,9 @@ projects:
 			}
 			projectQuery.After = projectIDs[len(projectIDs)-1]
 		}
+	}
+	if preferredHead != 0 {
+		return preferredHead, true, nil
 	}
 	var selected tracker.WorkItemID
 	if len(heads) > 0 {
