@@ -740,6 +740,7 @@ describe("the project settings", () => {
     const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
     render(<ClientProvider client={client}><RouterProvider router={router as never} /></ClientProvider>);
     await user.click(await screen.findByRole("button", { name: "Delete project" }));
+    await user.type(within(screen.getByRole("alertdialog")).getByRole("textbox", { name: `To confirm, type ${project.name} below` }), project.name);
     await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete project" }));
     expect(remove).toHaveBeenCalledOnce();
     expect(refresh).not.toHaveBeenCalled();
@@ -789,17 +790,56 @@ describe("the project settings", () => {
     const dialog = screen.getByRole("alertdialog", { name: "Delete Retired project?" });
     expect(within(dialog).getByText(/deletes its secrets and access grants/)).toBeTruthy();
     expect(within(dialog).getByText(/stored artifacts are retained/)).toBeTruthy();
+    const warning = within(dialog).getByRole("alert");
+    expect(warning.textContent).toBe("This action cannot be undone.");
+    expect(warning.getAttribute("data-variant")).toBe("error");
+    const input = within(dialog).getByRole("textbox", { name: "To confirm, type Retired project below" });
+    const button = within(dialog).getByRole("button", { name: "Delete project" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    await user.click(button);
+    await user.click(input);
+    await user.keyboard("{Enter}");
+    expect(onDelete).not.toHaveBeenCalled();
+    for (const name of ["retired project", "Retired", "Retired project extra"]) {
+      await user.clear(input);
+      await user.type(input, name);
+      expect(button.disabled).toBe(true);
+      fireEvent.submit(input.closest("form")!);
+      await user.keyboard("{Enter}");
+      expect(onDelete).not.toHaveBeenCalled();
+    }
+    await user.clear(input);
+    await user.type(input, "Retired project");
+    expect(button.disabled).toBe(false);
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(onDelete).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Delete project" }));
-    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete project" }));
+    const reopened = within(screen.getByRole("alertdialog"));
+    const reopenedInput = reopened.getByRole("textbox", { name: "To confirm, type Retired project below" }) as HTMLInputElement;
+    expect(reopenedInput.value).toBe("");
+    expect((reopened.getByRole("button", { name: "Delete project" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.type(reopenedInput, "  Retired project  ");
+    expect((reopened.getByRole("button", { name: "Delete project" }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(reopened.getByRole("button", { name: "Delete project" }));
     expect(onDelete).toHaveBeenCalledOnce();
     view.rerender(<ProjectDeletionSettings projectName="Retired project" pending error={null} onDelete={onDelete} onDismiss={onDismiss} />);
     expect((screen.getByRole("button", { name: "Deleting…" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(reopenedInput.disabled).toBe(true);
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    fireEvent.submit(reopenedInput.closest("form")!);
+    expect(onDelete).toHaveBeenCalledOnce();
     view.rerender(<ProjectDeletionSettings projectName="Retired project" pending={false} error="Finish active work first" onDelete={onDelete} onDismiss={onDismiss} />);
     expect(within(screen.getByRole("alertdialog")).getByText("Finish active work first")).toBeTruthy();
+    await user.click(reopenedInput);
+    await user.keyboard("{Enter}");
+    expect(onDelete).toHaveBeenCalledTimes(2);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    await user.click(screen.getByRole("button", { name: "Delete project" }));
+    expect((screen.getByRole("textbox", { name: "To confirm, type Retired project below" }) as HTMLInputElement).value).toBe("");
   });
 
   it("shows the saved workflow and submits a reviewed edit without allowing viewer edits", () => {
