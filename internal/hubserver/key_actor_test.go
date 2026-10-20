@@ -375,6 +375,7 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 			{"edit comment", operatortool.EditComment, "", ""},
 			{"restore item", operatortool.RestoreItem, "", ""},
 			{"verify fix", operatortool.VerifyFix, "", ""},
+			{"transfer item", operatortool.TransferItem, "", ""},
 		} {
 			t.Run(test.name, func(t *testing.T) {
 				item := create(t, test.name)
@@ -401,6 +402,43 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 					fields["title"] = "Corrected"
 				case operatortool.MoveItem:
 					fields["target_state"] = "Done"
+				case operatortool.TransferItem:
+					now := f.service.config.now()
+					machine := tracker.MachineID(newNativeID("machine"))
+					operatorSQL(t, f, `INSERT INTO machines(id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at,organization_id,token_id) VALUES(?,?,?,1,'test',?,?,?,?,?)`, machine, machine, machine, formatHubTime(now), formatHubTime(now), formatHubTime(now), scope.organization, issuer.ID)
+					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() {
+						if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+							t.Error(err)
+						}
+					})
+					input := changeTestInput()
+					input.Repository = "https://github.com/example-org/example-project"
+					if _, err := f.service.approveChangeReviewPolicyCommand(t.Context(), tx, scope, tracker.ApproveChangeReviewPolicy{Policy: tracker.ChangeReviewPolicy{PolicyID: input.PolicyID}}); err != nil {
+						t.Fatal(err)
+					}
+					input.AttemptID = seedHealthRateAttempt(t, tx, scope, item, string(machine), "succeeded", tracker.NativeRunData{PolicyID: input.PolicyID}, now, -1)
+					input.RunID = newNativeID("run")
+					if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET run_id=? WHERE id=?", input.RunID, input.AttemptID); err != nil {
+						t.Fatal(err)
+					}
+					bundle := changeTestSource(t, &input)
+					created, err := f.service.createChangeCommand(t.Context(), tx, scope, string(item.WorkItemID), tracker.CreateChange{Title: "Transfer source"}, now)
+					if err != nil {
+						t.Fatal(err)
+					}
+					change := created.(tracker.ChangeRequest)
+					published, err := f.service.publishChangeVersionCommand(t.Context(), tx, scope, string(item.WorkItemID), change.ID, tracker.PublishChangeVersion{ChangeVersionInput: input, SourceBundle: bundle}, now)
+					if err != nil {
+						t.Fatalf("publish source: %#v", err)
+					}
+					if err := f.service.database.commit(t.Context(), tx); err != nil {
+						t.Fatal(err)
+					}
+					fields["version_id"] = published.(tracker.ChangeVersion).ID
 				case operatortool.RestoreItem:
 					_, err := f.service.setNativeArchiveCommand(t.Context(), scope, string(item.WorkItemID), archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: "archive"}, ExpectedRevision: item.Revision}, true)
 					if err != nil {
