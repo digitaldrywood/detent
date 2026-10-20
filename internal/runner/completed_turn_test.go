@@ -26,6 +26,13 @@ type completedExecutionWorkspace struct {
 	onValidation     func()
 }
 
+func (*completedExecutionWorkspace) Use(ctx context.Context, _ workspace.Issue) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return func() {}, nil
+}
+
 func (w *completedExecutionWorkspace) Head(context.Context, workspace.Info, workspace.Issue) (string, error) {
 	return "completed-head", nil
 }
