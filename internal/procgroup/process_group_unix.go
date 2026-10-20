@@ -368,7 +368,7 @@ func observeProcesses(identities []Identity) ([]Observation, error) {
 
 	observations := make([]Observation, 0, len(identities))
 	for _, identity := range identities {
-		observation := Observation{Identity: identity}
+		observation := Observation{Identity: identity, GroupObserved: true}
 		if identity.PID <= 0 || identity.StartedAt.IsZero() {
 			observations = append(observations, observation)
 			continue
