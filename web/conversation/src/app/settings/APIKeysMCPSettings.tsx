@@ -143,6 +143,40 @@ function useKeyOwnerName(apiKey: AccessKey) {
   return ownerName;
 }
 
+function useKeyLastCall(apiKey: AccessKey, preserveFirst = false) {
+  const api = useAccountApi();
+  const { id, kind } = apiKey;
+  const [lastCall, setLastCall] = React.useState(apiKey.last_used_at ?? null);
+  useRelativeTimeTick(60_000);
+
+  React.useEffect(() => {
+    let current = true;
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      try {
+        const result = await (kind === "personal"
+          ? api.personalKeys()
+          : api.serviceKeys());
+        if (!current) return;
+        const used = result.keys.find((key) => key.id === id)?.last_used_at;
+        if (used) {
+          setLastCall((previous) => (preserveFirst ? previous ?? used : used));
+        }
+      } catch {
+        if (!current) return;
+      }
+      if (current) timer = setTimeout(() => void poll(), 5_000);
+    }
+    void poll();
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  }, [api, id, kind, preserveFirst]);
+
+  return lastCall;
+}
+
 function SetupTransport({
   value,
   onChange,
@@ -175,6 +209,7 @@ function ConnectKeySteps({
 }) {
   const account = useAccountBootstrap();
   const ownerName = useKeyOwnerName(apiKey);
+  const lastCall = useKeyLastCall(apiKey);
   const [transport, setTransport] = React.useState("mcp");
   const promptLabel = `${transport === "mcp" ? "MCP" : "REST"} setup prompt`;
   const prompt = keySetupPrompt(endpoint, transport === "rest", apiKey.kind);
@@ -223,7 +258,7 @@ function ConnectKeySteps({
           <li className="flex gap-3">
             <span
               className={
-                apiKey.last_used_at
+                lastCall
                   ? "font-semibold text-success-foreground"
                   : "font-semibold text-muted-foreground"
               }
@@ -236,14 +271,14 @@ function ConnectKeySteps({
                 role="status"
                 className="flex items-center gap-2 text-sm break-words text-muted-foreground"
               >
-                {apiKey.last_used_at ? (
+                {lastCall ? (
                   <>
                     <span
                       aria-hidden="true"
                       className="size-1.5 shrink-0 rounded-full bg-success-foreground"
                     />
                     <span>
-                      Last call {formatRelativeTimeLabel(apiKey.last_used_at)} ·
+                      Last call {formatRelativeTimeLabel(lastCall)} ·
                       acting as{" "}
                       {apiKey.kind === "personal"
                         ? ownerName
@@ -272,43 +307,18 @@ function CreatedKeySteps({
   readonly created: CreatedAccessKey;
   readonly endpoint: string;
 }) {
-  const api = useAccountApi();
   const account = useAccountBootstrap();
-  const { id, kind } = created;
+  const { kind } = created;
   const [revealed, setRevealed] = React.useState(false);
   const [keyCopied, setKeyCopied] = React.useState(false);
   const [copied, setCopied] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [transport, setTransport] = React.useState("mcp");
   const [fullPrompt, setFullPrompt] = React.useState(false);
-  const [firstUse, setFirstUse] = React.useState(created.last_used_at ?? null);
+  const firstUse = useKeyLastCall(created, true);
   const ownerName = useKeyOwnerName(created);
-  useRelativeTimeTick(60_000);
   const prompt = keySetupPrompt(endpoint, transport === "rest", kind);
   const promptLabel = `${transport === "mcp" ? "MCP" : "REST API"} setup prompt`;
-
-  React.useEffect(() => {
-    let current = true;
-    let timer: ReturnType<typeof setTimeout>;
-    async function poll() {
-      try {
-        const result = await (kind === "personal"
-          ? api.personalKeys()
-          : api.serviceKeys());
-        if (!current) return;
-        const used = result.keys.find((key) => key.id === id)?.last_used_at;
-        if (used) setFirstUse((previous) => previous ?? used);
-      } catch {
-        if (!current) return;
-      }
-      if (current) timer = setTimeout(() => void poll(), 5_000);
-    }
-    void poll();
-    return () => {
-      current = false;
-      clearTimeout(timer);
-    };
-  }, [api, id, kind]);
 
   async function copy(value: string, target: string) {
     try {
