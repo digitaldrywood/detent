@@ -23,6 +23,7 @@ type Identity struct {
 type TerminationOutcome string
 
 type Observation struct {
+	GroupObserved bool
 	Identity
 	Alive        bool
 	Stale        bool
