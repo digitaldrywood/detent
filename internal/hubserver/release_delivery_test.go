@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -356,5 +359,158 @@ func TestNativeReleaseDeliveryMCPAuthorityAndDistinctRows(t *testing.T) {
 	args.ProjectID = "prj_other"
 	if _, err := (hubChangeApplication{service: f.service, scope: scope}).MutateChange(t.Context(), operatortool.AssociateReleasePick, args); err == nil {
 		t.Fatal("cross-project association authorized")
+	}
+}
+
+func TestNativeReleaseDeliveryMachineAdmission(t *testing.T) {
+	for _, name := range []string{"authorized", "no delegation", "different criteria", "changed body", "missing dependency", "held", "no dispatch", "stale policy", "replay", "stale policy replay", "changed source", "reopened source", "ordinary machine", "unverified", "changed body replay"} {
+		t.Run(name, func(t *testing.T) {
+			f := newReleaseDeliveryFixture(t, false)
+			prompt := "## Release delivery contract\nVerified release picks of reviewed develop fixes may receive the approved delivery contract.\n" + strings.ReplaceAll(nativeContractTestBody, "## ", "### ")
+			if name == "no delegation" {
+				prompt = strings.ReplaceAll(prompt, "Verified release picks of reviewed develop fixes may receive the approved delivery contract.", "No automatic confirmation is delegated.")
+			}
+			workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{Workflow: []byte(prompt), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\n"), HasConfig: true, ConfigPath: "detent.yaml"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptor, err := config.ResolvePolicy(workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+			if name == "authorized" || name == "no delegation" {
+				ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+				credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				reader := operatorWorkReads{service: f.service, scope: nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}}
+				result, err := reader.ReadWork(ctx, operatortool.WorkConfig, operatortool.WorkReadRequest{ProjectID: string(f.project.ID)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var read struct {
+					Data struct {
+						IssueContract nativeWorkIssueContract `json:"issue_contract"`
+					} `json:"data"`
+				}
+				if err := json.Unmarshal(result.Content, &read); err != nil {
+					t.Fatal(err)
+				}
+				delivery := read.Data.IssueContract.ReleaseDelivery
+				if name == "no delegation" && delivery != nil || name == "authorized" && (delivery == nil || delivery.PolicyID != descriptor.ID || delivery.Body != "## Acceptance criteria\nThe change works.\n\n## Must not break\nExisting behavior.\n\n## How we know it worked\nThe focused tests pass.") {
+					t.Fatalf("work_config delegation=%+v", delivery)
+				}
+			}
+			rules := f.rules
+			rules.PolicyID = descriptor.ID
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "delivery-contract-rules"}, ExpectedID: f.rules.ID, Policy: rules}), http.StatusOK)
+			body := issueorigin.Stamp(nativeContractTestBody, issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: f.request.Repository + "/actions/runs/123", Fingerprint: "fresh-release-delivery"})
+			if name == "different criteria" {
+				body = strings.Replace(body, "The change works.", "Change an unrelated endpoint.", 1)
+			}
+			if name == "no dispatch" {
+				body += "\ndetent:no-dispatch"
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "fresh-machine-delivery"}, Title: "Deliver the reviewed release repair", Body: body, State: "Backlog"})
+			requireNativeStatus(t, response, http.StatusOK)
+			f.delivery = tracker.NativeIssue{}
+			decodeHubResponse(t, response, &f.delivery)
+			if len(f.delivery.IssueContract.ConfirmedSections) != 0 {
+				t.Fatal("fresh machine delivery unexpectedly confirmed")
+			}
+			f.itemPath = f.base + "/work-items/" + string(f.delivery.WorkItemID)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.itemPath+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "fresh-source-dependency"}, ExpectedRevision: f.delivery.Revision, RelatedWorkItemID: f.issue.WorkItemID, Operation: "add"}), http.StatusOK)
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.itemPath, f.token, nil), &f.delivery)
+			if name == "held" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET issue_contract_json=? WHERE native_id=?", `{"human_action":"Keep this delivery held"}`, f.delivery.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.request.ExpectedRevision = f.delivery.Revision
+			if name == "unverified" {
+				f.verifier.refuse = true
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.itemPath+"/release-pick", f.token, f.request), http.StatusUnprocessableEntity)
+			} else if name != "ordinary machine" {
+				f.associate(t, f.request)
+			}
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.itemPath, f.token, nil), &f.delivery)
+			if f.delivery.State != "Backlog" || name == "held" && f.delivery.IssueContract.HumanAction != "Keep this delivery held" {
+				t.Fatalf("association changed workflow or human hold: %+v", f.delivery)
+			}
+			if f.delivery.Body != body {
+				t.Fatal("association changed caller diagnostics or provenance blocks")
+			}
+			if name == "replay" {
+				f.request.IdempotencyKey = "machine-association-replay"
+				f.associate(t, f.request)
+			}
+			if name == "changed body" || name == "changed body replay" {
+				f.delivery.Body += "\nAdditional scope"
+				if name == "changed body replay" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", f.delivery.Body, f.delivery.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+					f.request.IdempotencyKey = "changed-body-replay"
+					f.associate(t, f.request)
+					decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.itemPath, f.token, nil), &f.delivery)
+				}
+			}
+			if name == "missing dependency" {
+				f.delivery.Dependencies = nil
+			}
+			if name == "stale policy" || name == "stale policy replay" {
+				sources := *workflow.DefinitionSources
+				sources.Workflow = []byte(prompt + "\n\nUpdated project policy.\n")
+				updated, err := config.ParseProjectDefinition(sources)
+				if err != nil {
+					t.Fatal(err)
+				}
+				changed, err := config.ResolvePolicy(updated)
+				if err != nil {
+					t.Fatal(err)
+				}
+				approveHubTestPolicy(t, f.service, f.base+"/policy", changed)
+			}
+			if name == "stale policy replay" {
+				f.request.IdempotencyKey = "stale-policy-replay"
+				f.associate(t, f.request)
+				decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.itemPath, f.token, nil), &f.delivery)
+			}
+			if name == "changed source" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_requests SET record_json=json_set(record_json,'$.current_version_id','changed-version') WHERE id=?", f.change.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if name == "reopened source" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Todo') WHERE native_id=?", f.project.ID, f.issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.delivery.State = "Todo"
+			evaluation, err := evaluateNativeIssueContract(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, f.delivery)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := name == "authorized" || name == "replay"
+			if evaluation.Allowed != want {
+				t.Fatalf("machine delivery allowed=%t, want %t: %+v", evaluation.Allowed, want, evaluation)
+			}
+			if want {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.itemPath+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "admit-delivery"}, ExpectedRevision: f.delivery.Revision, State: "Todo", Reason: "user_requested"}), http.StatusOK)
+				worker := f.worker(t, "delivery-worker")
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "delivery-machine", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
+				claim := tracker.NativeClaim{WorkItemID: f.delivery.WorkItemID, PolicyID: descriptor.ID, MachineID: "delivery-machine", SessionID: "delivery-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+				preview := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", worker, tracker.NativeCapacityPreview{NativeClaim: claim})
+				requireNativeStatus(t, preview, http.StatusOK)
+				var page tracker.NativeCapacityPage
+				decodeHubResponse(t, preview, &page)
+				if !slices.ContainsFunc(page.Items, func(candidate tracker.NativeIssue) bool { return candidate.WorkItemID == f.delivery.WorkItemID }) {
+					t.Fatalf("authorized delivery absent from claim preview: %+v", page)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusOK)
+			}
+		})
 	}
 }

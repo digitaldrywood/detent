@@ -203,6 +203,9 @@ func (s *Service) associateReleasePickCommand(ctx context.Context, tx *sql.Tx, s
 	if !independentReview {
 		return nil, nativeInvalid("Release delivery requires the project's independent review policy")
 	}
+	if err := approveReleaseDeliveryContract(&issue, approved.Policy, now); err != nil {
+		return nil, err
+	}
 	created, err := s.createChangeCommand(ctx, tx, scope, item, tracker.CreateChange{Title: issue.Title}, now)
 	if err != nil {
 		return nil, err
