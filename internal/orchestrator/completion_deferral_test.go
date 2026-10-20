@@ -32,6 +32,7 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 		name     string
 		fenceErr error
 		retired  bool
+		rejected bool
 	}{
 		{name: "503", fenceErr: completionDeferralAvailabilityError()},
 		{name: "403", fenceErr: &github.StatusError{StatusCode: 403, Err: github.ErrAuthenticationFailed}},
@@ -43,6 +44,10 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 		{name: "canceled read", fenceErr: context.Canceled},
 		{name: "transport", fenceErr: errors.New("connection reset by peer")},
 		{name: "retired native fencing token", fenceErr: fmt.Errorf("%w: stale_fencing_token", runpkg.ErrExecutionAuthorityUnavailable), retired: true},
+		{name: "event rejected", fenceErr: completionDeferralRejection{tracker.PublicationRejection{Category: "event_validation", Field: "data.outcome"}}, rejected: true},
+		{name: "runtime rejected", fenceErr: completionDeferralRejection{tracker.PublicationRejection{Category: "runtime_validation", Field: "data.runtime.activity"}}, rejected: true},
+		{name: "execution rejected", fenceErr: completionDeferralRejection{tracker.PublicationRejection{Category: "execution_validation", Field: "data.finalization"}}, rejected: true},
+		{name: "owner rejected", fenceErr: completionDeferralRejection{tracker.PublicationRejection{Category: "owner_validation", Field: "data.finalization"}}, rejected: true},
 	}
 
 	for _, tt := range tests {
@@ -63,6 +68,20 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
 
 			orch.handleQueuedRunResults(t.Context(), &state, completionDeferralEvent(issue, attemptID, now))
+			if tt.rejected {
+				if len(state.deferredCompletions) != 0 || len(state.Retry) != 0 || len(state.Running) != 0 || len(state.Claimed) != 0 {
+					t.Fatal("rejected completion retained live state")
+				}
+				receipt, err := runtimeStore.WorkAttempt(t.Context(), attemptID)
+				if err != nil || receipt.TerminalState != store.WorkAttemptTerminalFailure || receipt.ErrorClass != "event_publication" || receipt.ErrorMessage != tt.fenceErr.Error() {
+					t.Fatalf("rejected completion receipt = %+v, %v", receipt, err)
+				}
+				orch.retryDeferredCompletions(t.Context(), &state, now.Add(time.Hour))
+				if tracker.fetchCount() != 1 {
+					t.Fatal("rejected completion retried")
+				}
+				return
+			}
 			if tt.retired {
 				if len(state.deferredCompletions) != 0 || len(state.Retry) != 0 || len(state.Running) != 0 || len(state.Claimed) != 0 {
 					t.Fatal("obsolete native completion retained live state")
@@ -110,6 +129,18 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			}
 		})
 	}
+}
+
+type completionDeferralRejection struct {
+	rejection tracker.PublicationRejection
+}
+
+func (e completionDeferralRejection) Error() string {
+	return e.rejection.DiagnosticError()
+}
+
+func (e completionDeferralRejection) NativeTerminalFailure() tracker.NativeTerminalFailure {
+	return tracker.NativeTerminalFailure{Rejection: &e.rejection}
 }
 
 func TestDeferredCompletionRestartAndRecovery(t *testing.T) {

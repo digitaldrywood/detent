@@ -68,7 +68,12 @@ func nativeRejection(err error, category, field string) error {
 	if !errors.As(err, &failure) || failure.Code != "invalid_request" || !rejection.Valid() {
 		return err
 	}
-	return &nativeError{Code: failure.Code, Message: "The requested operation is unavailable", status: failure.status, Details: map[string]any{"rejection": rejection}}
+	result := &nativeError{Code: failure.Code, Message: rejection.DiagnosticError(), status: failure.status, Details: map[string]any{"rejection": rejection}}
+	switch category {
+	case "event_validation", "runtime_validation", "execution_validation", "usage_validation", "owner_validation", "body_decode":
+		result.Message, result.publicMessage = failure.Message, true
+	}
+	return result
 }
 
 func nativeNotFound() error {
@@ -117,11 +122,18 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 	var failure *nativeError
 	if errors.As(err, &failure) {
 		if s.config.Hosted != nil {
-			if failure.Code == "checkout_unavailable" || failure.publicMessage {
+			if failure.publicMessage {
+				return c.JSON(failure.status, failure)
+			}
+			if failure.Code == "checkout_unavailable" {
 				return c.JSON(failure.status, apiErrorResponse{Code: failure.Code, Message: failure.Message})
 			}
 			if len(failure.Details) > 0 {
-				return c.JSON(failure.status, &nativeError{Code: failure.Code, Message: "The requested operation is unavailable", Details: failure.Details, status: failure.status})
+				message := "The requested operation is unavailable"
+				if rejection, ok := failure.Details["rejection"].(runnerauth.PublicationRejection); ok && rejection.Valid() {
+					message = rejection.DiagnosticError()
+				}
+				return c.JSON(failure.status, &nativeError{Code: failure.Code, Message: message, Details: failure.Details, status: failure.status})
 			}
 			return c.JSON(failure.status, apiErrorResponse{Code: failure.Code, Message: "The requested operation is unavailable"})
 		}
@@ -419,6 +431,9 @@ func (s *Service) nativeMutationStatus(c echo.Context, status int, command track
 	options := nativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Item: c.Param("item"), CheckPrincipal: changeCheckRequest(c), RequireLease: c.Param("item") != "" && !strings.HasSuffix(c.Path(), "/events") && c.Path() != changeBase+"/:change/versions/:version/checks", Completion: hostedCompletionMutation(c, input), Feature: hostedMutationFeature(c)}
 	result, err := s.executeNativeMutation(c.Request().Context(), nativeRequestScope(c), options, command, input, operation)
 	if err != nil {
+		if request, ok := input.(tracker.NativeRunEvent); ok {
+			return s.nativeRunEventError(c, request, err)
+		}
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSONBlob(status, result)
