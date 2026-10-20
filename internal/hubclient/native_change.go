@@ -421,6 +421,9 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 			Source: source,
 		},
 	}
+	if err := e.retainChangeValidation(ctx, &request.ChangeVersionInput); err != nil {
+		return "", false, err
+	}
 	identity, err := json.Marshal(struct {
 		Project tracker.ProjectID
 		Item    tracker.NativeWorkItemID
