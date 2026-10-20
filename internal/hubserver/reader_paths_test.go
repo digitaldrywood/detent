@@ -372,6 +372,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"reserveHostedInvitationSeat":       "Reserves an invitation seat while checking the plan allowance.",
 		"executeNativeMutation":             "Runs a native mutation with authority, event and replay receipt in one transaction.",
 		"maintainNativeRetention":           "Deletes expired native records on the existing maintenance tick.",
+		"backfillChangeSource":              "Converts one legacy source representation after reader-pool validation on the existing maintenance tick.",
 		"backfillAnalyticsRollups":          "Projects one bounded batch of a project's work items and their positions on the existing maintenance tick.",
 		"drainAnalyticsDirty":               "Projects one bounded batch of deferred analytics work items on the existing maintenance tick.",
 		"drainNativeBoardDirty":             "Projects one dirty board card and consumes its marker in one background write transaction.",

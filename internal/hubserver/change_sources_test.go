@@ -166,7 +166,7 @@ func changeTestSource(t *testing.T, input *tracker.ChangeVersionInput, content .
 	git("commit", "-m", "base")
 	base := git("rev-parse", "HEAD")
 	data := []byte(input.HeadSHA + "\n")
-	if len(content) > 0 {
+	if len(content) > 0 && content[0] != nil {
 		data = content[0]
 		if err := os.WriteFile(path, append(bytes.Clone(data), []byte("draft source\n")...), 0o600); err != nil {
 			t.Fatal(err)
@@ -174,11 +174,13 @@ func changeTestSource(t *testing.T, input *tracker.ChangeVersionInput, content .
 		git("add", "source.txt")
 		git("commit", "-m", "source draft")
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
+	if len(content) == 0 || content[0] != nil {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		git("add", "source.txt")
 	}
-	git("add", "source.txt")
-	git("commit", "-m", "reviewed source")
+	git("commit", "--allow-empty", "-m", "reviewed source")
 	head := git("rev-parse", "HEAD")
 	capture, err := workspace.CaptureChangeSource(t.Context(), directory, base, head)
 	if err != nil {
