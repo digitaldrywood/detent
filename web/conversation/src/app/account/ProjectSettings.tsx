@@ -3,6 +3,7 @@ import { ModelSelectionSettings } from "./ModelSelectionSettings.tsx";
 import React from "react";
 
 import { SpritesCard } from "./SpritesCard.tsx";
+import { ProjectSpriteControls } from "./ProjectSpriteControls.tsx";
 import { WorkflowRevisions } from "./WorkflowRevisions.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
@@ -609,7 +610,7 @@ export function ProjectSettingsRoute({
       intakeHref={`/projects/${projectId}/setup`}
       onOpenSetup={onNavigate ? () => onNavigate(`/projects/${projectId}/setup`) : undefined}
       onboarding={setup.value}
-      sprites={<><SpritesCard key={projectId} projectId={projectId} canManage={canManage} /></>}
+      sprites={<><ProjectSpriteControls key={projectId} projectId={projectId} canManage={canManage && project?.can_write === true} /><SpritesCard key={`token-${projectId}`} projectId={projectId} canManage={canManage} /></>}
       workflow={
         <>
           <SlugSettings projectId={projectId} canManage={canManage && project?.can_write === true} />
