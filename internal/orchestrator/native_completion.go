@@ -295,9 +295,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 	}
 	if unaddressedRefusal != "" {
-		target, ok = connector.LandingRefusalLane(states, issue.State, cfg.reviewTargetState(), false)
+		target, ok = connector.LandingRefusalLane(states, issue.State, review, false)
 		if !ok {
-			return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", strings.TrimSpace(issue.State), cfg.reviewTargetState()))
+			return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", strings.TrimSpace(issue.State), review))
 		}
 	} else if changed && change.Reviewed && !needsReview && !unfinished && !autoPromoteOptoutLabel(issue, cfg) {
 		if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); direct && dispatchableState(states, landing) {
