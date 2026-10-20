@@ -282,8 +282,20 @@ describe("the conversation shell", () => {
     expect(screen.queryByText("Choose a project first")).toBeNull();
     await setComposerText(composer, "Start a writable chat");
     expect(screen.getByLabelText<HTMLButtonElement>("Send message").disabled).toBe(false);
-    fireEvent.keyDown(composer, { key: "Enter" });
-    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/chat\/c\/conv_/));
+    let resolveNavigation!: () => void;
+    const navigated = new Promise<void>((resolve) => { resolveNavigation = resolve; });
+    const unsubscribe = router.subscribe("onResolved", ({ toLocation }) => {
+      if (toLocation.pathname.startsWith("/chat/c/conv_")) resolveNavigation();
+    });
+    try {
+      await act(async () => {
+        fireEvent.keyDown(composer, { key: "Enter" });
+        await navigated;
+      });
+    } finally {
+      unsubscribe();
+    }
+    expect(router.state.location.pathname).toMatch(/^\/chat\/c\/conv_/);
     const conversationId = router.state.location.pathname.replace("/chat/c/", "");
     const response = await fetch(`${hub.url}/api/v2/organizations/org_mock/projects/${expectedId}/conversations/${conversationId}`);
     expect(response.status).toBe(200);

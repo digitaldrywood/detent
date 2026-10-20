@@ -18,16 +18,18 @@ for (const width of [1440, 390]) {
       await page.route("**/api/cloud/session", (route) => route.fulfill({ json: session }));
       await page.route("**/api/cloud/organizations", (route) => route.fulfill({ json: session }));
       await page.route("**/api/cloud/platform/users?*", async (route) => {
-        const query = new URL(route.request().url()).searchParams.get("q");
-        await route.fulfill({ json: { ...users, users: users.users.filter((user) => user.email.includes(query)) } });
+        const query = new URL(route.request().url()).searchParams.get("q") ?? "";
+        const matches = users.users.filter((user) => user.email.includes(query));
+        await route.fulfill({ json: { ...users, total: matches.length, users: matches } });
       });
       await page.goto(origin + "/platform/users");
       expect(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe(theme);
       await expect(page.getByRole("heading", { name: "Users", exact: true })).toBeVisible();
       const input = page.getByRole("searchbox", { name: "Search by email" });
+      await expect(page.getByRole("table", { name: "Users" }).getByRole("link", { name: "sam@example.test" })).toBeVisible();
       await input.fill("example.test");
       await expect(page).toHaveURL(origin + "/platform/users?q=example.test");
-      await expect(page.getByText("Search by email", { exact: true })).toBeVisible();
+      await expect(input).toBeVisible();
       const table = page.getByRole("table", { name: "Users" });
       await expect(table.getByRole("link", { name: "sam@example.test" })).toBeVisible();
       await expect(table.getByRole("row", { name: /sam@example.test/ })).toContainText("2026-10-06 14:02Z");
@@ -62,7 +64,8 @@ for (const width of [1440, 390]) {
       await page.goBack();
       await expect(input).toHaveValue("example.test");
       await input.fill("missing");
-      await expect(page.getByRole("row", { name: "No users match" })).toBeVisible();
+      await expect(page.getByText("No users match", { exact: true })).toBeVisible();
+      await expect(table).toHaveCount(0);
       await expect(page.getByText("Not searched: Slow Tenant")).toBeVisible();
       const organization = { ...fixture.detail.organization, id: "org_alpha", name: "Example Alpha", can_support: false };
       await page.route("**/api/cloud/platform/organizations", (route) => route.fulfill({ json: { ...fixture.organizations, organizations: [organization] } }));

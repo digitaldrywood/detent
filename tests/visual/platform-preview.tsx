@@ -68,7 +68,8 @@ if (location.protocol === "file:") {
       value = { ...audit, rows: older ? rows.slice(3) : rows.slice(0, 3), next_cursor: !older && rows.length > 3 ? "older-page" : "" };
     } else if (path.startsWith("/api/cloud/platform/users?")) {
       const query = new URL(path, "https://platform.detent.test").searchParams.get("q") ?? "";
-      value = { ...users, users: users.users.filter((user) => user.email.includes(query)) };
+      const matches = users.users.filter((user) => user.email.includes(query));
+      value = { ...users, total: matches.length, users: matches };
     } else if (path.endsWith("/organizations")) {
       value = { ...fixture.organizations, can_grant: !location.search.includes("staff") };
     } else if (path.endsWith("/allowlist")) {

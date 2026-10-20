@@ -21,19 +21,16 @@ func (s *Service) platformUsersJSON(c echo.Context) error {
 	if !s.platformStaff(ctx, session) {
 		return c.JSON(http.StatusForbidden, map[string]string{"code": "forbidden", "message": "The platform console is limited to Detent staff"})
 	}
-	query, err := platformusers.Parse(c.QueryParam("q"))
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"code": "invalid_query", "message": "Enter at least three characters"})
-	}
+	query := platformusers.Parse(c.QueryParam("q"))
 	result, err := s.searchPlatformUsers(ctx, query)
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "User search is temporarily unavailable"})
 	}
-	return c.JSON(http.StatusOK, result)
+	return c.JSON(http.StatusOK, pagePlatformUsers(result, c.QueryParams()))
 }
 
 func (s *Service) searchPlatformUsers(ctx context.Context, query platformusers.Query) (platformusers.Result, error) {
-	result := platformusers.Result{Users: []platformusers.User{}, Unsearched: []platformusers.Organization{}}
+	result := platformusers.Result{Users: []platformusers.User{}, Unsearched: []platformusers.Organization{}, Organizations: []platformusers.Organization{}}
 	users := make(map[string]platformusers.User)
 	user := func(email string) platformusers.User {
 		email = platformEmail(email)
@@ -47,7 +44,7 @@ SELECT lower(email) AS email,subject,created_at,
 row_number() OVER (PARTITION BY lower(email) ORDER BY julianday(created_at) DESC,token_hash) AS rank
 FROM sessions WHERE coalesce(json_extract(identity_json,'$.support_actor'),'') = ''
 AND CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 END)
-SELECT email,subject,created_at FROM latest WHERE rank=1 ORDER BY email LIMIT ?`, query.Exact, query.Text, query.Text, platformusers.Limit)
+SELECT email,subject,created_at FROM latest WHERE rank=1 ORDER BY email`, query.Exact, query.Text, query.Text)
 	if err != nil {
 		return result, err
 	}
@@ -66,7 +63,7 @@ SELECT email,subject,created_at FROM latest WHERE rank=1 ORDER BY email LIMIT ?`
 		return result, err
 	}
 	rows, err = s.registry.store.db.QueryContext(ctx, `SELECT email,role FROM platform_members
-WHERE CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 END ORDER BY email LIMIT ?`, query.Exact, query.Text, query.Text, platformusers.Limit)
+WHERE CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 END ORDER BY email`, query.Exact, query.Text, query.Text)
 	if err != nil {
 		return result, err
 	}
@@ -99,13 +96,28 @@ WHERE CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 END ORDER BY 
 	tenantResults := make([]platformusers.TenantResult, len(ids))
 	searched := make([]bool, len(ids))
 	s.eachReadyTenant(ctx, ids, func(call context.Context, index int, organization Organization) {
-		status, body, err := s.serviceCall(call, organization, "/internal/v1/platform/users", query, nil)
-		if err == nil && status == http.StatusOK && json.Unmarshal(body, &tenantResults[index]) == nil {
-			searched[index] = true
+		request := query
+		for {
+			var page platformusers.TenantResult
+			status, body, err := s.serviceCall(call, organization, "/internal/v1/platform/users", request, nil)
+			if err != nil || status != http.StatusOK || json.Unmarshal(body, &page) != nil {
+				return
+			}
+			tenantResults[index].Members = append(tenantResults[index].Members, page.Members...)
+			tenantResults[index].Invitations = append(tenantResults[index].Invitations, page.Invitations...)
+			if page.NextCursor == "" {
+				searched[index] = true
+				return
+			}
+			if page.NextCursor <= request.After {
+				return
+			}
+			request.After = page.NextCursor
 		}
 	})
 	for index, organization := range ready {
 		org := platformusers.Organization{ID: organization.ID, Name: organization.Name}
+		result.Organizations = append(result.Organizations, org)
 		if !searched[index] {
 			result.Unsearched = append(result.Unsearched, org)
 			continue
@@ -129,7 +141,7 @@ WHERE CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 END ORDER BY 
 		emails = append(emails, email)
 	}
 	sort.Strings(emails)
-	for _, email := range emails[:min(len(emails), platformusers.Limit)] {
+	for _, email := range emails {
 		item := users[email]
 		sort.Slice(item.Memberships, func(i, j int) bool { return strings.Compare(item.Memberships[i].Name, item.Memberships[j].Name) < 0 })
 		sort.Slice(item.Invitations, func(i, j int) bool { return strings.Compare(item.Invitations[i].Name, item.Invitations[j].Name) < 0 })
