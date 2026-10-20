@@ -358,6 +358,50 @@ func TestNativeNoOpRevisions(t *testing.T) {
 	if versions != beforeVersions+4 || events != beforeEvents+4 {
 		t.Fatalf("real transition wrote extra history: versions=%d/%d events=%d/%d", versions, beforeVersions, events, beforeEvents)
 	}
+	t.Run("operator hold response and replay", func(t *testing.T) {
+		now := time.Now().UTC().Add(time.Hour)
+		states[1].Transitions = append(states[1].Transitions, "Blocked")
+		states = append(states, tracker.NativeState{Name: "Blocked", Transitions: []string{"Blocked", "Todo"}})
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if err := applyNativeProjectStates(t.Context(), tx, scope, states, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.database.commit(t.Context(), tx); err != nil {
+			t.Fatal(err)
+		}
+		clock := f.service.database.now
+		f.service.database.now = func() time.Time { return now }
+		t.Cleanup(func() { f.service.database.now = clock })
+		request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "enter-blocked"}, ExpectedRevision: transitioned.Revision, State: "Blocked", Reason: "user_requested"}
+		response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, request)
+		requireNativeStatus(t, response, http.StatusOK)
+		var blocked tracker.NativeIssue
+		decodeHubResponse(t, response, &blocked)
+		now = now.Add(time.Minute)
+		request.IdempotencyKey = "retain-operator-hold"
+		request.ExpectedRevision = blocked.Revision
+		for _, operation := range []string{"hold", "replay"} {
+			response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, request)
+			requireNativeStatus(t, response, http.StatusOK)
+			var result tracker.NativeIssue
+			decodeHubResponse(t, response, &result)
+			current := readWorkItem(t, f, issue.WorkItemID, "")
+			if result.Revision != blocked.Revision || !result.UpdatedAt.Equal(blocked.UpdatedAt) || !result.LastActivityAt.Equal(now) || !result.LastActivityAt.Equal(current.LastActivityAt) {
+				t.Fatalf("%s returned stale operator hold: revision=%d/%d activity=%s/%s", operation, result.Revision, blocked.Revision, result.LastActivityAt, current.LastActivityAt)
+			}
+		}
+		var holdVersions, holdEvents int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", issue.WorkItemID, issue.WorkItemID).Scan(&holdVersions, &holdEvents); err != nil {
+			t.Fatal(err)
+		}
+		if holdVersions != versions+1 || holdEvents != events+2 {
+			t.Fatalf("operator hold or replay wrote extra history: versions=%d/%d events=%d/%d", holdVersions, versions, holdEvents, events)
+		}
+	})
 }
 
 func TestCollaborationDeltaMigration(t *testing.T) {

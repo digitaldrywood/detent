@@ -931,6 +931,10 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 			if err := appendNativeHistory(ctx, tx, scope, item, "workflow.transitioned", data, now); err != nil {
 				return nil, err
 			}
+			issue, _, err = readNativeIssue(ctx, tx, scope, item)
+			if err != nil {
+				return nil, err
+			}
 		}
 		return issue, nil
 	})
