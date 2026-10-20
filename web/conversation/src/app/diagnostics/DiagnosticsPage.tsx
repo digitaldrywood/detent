@@ -117,7 +117,6 @@ export function DiagnosticsRoute(): React.ReactElement {
       {...state}
       scope={bootstrap?.organization.name ?? "This organization"}
       projects={bootstrap?.projects ?? []}
-      canManage={bootstrap?.actor.can_manage ?? false}
       range={range}
       onRangeChange={setRange}
       onRefresh={() => {
@@ -179,14 +178,12 @@ export function DiagnosticsView({
   onRangeChange,
   onRefresh,
   projects = [],
-  canManage = false,
   findingsError = null,
   onAsk,
   canAsk,
   panelControls,
 }: {
   readonly projects?: readonly AccountProject[];
-  readonly canManage?: boolean;
   readonly findingsError?: string | null;
   readonly report: DiagnosticsReport | null;
   readonly appUpdates?: UpdatesReport | null;
@@ -204,7 +201,7 @@ export function DiagnosticsView({
   readonly panelControls?: React.ReactNode;
 }): React.ReactElement {
   const findings = findingRows === null ? null : orderedFindings(findingRows.filter((finding) => finding.resolved_at == null));
-  const problems = runnerFindings(runners ?? [], projects, canManage);
+  const problems = runnerFindings(runners ?? [], projects);
   const refusals = report?.refused;
   const totalRefused = refusals?.reduce((sum, row) => sum + row.count, 0);
   const conflictRefused =
@@ -277,7 +274,7 @@ export function DiagnosticsView({
                       <p className="text-sm font-medium">{problem.summary}</p>
                       <p className="text-xs text-muted-foreground">{problem.impact}</p>
                     </div>
-                    <div className="min-w-0">{problem.destination ? <Button variant="outline" size="sm" render={<Link to={problem.destination} />}>{problem.action}</Button> : <p className="text-xs text-muted-foreground">{problem.action}</p>}</div>
+                    <div className="min-w-0"><p className="text-xs text-muted-foreground">{problem.action}</p></div>
                   </article>)}
                 </div> : null}
                 {findings === null ? (

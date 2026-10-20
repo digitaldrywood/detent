@@ -15,10 +15,10 @@ func TestMergeProblems(t *testing.T) {
 	oldProject.ProjectID = "one"
 	newProject := NewProblem("backend_missing")
 	newProject.ProjectID = "two"
-	project := NewProblem("policy_mismatch")
+	project := NewProblem("settings_invalid")
 	project.ProjectID = "alpha"
 	project.FirstSeen = now.Add(-2 * time.Hour)
-	second := NewProblem("policy_mismatch")
+	second := NewProblem("settings_invalid")
 	second.ProjectID = "beta"
 	for _, test := range []struct {
 		name              string
@@ -31,8 +31,8 @@ func TestMergeProblems(t *testing.T) {
 		{"project failures remain distinct", []Problem{oldProject}, []Problem{newProject, oldProject}, []string{"backend_missing/one", "backend_missing/two"}},
 		{"recovered project clears independently", []Problem{oldProject}, []Problem{newProject}, []string{"backend_missing/two"}},
 		{"deduplicated and sorted", []Problem{old}, []Problem{NewProblem("tier_unavailable"), NewProblem("backend_missing"), NewProblem("backend_missing")}, []string{"backend_missing", "tier_unavailable"}},
-		{"project problems retain separate timestamps", []Problem{project}, []Problem{second, project, second}, []string{"policy_mismatch/alpha", "policy_mismatch/beta"}},
-		{"one project clears independently", []Problem{project, second}, []Problem{second}, []string{"policy_mismatch/beta"}},
+		{"project problems retain separate timestamps", []Problem{project}, []Problem{second, project, second}, []string{"settings_invalid/alpha", "settings_invalid/beta"}},
+		{"one project clears independently", []Problem{project, second}, []Problem{second}, []string{"settings_invalid/beta"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := MergeProblems(test.previous, test.current, now)
