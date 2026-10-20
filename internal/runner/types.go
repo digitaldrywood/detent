@@ -672,6 +672,7 @@ type RunRequest struct {
 	checkpointRefs            *checkpointRefs
 	executionCancellation     func() error
 	validationEvidenceSource  AttemptDiffSource
+	reviewSource              func(context.Context, *RunResult) (string, error)
 }
 
 type NativeReviewContinuation struct {
