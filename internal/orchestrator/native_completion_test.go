@@ -98,6 +98,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	undispatched := append([]connector.WorkflowState(nil), landing...)
 	undispatched[3].Dispatchable = false
 	rework := append(append([]connector.WorkflowState(nil), landing...), connector.WorkflowState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Review", "Merging", "Blocked"}})
+	reworkRetry := append(append([]connector.WorkflowState(nil), landing...), connector.WorkflowState{Name: "Rework", Dispatchable: true, Transitions: []string{"Todo", "In Review", "Merging", "Blocked"}})
 	blockedLanding := append([]connector.WorkflowState(nil), landing...)
 	blockedLanding[1].Transitions = append([]string{"Blocked"}, blockedLanding[1].Transitions...)
 	blockedLanding = append(blockedLanding, connector.WorkflowState{Name: "Blocked", Transitions: []string{"In Progress"}})
@@ -128,6 +129,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	opened := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, Files: 2}
 	waiting := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Files: 2}
 	accepted := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: head, Files: 2}
+	validatorRework := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Files: 2, Validator: &gate.ValidatorResult{VersionID: "version_1", Submitted: true, Verdict: gate.ValidatorVerdictRework, Score: 1}}
 	sourceWait := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Files: 2, ImplementationReview: &gate.ValidatorResult{VersionID: "version_1", HeadSHA: head, Verdict: "wait", Commands: []gate.CommandResult{{Command: "unavailable-host-tool", HeadSHA: head, ExitCode: 127}}}}
 	chatGPTCriterion := "a real ChatGPT custom connector signs in against production"
 	claudeCriterion := "a real Claude connector signs in against production"
@@ -172,6 +174,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		statesErr     error
 		reviewed      *bool
 		reviewState   *connector.ChangeReview
+		startHead     string
 		updateErr     error
 		plain         bool
 		quotaWait     bool
@@ -234,6 +237,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "blocked unchanged Rework preserves unmet prerequisite without Change", states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: prerequisiteReport, blockerState: "Backlog", diffStats: checkpoint, wantState: "Blocked", wantComment: "detent-status blocked", roundTrip: true},
 		{name: "instance blocker lane refusal still retries", states: blockedLanding, humanReview: &no, finalMessage: instanceReport, updateErr: connector.ErrStateUpdateBlocked, wantInstance: true},
 		{name: "instance blocker without Blocked lane retries", states: fourLanes, humanReview: &no, finalMessage: instanceReport, wantInstance: true},
+		{name: "Rework completion leaving requested changes on its starting head has no work product", change: waiting, startHead: head, reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true}, states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\\nschema: 1\\nstatus: complete\\nblockers: []\\nhuman_action: null\\n```", wantSettled: true, wantState: "Todo"},
+		{name: "Rework completion leaving a validator rework verdict on its starting head has no work product", change: validatorRework, startHead: head, states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\\nschema: 1\\nstatus: complete\\nblockers: []\\nhuman_action: null\\n```", wantSettled: true, wantState: "Todo"},
+		{name: "Rework completion with new commits under requested changes stays in Rework", change: waiting, startHead: strings.Repeat("e", 40), reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true}, states: reworkRetry, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\\nschema: 1\\nstatus: complete\\nblockers: []\\nhuman_action: null\\n```", wantState: "Rework", wantSameState: true},
 		{name: "unfinished source free completion with checkpoint returns to Rework", states: unfinishedWorkflow, change: &runpkg.NativeChange{}, humanReview: &no, diffStats: checkpoint, wantSettled: true, wantState: "Rework"},
 		{name: "recorded failed completion with retained checkpoint returns to Rework", states: unfinishedWorkflow, humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, turnStarted: true, wantState: "Rework", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
 		{name: "recorded failed completion without checkpoint returns to Todo", states: fourLanes, humanReview: &no, runErr: checkpointDeadline, turnStarted: true, wantState: "Todo", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
@@ -321,7 +327,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "unsatisfiable criterion preserves blocking finding", change: criterionReview("wait", 1, gate.Finding{Severity: "p1", Body: "Source defect"}), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Source defect"}},
 		{name: "unsatisfiable criterion preserves minimum score", change: criterionReview("wait", .2), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes"},
 		{name: "unsatisfiable criterion preserves explicit source rework", change: criterionReview("rework", 1), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes"},
-		{name: "unsatisfiable criterion preserves published review findings", change: criterionReview("wait", 1), reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true}, states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "still has requested changes"},
+		{name: "unsatisfiable criterion preserves published review findings", change: criterionReview("wait", 1), reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true}, states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "opened Change Request"},
 		{name: "unsatisfiable criterion preserves reported human action", change: criterionReview("wait", 1), states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "human_action: null", "human_action: Approve the consumer rollout"), wantState: "Blocked", wantComment: "issue acceptance is not recorded"},
 		{name: "unsatisfiable criterion preserves prerequisite owner", change: criterionReview("wait", 1), states: unfinishedWorkflow, humanReview: &no, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "prerequisite must finish"},
 		{name: "fixable criterion keeps Rework", change: criterionChange(gate.CriterionEvidence{Criterion: "Missing screenshot", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionReworkFixable}), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes"},
@@ -394,7 +400,6 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "malformed published report cannot auto land", change: accepted, states: landing, finalMessage: "```detent-status\nschema: 99\nstatus: complete\n```", wantState: "In Review", wantComment: "no valid complete detent-status disposition"},
 		{name: "typed accepted current version lands normally", change: accepted, states: landing, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "completed reviewed Rework reaches landing", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Merging", wantComment: "runner lands it next"},
-		{name: "completed Rework explains outstanding current findings", change: waiting, states: rework, sourceState: "Rework", humanReview: &no, reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true}, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Rework", wantSameState: true, wantComment: "still has requested changes"},
 		{name: "refused completed Rework landing retains completion ownership", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", updateErr: errors.New("stale fencing token"), wantState: "Merging", wantDeferred: true, roundTrip: true},
 		{name: "publication outage retries current publisher", reviewed: &yes, republish: true, change: &runpkg.NativeChange{Error: "hub unavailable"}, states: landing, wantDeferred: true},
 		{name: "an unopened change is handed off, not reviewed", change: &runpkg.NativeChange{Changed: true, Error: "hub unavailable", HeadSHA: head, Files: 1}, states: workflow, wantDeferred: true},
@@ -510,6 +515,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				runningTokens = TokenTotals{}
 			}
 			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Generation: 7, SessionID: "native-session", Tokens: runningTokens, Mode: mode, DispatchSourceState: issue.State, DispatchTargetState: issue.State, StartedAt: now.Add(-time.Minute)}
+			if test.startHead != "" {
+				running := state.Running[issue.ID]
+				running.DispatchLoopStart = dispatchLoopStartRecord{Captured: true, WorkspaceHeadAvailable: true, Fingerprint: dispatchLoopFingerprint{WorkspaceHead: test.startHead}}
+				state.Running[issue.ID] = running
+			}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
 			if test.interrupted {
 				previous := cloneIssue(issue)
@@ -855,7 +865,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				if wantTerminal == "" {
 					wantTerminal = terminalStateForRun(test.runErr, finalState)
 				}
-				if attempts.completions[0].TerminalState != wantTerminal || wantTerminal == store.WorkAttemptTerminalSuccess && attempts.completions[0].ErrorClass != "" || state.TokenTotals.TotalTokens != 42 {
+				if attempts.completions[0].TerminalState != wantTerminal || wantTerminal == store.WorkAttemptTerminalSuccess && attempts.completions[0].ErrorClass != "" && attempts.completions[0].ErrorClass != terminalAttemptWithoutWorkProductReason || state.TokenTotals.TotalTokens != 42 {
 					t.Fatalf("settlement lost provider accounting: %+v", attempts.completions[0])
 				}
 				var metadata struct {
