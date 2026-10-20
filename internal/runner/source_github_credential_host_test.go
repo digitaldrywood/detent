@@ -59,6 +59,35 @@ func TestSourceGitCredentialsUseGitHubHostForNativeTracker(t *testing.T) {
 	}
 }
 
+func TestWorkerGitCredentialHelperFollowsTokenHandoff(t *testing.T) {
+	saved, savedCaptured := hostGitHubCLI.values, hostGitHubCLI.captured
+	t.Cleanup(func() { hostGitHubCLI.values, hostGitHubCLI.captured = saved, savedCaptured })
+	hostDir := "/host/g h's/config"
+	for _, tc := range []struct {
+		name, token, hostConfigDir, wantHelper string
+	}{
+		{name: "handed-off token reads the private config", token: "test-worker-github-token", hostConfigDir: hostDir, wantHelper: "!gh auth git-credential"},
+		{name: "no token uses the host default config", token: "", hostConfigDir: "", wantHelper: "!env -u GH_CONFIG_DIR gh auth git-credential"},
+		{name: "no token keeps the host GH_CONFIG_DIR", token: " ", hostConfigDir: hostDir, wantHelper: "!env GH_CONFIG_DIR='/host/g h'\\''s/config' gh auth git-credential"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hostGitHubCLI.captured = true
+			hostGitHubCLI.values = map[string]*string{"GH_CONFIG_DIR": nil}
+			if tc.hostConfigDir != "" {
+				dir := tc.hostConfigDir
+				hostGitHubCLI.values["GH_CONFIG_DIR"] = &dir
+			}
+			got := gitCredentialHelperEnvironment(tc.token)
+			if got["GIT_CONFIG_VALUE_1"] != tc.wantHelper {
+				t.Fatalf("credential helper = %q, want %q", got["GIT_CONFIG_VALUE_1"], tc.wantHelper)
+			}
+			if got["GIT_TERMINAL_PROMPT"] != "0" || got["GIT_CONFIG_COUNT"] != "2" || got["GIT_CONFIG_KEY_0"] != "credential.helper" || got["GIT_CONFIG_VALUE_0"] != "" || got["GIT_CONFIG_KEY_1"] != "credential.helper" {
+				t.Fatalf("git environment = %v, want the prompt disabled and the helper list reset before the gh helper", got)
+			}
+		})
+	}
+}
+
 func TestHostGitHubTokenLookupIgnoresPrivateWorkerConfig(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake gh is a shell script")
