@@ -72,7 +72,7 @@ func TestScheduledTaskDefinition(t *testing.T) {
 				t.Fatal(task.Actions.Exec.Arguments)
 			}
 			script := decodePowerShell(t, strings.TrimPrefix(task.Actions.Exec.Arguments, prefix))
-			for _, want := range []string{test.wantCommand, `$env:DETENT_SERVICE_MANAGER = 'scheduled-task'`, `$env:PATH = 'C:\Tools;C:\Program Files\Provider'`, `exit $LASTEXITCODE`} {
+			for _, want := range []string{test.wantCommand, `$env:DETENT_SERVICE_MANAGER = 'scheduled-task'`, `$env:DETENT_SERVICE_TASK = 'detent.runner-S-1-5-21-1234'`, `$env:PATH = 'C:\Tools;C:\Program Files\Provider'`, `exit $LASTEXITCODE`} {
 				if !strings.Contains(script, want) {
 					t.Errorf("script %q missing %q", script, want)
 				}
