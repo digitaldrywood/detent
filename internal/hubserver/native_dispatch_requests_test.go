@@ -502,11 +502,8 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 					} {
 						reply := call("tools/call", operatortool.MoveItem, map[string]any{"project_id": string(f.project.ID), "request_id": move.name, "identifier": move.identifier, "expected_revision": strconv.FormatInt(int64(before.Revision), 10), "target_state": before.State})
 						raw := hostedContextData(t, reply, true)
-						if move.denied || !test.moveGuidance {
-							want := operatortool.ErrInvalidArguments.Error()
-							if move.denied {
-								want = operatortool.ErrAccessDenied.Error()
-							}
+						if move.denied {
+							want := operatortool.ErrAccessDenied.Error()
 							var result struct {
 								Content []struct{ Text string } `json:"content"`
 							}
@@ -516,6 +513,12 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 							continue
 						}
 						var refusal operatortool.RequestError
+						if !test.moveGuidance {
+							if err := json.Unmarshal(raw, &refusal); err != nil || refusal.Code != "transition_not_allowed" || refusal.Message != "Workflow transition is not allowed" {
+								t.Fatalf("%s refusal changed: %s %s", move.name, reply.Result, reply.Error)
+							}
+							continue
+						}
 						if err := json.Unmarshal(raw, &refusal); err != nil || refusal.Code != "invalid_request" {
 							t.Fatalf("%s refusal=%s result=%s rpc_error=%s err=%v", move.name, raw, reply.Result, reply.Error, err)
 						}
