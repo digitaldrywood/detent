@@ -995,6 +995,7 @@ describe("the page container", () => {
 const usageFixture: BillingUsageReport = {
   organization_id: "org_a",
   renews_at: "2026-11-08T00:00:00Z",
+  complimentary: false, expires_at: null, cancels_at: null,
   charged_ai_micros: 31600000,
   chat_usage: {
     range: { from: "2026-10-08T00:00:00Z", to: "2026-11-08T00:00:00Z" },
@@ -1065,8 +1066,8 @@ describe("plan usage meters", () => {
       expect(alert.textContent).not.toContain("Events received");
     }
     const detailId = screen.getByRole("meter", { name: "API writes" }).getAttribute("aria-describedby")!;
-    expect(document.getElementById(detailId)?.textContent).toContain("Resets");
-    expect(document.getElementById(detailId)?.textContent).not.toContain("when the current window ends");
+    expect(document.getElementById(detailId)?.textContent).not.toContain("Resets");
+    expect(screen.getAllByText(/^Resets /)).toHaveLength(1);
   });
 
   it.each([
@@ -1136,7 +1137,7 @@ describe("plan billing usage", () => {
     renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
     const move = await screen.findByRole("button", { name: "Move to Starter" });
     expect(screen.getAllByText("Current")).toHaveLength(1);
-    expect(screen.getByRole("alert").textContent).toContain("Move to Starter for 12 concurrent work slots");
+    expect(nextFittingPlan(planFixture, [starter, nextStarter])?.price_id).toBe("price_starter_v2");
     expect(move.hasAttribute("disabled")).toBe(false);
     fireEvent.click(move);
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.stripe.com/test"));
@@ -1152,26 +1153,26 @@ describe("plan billing usage", () => {
       ...account, actor: { ...account.actor, role: role === "support" ? "owner" : role },
       support: role === "support" ? { actor: "support@example.test" } : null,
     } }, <PlanSettings />);
-    await screen.findByText("$31.60");
+    if (role === "member") {
+      await screen.findByText("Plan and usage need owner or admin access");
+      expect(screen.queryByRole("meter")).toBeNull();
+      return;
+    }
+    await screen.findByText("$31.60 spent this period");
     expect(screen.getByText("$18.40")).toBeTruthy();
-    expect(screen.getByText("4.80M")).toBeTruthy();
-    expect(screen.getByText("3.90M input · 600K cached · 300K output")).toBeTruthy();
-    expect(screen.getByText("Auto top-up: $25.00 below $5.00")).toBeTruthy();
-    expect(screen.getByText("2026-10-08 – 2026-11-08")).toBeTruthy();
-    for (const name of ["Upgrade", "Manage billing", "Buy credits", "Move to Team", "Move to Growth"]) {
+    expect(screen.queryByRole("link", { name: "Billing" }) !== null).toBe(role === "owner");
+    for (const name of ["Upgrade", "Manage billing", "Move to Team", "Move to Growth"]) {
       expect(screen.queryByRole("button", { name }) !== null).toBe(role === "owner");
     }
     expect(screen.queryByRole("button", { name: "Move to Scale" })).toBeNull();
     expect(screen.getByText(/Contact us/)).toBeTruthy();
     expect(screen.getByText("Current")).toBeTruthy();
-    expect(screen.getByRole("alert").textContent).toContain("Move to Team for 20 concurrent work slots");
     expect(screen.getByRole("alert").textContent).toContain("Concurrent work");
     expect(screen.getByRole("alert").textContent).not.toContain("Events received");
   });
 
   it.each([
     ["Move to Growth", "/billing/checkout", "price_growth"],
-    ["Buy credits", "/billing/credits/checkout", "credit_25"],
     ["Manage billing", "/billing/portal", undefined],
   ])("opens the existing hosted flow for %s", async (name, endpoint, price) => {
     const fetch = mockPlanUsage();
@@ -1207,6 +1208,55 @@ describe("plan billing usage", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Compare plans" }));
     expect(document.activeElement?.id).toBe("settings-plan-comparison");
     expect(scroll).toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ complimentary: true, expires_at: "2026-12-31T00:00:00Z" }, "Expires Dec 31, 2026 · 73 days left"],
+    [{ complimentary: true, expires_at: null }, "No end date"],
+    [{ complimentary: false, renews_at: "2026-11-08T00:00:00Z" }, "Renews Nov 8, 2026"],
+    [{ complimentary: false, cancels_at: "2026-11-08T00:00:00Z" }, "Cancels Nov 8, 2026"],
+  ])("renders the plan lifecycle (%j)", async (fields, expected) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-19T00:00:00Z"));
+    mockPlanUsage({ ...usageFixture, ...fields });
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    expect(await screen.findByText(expected)).toBeTruthy();
+    expect(screen.queryByText("Complimentary") !== null).toBe(fields.complimentary);
+  });
+
+  it("groups excluded allowances and highlights an unoffered current plan before the offered tiers", async () => {
+    const legacy = { ...planFixture, name: "Legacy complimentary pilot", monthly_usd_cents: null,
+      effective_base: { id: "pilot_free", version: 1 }, features: [],
+      allowances: { ...planFixture.allowances, relay_bytes: 0, artifact_retained_bytes: 0, artifact_reserved_bytes: 0, artifact_bytes: 0, artifact_upload_bytes: 0, artifact_retention_seconds: 0 },
+    };
+    mockPlanUsage({ ...usageFixture, name: legacy.name, effective_base: legacy.effective_base, complimentary: true, expires_at: null, renews_at: null }, legacy);
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    await screen.findByText("Complimentary");
+    expect(screen.getAllByText("Not on your plan")).toHaveLength(1);
+    const excluded = screen.getByText("Not on your plan").parentElement!.parentElement!;
+    for (const label of ["Relay data", "Artifact storage", "Reserved artifact storage", "Artifact size", "Upload size", "Artifact retention"]) expect(within(excluded).getByText(label)).toBeTruthy();
+    expect(screen.getAllByText(/^Resets /)).toHaveLength(1);
+    const comparison = screen.getByLabelText("Compare plans");
+    const current = within(comparison).getByText("Current").closest("[aria-current]")!;
+    expect(current).toBe(within(comparison).getAllByRole("row")[1]);
+    expect(current.className).toContain("ring-info");
+    expect(within(current as HTMLElement).getByText("Never expires")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("pilot_free");
+    expect(within(comparison).getByText("Contact us")).toBeTruthy();
+    expect(comparison.textContent).not.toContain("100 slots");
+  });
+
+  it("offers Starter from the Free limit banner and preserves the current Free column", async () => {
+    const free = { ...usageFixture.comparison_plans[0]!, id: "free", name: "Free", monthly_usd_cents: 0, features: [], price_id: "", allowances: { concurrent_work: 2 } };
+    mockPlanUsage({ ...usageFixture, effective_base: { id: "free", version: 1 }, name: "Free", renews_at: null, comparison_plans: [free, ...usageFixture.comparison_plans] }, { ...planFixture, name: "Free", monthly_usd_cents: 0, effective_base: { id: "free", version: 1 }, allowances: { concurrent_work: 2 }, usage: { concurrent_work: 2 } });
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    const banner = await screen.findByRole("alert");
+    expect(within(banner).getByText("At your Free limit")).toBeTruthy();
+    expect(within(banner).getByRole("button", { name: "Move to Starter" }).hasAttribute("disabled")).toBe(false);
+    const current = screen.getByText("Current").closest("[aria-current]")!;
+    expect(current.textContent).toContain("Free");
+    expect(current.textContent).toContain("Never expires");
+    expect(screen.queryByText(/^Renews /)).toBeNull();
   });
 
   it("does not recommend a tier whose storage has the same limit", () => {

@@ -1,5 +1,10 @@
 import { SHELL_SHORTCUTS } from "../lib/shortcuts.ts";
 import {
+  ArrowRightIcon,
+  CheckIcon,
+  ClockIcon,
+  LockKeyholeIcon,
+  TriangleAlertIcon,
   BlocksIcon,
   CreditCardIcon,
   InfoIcon,
@@ -12,7 +17,7 @@ import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Switch } from "../../components/ui/switch.tsx";
-import { UsageMeter } from "../../components/ui/usage-meter.tsx";
+import { UsageMeter, formatUsageValue } from "../../components/ui/usage-meter.tsx";
 import { Badge } from "../../components/ui/badge.tsx";
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert.tsx";
 import { Kbd } from "../../components/ui/kbd.tsx";
@@ -51,10 +56,11 @@ import {
   type SettingsSectionId,
 } from "./sections.tsx";
 import { CreditSettings } from "./CreditSettings.tsx";
-import { approachingPlanLimits, nextFittingPlan, planUsageRows } from "./planUsage.ts";
-import { formatShortTimestamp } from "../../timestampFormat.ts";
-import { formatCount, formatTokens, formatUsd } from "../usage/usageFormat.ts";
-import { useClientSettings } from "../adapters/settings.ts";
+import { approachingPlanLimits, nextFittingPlan, planUsageRows, planStatus } from "./planUsage.ts";
+import { Skeleton } from "../../components/ui/skeleton.tsx";
+import { SettingsHelp } from "./SettingsHelp.tsx";
+import { cn } from "../../lib/utils.ts";
+import { formatCount, formatUsd } from "../usage/usageFormat.ts";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout.tsx";
 import { ProjectRankSettings } from "./ProjectRankSettings.tsx";
 import { SpritesCard } from "../account/SpritesCard.tsx";
@@ -68,10 +74,7 @@ export function allowanceLabel(name: string): string {
   return name.replace(/^api_/, "API ").replaceAll("_", " ");
 }
 
-function concurrentWorkText(plan: Pick<ComparisonPlan, "allowances">): string {
-  const limit = plan.allowances.concurrent_work;
-  return limit === undefined ? "unlimited concurrent work" : `${formatCount(limit)} concurrent work slots`;
-}
+
 
 /** An allowance row's three facts: consumed, allowed, and whether it is over. */
 export interface AllowanceRow {
@@ -361,24 +364,56 @@ export function PlanSettings(): React.ReactElement {
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
   const plan = useResource<PlanReport>(() => api.plan(), [api]);
-  const billing = useResource<BillingUsageReport>(() => api.billingUsage(), [api]);
-  const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
+  const billing = useResource<BillingUsageReport>(
+    () => api.billingUsage(),
+    [api],
+  );
   const report = plan.error === null ? plan.value : undefined;
   const usage = billing.error === null ? billing.value : undefined;
   const rows = report === undefined ? [] : planUsageRows(report);
+  const excluded = rows.filter(
+    (row) =>
+      row.limit <= 0 ||
+      (row.name.startsWith("artifact_") &&
+        !report?.features?.includes("hosted_artifacts")),
+  );
+  const included = rows.filter((row) => !excluded.includes(row));
   const warnings = report === undefined ? [] : approachingPlanLimits(report);
-  const planName = report?.name || report?.effective_base.id || "current plan";
-  const reset = formatShortTimestamp(report?.window_ends_at ?? "", timestampFormat);
-  const artifactRetention = report?.allowances.artifact_retention_seconds;
-  const comparisons = usage?.comparison_plans.toSorted((a, b) => (a.monthly_usd_cents ?? Infinity) - (b.monthly_usd_cents ?? Infinity)) ?? [];
-  const nextPlan = report === undefined ? undefined : nextFittingPlan(report, comparisons);
-  const canBill = bootstrap?.actor.role === "owner" && bootstrap.support == null;
+  const planName = usage?.name || report?.name || "Current plan";
+  const comparisons = usage?.comparison_plans ?? [];
+  const currentRef = usage?.effective_base ?? report?.effective_base;
+  const currentOffered = comparisons.some(
+    (candidate) =>
+      candidate.id === currentRef?.id &&
+      candidate.version === currentRef.version,
+  );
+  const comparisonColumns: readonly ComparisonPlan[] =
+    report === undefined || currentOffered
+      ? comparisons
+      : [
+          {
+            id: currentRef?.id ?? "",
+            version: currentRef?.version ?? 1,
+            name: planName,
+            monthly_usd_cents:
+              usage?.monthly_usd_cents ?? report.monthly_usd_cents,
+            features: report.features ?? [],
+            allowances: report.allowances,
+            price_id: "",
+          },
+          ...comparisons,
+        ];
+  const nextPlan =
+    report === undefined ? undefined : nextFittingPlan(report, comparisons);
+  const canView =
+    bootstrap?.actor.role === "owner" || bootstrap?.actor.role === "admin";
+  const canBill =
+    bootstrap?.actor.role === "owner" && bootstrap.support == null;
   const canCheckout = canBill && usage?.can_checkout === true;
   const canManage = canBill && usage?.can_manage === true;
-  const canBuy = canBill && usage?.can_buy_credits === true;
   const purchaseKeys = React.useRef(new Map<string, string>());
   const checkout = useMutation(async (price: string) => {
-    if (!canCheckout) return;
+    if (!canCheckout || usage?.checkout_pending) return;
     let key = purchaseKeys.current.get(price);
     if (key === undefined) {
       key = newKey();
@@ -392,149 +427,438 @@ export function PlanSettings(): React.ReactElement {
     const result = await api.portal({ key: newKey() });
     globalThis.location?.assign(result.url);
   });
-  const credits = usage?.ai_credits;
-  const [creditPrice, setCreditPrice] = React.useState("");
-  const selectedCreditPrice = credits?.packs.some((pack) => pack.price_id === creditPrice) ? creditPrice : credits?.packs[0]?.price_id ?? "";
-  const buy = useMutation(async () => {
-    if (!canBuy || selectedCreditPrice === "") return;
-    let key = purchaseKeys.current.get(selectedCreditPrice);
-    if (key === undefined) {
-      key = newKey();
-      purchaseKeys.current.set(selectedCreditPrice, key);
-    }
-    const result = await api.creditCheckout({ price: selectedCreditPrice, key });
-    globalThis.location?.assign(result.url);
-  });
-  const autoPack = credits?.packs.find((pack) => pack.price_id === credits.price_id);
   const comparePlans = () => {
     const target = document.getElementById("settings-plan-comparison");
     target?.scrollIntoView({ block: "start" });
     target?.focus({ preventScroll: true });
   };
-  const renewal = usage?.renews_at;
-  const renewalDate = renewal && !renewal.startsWith("0001-") ? new Date(renewal).toLocaleDateString() : null;
-  const period = usage?.chat_usage.range;
+  const status = usage === undefined ? null : planStatus(usage);
+  const expiry = usage?.expires_at
+    ? `Expires ${new Date(usage.expires_at).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}`
+    : usage?.complimentary || currentRef?.id === "free"
+      ? "Never expires"
+      : status?.replace(/, \d{4}/, "");
+  const reset = report?.window_ends_at
+    ? new Date(report.window_ends_at).toLocaleTimeString("en-US", {
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : null;
+  const moveButton = (candidate: ComparisonPlan, primary = false) =>
+    canBill &&
+    candidate.price_id !== "" &&
+    candidate.monthly_usd_cents != null ? (
+      <Button
+        size="xs"
+        className="w-full md:w-auto"
+        variant={primary ? "default" : "outline"}
+        disabled={
+          !canCheckout || usage?.checkout_pending === true || checkout.pending
+        }
+        onClick={() => void checkout.call(candidate.price_id)}
+      >
+        {checkout.pending ? "Opening…" : `Move to ${candidate.name || "plan"}`}
+      </Button>
+    ) : null;
+  const error = plan.error ?? billing.error;
+
+  if (!canView || error?.isAccessError)
+    return (
+      <SettingsPageContainer>
+        <SettingsSection id="settings-plan" title="Plan & usage">
+          <SettingsRow
+            title="Plan and usage need owner or admin access"
+            description="Ask an organization owner or admin to manage your plan."
+          />
+        </SettingsSection>
+      </SettingsPageContainer>
+    );
+  if (
+    (plan.loading && report === undefined) ||
+    (billing.loading && usage === undefined)
+  )
+    return (
+      <SettingsPageContainer>
+        <SettingsSection
+          id="settings-plan"
+          title="Plan"
+          icon={<ReceiptTextIcon className="size-3.5" />}
+        >
+          <div
+            role="status"
+            aria-label="Loading plan and usage"
+            className="space-y-4 p-4"
+          >
+            <Skeleton className="h-5 w-48" />
+            <Skeleton className="h-4 w-64 max-w-full" />
+            <Skeleton className="h-4 w-32" />
+          </div>
+        </SettingsSection>
+      </SettingsPageContainer>
+    );
 
   return (
     <SettingsPageContainer>
       {warnings.length > 0 ? (
         <Alert variant="warning">
-          <AlertTitle>Approaching your {planName} limits</AlertTitle>
+          <TriangleAlertIcon className="size-4" />
+          <AlertTitle>
+            {currentRef?.id === "free" &&
+            warnings.some((row) => row.used >= row.limit)
+              ? "At your Free limit"
+              : `Approaching your ${planName} limits`}
+          </AlertTitle>
           <AlertDescription>
-            <p>{warnings.map((row) => row.label).join(", ")} {warnings.length === 1 ? "is" : "are"} approaching or at the limit.
-              {warnings.some((row) => row.name === "unarchived_issues") ? " Finish or archive open issues to free capacity." : ""}
-              {nextPlan === undefined
-                ? usage === undefined ? " Compare plans when billing usage is available." : " No larger listed plan provides more headroom for all current usage."
-                : ` Move to ${nextPlan.name ?? nextPlan.id} for ${concurrentWorkText(nextPlan)}.`}
-            </p>
-            <div><Button size="sm" onClick={comparePlans}>Compare plans</Button></div>
+            <div className="flex flex-wrap items-center gap-2">
+              {warnings.map((row) => (
+                <Badge key={row.name} variant="warning">
+                  {row.label} {formatUsageValue(row.used, row.unit)} /{" "}
+                  {formatUsageValue(row.limit, row.unit)}
+                </Badge>
+              ))}
+              <Button size="sm" variant="outline" onClick={comparePlans}>
+                Compare plans
+              </Button>
+              {currentRef?.id === "free" && nextPlan
+                ? moveButton(nextPlan, true)
+                : null}
+            </div>
           </AlertDescription>
         </Alert>
       ) : null}
-      <SettingsSection id="settings-plan" title="Plan" icon={<ReceiptTextIcon className="size-3.5" />}>
-        {plan.loading && plan.value === undefined ? (
-          <SettingsRow title="Loading the plan" />
-        ) : plan.error !== null ? (
-          <SettingsRow title="Plan is not available" description={plan.error.isAccessError ? "Plan and usage need owner or admin access." : plan.error.message} />
-        ) : report === undefined ? null : (
+      <SettingsSection
+        id="settings-plan"
+        title="Plan"
+        icon={<ReceiptTextIcon className="size-3.5" />}
+      >
+        {error !== null ? (
           <SettingsRow
-            title={planName}
-            description="Hosting and model-provider charges are separate."
-            status={<>{planPriceText(report)}{renewalDate === null ? null : ` · Renews ${renewalDate}`}</>}
-            control={canBill ? (
-              <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" disabled={!canManage || portal.pending} onClick={() => void portal.call()}>{portal.pending ? "Opening…" : "Manage billing"}</Button>
-                <Button size="sm" onClick={comparePlans}>Upgrade</Button>
-              </div>
-            ) : null}
+            title="Plan and usage are not available"
+            description={error?.message}
+            control={
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  void plan.refresh();
+                  void billing.refresh();
+                }}
+              >
+                Try again
+              </Button>
+            }
           />
+        ) : report === undefined ? null : (
+          <>
+            <SettingsRow
+              title={
+                <span className="flex flex-wrap items-center gap-2">
+                  {planName}
+                  {usage?.complimentary ? (
+                    <Badge variant="outline" size="sm">
+                      Complimentary
+                    </Badge>
+                  ) : report.monthly_usd_cents != null ? (
+                    <span className="font-normal text-muted-foreground">
+                      {formatUsd(
+                        (usage?.monthly_usd_cents ?? report.monthly_usd_cents) /
+                          100,
+                      ).replace(/\.00$/, "")}
+                    </span>
+                  ) : null}
+                  <span className="hidden sm:inline-flex">
+                    <SettingsHelp label="Plan details">
+                      {planPriceText({
+                        ...report,
+                        monthly_usd_cents:
+                          usage?.monthly_usd_cents ?? report.monthly_usd_cents,
+                      })}
+                    </SettingsHelp>
+                  </span>
+                </span>
+              }
+              status={
+                status ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    {usage?.complimentary && usage.expires_at ? (
+                      <span className="size-1.5 rounded-full bg-success" />
+                    ) : null}
+                    {status}
+                  </span>
+                ) : null
+              }
+              control={
+                canBill ? (
+                  <div className="flex w-full gap-2 sm:w-auto">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="flex-1 sm:flex-none"
+                      disabled={!canManage || portal.pending}
+                      onClick={() => void portal.call()}
+                    >
+                      {portal.pending ? "Opening…" : "Manage billing"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="flex-1 sm:flex-none"
+                      onClick={comparePlans}
+                    >
+                      Upgrade
+                    </Button>
+                  </div>
+                ) : null
+              }
+            />
+            <div
+              id="settings-ai-usage"
+              className="flex flex-wrap items-center justify-between gap-3 px-3 py-3 text-sm sm:px-4"
+            >
+              <div className="flex flex-wrap items-baseline gap-2">
+                <span className="text-muted-foreground">AI credits</span>
+                <span className="tabular-nums">
+                  {usage?.ai_credits
+                    ? formatUsd(usage.ai_credits.balance_micros / 1000000)
+                    : "Not enabled"}
+                </span>
+                {usage ? (
+                  <span className="text-xs text-muted-foreground">
+                    {formatUsd(usage.charged_ai_micros / 1000000)} spent this
+                    period
+                  </span>
+                ) : null}
+              </div>
+              {canBill ? (
+                <a
+                  className="inline-flex items-center gap-1 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  href={`${basePath()}/settings/billing`}
+                >
+                  Billing <ArrowRightIcon className="size-3.5" />
+                </a>
+              ) : null}
+            </div>
+          </>
         )}
       </SettingsSection>
-      {report === undefined ? null : (
-        <SettingsSection id="settings-plan-capacity" title="Capacity" hideTitle>
-          {["Capacity", "Storage", "This hour"].map((group) => (
-            <SettingsRow key={group} title={group} description={group === "Capacity" ? "Counts across the whole organization." : group === "This hour" ? `Resets ${reset || "when the current window ends"}` : undefined}>
-              <div className="grid grid-cols-1 gap-x-8 gap-y-6 py-3 sm:grid-cols-2">
-                {rows.filter((row) => row.group === group).map((row) => (
+      {report === undefined || error !== null ? null : (
+        <SettingsSection id="settings-plan-capacity" title="Usage">
+          {["Organization", "Storage", "This hour"].map((group) => {
+            const meters = included.filter((row) => row.group === group);
+            return meters.length === 0 ? null : (
+              <div key={group} className="px-3 py-2 sm:px-4">
+                <div className="flex items-center justify-between gap-3 py-1 text-xs text-muted-foreground">
+                  <h3>{group}</h3>
+                  {group === "This hour" && reset ? (
+                    <span className="inline-flex items-center gap-1">
+                      <ClockIcon className="size-3" />
+                      Resets {reset}
+                    </span>
+                  ) : null}
+                </div>
+                {meters.map((row) => (
                   <UsageMeter
                     key={row.name}
+                    layout="row"
                     label={row.label}
                     used={row.used}
                     limit={row.limit}
                     unit={row.unit}
                     limitOnly={row.limitOnly}
-                    notIncludedOn={row.limit === 0 && row.used === 0 ? planName : undefined}
-                    description={row.name === "artifact_retained_bytes" && artifactRetention !== undefined
-                      ? `${row.description ?? ""} Kept for ${formatCount(artifactRetention / 86400)} days.`
-                      : group === "This hour" ? `Resets ${reset || "when the current window ends"}` : row.description}
+                    description={row.description}
+                    detail={
+                      <SettingsHelp
+                        label={row.label}
+                      >{`${row.limitOnly ? `Up to ${formatUsageValue(row.limit, row.unit)}` : row.used >= row.limit ? "Limit reached" : `${formatUsageValue(Math.max(0, row.limit - row.used), row.unit)} left`}${row.description ? `. ${row.description}` : ""}`}</SettingsHelp>
+                    }
                   />
                 ))}
-                {group === "Storage" && !rows.some((row) => row.name === "artifact_retained_bytes") ? (
-                  <UsageMeter label="Artifact storage" used={report.usage.artifact_retained_bytes ?? 0} limit={0} unit="bytes"
-                    unlimited={report.features?.includes("hosted_artifacts") === true}
-                    notIncludedOn={report.features?.includes("hosted_artifacts") === true ? undefined : planName}
-                    description={artifactRetention === undefined ? "Build outputs and uploads." : `Build outputs and uploads · kept for ${formatCount(artifactRetention / 86400)} days.`} />
-                ) : null}
               </div>
-            </SettingsRow>
-          ))}
+            );
+          })}
+          {excluded.length > 0 ? (
+            <div className="grid gap-3 px-3 py-4 sm:grid-cols-[184px_minmax(0,1fr)] sm:gap-4 sm:px-4">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <LockKeyholeIcon className="size-3.5" />
+                Not on your plan
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {excluded.map((row) => (
+                  <Badge key={row.name} variant="secondary">
+                    {row.label}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </SettingsSection>
       )}
-      <SettingsSection id="settings-ai-usage" title="AI credits" headerAction={canBuy ? (
-        <Button size="xs" variant="outline" disabled={buy.pending || selectedCreditPrice === ""} onClick={() => void buy.call()}>{buy.pending ? "Opening…" : "Buy credits"}</Button>
-      ) : null}>
-        {billing.loading && billing.value === undefined ? <SettingsRow title="Loading AI credit usage" />
-          : billing.error !== null ? <SettingsRow title="AI usage is not available" description={billing.error.message} control={<Button size="sm" variant="outline" onClick={() => void billing.refresh()}>Try again</Button>} />
-          : usage === undefined ? null : (
-            <>
-              <SettingsRow title="Current period" description={`${period?.from.slice(0, 10)} – ${period?.to.slice(0, 10)}`} />
-              <div className="grid grid-cols-1 sm:grid-cols-3">
-                <SettingsRow title="Balance" status={credits === undefined ? "Credits are not enabled" : formatUsd(credits.balance_micros / 1000000)}
-                  description={credits === undefined ? undefined : credits.auto_enabled
-                    ? `Auto top-up: ${autoPack === undefined ? "selected pack" : formatUsd(autoPack.usd_cents / 100)} below ${formatUsd(credits.threshold_cents / 100)}`
-                    : "Auto top-up: off"} />
-                <SettingsRow title="Spent this period" status={formatUsd(usage.charged_ai_micros / 1000000)} description="Charged AI credits, including the model cost multiplier." />
-                <SettingsRow title="Tokens this period" status={formatTokens(usage.chat_usage.tokens)} description={`${formatTokens(Math.max(0, usage.chat_usage.input - usage.chat_usage.cached_input))} input · ${formatTokens(usage.chat_usage.cached_input)} cached · ${formatTokens(usage.chat_usage.output)} output`} />
-              </div>
-              {canBuy && (credits?.packs.length ?? 0) > 1 ? (
-                <SettingsRow title="Credit pack" control={
-                  <Select value={selectedCreditPrice} onValueChange={(value) => setCreditPrice(String(value))}>
-                    <SelectTrigger size="sm" aria-label="Credit pack"><SelectValue>{credits?.packs.find((pack) => pack.price_id === selectedCreditPrice)?.label}</SelectValue></SelectTrigger>
-                    <SelectPopup>{credits?.packs.map((pack) => <SelectItem key={pack.price_id} value={pack.price_id}>{pack.label} · {formatUsd(pack.usd_cents / 100)}</SelectItem>)}</SelectPopup>
-                  </Select>
-                } />
-              ) : canBuy ? <SettingsRow title="Credit pack" description={`${credits?.packs[0]?.label} · ${formatUsd((credits?.packs[0]?.usd_cents ?? 0) / 100)}`} /> : null}
-              {credits?.failure ? <SettingsRow title="Auto top-up needs attention" description={credits.failure} /> : null}
-              {credits?.in_flight ? <SettingsRow title="Automatic top-up pending" description="Your balance changes after Stripe confirms payment." /> : null}
-              {usage.chat_usage.unpriced_turns > 0 ? <SettingsRow title="Pricing pending" description={`${formatCount(usage.chat_usage.unpriced_turns)} turns are awaiting pricing; charged spend updates once pricing is recorded.`} /> : null}
-            </>
-          )}
-      </SettingsSection>
-      <SettingsSection id="settings-plan-comparison" title="Plans" headerAction={<span className="text-xs text-muted-foreground">Per organization per month</span>}>
-        {billing.loading && billing.value === undefined ? <SettingsRow title="Loading plans" />
-          : billing.error !== null ? <SettingsRow title="Plans are not available" description={billing.error.message} />
-          : comparisons.length === 0 ? <SettingsRow title="No comparison plans are available" /> : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
-              {comparisons.map((candidate) => {
-                const current = candidate.id === report?.effective_base.id && candidate.version === report?.effective_base.version;
-                const label = candidate.name ?? candidate.id;
-                return (
-                  <SettingsRow key={`${candidate.id}-${candidate.version}`} title={<>{label} {current ? <Badge variant="outline" size="sm">Current</Badge> : null}</>}>
-                    <div className="space-y-3 pb-3 text-sm">
-                      <p>{candidate.monthly_usd_cents == null ? "Contact us" : formatUsd(candidate.monthly_usd_cents / 100)}<br />
-                        {candidate.monthly_usd_cents == null ? "Custom concurrent work" : concurrentWorkText(candidate)}<br />
-                        Unlimited projects</p>
-                      {!current && canBill && candidate.monthly_usd_cents != null ? <Button size="sm" variant={candidate.id === nextPlan?.id && candidate.version === nextPlan?.version ? "default" : "outline"} disabled={!canCheckout || usage?.checkout_pending === true || candidate.price_id === "" || checkout.pending} onClick={() => void checkout.call(candidate.price_id)}>{checkout.pending ? "Opening…" : `Move to ${label}`}</Button> : null}
-                    </div>
-                  </SettingsRow>
-                );
-              })}
+      {usage === undefined || error !== null ? null : (
+        <SettingsSection
+          id="settings-plan-comparison"
+          title="Plans"
+          headerAction={
+            <span className="text-xs text-muted-foreground">
+              Per organization per month
+            </span>
+          }
+        >
+          <div
+            role="table"
+            className="grid md:grid-flow-col md:auto-cols-fr"
+            aria-label="Compare plans"
+          >
+            <div role="row" className="sr-only">
+              <span role="columnheader">Plan</span>
+              <span role="columnheader">Concurrent work</span>
+              <span role="columnheader">Hosted artifacts</span>
+              <span role="columnheader">Projects</span>
+              <span role="columnheader">Plan action or expiry</span>
             </div>
-          )}
-        {canBill && usage?.checkout_pending === true ? <SettingsRow title="Checkout in progress" description="Finish the existing checkout, or wait for it to expire before choosing another plan." />
-          : canBill && usage?.can_checkout === false && usage.can_manage ? <SettingsRow title="Subscription changes" description="Manage your existing subscription through Manage billing." /> : null}
-        {checkout.error || portal.error || buy.error ? <SettingsRow title="Billing action failed"><div className="pb-3"><ControlError message={checkout.error?.message ?? portal.error?.message ?? buy.error?.message ?? null} /></div></SettingsRow> : null}
-      </SettingsSection>
+            <div
+              aria-hidden="true"
+              className="hidden grid-rows-[110px_44px_44px_44px_64px] text-xs text-muted-foreground md:grid"
+            >
+              <div />
+              <div className="flex items-center border-t border-border/50 px-3">
+                Concurrent work
+              </div>
+              <div className="flex items-center border-t border-border/50 px-3">
+                Hosted artifacts
+              </div>
+              <div className="flex items-center border-t border-border/50 px-3">
+                Projects
+              </div>
+              <div className="border-t border-border/50" />
+            </div>
+            {comparisonColumns.map((candidate) => {
+              const current =
+                candidate.id === currentRef?.id &&
+                candidate.version === currentRef.version;
+              const custom =
+                candidate.id === "scale" && candidate.version === 2;
+              const slots = custom
+                ? "Custom"
+                : candidate.allowances.concurrent_work === undefined
+                  ? "Unlimited"
+                  : `${formatCount(candidate.allowances.concurrent_work)} slots`;
+              const projects =
+                candidate.allowances.projects === undefined
+                  ? "Unlimited"
+                  : formatCount(candidate.allowances.projects);
+              const label =
+                current && candidate.id === "pilot_free"
+                  ? "Legacy pilot"
+                  : candidate.name || "Plan";
+              return (
+                <div
+                  role="row"
+                  key={`${candidate.id}-${candidate.version}`}
+                  aria-current={current ? "true" : undefined}
+                  className={cn(
+                    "grid grid-cols-[1fr_auto] gap-2 p-3 md:grid-cols-1 md:grid-rows-[110px_44px_44px_44px_64px] md:gap-0 md:p-0",
+                    current &&
+                      "relative z-1 rounded-xl bg-info/8 ring-2 ring-info ring-inset",
+                  )}
+                >
+                  <div
+                    role="rowheader"
+                    className="col-span-2 flex items-center justify-between gap-2 md:col-span-1 md:flex-col md:items-start md:justify-center md:px-3"
+                  >
+                    <h3 className="flex flex-wrap items-center gap-1.5 text-sm">
+                      {label}
+                      {current ? <Badge size="sm">Current</Badge> : null}
+                    </h3>
+                    <span
+                      className={cn(
+                        "tabular-nums",
+                        custom
+                          ? "text-xs text-muted-foreground"
+                          : "text-lg font-semibold",
+                      )}
+                    >
+                      {custom
+                        ? "Contact us"
+                        : formatUsd(
+                            (candidate.monthly_usd_cents ?? 0) / 100,
+                          ).replace(/\.00$/, "")}
+                    </span>
+                  </div>
+                  <div className="col-span-2 flex flex-wrap gap-x-3 gap-y-1 md:contents">
+                    <div
+                      role="cell"
+                      className="text-xs text-muted-foreground md:flex md:items-center md:border-t md:border-border/50 md:px-3 md:text-foreground"
+                    >
+                      <span className="sr-only">Concurrent work: </span>
+                      {slots}
+                      {custom ? (
+                        <span className="md:hidden"> slots</span>
+                      ) : null}
+                    </div>
+                    <div
+                      role="cell"
+                      className="text-xs md:flex md:items-center md:border-t md:border-border/50 md:px-3"
+                    >
+                      {candidate.features.includes("hosted_artifacts") ? (
+                        <span className="inline-flex items-center gap-1 text-success-foreground">
+                          <CheckIcon aria-hidden="true" className="size-3.5" />
+                          <span className="md:sr-only">Hosted artifacts</span>
+                          <span className="sr-only"> included</span>
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">
+                          <span className="sr-only">
+                            Hosted artifacts: not included
+                          </span>
+                          <span className="hidden md:inline">—</span>
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      role="cell"
+                      className="text-xs text-muted-foreground md:flex md:items-center md:border-t md:border-border/50 md:px-3 md:text-foreground"
+                    >
+                      {projects}
+                      <span className="md:sr-only"> projects</span>
+                    </div>
+                  </div>
+                  <div
+                    role="cell"
+                    className="col-span-2 flex items-center text-xs text-muted-foreground md:col-span-1 md:border-t md:border-border/50 md:px-2"
+                  >
+                    {current
+                      ? expiry
+                      : moveButton(
+                          candidate,
+                          currentRef?.id === "free" &&
+                            candidate.id === "starter",
+                        )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {canBill && usage.checkout_pending ? (
+            <SettingsRow
+              title="Checkout in progress"
+              description="Finish the existing checkout, or wait for it to expire before choosing another plan."
+            />
+          ) : canBill && !usage.can_checkout && usage.can_manage ? (
+            <SettingsRow
+              title="Subscription changes"
+              description="Manage your existing subscription through Manage billing."
+            />
+          ) : null}
+          {checkout.error || portal.error ? (
+            <SettingsRow title="Billing action failed">
+              <ControlError
+                message={
+                  checkout.error?.message ?? portal.error?.message ?? null
+                }
+              />
+            </SettingsRow>
+          ) : null}
+        </SettingsSection>
+      )}
     </SettingsPageContainer>
   );
 }
