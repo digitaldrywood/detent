@@ -2698,6 +2698,9 @@ Dispatchable mapped lanes require `allow_dispatch: true` on `start` or `apply`.
 `apply` and `retry` may supply corrected `status_lanes` in `project_v2`, retaining
 the project ID selected before discovery. Omitting it retains the existing source
 and mapping. Completed and skipped items remain unchanged.
+An explicit retry routing correction also updates the lane of failed selected
+items created before snapshot intake, while preserving their native content.
+Items whose source snapshot is already complete retain their lane.
 
 The per-job size cap uses the plan catalog's `unarchived_issues` allowance:
 Free permits 200, Starter 2,000, Growth 10,000 and Scale 50,000. Unhosted Hubs
