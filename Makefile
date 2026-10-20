@@ -84,6 +84,7 @@ check-migrations:
 
 check-generated: generate-docs
 	$(SQLC) diff -f "$(SQLC_CONFIG)"
+	python3 scripts/check-runner-enrollment-docs.py
 
 css:
 	@if [ -f "$(TAILWIND_INPUT)" ]; then \
