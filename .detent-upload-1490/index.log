@@ -1,0 +1,135 @@
+{
+  "head": "6615ce55d0e67d376a13103ab8b27277936e1d76",
+  "tree": "805ac781991af37e7d60a1e696c54f4eef1dc0e6",
+  "scope": "Recovered original one-file patch retained; no tracked source changes in Rework. Earlier native version 25539927f remains historical evidence. Current checks apply to recovered head 6615ce55d.",
+  "scratch_repair": "Replaced ignored broken tmp symlink from earlier attempt with current runner-provided TMPDIR. No repository code or gate changes.",
+  "environment": "darwin/arm64; Go 1.26.9; Node 24 via npx package; macOS system Chrome",
+  "commands": [
+    {
+      "command": "GOTOOLCHAIN=go1.26.9 GOMAXPROCS=4 npx --yes --package=node@24 -c 'make check-land TEST_PROCS=4'",
+      "exit": 0,
+      "seconds": 511
+    },
+    {
+      "command": "GOTOOLCHAIN=go1.26.9 GOMAXPROCS=4 npx --yes --package=node@24 -c 'node node_modules/@playwright/test/cli.js test --config tmp/rework-evidence/playwright.config.cjs --project chromium --grep \"reaches Work and the Browse group from the sidebar\"'",
+      "exit": 0,
+      "outcome": "1 passed (15.7s), one worker, zero retries; URL and Axe preserved"
+    },
+    {
+      "command": "GOTOOLCHAIN=go1.26.9 GOMAXPROCS=4 npx --yes --package=node@24 -c 'make check-landing TEST_PROCS=4'",
+      "exit": 0,
+      "seconds": 138
+    }
+  ],
+  "provenance": "Worker terminal executions on committed recovered source; not a manufactured immutable host receipt or acceptance inspection. Browser command first failed in nested npx launcher with npm EUSAGE before tests ran; retained failure log. Direct Node CLI fixed launcher invocation. No test was retried. Config changes only execution output paths, worker count, retries=0, system Chrome and video capture; assertion/expect/test timeouts unchanged. macOS observation, not Linux verification. Independent host publication/review/audit/landing remain pending.",
+  "documents": [
+    {
+      "original": "app.log",
+      "original_sha256": "bc236e241f0bb6f842824c6f49ac351be3065810cf22d56097a4ed9f11fdadc1",
+      "original_bytes": 33213,
+      "parts": [
+        {
+          "path": ".detent-upload-1490/app.log.part-1.log",
+          "byte_start": 0,
+          "byte_end_exclusive": 12000,
+          "sha256": "7447d0377de2713ac8b6569d91382b3ac6bc689cb4664dc4a83ca6018e55e822"
+        },
+        {
+          "path": ".detent-upload-1490/app.log.part-2.log",
+          "byte_start": 12000,
+          "byte_end_exclusive": 24000,
+          "sha256": "06defcbfeff42a646fff46e0d67ae7580f057a3dd48327bb83f2403fb33348bf"
+        },
+        {
+          "path": ".detent-upload-1490/app.log.part-3.log",
+          "byte_start": 24000,
+          "byte_end_exclusive": 33213,
+          "sha256": "46cfadd693ae1b1d62d026f7f6711564d7f368c074cd6086556bdc84e7968b35"
+        }
+      ]
+    },
+    {
+      "original": "check-land.log",
+      "original_sha256": "f06670af8faf297d374f7652a95e078ab217e3a614037d581cb3c2b22bbf951c",
+      "original_bytes": 15896,
+      "parts": [
+        {
+          "path": ".detent-upload-1490/check-land.log.part-1.log",
+          "byte_start": 0,
+          "byte_end_exclusive": 12000,
+          "sha256": "a3a4d25d9fd3d6ff03aa4719c03eb63b62d03ec5b5e3d679591516bf7bcd071e"
+        },
+        {
+          "path": ".detent-upload-1490/check-land.log.part-2.log",
+          "byte_start": 12000,
+          "byte_end_exclusive": 15896,
+          "sha256": "26db7a77e5920d05800f296c048de8ecc005af29722ba2b60a25d510c8002c55"
+        }
+      ]
+    },
+    {
+      "original": "focused-launcher-failure.log",
+      "original_sha256": "5696611fde6d131d823a7d3193c4a00f7363c472ee2c8b98d6927ca693f3f0b5",
+      "original_bytes": 1927,
+      "parts": [
+        {
+          "path": ".detent-upload-1490/focused-launcher-failure.log.part-1.log",
+          "byte_start": 0,
+          "byte_end_exclusive": 1927,
+          "sha256": "c04a1bf84000f518933a4acbda474fe7c768b98fa4a5b59df0551ddd7f1dd27d"
+        }
+      ]
+    },
+    {
+      "original": "focused-journey.log",
+      "original_sha256": "5dac5fc1a44134f6048f520ea00a32c6f3f80c8169649f1ee85e5023e7618ee8",
+      "original_bytes": 353,
+      "parts": [
+        {
+          "path": ".detent-upload-1490/focused-journey.log.part-1.log",
+          "byte_start": 0,
+          "byte_end_exclusive": 353,
+          "sha256": "f0aad6b994f58eeae569562bd1b80e0014dec75cea175b29880081ed42dee3f8"
+        }
+      ]
+    },
+    {
+      "original": "check-landing.log",
+      "original_sha256": "32bc1138aca3ab2426f2f7f6c8a90528eb7b7ae3a667733a4b0ba2c1ddb08618",
+      "original_bytes": 34655,
+      "parts": [
+        {
+          "path": ".detent-upload-1490/check-landing.log.part-1.log",
+          "byte_start": 0,
+          "byte_end_exclusive": 12000,
+          "sha256": "57194f0f3a54e26cce8f77d738cc3cc22b22f69832d151780e84d3e883f8a27d"
+        },
+        {
+          "path": ".detent-upload-1490/check-landing.log.part-2.log",
+          "byte_start": 12000,
+          "byte_end_exclusive": 24000,
+          "sha256": "4a683102fcce81349f60b5488b06de3626f74acdb5dc81880791308dc5431fb1"
+        },
+        {
+          "path": ".detent-upload-1490/check-landing.log.part-3.log",
+          "byte_start": 24000,
+          "byte_end_exclusive": 34655,
+          "sha256": "314f366b6faa49ccdbac85ba2db22dd3c48720df57cbb063dcdba2f9e873eb55"
+        }
+      ]
+    },
+    {
+      "original": "playwright.config.cjs",
+      "original_sha256": "97203998877c0ea466f14e1100b1ee5ae84a010451905806aa4d6b6e82611229",
+      "original_bytes": 496,
+      "parts": [
+        {
+          "path": ".detent-upload-1490/playwright.config.cjs.part-1.log",
+          "byte_start": 0,
+          "byte_end_exclusive": 496,
+          "sha256": "2d86df7bc167b62d0ab9546865b30d931cf495c3aafa3a37340280d0ac843bbd"
+        }
+      ]
+    }
+  ]
+}

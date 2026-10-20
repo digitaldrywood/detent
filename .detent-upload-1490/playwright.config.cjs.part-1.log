@@ -1,0 +1,11 @@
+{
+  "original_document": "playwright.config.cjs",
+  "source_head": "6615ce55d0e67d376a13103ab8b27277936e1d76",
+  "source_tree": "805ac781991af37e7d60a1e696c54f4eef1dc0e6",
+  "original_sha256": "97203998877c0ea466f14e1100b1ee5ae84a010451905806aa4d6b6e82611229",
+  "original_bytes": 496,
+  "byte_start": 0,
+  "byte_end_exclusive": 496,
+  "encoding": "UTF-8; recover original bytes by encoding text as UTF-8",
+  "text": "const path = require(\"node:path\");\nconst root = \"/Users/corylanou/code/detent-runner/detent/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1490-5b2bc92ccbce\";\nconst base = require(path.join(root, \"playwright.config.js\"));\nmodule.exports = { ...base, testDir: path.join(root, \"tests/visual\"), outputDir: path.join(__dirname, \"playwright-results\"), workers: 1, retries: 0, reporter: [[\"list\"]], use: { ...base.use, channel: \"chrome\", video: \"off\" } };\n"
+}

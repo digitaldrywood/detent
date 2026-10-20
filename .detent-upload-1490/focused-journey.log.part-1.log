@@ -1,0 +1,11 @@
+{
+  "original_document": "focused-journey.log",
+  "source_head": "6615ce55d0e67d376a13103ab8b27277936e1d76",
+  "source_tree": "805ac781991af37e7d60a1e696c54f4eef1dc0e6",
+  "original_sha256": "5dac5fc1a44134f6048f520ea00a32c6f3f80c8169649f1ee85e5023e7618ee8",
+  "original_bytes": 353,
+  "byte_start": 0,
+  "byte_end_exclusive": 353,
+  "encoding": "UTF-8; recover original bytes by encoding text as UTF-8",
+  "text": "\nRunning 1 test using 1 worker\n\n(node:92842) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.\n(Use `node --trace-warnings ...` to show where the warning was created)\n  ✓  1 [chromium] › tests/visual/work.spec.js:398:3 › the work board › reaches Work and the Browse group from the sidebar (3.1s)\n\n  1 passed (15.7s)\n"
+}
