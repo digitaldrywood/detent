@@ -4411,6 +4411,7 @@ func TestDispatchPlannerHoldsUnchangedRework(t *testing.T) {
 		humanAction  string
 		readError    bool
 		reviewHold   bool
+		signal       func(*workpad.Signal)
 		wantReleased bool
 	}{
 		{name: "human moves to Todo", resume: "Todo", wantReleased: true},
@@ -4427,6 +4428,12 @@ func TestDispatchPlannerHoldsUnchangedRework(t *testing.T) {
 		{name: "unavailable source evidence stays held", version: "version-2", head: "head-2", readError: true},
 		{name: "new source preserves review hold", version: "version-2", head: "head-2", reviewHold: true},
 		{name: "new source preserves human hold", version: "version-2", head: "head-2", humanAction: "Approve rollout"},
+		{name: "new source preserves recorded blocker", version: "version-2", head: "head-2", signal: func(signal *workpad.Signal) {
+			signal.Blockers = []workpad.Blocker{{Reason: "Approve rollout", Unverifiable: true}}
+		}},
+		{name: "new source preserves invalid signal", version: "version-2", head: "head-2", signal: func(signal *workpad.Signal) {
+			signal.Invalid = &workpad.Invalid{Message: "Invalid blocker"}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -4450,6 +4457,10 @@ func TestDispatchPlannerHoldsUnchangedRework(t *testing.T) {
 			parked, ok := o.terminalAttemptRetryLimitReached(t.Context(), &state, issue, terminalAttemptRetryLimitCause, true, RunModeImplement, DiffStats{HeadSHA: "head-1"}, now, "Review finding-1 on unchanged head head-1", current)
 			if !ok {
 				t.Fatal("first unchanged Rework did not park")
+			}
+			parked.WorkpadSignal, ok = workpad.SignalFromComment(tracker.comments[len(tracker.comments)-1], "", "")
+			if !ok || parked.WorkpadSignal == nil || parked.WorkpadSignal.Status != workpad.StatusBlocked || parked.WorkpadSignal.HumanAction != "Review finding-1 on unchanged head head-1" {
+				t.Fatalf("park did not publish its structured remedy: %+v", parked.WorkpadSignal)
 			}
 			raw, err := json.Marshal(state.Blocked[issue.ID])
 			if err != nil {
@@ -4486,10 +4497,10 @@ func TestDispatchPlannerHoldsUnchangedRework(t *testing.T) {
 					t.Fatalf("scheduler refusal omitted %q: %+v", evidence, refusal)
 				}
 			}
+			issue = parked
 			if tt.resume != "" {
 				issue.State = tt.resume
 			} else {
-				issue = parked
 				tracker.detail.Change.CurrentVersion = firstNonBlank(tt.version, "version-1")
 				tracker.detail.Versions[0].ID = tracker.detail.Change.CurrentVersion
 				tracker.detail.Versions[0].HeadSHA = firstNonBlank(tt.head, "head-1")
@@ -4511,8 +4522,24 @@ func TestDispatchPlannerHoldsUnchangedRework(t *testing.T) {
 				if tt.humanAction != "" {
 					issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: tt.humanAction}
 				}
+				if tt.signal != nil {
+					issue.WorkpadSignal = workpad.CloneSignal(issue.WorkpadSignal)
+					tt.signal(issue.WorkpadSignal)
+				}
 				if released := o.recoverCauseBlockedIssue(t.Context(), &state, issue, now.Add(25*time.Hour)); released != tt.wantReleased {
 					t.Fatalf("recovery released = %t, want %t: %+v", released, tt.wantReleased, state.Blocked[issue.ID])
+				}
+				if tt.humanAction != "" && o.recoverCauseBlockedIssue(t.Context(), &state, issue, now.Add(26*time.Hour)) {
+					t.Fatal("repeated recovery adopted an unrelated human hold as its own")
+				}
+				if parked.WorkpadSignal.HumanAction != "Review finding-1 on unchanged head head-1" {
+					t.Fatal("recovery mutated the observed park signal")
+				}
+				if tt.wantReleased {
+					issue.WorkpadSignal, ok = workpad.SignalFromComment(tracker.comments[len(tracker.comments)-1], "", "")
+					if !ok || issue.WorkpadSignal == nil || issue.WorkpadSignal.Status != workpad.StatusInProgress || issue.WorkpadSignal.HumanAction != "" || len(issue.WorkpadSignal.Blockers) != 0 {
+						t.Fatalf("recovery did not clear its own structured remedy: %+v", issue.WorkpadSignal)
+					}
 				}
 				issue.State = tracker.issues[issue.ID].State
 			}
