@@ -66,7 +66,7 @@ workpad:
 deliverable:
   kind: pull_request
   merge_method: squash
-  github_pull_request: true
+  github_pull_request: false
 dependencies:
   source: merged
 recovery:
@@ -171,6 +171,7 @@ gate:
     turn_timeout_ms: 0
     max_inline_diff_bytes: 65536
   security_audit:
+    enabled: true
     model: ""
     block_on:
       - p1
