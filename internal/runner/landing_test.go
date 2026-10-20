@@ -149,7 +149,7 @@ func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
 			}
 			cfg := config.Config{}
 			cfg.Gate.Run = "true"
-			cfg.Worker.GitHubToken = test.name
+			cfg.Worker.GitHubToken = test.name + ":" + t.TempDir()
 			cfg.Tracker.Kind = config.TrackerGitHub
 			cfg.Tracker.Endpoint = "https://native-prepare.test/graphql"
 			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: &landingBackend{Backend: backend, preparationRequest: test.quota}, AgentBackend: &fakeCodexClient{}})
