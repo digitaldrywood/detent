@@ -225,6 +225,9 @@ func hubChangeResult(value any) (operatortool.Result, error) {
 	return operatortool.Result{Content: raw}, nil
 }
 func hubSafeChangeError(err error) error {
+	if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
+		return operatortool.ErrProviderUnavailable
+	}
 	if errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, sql.ErrNoRows) {
 		return operatortool.ErrAccessDenied
 	}

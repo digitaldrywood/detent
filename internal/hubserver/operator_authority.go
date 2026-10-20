@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
@@ -21,6 +23,13 @@ import (
 )
 
 type operatorEntryOriginKey struct{}
+
+func operatorAuthorizationError(err error) error {
+	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable || errors.Is(err, operatortool.ErrProviderUnavailable) {
+		return operatortool.ErrProviderUnavailable
+	}
+	return operatortool.ErrAccessDenied
+}
 
 func (s *Service) registerOperatorTools(e *echo.Echo) {
 	// Hubs expose native work commands and hosted billing/usage operations.
@@ -52,12 +61,15 @@ func operatorAccessTime(ctx context.Context, now time.Time) time.Time {
 func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		credential, status, err := s.authenticateAPIRequest(c)
-		if err != nil && s.config.Hosted != nil && !s.hostedShared() && c.Request().Header.Get(echo.HeaderAuthorization) == "" {
+		if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) && s.config.Hosted != nil && !s.hostedShared() && c.Request().Header.Get(echo.HeaderAuthorization) == "" {
 			if _, hash, sessionErr := s.hostedSession(c.Request().Context(), c); sessionErr == nil {
 				credential, err = s.hostedAccountCredential(c.Request().Context(), hash)
 			}
 		}
 		if err != nil {
+			if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
+				return s.nativeAPIError(c, err)
+			}
 			return c.JSON(status, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 		}
 		organization := c.Param("organization")
@@ -100,7 +112,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 				var err error
 				current, _, err = s.authenticateAPIToken(ctx, token, "", "")
 				if err != nil {
-					return apiCredential{}, operatortool.ErrAccessDenied
+					return apiCredential{}, operatorAuthorizationError(err)
 				}
 			} else {
 				session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
@@ -120,7 +132,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 					}
 				}
 				if err != nil {
-					return apiCredential{}, operatortool.ErrAccessDenied
+					return apiCredential{}, operatorAuthorizationError(err)
 				}
 			}
 			return current, nil

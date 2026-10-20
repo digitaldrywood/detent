@@ -130,7 +130,10 @@ func (s *Service) hostedAPITokenCredential(ctx context.Context, credential apiCr
 		}
 	}
 	current, err := s.hostedMembership(ctx, identity)
-	if err != nil || current.ID != membership.String {
+	if err != nil {
+		return apiCredential{}, err
+	}
+	if current.ID != membership.String {
 		return apiCredential{}, auth.ErrHostedIdentity
 	}
 	var local string
@@ -161,11 +164,17 @@ func (s *Service) hostedKeyCredentialFor(ctx context.Context, credential apiCred
 		return apiCredential{}, operatortool.ErrAccessDenied
 	}
 	session, err := s.WebSession(ctx, credential.SessionHash, s.config.now())
-	if err != nil || session.Identity.SupportActor != "" {
+	if err != nil {
+		return apiCredential{}, operatorAuthorizationError(err)
+	}
+	if session.Identity.SupportActor != "" {
 		return apiCredential{}, operatortool.ErrAccessDenied
 	}
 	current, _, err := s.hostedSessionCredential(ctx, session, credential.SessionHash)
-	if err != nil || current.ID != credential.ID || current.Hash != credential.Hash || current.HostedMembership != credential.HostedMembership {
+	if err != nil {
+		return apiCredential{}, operatorAuthorizationError(err)
+	}
+	if current.ID != credential.ID || current.Hash != credential.Hash || current.HostedMembership != credential.HostedMembership {
 		return apiCredential{}, operatortool.ErrAccessDenied
 	}
 	current.HostedRole = lesserHostedRole(current.HostedRole, credential.HostedRole)

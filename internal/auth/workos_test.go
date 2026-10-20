@@ -487,6 +487,7 @@ func TestWorkOSOrganizationAndMembershipOperations(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.mode.Store("http-error")
+			p = f.provider(t)
 			if err := tt.run(); !errors.Is(err, auth.ErrHostedIdentity) {
 				t.Fatalf("provider failure error = %v", err)
 			}

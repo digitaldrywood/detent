@@ -100,6 +100,9 @@ func isNativeConflict(err error) bool {
 }
 
 func (s *Service) nativeAPIError(c echo.Context, err error) error {
+	if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
+		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: auth.HostedReasonProviderUnavailable, Message: operatortool.ErrProviderUnavailable.Error()})
+	}
 	var export *operatortool.WorkBulkExportItemError
 	if errors.As(err, &export) {
 		s.config.Logger.Error(export.Message, append([]any{"error", err}, s.database.readTimeoutAttributes(err)...)...)

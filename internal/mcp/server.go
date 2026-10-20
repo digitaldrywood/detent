@@ -637,7 +637,7 @@ func safeToolError(err error) string {
 	if errors.Is(err, explain.ErrNotFound) {
 		return "work item not found in this project"
 	}
-	for _, safe := range []error{operatortool.ErrProjectScopeRequired, operatortool.ErrAccessDenied, operatortool.ErrInvalidArguments, mutation.ErrConflict, mutation.ErrUncertain} {
+	for _, safe := range []error{operatortool.ErrProjectScopeRequired, operatortool.ErrAccessDenied, operatortool.ErrProviderUnavailable, operatortool.ErrInvalidArguments, mutation.ErrConflict, mutation.ErrUncertain} {
 		if errors.Is(err, safe) {
 			return safe.Error()
 		}
@@ -681,6 +681,8 @@ func failedToolCallResult(protocolVersion string, err error) toolCallResult {
 	var export *operatortool.WorkBulkExportItemError
 	var detail any
 	switch {
+	case errors.Is(err, operatortool.ErrProviderUnavailable):
+		detail = &operatortool.RequestError{Code: "provider_unavailable", Message: operatortool.ErrProviderUnavailable.Error()}
 	case errors.As(err, &export):
 		detail = export
 	case errors.Is(err, operatortool.ErrResultTooLarge):

@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
@@ -120,6 +121,9 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 		return func(c echo.Context) error {
 			credential, status, err := s.authenticateAPIRequest(c)
 			if err != nil {
+				if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
+					return s.nativeAPIError(c, err)
+				}
 				return c.JSON(status, apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
 			}
 			if s.config.Hosted != nil {
@@ -227,6 +231,9 @@ WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credentia
 	if s.config.Hosted != nil {
 		credential, err = s.hostedAPITokenCredential(ctx, credential, createdAt, expiresAt)
 		if err != nil {
+			if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+				return apiCredential{}, http.StatusServiceUnavailable, err
+			}
 			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
 		}
 	}

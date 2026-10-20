@@ -72,6 +72,9 @@ func (s *Service) WebSession(ctx context.Context, hash string, now time.Time) (a
 		return auth.Session{}, err
 	}
 	current, err := s.config.Hosted.Provider.CurrentSession(ctx, *session.Identity)
+	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+		return auth.Session{}, err
+	}
 	if err != nil || !current.ExpiresAt.After(now) || current.Subject != session.Identity.Subject || current.SessionID != session.Identity.SessionID || current.OrganizationID != session.Identity.OrganizationID || current.SupportActor != session.Identity.SupportActor || current.SupportReason != session.Identity.SupportReason {
 		return auth.Session{}, auth.ErrInvalidSession
 	}
@@ -119,6 +122,9 @@ func (s *Service) hostedMembership(ctx context.Context, identity *auth.HostedIde
 func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCredential, int, error) {
 	session, hash, err := s.hostedSession(ctx, c)
 	if err != nil {
+		if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+			return apiCredential{}, http.StatusServiceUnavailable, err
+		}
 		return apiCredential{}, http.StatusUnauthorized, auth.ErrInvalidSession
 	}
 	var credential apiCredential
@@ -174,6 +180,9 @@ func lesserHostedRole(a, b string) string {
 func (s *Service) hostedSessionCredential(ctx context.Context, session auth.Session, hash string) (apiCredential, int, error) {
 	membership, err := s.hostedMembership(ctx, session.Identity)
 	if err != nil {
+		if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+			return apiCredential{}, http.StatusServiceUnavailable, err
+		}
 		var lookup *hostedMembershipLookupError
 		if errors.As(err, &lookup) {
 			return apiCredential{}, http.StatusInternalServerError, err
@@ -315,7 +324,10 @@ func (s *Service) hostedMutationIdentity(ctx context.Context, credential apiCred
 	}
 	if credential.HostedKeyScope != "" {
 		membership, err := s.hostedMembership(ctx, credential.Hosted)
-		if err != nil || membership.ID != credential.HostedMembership {
+		if err != nil {
+			return auth.HostedIdentity{}, auth.Membership{}, err
+		}
+		if membership.ID != credential.HostedMembership {
 			return auth.HostedIdentity{}, auth.Membership{}, auth.ErrHostedIdentity
 		}
 		return *credential.Hosted, membership, nil
@@ -329,6 +341,9 @@ func (s *Service) hostedMutationIdentity(ctx context.Context, credential apiCred
 		return *credential.Hosted, membership, nil
 	}
 	identity, err := s.config.Hosted.Provider.CurrentSession(ctx, *credential.Hosted)
+	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+		return auth.HostedIdentity{}, auth.Membership{}, err
+	}
 	if err != nil || !identity.ExpiresAt.After(s.config.now()) || identity.Subject != credential.Hosted.Subject || identity.SessionID != credential.Hosted.SessionID || identity.SupportActor != credential.Hosted.SupportActor || identity.SupportReason != credential.Hosted.SupportReason || identity.OrganizationID != credential.Hosted.OrganizationID {
 		return auth.HostedIdentity{}, auth.Membership{}, auth.ErrHostedIdentity
 	}
@@ -349,6 +364,9 @@ func (s *Service) recheckHostedAuthority(ctx context.Context, tx *sql.Tx, scope 
 	}
 	identity, membership, err := s.hostedMutationIdentity(ctx, scope.credential)
 	if err != nil {
+		if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+			return operatortool.ErrProviderUnavailable
+		}
 		return auth.ErrHostedIdentity
 	}
 	if scope.credential.EntryKey == nil || scope.credential.EntryKey.Kind != "service" {

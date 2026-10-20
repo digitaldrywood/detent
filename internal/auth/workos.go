@@ -11,7 +11,9 @@ import (
 	"net/mail"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	coreoidc "github.com/coreos/go-oidc/v3/oidc"
@@ -43,10 +45,34 @@ type workosProvider struct {
 	client      *http.Client
 	verifier    *coreoidc.IDTokenVerifier
 	logger      *slog.Logger
+	memberships workosMembershipCache
 }
 
 type workosTransport struct {
 	base http.RoundTripper
+}
+
+type workosMembershipKey struct {
+	userID         string
+	organizationID string
+}
+
+type workosMembershipEntry struct {
+	memberships []Membership
+	expires     time.Time
+}
+
+type workosMembershipCache struct {
+	sync.Mutex
+	entries    map[workosMembershipKey]workosMembershipEntry
+	generation uint64
+}
+
+func (p *workosProvider) invalidateMemberships() {
+	p.memberships.Lock()
+	clear(p.memberships.entries)
+	p.memberships.generation++
+	p.memberships.Unlock()
 }
 
 func (t workosTransport) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -472,6 +498,39 @@ func (p *workosProvider) Memberships(ctx context.Context, userID string, organiz
 	if (userID == "" && organizationID == "") || (userID != "" && !validWorkOSID(userID)) || (organizationID != "" && !validWorkOSID(organizationID)) {
 		return nil, ErrHostedIdentity
 	}
+	if userID == "" {
+		return p.loadMemberships(ctx, userID, organizationID)
+	}
+	key := workosMembershipKey{userID, organizationID}
+	p.memberships.Lock()
+	now := time.Now()
+	for key, entry := range p.memberships.entries {
+		if !now.Before(entry.expires) {
+			delete(p.memberships.entries, key)
+		}
+	}
+	if entry, ok := p.memberships.entries[key]; ok {
+		p.memberships.Unlock()
+		return slices.Clone(entry.memberships), nil
+	}
+	generation := p.memberships.generation
+	p.memberships.Unlock()
+	memberships, err := p.loadMemberships(ctx, userID, organizationID)
+	if err != nil || len(memberships) == 0 {
+		return memberships, err
+	}
+	p.memberships.Lock()
+	if generation == p.memberships.generation {
+		if p.memberships.entries == nil {
+			p.memberships.entries = make(map[workosMembershipKey]workosMembershipEntry)
+		}
+		p.memberships.entries[key] = workosMembershipEntry{memberships: slices.Clone(memberships), expires: now.Add(time.Minute)}
+	}
+	p.memberships.Unlock()
+	return memberships, nil
+}
+
+func (p *workosProvider) loadMemberships(ctx context.Context, userID string, organizationID string) ([]Membership, error) {
 	query := url.Values{"limit": {"100"}, "statuses": {"active"}}
 	if userID != "" {
 		query.Set("user_id", userID)
@@ -546,6 +605,8 @@ func (p *workosProvider) CreateMembership(ctx context.Context, userID string, or
 	if !validWorkOSID(userID) || !validWorkOSID(organizationID) || !ValidOrganizationRole(role) {
 		return Membership{}, ErrHostedIdentity
 	}
+	p.invalidateMemberships()
+	defer p.invalidateMemberships()
 	request := struct {
 		UserID         string `json:"user_id"`
 		OrganizationID string `json:"organization_id"`
@@ -569,6 +630,8 @@ func (p *workosProvider) SetMembershipRole(ctx context.Context, id string, role 
 	if !validWorkOSID(id) || !ValidOrganizationRole(role) {
 		return ErrHostedIdentity
 	}
+	p.invalidateMemberships()
+	defer p.invalidateMemberships()
 	request := struct {
 		Role string `json:"role_slug"`
 	}{role}
@@ -586,6 +649,8 @@ func (p *workosProvider) RevokeMembership(ctx context.Context, id string) error 
 	if !validWorkOSID(id) {
 		return ErrHostedIdentity
 	}
+	p.invalidateMemberships()
+	defer p.invalidateMemberships()
 	return p.request(ctx, http.MethodPut, "/user_management/organization_memberships/"+id+"/deactivate", nil, nil)
 }
 
@@ -718,6 +783,8 @@ func (p *workosProvider) acceptInvitationRecord(ctx context.Context, invitation 
 	if user.ID != userID || !user.EmailVerified || normalizeEmail(user.Email) != normalizeEmail(invitation.Email) {
 		return ErrHostedIdentity
 	}
+	p.invalidateMemberships()
+	defer p.invalidateMemberships()
 	var accepted Invitation
 	if err := p.request(ctx, http.MethodPost, "/user_management/invitations/"+invitation.ID+"/accept", nil, &accepted); err != nil {
 		return err
@@ -780,9 +847,16 @@ func (p *workosProvider) request(ctx context.Context, method string, path string
 	if payload != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
+	started := time.Now()
 	response, err := p.client.Do(request)
 	if err != nil {
-		p.log().DebugContext(ctx, "workos request failed", "method", method, "path", logPath)
+		var requestError *url.Error
+		if errors.As(err, &requestError) {
+			err = requestError.Err
+		}
+		detail := strings.ReplaceAll(err.Error(), request.URL.String(), p.apiURL+logPath)
+		detail = strings.ReplaceAll(detail, p.apiKey, "redacted")
+		p.log().WarnContext(ctx, "workos request failed", "method", method, "path", logPath, "error", detail, "elapsed", time.Since(started))
 		return hostedDenial(HostedReasonProviderUnavailable)
 	}
 	defer response.Body.Close()
