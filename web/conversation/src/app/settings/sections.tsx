@@ -100,9 +100,11 @@ const WHY_DISABLED =
 export function settingsNavItems({
   canManage,
   supporting,
+  selfHosted = false,
 }: {
   readonly canManage: boolean;
   readonly supporting: boolean;
+  readonly selfHosted?: boolean;
 }): readonly SettingsNavItem[] {
   const items: SettingsNavItem[] = [
     { id: "general", label: SETTINGS_SECTION_LABELS.general, icon: Settings2Icon },
@@ -115,7 +117,7 @@ export function settingsNavItems({
     { id: "integrations", label: SETTINGS_SECTION_LABELS.integrations, icon: BlocksIcon },
     { id: "mcp", label: SETTINGS_SECTION_LABELS.mcp, icon: PlugIcon },
   ];
-  if (canManage) {
+  if (canManage && !selfHosted) {
     items.push({ id: "plan", label: SETTINGS_SECTION_LABELS.plan, icon: ReceiptTextIcon });
     if (!supporting) {
       items.push({ id: "billing", label: SETTINGS_SECTION_LABELS.billing, icon: CreditCardIcon });
@@ -143,7 +145,7 @@ export function settingsNavItems({
     { id: "whats-new", label: SETTINGS_SECTION_LABELS["whats-new"], icon: MegaphoneIcon },
     { id: "about", label: SETTINGS_SECTION_LABELS.about, icon: InfoIcon },
   );
-  return items.map((item) => ({ ...item,
+  return items.filter((item) => !selfHosted || !["organization/members", "mcp"].includes(item.id)).map((item) => ({ ...item,
     label: item.id === "mcp" && !basePath().startsWith("/organizations/") ? "API & MCP" : item.label,
     group: ["general", "whats-new", "about"].includes(item.id) ? undefined : ["appearance", "keybindings", "snap-shot", "source-control", "connections", "archived"].includes(item.id) ? "account" : "organization",
   }));

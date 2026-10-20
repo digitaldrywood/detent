@@ -59,12 +59,15 @@ func appReserved(path string) bool {
 
 // registerAppRoutes mounts the React application: its bootstrap payload and
 // the catch-all shell. The shell is mounted whether or not the conversation
-// product is enabled. A single-tenant hub has no hosted session and mounts
-// none of this. The hosted pages still own the paths they register, so the
+// product is enabled. The hosted pages still own the paths they register, so the
 // catch-all serves only the client routes they leave free.
 func (s *Service) registerAppRoutes(e *echo.Echo) {
-	e.GET(hostedOrganizationBase+"/readable/:project_slug", s.resolveReadablePage, s.hostedSessionOnly)
-	e.GET(hostedOrganizationBase+"/readable/:project_slug/issues/:number", s.resolveReadablePage, s.hostedSessionOnly)
+	session := s.hostedSessionOnly
+	if s.config.Hosted == nil {
+		session = s.localAppOnly
+	}
+	e.GET(hostedOrganizationBase+"/readable/:project_slug", s.resolveReadablePage, session)
+	e.GET(hostedOrganizationBase+"/readable/:project_slug/issues/:number", s.resolveReadablePage, session)
 	e.GET("/app/bootstrap", s.appBootstrapPayload)
 	e.GET("/chat/bootstrap", s.appBootstrapPayload)
 	e.GET("/app/updates", s.appUpdates)
@@ -85,7 +88,11 @@ func (s *Service) appShell(c echo.Context) error {
 	if appReserved(path) {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	if path != "/login" {
+	if s.config.Hosted == nil {
+		if _, status, err := s.localAppCredential(c); err != nil {
+			return s.localAppUnauthorized(c, status)
+		}
+	} else if path != "/login" {
 		// The shell itself carries no customer data; every screen reads the
 		// JSON API, which enforces membership. A session is enough here, so
 		// a staff account can still reach the support screen.
@@ -138,7 +145,7 @@ func (s *Service) appShell(c echo.Context) error {
 		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 		defer cancelRead()
 		var slug string
-		if err := s.database.reader.QueryRowContext(readCtx, "SELECT slug FROM organizations WHERE id=?", s.config.Hosted.OrganizationID).Scan(&slug); err != nil {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT slug FROM organizations WHERE id=?", s.appOrganizationID()).Scan(&slug); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		shell = []byte(strings.Replace(string(shell), "<head>", `<head><meta name="detent-router-base" content="/`+html.EscapeString(slug)+`">`, 1))
@@ -264,6 +271,17 @@ func runnerBehind(current string, reported string) bool {
 // reads one row per runner. A revoked enrolment is not in the answer: it is
 // not a runner anybody is going to upgrade.
 func (s *Service) appUpdates(c echo.Context) error {
+	if s.config.Hosted == nil {
+		credential, status, err := s.localAppCredential(c)
+		if err != nil {
+			return s.localAppUnauthorized(c, status)
+		}
+		payload, err := s.readAppUpdates(c.Request().Context(), credential)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSON(http.StatusOK, payload)
+	}
 	credential, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		if status == http.StatusForbidden {
@@ -281,7 +299,7 @@ func (s *Service) appUpdates(c echo.Context) error {
 func (s *Service) readAppUpdates(ctx context.Context, credential apiCredential) (appUpdates, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if credential.Hosted == nil || credential.HostedRole == "viewer" || !s.appAllRunnerGrants(ctx, credential) {
+	if s.config.Hosted != nil && (credential.Hosted == nil || credential.HostedRole == "viewer" || !s.appAllRunnerGrants(ctx, credential)) {
 		return appUpdates{}, nativeNotFound()
 	}
 	current := detentVersion(s.config.Version)
@@ -289,7 +307,7 @@ func (s *Service) readAppUpdates(ctx context.Context, credential apiCredential) 
 	payload := appUpdates{MinimumRunnerVersion: minimum, Current: current, Source: "hub", Runners: []appUpdateRunner{}, Client: s.clientBuild}
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, r.display_name, m.version, r.last_heartbeat_at
 FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id
-WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.id`, s.config.Hosted.OrganizationID)
+WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.id`, s.appOrganizationID())
 	if err != nil {
 		return appUpdates{}, fmt.Errorf("list runner versions: %w", err)
 	}
@@ -417,6 +435,7 @@ type appBootstrapPreferences struct {
 }
 
 type appBootstrap struct {
+	SelfHosted    bool                       `json:"self_hosted,omitempty"`
 	HasUnread     bool                       `json:"has_unread"`
 	Organization  appBootstrapOrganization   `json:"organization"`
 	Organizations []appBootstrapOrganization `json:"organizations"`
@@ -452,6 +471,9 @@ type appBootstrapRefusalDetails struct {
 }
 
 func (s *Service) appBootstrapPayload(c echo.Context) error {
+	if s.config.Hosted == nil {
+		return s.localAppBootstrap(c)
+	}
 	credential, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		if status == http.StatusForbidden {
@@ -645,6 +667,9 @@ func (s *Service) appBootstrapPlan(ctx context.Context) *appBootstrapPlan {
 // hostedReadableProjects lists the projects the credential may read with the
 // capabilities the client needs to render them.
 func (s *Service) hostedReadableProjects(ctx context.Context, credential apiCredential) ([]appBootstrapProject, error) {
+	if s.config.Hosted == nil {
+		return s.localAppProjects(ctx, credential)
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	projects := []appBootstrapProject{}

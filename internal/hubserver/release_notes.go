@@ -40,7 +40,7 @@ func (s *Service) releaseSeenTime(ctx context.Context, credential apiCredential)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	var value string
-	err := s.database.reader.QueryRowContext(ctx, `SELECT build_time FROM hosted_release_preferences WHERE organization_id=? AND user_id=?`, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&value)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT build_time FROM hosted_release_preferences WHERE organization_id=? AND user_id=?`, s.appOrganizationID(), appSubject(credential)).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		build, ok := s.runningRelease()
 		if !ok {
@@ -113,11 +113,11 @@ func (s *Service) readReleaseNotes(ctx context.Context, credential apiCredential
 
 func (s *Service) releaseNotesAPI(c echo.Context) error {
 	ctx := c.Request().Context()
-	credential, _, err := s.hostedCredential(ctx, c)
+	credential, _, err := s.appCredential(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	if c.Param("organization") != s.config.Hosted.OrganizationID {
+	if c.Param("organization") != s.appOrganizationID() {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if c.Request().Method == http.MethodPut {
@@ -125,7 +125,7 @@ func (s *Service) releaseNotesAPI(c echo.Context) error {
 		if !ok {
 			return s.nativeAPIError(c, nativeInvalid("The running release is unavailable"))
 		}
-		_, err := s.database.db.ExecContext(ctx, `INSERT INTO hosted_release_preferences (organization_id,user_id,version,build_time) VALUES (?,?,?,?) ON CONFLICT (organization_id,user_id) DO UPDATE SET version=excluded.version,build_time=excluded.build_time WHERE excluded.build_time>=hosted_release_preferences.build_time`, s.config.Hosted.OrganizationID, credential.Hosted.Subject, build.Version, build.BuildTime.UTC().Format("2006-01-02T15:04:05.000000000Z"))
+		_, err := s.database.db.ExecContext(ctx, `INSERT INTO hosted_release_preferences (organization_id,user_id,version,build_time) VALUES (?,?,?,?) ON CONFLICT (organization_id,user_id) DO UPDATE SET version=excluded.version,build_time=excluded.build_time WHERE excluded.build_time>=hosted_release_preferences.build_time`, s.appOrganizationID(), appSubject(credential), build.Version, build.BuildTime.UTC().Format("2006-01-02T15:04:05.000000000Z"))
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}

@@ -590,7 +590,7 @@ func (s *Service) hostedMemberByID(ctx context.Context, credential apiCredential
 // listHostedProjects answers GET /projects with the readable projects and the
 // onboarding readiness each project screen opens with.
 func (s *Service) listHostedProjects(c echo.Context) error {
-	credential, _, err := s.hostedCredential(c.Request().Context(), c)
+	credential, _, err := s.appCredential(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
@@ -599,7 +599,7 @@ func (s *Service) listHostedProjects(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	setups, err := s.projectOnboardingBatch(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), readable)
+	setups, err := s.projectOnboardingBatch(ctx, tracker.OrganizationID(s.appOrganizationID()), readable)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

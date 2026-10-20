@@ -62,15 +62,15 @@ func (s *Service) savedWorkViews(c echo.Context) error {
 	ctx := c.Request().Context()
 	readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	credential, _, err := s.hostedCredential(ctx, c)
+	credential, _, err := s.appCredential(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	org := s.config.Hosted.OrganizationID
+	org := s.appOrganizationID()
 	if c.Param("organization") != org {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	user := credential.Hosted.Subject
+	user := appSubject(credential)
 	id := c.Param("view")
 	var current savedWorkView
 	if id != "" {
@@ -256,7 +256,7 @@ func (s *Service) readSavedWorkView(ctx context.Context, org, user, id string) (
 		return v, err
 	}
 	defer tx.Rollback()
-	err = tx.QueryRowContext(ctx, `SELECT id,owner_id,name,scope,project_id,layout, tab, search, sort, completed_window, archived, created_by,all_lanes,EXISTS(SELECT 1 FROM hosted_work_view_favorites f WHERE f.view_id=v.id AND f.user_id=?) FROM hosted_work_views v WHERE id=? AND organization_id=? AND (owner_id=? OR scope='organization') AND (project_id IS NULL OR EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=v.organization_id AND g.project_id=v.project_id AND g.user_id=?))`, user, id, org, user, user).Scan(&v.ID, &v.OwnerID, &v.Name, &v.Scope, &v.ProjectID, &v.State.View, &v.State.Tab, &v.State.Q, &v.State.Sort, &v.State.CompletedWindow, &v.State.Archived, &v.State.CreatedBy, &allLanes, &v.Favorite)
+	err = tx.QueryRowContext(ctx, `SELECT id,owner_id,name,scope,project_id,layout, tab, search, sort, completed_window, archived, created_by,all_lanes,EXISTS(SELECT 1 FROM hosted_work_view_favorites f WHERE f.view_id=v.id AND f.user_id=?) FROM hosted_work_views v WHERE id=? AND organization_id=? AND (owner_id=? OR scope='organization') AND (? OR project_id IS NULL OR EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=v.organization_id AND g.project_id=v.project_id AND g.user_id=?))`, user, id, org, user, s.config.Hosted == nil, user).Scan(&v.ID, &v.OwnerID, &v.Name, &v.Scope, &v.ProjectID, &v.State.View, &v.State.Tab, &v.State.Q, &v.State.Sort, &v.State.CompletedWindow, &v.State.Archived, &v.State.CreatedBy, &allLanes, &v.Favorite)
 	if errors.Is(err, sql.ErrNoRows) {
 		return v, nativeNotFound()
 	}
@@ -314,7 +314,7 @@ func (s *Service) setSavedWorkFavorite(ctx context.Context, db nativeExecer, id,
 }
 
 func (s *Service) savedWorkViewIDs(ctx context.Context, org, user, cursor string) ([]string, error) {
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT id FROM hosted_work_views v WHERE organization_id=? AND id>? AND (owner_id=? OR scope='organization') AND (project_id IS NULL OR EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=v.organization_id AND g.project_id=v.project_id AND g.user_id=?)) ORDER BY id LIMIT ?`, org, cursor, user, user, maxSavedWorkViewsPageSize+1)
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT id FROM hosted_work_views v WHERE organization_id=? AND id>? AND (owner_id=? OR scope='organization') AND (? OR project_id IS NULL OR EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=v.organization_id AND g.project_id=v.project_id AND g.user_id=?)) ORDER BY id LIMIT ?`, org, cursor, user, s.config.Hosted == nil, user, maxSavedWorkViewsPageSize+1)
 	if err != nil {
 		return nil, err
 	}
