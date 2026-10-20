@@ -1,0 +1,50 @@
+Project Sprite token metadata failure browser evidence
+Source HEAD before host finalization: 47ad57976a3a8d4f96f463834f6c76d8b327ac8b
+Final staged source tree: bddf7240151d096da459dfa86f30bf04b2fe9ba0
+Real ProjectSpriteControls component bundled from this worktree with esbuild and rendered with this worktree Node 24 make app CSS.
+Synthetic fetch fixture only; no real provider execution, credentials, or billing changes.
+Chrome DevTools isolated context, local ephemeral server; 1440x1100 desktop and 390x1100 narrow; light and dark.
+Observed sequence: token metadata 503 while allocation/pool succeed; Desired 2 Actual 2 Ready 1 retained, + disabled, minus and Off enabled. Minus writes desired_count=1 expected_revision=7, Off writes desired_count=0 expected_revision=8, distinct idempotency keys. On token metadata recovery, Reload enables + and clears preparation guidance. No horizontal overflow at 390px.
+All six screenshots visually inspected. Source candidate unchanged between capture and staging. Host commit and immutable Change publication are pending.
+Scope/invariants: INV-3 reuses existing read/polling owner; INV-15 authorized existing project Sprite surface; INV-16 tracker evidence. No safety-critical paths or Go owners changed.
+Files and SHA-256:
+token-failure-desktop-dark.png 2ca4d7dc61b9a8a787dd0e7b08ab6522e506c71c2fb1c848a1619cdca7862743
+token-failure-desktop-light.png 91c529d9ef87ea39416f3feb26b625efd02cf00bf3cb177793e128057844a6f0
+token-failure-narrow-dark.png b0e8af8b14c21339572d9d5c104ae1d42979e558cc38661ea0fe2bb6dd2ad2d8
+token-failure-narrow-light.png c105e3ee9bfb7cd16c7c445569875523bb78a481a0f902caad88d99663f199a0
+token-failure-off-narrow-dark.png 3c5908733b8d1e45314bc5ffa581be59391e2b74d77a238befd1a76b6669b32c
+token-recovered-narrow-dark.png 57b950920da37fe42809eb76c9e65b0e01729a40fc31f4fd9d3a14af089e2aaf
+
+preview.tsx SHA-256 1f46f8931786d38c4a32f2ec8dcf1e729d18a33f1fbbce041bda9bcd68230597
+import React from "react";
+import {createRoot} from "react-dom/client";
+import {createRootRoute,createRouter,RouterProvider} from "@tanstack/react-router";
+import {ClientContext} from "/Users/corylanou/code/detent-runner/detent/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1222-83b3e4c06946/web/conversation/src/app/client.ts";
+import {ProjectSpriteControls} from "/Users/corylanou/code/detent-runner/detent/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1222-83b3e4c06946/web/conversation/src/app/account/ProjectSpriteControls.tsx";
+const params = new URLSearchParams(location.search);
+document.documentElement.classList.toggle("dark", params.get("theme") === "dark");
+let allocation = {project_id:"project_example",managed:true,desired_count:2,allocated_count:2,shortfall:0,provision_failures:0,revision:"7"};
+const pool={min_runners:0,max_runners:4,idle_seconds:300,bootstrap:"",revision:1,members:[{name:"example-sprite",allocation_project_id:"project_example",state:"enrolled",status:"ready",runner_id:"runner_example",bootstrap_log:"Runner enrolled",idle_since:""}]};
+window.writes=[];
+window.tokenAvailable=false;
+window.fetch=async (input,init)=>{
+ const path=String(input);
+ if(path.endsWith("/sprite-pool/allocation")){
+  if(init?.method==="PUT") {const body=JSON.parse(init.body); window.writes.push(body);allocation={...allocation,desired_count:body.desired_count,revision:String(Number(allocation.revision)+1)};}
+  return new Response(JSON.stringify(allocation));
+ }
+ if(path.endsWith("/sprite-pool"))return new Response(JSON.stringify(pool));
+ if(path.endsWith("/secrets/fly_sprites_token")) return window.tokenAvailable ? new Response(JSON.stringify({kind:"fly_sprites_token",present:true})):new Response("{}",{status:503});
+ throw new Error("Unexpected preview request");
+};
+const client={account:{organization:{id:"org_example",name:"Example organization"},projects:[{id:"project_example",name:"Example project",can_write:true}],base_path:"/example-org"},http:{origin:"",apiBase:"/api/v2/organizations/org_example",csrfToken:"preview"}};
+const route=createRootRoute({component:()=> <ClientContext.Provider value={client}><main className="mx-auto max-w-4xl p-4"><h1 className="mb-4 text-lg font-semibold">Example project settings</h1><ProjectSpriteControls projectId="project_example" canManage={true}/></main></ClientContext.Provider>});
+const router=createRouter({routeTree:route});
+createRoot(document.getElementById("root")).render(<RouterProvider router={router}/>);
+
+
+build.mjs SHA-256 b79e7c81101a66fbd88b1cd96957ab50ef03a112f2b54e7e6aa9499e432ca708
+import {build} from "/Users/corylanou/code/detent-runner/detent/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1222-83b3e4c06946/web/conversation/node_modules/esbuild/lib/main.js";await build({entryPoints:["/Users/corylanou/code/detent-runner/detent/.detent/workspaces/execution-4247580411/worker-2571470376/detent-worker-scratch/220d6b08b2255b70/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1222-83b3e4c06946/attempt-d46f5f82-7e5d-40c5-9749-68616677f7b6/sprite-preview/preview.tsx"],bundle:true,format:"esm",platform:"browser",jsx:"automatic",outfile:"/Users/corylanou/code/detent-runner/detent/.detent/workspaces/execution-4247580411/worker-2571470376/detent-worker-scratch/220d6b08b2255b70/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1222-83b3e4c06946/attempt-d46f5f82-7e5d-40c5-9749-68616677f7b6/sprite-preview/preview.js",nodePaths:["/Users/corylanou/code/detent-runner/detent/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1222-83b3e4c06946/web/conversation/node_modules"],alias:{"~":"/Users/corylanou/code/detent-runner/detent/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1222-83b3e4c06946/web/conversation/src"},define:{"process.env.NODE_ENV":"\"production\""}});
+
+server.mjs SHA-256 4950be20f2c850eac8f173120f1bf3cec0c11d46852614e91bae0a3b8b3a24e2
+import http from "node:http";import fs from "node:fs";import path from "node:path";const dir="/Users/corylanou/code/detent-runner/detent/.detent/workspaces/execution-4247580411/worker-2571470376/detent-worker-scratch/220d6b08b2255b70/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1222-83b3e4c06946/attempt-d46f5f82-7e5d-40c5-9749-68616677f7b6/sprite-preview";const css="/Users/corylanou/code/detent-runner/detent/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1222-83b3e4c06946/static/app/conversation/app.css";http.createServer((req,res)=>{const p=new URL(req.url,"http://localhost").pathname; const file=p==="/app.css"?css:path.join(dir,p==="/"?"index.html":p);res.setHeader("Content-Type",p.endsWith(".css")?"text/css":p.endsWith(".js")?"text/javascript":"text/html");fs.createReadStream(file).on("error",()=>res.end()).pipe(res)}).listen(0,"127.0.0.1",function(){console.log("http://127.0.0.1:"+this.address().port)});
