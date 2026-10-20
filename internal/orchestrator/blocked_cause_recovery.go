@@ -494,7 +494,8 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 			}
 		}
 	}
-	if park.Owner == blockedRecoveryOwnerHuman || park.Owner == blockedRecoveryOwnerOperator {
+	staleRework := park.Cause == terminalAttemptRetryLimitCause && park.StaleRework != nil && park.Owner == blockedRecoveryOwnerOperator
+	if park.Owner == blockedRecoveryOwnerHuman || park.Owner == blockedRecoveryOwnerOperator && !staleRework {
 		reason := strings.TrimSpace(park.HoldReason)
 		if reason == "" {
 			reason = "human_recovery"
@@ -512,7 +513,7 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "managed_recovery", &park, park.CauseFingerprint)
 		return false
 	}
-	breakerPark := breakerParkCause(park.Cause)
+	breakerPark := breakerParkCause(park.Cause) && !staleRework
 	if !breakerPark && park.Predicate != blockedRecoveryPredicateFingerprintChange &&
 		park.Predicate != blockedRecoveryPredicateOncePerFingerprint {
 		derivedPark, found, laneReason, failure := o.deriveCurrentBreakerRecoveryPark(ctx, state, issue)
@@ -530,6 +531,19 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	}
 	signals := blockedCauseSignals{}
 	currentFingerprint := ""
+	if staleRework {
+		current := o.currentStaleReworkEvidence(ctx, issue, park.StaleRework.ChangeID)
+		if !staleReworkEvidenceChanged(park.StaleRework, current) {
+			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "cause_unchanged", &park, park.CauseFingerprint)
+			return false
+		}
+		data, err := json.Marshal(current)
+		if err != nil {
+			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", schedulerParkRecoveryUnavailableReason, &park, park.CauseFingerprint)
+			return false
+		}
+		currentFingerprint = blockedCauseHash(string(data))
+	}
 	if park.CauseFingerprintVersion != blockedCauseFingerprintVersion {
 		signals = o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
 		currentFingerprint = blockedCauseFingerprint(park.Cause, signals)

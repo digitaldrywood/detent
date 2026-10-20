@@ -59,7 +59,7 @@
     "internal/orchestrator/run_completion.go:reworkMergeWorkerResult": "4029b7e7046926e1de133946340d177982b071f99999580edf97e4172bfb2de3",
     "internal/orchestrator/run_completion.go:blockExhaustedMergeWorker": "0981e1d3abe67d6bfe7fd7af979f19359d227bd3d086e783ec179d8b30efc3c2",
     "internal/orchestrator/session_brake.go:handleSessionBrake": "dc7dc5b50b098e335b7d0f7596988af8f2b263ff5c2e349f8abdae4fa5027a0b",
-    "internal/orchestrator/terminal_attempt_retry.go:parkRetryCycleLimit": "d200affecd61d430afaa6438fc2107b26a67daff56d94db0629653ddea287833",
+    "internal/orchestrator/terminal_attempt_retry.go:parkRetryCycleLimit": "b4bc75c5e163637ad67a646579d7f8696dc286c2dbcf90762e2b3a85c4daf85b",
     "internal/orchestrator/workflow_metrics.go:updateIssueState": "d295ff8d7e86737e7c477c2cee5277f32d0e5821094a0dcbce188878f136bb30",
     "internal/orchestrator/workflow_metrics.go:updateIssueStateByID": "072e7213f3009b9d2bea4458af718434a8f7f9497b306490e51ad4d20b26c8fd",
     "internal/orchestrator/workflow_metrics.go:updateIssueStateByIDWithMetadata": "f9e2541bd1a2f834b30a364e7b18be5d8901d437f63ee1c0778c3f6b30669cb6",

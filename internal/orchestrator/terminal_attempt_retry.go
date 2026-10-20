@@ -354,6 +354,13 @@ func (o *Orchestrator) parkRetryCycleLimit(
 		metadata.BlockedRecovery.HoldReason = "terminal_attempt_external_review"
 		metadata.BlockedRecovery.IntentResumable = false
 		metadata.BlockedRecovery.OperatorRemedy = firstNonBlank(humanAction, "Review the terminal attempt, then move the issue to Todo to authorize another worker session.")
+		if humanAction != "" {
+			metadata.BlockedRecovery.StaleRework = o.currentStaleReworkEvidence(ctx, issue, "")
+			if evidence := metadata.BlockedRecovery.StaleRework; evidence != nil && diffStats.HeadSHA != "" && evidence.HeadSHA != diffStats.HeadSHA {
+				metadata.BlockedRecovery.StaleRework = nil
+			}
+			metadata.BlockedRecovery.Predicate = blockedRecoveryPredicateFingerprintChange
+		}
 	}
 	metadata.BlockedRecovery.WorkAttemptID = latest.AttemptID
 	metadata.BlockedRecovery.AttemptNumber = latest.AttemptNumber
