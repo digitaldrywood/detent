@@ -119,17 +119,28 @@ func importedGitHubIssueURLs(ctx context.Context, tx *sql.Tx, project, item, nod
 	rows, err := tx.QueryContext(ctx, `SELECT r.record_json FROM github_import_records r
 JOIN github_imports g ON g.id = r.import_id
 WHERE g.project_id = ? AND g.work_item_id = ? AND r.kind = 'issue'
-UNION ALL SELECT record_json FROM collaboration_versions
-WHERE project_id = ? AND work_item_id = ? AND record_id = ?`, project, item, project, item, item)
+`, project, item)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
+	var records []string
 	for rows.Next() {
 		var raw string
 		if err := rows.Scan(&raw); err != nil {
 			return nil, err
 		}
+		records = append(records, raw)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	history, err := importedNativeIssueVersions(ctx, tx, project, item)
+	if err != nil {
+		return nil, err
+	}
+	records = append(records, history...)
+	for _, raw := range records {
 		var record struct {
 			Body       string             `json:"body"`
 			Provenance tracker.Provenance `json:"provenance"`
@@ -151,4 +162,43 @@ WHERE project_id = ? AND work_item_id = ? AND record_id = ?`, project, item, pro
 		return nil, err
 	}
 	return urls, nil
+}
+
+func importedNativeIssueVersions(ctx context.Context, tx *sql.Tx, project, item string) ([]string, error) {
+	var encoded bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pragma_table_info('collaboration_versions') WHERE name='encoding')").Scan(&encoded); err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT organization_id, revision, record_json FROM collaboration_versions WHERE project_id=? AND work_item_id=? AND record_id=? ORDER BY revision", project, item, item)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type version struct {
+		organization, raw string
+		revision          int64
+	}
+	var versions []version
+	for rows.Next() {
+		var value version
+		if err := rows.Scan(&value.organization, &value.revision, &value.raw); err != nil {
+			return nil, err
+		}
+		versions = append(versions, value)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	records := make([]string, 0, len(versions))
+	for _, version := range versions {
+		raw := []byte(version.raw)
+		if encoded {
+			raw, err = reconstructNativeVersion(ctx, tx, version.organization, project, item, item, version.revision)
+			if err != nil {
+				return nil, err
+			}
+		}
+		records = append(records, string(raw))
+	}
+	return records, nil
 }

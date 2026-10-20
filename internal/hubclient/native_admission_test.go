@@ -574,6 +574,9 @@ SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, 
 				if err != nil {
 					t.Fatal(err)
 				}
+				if current.Revision != blocked.Revision {
+					t.Fatalf("same-lane operator hold created a record revision: %d/%d", current.Revision, blocked.Revision)
+				}
 				request.ExpectedRevision = current.Revision
 			case "policy":
 				h.repolicy(t)
