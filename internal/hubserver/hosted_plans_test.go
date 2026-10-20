@@ -806,7 +806,7 @@ func TestHostedPlanReportListsOnlyActiveGrants(t *testing.T) {
 	}
 }
 
-func TestHostedEmptyEntitlementsUseDefaultCatalog(t *testing.T) {
+func TestHostedPlanConfigurationDefaults(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name  string
@@ -818,32 +818,69 @@ func TestHostedEmptyEntitlementsUseDefaultCatalog(t *testing.T) {
 		{name: "empty plan list", plans: &HostedPlansConfig{Plans: []HostedPlan{}}, zero: true},
 		{name: "windows only", plans: &HostedPlansConfig{WindowSeconds: 3600}},
 		{name: "base only", plans: &HostedPlansConfig{Base: PlanReference{ID: "pilot_free", Version: 1}}},
-		{name: "default catalog", plans: func() *HostedPlansConfig { c := pilotHostedPlans(); return &c }()},
+		{name: "pilot catalog", plans: func() *HostedPlansConfig { c := pilotHostedPlans(); return &c }()},
+		{name: "Cloud catalog", plans: func() *HostedPlansConfig { c := capacityHostedPlans(); return &c }()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			if got := test.plans.IsZero(); got != test.zero {
 				t.Fatalf("IsZero() = %v, want %v", got, test.zero)
 			}
+			valid := test.zero || test.name == "pilot catalog" || test.name == "Cloud catalog"
 			f := newHostedSecurityFixture(t)
 			cfg := *f.service.config.Hosted
-			cfg.Billing = nil
 			cfg.Plans = test.plans
 			err := ValidateHostedConfig(&cfg)
+			if !valid {
+				if err == nil {
+					t.Fatal("partial entitlements accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ValidateHostedConfig() = %v", err)
+			}
+			serviceConfig := f.service.config
+			serviceConfig.DatabasePath = filepath.Join(t.TempDir(), "catalog.db")
+			serviceConfig.Hosted = &cfg
+			d := openTestService(t, serviceConfig).database
 			if test.zero {
-				if err != nil || cfg.Plans != nil {
-					t.Fatalf("ValidateHostedConfig() = %v, plans = %+v; want default catalog", err, cfg.Plans)
+				if cfg.Plans != nil || d.plans() != nil {
+					t.Fatal("hosted configuration without a catalog enabled plan allowances")
 				}
-				return
-			}
-			if test.name == "default catalog" {
+				var count int
+				if err := d.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_plan_assignments").Scan(&count); err != nil || count != 0 {
+					t.Fatalf("unconfigured catalog assignments = %d: %v", count, err)
+				}
+				tx, err := d.db.BeginTx(t.Context(), nil)
 				if err != nil {
-					t.Fatalf("ValidateHostedConfig() = %v", err)
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if err := d.checkHostedClaim(t.Context(), tx, time.Now()); err != nil {
+					t.Fatalf("unlimited claim = %v", err)
+				}
+				if err := d.checkHostedGrowth(t.Context(), tx, nil, time.Now(), false); err != nil {
+					t.Fatalf("unlimited growth = %v", err)
+				}
+				if err := d.requireHostedFeature(t.Context(), tx, "hosted_artifacts", time.Now()); err != nil {
+					t.Fatalf("unlimited feature = %v", err)
 				}
 				return
 			}
-			if err == nil {
-				t.Fatal("partial entitlements accepted")
+			entitlement, err := d.hostedPlanUsage(t.Context(), time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := PlanReference{ID: "pilot_free", Version: 1}
+			if test.name == "Cloud catalog" {
+				want = PlanReference{ID: "free", Version: 1}
+				if entitlement.Allowances["concurrent_work"] != 2 {
+					t.Fatalf("Free concurrency = %d, want 2", entitlement.Allowances["concurrent_work"])
+				}
+			}
+			if entitlement.Base != want || entitlement.EffectiveBase != want {
+				t.Fatalf("new organization entitlement = %+v, want %v", entitlement, want)
 			}
 		})
 	}
@@ -933,7 +970,8 @@ func TestCapacityCatalog(t *testing.T) {
 	cfg := f.service.config
 	cfg.DatabasePath = filepath.Join(t.TempDir(), "capacity.db")
 	hosted := *cfg.Hosted
-	hosted.Plans = nil
+	plans := capacityHostedPlans()
+	hosted.Plans = &plans
 	cfg.Hosted = &hosted
 	f.service = openTestService(t, cfg)
 	for _, test := range []struct {
@@ -1023,7 +1061,8 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "legacy-grant", Action: "grant", ExpectedRevision: 1, GrantID: "legacy", Plan: PlanReference{ID: "comp_team", Version: 1}, Scope: []string{"projects", "native_execution"}, Reason: "existing complimentary access"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+	plans := capacityHostedPlans()
+	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 		t.Fatal(err)
 	}
 	var retained string
@@ -1162,7 +1201,8 @@ func TestCapacityFreeConcurrentWorkQueues(t *testing.T) {
 	worker := f.worker(t, "free-worker")
 	d := f.service.database
 	d.hostedOrganization = f.project.OrganizationID
-	if err := d.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+	plans := capacityHostedPlans()
+	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 		t.Fatal(err)
 	}
 	claim := func(issue tracker.NativeIssue, machine string) *httptest.ResponseRecorder {

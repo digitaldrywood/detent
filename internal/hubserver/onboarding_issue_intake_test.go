@@ -826,7 +826,8 @@ func TestGitHubBatchUsesCatalogJobCap(t *testing.T) {
 			f := newBatchFixture(t)
 			d := f.service.database
 			d.hostedOrganization = f.project.OrganizationID
-			if err := d.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+			plans := capacityHostedPlans()
+			if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 				t.Fatal(err)
 			}
 			if test.plan != "free" {

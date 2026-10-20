@@ -39,11 +39,11 @@ func (d *database) runtimeState() *hostedRuntimeConfig {
 	d.runtimeReadMu.Lock()
 	defer d.runtimeReadMu.Unlock()
 	current := d.hostedRuntime.Load()
-	if current == nil || d.runtimeFile == "" {
+	if d.runtimeFile == "" {
 		return current
 	}
 	file, err := os.Stat(d.runtimeFile)
-	if err != nil || current.File != nil && os.SameFile(file, current.File) && file.ModTime().Equal(current.File.ModTime()) && file.Size() == current.File.Size() {
+	if err != nil || current != nil && current.File != nil && os.SameFile(file, current.File) && file.ModTime().Equal(current.File.ModTime()) && file.Size() == current.File.Size() {
 		return current
 	}
 	raw, err := os.ReadFile(d.runtimeFile)
@@ -58,8 +58,12 @@ func (d *database) runtimeState() *hostedRuntimeConfig {
 	if !ok || !slices.Contains(publication.Published, update.StageID) {
 		return current
 	}
-	next := *current
+	next := hostedRuntimeConfig{}
+	if current != nil {
+		next = *current
+	}
 	next.File, next.Published = file, publication.Published
+	next.Plans = HostedPlansConfig{}
 	if !update.Plans.IsZero() {
 		next.Plans = *update.Plans
 	}
@@ -79,7 +83,7 @@ func (d *database) runtimeVisible(id string) bool {
 
 func (d *database) plans() *HostedPlansConfig {
 	state := d.runtimeState()
-	if state == nil {
+	if state == nil || state.Plans.IsZero() {
 		return nil
 	}
 	return &state.Plans
@@ -141,8 +145,10 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 			return err
 		}
 	}
-	if err := plans.validate(); err != nil {
-		return nativeInvalid("Reloaded entitlement configuration is invalid")
+	if !plans.IsZero() {
+		if err := plans.validate(); err != nil {
+			return nativeInvalid("Reloaded entitlement configuration is invalid")
+		}
 	}
 	var config *HostedBillingConfig
 	if current := s.hostedBillingConfig(); current != nil {

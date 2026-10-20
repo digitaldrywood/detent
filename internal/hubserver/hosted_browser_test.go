@@ -927,7 +927,8 @@ func TestHostedBrowserPreview(t *testing.T) {
 		f.seedCoordinatorWorkflow(t)
 	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_CAPACITY") != "" {
-		if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+		plans := capacityHostedPlans()
+		if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_id='starter',base_version=1"); err != nil {
