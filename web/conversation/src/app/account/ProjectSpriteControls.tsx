@@ -28,11 +28,12 @@ export function ProjectSpriteControls({ projectId, canManage }: {
   const api = useAccountApi();
   const account = useAccountBootstrap();
   const snapshot = useResource(async () => {
-    const [allocation, pool, token] = await Promise.all([
-      api.projectSpriteAllocation(projectId), api.spritePool(projectId), api.spritesSecret(""),
+    const [allocation, pool] = await Promise.all([
+      api.projectSpriteAllocation(projectId), api.spritePool(projectId),
     ]);
-    return { allocation, pool, token };
+    return { allocation, pool };
   }, [api, projectId]);
+  const token = useResource(() => api.spritesSecret(""), [api]);
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState<AccountError | null>(null);
   const inFlight = React.useRef(false);
@@ -46,21 +47,25 @@ export function ProjectSpriteControls({ projectId, canManage }: {
   const active = members.filter((member) => member.state !== "deleted");
   const ready = active.filter((member) => member.status === "ready" || member.status === "sleeping").length;
   const draining = active.filter((member) => member.status === "draining" || member.state === "deleting").length;
-  const prepared = current !== undefined && current.pool.revision > 0 && current.pool.max_runners > 0 && current.token.present && !current.pool.isolation_tier_unavailable_reason;
+  const prepared = current !== undefined && current.pool.revision > 0 && current.pool.max_runners > 0 && !token.loading && token.error === null && token.value?.present && !current.pool.isolation_tier_unavailable_reason;
   const refresh = snapshot.refresh;
+  const refreshToken = token.refresh;
 
   React.useEffect(() => {
     const timer = globalThis.setInterval(() => {
-      if (!inFlight.current && document.visibilityState !== "hidden") void refresh();
+      if (!inFlight.current && document.visibilityState !== "hidden") {
+        void refresh();
+        void refreshToken();
+      }
     }, 5000);
     return () => globalThis.clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, refreshToken]);
 
   async function reload(): Promise<void> {
     if (inFlight.current) return;
     setError(null);
     command.current = null;
-    await refresh();
+    await Promise.all([refresh(), refreshToken()]);
   }
 
   async function save(desiredCount: number, retry = false): Promise<void> {
@@ -104,7 +109,8 @@ export function ProjectSpriteControls({ projectId, canManage }: {
           <p>Each new Sprite needs its own provider and GitHub sign-in in its console. Subscription logins cannot be copied. Detent handles creation, fresh runner enrollment and repository setup; no other terminal setup is needed.</p>
           <p>Provider billing stays as configured. Runner policy approval and any repository setup requirements still apply.</p>
           {current.pool.isolation_tier_unavailable_reason ? <p>{current.pool.isolation_tier_unavailable_reason}</p> : null}
-          {!current.token.present ? <a className="underline underline-offset-4" href={`${account?.base_path ?? ""}/settings/integrations#sprites`}>Set the organization Sprites token</a> : null}
+          {token.error ? <p>Could not check the organization’s Sprites token. Decrease or turn Off project Sprites, or reload to check again before provisioning.</p> : token.loading ? <p>Checking Sprites token…</p> : null}
+          {token.error || !token.value?.present ? <a className="underline underline-offset-4" href={`${account?.base_path ?? ""}/settings/integrations#sprites`}>{token.error ? "Review the organization Sprites token" : "Set the organization Sprites token"}</a> : null}
           <details>
             <summary className="cursor-pointer">Prepare organization pool</summary>
             <SpritePoolCard projectId={projectId} canManage={canManage} />
