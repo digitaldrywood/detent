@@ -1975,35 +1975,54 @@ func TestNativePublicationRecoveryOnAnyRunner(t *testing.T) {
 	change := tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "head"}
 	for _, test := range []struct {
 		name string
-		edit func(*tracker.NativeRecovery, *workspace.RecoveryState)
+		role string
+		edit func(*tracker.NativeRecovery, **workspace.RecoveryState)
 		want bool
 	}{
-		{"source runner", func(*tracker.NativeRecovery, *workspace.RecoveryState) {}, true},
-		{"configuration changed", func(r *tracker.NativeRecovery, _ *workspace.RecoveryState) {
+		{"source runner", RoleRework, func(*tracker.NativeRecovery, **workspace.RecoveryState) {}, true},
+		{"configuration changed", RoleRework, func(r *tracker.NativeRecovery, _ **workspace.RecoveryState) {
 			r.Lease.PolicyID = "new-configuration"
 		}, true},
-		{"another runner restored the Change source", func(r *tracker.NativeRecovery, local *workspace.RecoveryState) {
+		{"another runner restored the Change source", RoleRework, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
 			r.Lease.MachineID = "other"
-			local.WorkspaceFingerprint = "fresh-checkout-digest"
+			(*local).WorkspaceFingerprint = "fresh-checkout-digest"
 		}, true},
-		{"restored head differs from the version", func(r *tracker.NativeRecovery, local *workspace.RecoveryState) {
+		{"restored head differs from the version", RoleRework, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
 			r.Lease.MachineID = "other"
-			local.HeadSHA = "other-head"
+			(*local).HeadSHA = "other-head"
 		}, false},
-		{"restored workspace is dirty", func(r *tracker.NativeRecovery, local *workspace.RecoveryState) {
+		{"restored workspace is dirty", RoleRework, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
 			r.Lease.MachineID = "other"
-			local.TrackedPaths = []string{"work.go"}
+			(*local).TrackedPaths = []string{"work.go"}
 		}, false},
-		{"version superseded", func(r *tracker.NativeRecovery, _ *workspace.RecoveryState) {
+		{"version superseded", RoleRework, func(r *tracker.NativeRecovery, _ **workspace.RecoveryState) {
 			r.ChangeDetail.Change.CurrentVersion = "newer"
 		}, false},
-		{"settled publication", func(r *tracker.NativeRecovery, _ *workspace.RecoveryState) {
+		{"settled publication", RoleRework, func(r *tracker.NativeRecovery, _ **workspace.RecoveryState) {
 			r.Attempts[0].Checkpoint.EffectState = "confirmed"
+		}, false},
+		{"interrupted implementation restored on another runner", RoleCode, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
+			(*local).WorkspaceFingerprint = "fresh-checkout-digest"
+		}, true},
+		{"interrupted implementation PR creation from a git checkpoint", RoleCode, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+			r.Attempts[0].Checkpoint.ExternalEffect = "pr_create"
+			(*local).WorkspaceFingerprint = "fresh-checkout-digest"
+		}, true},
+		{"implementation without a restored workspace", RoleCode, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			*local = nil
+		}, false},
+		{"planning never reconciles publication", RolePlan, func(r *tracker.NativeRecovery, _ **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
 		}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			identity := tracker.NativeExecutionIdentity{Role: RoleRework}
+			identity := tracker.NativeExecutionIdentity{Role: test.role}
 			recovery := tracker.NativeRecovery{
 				Lease: tracker.NativeLease{MachineID: "source", PolicyID: "policy"},
 				Attempts: []tracker.NativeAttempt{{
@@ -2018,9 +2037,15 @@ func TestNativePublicationRecoveryOnAnyRunner(t *testing.T) {
 				ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", Repository: "owner/repo", PolicyID: "policy"},
 				Policy:             policy.Descriptor{ID: "policy", Gates: policy.Gates{GitHubPullRequest: true}},
 			}}
-			test.edit(&recovery, local)
+			test.edit(&recovery, &local)
 			if got := nativePublicationRecovery(recovery, local, identity, current); got != test.want {
 				t.Fatalf("nativePublicationRecovery() = %v, want %v", got, test.want)
+			}
+			for _, operatorFresh := range []bool{false, true} {
+				action, reason := nativeRecoveryAction(recovery, local, false, store.AgentResumeState{}, identity, operatorFresh, current)
+				if reconciled := action == "fresh_checkout" && reason == "publication_reconciliation_required"; reconciled != test.want {
+					t.Fatalf("nativeRecoveryAction(operatorFresh=%t) = %s/%s, want reconciliation %t", operatorFresh, action, reason, test.want)
+				}
 			}
 		})
 	}
