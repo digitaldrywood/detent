@@ -47,7 +47,7 @@ func (o *Orchestrator) demoteTerminalAttemptRetry(
 		o.terminalAttemptClaimBlocksDemotion(ctx, issue, at) {
 		return issue, false, false
 	}
-	if parked, ok := o.terminalAttemptRetryLimitReached(ctx, state, issue, retryCause, durable, runMode, diffStats, at, currentAttempts...); ok {
+	if parked, ok := o.terminalAttemptRetryLimitReached(ctx, state, issue, retryCause, durable, runMode, diffStats, at, "", currentAttempts...); ok {
 		return parked, true, true
 	}
 	targetState := terminalAttemptTodoState(o.cfg.ActiveStates)
@@ -112,8 +112,15 @@ func (o *Orchestrator) terminalAttemptRetryLimitReached(
 	runMode string,
 	diffStats DiffStats,
 	at time.Time,
+	humanAction string,
 	currentAttempts ...telemetry.WorkAttempt,
 ) (connector.Issue, bool) {
+	if durable && humanAction != "" && len(currentAttempts) > 0 {
+		current := currentAttempts[0]
+		if current.TerminalState == string(store.WorkAttemptTerminalSuccess) && current.ErrorClass == terminalAttemptWithoutWorkProductReason && !planOnlyAttempt(current) && retryCycleAttemptMatches(current, retryCause) {
+			return o.parkRetryCycleLimit(ctx, state, issue, runMode, diffStats, retryCause, 1, current, at, humanAction)
+		}
+	}
 	operatorReview := retryCause == terminalAttemptRetryLimitCause && o.cfg.Recovery.EffectiveTerminalAttemptRetryLimit() == 0
 	if !durable && operatorReview && state != nil && len(currentAttempts) > 0 {
 		current := currentAttempts[0]
@@ -139,7 +146,7 @@ func (o *Orchestrator) terminalAttemptRetryLimitReached(
 	case !known:
 		o.recordRetryCycleHistoryUnavailable(state, issue, retryCause, at)
 	case count >= o.retryCycleFailureLimit(retryCause):
-		return o.parkRetryCycleLimit(ctx, state, issue, runMode, diffStats, retryCause, count, latest, at)
+		return o.parkRetryCycleLimit(ctx, state, issue, runMode, diffStats, retryCause, count, latest, at, "")
 	}
 	return issue, false
 }
@@ -325,6 +332,7 @@ func (o *Orchestrator) parkRetryCycleLimit(
 	count int,
 	latest telemetry.WorkAttempt,
 	at time.Time,
+	humanAction string,
 ) (connector.Issue, bool) {
 	if o == nil || o.connector == nil || state == nil {
 		return issue, false
@@ -340,11 +348,12 @@ func (o *Orchestrator) parkRetryCycleLimit(
 		diffStats,
 	)
 	attemptError := retryCycleAttemptError(o, latest)
-	operatorReview := cause == terminalAttemptRetryLimitCause && o.cfg.Recovery.EffectiveTerminalAttemptRetryLimit() == 0
+	operatorReview := cause == terminalAttemptRetryLimitCause && (humanAction != "" || o.cfg.Recovery.EffectiveTerminalAttemptRetryLimit() == 0)
 	if operatorReview {
 		metadata.BlockedRecovery.Owner = blockedRecoveryOwnerOperator
 		metadata.BlockedRecovery.HoldReason = "terminal_attempt_external_review"
 		metadata.BlockedRecovery.IntentResumable = false
+		metadata.BlockedRecovery.OperatorRemedy = firstNonBlank(humanAction, "Review the terminal attempt, then move the issue to Todo to authorize another worker session.")
 	}
 	metadata.BlockedRecovery.WorkAttemptID = latest.AttemptID
 	metadata.BlockedRecovery.AttemptNumber = latest.AttemptNumber
@@ -388,14 +397,14 @@ func (o *Orchestrator) parkRetryCycleLimit(
 		blocked := state.Blocked[issue.ID]
 		blocked.RecoveryAction = "hold"
 		blocked.RecoveryReason = metadata.BlockedRecovery.HoldReason
-		blocked.RecoveryRemedy = "Review the terminal attempt, then move the issue to Todo to authorize another worker session."
+		blocked.RecoveryRemedy = metadata.BlockedRecovery.OperatorRemedy
 		blocked.RecoveryReachability = blockedRecoveryReachability("hold")
 		blocked.RecoveryIntentResumable = false
 		blocked.NeedsHumanAttention = true
 		state.Blocked[issue.ID] = blocked
 	}
 	if o.connector != nil && transitionErr == nil {
-		comment := retryCycleLimitComment(issue, cause, count, targetState, latest, attemptError, operatorReview)
+		comment := retryCycleLimitComment(issue, cause, count, targetState, latest, attemptError, operatorReview, humanAction)
 		if err := o.connector.CreateComment(ctx, issue.ID, comment); err != nil && o.logger != nil {
 			o.logger.Warn("retry cycle limit comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "cause", cause, "error", err)
 		}
@@ -410,7 +419,7 @@ func (o *Orchestrator) parkRetryCycleLimit(
 		telemetry.LogLifecycleMessage(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, event, "retry cycle limit reached", o.issueLifecycleCorrelation(issue),
 			"cause", cause,
 			"consecutive_attempts", count,
-			"limit", o.retryCycleFailureLimit(cause),
+			"limit", min(count, o.retryCycleFailureLimit(cause)),
 			"target_state", targetState,
 		)
 	}
@@ -433,10 +442,14 @@ func retryCycleLimitComment(
 	attempt telemetry.WorkAttempt,
 	attemptError string,
 	operatorReview bool,
+	humanAction string,
 ) string {
 	recovery := "until the configured breaker cooldown ends, then Detent returns it to its prior lane automatically."
 	if operatorReview {
 		recovery = "for external review because recovery.terminal_attempt_retry_limit is 0. Review the terminal attempt, then move the issue to Todo to authorize another worker session."
+	}
+	if humanAction != "" {
+		recovery = "until an operator authorizes further work. " + humanAction
 	}
 	comment := fmt.Sprintf(
 		"Detent stopped retrying %s after %d consecutive %s attempts. The issue is parked in `%s` %s",
@@ -446,6 +459,11 @@ func retryCycleLimitComment(
 		targetState,
 		recovery,
 	)
+	if humanAction != "" {
+		if quoted, err := json.Marshal(humanAction); err == nil {
+			comment += "\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: " + string(quoted) + "\n```"
+		}
+	}
 	if attemptError == "" {
 		return comment
 	}
