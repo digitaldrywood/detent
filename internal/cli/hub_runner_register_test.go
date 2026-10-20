@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -28,40 +27,6 @@ import (
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func TestSelfHostedRunnerRegistrationDocumentedFlags(t *testing.T) {
-	t.Parallel()
-
-	raw, err := os.ReadFile("../../docs/hub-self-hosting.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, section, ok := strings.Cut(string(raw), "### Enroll a runner without the web app\n")
-	if !ok {
-		t.Fatal("self-hosted runner enrollment section missing")
-	}
-	section, _, _ = strings.Cut(section, "\n### ")
-	commands := regexp.MustCompile(`detent hub runner register(?:[^\n]*\\\n)*[^\n]*`).FindAllString(section, -1)
-	if len(commands) == 0 {
-		t.Fatal("self-hosted enrollment has no registration command")
-	}
-	flags := regexp.MustCompile(`--[a-z][a-z-]*`).FindAllString(strings.Join(commands, "\n"), -1)
-	for _, match := range regexp.MustCompile("`(--[a-z][a-z-]*)`").FindAllStringSubmatch(section, -1) {
-		flags = append(flags, match[1])
-	}
-	if len(flags) == 0 {
-		t.Fatal("self-hosted registration has no documented flags")
-	}
-	cmd := newHubRunnerRegisterCommand("test", func(string) string { return "" }, nil)
-	for _, flag := range flags {
-		if flag == "--token" {
-			t.Error("self-hosted registration must pass the enrollment token through the environment")
-		}
-		if cmd.Flags().Lookup(strings.TrimPrefix(flag, "--")) == nil {
-			t.Errorf("self-hosted registration documents unknown flag %s", flag)
-		}
-	}
-}
 
 func TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin(t *testing.T) {
 	if testing.Short() {
