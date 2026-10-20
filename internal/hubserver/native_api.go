@@ -62,6 +62,10 @@ func nativeInvalid(message string) error {
 	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity}
 }
 
+func nativePublicInvalid(message string) error {
+	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
+}
+
 func nativeRejection(err error, category, field string) error {
 	var failure *nativeError
 	rejection := runnerauth.PublicationRejection{Category: category, Field: field}

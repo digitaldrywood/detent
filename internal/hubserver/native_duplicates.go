@@ -159,9 +159,6 @@ func duplicateContentHash(request tracker.CreateIssue) (string, error) {
 }
 
 func challengeNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (duplicateChallenge, error) {
-	if _, err := validateNativeIssueDraft(ctx, tx, scope, request); err != nil {
-		return duplicateChallenge{}, err
-	}
 	var enabled bool
 	if err := tx.QueryRowContext(ctx, "SELECT duplicate_challenge FROM projects WHERE organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&enabled); err != nil {
 		return duplicateChallenge{}, err

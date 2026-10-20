@@ -46,10 +46,10 @@ const linkedIssueRepositoryMismatch = "GitHub issue must belong to this native p
 
 func validateLinkedIssueRepository(integration ProjectIntegration, repository string) error {
 	if integration.Profile == "native" && integration.Repository == "" && integration.CheckoutRepository == "" {
-		return nativeInvalid(linkedIssueRepositoryRequired)
+		return nativePublicInvalid(linkedIssueRepositoryRequired)
 	}
 	if integration.Profile != "native" || (!strings.EqualFold(repository, integration.Repository) && !strings.EqualFold(repository, integration.CheckoutRepository)) {
-		return nativeInvalid(linkedIssueRepositoryMismatch)
+		return nativePublicInvalid(linkedIssueRepositoryMismatch)
 	}
 	return nil
 }
@@ -65,7 +65,7 @@ func createLinkedIssueInStateTx(ctx context.Context, tx *sql.Tx, scope nativeSco
 		return tracker.NativeIssue{}, nativeInvalid(err.Error())
 	}
 	if request.Provenance != nil {
-		return tracker.NativeIssue{}, nativeInvalid("Linked issues obtain provenance during runner intake")
+		return tracker.NativeIssue{}, nativePublicInvalid("Linked issues obtain provenance during runner intake")
 	}
 	integration, err := readProjectIntegration(ctx, tx, scope)
 	if err != nil {

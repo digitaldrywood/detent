@@ -105,6 +105,11 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 		if scope.credential.HostedRole != "reporter" && request.GitHubIssueURL == "" && (workerReport || scheduledReport) {
 			return createNativeMachineIntakeTx(ctx, tx, scope, request, now, scheduledReport)
 		}
+		if request.GitHubIssueURL == "" && request.Provenance == nil && (!machine || scope.credential.HostedRole == "reporter") {
+			if err := validateNativeIssueFiling(ctx, tx, scope, request, now); err != nil {
+				return nil, err
+			}
+		}
 		var related []possibleDuplicate
 		if request.ChallengeToken != "" {
 			var err error

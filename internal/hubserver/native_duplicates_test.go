@@ -22,14 +22,17 @@ func TestNativeDuplicateFiling(t *testing.T) {
 		closedDays int
 		challenge  bool
 		archived   bool
+		state      string
 	}{
-		{"matching title", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false},
-		{"matching body", true, "A different symptom", "Checkout hangs during repository association", 0, true, false},
-		{"no match", true, "Invitation email rejected", "Mailbox rejects the invite address; delivery returns an SMTP rejection from the recipient domain after verification links are sent. Sender reputation, relay credentials, mailbox quota, attachments, calendar invitations, spam filtering, and address formatting each need investigation.", 0, false, false},
-		{"disabled", false, "Runner checkout deadlocks", "Checkout hangs during repository association", 0, false, false},
-		{"recent closed", true, "Runner checkout deadlocks", "Separate observed details", 29, true, false},
-		{"old closed", true, "Runner checkout deadlocks", "Separate observed details", 31, false, false},
-		{"recent archived", true, "Runner checkout deadlocks", "Separate observed details", 29, true, true},
+		{"matching title", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false, "Todo"},
+		{"default lane", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false, ""},
+		{"matching body", true, "A different symptom", "Checkout hangs during repository association", 0, true, false, "Todo"},
+		{"no match", true, "Invitation email rejected", "Mailbox rejects the invite address; delivery returns an SMTP rejection from the recipient domain after verification links are sent. Sender reputation, relay credentials, mailbox quota, attachments, calendar invitations, spam filtering, and address formatting each need investigation.", 0, false, false, "Todo"},
+		{"disabled", false, "Runner checkout deadlocks", "Checkout hangs during repository association", 0, false, false, "Todo"},
+		{"recent closed", true, "Runner checkout deadlocks", "Separate observed details", 29, true, false, "Todo"},
+		{"old closed", true, "Runner checkout deadlocks", "Separate observed details", 31, false, false, "Todo"},
+		{"recent archived", true, "Runner checkout deadlocks", "Separate observed details", 29, true, true, "Todo"},
+		{"unlinked Triage", true, "Runner checkout deadlocks", "Separate observed details", 0, false, false, "Triage"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC).AddDate(0, 0, -test.closedDays)
@@ -54,11 +57,33 @@ func TestNativeDuplicateFiling(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "filing"}, Title: test.title, Body: test.body + issueContractTestSections, State: "Todo"}
+			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "filing"}, Title: test.title, Body: test.body + issueContractTestSections, State: test.state}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 			wantStatus := http.StatusOK
 			if test.challenge {
 				wantStatus = http.StatusConflict
+			}
+			if test.state == "Triage" {
+				requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+				var refusal struct {
+					apiErrorResponse
+					duplicateChallenge
+				}
+				decodeHubResponse(t, response, &refusal)
+				if refusal.Code != "invalid_request" || refusal.Message != "Triage is reserved for linked GitHub issue intake" || refusal.ChallengeToken != "" {
+					t.Fatalf("lane refusal=%s", response.Body.String())
+				}
+				var issues, challenges int
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&issues); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_duplicate_challenges WHERE project_id=?", f.project.ID).Scan(&challenges); err != nil {
+					t.Fatal(err)
+				}
+				if issues != 1 || challenges != 0 {
+					t.Fatalf("refused lane created issues=%d challenges=%d", issues, challenges)
+				}
+				return
 			}
 			requireNativeStatus(t, response, wantStatus)
 			var challenge duplicateChallenge
@@ -344,6 +369,40 @@ func TestNativeDuplicateMCP(t *testing.T) {
 				return result.Content.Data
 			}
 			args := map[string]any{"request_id": "mcp-duplicate", "title": first.Title, "description": "Private submitted description" + issueContractTestSections, "state": "Todo"}
+			args["project_id"] = f.project.ID
+			for _, test := range []struct{ name, state, body, message string }{
+				{"unlinked Triage", "Triage", "Description" + issueContractTestSections, "Triage is reserved for linked GitHub issue intake"},
+				{"unknown lane", "Unknown", "Description" + issueContractTestSections, "Workflow state does not exist"},
+				{"missing issue contract", "Todo", "Description without required sections", "Add or complete these required issue sections:"},
+				{"default lane contract", "", "Description without required sections", "Add or complete these required issue sections:"},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					args["state"], args["description"] = test.state, test.body
+					refused := protocol("tools/call", operatortool.FileIssue, args)
+					var refusal struct {
+						IsError bool `json:"isError"`
+						Content struct {
+							operatortool.RequestError
+							duplicateChallenge
+						} `json:"structuredContent"`
+					}
+					if err := json.Unmarshal(refused.Result, &refusal); err != nil || !refusal.IsError || len(refused.Error) != 0 || refusal.Content.Code != "invalid_request" || !strings.Contains(refusal.Content.Message, test.message) || refusal.Content.ChallengeToken != "" {
+						t.Fatalf("lane refusal=%s %s err=%v", refused.Result, refused.Error, err)
+					}
+					var issues, challenges int
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&issues); err != nil {
+						t.Fatal(err)
+					}
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_duplicate_challenges WHERE project_id=?", f.project.ID).Scan(&challenges); err != nil {
+						t.Fatal(err)
+					}
+					if issues != 7 || challenges != 0 {
+						t.Fatalf("refused lane created issues=%d challenges=%d", issues, challenges)
+					}
+				})
+			}
+			args["description"] = "Private submitted description" + issueContractTestSections
+			args["state"] = "Todo"
 			raw := call(operatortool.FileIssue, args)
 			var challenge duplicateChallenge
 			if err := json.Unmarshal(raw, &challenge); err != nil {

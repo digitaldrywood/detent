@@ -288,6 +288,15 @@ func TestNativeWorkflowRefusalCode(t *testing.T) {
 			if redacted.Message != "The requested operation is unavailable" {
 				t.Fatalf("hosted message = %q", redacted.Message)
 			}
+			recorded = httptest.NewRecorder()
+			context = echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/work-items", nil), recorded)
+			if err := service.nativeAPIError(context, validateNativeIssueIntake(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, tracker.CreateIssue{State: "Triage"})); err != nil {
+				t.Fatal(err)
+			}
+			public := requireNativeCode(t, recorded, http.StatusUnprocessableEntity, "invalid_request")
+			if public.Message != "Triage is reserved for linked GitHub issue intake" {
+				t.Fatalf("hosted lane message = %q", public.Message)
+			}
 		})
 	}
 }

@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
@@ -871,4 +873,110 @@ func performHubWorkCall(t *testing.T, service *Service, path, token, name string
 	response := httptest.NewRecorder()
 	service.Handler().ServeHTTP(response, request)
 	return response
+}
+
+func TestSafeNativeWorkError(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "public-filing-errors")
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	now := time.Now().UTC()
+	validSource := tracker.Provenance{Provider: "github", ExternalID: "issue", AuthorID: "author", CreatedAt: now, UpdatedAt: now, ObservedAt: now}
+	for _, test := range []struct {
+		name    string
+		request tracker.CreateIssue
+		worker  bool
+		setup   string
+		message string
+	}{
+		{name: "Triage", request: tracker.CreateIssue{State: "Triage"}, message: "Triage is reserved for linked GitHub issue intake"},
+		{name: "Triage with Backlog", request: tracker.CreateIssue{State: "Triage"}, setup: `UPDATE projects SET states_json=json_insert(states_json, '$[#]', json('{"name":"Backlog"}')) WHERE id=?`, message: "Triage is reserved for linked GitHub issue intake; use Backlog for drafts"},
+		{name: "worker Triage with restricted Backlog", worker: true, request: tracker.CreateIssue{State: "Triage"}, setup: `UPDATE projects SET states_json=json_insert(states_json, '$[#]', json('{"name":"Backlog","operator_only":true}')) WHERE id=?`, message: "Triage is reserved for linked GitHub issue intake"},
+		{name: "title", request: tracker.CreateIssue{Title: strings.Repeat("x", 501)}, message: "Title must contain 1 to 500 bytes and body at most 256 KiB"},
+		{name: "priority", request: tracker.CreateIssue{Priority: new(4)}, message: "Priority must be between 0 and 3"},
+		{name: "label count", request: tracker.CreateIssue{Labels: make([]string, 101)}, message: "At most 100 labels or assignees are supported"},
+		{name: "label value", request: tracker.CreateIssue{Labels: []string{""}}, message: "Labels and assignees must contain 1 to 200 bytes"},
+		{name: "worker provenance", request: tracker.CreateIssue{Provenance: &validSource}, worker: true, message: "Imported provenance requires an operator"},
+		{name: "import provider", request: tracker.CreateIssue{Provenance: &tracker.Provenance{Provider: "unknown"}}, message: "Import source is invalid"},
+		{name: "import author", request: tracker.CreateIssue{Provenance: &tracker.Provenance{Provider: "github"}}, message: "Import source and author are invalid"},
+		{name: "import time", request: tracker.CreateIssue{Provenance: &tracker.Provenance{Provider: "github", ExternalID: "issue", AuthorID: "author"}}, message: "Import timestamps are invalid"},
+		{name: "compatibility project", setup: "UPDATE projects SET profile='github' WHERE id=?", message: "Compatibility project content is externally owned"},
+		{name: "unknown lane", request: tracker.CreateIssue{State: "Unknown"}, message: "Workflow state does not exist"},
+		{name: "operator lane", worker: true, setup: "UPDATE projects SET states_json=json_set(states_json, '$[0].operator_only', json('true')) WHERE id=?", message: "Workflow target requires an operator"},
+		{name: "reserved label", request: tracker.CreateIssue{Labels: []string{workspaceItemLabel}}, message: "Label detent:workspace is reserved"},
+		{name: "linked provenance", request: tracker.CreateIssue{GitHubIssueURL: "https://github.com/example-org/example-project/issues/1", Provenance: &validSource}, message: "Linked issues obtain provenance during runner intake"},
+		{name: "linked repository required", request: tracker.CreateIssue{GitHubIssueURL: "https://github.com/example-org/example-project/issues/1"}, message: linkedIssueRepositoryRequired},
+		{name: "linked repository mismatch", setup: "UPDATE projects SET checkout_repository='example-org/other-project' WHERE id=?", request: tracker.CreateIssue{GitHubIssueURL: "https://github.com/example-org/example-project/issues/1"}, message: linkedIssueRepositoryMismatch},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if test.setup != "" {
+				if _, err := tx.ExecContext(t.Context(), test.setup, f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			request := test.request
+			if request.Title == "" {
+				request.Title = "Issue validation"
+			}
+			if request.Body == "" {
+				request.Body = issueContractTestSections
+			}
+			if request.State == "" {
+				request.State = "Todo"
+			}
+			caller := scope
+			if test.worker {
+				caller.credential.Scope = apiScopeWorker
+			}
+			_, cause := createNativeIssueTx(t.Context(), tx, caller, request, now)
+			err = safeNativeWorkError(cause)
+			var refusal *operatortool.RequestError
+			if !errors.As(err, &refusal) || refusal.Code != "invalid_request" || refusal.Message != test.message || errors.Is(err, operatortool.ErrSnapshotUnavailable) {
+				t.Fatalf("refusal=%v, want invalid_request: %s", err, test.message)
+			}
+			response := httptest.NewRecorder()
+			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/work-items", nil), response)
+			service := &Service{config: Config{Hosted: &HostedConfig{}}}
+			if err := service.nativeAPIError(context, cause); err != nil {
+				t.Fatal(err)
+			}
+			if refusal := requireNativeCode(t, response, http.StatusUnprocessableEntity, "invalid_request"); refusal.Message != test.message {
+				t.Fatalf("hosted refusal=%s, want %s", refusal.Message, test.message)
+			}
+		})
+	}
+	_, sqlFailure := f.service.database.db.ExecContext(t.Context(), "SELECT missing_private_column FROM issues")
+	if sqlFailure == nil {
+		t.Fatal("expected SQL diagnostic")
+	}
+	for _, test := range []struct {
+		name  string
+		cause error
+	}{
+		{"private refusal", nativeInvalid("private refusal diagnostic")},
+		{"SQL failure", sqlFailure},
+		{"internal failure", errors.New("private database diagnostic")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := safeNativeWorkError(test.cause)
+			var refusal *operatortool.RequestError
+			if !errors.Is(err, operatortool.ErrSnapshotUnavailable) || !errors.Is(err, test.cause) || errors.As(err, &refusal) {
+				t.Fatalf("private failure=%v", err)
+			}
+			response := httptest.NewRecorder()
+			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/work-items", nil), response)
+			service := &Service{config: Config{Hosted: &HostedConfig{}, Logger: discardLogger()}, database: f.service.database}
+			if err := service.nativeAPIError(context, test.cause); err != nil {
+				t.Fatal(err)
+			}
+			var failure apiErrorResponse
+			decodeHubResponse(t, response, &failure)
+			if failure.Message != "The requested operation is unavailable" && failure.Message != "Native operation could not be completed" {
+				t.Fatalf("hosted private failure=%s", response.Body.String())
+			}
+		})
+	}
 }

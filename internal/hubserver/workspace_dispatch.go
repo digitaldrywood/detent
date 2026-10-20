@@ -439,7 +439,7 @@ func requireUnreservedLabels(ctx context.Context, labels []string) error {
 	}
 	for _, label := range labels {
 		if strings.EqualFold(strings.TrimSpace(label), workspaceItemLabel) {
-			return nativeInvalid("Label " + workspaceItemLabel + " is reserved")
+			return nativePublicInvalid("Label " + workspaceItemLabel + " is reserved")
 		}
 	}
 	return nil

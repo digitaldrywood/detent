@@ -351,18 +351,18 @@ func nativeIssueChangeIncluded(value string) (bool, error) {
 
 func validateNativeContent(title, body string, labels, assignees []string, priority *int) error {
 	if strings.TrimSpace(title) == "" || len(title) > 500 || len(body) > 256<<10 {
-		return nativeInvalid("Title must contain 1 to 500 bytes and body at most 256 KiB")
+		return nativePublicInvalid("Title must contain 1 to 500 bytes and body at most 256 KiB")
 	}
 	if priority != nil && (*priority < 0 || *priority > 3) {
-		return nativeInvalid("Priority must be between 0 and 3")
+		return nativePublicInvalid("Priority must be between 0 and 3")
 	}
 	for _, values := range [][]string{labels, assignees} {
 		if len(values) > 100 {
-			return nativeInvalid("At most 100 labels or assignees are supported")
+			return nativePublicInvalid("At most 100 labels or assignees are supported")
 		}
 		for _, value := range values {
 			if strings.TrimSpace(value) == "" || len(value) > 200 {
-				return nativeInvalid("Labels and assignees must contain 1 to 200 bytes")
+				return nativePublicInvalid("Labels and assignees must contain 1 to 200 bytes")
 			}
 		}
 	}
@@ -374,10 +374,10 @@ func validateNativeProvenance(scope nativeScope, provenance *tracker.Provenance)
 		return nil
 	}
 	if scope.credential.Scope == apiScopeWorker {
-		return nativeInvalid("Imported provenance requires an operator")
+		return nativePublicInvalid("Imported provenance requires an operator")
 	}
 	if provenance.Provider != "github" && provenance.Provider != "local_sqlite" && provenance.Provider != "github_local" {
-		return nativeInvalid("Import source is invalid")
+		return nativePublicInvalid("Import source is invalid")
 	}
 	return validateSourceProvenance(provenance)
 }
@@ -391,10 +391,10 @@ func validateImportProvenance(provenance *tracker.Provenance) error {
 
 func validateSourceProvenance(provenance *tracker.Provenance) error {
 	if strings.TrimSpace(provenance.ExternalID) == "" || len(provenance.ExternalID) > 200 || strings.TrimSpace(provenance.AuthorID) == "" || len(provenance.AuthorID) > 200 || len(provenance.AuthorDisplayName) > 200 {
-		return nativeInvalid("Import source and author are invalid")
+		return nativePublicInvalid("Import source and author are invalid")
 	}
 	if provenance.CreatedAt.IsZero() || provenance.UpdatedAt.Before(provenance.CreatedAt) || provenance.ObservedAt.Before(provenance.UpdatedAt) {
-		return nativeInvalid("Import timestamps are invalid")
+		return nativePublicInvalid("Import timestamps are invalid")
 	}
 	return nil
 }
@@ -475,7 +475,7 @@ func validateNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope
 		return tracker.NativeProject{}, err
 	}
 	if project.Profile != "native" {
-		return tracker.NativeProject{}, nativeInvalid("Compatibility project content is externally owned")
+		return tracker.NativeProject{}, nativePublicInvalid("Compatibility project content is externally owned")
 	}
 	return project, nil
 }
@@ -493,16 +493,80 @@ func defaultNativeIssueState(states []tracker.NativeState) string {
 	return ""
 }
 
+func validateNativeIssueIntake(ctx context.Context, q nativeQueryer, scope nativeScope, request tracker.CreateIssue) error {
+	if request.State != "Triage" || request.GitHubIssueURL != "" || scope.credential.HostedRole == "reporter" {
+		return nil
+	}
+	project, err := readNativeProject(ctx, q, scope)
+	if err != nil {
+		return err
+	}
+	for _, state := range project.States {
+		if state.Name == "Backlog" && (!state.OperatorOnly || scope.credential.Scope != apiScopeWorker) {
+			return nativePublicInvalid("Triage is reserved for linked GitHub issue intake; use Backlog for drafts")
+		}
+	}
+	return nativePublicInvalid("Triage is reserved for linked GitHub issue intake")
+}
+
+func validateNativeIssueState(scope nativeScope, project tracker.NativeProject, state string, machineIntake bool) error {
+	for _, candidate := range project.States {
+		if candidate.Name == state {
+			if candidate.OperatorOnly && scope.credential.Scope == apiScopeWorker && !machineIntake {
+				return nativePublicInvalid("Workflow target requires an operator")
+			}
+			return nil
+		}
+	}
+	return nativePublicInvalid("Workflow state does not exist")
+}
+
+func nativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, project tracker.NativeProject, request tracker.CreateIssue, now time.Time, machineIntake bool) tracker.NativeIssue {
+	if request.State == "" {
+		request.State = defaultNativeIssueState(project.States)
+	}
+	if scope.credential.HostedRole == "reporter" {
+		request.State = "Triage"
+	}
+	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Revision: 1, Profile: "native"},
+		Type: request.Type, ReportContext: request.ReportContext, Title: request.Title, Body: request.Body, State: request.State, Priority: request.Priority, Labels: request.Labels, Assignees: request.Assignees,
+		Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, Dependencies: []tracker.NativeWorkItemID{}}
+	issue.IssueContract = &issuecontract.State{Exempt: workspaceLabelAllowed(ctx)}
+	if (machineIntake || scope.scheduledRepair != nil && scope.scheduledRepair.importURL != "") && issue.Provenance == nil {
+		applyScheduledRepairContract(ctx, tx, scope, &issue, now)
+	}
+	_, machineOrigin := issueorigin.Parse(issue.Body)
+	if scope.credential.HostedRole != "reporter" && issue.Actor.Kind == "human" && !machineOrigin && !machineIntake && issue.Provenance == nil {
+		issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(issue.Body)
+	}
+	return issue
+}
+
+func validateNativeIssueFiling(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) error {
+	if err := validateNativeIssueIntake(ctx, tx, scope, request); err != nil {
+		return err
+	}
+	project, err := validateNativeIssueDraft(ctx, tx, scope, request)
+	if err != nil {
+		return err
+	}
+	issue := nativeIssueDraft(ctx, tx, scope, project, request, now, false)
+	if err := validateNativeIssueState(scope, project, issue.State, false); err != nil {
+		return err
+	}
+	return requireNativeIssueContractAtFiling(ctx, tx, scope, issue)
+}
+
 func createNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, machineIntake bool) (tracker.NativeIssue, error) {
+	if err := validateNativeIssueIntake(ctx, tx, scope, request); err != nil {
+		return tracker.NativeIssue{}, err
+	}
 	if request.GitHubIssueURL != "" {
 		return createLinkedIssueTx(ctx, tx, scope, request, now)
 	}
 	if scope.credential.HostedRole == "reporter" {
 		request.State = "Triage"
 		return createNativeIssueDraft(ctx, tx, scope, request, now, machineIntake, false)
-	}
-	if request.State == "Triage" {
-		return tracker.NativeIssue{}, nativeInvalid("Triage is reserved for linked GitHub issue intake")
 	}
 	return createNativeIssueDraft(ctx, tx, scope, request, now, machineIntake, false)
 }
@@ -531,16 +595,13 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 			return tracker.NativeIssue{}, err
 		}
 	}
-	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Revision: 1, Profile: "native"},
-		Type: request.Type, ReportContext: request.ReportContext, Title: request.Title, Body: request.Body, State: request.State, Priority: request.Priority, Labels: request.Labels, Assignees: request.Assignees,
-		Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, Dependencies: []tracker.NativeWorkItemID{}}
-	issue.IssueContract = &issuecontract.State{Exempt: workspaceLabelAllowed(ctx)}
-	if (machineIntake || scope.scheduledRepair != nil && scope.scheduledRepair.importURL != "") && issue.Provenance == nil {
-		applyScheduledRepairContract(ctx, tx, scope, &issue, now)
+	issue := nativeIssueDraft(ctx, tx, scope, project, request, now, machineIntake)
+	if err := validateNativeIssueState(scope, project, issue.State, machineIntake); err != nil {
+		return tracker.NativeIssue{}, err
 	}
 	var workflowID int64
 	if err := tx.QueryRowContext(ctx, "SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = ?", scope.project, issue.State).Scan(&workflowID); err != nil {
-		return tracker.NativeIssue{}, nativeInvalid("Workflow state does not exist")
+		return tracker.NativeIssue{}, err
 	}
 	issue.Blockers = []tracker.NativeDependency{}
 	issue.IgnoreDependencies = !project.RequireDependencies
@@ -559,9 +620,6 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 	issue.ExternalReferences = nativeSourceReferences("", "", "", 0, "", importedURL, issue.Provenance)
 	for _, state := range project.States {
 		if state.Name == issue.State {
-			if state.OperatorOnly && scope.credential.Scope == apiScopeWorker && !machineIntake {
-				return tracker.NativeIssue{}, nativeInvalid("Workflow target requires an operator")
-			}
 			issue.Terminal = state.Terminal
 		}
 	}
@@ -593,10 +651,6 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 	author := issue.Actor.PrincipalID
 	if issue.Provenance != nil {
 		author = issue.Provenance.AuthorID
-	}
-	_, machineOrigin := issueorigin.Parse(issue.Body)
-	if scope.credential.HostedRole != "reporter" && issue.Actor.Kind == "human" && !machineOrigin && !machineIntake && issue.Provenance == nil {
-		issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(issue.Body)
 	}
 	if !linkedIntake {
 		if err := requireNativeIssueContractAtFiling(ctx, tx, scope, issue); err != nil {
