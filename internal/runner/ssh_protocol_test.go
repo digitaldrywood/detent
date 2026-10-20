@@ -17,9 +17,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/compute"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -58,6 +60,10 @@ func TestSSHErrorRoundTrip(t *testing.T) {
 		{"landing validation", &workspace.ValidationError{Output: "failed package", Err: context.DeadlineExceeded}, context.DeadlineExceeded, func(err error) bool {
 			var validation *workspace.ValidationError
 			return errors.As(err, &validation) && validation.Output == "failed package"
+		}},
+		{"missing hook shell", &workspace.HookError{Hook: "after_create", ExitCode: -1, Err: &shell.UnavailableError{Shell: "bash"}}, workspace.ErrHookFailed, func(err error) bool {
+			var unavailable *shell.UnavailableError
+			return errors.As(err, &unavailable) && unavailable.Shell == "bash"
 		}},
 		{"joined", errors.Join(ErrWorkspacePreparation, context.DeadlineExceeded), context.DeadlineExceeded, nil},
 		{"capacity", backendcapacity.NewError(backendcapacity.Scope{BackendID: "code"}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload}, errors.New("busy")), nil, func(err error) bool {
@@ -347,5 +353,32 @@ func TestSSHRunResponseRetainsResultOnFailure(t *testing.T) {
 	}
 	if got.Result.Compute == nil || *got.Result.Compute != *response.Result.Compute || !got.Result.TurnStarted || got.Result.Tokens.TotalTokens != 19 || got.Err() == nil {
 		t.Fatalf("lost failure result: %+v", got)
+	}
+}
+
+func TestResolveSSHWorkflowPreservesHookShell(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"", "bash", "sh", "pwsh"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			workflow := config.Workflow{Config: config.Config{Hooks: config.Hooks{Shell: name}}}
+			workflow.Config.Normalize()
+			forwarded, err := ResolveSSHWorkflow(t.Context(), workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(forwarded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var received config.Workflow
+			if err := json.Unmarshal(data, &received); err != nil {
+				t.Fatal(err)
+			}
+			received.Config.Normalize()
+			if received.Config.Hooks.Shell != name || workflow.Config.Hooks.Shell != name {
+				t.Fatalf("hook shell changed during forwarding: source %q, received %q, want %q", workflow.Config.Hooks.Shell, received.Config.Hooks.Shell, name)
+			}
+		})
 	}
 }

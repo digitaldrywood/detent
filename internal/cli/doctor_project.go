@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -386,6 +387,18 @@ func checkDoctorProjectWithProgress(
 				Findings:  findings,
 				Proposals: doctorWorkflowProposalsForFindings(id, findings, 1),
 			}
+		}
+	}
+	if strings.TrimSpace(workflow.Config.Hooks.Shell) != "" {
+		environment := doctorBinaryEnvironment{CheckedPath: deps.lookupEnv("PATH")}
+		if deps.binaryEnvironment != nil {
+			environment = *deps.binaryEnvironment
+		}
+		shellCheck := checkDoctorHookShell(workflow.Config.Hooks.Shell, runtime.GOOS, deps, environment)
+		if shellCheck.Status == doctorFail {
+			workflowCheck.Status = doctorFail
+			workflowCheck.Detail += "; " + shellCheck.Detail
+			workflowCheck.Hint = shellCheck.Hint
 		}
 	}
 	checks = append(checks, workflowCheck)
