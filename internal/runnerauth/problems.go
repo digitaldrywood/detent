@@ -10,16 +10,17 @@ import (
 )
 
 type Problem struct {
-	ProjectID   string    `json:"project_id,omitempty"`
-	Subject     string    `json:"subject,omitempty"`
-	Check       string    `json:"check,omitempty"`
-	ErrorOutput string    `json:"error_output,omitempty"`
-	FixCommand  string    `json:"fix_command,omitempty"`
-	ReportedAt  time.Time `json:"reported_at,omitempty"`
-	Code        string    `json:"code"`
-	Message     string    `json:"message"`
-	FixHint     string    `json:"fix_hint"`
-	FirstSeen   time.Time `json:"first_seen"`
+	CachedCapabilities bool      `json:"cached_capabilities,omitempty"`
+	ProjectID          string    `json:"project_id,omitempty"`
+	Subject            string    `json:"subject,omitempty"`
+	Check              string    `json:"check,omitempty"`
+	ErrorOutput        string    `json:"error_output,omitempty"`
+	FixCommand         string    `json:"fix_command,omitempty"`
+	ReportedAt         time.Time `json:"reported_at,omitempty"`
+	Code               string    `json:"code"`
+	Message            string    `json:"message"`
+	FixHint            string    `json:"fix_hint"`
+	FirstSeen          time.Time `json:"first_seen"`
 }
 
 func NewProblem(code string) Problem {

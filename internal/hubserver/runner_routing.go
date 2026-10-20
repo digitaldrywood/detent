@@ -81,7 +81,7 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.T
 	if r.MachineUse == "" {
 		r.MachineUse = "shared"
 	}
-	if err := applyRunnerProblems(&r, problems, isolationRaw, protocol, rejected); err != nil {
+	if err := applyRunnerProblems(&r, problems, isolationRaw, protocol, rejected, now); err != nil {
 		return r, nil, time.Time{}, err
 	}
 	if spriteName != "" && spriteName == r.Hostname && r.IsolationTier == "sandbox" {

@@ -121,11 +121,13 @@ func TestIsolationProbeCancellation(t *testing.T) {
 	for _, test := range []struct {
 		name             string
 		cached, complete bool
+		workflowFailure  bool
 	}{
-		{"unobserved cancellation", false, false},
-		{"cached cancellation", true, false},
-		{"completed native only", false, true},
-		{"refresh native only", true, true},
+		{"unobserved cancellation", false, false, false},
+		{"cached cancellation", true, false, false},
+		{"cached cancellation preserves workflow failure", true, false, true},
+		{"completed native only", false, true, false},
+		{"refresh native only", true, true, false},
 	} {
 		cached := test.cached
 		t.Run(test.name, func(t *testing.T) {
@@ -144,9 +146,16 @@ func TestIsolationProbeCancellation(t *testing.T) {
 					if test.complete {
 						return isolation.Report{"example-project/codex": {isolation.NativeTrusted}}, nil
 					}
+					problem := runnerauth.Problem{Code: "backend_probe_failed", Subject: "example-project/codex", Check: "codex login status", Message: "Probe incomplete", ErrorOutput: "context deadline exceeded", FixHint: "Check the runner probe", ReportedAt: time.Now()}
+					problems := []runnerauth.Problem{problem}
+					if test.workflowFailure {
+						settings := runnerauth.NewProblem("settings_invalid")
+						settings.Check = "load workflow"
+						settings.ErrorOutput = "parse workflow: invalid settings (signal: killed)"
+						problems = append(problems, settings)
+					}
 					<-ctx.Done()
-					problem := runnerauth.Problem{Code: "backend_probe_failed", Subject: "example-project/codex", Check: "codex login status", Message: "Probe incomplete", ErrorOutput: ctx.Err().Error(), FixHint: "Check the runner probe", ReportedAt: time.Now()}
-					return isolation.Report{"example-project/codex": {}}, []runnerauth.Problem{problem}
+					return isolation.Report{"example-project/codex": {}}, problems
 				}}
 				if cached {
 					scheduler.probeIsolation(t.Context())
@@ -168,10 +177,20 @@ func TestIsolationProbeCancellation(t *testing.T) {
 				if report.Supports(isolation.NativeTrusted) != cached {
 					t.Fatalf("cancelled probe changed cached capabilities: %+v", report)
 				}
-				if len(problems) != 2 || problems[0].Subject != "example-project/codex" || problems[0].Check != "codex login status" {
-					t.Fatalf("probe source lost: %+v", problems)
+				wantProblems := 2
+				if cached && !test.workflowFailure {
+					wantProblems = 1
 				}
-				observation := problems[1]
+				if len(problems) != wantProblems {
+					t.Fatalf("partial probe problems were not consolidated: %+v", problems)
+				}
+				if test.workflowFailure && (problems[0].Code != "settings_invalid" || problems[0].ErrorOutput != "parse workflow: invalid settings (signal: killed)") {
+					t.Fatalf("genuine workflow failure was dropped: %+v", problems)
+				}
+				observation := problems[len(problems)-1]
+				if observation.CachedCapabilities != cached {
+					t.Fatalf("cached capability provenance lost: %+v", observation)
+				}
 				if observation.Code != "backend_probe_failed" || observation.Check != "runner isolation probe" || !observation.ReportedAt.Equal(time.Now()) || observation.FixCommand != "" {
 					t.Fatalf("incomplete probe observation=%+v", observation)
 				}
