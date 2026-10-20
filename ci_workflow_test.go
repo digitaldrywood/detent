@@ -124,9 +124,26 @@ func TestCIWindowsChecksUseExistingLinuxVetStep(t *testing.T) {
 	t.Parallel()
 
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
+	if !strings.Contains(triggers, "\n  pull_request:\n") {
+		t.Fatal("Windows checks must run on pull requests")
+	}
 	job := workflowBetween(t, workflow, "\n  verify-fast:\n", "\n  generated:")
 	if !strings.Contains(job, "    runs-on: ubuntu-latest\n") {
 		t.Fatal("Windows checks must reuse the existing Linux verify-fast job")
+	}
+	for _, want := range []string{
+		"    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.preflight.outputs.should_run == 'true') }}\n",
+		"          ref: ${{ github.event_name == 'pull_request' && github.sha || needs.preflight.outputs.develop_sha }}\n",
+	} {
+		if !strings.Contains(job, want) {
+			t.Fatalf("Windows checks must run on the PR merge commit even when scheduled preflight is skipped: missing %q", want)
+		}
+	}
+	for _, name := range []string{"Build", "Audit all Go packages with NilAway and the reviewed baseline", "Verify landing gate concurrency and failure propagation"} {
+		if !strings.Contains(job, "      - name: "+name+"\n        if: github.event_name != 'pull_request'\n") {
+			t.Errorf("%s must stay outside the PR guard", name)
+		}
 	}
 	vet := workflowBetween(t, job, "      - name: Vet\n", "\n      - name:")
 	for _, command := range []string{
@@ -138,6 +155,34 @@ func TestCIWindowsChecksUseExistingLinuxVetStep(t *testing.T) {
 		if !strings.Contains(vet, command) {
 			t.Errorf("existing Linux Vet step missing %q", command)
 		}
+	}
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "scripts", "check-evidence.sh"), []byte("check_with_evidence() { printf '%s\\n' \"$*\"; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := strings.SplitN(vet, "        run: |\n", 2)[1]
+	for _, event := range []string{"pull_request", "schedule", "workflow_dispatch"} {
+		t.Run(event, func(t *testing.T) {
+			cmd := exec.CommandContext(t.Context(), "bash", "-e", "-c", script)
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "GITHUB_EVENT_NAME="+event)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("Vet step: %v\n%s", err, output)
+			}
+			want := "vet make vet\n"
+			if event == "pull_request" {
+				want = "windows-build-amd64 env GOOS=windows GOARCH=amd64 go build ./...\n" +
+					"windows-vet env GOOS=windows GOARCH=amd64 go vet ./...\n" +
+					"windows-build-arm64 env GOOS=windows GOARCH=arm64 go build ./...\n"
+			}
+			if string(output) != want {
+				t.Fatalf("Vet commands = %q, want %q", output, want)
+			}
+		})
 	}
 	workflows, err := filepath.Glob(".github/workflows/*")
 	if err != nil {

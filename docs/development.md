@@ -112,13 +112,15 @@ walking host toolchain caches. Scheduled race and coverage targets use
 `-count=1`, preserving fresh scheduled evidence.
 Build and module caches retain their native locations.
 
-Windows portability is guarded by cross-compilation in the existing Linux
+Every pull request guards Windows portability by cross-compilation in the existing Linux
 `verify-fast` job's Vet step in `.github/workflows/ci.yml`. It runs
 `GOOS=windows GOARCH=amd64 go build ./...`,
 `GOOS=windows GOARCH=amd64 go vet ./...`, and
 `GOOS=windows GOARCH=arm64 go build ./...`, covering Windows-only sources
-without a Windows VM or a separate job. This workflow retains its scheduled
-and manual triggers; these checks add no PR workflow or landing gate.
+without a Windows VM or a separate job. PR runs check out the PR merge commit
+and run only this job, with its broader checks disabled. The Windows commands
+do not run in the scheduled or manual full suite. Required status checks and
+the landing gates are unchanged.
 
 Packages that own transport, hub, watcher, orchestrator, and runner goroutines
 also run `go.uber.org/goleak` from package-level tests, so `go test ./...`,
