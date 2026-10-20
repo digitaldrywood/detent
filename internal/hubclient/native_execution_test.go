@@ -1155,3 +1155,107 @@ func TestNativeCacheWaitRuntimeRecovery(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeRejectedCompletionReleasesClaim(t *testing.T) {
+	for _, test := range []struct{ name, category, fault string }{
+		{"event", "event_validation", ""}, {"runtime", "runtime_validation", ""},
+		{"execution", "execution_validation", ""}, {"owner", "owner_validation", ""},
+		{"usage", "usage_validation", ""}, {"decode", "body_decode", ""},
+		{"replacement unavailable", "event_validation", "replacement"},
+		{"replacement rate limited", "event_validation", "rate_limit"},
+		{"replacement transport", "event_validation", "transport"},
+		{"release unavailable", "event_validation", "release"},
+		{"accepted runtime unavailable", "event_validation", "lookup"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			category := test.category
+			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+				{Name: "Done", Terminal: true},
+			}, true)
+			issue := h.createInProgress(t, "completion")
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := execution.PrepareFinish(t.Context(), "succeeded", "private completion text", nil); err != nil {
+				t.Fatal(err)
+			}
+			field := map[string]string{"event_validation": "data.outcome", "runtime_validation": "data.runtime.activity", "execution_validation": "data.finalization", "owner_validation": "data.finalization", "usage_validation": "data.usage"}[category]
+			want := tracker.PublicationRejection{Category: category, Field: field}
+			client := execution.claim.source.client.client
+			next := client.httpClient.Transport
+			var events []tracker.NativeRunEvent
+			faulted := false
+			client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(request.URL.Path, "/events") {
+					body, err := io.ReadAll(request.Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					request.Body = io.NopCloser(strings.NewReader(string(body)))
+					var event tracker.NativeRunEvent
+					if err := json.Unmarshal(body, &event); err != nil {
+						t.Fatal(err)
+					}
+					events = append(events, event)
+					if len(events) == 1 {
+						payload, err := json.Marshal(map[string]any{"code": "invalid_request", "message": "private refusal text", "details": map[string]any{"rejection": want}})
+						if err != nil {
+							t.Fatal(err)
+						}
+						return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(payload))), Request: request}, nil
+					}
+				}
+				if !faulted && (test.fault == "lookup" && strings.Contains(request.URL.Path, "/attempts/") || test.fault == "release" && strings.HasSuffix(request.URL.Path, "/release") || (test.fault == "replacement" || test.fault == "transport" || test.fault == "rate_limit") && len(events) == 2 && strings.HasSuffix(request.URL.Path, "/events")) {
+					faulted = true
+					if test.fault == "transport" {
+						return nil, errors.New("connection reset by peer")
+					}
+					status := http.StatusServiceUnavailable
+					if test.fault == "rate_limit" {
+						status = http.StatusTooManyRequests
+					}
+					return &http.Response{StatusCode: status, Header: http.Header{"Retry-After": []string{"60"}}, Body: io.NopCloser(strings.NewReader(`{"code":"unavailable"}`)), Request: request}, nil
+				}
+				return next.RoundTrip(request)
+			})
+			err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed")
+			if test.fault != "" {
+				if !faulted || err == nil || h.scheduler.claims[issue.ID].ID == "" {
+					t.Fatalf("outage did not preserve claim: %v", err)
+				}
+				err = h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed")
+			}
+			var rejection *nativeCompletionRejection
+			if !errors.As(err, &rejection) || rejection.failure.Rejection == nil || *rejection.failure.Rejection != want {
+				t.Fatalf("completion rejection = %v", err)
+			}
+			wantEvents := 2
+			if test.fault == "replacement" || test.fault == "transport" || test.fault == "rate_limit" {
+				wantEvents = 3
+			}
+			if len(events) != wantEvents || events[0].IdempotencyKey == events[1].IdempotencyKey || events[1].Data.Sequence != events[0].Data.Sequence || events[1].Data.Outcome != "failed" || events[1].Data.CompletionBody != "" {
+				t.Fatalf("refused completion was not replaced: %+v", events)
+			}
+			if wantEvents == 3 && events[1].IdempotencyKey != events[2].IdempotencyKey {
+				t.Fatal("replacement retry changed idempotency key")
+			}
+			evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+			if err != nil || evidence.Attempt == nil {
+				t.Fatalf("attempt = %+v, %v", evidence, err)
+			}
+			attempt := evidence.Attempt
+			if attempt.Status != "failed" || attempt.ClaimReleasedAt == nil || attempt.TerminalFailure == nil || attempt.TerminalFailure.Rejection == nil || *attempt.TerminalFailure.Rejection != want {
+				t.Fatalf("terminal failure not recorded: %+v", attempt)
+			}
+			if _, retained := h.scheduler.claims[issue.ID]; retained {
+				t.Fatal("terminal completion retained claim")
+			}
+			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || len(events) != wantEvents {
+				t.Fatalf("refused event retried: %v, %d", err, len(events))
+			}
+		})
+	}
+}

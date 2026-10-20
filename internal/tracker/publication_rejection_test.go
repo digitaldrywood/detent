@@ -13,6 +13,12 @@ func TestTerminalPublicationRejectionAllowlist(t *testing.T) {
 	}{
 		{"acceptance", PublicationRejection{Category: "acceptance_validation", Field: "validator.version_id"}, true},
 		{"security audit", PublicationRejection{Category: "security_audit", Field: "execution_session"}, true},
+		{"event", PublicationRejection{Category: "event_validation", Field: "data.outcome"}, true},
+		{"runtime", PublicationRejection{Category: "runtime_validation", Field: "data.runtime.activity"}, true},
+		{"execution", PublicationRejection{Category: "execution_validation", Field: "data.finalization"}, true},
+		{"owner", PublicationRejection{Category: "owner_validation", Field: "data.finalization"}, true},
+		{"usage", PublicationRejection{Category: "usage_validation", Field: "data.usage"}, true},
+		{"decode", PublicationRejection{Category: "body_decode"}, true},
 		{"security audit private field", PublicationRejection{Category: "security_audit", Field: "private-payload"}, false},
 		{"private category", PublicationRejection{Category: "private-payload", Field: "validator.version_id"}, false},
 		{"private field", PublicationRejection{Category: "acceptance_validation", Field: "private-payload token=credential"}, false},

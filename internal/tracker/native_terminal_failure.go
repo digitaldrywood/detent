@@ -34,12 +34,12 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	first, _, _ := strings.Cut(f.Error, "\n")
 	f.Error = text.publicText(nativeFailureAssignment.ReplaceAllString(strings.TrimSpace(first), "[redacted]"))
 	switch f.ErrorClass {
-	case "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery", "acceptance_publication", "security_audit_publication", "finalization", "lease_released":
+	case "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery", "acceptance_publication", "security_audit_publication", "event_publication", "finalization", "lease_released":
 	default:
 		f.ErrorClass = ""
 	}
 	switch f.Stage {
-	case "pre_provider", "workspace_preparation", "acceptance_publication", "security_audit_publication", "finalization", "lease_release":
+	case "pre_provider", "workspace_preparation", "acceptance_publication", "security_audit_publication", "event_publication", "finalization", "lease_release":
 	default:
 		f.Stage = ""
 	}
@@ -53,7 +53,7 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	}
 	f.Attribution = ""
 	switch f.ErrorClass {
-	case "backend_startup", "protocol", "workspace_hook", "acceptance_publication", "security_audit_publication":
+	case "backend_startup", "protocol", "workspace_hook", "acceptance_publication", "security_audit_publication", "event_publication":
 		f.Attribution = "instance"
 	case "issue_configuration", "source_recovery":
 		f.Attribution = "issue"

@@ -19,9 +19,9 @@ func (r PublicationRejection) Valid() bool {
 	case "event_validation":
 		return slices.Contains([]string{"", "schema_version", "type", "data", "data.runtime", "data.outcome", "data.artifact_ids"}, r.Field)
 	case "runtime_validation":
-		return slices.Contains([]string{"data.runtime", "data.runtime.pipeline", "data.runtime.validation", "data.runtime.completion", "data.runtime.phases", "data.runtime.identity", "data.runtime.activity", "data.runtime.landing", "data.runtime.rest", "data.runtime.github"}, r.Field)
+		return slices.Contains([]string{"data.runtime", "data.runtime.worker_launch", "data.runtime.pipeline", "data.runtime.validation", "data.runtime.completion", "data.runtime.phases", "data.runtime.identity", "data.runtime.activity", "data.runtime.landing", "data.runtime.rest", "data.runtime.github"}, r.Field)
 	case "execution_validation":
-		return slices.Contains([]string{"data", "data.terminal_failure", "data.finalization", "data.evidence", "data.completion_body", "data.disposition", "data.identity", "data.handoff"}, r.Field)
+		return slices.Contains([]string{"data", "data.runtime.worker_launch.policy_id", "data.terminal_failure", "data.finalization", "data.evidence", "data.completion_body", "data.disposition", "data.identity", "data.handoff"}, r.Field)
 	case "usage_validation":
 		return r.Field == "data.usage"
 	case "owner_validation":
@@ -46,6 +46,8 @@ func (r *PublicationRejection) TerminalStage() string {
 		return "acceptance_publication"
 	case "security_audit":
 		return "security_audit_publication"
+	case "event_validation", "runtime_validation", "execution_validation", "owner_validation", "usage_validation", "body_decode":
+		return "event_publication"
 	}
 	return ""
 }

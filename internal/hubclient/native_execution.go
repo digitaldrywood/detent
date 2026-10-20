@@ -676,6 +676,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 	interrupted := e.data.Outcome == "interrupted"
 	e.mu.Unlock()
 	var finishErr error
+	var rejection *nativeCompletionRejection
 	if outcome != "" && !finished {
 		if e.remaining() <= 0 {
 			finishErr = e.renew(ctx, 0)
@@ -684,10 +685,14 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 			finishErr = e.Finish(ctx, outcome)
 		}
 		if finishErr != nil {
-			if !claimLost(finishErr) && !errors.Is(finishErr, orchestrator.ErrSchedulingClaimLost) {
-				return finishErr
+			if errors.As(finishErr, &rejection) {
+				finishErr = nil
+			} else {
+				if !claimLost(finishErr) && !errors.Is(finishErr, orchestrator.ErrSchedulingClaimLost) {
+					return finishErr
+				}
+				finishErr = errors.Join(runner.ErrExecutionAuthorityUnavailable, finishErr)
 			}
-			finishErr = errors.Join(runner.ErrExecutionAuthorityUnavailable, finishErr)
 		}
 	}
 	if err := e.closeWorkers(ctx); err != nil {
@@ -695,7 +700,10 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.data.Identity != nil && (finishErr != nil || interrupted) {
+	if failure := e.data.TerminalFailure; failure != nil && failure.Stage == "event_publication" {
+		rejection = &nativeCompletionRejection{failure: *failure}
+	}
+	if e.data.Identity != nil && (finishErr != nil || interrupted) && rejection == nil {
 		path, err := nativeItemPath(e.claim.lease.WorkItemID)
 		if err != nil {
 			return errors.Join(finishErr, err)
@@ -729,11 +737,14 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 	completedSource := data.Disposition != nil && data.Disposition.Status == "complete" && finalization != nil &&
 		finalization.Settled && finalization.Changed && finalization.ChangeID != "" && finalization.VersionID != "" && finalization.HeadSHA != "" &&
 		finalization.VersionError == "" && finalization.Error == ""
-	retain := e.scheduler.client.runner != nil && (data.Outcome == "" || data.Outcome == "interrupted" && !completedSource)
+	retain := rejection == nil && e.scheduler.client.runner != nil && (data.Outcome == "" || data.Outcome == "interrupted" && !completedSource)
 	if !retain {
 		if err := e.claim.source.client.Release(ctx, e.claim.lease, "released"); err != nil && !claimLost(err) {
 			return errors.Join(finishErr, err)
 		}
+	}
+	if finishErr == nil && rejection != nil {
+		return rejection
 	}
 	return finishErr
 }
@@ -857,7 +868,54 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 			return e.executionError(err)
 		}
 	}
+	if failure := e.pending.Data.TerminalFailure; failure != nil && failure.Stage == "event_publication" && e.pending.Data.Runtime == nil && e.data.Sequence > 0 {
+		path, err := nativeItemPath(e.claim.lease.WorkItemID)
+		if err != nil {
+			return err
+		}
+		var attempt tracker.NativeAttempt
+		if err := e.claim.source.client.client.request(ctx, http.MethodGet, e.claim.source.client.base()+path+"/attempts/"+e.data.AttemptID, nil, &attempt); err != nil {
+			return e.executionError(err)
+		}
+		if attempt.LeaseID != e.claim.lease.ID || attempt.FencingToken != e.claim.lease.FencingToken || attempt.RunID != e.data.RunID || attempt.PolicyID != e.data.PolicyID || attempt.Sequence != e.data.Sequence {
+			return e.unavailable(runner.ErrExecutionAuthorityUnavailable)
+		}
+		e.pending.Data.Identity = attempt.Identity
+		e.pending.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: e.scheduler.now().UTC()}
+		if r := attempt.Runtime; r != nil {
+			e.pending.Data.Runtime.LocalAttemptID, e.pending.Data.Runtime.Generation, e.pending.Data.Runtime.WorkerLaunch = r.LocalAttemptID, r.Generation, r.WorkerLaunch
+		}
+	}
 	if err := e.claim.source.client.AppendEvent(ctx, e.claim.lease.WorkItemID, *e.pending); err != nil {
+		var refusal *APIError
+		if e.pending.Type == "run.finished" && errors.As(err, &refusal) && refusal.permanentInvalidRequest() {
+			failure := refusal.NativeTerminalFailure()
+			failure.Stage, failure.ErrorClass = "event_publication", "event_publication"
+			failure.Error = "Hub rejected the completion request"
+			failure.ObservedAt = e.scheduler.now().UTC()
+			failure = failure.Public()
+			data := tracker.NativeRunData{
+				RunID: e.data.RunID, AttemptID: e.data.AttemptID, PolicyID: e.claim.lease.PolicyID,
+				LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken,
+				Identity: e.data.Identity, Sequence: e.data.Sequence + 1, Outcome: "failed", TerminalFailure: &failure,
+			}
+			if data.Identity == nil && e.data.Runtime != nil {
+				data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", LocalAttemptID: e.data.Runtime.LocalAttemptID, Generation: e.data.Runtime.Generation}
+			}
+			key := data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10) + ":rejected"
+			if e.pending.IdempotencyKey == key {
+				failure = *e.pending.Data.TerminalFailure
+				e.data.TerminalFailure, e.pending = &failure, nil
+				e.preparedOutcome = ""
+				return &nativeCompletionRejection{failure: failure}
+			}
+			e.preparedOutcome, e.preparedFailure = "failed", &failure
+			e.pending = &tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: key}, Type: "run.finished", SchemaVersion: 1, Data: data}
+			if err := e.flush(ctx); err != nil {
+				return err
+			}
+			return &nativeCompletionRejection{failure: failure}
+		}
 		return e.executionError(err)
 	}
 	checkpoint := e.data.Handoff
@@ -868,6 +926,18 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	e.pending = nil
 	e.runtimeDirty = false
 	return nil
+}
+
+type nativeCompletionRejection struct {
+	failure tracker.NativeTerminalFailure
+}
+
+func (e *nativeCompletionRejection) Error() string {
+	return e.failure.Error
+}
+
+func (e *nativeCompletionRejection) NativeTerminalFailure() tracker.NativeTerminalFailure {
+	return e.failure
 }
 
 func (e *nativeExecution) AvailabilityDeadline() time.Time {
