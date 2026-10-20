@@ -880,7 +880,7 @@ func TestNativeExecutionOperatorLandingTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	next = h.descriptor
-	next.Gates.MergeMethod = "merge"
+	next.Gates.Validator = true
 	next = next.WithID()
 	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 		t.Fatal(err)
