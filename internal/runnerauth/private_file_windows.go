@@ -18,7 +18,8 @@ func currentUserSecurityDescriptor() (*windows.SECURITY_DESCRIPTOR, error) {
 	if err != nil {
 		return nil, err
 	}
-	return windows.SecurityDescriptorFromString("D:P(A;;FA;;;" + user.User.Sid.String() + ")")
+	sid := user.User.Sid.String()
+	return windows.SecurityDescriptorFromString("O:" + sid + "D:P(A;;FA;;;" + sid + ")")
 }
 
 func createPrivateFile(path string) (*os.File, error) {
@@ -49,7 +50,7 @@ func openPrivateFile(path string, forUpdate bool) (*os.File, error) {
 	}
 	access := uint32(windows.GENERIC_READ)
 	if forUpdate {
-		access |= windows.WRITE_DAC
+		access |= windows.WRITE_DAC | windows.MAXIMUM_ALLOWED
 	}
 	handle, err := windows.CreateFile(name, access, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
@@ -57,15 +58,7 @@ func openPrivateFile(path string, forUpdate bool) (*os.File, error) {
 	}
 	file := os.NewFile(uintptr(handle), path)
 	if forUpdate {
-		sd, err := currentUserSecurityDescriptor()
-		if err == nil {
-			var dacl *windows.ACL
-			dacl, _, err = sd.DACL()
-			if err == nil {
-				err = windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
-			}
-		}
-		if err != nil {
+		if err := securePrivateFile(handle); err != nil {
 			return nil, errors.Join(fmt.Errorf("runner credential file permissions could not be secured: %w", err), file.Close())
 		}
 	}
@@ -75,12 +68,52 @@ func openPrivateFile(path string, forUpdate bool) (*os.File, error) {
 	return file, nil
 }
 
+func securePrivateFile(handle windows.Handle) error {
+	sd, err := currentUserSecurityDescriptor()
+	if err != nil {
+		return err
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return err
+	}
+	previous, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	previousOwner, _, err := previous.Owner()
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	information := windows.SECURITY_INFORMATION(windows.DACL_SECURITY_INFORMATION | windows.PROTECTED_DACL_SECURITY_INFORMATION)
+	if previousOwner == nil || !previousOwner.Equals(owner) {
+		information |= windows.OWNER_SECURITY_INFORMATION
+	}
+	return windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, information, owner, nil, dacl, nil)
+}
+
 func validatePrivateDACL(handle windows.Handle) error {
-	sd, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	sd, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return fmt.Errorf("runner credential file permissions could not be inspected: %w", err)
 	}
-	invalid := errors.New("runner credential file requires a protected DACL granting full control only to the current user; disable inheritance and remove other access entries with icacls before retrying")
+	return validatePrivateSecurityDescriptor(sd)
+}
+
+func validatePrivateSecurityDescriptor(sd *windows.SECURITY_DESCRIPTOR) error {
+	invalid := errors.New("runner credential file requires ownership by the current user and a protected DACL granting full control only to that user; set the owner, disable inheritance and remove other access entries with icacls before retrying")
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return fmt.Errorf("runner credential file user could not be inspected: %w", err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil || owner == nil || !owner.Equals(user.User.Sid) {
+		return invalid
+	}
 	control, _, err := sd.Control()
 	if err != nil || control&windows.SE_DACL_PROTECTED == 0 {
 		return invalid
@@ -95,10 +128,6 @@ func validatePrivateDACL(handle windows.Handle) error {
 	}
 	if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != 0 || ace.Mask != fileFullControl {
 		return invalid
-	}
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
-	if err != nil {
-		return fmt.Errorf("runner credential file user could not be inspected: %w", err)
 	}
 	if !(*windows.SID)(unsafe.Pointer(&ace.SidStart)).Equals(user.User.Sid) {
 		return invalid
