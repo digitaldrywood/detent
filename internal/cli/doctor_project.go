@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/skills"
 )
 
@@ -353,7 +355,7 @@ func checkDoctorProjectWithProgress(
 	workflowCheck := doctorCheck{
 		Name:              workflowCheckName,
 		Status:            doctorOK,
-		Detail:            doctorWorkflowDetail(project.Workflow, project, workflow.Config),
+		Detail:            doctorWorkflowDetail(project.Workflow, project, workflow.Config) + "; hook shell=" + commandshell.Normalize(workflow.Config.Hooks.Shell),
 		ProjectDefinition: doctorProjectDefinition(id, workflow.Definition),
 	}
 	if workflow.Definition.Layout == "" {
@@ -385,6 +387,19 @@ func checkDoctorProjectWithProgress(
 				Findings:  findings,
 				Proposals: doctorWorkflowProposalsForFindings(id, findings, 1),
 			}
+		}
+	}
+	if strings.TrimSpace(workflow.Config.Hooks.Shell) != "" {
+		deps = deps.withDefaults()
+		environment := doctorBinaryEnvironment{CheckedPath: deps.lookupEnv("PATH")}
+		if deps.binaryEnvironment != nil {
+			environment = *deps.binaryEnvironment
+		}
+		shellCheck := checkDoctorHookShell(workflow.Config.Hooks.Shell, runtime.GOOS, deps, environment)
+		if shellCheck.Status == doctorFail {
+			workflowCheck.Status = doctorFail
+			workflowCheck.Detail += "; " + shellCheck.Detail
+			workflowCheck.Hint = shellCheck.Hint
 		}
 	}
 	checks = append(checks, workflowCheck)

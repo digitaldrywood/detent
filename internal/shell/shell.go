@@ -2,6 +2,8 @@ package shell
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"os/exec"
 	"path"
 	"runtime"
@@ -18,10 +20,7 @@ func Default() string {
 }
 
 func DefaultForOS(goos string) string {
-	if goos == "windows" {
-		return "cmd"
-	}
-	return "sh"
+	return NormalizeForOS("", goos)
 }
 
 func Normalize(name string) string {
@@ -30,10 +29,50 @@ func Normalize(name string) string {
 
 func NormalizeForOS(name string, goos string) string {
 	name = strings.TrimSpace(name)
-	if name == "" {
-		return DefaultForOS(goos)
+	if name != "" {
+		return name
 	}
-	return name
+	if goos == "windows" {
+		return "cmd"
+	}
+	return "sh"
+}
+
+type UnavailableError struct {
+	Shell string
+	Err   error
+}
+
+func (e *UnavailableError) Error() string {
+	return fmt.Sprintf("hook_shell_unavailable: shell %q is unavailable on this runner", e.Shell)
+}
+
+func (e *UnavailableError) Unwrap() error { return e.Err }
+
+func ResolveForOS(name string, goos string, lookPath func(string) (string, error), stat func(string) (os.FileInfo, error)) (string, error) {
+	name = NormalizeForOS(name, goos)
+	resolved, err := lookPath(name)
+	if err == nil {
+		return resolved, nil
+	}
+	base := shellBase(name)
+	if goos == "windows" && !strings.ContainsAny(name, `/\\:`) && (base == "bash" || base == "sh") {
+		candidate := `C:\Program Files\Git\bin\` + base + ".exe"
+		if info, statErr := stat(candidate); statErr == nil && info.Mode().IsRegular() {
+			return candidate, nil
+		}
+	}
+	return "", &UnavailableError{Shell: name, Err: err}
+}
+
+func resolveCommandSpecForOS(command string, shellName string, goos string, lookPath func(string) (string, error), stat func(string) (os.FileInfo, error)) (CommandSpec, error) {
+	resolved, err := ResolveForOS(shellName, goos, lookPath, stat)
+	if err != nil {
+		return CommandSpec{}, err
+	}
+	spec := CommandSpecForOS(command, shellName, goos)
+	spec.Name = resolved
+	return spec, nil
 }
 
 func Command(ctx context.Context, command string, shellName string) *exec.Cmd {
@@ -41,8 +80,15 @@ func Command(ctx context.Context, command string, shellName string) *exec.Cmd {
 }
 
 func CommandForOS(ctx context.Context, command string, shellName string, goos string) *exec.Cmd {
-	spec := CommandSpecForOS(command, shellName, goos)
+	spec, err := resolveCommandSpecForOS(command, shellName, goos, exec.LookPath, os.Stat)
+	if err != nil {
+		spec = CommandSpecForOS(command, shellName, goos)
+	}
 	cmd := exec.CommandContext(ctx, spec.Name, spec.Args...) // #nosec G204 -- workflow shell and command are operator-supplied.
+	cmd.Args[0] = NormalizeForOS(shellName, goos)
+	if err != nil {
+		cmd.Err = err
+	}
 	configureCommand(cmd, goos)
 	return cmd
 }

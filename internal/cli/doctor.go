@@ -245,6 +245,8 @@ type doctorTelemetryStore interface {
 }
 
 type doctorDeps struct {
+	statHookShell        func(string) (os.FileInfo, error)
+	binaryEnvironment    *doctorBinaryEnvironment
 	cacheCapacityBytes   func(string) (uint64, error)
 	inspectCaches        func(context.Context) toolcache.Report
 	githubWorkflows      func(context.Context, workflowconfig.Config, string) (map[string]string, error)
@@ -384,6 +386,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 }
 
 func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorDeps) doctorReport {
+	hostOS := runtime.GOOS
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -517,6 +520,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		report.Add(check)
 	}
 	binaryEnvironment := resolveDoctorBinaryEnvironment(ctx, resolution, liveBoot, deps)
+	deps.binaryEnvironment = &binaryEnvironment
 	var jobs []doctorCheckJob
 	if global != nil {
 		globalConfig := *global
@@ -670,6 +674,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			Name: "git binary",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorGit(jobCtx, deps, binaryEnvironment)}
+			},
+		},
+		doctorCheckJob{
+			Name: "Hook shell",
+			Run: func(context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorHookShell("", hostOS, deps, binaryEnvironment)}
 			},
 		},
 	)
@@ -1223,6 +1233,9 @@ var defaultInspectCaches = toolcache.Inspect
 
 func (d doctorDeps) withDefaults() doctorDeps {
 	defaults := defaultDoctorDeps()
+	if d.statHookShell == nil {
+		d.statHookShell = os.Stat
+	}
 	if d.inspectCaches == nil {
 		d.inspectCaches = defaultInspectCaches
 	}
