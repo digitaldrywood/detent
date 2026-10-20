@@ -48,19 +48,17 @@ func openPrivateFile(path string, forUpdate bool) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	access := uint32(windows.GENERIC_READ)
+	access := uint32(windows.GENERIC_READ | windows.WRITE_DAC)
 	if forUpdate {
-		access |= windows.WRITE_DAC | windows.MAXIMUM_ALLOWED
+		access |= windows.MAXIMUM_ALLOWED
 	}
 	handle, err := windows.CreateFile(name, access, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return nil, fmt.Errorf("runner credential file is unavailable: %w", err)
 	}
 	file := os.NewFile(uintptr(handle), path)
-	if forUpdate {
-		if err := securePrivateFile(handle); err != nil {
-			return nil, errors.Join(fmt.Errorf("runner credential file permissions could not be secured: %w", err), file.Close())
-		}
+	if err := securePrivateFile(handle, !forUpdate); err != nil {
+		return nil, errors.Join(fmt.Errorf("runner credential file permissions could not be secured: %w", err), file.Close())
 	}
 	if err := validatePrivateDACL(handle); err != nil {
 		return nil, errors.Join(err, file.Close())
@@ -68,7 +66,7 @@ func openPrivateFile(path string, forUpdate bool) (*os.File, error) {
 	return file, nil
 }
 
-func securePrivateFile(handle windows.Handle) error {
+func securePrivateFile(handle windows.Handle, legacyOnly bool) error {
 	sd, err := currentUserSecurityDescriptor()
 	if err != nil {
 		return err
@@ -77,13 +75,22 @@ func securePrivateFile(handle windows.Handle) error {
 	if err != nil {
 		return err
 	}
-	previous, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	previous, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return err
 	}
 	previousOwner, _, err := previous.Owner()
 	if err != nil {
 		return err
+	}
+	if legacyOnly {
+		control, _, err := previous.Control()
+		if err != nil {
+			return err
+		}
+		if previousOwner == nil || !previousOwner.Equals(owner) || control&windows.SE_DACL_PROTECTED != 0 {
+			return nil
+		}
 	}
 	dacl, _, err := sd.DACL()
 	if err != nil {

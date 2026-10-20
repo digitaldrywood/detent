@@ -1007,8 +1007,10 @@ machine. Stop that host and revoke provider/repository access separately if need
 Keep runner identity in the service account's private config directory (0700)
 with a regular 0600 credential file. On Windows, identity and routing-cache files
 are owned by the current user SID and created with a protected DACL granting
-full control only to that user, with inheritance disabled. Reads reject files
-owned by another account, with inherited access or with additional access
+full control only to that user, with inheritance disabled. Before reading legacy
+files owned by the current user with inheritance enabled, the runner replaces
+their DACL with these protections and verifies it. Reads reject files owned by
+another account and protected DACLs with additional or insufficient access
 entries. Identity updates reset ownership and the DACL before reading older
 files; routing-cache replacements create a new file with the same protections.
 Keep the service-account/profile directory private as well; POSIX permission
