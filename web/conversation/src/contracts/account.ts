@@ -859,7 +859,13 @@ export type ComparisonPlan = typeof ComparisonPlan.Type;
 
 export const BillingUsageReport = Schema.Struct({
   organization_id: Schema.String,
-  renews_at: Schema.String,
+  effective_base: Schema.optional(PlanReference),
+  name: Schema.optional(Schema.String),
+  monthly_usd_cents: Schema.optional(Schema.NullOr(Schema.Number)),
+  complimentary: Schema.optional(Schema.Boolean),
+  expires_at: Schema.optional(Schema.NullOr(Schema.String)),
+  renews_at: Schema.NullOr(Schema.String),
+  cancels_at: Schema.optional(Schema.NullOr(Schema.String)),
   chat_usage: ChatUsage,
   charged_ai_micros: Schema.Number,
   ai_credits: Schema.optional(AICredits),
