@@ -77,7 +77,7 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 				Platform:  PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"},
 				PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry",
 				SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), Provider: newFakeProvider(),
-				StateDir: t.TempDir(), clientFS: fstest.MapFS{},
+				StateDir: entryStateDir(t), clientFS: fstest.MapFS{},
 				Logger:              slog.New(replayTestHandler{Handler: slog.DiscardHandler, done: done}),
 				GitHubWebhookSecret: []byte("secret"), now: func() time.Time { return before },
 				transport: func(organization Organization) (http.RoundTripper, error) {

@@ -16,6 +16,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -91,6 +92,27 @@ type fakeAccess struct {
 var hubDatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
 	return hubserver.Open(ctx, hubserver.Config{DatabasePath: path, GitHubDisabled: true, Logger: slog.New(slog.DiscardHandler)})
 })
+
+var entryRegistryDatabase = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
+	return OpenRegistry(ctx, path)
+})
+
+var entryAuthDatabase = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
+	return openStore(ctx, path, authApplicationID, "auth")
+})
+
+func entryStateDir(t *testing.T) string {
+	t.Helper()
+	registry := entryRegistryDatabase(t)
+	directory := filepath.Dir(registry)
+	if err := os.Rename(registry, filepath.Join(directory, "registry.db")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(entryAuthDatabase(t), filepath.Join(directory, "auth.db")); err != nil {
+		t.Fatal(err)
+	}
+	return directory
+}
 
 func newFakeProvider() *fakeProvider {
 	return &fakeProvider{users: map[string]string{}, sessions: map[string]auth.HostedIdentity{}, memberships: map[string]auth.Membership{}, invitations: map[string]auth.Invitation{}, invitationRoles: map[string]string{}, access: map[string]fakeAccess{}, refresh: map[string]string{}}
@@ -413,6 +435,7 @@ func (b *browser) login(target, code string) string {
 }
 
 type tenantFixture struct {
+	once         sync.Once
 	id, provider string
 	path         string
 	config       hubserver.Config
@@ -453,47 +476,105 @@ func originPost(t *testing.T, handler http.Handler, token, target string, form u
 	}
 }
 
-func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id, providerID, owner, project string) (tenantFixture, http.Handler) {
-	t.Helper()
-	path := hubDatabasePath(t)
-	hosted := func(shared bool) *hubserver.HostedConfig {
-		plans := pilotPlans()
-		plans.Plans[0].Allowances["projects"] = 10
-		config := &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: map[string]string{"org_alpha": "http://127.0.0.1:19001", "org_beta": "http://127.0.0.1:19002"}[id], Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}}
-		if shared {
-			config.PublicURL = testPublicURL
-			config.SharedEntry = &hubserver.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+var alphaTenantDatabase = tenantDatabaseTemplate("org_alpha", "porg_alpha", "Alpha secret project")
+var betaTenantDatabase = tenantDatabaseTemplate("org_beta", "porg_beta", "Beta secret project")
+
+func tenantHostedConfig(provider *fakeProvider, key ed25519.PrivateKey, id, providerID string, shared bool) *hubserver.HostedConfig {
+	plans := pilotPlans()
+	plans.Plans[0].Allowances["projects"] = 10
+	config := &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: "user_alice", PublicURL: map[string]string{"org_alpha": "http://127.0.0.1:19001", "org_beta": "http://127.0.0.1:19002"}[id], Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}}
+	if shared {
+		config.PublicURL = testPublicURL
+		config.SharedEntry = &hubserver.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+	}
+	return config
+}
+
+func tenantDatabaseTemplate(id, providerID, project string) func(*testing.T) []byte {
+	var once sync.Once
+	var image []byte
+	return func(t *testing.T) []byte {
+		t.Helper()
+		once.Do(func() {
+			provider := newEntryProvider()
+			key := entrySigningKey()
+			path := hubDatabasePath(t)
+			config := hubserver.Config{DatabasePath: path, GitHubDisabled: true, Hosted: tenantHostedConfig(provider, key, id, providerID, false), Logger: slog.New(slog.DiscardHandler), InitialAdminToken: []byte(testAdminKey)}
+			origin, err := hubserver.Open(t.Context(), config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = origin.Close() })
+			token := originLogin(t, origin.Handler(), provider, "user_alice", providerID)
+			originPost(t, origin.Handler(), token, "/projects", url.Values{"name": {project}, "grant_access": {"true"}})
+			if err := origin.Close(); err != nil {
+				t.Fatal(err)
+			}
+			config.Hosted = tenantHostedConfig(provider, key, id, providerID, true)
+			if _, err := hubserver.MigrateHostedSharedOrigin(t.Context(), config); err != nil {
+				t.Fatal(err)
+			}
+			image, err = os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+		if len(image) == 0 {
+			t.Fatal("tenant database template is empty")
 		}
-		return config
+		return image
 	}
-	logger := slog.New(slog.DiscardHandler)
-	origin, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: path, GitHubDisabled: true, Hosted: hosted(false), Logger: logger, InitialAdminToken: []byte(testAdminKey)})
-	if err != nil {
+}
+
+func TestTenantDatabaseTemplateReused(t *testing.T) {
+	t.Parallel()
+	for _, image := range []func(*testing.T) []byte{alphaTenantDatabase, betaTenantDatabase} {
+		first := image(t)
+		if &first[0] != &image(t)[0] {
+			t.Fatal("tenant database template was rebuilt")
+		}
+	}
+}
+
+func (f *tenantFixture) open(ctx context.Context, t *testing.T) *hubserver.Service {
+	t.Helper()
+	f.once.Do(func() {
+		shared, err := hubserver.Open(ctx, f.config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.service = shared
+		t.Cleanup(func() { _ = shared.CloseContext(context.WithoutCancel(ctx)) })
+	})
+	return f.service
+}
+
+func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id, providerID string, image []byte) (*tenantFixture, http.Handler) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "hub.db")
+	if err := os.WriteFile(path, image, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	token := originLogin(t, origin.Handler(), provider, owner, providerID)
-	originPost(t, origin.Handler(), token, "/projects", url.Values{"name": {project}, "grant_access": {"true"}})
-	if err := origin.Close(); err != nil {
-		t.Fatal(err)
-	}
-	fixture := tenantFixture{id: id, provider: providerID, path: path, config: hubserver.Config{DatabasePath: path, GitHubDisabled: true, Hosted: hosted(true), Logger: logger, Conversation: &hubserver.ConversationConfig{Enabled: true}}}
-	if _, err := hubserver.MigrateHostedSharedOrigin(t.Context(), fixture.config); err != nil {
-		t.Fatal(err)
-	}
-	shared, err := hubserver.Open(t.Context(), fixture.config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = shared.Close() })
-	fixture.service = shared
-	return fixture, shared.Handler()
+	fixture := &tenantFixture{id: id, provider: providerID, path: path, config: hubserver.Config{DatabasePath: path, GitHubDisabled: true, Hosted: tenantHostedConfig(provider, key, id, providerID, true), Logger: slog.New(slog.DiscardHandler), Conversation: &hubserver.ConversationConfig{Enabled: true}}}
+	return fixture, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fixture.open(t.Context(), t).Handler().ServeHTTP(w, r)
+	})
 }
 
 type entryFixture struct {
 	service  *Service
 	provider *fakeProvider
 	tenants  map[string]http.Handler
-	fixtures map[string]tenantFixture
+	fixtures map[string]*tenantFixture
+}
+
+func (f entryFixture) tenant(t *testing.T, id string) *tenantFixture {
+	t.Helper()
+	fixture := f.fixtures[id]
+	if fixture == nil {
+		t.Fatalf("tenant fixture %q is missing", id)
+	}
+	return fixture
 }
 
 func newEntryFixture(t *testing.T) entryFixture {
@@ -501,11 +582,13 @@ func newEntryFixture(t *testing.T) entryFixture {
 	return newEntryFixtureWithLogger(t, slog.New(slog.DiscardHandler))
 }
 
-func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
-	t.Helper()
+func entrySigningKey() ed25519.PrivateKey {
 	seed := make([]byte, ed25519.SeedSize)
 	seed[0] = 42
-	key := ed25519.NewKeyFromSeed(seed)
+	return ed25519.NewKeyFromSeed(seed)
+}
+
+func newEntryProvider() *fakeProvider {
 	provider := newFakeProvider()
 	provider.users["user_alice"] = "alice@example.test"
 	provider.users["user_bob"] = "bob@example.test"
@@ -514,12 +597,19 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
 	provider.member("user_alice", "porg_alpha", "owner")
 	provider.member("user_alice", "porg_beta", "owner")
 	provider.member("user_bob", "porg_beta", "member")
-	alpha, alphaHandler := newTenant(t, provider, key, "org_alpha", "porg_alpha", "user_alice", "Alpha secret project")
-	beta, betaHandler := newTenant(t, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project")
+	return provider
+}
+
+func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
+	t.Helper()
+	key := entrySigningKey()
+	provider := newEntryProvider()
+	alpha, alphaHandler := newTenant(t, provider, key, "org_alpha", "porg_alpha", alphaTenantDatabase(t))
+	beta, betaHandler := newTenant(t, provider, key, "org_beta", "porg_beta", betaTenantDatabase(t))
 	tenants := map[string]http.Handler{testSocketEndpoint("alpha.sock"): alphaHandler, testSocketEndpoint("beta.sock"): betaHandler}
 	service, err := Open(t.Context(), Config{
 		Platform:  PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"},
-		PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, StateDir: t.TempDir(),
+		PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, StateDir: entryStateDir(t),
 		Logger: logger, clientFS: fstest.MapFS{},
 		transport: func(organization Organization) (http.RoundTripper, error) {
 			return handlerTransport{tenants[organization.Endpoint]}, nil
@@ -530,7 +620,7 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
 	}
 	t.Cleanup(func() { _ = service.Close() })
 	for _, tenant := range []struct {
-		fixture  tenantFixture
+		fixture  *tenantFixture
 		endpoint string
 		name     string
 	}{{alpha, testSocketEndpoint("alpha.sock"), "Alpha"}, {beta, testSocketEndpoint("beta.sock"), "Beta"}} {
@@ -538,7 +628,7 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
 			t.Fatal(err)
 		}
 	}
-	return entryFixture{service: service, provider: provider, tenants: tenants, fixtures: map[string]tenantFixture{"org_alpha": alpha, "org_beta": beta}}
+	return entryFixture{service: service, provider: provider, tenants: tenants, fixtures: map[string]*tenantFixture{"org_alpha": alpha, "org_beta": beta}}
 }
 
 type handlerTransport struct {

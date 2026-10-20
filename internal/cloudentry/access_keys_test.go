@@ -406,7 +406,7 @@ func TestAccessKeyOrganizationControls(t *testing.T) {
 	if result, failed := call("list_projects", map[string]any{"organization_id": "org_alpha"}); failed {
 		t.Fatalf("block affected other org=%s", result)
 	}
-	db, err := sql.Open("sqlite", f.fixtures["org_beta"].path)
+	db, err := sql.Open("sqlite", f.tenant(t, "org_beta").path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -714,7 +714,7 @@ func TestAccessKeyMCPPreservesMoveItemRequestErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.fixtures[org].config.Hosted.SharedEntry.ResolveKey = func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
+	f.tenant(t, org).config.Hosted.SharedEntry.ResolveKey = func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
 		return f.service.resolveTenantKey(ctx, organization, origin)
 	}
 	owner := newBrowser(t, f.service.Handler())

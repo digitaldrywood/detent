@@ -598,7 +598,7 @@ func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
 			if err := json.Unmarshal(raw, &envelope); err != nil {
 				t.Fatal(err)
 			}
-			db, err := sql.Open("sqlite", storeDSN(f.fixtures["org_alpha"].path))
+			db, err := sql.Open("sqlite", storeDSN(f.tenant(t, "org_alpha").path))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -627,7 +627,7 @@ func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
 			}
 			foreign := newBrowser(t, proxy)
 			foreign.login("/organizations/org_beta/organization", "user_bob:porg_beta")
-			beta, err := sql.Open("sqlite", storeDSN(f.fixtures["org_beta"].path))
+			beta, err := sql.Open("sqlite", storeDSN(f.tenant(t, "org_beta").path))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -696,7 +696,7 @@ func TestOAuthCurrentAuthority(t *testing.T) {
 				delete(f.provider.memberships, "om_user_alice_porg_alpha")
 				f.provider.mu.Unlock()
 			case "project grant removed":
-				tenant := f.fixtures["org_alpha"]
+				tenant := f.tenant(t, "org_alpha")
 				db, err := sql.Open("sqlite", storeDSN(tenant.path))
 				if err != nil {
 					t.Fatal(err)

@@ -49,7 +49,7 @@ func TestMigratedAttemptDiffReadsThroughEntry(t *testing.T) {
 	if err := json.Unmarshal(created.Body.Bytes(), &issue); err != nil {
 		t.Fatal(err)
 	}
-	db, err := sql.Open("sqlite", f.fixtures["org_alpha"].path+"?_pragma=foreign_keys(1)")
+	db, err := sql.Open("sqlite", f.tenant(t, "org_alpha").path+"?_pragma=foreign_keys(1)")
 	if err != nil {
 		t.Fatal(err)
 	}

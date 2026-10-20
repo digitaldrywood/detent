@@ -40,7 +40,7 @@ func platformMailConfig(t *testing.T, sender auth.EmailSender, output *logBuffer
 		Platform:  PlatformConfig{BootstrapAdminEmail: "admin-a@example.test"},
 		PublicURL: "https://cloud.example.test", ListenAddress: "127.0.0.1:0", Issuer: "entry",
 		SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), Provider: newFakeProvider(),
-		StateDir: t.TempDir(), clientFS: fstest.MapFS{}, platformEmailSender: sender,
+		StateDir: entryStateDir(t), clientFS: fstest.MapFS{}, platformEmailSender: sender,
 		Logger: slog.New(slog.NewJSONHandler(output, nil)),
 		now:    func() time.Time { return time.Date(2026, 10, 19, 16, 0, 0, 0, time.UTC) },
 	}

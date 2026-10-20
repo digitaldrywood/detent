@@ -61,13 +61,15 @@ func TestSharedEntryGitHubWebhookRouting(t *testing.T) {
 			f := newEntryFixture(t)
 			t.Cleanup(func() {
 				for _, fixture := range f.fixtures {
-					_ = fixture.service.Close()
+					if fixture.service != nil {
+						_ = fixture.service.Close()
+					}
 				}
 			})
 			withDatabase := func(id string, operation func(*sql.DB)) {
 				t.Helper()
 				fixture := f.fixtures[id]
-				if err := fixture.service.Close(); err != nil {
+				if err := fixture.open(t.Context(), t).Close(); err != nil {
 					t.Fatal(err)
 				}
 				db, err := sql.Open("sqlite", fixture.path+"?_pragma=foreign_keys(1)")

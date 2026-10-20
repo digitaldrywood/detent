@@ -539,7 +539,7 @@ func TestPlatformTenantFanOutIsBounded(t *testing.T) {
 			provider := newFakeProvider()
 			provider.users["user_support"] = "support@example.test"
 			service, err := Open(t.Context(), Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: provider,
-				StaffEmails: []string{"support@example.test"}, StateDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
+				StaffEmails: []string{"support@example.test"}, StateDir: entryStateDir(t), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
 				transport: func(Organization) (http.RoundTripper, error) { return transport, nil }, platformDeadline: test.deadline})
 			if err != nil {
 				t.Fatal(err)
@@ -622,7 +622,7 @@ func TestStaffSessionsReverifyEveryRead(t *testing.T) {
 				staff = append(staff, test.email)
 			}
 			service, err := Open(t.Context(), Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: provider,
-				StaffEmails: staff, StateDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
+				StaffEmails: staff, StateDir: entryStateDir(t), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
 				transport: func(Organization) (http.RoundTripper, error) { return &fanOutTransport{}, nil }})
 			if err != nil {
 				t.Fatal(err)

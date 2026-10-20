@@ -12,6 +12,8 @@ import (
 )
 
 func TestIssueUnsubscribeWithoutSession(t *testing.T) {
+	t.Parallel()
+	f := newEntryFixture(t)
 	for _, test := range []struct {
 		name, organization, token string
 		tenantStatus, want, calls int
@@ -24,7 +26,6 @@ func TestIssueUnsubscribeWithoutSession(t *testing.T) {
 		{"unknown organization", "org_missing", "unsub_" + strings.Repeat("a", 32), 204, 404, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newEntryFixture(t)
 			calls := 0
 			f.service.config.transport = func(organization Organization) (http.RoundTripper, error) {
 				return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
