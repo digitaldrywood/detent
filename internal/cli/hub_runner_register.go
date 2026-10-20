@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -18,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	servicepkg "github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -69,6 +71,9 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 		Args:         NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if service && startService == nil {
+				return servicepkg.ErrUnsupported
+			}
 			token = strings.TrimSpace(firstNonBlankString(token, lookupEnv("DETENT_RUNNER_ENROLLMENT_TOKEN")))
 			if token == "" {
 				return errors.New("an enrollment token is required: pass --token or set DETENT_RUNNER_ENROLLMENT_TOKEN")
@@ -171,7 +176,7 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 				}
 				result.NextSteps = append(result.NextSteps, steps...)
 			}
-			start := fmt.Sprintf("detent --config %s --headless", shellQuote(paths.config))
+			start := runnerStartCommand(paths.config, runtime.GOOS)
 			switch {
 			case service:
 				if err := startService(cmd, paths.config); err != nil {
@@ -466,4 +471,12 @@ func shellQuote(value string) string {
 		return value
 	}
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+func runnerStartCommand(configPath, goos string) string {
+	quoted := shellQuote(configPath)
+	if goos == "windows" {
+		quoted = "'" + strings.ReplaceAll(configPath, "'", "''") + "'"
+	}
+	return fmt.Sprintf("detent --config %s --headless", quoted)
 }

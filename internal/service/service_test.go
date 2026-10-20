@@ -254,6 +254,7 @@ func TestManagerFromProcessEnvironment(t *testing.T) {
 		want ManagerName
 	}{
 		{name: "legacy systemd definition", goos: "linux", env: map[string]string{"INVOCATION_ID": "test-invocation"}, want: ManagerSystemd},
+		{name: "Windows Scheduled Task", goos: "windows", env: map[string]string{ManagerEnvironment: string(ManagerScheduledTask)}, want: ManagerScheduledTask},
 		{
 			name: "explicit manager",
 			goos: "darwin",
