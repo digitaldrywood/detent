@@ -122,40 +122,23 @@ const spriteProvisionAttempts = 3
 
 var errSpriteReservationStale = errors.New("project Sprite count changed before this member was ready")
 
-func spriteAllocationRunnerProject(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID) (tracker.ProjectID, error) {
-	var project tracker.ProjectID
-	err := q.QueryRowContext(ctx, `SELECT m.allocation_project_id FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id WHERE m.organization_id=? AND r.machine_id=? AND m.allocation_project_id<>''`, scope.organization, machine).Scan(&project)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	return project, err
-}
-
 func spriteAllocationRunnerAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID) (bool, error) {
-	var target int
-	if err := q.QueryRowContext(ctx, `SELECT COALESCE((SELECT desired_count FROM project_sprite_allocations WHERE organization_id=? AND project_id=?),-1)`, scope.organization, scope.project).Scan(&target); err != nil {
+	var managed bool
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM project_sprite_allocations WHERE organization_id=? AND project_id=?)`, scope.organization, scope.project).Scan(&managed); err != nil {
 		return false, err
 	}
-	if target == 0 {
-		return false, nil
+	if !managed {
+		var member bool
+		err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id WHERE m.organization_id=? AND m.allocation_project_id<>'' AND r.machine_id=?)`, scope.organization, machine).Scan(&member)
+		return !member, err
 	}
-	var owner tracker.ProjectID
-	var ready, sharing, granted bool
 	var raw sql.NullString
-	err := q.QueryRowContext(ctx, `SELECT m.allocation_project_id,m.state='enrolled' AND r.state='active' AND COALESCE(a.desired_count,0)>0,p.share_idle_capacity,
- r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?),json_extract(r.local_checks_json,?)
- FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id
- LEFT JOIN project_sprite_allocations a ON a.organization_id=m.organization_id AND a.project_id=m.allocation_project_id
- JOIN organization_sprite_pools p ON p.organization_id=m.organization_id
- WHERE m.organization_id=? AND m.allocation_project_id<>'' AND r.machine_id=?`, scope.project, "$."+jsonPathKey(string(scope.project)), scope.organization, machine).Scan(&owner, &ready, &sharing, &granted, &raw)
+	err := q.QueryRowContext(ctx, `SELECT json_extract(r.local_checks_json,?) FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id JOIN project_sprite_allocations a ON a.organization_id=m.organization_id AND a.project_id=m.allocation_project_id WHERE m.organization_id=? AND m.allocation_project_id=? AND m.state='enrolled' AND r.state='active' AND a.desired_count>0 AND r.machine_id=?`, "$."+jsonPathKey(string(scope.project)), scope.organization, scope.project, machine).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return target < 0, nil
+		return false, nil
 	}
 	if err != nil {
 		return false, err
-	}
-	if !ready || !granted || owner != scope.project && !sharing {
-		return false, nil
 	}
 	checks, observed, err := decodeSpriteMemberChecks(raw)
 	return observed && checks.WorkReady(), err
