@@ -7,7 +7,7 @@ import (
 	"errors"
 	"image"
 	_ "image/gif"
-	"image/jpeg"
+	_ "image/jpeg"
 	"image/png"
 	"io"
 	"net/http"
@@ -148,6 +148,12 @@ func Prepare(reader io.Reader, name, declared, scratch string) (upload *Upload, 
 		if err != nil {
 			return nil, ErrInvalid
 		}
+		if media == "image/jpeg" {
+			content, err = stripJPEGMetadata(content)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if err := file.Truncate(0); err != nil {
 			return nil, err
 		}
@@ -155,7 +161,7 @@ func Prepare(reader io.Reader, name, declared, scratch string) (upload *Upload, 
 			return nil, err
 		}
 		if media == "image/jpeg" {
-			err = jpeg.Encode(file, picture, &jpeg.Options{Quality: 90})
+			_, err = file.Write(content)
 		} else {
 			media = "image/png"
 			err = png.Encode(file, picture)
