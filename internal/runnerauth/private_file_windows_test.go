@@ -1,6 +1,7 @@
 package runnerauth
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -28,7 +29,10 @@ func TestWindowsCredentialDACL(t *testing.T) {
 			}
 			path := identityPath
 			load := func() error {
-				_, err := Load(identityPath)
+				loaded, err := Load(identityPath)
+				if err == nil && (loaded.Credential != identity.Credential || loaded.Identity.Binding != identity.Identity.Binding || loaded.HubURL != identity.HubURL) {
+					t.Fatal("loaded identity changed its credential or binding")
+				}
 				return err
 			}
 			write := func() error { return Save(identityPath, identity) }
@@ -37,7 +41,10 @@ func TestWindowsCredentialDACL(t *testing.T) {
 				snapshot := RoutingSnapshot{RunnerID: identity.Identity.RunnerID, Revision: 1, Routing: Routing{DisplayName: "Runner", State: "active", CapacityLimit: 1}}
 				write = func() error { return SaveRoutingCache(identityPath, snapshot) }
 				load = func() error {
-					_, err := LoadRoutingCache(identityPath)
+					loaded, err := LoadRoutingCache(identityPath)
+					if err == nil && (loaded.RunnerID != snapshot.RunnerID || loaded.Revision != snapshot.Revision || loaded.Routing.DisplayName != snapshot.Routing.DisplayName) {
+						t.Fatal("loaded routing cache changed its snapshot")
+					}
 					return err
 				}
 				if err := write(); err != nil {
@@ -48,12 +55,33 @@ func TestWindowsCredentialDACL(t *testing.T) {
 			if err := load(); err != nil {
 				t.Fatalf("fresh credential could not be loaded: %v", err)
 			}
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+			if err != nil {
+				t.Fatal(err)
+			}
+			control, _, err := sd.Control()
+			if err != nil || control&windows.SE_DACL_PROTECTED != 0 {
+				t.Fatalf("legacy fixture must inherit its DACL: control=%x err=%v", control, err)
+			}
+			if err := load(); err != nil {
+				t.Fatalf("legacy credential could not be loaded at startup: %v", err)
+			}
+			assertUserOnlyDACL(t, path, user.User.Sid)
 			for _, test := range []struct {
 				name, sddl string
 				protected  bool
 			}{
 				{"extra ACE", "D:P(A;;FA;;;" + sid + ")(A;;GR;;;WD)", true},
-				{"inherited ACL", "D:(A;;FA;;;" + sid + ")", false},
 				{"read-only ACE", "D:P(A;;GR;;;" + sid + ")", true},
 			} {
 				t.Run(test.name, func(t *testing.T) {
