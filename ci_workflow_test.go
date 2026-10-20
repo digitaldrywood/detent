@@ -120,6 +120,36 @@ func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
 	}
 }
 
+func TestCIWindowsChecksUseExistingLinuxVetStep(t *testing.T) {
+	t.Parallel()
+
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	job := workflowBetween(t, workflow, "\n  verify-fast:\n", "\n  generated:")
+	if !strings.Contains(job, "    runs-on: ubuntu-latest\n") {
+		t.Fatal("Windows checks must reuse the existing Linux verify-fast job")
+	}
+	vet := workflowBetween(t, job, "      - name: Vet\n", "\n      - name:")
+	for _, command := range []string{
+		"check_with_evidence vet make vet",
+		"check_with_evidence windows-build-amd64 env GOOS=windows GOARCH=amd64 go build ./...",
+		"check_with_evidence windows-vet env GOOS=windows GOARCH=amd64 go vet ./...",
+		"check_with_evidence windows-build-arm64 env GOOS=windows GOARCH=arm64 go build ./...",
+	} {
+		if !strings.Contains(vet, command) {
+			t.Errorf("existing Linux Vet step missing %q", command)
+		}
+	}
+	workflows, err := filepath.Glob(".github/workflows/*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range workflows {
+		if strings.Contains(readNormalizedFile(t, path), "windows-latest") {
+			t.Errorf("%s must not add a Windows runner", path)
+		}
+	}
+}
+
 func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 	if testing.Short() {
 		t.Skip("process lifecycle integration")
