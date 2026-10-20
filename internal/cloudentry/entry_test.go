@@ -1525,6 +1525,12 @@ func testSocketEndpoint(name string) string {
 	return "unix:" + filepath.Join(root, "tenants", name)
 }
 
+func capacityPlans() *hubserver.HostedPlansConfig {
+	plans := hubserver.CheckoutHostedPlans(nil)
+	plans.Base = hubserver.PlanReference{ID: "free", Version: 1}
+	return plans
+}
+
 func pilotPlans() *hubserver.HostedPlansConfig {
 	free := map[string]int64{
 		"members": 10, "projects": 1, "repositories": 10, "registered_runners": 4, "connected_runners": 4, "concurrent_work": 2,
