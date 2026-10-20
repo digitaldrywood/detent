@@ -342,6 +342,12 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	if !currentParkFound {
 		park, currentParkFound, derivedLaneReason, derivationFailure = o.deriveCurrentBreakerRecoveryPark(ctx, state, issue)
 	}
+	parkOwnsSignal := currentParkFound && staleReworkParkOwnsSignal(park, issue.WorkpadSignal)
+	if parkOwnsSignal {
+		signal := *issue.WorkpadSignal
+		signal.HumanAction = ""
+		issue.WorkpadSignal = &signal
+	}
 	var evidence *blockedRecoveryDependencyEvidence
 	if len(cohort) > 0 {
 		evidence = cohort[0]
@@ -358,6 +364,9 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		evidence = &blockedRecoveryDependencyEvidence{issue: withDependencies, workpadRefs: workpadRefs, workpadCurrent: current, blockers: blockers, references: references}
 	}
 	withDependencies, workpadRefs, workpadCurrent := evidence.issue, evidence.workpadRefs, evidence.workpadCurrent
+	if parkOwnsSignal {
+		withDependencies.WorkpadSignal = issue.WorkpadSignal
+	}
 	blockers := evidence.blockers
 	withDependencies.BlockedBy = dependencyResolvedBlockerRefs(blockers)
 	recorded := recordedBlockerEvaluation{}
@@ -494,7 +503,7 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 			}
 		}
 	}
-	staleRework := park.Cause == terminalAttemptRetryLimitCause && park.StaleRework != nil && park.Owner == blockedRecoveryOwnerOperator
+	staleRework := staleReworkPark(park)
 	if park.Owner == blockedRecoveryOwnerHuman || park.Owner == blockedRecoveryOwnerOperator && !staleRework {
 		reason := strings.TrimSpace(park.HoldReason)
 		if reason == "" {
@@ -1538,7 +1547,7 @@ func blockedCauseRecoveryComment(
 	targetState string,
 	fingerprint string,
 ) string {
-	return fmt.Sprintf(
+	comment := fmt.Sprintf(
 		"Blocked recovery predicate satisfied. Moved %s from %s to %s.\n\n- cause: %s\n- predicate: %s\n- cause_fingerprint: %s",
 		issueLabel(issue),
 		strings.TrimSpace(issue.State),
@@ -1547,6 +1556,10 @@ func blockedCauseRecoveryComment(
 		strings.TrimSpace(park.Predicate),
 		strings.TrimSpace(fingerprint),
 	)
+	if staleReworkPark(park) {
+		comment += "\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"
+	}
+	return comment
 }
 
 func (o *Orchestrator) recordBlockedRecoveryDecision(
@@ -1615,7 +1628,9 @@ func (o *Orchestrator) recordBlockedRecoveryDecision(
 		current.Resumable = false
 		current.Reachability = entry.RecoveryReachability
 		current.HoldReason = entry.RecoveryReason
-		current.OperatorRemedy = entry.RecoveryRemedy
+		if !staleReworkPark(current) {
+			current.OperatorRemedy = entry.RecoveryRemedy
+		}
 		entry.Recovery = &current
 		entry.RecoveryTarget = current.TargetState
 		entry.RecoveryIntentResumable = current.IntentResumable

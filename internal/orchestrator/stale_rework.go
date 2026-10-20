@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 type staleReworkEvidence struct {
@@ -18,6 +19,17 @@ type staleReworkEvidence struct {
 	BaseSHA         string   `json:"base_sha"`
 	BaseFingerprint string   `json:"base_fingerprint,omitempty"`
 	Findings        []string `json:"findings,omitempty"`
+}
+
+func staleReworkPark(park workflowLaneBlockedRecoveryMetadata) bool {
+	return park.Cause == terminalAttemptRetryLimitCause && park.StaleRework != nil && park.Owner == blockedRecoveryOwnerOperator
+}
+
+func staleReworkParkOwnsSignal(park workflowLaneBlockedRecoveryMetadata, signal *workpad.Signal) bool {
+	return staleReworkPark(park) && signal != nil && signal.Invalid == nil &&
+		signal.Source == workpad.SourceStructured && signal.Status == workpad.StatusBlocked &&
+		len(signal.Blockers) == 0 && signal.ReasonCode == "" &&
+		park.OperatorRemedy != "" && signal.HumanAction == park.OperatorRemedy
 }
 
 func (o *Orchestrator) currentStaleReworkEvidence(ctx context.Context, issue connector.Issue, changeID string) *staleReworkEvidence {
