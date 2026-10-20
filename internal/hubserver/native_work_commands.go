@@ -265,15 +265,16 @@ func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScop
 			fields = append(fields, "title")
 		}
 		if request.Body != nil {
+			bodyChanged := issue.Body != *request.Body
 			issue.Body = *request.Body
-			if issue.IssueContract == nil {
+			if bodyChanged && issue.IssueContract == nil {
 				issue.IssueContract = &issuecontract.State{}
 			}
-			if scope.actor().Kind == "human" && scope.credential.HostedRole != "reporter" {
+			if bodyChanged && scope.actor().Kind == "human" && scope.credential.HostedRole != "reporter" {
 				issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(issue.Body)
 				issue.IssueContract.RecordedAt = now
 			}
-			if issue.IssueContract.ReturnState != "" {
+			if bodyChanged && issue.IssueContract.ReturnState != "" {
 				contract, err := nativeIssueContract(ctx, tx, scope)
 				if err != nil {
 					return nil, err
@@ -444,6 +445,9 @@ func (s *Service) updateNativeCommentCommand(ctx context.Context, scope nativeSc
 		}
 		if !request.Deleted && (strings.TrimSpace(request.Body) == "" || len(request.Body) > 64<<10) {
 			return nil, nativeInvalid("Comment body must contain 1 byte to 64 KiB")
+		}
+		if comment.Body == request.Body && comment.Deleted == request.Deleted {
+			return comment, nil
 		}
 		comment.Body = request.Body
 		comment.Deleted = request.Deleted

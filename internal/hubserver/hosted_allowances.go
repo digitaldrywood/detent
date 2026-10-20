@@ -22,6 +22,11 @@ const collaborationBytesRecount = `SELECT
 	(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM github_import_records) +
 	(SELECT coalesce(sum(size),0) FROM attachments WHERE object_deleted_at IS NULL)`
 
+func recountCollaborationBytes(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, "UPDATE hosted_usage_counters SET value=("+collaborationBytesRecount+") WHERE name='collaboration_bytes'")
+	return err
+}
+
 func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, now time.Time, metrics ...string) (map[string]int64, error) {
 	runtimePlans := d.plans()
 	result := make(map[string]int64)
