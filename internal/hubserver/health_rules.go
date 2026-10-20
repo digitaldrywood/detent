@@ -248,9 +248,6 @@ func refusalFinding(p healthProject) (healthFinding, bool) {
 	summary := "Candidates cannot start work because runners refused every claim."
 	action := "The runner operator checks the claim refusal in the runner's logs."
 	switch reason {
-	case "policy_mismatch":
-		summary = "Candidates cannot start work because runner policy differs from its approval."
-		action = "The organization administrator reviews the project's policy in Settings → Integrations."
 	case "runner_heartbeat_stale":
 		summary = "Candidates cannot start work because their runners are offline."
 		action = "The runner operator checks the runner process and its Hub connection."

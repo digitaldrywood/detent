@@ -39,6 +39,11 @@ func TestHealthRules(t *testing.T) {
 			if len(got) != 1 || got[0].Signal != test.signal || got[0].Severity != "attention" || got[0].Subject.ID == "" || got[0].NextAction == "" {
 				t.Fatalf("findings = %+v", got)
 			}
+			if test.name == "all refused" {
+				if got[0].Evidence.Reason != "policy_mismatch" || got[0].Summary != "Candidates cannot start work because runners refused every claim." || got[0].NextAction != "The runner operator checks the claim refusal in the runner's logs." {
+					t.Fatalf("policy refusal guidance = %+v", got[0])
+				}
+			}
 			if repeat := evaluateHealth(now.Add(time.Second), test.snapshot); len(repeat) != 1 || repeat[0].Fingerprint != got[0].Fingerprint {
 				t.Fatalf("unstable fingerprint: %+v", repeat)
 			}

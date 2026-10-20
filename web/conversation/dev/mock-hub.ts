@@ -193,7 +193,7 @@ const WORKFLOW_STATES = [
 const ONBOARDING_STEP_TEXT: ReadonlyArray<{ name: string; detail: string }> = [
   { name: "Execution runner", detail: "Connect a computer to do this project's work. Click Enroll a runner, then paste the command it gives you into a terminal on that machine." },
   { name: "Local validation", detail: "Check that your computer has the project files, can run Detent, and is signed in to your AI coding tool. Fix any failed checks on that computer, restart the runner, then click Refresh runner checks." },
-  { name: "Repository configuration", detail: "The project configuration tells Detent how to work on your code. Review the settings sent by your runner, then click Approve to allow work to start." },
+  { name: "Repository configuration", detail: "Review the repository configuration reported from detent.yaml and WORKFLOW.md on the runner host." },
   { name: "Artifact history", detail: "Choose where to keep files from agent runs, such as logs and screenshots. Keep them on your runner, or connect storage that you manage." },
 ];
 
