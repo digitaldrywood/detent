@@ -19,11 +19,11 @@ function useGo(): (to: string) => void {
 }
 
 export function SettingsScreen(): React.ReactElement {
-  const { section, organizationPage } = useParams({ strict: false }) as { section?: string; organizationPage?: string };
+  const { section, organizationPage, runner } = useParams({ strict: false }) as { section?: string; organizationPage?: string; runner?: string };
   const search = useSearch({ strict: false }) as { project?: string };
-  const requested = organizationPage === undefined ? section : `organization/${organizationPage}`;
+  const requested = runner ? "runners" : organizationPage === undefined ? section : `organization/${organizationPage}`;
   const id = requested !== undefined && isSettingsSectionId(requested) ? requested : organizationPage === undefined ? DEFAULT_SECTION : "organization";
-  return <SettingsRoute section={id} project={search.project ?? null} onNavigate={useGo()} />;
+  return <SettingsRoute section={id} runnerId={runner} project={search.project ?? null} onNavigate={useGo()} />;
 }
 
 export function SetupScreen(): React.ReactElement {

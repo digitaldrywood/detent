@@ -1,4 +1,4 @@
-import { BotIcon, ChevronDownIcon, ServerIcon } from "lucide-react";
+import { ChevronDownIcon, ServerIcon } from "lucide-react";
 import React from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Menu, MenuTrigger, MenuPopup, MenuItem } from "../../components/ui/menu.tsx";
@@ -8,7 +8,7 @@ import { SpritePoolCard } from "../account/SpritePoolCard.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "../../components/ui/dialog.tsx";
-import type { FleetResponse, FleetRunner, ProviderCapacity, RunnerRouting, SuggestedLimit } from "../../contracts/account.ts";
+import type { FleetResponse, FleetRunner, RunnerRouting } from "../../contracts/account.ts";
 import type { LoadHostHistory } from "./HostLoad.tsx";
 import { useRunnerSuggestions } from "./runnerSuggestions.ts";
 import { cn } from "../../lib/utils.ts";
@@ -23,122 +23,30 @@ import {
   type PendingEnrollment,
 } from "./EnrollRunner.tsx";
 import { HostCard } from "./HostCard.tsx";
-import { RunnerDetailSheet, type RunnerProject } from "./RunnerDetailSheet.tsx";
+import { RunnerDetailPage, type RunnerProject } from "./RunnerDetailPage.tsx";
 import { NativeSelect } from "../account/controls.tsx";
-import { formatLocalTime } from "./format.ts";
-import { CapacityPanel } from "./CapacityPanel.tsx";
-
-export interface ProviderRow {
-  readonly provider: string;
-  readonly accounts: number;
-  readonly used: number;
-  readonly max: number;
-  readonly availability: readonly string[];
-  readonly status: readonly string[];
-  readonly models: readonly string[];
-}
-
-export function summarizeProviders(runners: readonly FleetRunner[]): readonly ProviderRow[] {
-  const rows = new Map<
-    string,
-    {
-      provider: string;
-      accounts: Map<string, { used: number; max: number }>;
-      availability: Set<string>;
-      status: Set<string>;
-      models: Set<string>;
-    }
-  >();
-  const capacities: ProviderCapacity[] = runners.flatMap((runner) => [...runner.provider_capacity]);
-  const sharedProviders = new Set(capacities.filter((capacity) => !capacity.shared_account_alias).map((capacity) => capacity.provider));
-  for (const capacity of capacities) {
-    let row = rows.get(capacity.provider);
-    if (row === undefined) {
-      row = {
-        provider: capacity.provider,
-        accounts: new Map(),
-        availability: new Set(),
-        status: new Set(),
-        models: new Set(),
-      };
-      rows.set(capacity.provider, row);
-    }
-    const account = sharedProviders.has(capacity.provider) ? "" : capacity.shared_account_alias ?? "";
-    const pool = row.accounts.get(account);
-    const max = capacity.max_concurrent ?? 0;
-    row.accounts.set(account, {
-      used: Math.max(pool?.used ?? 0, capacity.used),
-      max: pool?.max && max ? Math.min(pool.max, max) : pool?.max || max,
-    });
-    row.availability.add(capacity.availability);
-    row.status.add(capacity.reset_at ? "Rate limited until " + formatLocalTime(capacity.reset_at)
-      : [capacity.availability, capacity.state].filter(Boolean).map((value) => value.replaceAll("_", " ")).join(" · "));
-    for (const model of capacity.models ?? []) row.models.add(model);
-  }
-  return [...rows.values()].map((row) => ({
-    provider: row.provider,
-    accounts: row.accounts.size,
-    used: [...row.accounts.values()].reduce((sum, pool) => sum + pool.used, 0),
-    max: [...row.accounts.values()].reduce((sum, pool) => sum + pool.max, 0),
-    availability: [...row.availability],
-    status: [...row.status],
-    models: [...row.models],
-  }));
-}
-
-export function ProviderSummary({ runners }: { readonly runners: readonly FleetRunner[] }): React.ReactElement {
-  const rows = summarizeProviders(runners);
-  return (
-    <div className="min-w-0 overflow-x-auto rounded-xl" tabIndex={0} role="region" aria-label="Provider accounts">
-      <table className="w-full min-w-[640px] text-left text-xs">
-        <thead className="border-b border-border/60 text-muted-foreground">
-          <tr>{["Provider", "Accounts", "In use", "Models", "Status"].map((heading) => <th key={heading} scope="col" className="px-4 py-3 font-medium">{heading}</th>)}</tr>
-        </thead>
-        <tbody className="divide-y divide-border/50">
-          {rows.map((row) => {
-            const { provider, used, max, status } = row;
-            return (
-              <tr key={provider}>
-                <th scope="row" className="px-4 py-4 font-medium">{provider}</th>
-                <td className="px-4 py-4 tabular-nums">{row.accounts}</td>
-                <td className="min-w-28 px-4 py-4">
-                  <span className="tabular-nums">{used}/{max}</span>
-                  <div role="progressbar" aria-label={provider + " in use"} aria-valuenow={used} aria-valuemin={0} aria-valuemax={max} className="mt-2 h-1 w-16 overflow-hidden rounded-full bg-accent">
-                    <div className="h-full bg-primary" style={{ width: (max > 0 ? Math.min(100, used / max * 100) : 0) + "%" }} />
-                  </div>
-                </td>
-                <td className="max-w-56 px-4 py-4 text-muted-foreground">{row.models.join(", ") || "—"}</td>
-                <td className="px-4 py-4">{status.map((value) => <p key={value} className={value.startsWith("Rate limited") ? "text-warning-foreground" : "text-muted-foreground"}>{value}</p>)}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+import { RunnerStatusDot } from "../../components/RunnerStatusDot.tsx";
+import { runnerNeedsAttention } from "./runnerPresentation.ts";
+import { RunnerRemoval } from "./RunnerRemoval.tsx";
 
 export function RunnersSectionView({
-  fleet, now, organizationName = "this organization", onEnroll, enrollments = [], onSaveRouting, projects = [], onReloadRunner, onRemoveRunner, onAssist, spritePools, spritePoolAttentionCount = 0, suggestions = {}, loadHostHistory,
+  fleet, now, organizationName = "this organization", onEnroll, enrollments = [], projects = [], onOpenRunner, onRemoveRunner, onAssist, spritePools, spritePoolAttentionCount = 0,
 }: {
   readonly fleet: FleetResponse;
-  readonly suggestions?: Readonly<Record<string, SuggestedLimit>>;
-  readonly loadHostHistory?: LoadHostHistory;
   readonly onAssist?: () => void;
   readonly spritePools?: (attentionOnly: boolean) => React.ReactNode;
   readonly spritePoolAttentionCount?: number;
   readonly projects?: readonly RunnerProject[];
-  readonly onReloadRunner?: () => Promise<void>;
   readonly now?: number;
   readonly organizationName?: string;
   readonly onEnroll?: (name?: string) => void;
   readonly enrollments?: readonly PendingEnrollment[];
-  readonly onSaveRouting?: (runner: FleetRunner, routing: RunnerRouting) => Promise<void>;
+  readonly onOpenRunner?: (runner: FleetRunner) => void;
   readonly onRemoveRunner?: (runner: FleetRunner) => Promise<void>;
 }): React.ReactElement {
   const [attentionOnly, setAttentionOnly] = React.useState(() => new URLSearchParams(window.location.search).get("health") === "needs_attention");
-  const attentionCount = fleet.runners.filter((runner) => runner.health === "needs_attention").length + spritePoolAttentionCount;
-  const runners = attentionOnly ? fleet.runners.filter((runner) => runner.health === "needs_attention") : fleet.runners;
+  const attentionCount = fleet.runners.filter((runner) => runnerNeedsAttention(runner)).length + spritePoolAttentionCount;
+  const runners = attentionOnly ? fleet.runners.filter((runner) => runnerNeedsAttention(runner)) : fleet.runners;
   function filterUrl(only: boolean): string {
     const url = new URL(window.location.href);
     if (only) url.searchParams.set("health", "needs_attention");
@@ -156,50 +64,13 @@ export function RunnersSectionView({
     window.addEventListener("popstate", update);
     return () => window.removeEventListener("popstate", update);
   }, []);
-  const [runnerToOpen, setRunnerToOpen] = React.useState<string | null>(null);
   const [runnerToRemove, setRunnerToRemove] = React.useState<FleetRunner | null>(null);
-  const [removing, setRemoving] = React.useState(false);
-  const [removeError, setRemoveError] = React.useState<string | null>(null);
-  async function removeRunner(): Promise<void> {
-    if (!runnerToRemove || !onRemoveRunner || removing) return;
-    setRemoving(true);
-    setRemoveError(null);
-    try {
-      await onRemoveRunner(runnerToRemove);
-      setRunnerToRemove(null);
-    } catch (error) {
-      setRemoveError(error instanceof Error ? error.message : "Could not remove the runner.");
-    } finally {
-      setRemoving(false);
-    }
-  }
-  function openRunner(runner: FleetRunner): void {
-    if (attentionOnly && runner.health !== "needs_attention") {
-      window.history.replaceState(window.history.state, "", filterUrl(false));
-      setAttentionOnly(false);
-    }
-    setRunnerToOpen(runner.id);
-  }
-  const selectedRunner = fleet.runners.find((runner) => runner.id === runnerToOpen);
   return (
     <>
-      <Dialog open={runnerToRemove !== null} onOpenChange={(open) => { if (!open && !removing) setRunnerToRemove(null); }}>
-        <DialogPopup>
-          <DialogHeader>
-            <DialogTitle>Remove runner {runnerToRemove?.display_name}?</DialogTitle>
-            <DialogDescription>This revokes its credentials and removes it from the fleet. Historical runs keep the runner's name. Runners with active work must finish their attempts before removal.</DialogDescription>
-          </DialogHeader>
-          {removeError ? <DialogPanel><p role="alert" className="text-sm text-destructive">{removeError}</p></DialogPanel> : null}
-          <DialogFooter>
-            <Button variant="outline" disabled={removing} onClick={() => setRunnerToRemove(null)}>Cancel</Button>
-            <Button variant="destructive" disabled={removing} onClick={() => void removeRunner()}>{removing ? "Removing…" : "Remove runner"}</Button>
-          </DialogFooter>
-        </DialogPopup>
-      </Dialog>
-      {selectedRunner ? <RunnerDetailSheet key={selectedRunner.id} runner={selectedRunner} projects={projects} editable={(selectedRunner.editable ?? fleet.editable) !== false && onSaveRouting !== undefined} now={now} onClose={() => setRunnerToOpen(null)} onSave={onSaveRouting} onReload={onReloadRunner} suggestion={suggestions[selectedRunner.id]} loadHostHistory={loadHostHistory} /> : null}
+      {runnerToRemove && onRemoveRunner ? <RunnerRemoval runner={runnerToRemove} onRemove={onRemoveRunner} onClose={() => setRunnerToRemove(null)} /> : null}
       <header className="flex flex-col items-start justify-between gap-4 sm:flex-row">
         <div className="min-w-0 space-y-2">
-          <h2 className="text-xl font-semibold tracking-tight">Providers & runners</h2>
+          <h2 className="text-xl font-semibold tracking-tight">Runners</h2>
           <p className="text-[13px] text-muted-foreground">Runners take work for {organizationName}. Add capacity manually, or let Luna walk you through setup.</p>
         </div>
         {onEnroll === undefined ? null : <Menu>
@@ -216,16 +87,16 @@ export function RunnersSectionView({
         </div>
       ) : (
         <>
-          <SettingsSection id="settings-runners" title="Runners" variant="plain">
+          <SettingsSection id="settings-runners" title="Runner list" variant="plain" hideTitle>
             <nav aria-label="Filter runners" className="mb-3 flex w-fit max-w-full rounded-lg border border-border/60 bg-muted/40 p-1 text-xs">
               {([[false, "All " + fleet.runners.length], [true, "Needs attention " + attentionCount]] as const).map(([only, label]) => (
                 <a key={label} href={filterUrl(only)} aria-current={attentionOnly === only ? "true" : undefined} onClick={(event) => selectAttentionFilter(event, only)} className={cn("rounded-md px-3 py-1.5 outline-none focus-visible:ring-2 focus-visible:ring-ring", attentionOnly === only ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground")}>{label}</a>
               ))}
             </nav>
             <div className="@container/runner-list overflow-hidden rounded-xl border border-border/60 bg-card/40">
-              <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1.2fr)_6rem_minmax(0,1fr)_7rem_minmax(0,1fr)_11rem] gap-4 border-b border-border/50 px-4 py-3 text-xs text-muted-foreground @[48rem]/runner-list:grid"><span>Runner</span><span>Host kind</span><span>Health</span><span>In use</span><span>Projects</span><span /></div>
+              <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_5rem_minmax(0,1fr)_7rem] gap-4 border-b border-border/50 px-4 py-3 text-xs text-muted-foreground @[48rem]/runner-list:grid"><span>Runner</span><span>Version</span><span>Slots</span><span>Projects</span><span /></div>
               <div className="divide-y divide-border/50">
-                {runners.map((runner) => <HostCard key={runner.id} runner={runner} now={now} projects={projects} suggestion={suggestions[runner.id]} onOpen={() => openRunner(runner)} {...(fleet.editable !== false && onRemoveRunner ? { onRemove: () => { setRemoveError(null); setRunnerToRemove(runner); } } : {})} />)}
+                {runners.map((runner) => <HostCard key={runner.id} runner={runner} now={now} projects={projects} onOpen={() => onOpenRunner?.(runner)} {...(fleet.editable !== false && onRemoveRunner ? { onRemove: () => { setRunnerToRemove(runner); } } : {})} />)}
                 {runners.length === 0 ? <p className="px-4 py-6 text-[13px] text-muted-foreground">No runners need attention.</p> : null}
               </div>
               {spritePools?.(attentionOnly)}
@@ -239,19 +110,15 @@ export function RunnersSectionView({
           <PendingEnrollments enrollments={enrollments} onRenew={onEnroll} />
         </SettingsSection>
       )}
-      {fleet.runners.length > 0 ? <details className="space-y-4">
-        <summary className="cursor-pointer text-sm text-muted-foreground">Fleet capacity and providers</summary>
-        <CapacityPanel runners={fleet.runners} onOpen={openRunner} showProviders={false} />
-        <SettingsSection id="settings-providers" title="Providers" icon={<BotIcon className="size-3.5" />} className="min-w-0">
-          {fleet.runners.some((runner) => runner.provider_capacity.length > 0) ? <ProviderSummary runners={fleet.runners} /> : <SettingsRow title="No provider capacity reported" description="A runner reports the providers it can reach when it heartbeats." />}
-        </SettingsSection>
-      </details> : null}
+      {fleet.runners.length > 0 ? <div aria-label="Runner status legend" className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+        {[["healthy", "active", "Healthy"], ["needs_attention", "active", "Needs attention"], ["healthy", "draining", "Draining"], ["offline", "active", "Offline"]].map(([health, state, label]) => <span key={label} className="inline-flex items-center gap-1.5"><RunnerStatusDot runner={{ health: health!, state: state! }} />{label}</span>)}
+      </div> : null}
     </>
   );
 }
 
 /** The section as the settings page mounts it: it owns the one read. */
-export function RunnersSettings(): React.ReactElement {
+export function RunnersSettings({ runnerId, onNavigate, onRunnerName }: { readonly runnerId?: string; readonly onNavigate?: (to: string) => void; readonly onRunnerName?: (name: string) => void }): React.ReactElement {
   const shell = useOptionalShell();
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
@@ -281,18 +148,33 @@ export function RunnersSettings(): React.ReactElement {
   const [enrollmentName, setEnrollmentName] = React.useState("");
   const [enrollments, setEnrollments] = React.useState<readonly PendingEnrollment[]>([]);
   const canEnroll = bootstrap?.actor.can_manage_runners ?? false;
-  const runnerRevisions = React.useMemo(() => fleet.value?.runners.map((runner) => ({ id: runner.id, revision: runner.revision ?? 0 })) ?? [], [fleet.value]);
+  const runnerRevisions = React.useMemo(() => fleet.value?.runners.filter((runner) => runner.id === runnerId).map((runner) => ({ id: runner.id, revision: runner.revision ?? 0 })) ?? [], [fleet.value, runnerId]);
   const suggestions = useRunnerSuggestions(api.runnerCapacity, runnerRevisions, canEnroll);
   async function reloadRunner(): Promise<void> {
     fleet.set(await api.fleet());
   }
 
+  const selected = fleet.value?.runners.find((runner) => runner.id === runnerId);
+  React.useEffect(() => { onRunnerName?.(selected?.display_name ?? "Runner"); }, [selected?.display_name, onRunnerName]);
+  async function saveRouting(runner: FleetRunner, routing: RunnerRouting): Promise<void> {
+    await api.setRunnerRouting({ runner: runner.id, revision: runner.revision ?? 0, displayName: routing.display_name,
+      tags: routing.tags, state: routing.state, capacityLimit: routing.capacity_limit, projectIds: routing.project_ids, scope: routing.scope,
+      isolationTier: routing.isolation_tier, hostServices: routing.host_services, availability: routing.availability });
+    await reloadRunner();
+  }
+  async function removeRunner(runner: FleetRunner): Promise<void> {
+    await api.removeRunner(runner.id);
+    if (fleet.value) fleet.set({ ...fleet.value, runners: fleet.value.runners.filter((entry) => entry.id !== runner.id) });
+    if (runnerId) onNavigate?.("/settings/runners");
+    void fleet.refresh();
+  }
+
   return (
-    <SettingsPageContainer>
+    <SettingsPageContainer width="wide">
       {fleet.value === undefined ? (
         fleet.error !== null ? (
           <SettingsSection
-            title="Providers & runners"
+            title="Runners"
             icon={<ServerIcon className="size-3.5" />}
           >
             <SettingsRow
@@ -311,39 +193,44 @@ export function RunnersSettings(): React.ReactElement {
           </SettingsSection>
         ) : (
           <SettingsSection
-            title="Providers & runners"
+            title="Runners"
             icon={<ServerIcon className="size-3.5" />}
           >
             <SettingsRow title="Loading the fleet" />
           </SettingsSection>
         )
+      ) : runnerId ? (
+        selected ? <RunnerDetailPage
+          key={selected.id}
+          runner={selected}
+          projects={bootstrap?.projects ?? []}
+          editable={(selected.editable ?? fleet.value.editable) !== false && (canEnroll || selected.editable === true)}
+          currentVersion={fleet.value.current}
+          onClose={() => onNavigate?.("/settings/runners")}
+          onSave={saveRouting}
+          onReload={reloadRunner}
+          suggestion={suggestions[selected.id]}
+          loadHostHistory={loadHostHistory}
+          {...(canEnroll && fleet.value.editable ? { onRemove: removeRunner } : {})}
+        /> : <SettingsSection title="Runner unavailable">
+          <SettingsRow title="This runner was removed or is not accessible." control={<Button variant="outline" onClick={() => onNavigate?.("/settings/runners")}>Back to Runners</Button>} />
+        </SettingsSection>
       ) : (
         <RunnersSectionView
           fleet={fleet.value}
-          suggestions={suggestions}
-          loadHostHistory={loadHostHistory}
           organizationName={bootstrap?.organization.name}
           projects={bootstrap?.projects ?? []}
-          onReloadRunner={reloadRunner}
+          onOpenRunner={(runner) => onNavigate?.(`/settings/runners/${encodeURIComponent(runner.id)}`)}
           spritePoolAttentionCount={poolAttention[""] ? 1 : 0}
           spritePools={(attentionOnly) => bootstrap ? <SpritePoolCard compact projectId="" canManage={bootstrap.actor.can_manage} attentionOnly={attentionOnly} onAttentionChange={onPoolAttentionChange} /> : null}
           {...(canEnroll ? { onAssist: () => {
             setAssistProject("");
             setAssistOpen(true);
           } } : {})}
-          {...(canEnroll && fleet.value.editable ? { onRemoveRunner: async (runner: FleetRunner) => {
-            await api.removeRunner(runner.id);
-            fleet.set({ ...fleet.value!, runners: fleet.value!.runners.filter((entry) => entry.id !== runner.id) });
-            await fleet.refresh();
-          } } : {})}
+          {...(canEnroll && fleet.value.editable ? { onRemoveRunner: removeRunner } : {})}
           enrollments={enrollments}
           {...(canEnroll ? { onEnroll: (name = "") => { setEnrollmentName(name); setOpen(true); } } : {})}
-          {...(canEnroll || fleet.value.runners.some((runner) => runner.editable) ? { onSaveRouting: async (runner: FleetRunner, routing: RunnerRouting) => {
-            await api.setRunnerRouting({ runner: runner.id, revision: runner.revision ?? 0, displayName: routing.display_name,
-              tags: routing.tags, state: routing.state, capacityLimit: routing.capacity_limit, projectIds: routing.project_ids, scope: routing.scope,
-              isolationTier: routing.isolation_tier, hostServices: routing.host_services, availability: routing.availability });
-            await reloadRunner();
-          } } : {})}
+
         />
       )}
       <Dialog open={assistOpen} onOpenChange={setAssistOpen}>
