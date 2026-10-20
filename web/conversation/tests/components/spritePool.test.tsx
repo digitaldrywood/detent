@@ -24,6 +24,7 @@ function mountProjectControls(options: {
   allocation?: typeof ProjectSpriteAllocation.Type;
   pool?: typeof SpritePool.Type;
   token?: boolean;
+  tokenRead?: () => Promise<Response>;
   mutate?: (input: Record<string, unknown>) => Promise<Response>;
 } = {}) {
   let allocation = options.allocation ?? initialAllocation;
@@ -44,7 +45,7 @@ function mountProjectControls(options: {
       return new Response(JSON.stringify(allocation));
     }
     if (String(input).endsWith("/sprite-pool")) return new Response(JSON.stringify(pool));
-    if (String(input).endsWith("/secrets/fly_sprites_token")) return new Response(JSON.stringify({ kind: "fly_sprites_token", present: options.token ?? true }));
+    if (String(input).endsWith("/secrets/fly_sprites_token")) return options.tokenRead ? options.tokenRead() : new Response(JSON.stringify({ kind: "fly_sprites_token", present: options.token ?? true }));
     throw new Error(`Unexpected request ${input}`);
   });
   vi.stubGlobal("fetch", fetcher);
@@ -65,6 +66,28 @@ function mountProjectControls(options: {
 }
 
 describe("Project Sprite count controls", () => {
+  it.each(["endpoint", "network"])("keeps decrement and Off available after a token metadata %s failure", async (failure) => {
+    let tokenAvailable = false;
+    const f = mountProjectControls({ tokenRead: async () => {
+      if (tokenAvailable) return new Response(JSON.stringify({ kind: "fly_sprites_token", present: true }));
+      if (failure === "network") throw new TypeError("Connection lost");
+      return new Response("{}", { status: 503 });
+    } });
+    await screen.findByText("Desired 2 · Actual 2 · Ready 0");
+    await screen.findByText(/Decrease or turn Off project Sprites/);
+    expect((screen.getByRole("button", { name: "Increase project Sprites" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Decrease project Sprites" }));
+    await screen.findByText("Desired 1 · Actual 2 · Ready 0");
+    fireEvent.click(screen.getByRole("button", { name: "Off" }));
+    await screen.findByText("Desired 0 · Actual 2 · Ready 0");
+    expect(f.writes.map((body) => body.desired_count)).toEqual([1, 0]);
+    expect(f.writes.map((body) => body.expected_revision)).toEqual(["7", "8"]);
+    tokenAvailable = true;
+    fireEvent.click(screen.getByRole("button", { name: "Reload Sprites" }));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Increase project Sprites" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByText(/Decrease or turn Off project Sprites/)).toBeNull();
+  });
+
   it("uses the project command for increment, decrement, Off and reload", async () => {
     const f = mountProjectControls();
     await screen.findByText("Desired 2 · Actual 2 · Ready 0");
