@@ -145,7 +145,7 @@ func scheduledTaskXML(cfg Config) string {
 	for _, argument := range cfg.Arguments {
 		arguments = append(arguments, shell.QuotePowerShellArg(argument))
 	}
-	script := `$env:` + ManagerEnvironment + ` = ` + shell.QuotePowerShellArg(string(ManagerScheduledTask)) + `; $env:PATH = ` + shell.QuotePowerShellArg(cfg.Path) + `; & ` + shell.QuotePowerShellArg(cfg.BinaryPath) + ` ` + strings.Join(arguments, " ") + `; exit $LASTEXITCODE`
+	script := `$env:` + ManagerEnvironment + ` = ` + shell.QuotePowerShellArg(string(ManagerScheduledTask)) + `; $env:DETENT_SERVICE_TASK = ` + shell.QuotePowerShellArg(serviceName(cfg.Name)+"-"+cfg.UID) + `; $env:PATH = ` + shell.QuotePowerShellArg(cfg.Path) + `; & ` + shell.QuotePowerShellArg(cfg.BinaryPath) + ` ` + strings.Join(arguments, " ") + `; exit $LASTEXITCODE`
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>` + html.EscapeString(cfg.UID) + `</UserId></LogonTrigger></Triggers>

@@ -1878,6 +1878,66 @@ func TestReplaceBinaryStagesWindowsReplacement(t *testing.T) {
 	}
 }
 
+func TestWindowsUpdateScript(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, manager, task string
+		wantRestart         bool
+	}{
+		{name: "scheduled task", manager: "scheduled-task", task: "detent.runner-S-1-5-21-1234", wantRestart: true},
+		{name: "manual"},
+		{name: "manual with inherited task name", manager: "foreground/manual", task: "detent.runner-S-1-5-21-1234"},
+		{name: "existing scheduled task", manager: "scheduled-task", wantRestart: true},
+		{name: "scheduled task with blank identity", manager: "scheduled-task", task: " ", wantRestart: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			for _, operation := range []struct {
+				name, source, backup string
+			}{
+				{name: "update", source: `C:\Program Files\Detent\.detent.exe.update`, backup: `C:\Program Files\Detent\detent.previous.exe`},
+				{name: "rollback", source: `C:\Program Files\Detent\detent.previous.exe`},
+			} {
+				t.Run(operation.name, func(t *testing.T) {
+					t.Parallel()
+					script := windowsUpdateScript(operation.source, `C:\Program Files\Detent\detent.exe`, operation.backup, 4242, map[string]string{
+						"DETENT_SERVICE_MANAGER": test.manager,
+						"DETENT_SERVICE_TASK":    test.task,
+					})
+					steps := []string{
+						`Get-Process -Id 4242 -ErrorAction SilentlyContinue; if ($null -ne $old) { $old.WaitForExit() }; exit 0"` + "\nif errorlevel 1 exit /b 1\n",
+						"move /Y \"%source%\" \"%target%\" >nul 2>nul\nif not errorlevel 1 goto done\n",
+						"if %attempts% GEQ 60 exit /b 1\n",
+						"goto retry\n:done\n",
+					}
+					if test.wantRestart {
+						steps = append(steps,
+							`$taskName = $env:DETENT_SERVICE_TASK; if ([string]::IsNullOrWhiteSpace($taskName)) { $taskName = 'detent.runner-' + [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value };`,
+							`$task = $scheduler.GetFolder('\').GetTask($taskName); $task.Stop(0);`,
+							`while ($task.State -eq 2 -or $task.State -eq 4) { Start-Sleep -Milliseconds 100 }; $null = $task.Run($null)"`+"\nif errorlevel 1 exit /b 1\n",
+						)
+					} else if strings.Contains(script, "$scheduler") || strings.Contains(script, "$task.") {
+						t.Fatalf("script restarts a task without a managed task identity:\n%s", script)
+					}
+					steps = append(steps, `del "%~f0"`)
+					remaining := script
+					for _, step := range steps {
+						index := strings.Index(remaining, step)
+						if index < 0 {
+							t.Fatalf("missing or out-of-order step %q:\n%s", step, script)
+						}
+						remaining = remaining[index+len(step):]
+					}
+					copyStep := "copy /Y \"%target%\" \"%backup%\" >nul 2>nul\nif errorlevel 1 exit /b 1\n"
+					if strings.Contains(script, copyStep) != (operation.backup != "") {
+						t.Fatalf("incorrect backup behavior for %s:\n%s", operation.name, script)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestExtractBinaryReadsWindowsArchive(t *testing.T) {
 	t.Parallel()
 
