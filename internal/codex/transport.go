@@ -154,7 +154,7 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 	cmd.Stderr = stderrWriter
 
 	procgroup.Configure(ctx, cmd)
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("start command: %w", err),
 			stdin.Close(),

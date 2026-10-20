@@ -79,7 +79,7 @@ func (b *AgentBackend) RunTurn(
 
 	procgroup.Configure(ctx, cmd)
 	startedAt := time.Now()
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		return runner.AgentTurnResult{}, errors.Join(
 			fmt.Errorf("start claude command: %w", err),
 			stdout.Close(),
