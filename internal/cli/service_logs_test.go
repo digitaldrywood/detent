@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,12 +12,13 @@ import (
 	"testing/synctest"
 	"time"
 
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/service"
 )
 
 func TestServiceLogRetention(t *testing.T) {
 	t.Parallel()
-	for _, manager := range []service.ManagerName{service.ManagerLaunchd, service.ManagerSystemd} {
+	for _, manager := range []service.ManagerName{service.ManagerLaunchd, service.ManagerSystemd, service.ManagerScheduledTask} {
 		t.Run(string(manager), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				root := t.TempDir()
@@ -261,5 +263,82 @@ func assertServiceLogText(t *testing.T, path, want string) {
 	data, err := os.ReadFile(path)
 	if err != nil || string(data) != want {
 		t.Fatalf("log %s = %q, %v; want %q", filepath.Base(path), data, err, want)
+	}
+}
+
+func TestScheduledTaskBootLogs(t *testing.T) {
+	t.Parallel()
+	for _, manager := range []service.ManagerName{service.ManagerScheduledTask, service.ManagerManual} {
+		t.Run(string(manager), func(t *testing.T) {
+			t.Parallel()
+			configPath := filepath.Join(t.TempDir(), "runner config", "global.yaml")
+			if err := globalconfig.Write(configPath, globalconfig.Config{APIVersion: globalconfig.APIVersion, Kind: globalconfig.Kind, Global: globalconfig.Settings{MaxConcurrentAgents: 2, Scheduling: globalconfig.SchedulingWeighted}, Projects: []globalconfig.Project{}}); err != nil {
+				t.Fatal(err)
+			}
+			outPath, errPath := service.LogPaths(service.Config{ConfigPath: configPath})
+			for _, path := range []string{outPath, errPath} {
+				stream := openServiceLogFixture(t, path)
+				if _, err := stream.WriteString("prior\n"); err != nil {
+					t.Fatal(err)
+				}
+				if err := stream.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var consoleOut, consoleErr strings.Builder
+			cmd := NewRootCommand(t.Context(), func(opts *options) {
+				opts.lookupEnv = func(key string) string {
+					if key == service.ManagerEnvironment {
+						return string(manager)
+					}
+					return ""
+				}
+			}, WithLoggerFunc(func(_ RuntimeSettings, stdout, stderr io.Writer, _ bool) *slog.LevelVar {
+				if _, err := io.WriteString(stdout, "stdout\n"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := io.WriteString(stderr, "stderr\n"); err != nil {
+					t.Fatal(err)
+				}
+				return nil
+			}), WithBootFunc(func(_ context.Context, cfg BootConfig) error {
+				if _, err := io.WriteString(cfg.Output, "boot\n"); err != nil {
+					t.Fatal(err)
+				}
+				if manager == service.ManagerScheduledTask {
+					if cfg.Output != cfg.serviceStdout || cfg.serviceStderr == nil {
+						t.Fatal("boot did not receive service streams")
+					}
+					stop := startServiceLogRetention(t.Context(), string(manager), configPath, logRotation{MaxSizeBytes: 7, MaxBackups: 1}, cfg.serviceStdout, cfg.serviceStderr)
+					stop()
+					assertServiceLogText(t, outPath, "")
+					assertServiceLogText(t, outPath+".1", "t\nboot\n")
+					assertServiceLogText(t, errPath, "")
+					assertServiceLogText(t, errPath+".1", "stderr\n")
+					if _, err := io.WriteString(cfg.Output, "after rotation\n"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return nil
+			}))
+			cmd.SetOut(&consoleOut)
+			cmd.SetErr(&consoleErr)
+			cmd.SetArgs([]string{"--config", configPath, "--headless"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if manager == service.ManagerScheduledTask {
+				assertServiceLogText(t, outPath, "after rotation\n")
+				if consoleOut.Len() != 0 || consoleErr.Len() != 0 {
+					t.Fatalf("service output escaped to console: %q, %q", consoleOut.String(), consoleErr.String())
+				}
+			} else {
+				assertServiceLogText(t, outPath, "prior\n")
+				assertServiceLogText(t, errPath, "prior\n")
+				if consoleOut.String() != "stdout\nboot\n" || consoleErr.String() != "stderr\n" {
+					t.Fatalf("manual output = %q, %q", consoleOut.String(), consoleErr.String())
+				}
+			}
+		})
 	}
 }
