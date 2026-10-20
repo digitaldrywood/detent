@@ -1153,8 +1153,8 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 				{ReceiptID: "timing_failed", Command: "make check-landing", HeadSHA: "head", TreeSHA: "tree", ExitCode: 2, Output: "[earlier output truncated]", OutputTruncated: true},
 				{ReceiptID: "timing_passed", Command: "make check-landing", HeadSHA: "head", TreeSHA: "tree", ExitCode: 0, Output: "check-landing finished: exit=0"},
 			}},
-			want:      []string{`receipt_id="timing_failed"`, `receipt_id="timing_passed"`, "unless a later receipt of the same command passed on the same head and tree", "suspected flaky test under INV-19", "do not demand that Rework diagnose it beyond its retained output"},
-			forbidden: []string{"prevents a passing review, even if omitted from criteria_evidence. Use"},
+			want:      []string{`receipt_id="timing_failed"`, `receipt_id="timing_passed"`, "unless a later receipt of the same command passed on the same head and tree", "a High defect under INV-19", `starts with "INV-19 High flaky test"`, "names both receipt_ids", "exercises source this change adds or modifies, report it at p1; it blocks this change", "report it at p2 without blocking an otherwise passing candidate", "do not demand that Rework diagnose it beyond its retained output"},
+			forbidden: []string{"prevents a passing review, even if omitted from criteria_evidence. Use", "p3 finding"},
 		},
 		{
 			name:      "native omitted patch reads pinned source",

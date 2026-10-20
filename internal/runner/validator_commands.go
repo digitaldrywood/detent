@@ -20,7 +20,7 @@ type validatorCommands struct {
 	mu               sync.Mutex
 	results          []gate.CommandResult
 	failure          error
-	validationFailed bool
+	failedValidation map[string]bool
 	run              workspace.ReviewCommandRunner
 	info             workspace.Info
 	issue            workspace.Issue
@@ -90,8 +90,16 @@ func (v *validatorCommands) execute(ctx context.Context, command string, validat
 	}
 
 	v.results = append(v.results, result)
-	if validation && result.ExitCode != 0 {
-		v.validationFailed = true
+	if validation {
+		key := result.Command + "\x00" + result.TreeSHA
+		if result.ExitCode == 0 {
+			delete(v.failedValidation, key)
+		} else {
+			if v.failedValidation == nil {
+				v.failedValidation = make(map[string]bool)
+			}
+			v.failedValidation[key] = true
+		}
 	}
 	return result, nil
 }
@@ -181,7 +189,7 @@ func (v *validatorCommands) apply(result *gate.ValidatorResult) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	result.Commands = slices.Clone(v.results)
-	if v.validationFailed && result.Verdict == gate.ValidatorVerdictPass {
+	if len(v.failedValidation) != 0 && result.Verdict == gate.ValidatorVerdictPass {
 		result.Verdict = gate.ValidatorVerdictWait
 		result.Summary += "\nHost validation command failed; passing test evidence is required."
 	}
