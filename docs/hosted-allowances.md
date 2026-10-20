@@ -225,7 +225,8 @@ administrator authority. Customer API keys do not acquire this authority.
 
 On Unix, SIGHUP reloads the existing `cloud.yaml` file. The full document,
 including restart-only fields, must parse and validate. The reloadable fields
-are `allocation.entitlements` and `allocation.billing.prices`. Existing plan
+are `allocation.entitlements`, `allocation.billing.prices`,
+`allocation.allowed_emails`, and `allocation.allowed_domains`. Existing plan
 versions and Stripe price mappings remain immutable; use a new version or price
 rather than changing one already stored. The entitlement policy, including
 usage-window settings, and the active billing price list publish as one
@@ -243,8 +244,14 @@ cannot be read or assigned through the entitlement API. Preparation and reload
 logs retain actor and reason. This replaces tenant-by-tenant application and
 compensating restoration. Startup never replaces persisted assignments or grants.
 
+After a successful reload, the entry applies the new sign-up allowlist to the
+next organization-creation permission check and the platform Sign-up allowlist
+read at `/api/cloud/platform/allowlist`. Empty email and domain lists allow anyone
+to create an organization. A failed reload retains the previous allowlist;
+existing organizations and sessions are unaffected.
+
 Listeners, origins, database/state paths, signing and provider credentials,
-platform membership seeds, attachments, allocation paths, capacity and allowlists,
+platform membership seeds, attachments, allocation paths and capacity,
 entitlement credentials, and billing settings other than prices require a
 restart. Reload logs list these fields and retain the running values, including
 for future tenant launches. SIGHUP does not restart the entry or tenant Hubs.
