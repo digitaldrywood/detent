@@ -1,0 +1,174 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+)
+
+func TestIssueIdentityReadsAreProjectScoped(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	base := time.Date(2026, 8, 7, 18, 0, 0, 0, time.UTC)
+	for index, projectID := range []string{"project-a", "project-b"} {
+		at := base.Add(time.Duration(index) * time.Minute)
+		if _, err := backend.RecordWorkflowPhaseEvent(ctx, WorkflowPhaseEvent{
+			ProjectID:    projectID,
+			IssueID:      "same-id",
+			Identifier:   "owner/repo#1",
+			IssueURL:     "https://example.com/1",
+			PhaseType:    WorkflowPhaseTypeLane,
+			PhaseName:    projectID,
+			Status:       "entered",
+			StartedAt:    at,
+			MetadataJSON: `{"provenance":{"origin":"unknown"}}`,
+		}); err != nil {
+			t.Fatalf("RecordWorkflowPhaseEvent(%s) error = %v", projectID, err)
+		}
+		if _, err := backend.RecordSchedulerDecision(ctx, SchedulerDecision{
+			ProjectID:  projectID,
+			IssueID:    "same-id",
+			Identifier: "owner/repo#1",
+			IssueURL:   "https://example.com/1",
+			Result:     SchedulerDecisionResultSkipped,
+			Reason:     projectID,
+			DecisionAt: at,
+		}); err != nil {
+			t.Fatalf("RecordSchedulerDecision(%s) error = %v", projectID, err)
+		}
+		sessionID, err := backend.StartSession(ctx, SessionStart{
+			ProjectID:        projectID,
+			IssueID:          "same-id",
+			Identifier:       "owner/repo#1",
+			IssueURL:         "https://example.com/1",
+			StartedAt:        at,
+			AgentBackendKind: "codex",
+		})
+		if err != nil {
+			t.Fatalf("StartSession(%s) error = %v", projectID, err)
+		}
+		if err := backend.FinishSession(ctx, sessionID, SessionFinish{
+			CompletedAt:       at.Add(30 * time.Second),
+			FinalState:        "completed",
+			ProviderSessionID: projectID + "-provider",
+			InputTokens:       int64((index + 1) * 100),
+			TotalTokens:       int64((index + 1) * 100),
+		}); err != nil {
+			t.Fatalf("FinishSession(%s) error = %v", projectID, err)
+		}
+		hostSession, err := backend.StartSession(ctx, SessionStart{
+			ProjectID: projectID, IssueID: "same-id", Identifier: "owner/repo#1", IssueURL: "https://example.com/1",
+			StartedAt: at.Add(time.Second), AgentBackendKind: "host", AgentRole: WorkerProcessRoleHostValidation,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := backend.FinishSession(ctx, hostSession, SessionFinish{CompletedAt: at.Add(time.Minute), FinalState: "completed"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	totals, err := backend.LifetimeTotals(ctx)
+	if err != nil || totals.Sessions != 2 {
+		t.Fatalf("host commands consumed provider lifetime totals: %+v err=%v", totals, err)
+	}
+	daily, err := backend.DailyTokenSpend(ctx, base)
+	if err != nil || daily.Sessions != 2 {
+		t.Fatalf("host commands consumed provider daily totals: %+v err=%v", daily, err)
+	}
+
+	for _, identity := range []IssueIdentity{
+		{ProjectID: "project-a", IssueID: "same-id"},
+		{ProjectID: "project-a", Identifier: "owner/repo#1"},
+		{ProjectID: "project-a", IssueURL: "https://example.com/1"},
+		{ProjectID: "project-a", IssueID: "same-id", Identifier: "owner/repo#1", IssueURL: "https://example.com/1"},
+	} {
+		timeline, err := backend.IssueWorkflowTimeline(ctx, identity)
+		if err != nil || len(timeline.Events) != 1 || timeline.Events[0].ProjectID != "project-a" {
+			t.Fatalf("IssueWorkflowTimeline() = %#v, %v", timeline, err)
+		}
+		decisions, err := backend.(IssueSchedulerDecisionStore).ListIssueSchedulerDecisions(ctx, IssueSchedulerDecisionQuery{Identity: identity})
+		if err != nil || len(decisions) != 1 || decisions[0].ProjectID != "project-a" {
+			t.Fatalf("ListIssueSchedulerDecisions() = %#v, %v", decisions, err)
+		}
+		session, err := backend.(ActivityStore).LatestIssueAgentSession(ctx, identity)
+		if err != nil || session.ProjectID != "project-a" || session.ProviderSessionID != "project-a-provider" {
+			t.Fatalf("LatestIssueAgentSession() = %#v, %v", session, err)
+		}
+		spend, err := backend.IssueTokenSpend(ctx, identity)
+		if err != nil || spend.TotalTokens != 100 || spend.Sessions != 1 {
+			t.Fatalf("IssueTokenSpend() = %#v, %v", spend, err)
+		}
+
+	}
+	for _, test := range []struct {
+		name         string
+		refused      bool
+		turns        int64
+		active       bool
+		wantSessions int64
+	}{
+		{name: "confirmed refusal", refused: true},
+		{name: "real failed turn", turns: 1, wantSessions: 1},
+		{name: "turn contradicts refusal", refused: true, turns: 1, wantSessions: 1},
+		{name: "active session", active: true, wantSessions: 1},
+		{name: "unknown zero-turn failure", wantSessions: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			identity := IssueIdentity{ProjectID: "project-a", IssueID: test.name}
+			sessionID, err := backend.StartSession(ctx, SessionStart{ProjectID: identity.ProjectID, IssueID: identity.IssueID, StartedAt: base, Model: "gpt-6.1-sol"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantTokens := int64(67)
+			if test.active {
+				wantTokens = 0
+			} else if err := backend.FinishSession(ctx, sessionID, SessionFinish{CompletedAt: base.Add(time.Minute), FinalState: "failed", Turns: test.turns, TurnStartRefused: test.refused, InputTokens: 60, OutputTokens: 7, TotalTokens: wantTokens}); err != nil {
+				t.Fatal(err)
+			}
+			spend, err := backend.IssueTokenSpend(ctx, identity)
+			if err != nil || spend.Sessions != test.wantSessions || spend.TotalTokens != wantTokens || len(spend.ByModel) != 1 || spend.ByModel[0].Sessions != test.wantSessions || spend.ByModel[0].TotalTokens != wantTokens {
+				t.Fatalf("IssueTokenSpend() = %+v, %v; want sessions=%d tokens=%d", spend, err, test.wantSessions, wantTokens)
+			}
+		})
+	}
+}
+
+func TestIssueIdentityReadsRequireProject(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	tests := []struct {
+		name string
+		read func() error
+	}{
+		{name: "workflow", read: func() error {
+			_, err := backend.IssueWorkflowTimeline(ctx, IssueIdentity{IssueID: "issue-1"})
+			return err
+		}},
+		{name: "scheduler", read: func() error {
+			_, err := backend.(IssueSchedulerDecisionStore).ListIssueSchedulerDecisions(ctx, IssueSchedulerDecisionQuery{Identity: IssueIdentity{IssueID: "issue-1"}})
+			return err
+		}},
+		{name: "session", read: func() error {
+			_, err := backend.(ActivityStore).LatestIssueAgentSession(ctx, IssueIdentity{IssueID: "issue-1"})
+			return err
+		}},
+		{name: "resume", read: func() error {
+			_, err := backend.LatestIssueAgentResumeState(ctx, IssueIdentity{IssueID: "issue-1"})
+			return err
+		}},
+		{name: "spend", read: func() error { _, err := backend.IssueTokenSpend(ctx, IssueIdentity{IssueID: "issue-1"}); return err }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if err := tt.read(); !errors.Is(err, ErrProjectRequired) {
+				t.Fatalf("read error = %v, want ErrProjectRequired", err)
+			}
+		})
+	}
+}

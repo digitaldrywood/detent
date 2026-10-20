@@ -1,0 +1,2842 @@
+# Detent Hub API
+
+See [monthly budget enforcement](monthly-budgets.md) for organization/project caps,
+full-issue drain, hard-stop recovery and delayed-cost exposure.
+
+See [monthly infrastructure usage](sprite-usage.md) for Sprite observation
+imports, shared UTC aggregation, corrections, scoped API/MCP reads and provider
+metering limits through the existing usage owner.
+
+Detent Hub owns its SQLite database and exposes fleet coordination through an authenticated HTTP API. Clients must never open or copy the live database files.
+
+This page documents implemented behavior, including native collaboration, Changes and scoped runner enrollment through `/api/v2`. See [self-hosted operations](hub-self-hosting.md) for deployment, export/import and recovery, and [artifact deployment](artifacts-deployment.md) for independent durable storage. The [native Hub and Cloud RFC](cloud-hub-rfc.md) defines the broader architecture.
+
+Cloud members get one scoped key for direct API and MCP access from
+**Settings → API & MCP**, at the preserved `/settings/mcp` bookmark. See
+[API & MCP setup](api-mcp-setup.md) for organization URLs, tested requests,
+private credential handling, agent prompts and the browser approval contract.
+Cloud keys do not authorize compatibility, worker, runner or instance-admin routes.
+
+## Runner project diagnostics
+
+`GET /api/v2/organizations/{organization}/projects/{project}/runner-diagnostics`
+and the `runner_project_diagnostics` operator/worker MCP tool read the same
+project-scoped service. Optional selectors are `runner_id`, `issue_id`,
+`attempt_id`, `cursor` and `limit` (1–100). Select a runner when multiple enrolled
+owners report the project. The cursor belongs to one observation; restart paging
+when a newer heartbeat replaces it.
+
+The existing project-configuration heartbeat carries at most 256 reconciled
+attempt records and 256 latest issue admission observations. `truncated` describes
+that source bound; `next_cursor` describes page continuation. Counts retain the
+runtime unsettled count and separate Running, Claimed, deferred, durable-active
+and native-claim memberships. Local attempt IDs establish attempt deduplication;
+claim-only issue identities do not establish an attempt relationship.
+
+Provider completion is recorded before host finalization. Pending host operations,
+redacted error classifications, deferred retry timing and lease renewal are separate
+fields. Admission predicates describe recorded callback/planner decisions and their
+observation times, never a new diagnostic evaluation. Unknown error text is omitted
+in full, including customer content, URLs, paths and credentials. The read neither
+renews nor releases a lease, retries completion, nor changes scheduler/tracker state.
+
+Responses preserve runner and runtime observation times, Hub receipt time, current
+running build evidence and field-level unavailability. Historical update receipts
+never supply the running build. Offline, stale and older-runner observations remain
+explicit; an unreported decision is not an observed refusal. The normal release
+owner deploys the supported service and reporting runner builds before live
+operator acceptance. This API does not install a build or recover an attempt.
+
+## Work view preferences
+
+Hosted sessions expose `GET`, `PUT`, and `DELETE` at
+`/api/v2/organizations/{organization}/work-view-preference` for the
+all-projects Work view, and at
+`/api/v2/organizations/{organization}/projects/{project}/work-view-preference`
+for a project view. Each member reads and writes only their own preference;
+project scopes require a read grant. These endpoints accept session cookies,
+with the bootstrap CSRF token on mutations, and refuse bearer credentials.
+
+The response is `{ "query": "view=list&tab=closed" }`, or `{ "query": null }`
+when no preference exists. `PUT` accepts the same query field containing a
+serialized view query of at most 8192 bytes. `DELETE` restores defaults and is
+safe to repeat. Explicit URL parameters override the saved preference without
+writing it; user changes save after a debounce. Browser storage caches only
+confirmed Hub values under an account, organization, and view scope key.
+
+## Saved Work views
+
+`/api/v2/organizations/{organization}/work-views` stores personal or shared Work
+views. The collection returns `views` and an optional `next_cursor`; send that
+cursor as `?cursor=...` to read the next page. Pages contain at most 25 views
+and 256 KiB of JSON. Each saved view accepts at most 16 KiB of encoded input.
+An owner can store 50 views per organization, and an organization can store 200.
+Updates preserve that allocation; deleting a view releases it. Concurrent
+creates competing for the same free allocation can return a conflict.
+
+## Release notes
+
+Hosted sessions expose `GET /api/v2/organizations/{organization}/release-notes`
+and `PUT /api/v2/organizations/{organization}/release-notes/seen`. Mutations
+require the bootstrap CSRF token; bearer credentials are refused. The write
+marks the running release seen for the current organization and user, without
+a request body. Preferences persist across devices and only advance, so a
+rollback does not make previously seen releases unread.
+
+The response contains `builds` newest first, `has_unread`, and an optional
+`next_cursor`. Each build includes `version`, `build_time`, `running`, `patch`,
+`unread`, `internal_count`, and `entries` with `category`, `text`, `pr_number`,
+and `pr_url`. `limit` defaults to 20 and accepts 1–100; pass `next_cursor` as
+`cursor` to read older builds. `has_unread` covers the whole feed, including
+builds outside the current page, and is also an additive field on app bootstrap.
+A member without a preference is treated as having seen the running release.
+
+The feed is generated and embedded during the binary build. Serving it makes
+no external requests. Conventional commit types `feat`, `perf`, `fix`, and
+`revert` map to New, Improved, Fixed, and Removed; internal changes are counted
+without publishing their text. Cherry-picks link their original pull request.
+Generic completion subjects use the first non-empty commit-body line. When
+that line has no meaningful title, the entry reads `Maintenance update` with
+the available original pull-request link and derived category.
+
+## Issue email notifications
+
+Hosted sessions expose `GET` and `PUT` at
+`/api/v2/organizations/{organization}/issue-notification-preference`.
+The response and `PUT` body are `{ "enabled": true }`. Each user controls
+their own preference, which defaults to enabled; mutations require the
+bootstrap CSRF token. Bearer keys and support impersonation cannot change it.
+Disabling the preference also discards that user's pending batches.
+
+Native issue filers and commenters with human actor identities receive
+transactional email for lane transitions, new comments, and added related
+links. Recipients must retain active membership and project read access.
+The actor's own action is excluded. Changes within one minute of the first
+event form one batch per issue and participant, persisted in the Hub database.
+Emails contain the issue number, title, transition or commenter, and links;
+they exclude issue bodies and comment text. Delivery runs after issue writes
+commit, and a send failure is logged without rolling back or retrying the write.
+
+Each email links to `/issue-notifications/unsubscribe?token=...` on a dedicated
+Hub, or `/organizations/{organization}/issue-notifications/unsubscribe?token=...`
+through Cloud's shared entry. The opaque link opts out of that issue without
+requiring a session and is safe to repeat. The shared entry forwards the token
+through the signed service boundary; it does not read or change issue content.
+
+## Project deletion
+
+Cloud owners and admins with a write grant on the selected project can call
+`DELETE /api/v2/organizations/{organization}/projects/{project}` with
+`idempotency_key` and `confirm_name` matching the current project name. The
+existing project settings screen requires a named confirmation before sending
+the request. Cancellation sends no mutation. Deleted project URLs and API
+references return not found, including for previously granted credentials.
+
+Deletion is an atomic tombstone, with no restore action. Project secrets and
+project access grants (member, API token, runner and unconsumed enrollment)
+are deleted. Issues, comments, runs, Changes, conversations, artifacts and
+attachment bytes, and audit and billing history are retained in storage but
+are no longer accessible through the project. The deleted project's name
+remains reserved. Retained storage remains subject to existing accounting.
+The connected GitHub repository, its issues and PRs, other projects,
+organization settings and shared runners are unchanged.
+
+Deletion is refused until live work leases, running attempts, open workspaces,
+queued or running scripts, unfinished conversation turns or messages, pending
+imports and GitHub writes have finished or been cancelled through their existing
+lifecycle. Sprite pool members that still use this project's token must be removed
+through the existing pool lifecycle first; organization-owned capacity is retained. No work is implicitly stopped by deletion. Once deleted,
+the project cannot accept new work, runner grants or repository intake.
+
+## Organization Sprite pools
+
+Hosted organizations expose `GET` and `PUT`
+`/api/v2/organizations/{organization}/sprite-pool`.
+There is one pool for all current and future projects; writes require owner/admin authority and the current
+`revision` (zero for initial configuration). Settings are `min_runners` (default
+zero), `max_runners` (default zero, disabled; at least the floor), `idle_seconds` (default
+300; range 30–86400), and `bootstrap`. Enabling requires nonempty customer
+bootstrap steps, hosted configuration and the organization secret store.
+The response includes current settings, every active member and the most recent
+20 deleted members, with lifecycle state, ordinary runner ID and last safe
+bootstrap progress log. The runner settings page exposes these reads.
+
+Native projects also expose `GET` and `PUT`
+`/api/v2/organizations/{organization}/projects/{project}/sprite-pool/allocation`.
+An owner/admin opts a project into managed members by writing `desired_count`,
+`expected_revision` (a decimal string, initially `"0"`) and `idempotency_key`.
+The organization pool must already be configured. Desired count is independent
+of runner job capacity and may exceed available capacity. Reads return
+`managed`, `desired_count`, `allocated_count`, `shortfall`,
+`provision_failures` and `revision`.
+Allocated count includes reserved and retiring members until deletion finishes.
+Replays return the original command response; reads return current allocation.
+Each failed paid provisioning attempt for the current revision increments
+`provision_failures`; after three, creation for that project pauses until the
+desired count is written again, which resets the count.
+
+The existing organization controller reserves members under the shared
+organization ceiling and reported provider limits. It retains existing members
+and assigns available slots to the oldest eligible unsatisfied project request, breaking
+ties by project ID, before satisfying new organization demand. Each member has
+one allocation owner. Managed projects accept work only on their own members;
+desired zero holds new claims, including workspace claims. Organization and
+manual runners remain available to projects that have not opted in. Manual
+adoption is not supported. Every new member is a fresh runner identity with one
+work slot. A managed member receives claims only after its runner's existing
+setup observation for the project passes, which includes the provider sign-in
+and repository checkout done once in the member's console. A Pi backend,
+which has no authentication-status contract, does not block readiness. A runner
+re-observes a project that is not ready at most every 30 seconds, so a console
+login is picked up without a restart. Before every paid
+provisioning step the controller re-reads the project's desired count; a
+reservation that no longer fits is cancelled before creation or retired before
+it can become eligible, so a completion after a decrement never dispatches.
+Decreasing desired count drains surplus members, preferring members that are not
+ready, then idle members, then busy ones: a draining member takes no new claims,
+keeps its credential so active work can finish and publish, and its Sprite is
+deleted only after the Hub holds no unreleased lease for it. An expired lease
+or offline heartbeat never proves deletion safe; the lease must be released by
+the runner, superseded through existing lease recovery, or released by an
+audited runner revocation. Organization members keep the existing idle and
+budget-retention checks, and downsizing never retires another allocation's
+members. Lowering the organization ceiling retires excess members across allocations,
+preserving desired counts and showing the resulting shortfalls. A project whose
+budget prevents creation does not block eligible requests or organization demand.
+
+Pool reads include each member's `status`: `provisioning`, `awaiting_login`,
+`awaiting_setup`, `ready`, `sleeping` (paused and wakeable through the existing
+Service restart), `unreachable` (credential revoked or expired, or the last wake
+failed), `draining` (retiring with unreleased work), `deleting` or `deleted`.
+A member awaiting login lists `waiting_for` steps, each with a `check`
+(`provider` or `github`) and the exact console `command`, such as
+`codex login --device-auth`, `gh auth login` and `gh auth setup-git`.
+
+Legacy per-project pools convert in place at schema upgrade: their floors and
+ceilings are summed, and their existing members retain Sprite names, runner IDs
+and project-token overrides. A forward migration restores totals captured before
+the historical capped cutover. If that cutover already deleted the legacy rows
+without capturing their totals, the original bounds must be supplied through
+the existing pool settings; the upgrade does not infer them from member counts.
+Administrators can then change the organization
+bounds through the existing pool settings. No project token is promoted
+implicitly. Luna's `promote_sprites_token` previews the first existing project
+token in organization project rank order as the organization default; an owner
+or admin must explicitly approve it. The preview is bound to that exact source
+token, and an existing organization token is never overwritten by promotion.
+
+Store the customer's Sprites organization token through the write-only
+`/api/v2/organizations/{organization}/secrets/fly_sprites_token` endpoint.
+Projects inherit this token, with their existing project secret endpoint providing
+a write-only override. Each use retains the supplying secret's encryption binding
+and audit scope. Pool calls use only `api.sprites.dev`, refuse redirects, audit
+each secret use, and bind each member to the organization used to create it.
+Replacing a token with one for a different organization cannot delete old
+members; restore authorized access to their original organization to finish
+cleanup. Removing the configuring principal's authority stops provider work.
+
+Customer bootstrap runs before enrollment, with `DETENT_ORGANIZATION_ID` and
+`DETENT_HUB_URL` set. It must configure legitimate provider authentication, Git
+credentials, repository checkout and dependencies in the runner's expected
+workspace. Deliver secrets through the customer's existing authorized secret
+service; do not store credential values in this readable script. The Hub then
+runs the pinned public bootstrap script with a fresh organization-scoped enrollment,
+pins the runner binary to its own released version, starts the ordinary runner
+Service and creates a post-setup checkpoint. Development builds cannot provision
+members. Arbitrary command output is suppressed; logs retain stage progress and
+failure status without provider or enrollment credentials. Enrollment does not
+prove provider authentication, checkout readiness or approved repository policy.
+
+Pool settings accept an organization-scoped `placement` object. Its `mode` is
+`blended` (local and Sprite runners eligible without preference weights),
+`sprites_only` (local execution excluded), or `local_first`. Existing settings
+and projects without a pool resolve to `blended`; omitting `placement` from a
+PUT preserves the saved policy. Changing placement affects new claims only.
+Runner owner allowlists, organization project rank, issue priority and age
+retain their existing scheduling owner; placement never preempts running work
+or modifies grants.
+
+`local_first` requires explicit positive `todo_threshold` and `overflow_slots`
+(1–100). There are no implicit numeric defaults and no overflow delay. At the
+threshold boundary, overflow becomes eligible; below it, warm Sprites cannot
+claim queued work. A Sprite still cannot claim an item with compatible free
+local capacity, even when it polls first. Overflow slots bound concurrent Sprite
+work, rather than provisioning one Sprite per queued item. `max_runners` remains
+the managed instance ceiling. Optional `max_sprite_slots` (0–100) bounds Sprite
+claims independently of instance count and warm capacity; zero preserves the
+existing runner/host/provider limits. Local-first also enforces `overflow_slots`
+as a concurrent Sprite-work limit, using the smaller bound when both are set.
+The configured warm floor remains independent of demand, limited to the
+overflow size in local-first mode; warm capacity does not authorize claims below
+the threshold.
+
+Only unleased, unanswered, dependency-ready, policy-compatible **Todo** work
+contributes demand. Backlog, other dispatchable states, unresolved dependencies,
+workspace items and incompatible model/host requirements never trigger overflow
+or state promotion. Capacity estimates apply approved requirements, runner and
+host ceilings, current runner health/availability, and reported shared-provider
+limits. Existing Sprite provider reports describe bootstrap compatibility; a
+first pool enrollment has unknown provider readiness until it reports capacity.
+Claims retain the runner's authoritative provider selection and admission gates.
+Exhausted Sprite provider accounts exclude Sprite work without excluding an
+independent eligible local account. Future monthly Sprite budget eligibility
+belongs in the existing admission owner.
+
+The existing lifecycle uses the same resolved placement snapshot for wake and
+provision decisions, and rechecks inside the creation transaction. Pending
+bootstrap and recent successful wakes contribute capacity once. Eligible paused
+members are woken before creation. The Sprite-pool API returns
+`placement_decision` with the resolved policy, ready Todo demand, compatible
+local capacity, Sprite usage, pending capacity, provisionable slots and the
+current explanation. Current admission reads and recorded routing refusals
+explain claim exclusions; these reads add no UI.
+
+Idle deletion drains members only after active host leases finish and preserves
+the current floor. Heartbeats, finish/release and the existing Hub maintenance
+cycle provide lifecycle triggers; no separate scaler or provider retry loop
+runs. Failed or interrupted bootstrap leaves a member for deletion; a later
+native scale-up may provision its replacement. PR publication and landing
+remain on the local runner.
+
+## Approved repository policy
+
+Every API claim requires an approved `policy_id`. Compatibility claims also
+supply exactly one `repositories` entry; native claims use their authenticated
+organization/project scope. Policies are resolved on the customer host. See
+[configuration precedence and approval](config.md#repository-policy-with-hub-execution).
+
+| Endpoint suffix | Method | Authority and payload |
+| --- | --- | --- |
+| `/api/v1/repositories/{owner}/{repo}/policy` | `GET` | Read current descriptor and approval provenance with a compatibility credential |
+| `/api/v2/organizations/{organization}/projects/{project}/policy` | `GET` | Read current descriptor, approval provenance and workflow apply history within native project grants (`limit`, `after`) |
+| Either policy endpoint | `PUT` | Instance administrator only; `expected_policy_id` (empty for first approval) and either a complete `policy` descriptor or `observed_policy_id` from the scoped onboarding read. Exact retries are idempotent; concurrent distinct replacements have one winner. |
+| Either policy endpoint | `DELETE` | Instance administrator only; `expected_policy_id`. Revokes current authority while retaining revision/lease history. |
+| `/api/v2/organizations/{organization}/projects/{project}/policy/observed` | `POST` | A runner with the `heartbeat` operation reports its resolved descriptor, including successful matches. The Hub retains the latest report per runner and returns distinct mismatches with all reporting runner IDs in `GET .../onboarding`. Conflicting configurations and previously approved reports are not new approval candidates. An enrolled runner may include `repository_source` alongside the descriptor: `repository`, `commit`, `default_branch`, `default_branch_head` and `default_branch_reachable`. Every new committed workflow definition reachable from the bound repository's default branch, including replacements of an approved policy, is applied through the existing atomic policy approval path as `repository-default-branch`. Replaying a historical approval does not replace current authority. Other reports remain pending. |
+
+Enrolled runner credentials receive the current approved descriptor and approval
+provenance from `GET .../policy`, without workflow apply history. Operator reads
+retain complete historical definitions and the existing `limit` and `after`
+pagination. Retained history therefore does not enlarge the runner's current
+execution contract.
+
+Hosted organizations approve through `PUT .../projects/{project}/onboarding/policy`
+(owner or admin); the generic `PUT .../policy` above stays instance-administrator
+only and is not served in hosted mode. Runners report each distinct resolved
+descriptor/provenance combination once, including successful matches that replace earlier mismatches.
+Only the latest observations from currently authorized runners are actionable.
+The MCP `approve_project_policy` tool accepts the same reference in `input`:
+`observed_policy_id` is the chosen `observed_policies[].policy.policy_id`, and
+`expected_policy_id` is the current `policy.policy.policy_id` (empty without an
+approval). Omit `input.policy` when approving by reference. The Hub resolves and
+validates the stored descriptor within the existing approval transaction; the
+full-descriptor path remains available. Unknown request fields and invalid
+field types are named in invalid-body errors.
+Previously approved descriptors retain their history; they are reported as
+configuration conflicts rather than newly generated policies.
+
+Native descriptors include `configuration`, containing shared project behavior,
+execution instructions and admission guidance. The existing approved policy
+revision is the authoritative configuration delivered to every native runner.
+Planning, validation, automatic promotion, review requirements, commands and
+permission grants are shared. Credentials, host paths, capacity, backend routing,
+active hours, isolation hooks and transport settings remain local. Native
+configuration/source digests and revisions identify the portable behavior and
+instructions rather than raw host-specific file bytes. Repository compatibility
+policies retain their original file/revision approval semantics.
+
+Native authored policy canonicalization version 3 omits local overlays whose
+filtered configuration contains only the schema marker or no keys and whose
+prompt is empty. Shared commands, permission grants and instructions still
+contribute to identity. Keep host paths out of authored prompt prose; runtime
+isolation context supplies the provisioned workspace and source checkout.
+Templates can use `{{ workspace.path }}` and `{{ workspace.source_root }}`
+without hashing the rendered host paths. Workspace roots resolve relative to
+each runner's project `workdir` in `global.yaml`.
+
+Upgrading to version 3 requires a one-time approval of the portable definition
+through the existing policy approval path. Version 1 and 2 snapshots remain
+verifiable and applicable; existing leases retain their pinned approval. All
+runners must use the same portable definition and canonicalization version
+before reporting one shared policy identity.
+
+For repository-controlled native workflows, enrolled runners compare the loaded
+definition with committed contents and verify ancestry against the configured
+origin's advertised default-branch HEAD. The Hub automatically applies eligible
+reports whose repository matches the project's checkout or integration binding.
+Feature-branch commits, uncommitted definition edits and reports without this
+provenance retain explicit approval through `detent hub policy approve` or the
+existing policy endpoint. Authenticated native inspection consumes the same
+approved shared definition as runtime; offline inspection describes the local
+proposal. The approval command explicitly proposes the selected local
+definition. The existing workflow refresh applies approved changes to idle
+runners without synchronizing files or pausing the project. Active leases keep
+their exact approved identity and prevent a replacement approval. No descriptor
+from another ref is automatically approved.
+
+Descriptors reject unknown JSON fields and validate all metadata, hashes and
+content-derived identities. Worker/operator tokens cannot approve or revoke a
+policy. Native cross-project and cross-organization reads follow existing grant
+checks. Native shared configuration is validated against its exact descriptor
+and gate metadata before storage or application. Host configuration and
+credentials are excluded from that payload. Conflicting runner reports without
+verified default-branch provenance do not change the shared definition.
+
+Every workflow application records repository, commit, previous and new
+`definition_digest`, `runner_id`, applying principal and timestamp atomically.
+`GET .../policy` and MCP `get_project_policy` return newest-first `history`;
+`history_next` supplies the next `after` cursor, with `limit` bounded to 1–200.
+Exact retries add no history. Manual approvals without a runner observation or
+Git revision retain empty values for unavailable provenance.
+
+Claim allocation checks approval and requirements in the lease transaction and
+persists the identity with the lease. Responses include `policy_id`; native run
+events must match it. Missing/stale approval returns `409 policy_mismatch` before
+allocation. Unsupported or unmatched requirements return `409 selector_no_match`.
+Approval can replace the current policy while agents are running. Existing
+leases retain their recorded policy revision; new claims require the current
+approved policy. Revocation denies renewals and run events but permits release.
+Legacy rows migrate without policy
+pins and cannot be reused through the API as approved execution claims.
+
+## Start the Hub
+
+Set a high-entropy bootstrap administrator token, then start the service on its loopback default:
+
+```sh
+export DETENT_HUB_ADMIN_TOKEN="$(openssl rand -hex 32)"
+detent hub serve --database /var/lib/detent/hub.db
+```
+
+The bootstrap token is inserted only when the Hub database has no bootstrap credential. Later restarts do not replace a token that was rotated or revoked through the API.
+
+The default listener is `127.0.0.1:7777`. A non-loopback `--listen` value is rejected unless either `--tls-cert` and `--tls-key` are both set or `--trusted-proxy` explicitly declares that a trusted reverse proxy terminates TLS. The proxy or host firewall must prevent clients from bypassing that proxy.
+
+Self-hosted instance administrators can call `POST /api/v2/admin/backup` with
+`{"output":"/private/backups/snapshot.db"}` to create an online SQLite snapshot
+on the Hub host. Success returns an empty `204` response. Output paths must be
+new, files are private (`0600`), and response bodies never contain the path or
+snapshot bytes. Project-scoped credentials cannot call it, and hosted Cloud
+Hubs do not expose it. See [backup and export](hub-self-hosting.md#backup-and-export)
+for snapshot consistency, offline maintenance and restore instructions.
+
+## Local board migration
+
+An operator can import a read-only copy of a retired `local_sqlite` or
+`github_local` store into an existing native project using
+`detent hub issue import-local`. See the [migration runbook](local-board-migration.md)
+for dry-run, stable store identity, lane mapping, GitHub onboarding prerequisites,
+and item-level transaction and replay behavior. The scoped command endpoint is
+`POST /api/v2/organizations/{organization}/projects/{project}/local-board-import`.
+
+## Authentication
+
+Send a bearer token with every control-plane and health request:
+
+```text
+Authorization: Bearer <token>
+```
+
+Tokens have one of three scopes:
+
+- `worker` registers and heartbeats machines, claims work, renews or releases leases, and appends fenced events.
+- `operator` reads state and performs typed workflow, dependency, priority, and queue-order mutations.
+- `admin` can perform all operations and create, rotate, or revoke tokens.
+
+Only SHA-256 token hashes and hash-derived fingerprints are stored. Plaintext is returned once by token creation or rotation responses, which carry `Cache-Control: no-store`. Token values are never included in Hub logs.
+
+Create and rotate scoped tokens with:
+
+```text
+POST   /api/v1/tokens
+POST   /api/v1/tokens/{id}/rotate
+DELETE /api/v1/tokens/{id}
+```
+
+Enrollment redemption accepts its separate one-time bearer token, which cannot call other APIs. `/api/v1/webhooks/github` uses GitHub's `X-Hub-Signature-256` HMAC authentication and never accepts a Hub token as a substitute.
+
+## Platform AI credit adjustments
+
+The Cloud entry accepts `POST /api/cloud/platform/organizations/{organization}/ai-credits`
+from a platform entitlement administrator (`admin` or `billing` role) with a
+current account session and its `X-CSRF-Token`, or from a bearer matching the
+existing entitlement-administrator service token. Organization keys, including
+organization-owner keys, cannot call this endpoint.
+
+```json
+{
+  "idempotency_key": "complimentary-pilot-1",
+  "amount_usd": "10.00",
+  "reason": "Complimentary pilot credits"
+}
+```
+
+`amount_usd` is a nonzero signed decimal string with at most six fractional
+digits. Positive amounts grant complimentary credits; negative amounts correct
+the balance and may leave it below zero. `reason` is required and bounded to
+500 bytes. The idempotency key contains 1–128 letters, digits, underscores or
+hyphens. AI credits must already be configured for the organization's active
+billing mode.
+
+The entry sends a signed service request to the tenant Hub's
+`/internal/v1/platform/ai-credits`. The tenant applies the balance and ledger
+row in one transaction on its open database. A successful response contains
+`organization_id` and the current `balance_micros` (one USD equals 1,000,000
+micros). Replaying the same key, amount, actor and trimmed reason returns the
+current balance without applying another adjustment. Reusing the key with
+different values returns `409 idempotency_conflict`; invalid amounts or reasons
+return `422 invalid_request`.
+
+Credit history and billing usage reports retain the `complimentary` kind,
+signed amount, timestamp, actor and reason. Account sessions record the
+administrator's email; the service token records `entitlement-administrator`.
+Stripe purchases, auto-fund and chat usage retain their existing ledger kinds.
+
+Organization-scoped runners enroll with `scope: "organization"` and an empty
+`project_ids` list. Routing can switch between `organization` and `projects`;
+omitting scope on existing project enrollments retains explicit project access.
+The runner owner may change its allowed projects; an organization owner/admin
+may also convert an existing project runner to organization scope. This routing
+change preserves identity, enrollment, project rank overrides, checkouts and
+provider logins, applies on the next refresh, and never releases active leases.
+Luna's `convert_runner_scope` uses the same routing command with explicit admin
+approval. Routing lists additional projects and links to their existing policy
+review in project settings; conversion approves no repository policies.
+Every claim still requires approved repository policy, supported isolation and
+available capacity. Shared runners choose the organization project rank before
+issue priority; `project_ranks` on a runner overrides the organization rank for
+those projects. Each project's checkout and `hooks.runner_setup` remain separate.
+
+## Scoped runner onboarding
+
+| Credential | Owner and lifetime | Revocation |
+| --- | --- | --- |
+| Enrollment token | Hub issues a grant for one organization, either scope `organization` with no project list or scope `projects` with explicit projects, operations and, optionally, host-generated runner/machine IDs; valid for 1–900 seconds and one redemption | Administrator deletes the unconsumed enrollment; expiry/revocation does not end an enrolled session |
+| Runner credential | Customer host generates a random 256-bit bearer credential; Hub stores its SHA-256 hash; valid for 24 hours from enrollment or renewal | Administrator revokes the runner; no resurrection by renewal, rotation, generic token rotation or ID reuse |
+| Provider/repository/storage credential | Customer login, keychain, workload identity or private host configuration; may outlive many runner sessions | Customer revokes it at its provider; revoking Hub access does not revoke this credential |
+
+Each logical runner has its own credential and an administrator-approved machine binding.
+`runner_` and `machine_` IDs are generated independently of hostname/display name.
+Renaming preserves both IDs. Reinstallation requires new IDs, a new credential
+and explicit enrollment; existing IDs remain reserved after revocation. Another
+enrollment or a legacy registration cannot silently take over an existing ID.
+Copying the private identity file copies bearer authority: never clone it into
+machine images or share it across hosts. Multiple logical runners on one host
+share the same machine ID and capacity ceiling through explicit enrollment
+approval. Hardware attestation is not implemented.
+
+### Runner routing authority
+
+Fleet reads include each runner's routing, revision, editability and, when
+editing is refused, the missing authority. Routing remains visible to
+organization viewers; work details remain restricted to readable projects.
+
+Owners and admins can change any runner's routing. Members need `manage_runner`
+on every currently allowed project and every project with an active lease on
+that runner. Adding a project also requires its `manage_runner` grant. These
+checks run again inside the mutation transaction. Unrelated projects do not
+restrict runner routing edits, including taking-work state and capacity.
+Organization-scoped runners can serve every organization project, so editing
+them or switching to organization scope requires grants on every current
+organization project.
+An unassigned runner with no active leases requires an owner or admin.
+Changing allowed projects additionally requires ownership of the runner.
+Organization-wide enrollment, removal and machine routing retain their
+all-project runner-management requirement. Scoped API keys must also cover
+every affected project and allow writes.
+
+### Register a runner with one command
+
+The Enroll dialog in the organization's runner settings asks for a display name
+and the projects the runner may work on, creates a token-first enrollment, and
+shows one command to run on the host:
+
+```sh
+detent hub runner register --url https://cloud.detent.build/organizations/org_example \
+  --token det_enroll_example --name "Build host" --capacity 2 --service
+```
+
+`register` does, in order:
+
+1. Generates the runner and machine IDs and a random credential on the host and
+   writes them to `identity.json` beside the runner configuration (default
+   `~/.config/detent-runner/`, private, outside any repository). An existing
+   identity there is reused, so a retry never creates a second runner.
+2. Redeems the token. The request carries the IDs, host name, display name,
+   capacity, version, OS and architecture, and the host credential, which the
+   Hub stores only as a SHA-256 hash. No provider or repository credential is
+   read or sent.
+3. Writes machine-only `global.yaml` once: the `client:` block (`hub_url`,
+   `identity_file`, `organization_id`, `display_name`, `capacity`),
+   `service_name`, and `workspace_root` (default `~/detent-runner`).
+   Existing configuration files are left untouched. Cloud owns the project list;
+   enrolled runners reject unknown keys at startup, naming the key paths.
+   Remove local `projects`, weights, priorities, scheduling, fair-share settings,
+   `global.agents.model_selection`, `client.native_projects` and other local
+   project policy defaults before upgrading. Nested unknown machine keys also
+   fail validation; the warning-and-ignore transition has ended.
+4. With `--service`, installs and starts a background service separate from a
+   local board's `detent` service on the same host. The default config path,
+   `~/.config/detent-runner/global.yaml`, keeps `detent.runner` (launchd
+   `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`).
+   New enrollments using other config paths append a stable hash of the absolute
+   config path to `detent.runner`, even when installed first. Naming does not
+   inspect installed services or depend on enrollment order. The name is stored in
+   `service_name`, so re-registration and updates target the same service.
+   Existing config names remain unchanged. Use a separate config directory for
+   each Hub enrollment; its credentials and service logs stay in that directory.
+   At startup, the runner reads its current allowed projects from Cloud, clones missing
+   linked repositories into `workspace_root/PROJECT_ID` using host Git
+   authentication, and loads `detent.yaml` and `WORKFLOW.md` from the repository's
+   current default branch. Existing matching checkouts under `workspace_root`
+   keep their directory and runtime project names so retained work can resume.
+   Project setup failures retain Cloud grants and do not prevent valid projects
+   from starting.
+
+`detent start` and `detent status` default to the runner service when the
+configuration has a `client.hub_url`, including older configurations without
+`service_name`. An explicit `service_name` selects that service. If launchd
+cannot bootstrap a disabled label, the error names it and prints the
+`launchctl enable` command to run before retrying.
+
+The token appears in the command because it is single-use and expires within 15
+minutes; once redeemed it grants nothing. To keep it out of shell history,
+omit `--token` and set `DETENT_RUNNER_ENROLLMENT_TOKEN` instead. A self-hosted
+Hub whose URL does not include `/organizations/ORG` needs `--organization`.
+Cloud-allowed projects use the Hub in place of the GitHub tracker their
+committed `detent.yaml` names, so the checkout needs no local override.
+`register` refuses an existing identity or configuration belonging to another
+Hub or organization. Model selection comes from organization/project settings
+in the Hub; local `global.agents.model_selection` is ignored.
+
+Organization defaults are available on hosted and self-hosted Hubs through
+`GET`/`PUT /api/v2/organizations/{org}/model-selection` and MCP
+`get_organization_model_selection` / `update_organization_model_selection`.
+Self-hosted organization operations require an organization-wide operator or
+administrator bearer token; project-scoped credentials cannot access them.
+Hosted organization operations retain their browser-session authorization.
+Updates supply `expected_revision` (a JSON string), `selection`, and
+`idempotency_key` for HTTP or `request_id` for MCP.
+Project overrides use `GET`/`PUT`
+`/api/v2/organizations/{org}/projects/{prj}/model-selection` or MCP
+`get_project_model_selection` / `update_project_model_selection`.
+Partial project settings override the organization default; a null project
+`selection` restores inheritance. Runners receive the effective selection from
+the Hub.
+
+With no settings configured, every organization, including on a self-hosted
+Hub, uses the seeded Codex selection: Sol (`gpt-6.1-sol`) at `high` for normal
+and complex work, Astra (`gpt-6-astra`) at `low` for planning and `medium` for
+validation, and Astra at `medium` for `complexity:very-complex` work. Per-issue
+effort is clamped to each stage's configured ceiling. Configure these defaults
+in the Hub, not in runner-local `global.yaml` or repository `detent.yaml`.
+
+`init` and `enroll` below remain for scripted setups that bind the IDs before
+the token exists.
+
+An enrollment created without `runner_id` and `machine_id` is token-first: it
+binds to the fresh IDs the host presents when it redeems the token, and the Hub
+records them on the enrollment at that moment. The host still generates its IDs
+and credential locally, the IDs must be unused, and the token can be redeemed
+once. The steps below bind the IDs up front instead.
+
+1. On the customer host, run `detent hub runner init --hub-url https://hub.example.com`.
+   It prints only runner/machine IDs and stores the credential under the OS user
+   config directory at `detent/runner/identity.json`. An explicit
+   `--identity-file` must be an absolute private path outside repositories and
+   ordinary workspaces. Initialization refuses to overwrite an identity.
+2. Send those public IDs to an instance administrator. The administrator creates
+   an enrollment using `POST /api/v2/organizations/{org}/runner-enrollments`:
+
+   ```json
+   {
+     "runner_id": "runner_0123456789abcdef0123456789abcdef",
+     "machine_id": "machine_fedcba9876543210fedcba9876543210",
+     "project_ids": ["prj_0123456789abcdef0123456789abcdef"],
+     "operations": ["read", "claim", "heartbeat", "events", "collaborate"],
+     "ttl_seconds": 300
+   }
+   ```
+
+   Use the actual IDs from initialization. The response contains `id`, `token`
+   and `expires_at` with `Cache-Control: no-store`. Deliver the token through an
+   approved private channel; never an issue, repository, shell argument or log.
+3. Supply it in `DETENT_RUNNER_ENROLLMENT_TOKEN` for the enrollment command and
+   run `detent hub runner enroll --organization org_example --display-name 'Build host'`.
+   Remove the enrollment variable from the host environment after the command.
+   `--enrollment-token-env` selects another variable name. No provider credential
+   is read or sent. The command sends its separate host-generated credential
+   over HTTPS, and the Hub atomically consumes the enrollment, registers the
+   machine, creates hashed authentication and installs the exact project grants.
+4. Configure the host scheduler using the private identity path:
+
+   ```yaml
+   client:
+     hub_url: https://hub.example.com
+     identity_file: /private/host-config/detent/runner/identity.json
+     organization_id: org_example
+     display_name: Build host
+   ```
+
+   Set `workspace_root` to the checkout directory. Substitute the real private
+   path and organization ID. `identity_file`
+   and `token_env` are mutually exclusive. An optional `machine_id` must exactly
+   match the enrolled ID. Cloud supplies the current allowed-project grants; no local mapping is needed.
+   The host retains its existing local model login/API-key configuration.
+
+| Operation grant | Permitted native operations |
+| --- | --- |
+| `read` | Capability negotiation and authorized project/issues/comments/history reads |
+| `claim` | Claim, renew and release fenced work leases in authorized projects |
+| `heartbeat` | Refresh only the authenticated machine's registration/heartbeat |
+| `events` | Submit typed, fenced run events for this runner's own leases |
+| `collaborate` | Create/edit issues and comments, transition workflow and edit dependencies within authorized projects |
+
+Grants must explicitly list at least one project and operation. No empty list
+means “all.” Enrolled runners cannot use v1, global health/outbox APIs, tenant
+administration or token-management endpoints. Administrators may replace project
+access through runner routing settings; operation grants require fresh enrollment.
+Generic token grants cannot widen runner authority. Claims, lease mutations and
+events check the individual runner's binding, organization, project and fencing,
+including when another runner uses the same host. A supplied `machine_id`, tag,
+capability or hostname never changes authority.
+
+## Named runners, host capacity and eligibility
+
+Repository `runners.profiles` declare requirements; they do not register hosts,
+assign tags or grant access. The approved policy descriptor pins the selected
+profile and requirements to each lease. Runner and host names are descriptive;
+selectors always use stable `runner_` and `machine_` IDs.
+
+| Selector | Deterministic behavior |
+| --- | --- |
+| Required tags | Every required tag must be present in administrator-owned runner tags. Tags are trimmed, lowercased, sorted and deduplicated at configuration/edit boundaries; canonical tags are lowercase ASCII tokens, at most 64 characters, with at most 32 distinct tags. |
+| Runner and machine IDs | Every supplied constraint must match exactly, together with all tags. Surrounding whitespace is trimmed in repository configuration; IDs are case-sensitive canonical lowercase tokens. Names never participate. |
+| Empty selector | Any otherwise authorized and eligible executor may claim. Legacy registrations retain this compatibility behavior. |
+| Unknown valid tag or ID | Work stays queued with `selector_no_match`; there is no fallback or selector widening. Invalid syntax is rejected during policy validation. |
+| Renames | Administrator renames preserve stable IDs, grants, tags and active leases. Worker registration/heartbeat cannot overwrite approved names. |
+| OS/architecture | Reported at enrollment, registration and heartbeat for operator visibility. Reports are capabilities, not grants or privileged routing tags. |
+
+Selection, health and capacity are checked within the atomic Hub claim transaction.
+An enrolled runner requires a heartbeat newer than two minutes; timestamps in the
+future fail closed. All unreleased, unexpired leases on a machine count against its
+shared host ceiling, including leases held by other runners and projects. Each
+runner also has an administrator limit and a reported local capacity; the lower
+value applies. Routing's optional `project_capacity_limits` maps authorized project
+IDs to independent ceilings from 0 to 10000 on that runner. These ceilings do not
+reserve capacity or grant access. Omission or null preserves overrides; an explicit
+map replaces them, including `{}` to unset all overrides. Removing project access
+requires explicitly removing its override in the same routing update; otherwise
+the update is rejected. A project absent from the
+map inherits the total capacity behavior. Changes to overrides require
+`idempotency_key` through the routing API; `update_runner_routing` uses its `request_id`. Both share runner
+revision conflicts and durable retry receipts. Lowering limits leaves active work
+and renewals intact, and refuses new slots until usage is below every applicable
+ceiling.
+
+A slot is an unreleased lease whose expiry is strictly after the Hub time. Verified
+native direct-landing members in the same machine/project/batch session group
+share one host slot and one slot per participating runner and project. Other
+leases count individually. Total, project and host limits are enforced together
+inside the existing claim transaction. Enrolled claims and expired renewals share
+the routing eligibility owner: project and total headroom form one runner capacity
+budget, and shared-host capacity is checked there without a second machine brake.
+Legacy claims retain the existing machine capacity owner. Capacity reads retain the existing total
+`desired`, `applied`, `effective` and status evidence; their `projects` map adds
+Hub-applied desired overrides (null means inherited), usage in slots, and effective
+project ceilings clamped by the effective total. Unknown total evidence remains
+unknown for positive project ceilings; an explicit zero is effective immediately.
+
+The first enrollment initializes the host ceiling from its capacity;
+subsequent shared enrollment and worker reports cannot raise it. Existing local
+pool, project and backend admission limits still apply in addition to Hub limits.
+
+To initialize another runner on the same actual host, choose a separate private
+destination and refer to the existing enrolled identity:
+
+```sh
+detent hub runner init --hub-url https://hub.example.com \
+  --identity-file /private/detent/release-runner.json \
+  --host-identity-file /private/detent/build-runner.json
+```
+
+This generates a new runner ID and credential, retaining only the machine ID.
+The administrator must set `shared_machine: true` in the new enrollment request.
+The host must already belong to that organization. Omitting explicit shared-host
+approval preserves collision rejection; neither an enrollment token nor a new
+credential can take over another runner's leases. Never copy a credential onto
+another computer to simulate a shared host.
+
+| Endpoint | Authority and behavior |
+| --- | --- |
+| `GET /api/v2/organizations/{org}/runners` | Instance administrator: fleet routing, host identity, platform, health, capacity and active-run eligibility. |
+| `GET /api/v2/organizations/{org}/runners/{runner}/routing` | That enrolled runner or instance administrator: public routing and active leases; no secrets. |
+| `GET /api/v2/organizations/{org}/runner-update/urgent` | Runner administrator: current urgent release request and revision (initially 0). |
+| `PUT /api/v2/organizations/{org}/runner-update/urgent` | Runner administrator: `expected_revision`, published semantic `version`, `confirm: true`, and `idempotency_key`. Marks that release urgent for every older enrolled runner. |
+| `PUT /api/v2/organizations/{org}/runners/{runner}/routing` | Instance administrator: `expected_revision`, `display_name`, `tags`, `state`, `capacity_limit`, `project_ids`. Replaces routing/access atomically; stale revisions return `409 revision_conflict`. Empty project access denies every project. |
+| `PUT /api/v2/organizations/{org}/machines/{machine}/routing` | Instance administrator: `expected_revision`, `display_name`, `capacity`. Capacity is shared by all bound runners. |
+| `POST /api/v2/organizations/{org}/projects/{project}/leases/{lease}/validate` | Owning runner: `fencing_token`. Revalidates authority, selectors and pinned policy within one transaction. The customer scheduler checks the returned binding against its private local identity before adopting or renewing work. |
+
+Runner availability uses `timezone`, string `windows`, optional `window_slots`,
+and `hard_deadline`. `window_slots` maps an exact normalized window string to a
+slot count from 0 to 10000; every key must name a window in `windows`. For example:
+
+```json
+{"timezone":"America/Chicago","windows":["Mon-Sun 22:00-07:00","Mon-Sun 07:00-22:00"],"window_slots":{"Mon-Sun 22:00-07:00":6,"Mon-Sun 07:00-22:00":2},"hard_deadline":""}
+```
+
+Enrolled runners cap their reported capacity at the active window's count.
+Uncounted windows retain their existing capacity, and capacity outside all windows
+is zero. Runner, host and reported-capacity limits still apply, so a window count
+can only lower capacity. Timezone and hard-deadline behavior are unchanged.
+The routing API and `update_runner_routing` / `list_runner_routing` carry these
+settings with the existing revision checks. `machine_use` is `shared` by default
+and accepts `shared` or `dedicated`; omitting it in a routing update preserves
+the current designation. It describes declared machine use and never detects
+a person through input devices or console sessions. Routing without counts omits
+`window_slots`; older runners ignore it and retain on/off availability.
+
+The Fleet page links to runner list/detail and project eligibility. Project views,
+including Runs, link to the same eligibility details. Runner detail includes active
+run policy, selectors, lease expiry and contextual authority exclusions. The configured
+Hub administrator connection can edit routing; an enrolled worker connection sees
+its own runner without edit controls. Dashboard mutation authentication still applies.
+
+An urgent release uses the existing `draining` state and enrolled update owner.
+All older runners stop accepting claims; active leases continue renewing and
+sessions finish before binary replacement and coordinated restart. The marker
+persists across Hub restarts and covers offline runners when they reconnect and
+older runners enrolled later. Matching post-start build evidence removes the
+urgency-derived drain; administrator-owned draining or disabled settings remain.
+The installed updater verifies the exact selected published artifact, signature
+and provenance. Automatic update opt-outs do not refuse this explicit operator
+request. An unsupported installation or failed verification retains the existing
+refusal receipt rather than claiming update success. MCP exposes
+`get_urgent_runner_update` and `mark_urgent_runner_update`; marking a release
+uses the existing material-action approval and all-project runner authority.
+
+| Change or exclusion | New dispatches | Active leases |
+| --- | --- | --- |
+| Draining | `runner_draining`; queued | May validate, renew and finish. |
+| Disabled | `runner_disabled`; queued | Validation, renewal and new Hub mutations are denied. |
+| Required tag removed | `selector_no_match`; queued | Affected validation, renewal and run events are denied. Unrelated tag edits preserve eligibility. |
+| Project access or credential revoked | No authority to dispatch | Further affected operations are denied; ownership never transfers to another runner on the host. |
+| Capacity reduced/full | `runner_capacity` or `host_capacity`; queued | Existing leases retain occupancy until release/expiry; no new lease exceeds the limit. |
+| Offline exact target | `runner_offline` or incompatible-caller `selector_no_match`; queued | Existing fencing and expiry remain authoritative. |
+
+Routing refusals do not create work attempts, consume failure retries or change the
+issue to Failed. The scheduler preserves their structured code as a scheduling
+deferral. Revocation is enforced on Hub operations immediately and on local execution
+at the next pre-start/renewal check. Work already executing on a disconnected host
+cannot be remotely undone; loss of renewal authority cancels the local attempt.
+Routing state, project access, host capacity and individual lease ownership survive
+Hub restart. The schema migration preserves existing identities and lease history.
+
+## Runner renewal, rotation and revocation
+
+| Endpoint | Authority | Behavior |
+| --- | --- | --- |
+| `POST /api/v2/organizations/{org}/runner-enrollments/redeem` | Enrollment bearer | Strict host identity/credential/machine metadata body; one transactional winner; replay, expired/revoked grant and wrong binding return 401; collisions return 409 |
+| `DELETE /api/v2/organizations/{org}/runner-enrollments/{id}` | Instance admin | Revoke an unconsumed grant |
+| `GET /api/v2/organizations/{org}/runners/{runner}` | That runner | Read its public identity, grants and expiry; no credential value |
+| `POST /api/v2/organizations/{org}/runners/{runner}/renew` | That active runner | Body `{}`; retain credential and extend expiry to 24 hours from Hub time |
+| `POST /api/v2/organizations/{org}/runners/{runner}/rotate` | That active runner | Body `{"credential":"<new host-generated credential>"}`; replace the hash and extend expiry atomically; previous credential stops working immediately |
+| `DELETE /api/v2/organizations/{org}/runners/{runner}` | Instance admin | Remove the runner from fleet, routing and eligibility; revoke all future authenticated access. Refuses active work with 422; repeat removal returns 204. |
+| `POST /api/v2/organizations/{org}/projects/{project}/machines/{machine}/heartbeat` | Owning runner with `heartbeat` | `display_name`, `capacity`, `version`, optional `os`/`architecture`; enrolled runners update reported capacity/platform and liveness, preserving administrator-owned names and limits |
+
+Hubs advertising `native_heartbeat_changes` accept an optional `change_cursor`
+on enrolled runner heartbeats. Send an empty string for the initial snapshot.
+The routing response adds `changes`: an opaque `cursor`, `reset`, changed
+`items` (`work_item_id`, string `revision`, `last_activity_at`), the project's
+approved `policy_id`, `capabilities_digest`, and a `claimable` queue hint.
+The existing routing response retains its runner update target and claim state.
+The cursor uses the board's project activity sequence and an observation time
+for activity recorded outside collaboration history. Invalid, expired, reset,
+or oversized deltas return `reset: true`; the runner performs a full project
+refresh before acknowledging the returned cursor.
+
+Runners retain the project snapshot and hydrate changed items before advancing
+their acknowledged cursor. Policy and capabilities reads are reused until their
+heartbeat identifiers change. Claims run only with the queue hint or after a
+slot frees, and the Hub continues to enforce policy, capacity, ordering and
+fencing when claiming. The heartbeat feed replaces list refreshes and dispatch
+long polling. Missing heartbeat fields retain the previous polling behavior for
+compatibility with older Hubs.
+
+Removal uses the existing credential revocation transaction. Active leases and
+unfinished attempts prevent removal; drain the runner and let its work finish
+first. Identity and machine records remain available to historical reads. The
+hosted fleet response excludes removed identities from `runners` and retains
+their display names and hostnames in `runner_names` for historical run labels.
+`GET /fleet?include=names` uses the same organization member authority and
+returns only `runner_names`, including active and removed identities. Name
+refreshes use this projection without reading Fleet quotas, routing or leases;
+the ordinary `GET /fleet` response retains its full usage contract.
+
+`GET /fleet?include=host_metrics&runner_id={runner}` reads one active runner's
+hourly host history for organization members whose credential can read every
+active project in the organization. Project-restricted credentials receive
+`404` because machine-wide metrics cannot be scoped to visible project activity.
+Removed and other-organization runners also receive `404`. Optional `from` and
+`to` RFC3339 timestamps select an inclusive start and exclusive end, with a
+positive range of at most 30 days and at most 720 rows. The default is the last seven days. Expired hours are omitted.
+Responses include metric counts, sums, extrema and averages derived from each
+metric's count; unavailable averages are omitted.
+
+`GET /api/v2/organizations/{organization}/runners/{runner}/capacity` and
+`get_runner_capacity` add an advisory `recommendation` to the existing capacity
+read. Capacity fields retain their meaning. Recommendations never change routing,
+capacity, slots or dispatch. Shared runners return `person_hours` and `free_hours`
+periods; dedicated runners return one `dedicated` period. Lower-slot availability
+windows declare person hours. Without those windows, person hours are 08:00–22:00
+in the runner timezone (UTC when unset). A host hour overlapping person hours
+uses the person reserve; run peaks are attributed by run start time.
+
+Each period requires 24 covered hours and 10 completed runs with peak memory
+and CPU/wall-time evidence. Covered hours use the minimum memory, CPU and disk
+sample count divided by 120, capped at one per hour. Sparse periods return
+`insufficient_evidence` and evidence counts without a slot range. The read uses
+retained completed host hours and up to 10,000 recent completed runs; `partial`
+reports run truncation. Running and infrastructure-interrupted attempts are excluded.
+
+The memory ceiling is floor((RAM minus reserve) / p90 run peak), capped by
+cores with a p90 CPU requirement of at least one core per slot. Dedicated and
+free hours reserve max(2 GiB, 10% RAM) and one core; person hours reserve
+max(8 GiB, 25% RAM) and two cores. Disk reserves max(20 GiB, 15% total);
+insufficient free disk yields zero slots. When observed disk growth correlates
+with lease occupancy, its p90 bytes per slot additionally caps slots. Growth is
+measured between consecutive sampled hours with unchanged disk capacity; idle
+growth and gaps do not become per-slot usage. The disk cap accounts for each
+hour's estimated background usage. Otherwise there is no measured per-slot disk
+estimate. GPU is not reserved.
+
+The range reflects the least and most headroom observed after estimating
+background memory and CPU from host metrics and lease-derived slot hours,
+within the resource ceilings. Any warn/critical macOS pressure, hourly mean
+Linux PSI memory `some` avg10 above 10%, or swap maximum growth of at least
+1 GiB between consecutive host hours with swap samples lowers both bounds by
+at least one. A pressure hour with at least one lease-derived slot-hour also
+caps both bounds at ceil(slot-hours) minus one. Idle or fractional occupancy
+below one slot-hour does not impose that cap. Unchanged or declining swap
+allocation alone does not count as pressure or add to `over_capacity_hours`.
+Available pressure evidence counts even when other resource samples are missing;
+those hours do not add resource coverage. Swap maxima show sampled allocation
+growth, not swap activity; PSI summaries cannot identify individual sample spikes.
+The evidence includes coverage, run counts, p90 memory and CPU, reserves,
+measured disk bytes per slot, slot hours and over-capacity hour counts.
+The result remains advice based on retained telemetry, including a zero range
+when observed pressure leaves no safe slot estimate.
+
+`recommendation.suggested_limit` turns the same hours into one advisory "Jobs
+at once" value: `limit`, `current`, `direction` (`lower`, `raise`, `hold` or
+`insufficient_evidence`), `hours_covered`, `saturated_hours` and up to three
+`reasons`. An hour counts when it has memory and CPU samples, and is busy when
+slots were in use. Shared runners leave person hours, as split for the periods
+above, out of coverage and saturation because the person's own work loads them;
+those hours still feed the low-disk reason and the adjacent-hour CPU and swap
+checks. A busy hour is saturated when memory pressure warned or was
+critical, PSI `some` avg10 averaged above 10, swap grew by at least 1 GiB over a
+swap-sampled previous hour, or CPU busy averaged 90% or more in it and an
+adjacent hour. Load average is not used. Fewer than 24 counted hours returns
+`insufficient_evidence` without a limit. When more than 5% of busy hours are
+saturated the limit lowers to the highest of the two levels below `current`
+whose hours (rounded slot use, at least three) stayed at or under 5% saturated,
+otherwise to `current` minus one, never below one. When saturation stays at or
+under 5% and every slot was busy (slot use at least 90% of `current`) in at
+least a quarter of the counted hours, it raises by one, up to 10,000. Otherwise
+it holds. Free disk under 10% in any hour adds a reason dated in the runner
+timezone and never changes the limit. The value is stateless and never changes
+routing, capacity or dispatch.
+
+Native Hubs advertise `runner_host_metrics` before runners include optional
+`host_metrics` in a heartbeat. A batch contains at most 24 summaries of at most
+1 KiB each. `host_metrics_acknowledged` identifies processed hours and restart
+segments in the heartbeat response. Each runner/hour stores one aggregate with
+at most 128 segment IDs; repeats do not write or change the aggregate. Once the
+segment limit is reached, additional segments are dropped, logged and
+acknowledged. Malformed or oversized summaries are dropped and logged without
+rejecting the heartbeat. Expired retries are acknowledged without storage, and
+existing native retention maintenance removes hours outside the 720-hour UTC
+window. Shutdown partials use ordinary heartbeat availability and lease rules.
+
+The existing `revoke_runner_identity` MCP operation performs the same removal.
+
+Hub time decides validity, with an inclusive start and exclusive expiry boundary.
+An invalid clock or time before issuance fails closed. Times are parsed before
+comparison, including fractional-second boundaries. There is no grace period or
+offline renewal of expired credentials: generate and enroll a new host identity.
+Clients renew automatically before requests when fewer than 12 hours remain.
+`detent hub runner renew` forces renewal; `detent hub runner rotate` generates
+and persists a replacement before sending it to the Hub. Credential-management
+operations cannot grant additional projects or operations.
+
+The host file includes a pending credential during rotation. A restart first
+tries that credential, then retries the same rotation with the old credential
+only if the pending one is unauthorized. A lost enrollment response is recovered
+by authenticating the already-persisted credential, without redeeming again.
+File locks serialize local credential maintenance; atomic private-file replacement
+preserves recovery state. Identity responses, audit records and CLI output never
+contain runner credentials. Identity audit rows record enrollment, renewal,
+rotation and revocation using stable actor IDs and Hub timestamps.
+
+Every request checks expiry and revocation against the owner database; there is
+no authentication cache. An already authenticated in-flight operation may finish.
+The enrolled scheduler treats subsequent authentication/authorization failure
+during lease maintenance as lost ownership, invoking its existing stop path.
+Previously granted leases remain fenced and expire through the existing lease
+recovery mechanism; revocation never transfers a running lease to a new host.
+It cannot forcibly erase credentials or stop an offline or hostile customer
+machine. Stop that host and revoke provider/repository access separately if needed.
+
+## Customer credential isolation and cleanup
+
+Keep runner identity in the service account's private config directory (0700)
+with a regular 0600 credential file. On Windows, provision the equivalent private
+service-account/profile ACLs; POSIX permission bits do not enforce Windows ACLs.
+Do not expose the runner identity file, enrollment variable, Hub admin token,
+provider login directory or storage configuration through repository files,
+ordinary workspaces, shared caches, artifacts or verbose shell tracing.
+Back up private identity only into customer-controlled secret storage.
+
+Use existing provider login or API-key facilities on the customer host. A trusted
+backend wrapper should select only the required provider environment variables
+or private credential mounts for the chosen backend. Run untrusted jobs under a
+separate OS account/container/VM with a restricted filesystem and environment;
+mount only that job's credential facilities. Environment variables and file mode
+bits do **not** protect secrets from code running with the same identity and
+execution context. Keep Hub runner authority in the control process's context,
+separate from the job. Neither the Hub nor these enrollment commands fetch,
+relay, store or validate provider/storage credentials.
+
+Use operator-owned wrappers and the existing hooks as this cleanup contract:
+
+- `hooks.before_run`: fail before execution if the approved sandbox, private
+  credential mounts and environment allowlist cannot be established. Hook child
+  process exports do not change the worker environment; perform injection in
+  the trusted backend launcher. Never echo credential values.
+- `hooks.after_run`: stop job processes, unmount credential facilities, remove
+  private job scratch and discard job-only capabilities. Make cleanup idempotent.
+- `hooks.before_remove`: verify teardown before ordinary workspace removal.
+  Both cleanup hooks are best effort and log failures; they are not security
+  boundaries or guaranteed crash cleanup. An operator-owned host janitor must
+  reconcile orphaned sandboxes after worker/host failure before reuse.
+
+Raw prompts, credential fields and artifact content are rejected by native event
+schemas. Explicit user-authored comments remain content and must not contain
+secrets. Encrypted provider-key provisioning through Hub is a future design
+option requiring authenticated recipient keys and a browser/control-plane trust
+model; no such relay is implemented.
+
+## Legacy token migration
+
+Migration 9 adds nullable expiry and separate enrollment/identity tables.
+Existing worker/operator/admin tokens retain their scopes, hashes, grants and
+non-expiring behavior; existing machine IDs and leases are not rewritten. A Hub
+restart or upgrade does not disconnect installations. Generic token creation,
+rotation and revocation still apply to legacy tokens; enrolled runners use the
+dedicated endpoints above. Legacy shared tokens retain their previous trust
+boundary and should only be used by mutually trusted clients.
+
+Migrate deliberately: initialize and enroll a new identity, stop legacy claims,
+allow existing leases to finish/release, switch native project configuration to
+`identity_file`, and verify claims/heartbeats with the new IDs. Then revoke the
+legacy token after every host sharing it has migrated. During overlap the old
+token remains authorized under its old scope. Never convert a shared token in
+place or reuse a legacy machine ID to transfer trust. Compatibility v1 projects
+can continue using their legacy configuration until their native cutover.
+
+## Work and fleet endpoints
+
+| Endpoint | Minimum scope | Purpose |
+| --- | --- | --- |
+| `GET /health` | any scoped token | Service, schema, repository, and outbox health |
+| `GET /api/v1/work-items` | any scoped token | Filtered, sorted work-item page |
+| `GET /api/v1/work-items/{id}` | any scoped token | Normalized item, graph, PRs, lease, workpad, and event timeline |
+| `POST /api/v1/claims` | worker | Atomically claim a requested item or the next compatible item |
+| `POST /api/v1/leases/{id}/renew` | worker | Renew with the exact fencing token |
+| `POST /api/v1/leases/{id}/release` | worker | Release with the exact fencing token |
+| `POST /api/v1/work-items/{id}/events` | worker | Append a session event with the exact fencing token |
+| `POST /api/v1/machines/register` | worker | Register or refresh a machine |
+| `POST /api/v1/machines/{id}/heartbeat` | worker | Update heartbeat, capacity, version, or capabilities |
+| `POST /api/v1/work-items/{id}/workflow` | operator | Change workflow state and enqueue its managed GitHub label |
+| `POST /api/v1/work-items/{id}/dependencies` | operator | Add or remove a Hub-authoritative dependency |
+| `POST /api/v1/work-items/{id}/priority` | operator | Change priority and enqueue its managed GitHub label |
+| `POST /api/v1/work-items/{id}/order` | operator | Change Hub-authoritative queue rank |
+| `GET /api/v1/repositories/freshness` | any scoped token | Repository synchronization health page |
+| `GET /api/v1/outbox/health` | any scoped token | Outbox counts and operator-action page |
+
+Worker events and operator mutations expose typed state changes only. They do not provide a generic GitHub request or arbitrary mutation surface.
+
+The legacy event upload accepts `kind: progress` with an optional typed `payload.step`: `plan`, `implement`, `test`, `review`, or `complete`. Unknown payload fields and event kinds are rejected. Existing locally recorded v1 history remains readable; it is not copied into native event payloads. New integrations should use the versioned v2 schemas below.
+
+## Work-item queries and cursors
+
+`GET /api/v1/work-items` accepts repeatable or comma-separated filters: `repository`, `workflow_state`, `readiness`, `priority`, `label`, `assignee`, `machine`, `lease`, `pr`, and `sync_health`.
+
+Supported sort values are `priority`, `created`, `updated`, `identifier`, and `workflow_state`; `order` is `asc` or `desc`. The default priority order uses priority, queue-rank presence, queue rank, creation time, repository owner/name, issue number, and internal ID. Every other sort also ends with repository owner/name, issue number, and internal ID, giving every page a stable total order.
+
+List responses contain an opaque `next_cursor`. Pass it back with the same sort and order. `limit` defaults to 50 and may not exceed 200. Repository freshness and outbox health use the same `limit` and opaque `cursor` convention. Work-item detail timelines use `timeline_limit` and `timeline_cursor`.
+
+Omit `work_item_id` from `POST /api/v1/claims` to claim next. Candidate selection and lease creation execute in one SQLite transaction; clients must not list candidates and then attempt a separate specific claim. Renew, release, and event requests must carry the positive `fencing_token` returned by the claim.
+
+## Native organization and project setup
+
+Each database receives a stable `hub_` identity and a local `org_` organization.
+Local operation requires no hosted account. Native projects, issues and comments
+use opaque `prj_`, `wi_` and `cmt_` IDs. IDs contain 128 random bits and survive
+restart and owner backups. Project issue numbers are display values; APIs and
+workers use immutable IDs. External references are optional.
+
+An instance administrator can list organizations with `GET /api/v2/organizations`,
+create another organization with `POST /api/v2/organizations` and `{"name":"Team"}`,
+and create a project with
+`POST /api/v2/organizations/{organization_id}/projects`:
+
+```json
+{
+  "idempotency_key": "create-project-example",
+  "name": "Example project",
+  "require_dependencies": true,
+  "states": [
+    {"name":"Todo","dispatchable":true,"terminal":false,"transitions":["In Progress"]},
+    {"name":"In Progress","dispatchable":true,"terminal":false,"transitions":["Review"]},
+    {"name":"Review","dispatchable":false,"terminal":false,"operator_only":true,"transitions":["Done","Todo"]},
+    {"name":"Done","dispatchable":false,"terminal":true,"transitions":[]}
+  ]
+}
+```
+
+Project state names and transitions are explicit; there is no prescribed workflow.
+A project created through the hosted client starts from a fixed template instead:
+`Todo` and `In Progress` (dispatchable), `Human Review` (neither dispatchable nor
+terminal, and not `operator_only`, so the orchestrator can move a completed run's
+Change Request there), `Merging` (dispatchable: an accepted Change Request waits
+there for the runner that lands it) and `Done` (terminal). `In Progress` may move
+to `Todo`, `Human Review`, `Merging` or `Done`; `Human Review` may move to `Done`,
+`Merging` or back to `In Progress`; `Merging` may move to `Done`, back to
+`Human Review`, or back to `In Progress`. A completed run whose published
+version the review policy already accepts moves from `In Progress` straight to
+`Merging`; any other committed change waits in the review lane.
+Hub migrations 36, 38 and 39 move projects whose workflow is exactly an earlier
+template onto it and leave customized workflows unchanged. A native project's Change Requests wait in the lane named by the
+runner's `auto_promote.source_state` (default `Human Review`), so a customized
+workflow needs that lane, non-`operator_only` and reachable from its active
+lanes, for completed runs to reach review.
+`operator_only` prevents workers from creating an issue in, or transitioning to,
+that state. `require_dependencies` defaults to true. Setting it false disables
+dependency readiness gating for that project while retaining scope and cycle
+validation. A resolved dependency has a terminal workflow state. This setting
+does not bypass lease ownership or machine capacity.
+
+Create a worker or operator token with the existing administrator token endpoint,
+then grant it project access with `POST /api/v2/tokens/{token_id}/grants`:
+
+```json
+{"organization_id":"org_example","project_id":"prj_example"}
+```
+
+Use the actual returned IDs. The grant operation is idempotent and converts the
+token to native-only access. Such tokens cannot use v1 or instance administration,
+including when their stored role is `admin`. Token rotation preserves grants;
+revocation prevents subsequent authenticated requests. The bootstrap administrator
+cannot be converted to a project token. Instance administration is deliberately
+separate from tenant access and hosted human membership.
+Enrolled runners use the scoped host identities described above.
+
+Every native project route requires both its organization and project grant.
+Unknown, guessed and inaccessible resource IDs return 404. Native machine IDs
+are bound to their organization and token principal; another token cannot take
+over registration or renew its leases. A legacy registration cannot overwrite a
+native machine. Native tokens cannot read legacy global lists through v1.
+
+## Native collaboration protocol
+
+`GET /api/v2/capabilities` reports server identity, the Hub's running `version`,
+supported protocol majors, event schemas, required native features, request size
+and page limits. Native
+clients negotiate major 2 and schema 1. A native claim supplies `protocol_major: 2`
+and `capabilities: ["native_issues", "scoped_collaboration"]`. Incompatible
+negotiation fails without switching tracker or scheduler.
+
+Runner issue detail and recovery reads with `claim` permission include optional
+`scheduling_eligible`. It combines the current lane, archive status and the Hub's
+authoritative dependency predicate, including dependencies outside the runner's
+read grants. Dependency details and public `dependency_ready` retain their normal
+visibility filtering. A false value refuses recovery or renewal; an absent value
+uses the existing project workflow and visible dependency projection for older
+Hubs. The field also advertises support for `cancel_attempt: true` on a lease
+release with reason `cancelled`. Recovery uses this only after rejecting a
+retained execution: the Hub releases the lease and records attempt cancellation
+in the same transaction. Ordinary releases leave attempt settlement with the
+execution controller so live worker cleanup and source publication retain their
+existing ordering.
+
+A person-filed native issue that enters Done gets `verification: {"state": "pending"}`, and its filer's issue email asks them to verify it. Worker, service-key, imported and origin-stamped issues never enter `pending`. The filer, or a member and above, answers with `POST /work-items/{id}/verification` or MCP `verify_fix`; a Reporter may answer only on issues they filed, which is a Reporter's only path out of Done. `verified` records `verified_by` and `verified_at` and keeps the issue in Done. `not_fixed` adds the required comment and moves the issue from Done to Todo with reason `user_requested`, so quality analytics count the reopen exactly as a manual one. Leaving Done clears the state. `GET /work-items` accepts `verification=pending` or `verified`. Verification never dispatches, blocks or lands work.
+
+Native issue `type` is required when a Reporter files and optional for other roles, including workers and machine reports. Untyped issues omit the field in reads. Members may edit the type. Reporters may edit only the title, body and attachment references on their own issues while in Triage; labels, priority, assignees, state and type remain refused. Once an issue leaves Triage, the response explains that it is already with the team and a comment can add details. Reporter edits do not confirm engineering issue-contract sections. Type edits appear in issue history, and labels remain independent of the type.
+
+Reporter REST, SSE and MCP reads are restricted to issues whose actor principal matches the caller's human principal, including personal keys and OAuth clients. Lists, search, exports, board counts and board deltas use the same ownership boundary. Other filers' issues return not found; dependencies, related links and attachment references to those issues are omitted. Reporter issue resources include `reporter_status`: Triage is `submitted`; Backlog and Todo are `planned`; In Progress, In Review, Rework, Merging and Blocked are `in_progress`; Done is `done`; Cancelled is `cancelled`. Cancelling an own issue still uses `move_item` to Cancelled. Filing, comments and `verify_fix` retain their reporter contracts.
+
+The following paths are relative to
+`/api/v2/organizations/{organization_id}/projects/{project_id}`. Worker and
+operator tokens can read and author collaboration; claims, machines and run
+events require worker scope. Instance administrators can perform these operations.
+
+| Method and path | Input or result |
+| --- | --- |
+| `GET /` | Project profile, states, transitions and readiness policy |
+| `POST /work-items` | `idempotency_key`, `title`, full `body`, configured `state`, optional `type` (`bug` or `change_request`), `report_context` (`url`, `app_build`, `browser`, `os`, `viewport`, `captured_at`; bounded single-line strings, unknown keys refused), `priority`, `labels`, `assignees`, import `provenance` |
+| `POST /work-items` (scheduled reporter evidence) | `idempotency_key`, `scheduled_validation` with `repository`, `run_id`, `run_attempt`, canonical `run_url`, pinned `head_sha`, and `conclusion: success`, `failure`, or `skipped`; no issue fields |
+| `GET /work-items` | Paged issues; optional exact `type` (`bug` or `change_request`); repeatable exact `state`, `label`, `assignee`, `priority` filters (OR within a dimension, AND across dimensions; at most 32 values and 4096 bytes per dimension). `q` matches title, project name or ID plus `#number`, and labels; without `include=work`, it also matches body. `include=work` adds compact body-free items, bounded current open selection, and complete-filter lane/running totals independent of cursor. `include=board` reads indexed lane pages with attempt/change card summaries and maintained scope totals; `include=summary` provides the byte-bounded MCP list projection with explicit detail omissions and continuation; it cannot be combined with `work` |
+| `GET /work-items/export` | Full stored work items and comments; repeatable `state` and `label` filters, `open`, `archived`, signed `cursor` and `limit` (default/max 500). OR within state/label, AND across dimensions, default excludes archived items. A 16 MiB page budget preserves full item content; `total`, `truncated`, `next_cursor`, `generated_at` and `freshness` report continuation and observation. Uses existing read scope and project grants; never refreshes linked sources |
+| `GET /work-items/{id}` | Full content, immutable scope, revision, authenticated author, import provenance, dependencies and optional external references |
+| `PATCH /work-items/{id}` | `idempotency_key`, `expected_revision`, supplied `type`, `title`, `body`, `priority`, `labels` or `assignees` |
+| `POST /work-items/{id}/workflow` | `idempotency_key`, `expected_revision`, target `state`, typed `reason` |
+| `POST /work-items/{id}/verification` | `idempotency_key`, optional `expected_revision`, `result` (`verified` or `not_fixed`), and `comment`, required for `not_fixed` |
+| `POST /work-items/{id}/dependencies` | `idempotency_key`, `expected_revision`, `related_work_item_id`, `operation: add` or `remove` |
+| `POST /work-items/{id}/dependency-reasons` | Source issue lease/fencing and `idempotency_key`; target `work_item_id` in the same project, `kind: blocked` or `unblocks`, `text`, current edge-set `basis`, and `expected_revision` of that reason |
+| `POST /work-items/{id}/comments` | `idempotency_key`, explicit `body`, optional import `provenance` |
+| `GET /work-items/{id}/comments` | Paged discussion with authorship, provenance, revisions, editor and timestamps |
+| `PATCH /work-items/{id}/comments/{comment_id}` | `idempotency_key`, `expected_revision`, explicit `body`; `deleted: true` soft-deletes the comment |
+| `GET /work-items/{id}/history` | Paged typed collaboration and run events |
+| `GET /work-items/{id}/versions/{revision}` | Immutable issue content snapshot |
+| `GET /work-items/{id}/comments/{comment_id}/versions/{revision}` | Immutable comment content snapshot |
+| `POST /machines/register` | `id`, `hostname`, `display_name`, `capacity`, `version`; registration also refreshes heartbeat |
+| `POST /claims` | Approved `policy_id`, `machine_id`, unique `session_id`, `ttl_seconds`, protocol negotiation, optional `work_item_id`, workflow and author/assignee/label filters |
+| `POST /leases/{lease_id}/renew` | `fencing_token`, `ttl_seconds` |
+| `POST /leases/{lease_id}/release` | `fencing_token`, typed `reason`; optional `cancel_attempt` for rejected recovery after the Hub advertises `scheduling_eligible` |
+| `POST /work-items/{id}/events` | Idempotent, versioned run fact with current lease and typed references |
+
+Dependency summaries include reader-scoped blocker and dependent numbers, titles,
+links, workflow state and live attempt start times. Reasons are display-only
+plain text, capped at 140 characters, with separate typed basis and revision
+fields. The basis hashes the sorted directional edge set. A reason write changes
+one issue and refuses an outdated basis or revision with `409 revision_conflict`.
+Reads omit stale text; cross-project edges suppress the corresponding sentence
+for all readers. Runners refresh stale reasons on outcome reporting and dependency
+mutations, including both endpoints, without changing lanes or eligibility.
+
+With project `duplicate_challenge` enabled (the default), native filing may
+return HTTP 409 with `code: possible_duplicates`, up to five
+`possible_duplicates`, and a `challenge_token`, creating no issue. MCP
+`file_issue` returns those challenge fields as a structured result. The agent
+reviews the returned candidates, using supported reads such as `work_item` and
+`work_comments` when needed, and explicitly decides whether they concern the
+same problem. When filing is already authorized and the evidence clearly
+establishes a distinct problem, proceed without another human question: repeat
+`file_issue` with the same `request_id` and unchanged content, the
+`challenge_token`, and `not_duplicate_of` containing the challenged issue
+numbers. The new issue links those matches as related. For an existing problem,
+use the existing issue and comment on its returned `work_item_id` within the
+caller's authorization instead of creating a duplicate. Ask the human only
+when overlap is genuinely ambiguous, a product decision is needed, or the
+proposed action exceeds authorization; never automatically dismiss candidates.
+This decision does not grant filing permission or confirm native issue-contract
+sections on behalf of a human.
+Tokens expire after one hour; expired filings need a new request identity.
+Confirmation deletes the token, while request replay retains its original
+result. Machine reports and linked GitHub intake are never challenged.
+
+Scheduled reporter evidence requires operator or administrator authority and
+the project's selected checkout repository. This report-only variant returns
+the report and the Hub's `recorded_at` receipt time without creating or changing
+an issue. A repository/run/attempt is recorded once per project; retries retain
+the original receipt time and conflicting reports are refused. Failure issue
+filing and deduplication remain separate writes through the same owner.
+Skipped reports record scheduled activity when the pinned commit was already
+attempted. They refresh reporting cadence without supplying green validation
+evidence or changing the last green time.
+
+The existing `dead_man` flow finding reports delivery stalled when landings stop
+despite candidates and a free slot, or scheduled validation goes silent or
+stays red. Its evidence counts identify `landing_stalled`, `scheduled_silent`
+and `scheduled_red`. Silence uses twice the median of up to twenty recent
+positive report intervals, with a six-hour minimum. Red requires repeated
+failures still reporting, with no green report for twenty-four hours; without
+a prior green, the first report starts that window. A green report clears the
+scheduled signal on the next health evaluation. Projects without any scheduled
+report history are excluded. Existing health reads, needs-attention surfaces
+and email delivery carry this flow finding; it creates no tracker issue.
+
+The `dependency_hold` flow finding reports delivery stalled when no candidate is
+claimable, a runner slot is free, nothing landed for thirty minutes, and, in
+a project that requires dependencies, dispatchable items have waited at least
+thirty minutes on dependencies held in non-dispatchable, non-terminal lanes. Its evidence counts `dependency_gated`, `held_blockers` and
+`free_slots`, and `work_item_ids` lists the held blockers.
+
+Rate signals listed in `baseline_unavailable` lack a comparable history, but
+absolute floors still report clear stalls with evidence reason
+`absolute_floor`: `retry_storm` at five same-signature failures in an hour (or
+twelve regardless of history), `stalled_active_item` after two hours without
+an attempt heartbeat, and `throughput_collapse` when nothing landed for six
+hours while Todo or active items have waited at least that long. Runner
+transitions that record `permission wait` or `lifetime limit` in their reason
+detail produce `unanswered_human_wait` and `lifetime_limit_hit`.
+
+Every work-item representation returned by create, get, list and update includes
+`web_url`. Hosted Hubs build this absolute link from the configured
+`hosted.public_url`, never from request Host or forwarding headers. Hosted
+browser links use
+`{public_url}/{organization_slug}/{project_slug}/issues/{number}`. The project
+board uses the same base without `/issues/{number}`, and changes append
+`/changes/{change_id}`. Earlier organization and project slugs, work-item ID
+URLs and legacy issue routes redirect to the current readable address. Slugs
+are generated from names, unique within their scope, and editable by owners
+and admins in settings; earlier slugs remain reserved. The same links are
+returned by MCP, which accepts readable issue URLs as scoped issue references.
+Non-hosted Hubs have no configured public URL
+or conversation app and return an empty string. Replayed mutations and historical
+work-item versions project the link using the serving Hub's current configuration;
+the URL is not immutable content.
+
+Collaboration mutations return the committed representation with status 200,
+including identical retries. Idempotency keys are scoped to the authenticated
+principal, organization and operation/resource. Reusing a key with different
+content returns 409 `idempotency_conflict`. REST mutation receipts outside
+conversation routes are retained for 24 hours; a retry with the same key after
+that is processed as a new request. Concurrent edits return 409
+`revision_conflict` with `current_revision`. Revisions, event sequences and fencing
+tokens are decimal strings on the wire. Mutations, their saved content versions,
+history and retry result commit in one SQLite transaction. Ordinary clients cannot
+update or delete history.
+
+Titles are limited to 500 bytes, bodies to 256 KiB, comments to 64 KiB, and requests
+to 1 MiB. There are at most 100 labels and 100 assignees, each at most 200 bytes;
+priority ranges from 0 (urgent) to 3 (low). Empty label/assignee arrays clear them.
+Unknown request fields and unsupported query parameters fail validation.
+Workflow reasons are `user_requested`, `worker_progress`, `validator_rework` and
+`dependency_ready`.
+Workflow mutations may include `reason_detail`, bounded to 8 KiB of UTF-8 text;
+the Hub preserves it in `workflow.transitioned` history. Orchestrator lane writes
+forward the lane ledger's reason as readable text through this field.
+Release reasons are `completed`, `cancelled`, `failed`, `released`,
+`work_item_hydration_failed` and `work_item_identity_missing`.
+
+Ordinary native work-item lists accept `q` (`query` on MCP `work_list`) for ranked
+full-text search of titles, bodies and comments. Search terms use stemming and
+prefix matching and combine with OR. Documents matching more distinct query
+terms rank first, followed by BM25 relevance and the ordinary
+list order. Legacy substring matches of titles, bodies, labels and identifiers
+remain included. Each search hit includes a short `snippet`; full-text matches are marked
+by brackets. Search composes with the existing exact filters.
+
+`created_after` and `updated_after` are inclusive RFC3339 timestamp bounds;
+`created_before` is exclusive. Combine created bounds to select one day. Offsets
+are supported and compared as instants. These selectors are available on REST
+and native MCP lists; snapshot-backed lists and the board projection reject them.
+
+Native issue lists accept `created_by` with a principal ID or `me`, alongside
+state, label, query and archived filters. `me` resolves to the authenticated
+human principal, including the owner of a personal key; service keys and worker
+credentials receive `invalid_request`. The filter uses the native filing actor,
+including for imported issues, and preserves project access checks. Issue reads
+include the filer's available display identity in `actor.display_name`.
+
+Native pages use `limit` (1–200, default 50) and an opaque `cursor`. Issue lists
+group items in configured workflow state order. Within nonterminal states,
+priority sorts first, then `last_activity_at` newest first; terminal states use
+activity alone. Missing priorities and activity sort last, and identifiers break
+ties. The first page retains matching item identities and SQL sort keys for the
+cursor's lifetime, including relevance scores and matched snippets for searches,
+so concurrent changes to state, priority, activity or filters
+cannot skip or repeat those items. New items appear in a fresh query. Each page
+loads current item details, so this is not a transactional export snapshot;
+a consistent export still requires a quiescent owner backup.
+
+Comment creation sequences and aggregate history sequences provide increasing
+page order. Signed cursors bind protocol, principal, organization, project,
+resource and query; they expire after one hour. Reuse with a different scope or
+filter fails. Restart preserves the signing key and retained issue sort keys.
+Cursors from the previous issue-number ordering require restarting the query.
+
+Dependency writes require access to both projects within the same organization.
+Cross-organization links are prohibited by the database and API. Transitive
+cycle detection and the graph edit execute in the same transaction, preventing
+two concurrent edits from jointly introducing a cycle. Dependency history changes
+the dependent issue revision, so stale graph edits conflict too.
+
+## Authorship and event custody
+
+The server derives `actor` from the authenticated token. Imported author IDs and
+names remain in `provenance`; they never grant authenticated user authority.
+Operator-authorized imports supply provider `github`, stable `external_id`,
+`author_id`, optional `author_display_name`, and source `created_at`, `updated_at`
+and `observed_at` timestamps. Local creation/update times remain server times.
+Repeated source IDs return the existing imported record and do not overwrite
+later native edits. [GitHub profiles and import](github-profiles.md) documents
+resumable history retrieval, explicit cutover, optional summaries and limitations;
+attaching provenance alone is not a claim that all external history was imported.
+
+Workers can edit their own comments. Operators can edit project comments, with
+the editor recorded separately from the original actor and provenance. Hosted
+users can edit or soft-delete only their own comments, regardless of organization
+role. Soft deletion clears the current body and sets `deleted: true`, preserving
+the original author, creation time, revision snapshots and attachment references.
+Deleted comments cannot be edited or restored. Explicit
+issue and comment content can contain code or secrets and is retained as
+collaboration data. The service does not promise that authored text is secret-free.
+
+History records have an event ID, organization/project, aggregate identity and
+sequence, type, schema version, server recording time, authenticated actor and
+typed data. `issue.created`, `issue.edited`, `comment.created`, `comment.edited`,
+`dependency.changed` and `workflow.transitioned` are server-generated. They refer
+to content revisions instead of duplicating full text in event data.
+
+Worker schema 1 accepts `run.started`, `run.finished`, `run.checkpointed` and, with the optional `native_runtime_evidence` capability, ordered `run.observed`.
+Their `data` requires `lease_id`, positive string `fencing_token`, and typed
+`run_`, `attempt_` and `policy_` IDs. Finished outcomes are `succeeded`, `failed`,
+`cancelled` and `interrupted`. Only checkpoints accept `artifact_ids`, at most 20
+typed `artifact_` IDs. Arbitrary URLs, signed download capabilities, raw prompts,
+transcripts, tool output, local paths, source, diffs and artifact bytes have no
+payload fields. The current lease and machine principal must match the item.
+Idempotent retries return the committed result; new events with an expired fence
+fail. A run outcome records a worker report, not a verified check or merge grant.
+The policy ID is `policy_` followed by its 64-character lowercase SHA-256 digest
+and must equal the approved descriptor pinned to the lease.
+
+### Health findings
+
+`GET /api/v2/organizations/{organization}/projects/{project}/health/findings`
+and the `health_findings` MCP read require the current project's read grant.
+They accept `state=open|resolved` (default `open`), an RFC3339 `since`, and
+`cursor`/`limit` paging (at most 100 findings). `since` includes findings seen
+or resolved at or after that time. The response includes `items`, an optional
+`next_cursor`, and the tenant detector's `last_tick_at` (null before its first
+successful evaluation).
+The HTTP endpoint additionally accepts `state=all`: open findings are always
+included, while `since` filters only resolved findings. Live consumers can share
+one read for open findings and recent resolutions.
+
+The Hub evaluates static health rules every minute using current state and
+at most 24 hours of recorded events. Findings and their native issue reports
+share a transaction with the successful tick. The existing machine reporter
+files diagnostic-only instance findings at Urgent with the infrastructure label
+into an existing nondispatchable, nonterminal state that is neither operator-only
+nor the reserved Triage state. Backlog is preferred; otherwise workflow order
+selects the first eligible state. If none exists, findings and the successful
+tick are retained without filing an issue.
+Other finding classes remain available through health reads without new issue
+reports. Reports remain attributed to the detector instance, even when the
+subject is a work item. Their bodies include `<!-- detent:no-dispatch -->` and
+diagnostic evidence, without generated repair acceptance criteria or human
+confirmation. Scheduled-CI repair reports follow their separate authorization
+contract. The detector does not claim work, change existing lanes, or make model
+calls.
+
+Finding reads include `filed_by: health_detector` and project-scoped `issues`
+links (`project_id`, `work_item_id`); issue bodies carry the finding ID, summary,
+next action, evidence and origin fingerprint. Changed evidence and reopened
+findings comment occurrences on matching open issues; unchanged observations
+do not repeat comments. Resolutions comment their time without closing issues.
+Terminal matches are already handled and remain unchanged. Existing human
+questions, holds, lanes, stronger priority, origin and imported history remain
+with the reporter owner. The operator can retire this project's external
+board-audit filing sweep after deploying the detector reporter.
+
+A finding preserves its ID and opening time while active and when
+reopened within 60 minutes of resolution. A later recurrence opens a new
+record with the same signal/subject fingerprint. Evidence lists are bounded
+to 20 IDs. Evaluations read at most 100 projects, 1,000 enrolled runners,
+10,000 current nonterminal items per tenant, and 10,000 recent events; an exceeded read
+bound or failed evaluation retains previous findings and the previous tick.
+
+Runner admission contexts also report `last_refresh_at` and `refresh_duration`
+(nanoseconds) from the project refresh owner. Existing runners can omit these
+fields; the detector uses enrollment time until refresh timing is reported.
+Human findings use current completion authority and active conversation
+questions, without reviving legacy worker question receipts. Recorded scheduler
+cycles are preferred for refusals, with reported capacity and approved policy
+as the fallback when cycle observations are absent.
+
+### Native runtime evidence
+
+With `native_runtime_evidence`, `GET /work-items/{item}/runtime` selects the
+latest fenced attempt or an exact `native_attempt_id` (typed native ID) or
+positive `attempt_id` (recorded local attempt ID). Selectors are mutually
+exclusive and ownership is scoped to the item and current project grant;
+ambiguous local IDs require the native selector. An absent selected attempt
+returns not found. An item with no recorded attempt returns explicit unavailable
+evidence. Older deployments return unsupported availability separately from
+grant denial.
+
+With `native_admission_evidence`, the same runtime read accepts a URL-encoded
+JSON `admission` parameter from the current registered runner. It contains
+`policy_id`, `observed_at`, and the runner's current `workflow_states`, `authors`,
+`assignees`, `label_include` and `label_exclude` claim filters. The JSON before URL encoding
+is bounded to 8 KiB, each filter to 32 values and each value to 128 bytes. Operator
+credentials cannot supply runner context. The existing single-item claim query
+evaluates those filters under current project grants and approved policy; no
+claim or scheduler event is written. Per-runner `admission` snapshots include
+runner revision, approved policy identity, observation times, existing refusal
+codes and unavailable predicates. Provider model requirements and home selection
+remain unavailable without actual evidence. `explain_item` projects observed
+refusals separately from historical scheduler decisions. An older Hub retains its
+existing runtime read with runner-specific selection unavailable.
+
+Candidate refusals preserve `no_claimable_work` and expose up to 100 authorized
+`unresolved_dependencies`, each with `work_item_id`, `project_id`, current
+`state` and `terminal`, when the shared claim dependency predicate excludes the
+item. Projects that do not require dependencies never report them as exclusion
+evidence. Per-runner snapshot `observed_at` and projected refusal `at` identify
+the current read. `other_native_candidate_exclusions` remains unavailable when
+dependency evidence does not establish all exclusions. `native_candidate_exclusion`
+remains unavailable for a generic refusal without authorized dependency evidence
+or a recorded scheduler refusal. When a recorded refusal is available, unknown
+current exclusion details remain `other_native_candidate_exclusions`.
+Truncated dependency evidence also marks `unresolved_dependencies` unavailable.
+These observations do not create recorded scheduler skips or analytics samples.
+
+With `native_admission_observation`, the existing registered-runner heartbeat
+accepts an optional bounded `admission` observation containing `context` and the
+`runner_revision` captured when that context was published. The Hub stamps
+`received_at` and stores the observation in existing machine metadata under the
+authenticated runner and project. Hosted `explain_item` reads that observation
+without accepting operator-supplied selectors. Current routing revision and
+approved policy must match, and both original selector and server receipt times
+must be fresh under the existing heartbeat window. Omitted observations do not
+freshen existing selectors; missing, mismatched or expired observations remain
+unavailable. Runner grants and machine identity remain authoritative.
+
+`GET /work-items/{item}/runtime/github-timings` requires both
+`native_attempt_id` and `runner_id`. The MCP work-read operation
+`github_scope_timings` takes those same selectors plus `project_id` and
+`reference`. Both reuse current project read grants and recorded attempt/runner
+ownership; runner credentials cannot select another runner. Reads inspect stored
+runtime evidence and make no GitHub or provider calls.
+
+Naturally completed native PR landings record at most 128 REST count keys and
+128 timing keys, with dropped-key counts, scope and observation timestamps,
+stage/step, endpoint family, protocol, query purpose, outcome, attempt/timed
+counts and nanosecond sums/maxima. The response includes the recorded native
+Change/version/head/merge identity. HTTP covers Do, body consumption and Close;
+token resolution is inclusive and can contain installation HTTP. Concurrent HTTP
+sums can exceed enclosing scope wall time. These values do not establish
+disjoint elapsed time, busy-wall, critical path, percentages or savings.
+Untimed durations are null; absent boundaries, build identity and sub-step wall
+timing have explicit unavailable coverage. This projection contains no raw URLs,
+queries, commands, prompts, credentials or credential attribution hashes.
+Historical receipts without timing snapshots remain unavailable; this read does
+not revive the retired legacy GitHub tracker refresh or satisfy its comparison.
+
+The typed snapshot includes the current native item, authentic last workflow
+transition and recorded scheduler decision, current Change readiness and
+enrolled runner routing/host/provider capacity. A current fenced lease is shown
+independently of the selected attempt, including a lease without a started run;
+lease reads omit private isolation configuration. Current candidate readiness is
+not full runner eligibility, and board counts or nil PRs cannot establish it.
+Historical decisions are recorded only when the existing scheduler evaluates
+them, with actor, item revision, source and server time; reads add no history.
+Declined claims record `scheduler.decision` with `outcome: skipped` and the
+existing refusal reason. Refusals are recorded once per item, runner and reason
+while the item revision and current Change version remain unchanged and no
+successful claim intervenes. Repeated polls do not append duplicate events.
+The runtime snapshot's `native_candidate_exclusion` contains the latest recorded
+refusal, including its runner, reason and item revision, even after a later
+claim succeeds. `explain_item` exposes it as historical evidence; it does not
+establish current ineligibility. Analytics `skip_reasons` counts these recorded
+events rather than current admission snapshots.
+
+`GET /work-items?include=board` returns compact `items`, matching `cards`
+(issue, status line, current attempt and change summaries), the durable project
+`sequence`, viewer-specific `grant_version`, and `work` totals. Board reads use the maintained card projection,
+without reading attempts or Changes per card. Their scope totals ignore lane
+and open/closed selection while respecting search, labels, assignees, priorities
+and archive selection. Board pages accept up to 2000 items and use signed
+keyset cursors; cursor/filter scope and expiry remain enforced. The client reads
+one initial page per visible lane and pages Backlog on demand.
+
+The hosted project activity stream accepts `board=true&since=<sequence>` for
+board frames. Each JSON `activity` frame has an SSE `id`, `sequence`, `gap`,
+`deltas` (ordered sequence plus previous/current card), `grant_version`, and scope `work` totals.
+A null current card removes the item from the board. The stream accepts the
+board's search, label, assignee, priority, archive and completed-window filters
+for its totals. `Last-Event-ID` takes precedence over `since` on browser
+reconnects. The Hub retains the latest 2048 card deltas per project; `gap=true`
+means the requested sequence is outside retained history and requires a new
+snapshot. A changed `grant_version` also requires a new snapshot: it fingerprints
+the viewer's readable projects, so dependency redactions update even when no
+card changes or the viewer reconnects after grants change. Otherwise reconnect
+replays missed cards, and unchanged ticks need
+no additional browser requests. Workspace and item-scoped streams retain their
+existing activity protocol.
+
+`GET /work-items?include=work` adds a compact `work` member to the existing
+inventory page. `work.lanes` contains state, total and observed running counts
+for the same authorized project and server filters, independent of the cursor.
+Running counts require a recorded running attempt with a current unreleased
+lease; In Progress membership is not evidence of a live worker.
+`work.as_of` is the server observation time. `work.items` selects at most the
+requested page limit of nonterminal items, ordered by live attempt, dispatchable
+state and descending issue number. `work.truncated` marks additional open items;
+state filters and the existing inventory cursor still navigate them.
+Both item selections omit issue bodies and linked-source snapshots in this
+projection; the existing item detail read retains full content. The inventory page uses a lane, priority and activity ordered snapshot with
+a scoped opaque cursor. Its `total` counts all items in that filtered snapshot
+and stays the same on continuation pages. Clients can omit `include=work` on
+continuations without changing cursor scope; state, open, archive and other
+filters must stay the same. Clients retain bounded per-item observations with known, unchecked,
+unavailable and partial coverage rather than inferring worker state from lanes.
+
+Ordered events may include `runtime`: local attempt/generation attribution,
+observed backend/model/effort provenance, phase intervals, heartbeat, bounded
+instruction profile, landing receipt and existing REST accounting. Attribution
+cannot change and heartbeat cannot move backwards in an attempt. Runtime
+freshness is unavailable without an observation, expired for future/old
+heartbeats or lost running leases, and available for recorded terminal
+observations. Lease renewal is not proof of agent activity.
+
+Activity spans contain hashes and allowlisted evidence labels, never command
+text, instruction contents or filesystem paths. The projection retains at most
+128 KiB, 64 instruction sources and 32 actions/span, with partial coverage,
+dropped/unpaired counts and no claim that reading an instruction caused an
+action. `board_session_history` provides offset/limit pages (1–200).
+Receipts, attempt lists, work history and explanations include profile metadata
+and explicitly identify omitted activity spans; full spans have their existing
+board_session_history owner. Exact runtime and attempt detail retain the bounded
+recorded profile.
+
+A landing observation names Change/version/head and either actual landed
+merge SHA/base/method or a bounded refusal kind. The Hub verifies actual landing
+against recorded Change authority; terminal attempt success alone cannot prove
+a ship. Configured command gates also record `landing.gate`: `command`,
+`exit_code`, `duration_ns`, validated `head_sha` and `tree_sha`, and up to 64 KiB
+of `output` with `output_truncated` when needed. The same receipt is available
+on the attempt and Change version. Historical receipts without `gate` do not
+establish that a command ran or passed. Duration measures command execution,
+excluding worktree preparation and scratch cleanup.
+
+REST data projects existing operation-header observations and attribution
+windows, with credential digests, resource, timestamp, HTTP status and the
+presence of a Used header. Selected-client counts exclude worker subprocesses,
+other clients and hosts; an unaccounted delta does not identify its consumer.
+At most 64 operation and attribution windows are returned, with dropped counts.
+This adds no quota capacity policy or aggregate reporting owner.
+
+The existing `explain_item`, `board_receipt`, `board_session`,
+`board_session_history`, `work_attempt_receipt`, `work_history` and
+`board_activity` operations delegate to this native application evidence
+through supported local and Cloud adapters. MCP results retain the 256 KiB
+bound and return unavailable on overflow. Native efficiency aggregates and
+unrecorded runtime data remain explicitly unavailable. Hub schema 59 preserves
+prior event history and refuses rollback when new event types would be lost.
+
+Tenant administrators read request traffic at
+`GET /api/v2/organizations/{organization}/diagnostics/requests`. The existing
+Diagnostics and Reports API responses and MCP `reports` response also include
+`requests` for administrators. Project-selected keys and other members do not
+receive tenant-wide traffic data. Admin keys with `all` project access can read
+the API and MCP report.
+
+The report covers the last completed hour, with UTC minute boundaries in
+`from` and `to`. `top_callers` and `top_routes` each return up to 20 rows sorted
+by descending `count`. Caller rows identify `caller_kind` (`runner`, `browser`,
+`mcp`, `ci`, or `anonymous`) and `caller_id`; route rows identify HTTP method
+and Echo route template, with IDs and query strings removed. Each row includes
+`count`, `sum_ms`, `p50_ms`, `p95_ms`, and `max_ms`. Percentiles are nearest-rank
+estimates from merged power-of-two microsecond histograms, bounded by the
+observed maximum; they are not averages of minute percentiles.
+
+Each tenant Hub aggregates requests in memory and flushes every minute to
+`<tenant-database-path>.metrics.sqlite`, using a separate SQLite connection and
+Goose schema. Minute rows retain caller, route, status class and latency for
+14 days. Neither the shared entry nor the host aggregates tenant metrics.
+
+The same flush folds requests into hourly rows per route template and status
+class, retained for 90 days. With `window=<duration>` (1h to 2160h) the
+endpoint also returns `route_latency` with `from`, `to`, `bucket` and
+`buckets`. Each bucket row has `from`, `route`, `status_class` (`2xx`, `4xx`,
+and so on), `count`, `sum_ms`, `p50_ms`, `p95_ms` and `max_ms`, for the 20
+busiest routes in the window. MCP `time_series` returns the same
+`route_latency` to administrators for its window, in buckets of at least one
+hour and at most 240 buckets.
+
+Authenticated runners use a UTC-minute request budget of
+`120 + 60 * effective capacity`, where effective capacity is the minimum of
+the host capacity, runner reported capacity, and runner capacity limit. This
+replaces the hosted `api_mutations` allowance for those runner requests; other
+callers retain the existing allowance. Excess requests return `429` with code
+`runner_request_budget` and `Retry-After` seconds until the next minute. The
+existing health detector opens an instance finding for the runner, including
+its top routes. Claims, lease renewal/release, machine heartbeats and runner
+credential renewal are exempt. Hub clients share the response backoff across
+ordinary requests and downloads, honor seconds and HTTP-date `Retry-After`,
+and allow exempt traffic through during backoff. A refused read or download
+waits out the window and is sent again, at most three times; a refusal without
+a usable `Retry-After` waits for the next minute. Other `429` codes do not
+start the backoff. Mutations are never replayed automatically.
+
+Native `analytics_dashboard`, `time_series` and `reports` return a paged
+`failure_signatures` read model per project. It groups recorded terminal errors
+and landing refusals (`conflict`, `base_protected`) within the half-open report
+window by a normalized first line. Signatures retain at most 256 UTF-8 bytes;
+examples retain at most 512 bytes of the recorded first line. IDs, hashes,
+path digits, timestamps and counts collapse to placeholders. Each group reports
+count, first and last seen, total failed-attempt usage cost and tokens, occupied
+slot-minutes, and at most 20 sorted work-item IDs with the distinct count and
+an omission flag. Usage and occupied time cover the whole selected attempt,
+even when it started before the failure window. The newest 1,000 failure records
+are selected; omitted records set the project partial flag and
+`failure_signatures_complete_population` unavailable marker. Group pages use
+`row_offset` and `limit` and preserve continuation under the MCP byte bound.
+
+Five matching failures on one work item within an inclusive 60-minute span
+classify as `retry storm`. Otherwise backend startup, protocol and workspace-hook
+failures classify as `infrastructure`, landing refusals as `merge`, and remaining
+failures as `attempt`. These read-time classes do not alter instance attribution,
+retry allowance or lane state. `explain_item.failure_signature` reports the latest
+failure signature and its count on that issue across the newest 1,000 failure
+records, with `partial` identifying an incomplete count. It is absent without
+failures. New terminal records retain a bounded, redacted first-line error and
+infrastructure class; provider response bodies and continuation lines remain
+omitted. Historical discarded error text cannot be recovered; stored provider
+metadata and finalizer errors remain readable fallbacks.
+
+### Rework and escape rates
+
+Native `reports`, `analytics_dashboard` and `time_series` expose `quality` per
+project; Cloud Reports uses the same project read. Windows are half-open and
+population reads are bounded to 1,000 records per source. Clipping sets
+`quality.partial`, lists `quality_complete_population`, and leaves percentages
+null. A zero denominator also yields null rather than a measured zero.
+
+`rework_percent` counts unique work items returned before landing by a review
+request or a Rework transition, divided by unique items worked in the window.
+Worked items include recorded Code/Rework attempts, working/review/landing
+transitions, returned items and landings. Multiple returns on one item count
+once. `escape_percent` counts unique versions landed in the window with a
+non-infrastructure escape detected by the window end, divided by versions
+landed in that window. Buckets use landing cohorts for the rate and detection
+time for escape counts and causes. An escape of an earlier landing remains in
+occurrence and cause counts without changing the current landing cohort.
+
+Each landing freezes the issue revision and body, required missing sections,
+acceptance criteria and the last approved validator review's criterion evidence.
+Snapshots are retained per version across later publications and issue edits.
+`get_change_version` returns `landing_quality`. Historical landings without a
+snapshot remain readable but require a human override for contract attribution.
+
+Reopening Done detects an escape against the latest preceding landing. Its
+workflow event ID is the occurrence identity. Until classified, it remains in
+counts with `pending_classification`; no cause is inferred from timing or from
+an absent historical snapshot. Reverts and attributed scheduled failures are
+registered by an evidence assessment through the existing Change discussion
+command (`POST .../changes/:change/discussion`, MCP `discuss_change`). Supply
+`version_id`, `body`, and an `escape` object:
+
+```json
+{
+  "occurrence_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "kind": "revert",
+  "observed_at": "2026-10-07T12:00:00Z",
+  "cause": "missing_criterion",
+  "evidence_reference": "revert commit eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "evidence_quote": "This reverts commit dddddddddddddddddddddddddddddddddddddddd",
+  "basis_quote": "Accept valid input"
+}
+```
+
+A read-only agent reads the occurrence and its immutable version context and
+returns an assessment. An authorized caller records that assessment; the
+classifier needs no source, issue, workflow or filing write authority.
+`underspecified_issue` quotes weak contract text or
+`Missing required section: <section>` from the snapshot. `missing_criterion`
+quotes a complete contract whose criteria did not cover the failure and leaves
+`criterion` empty. `validator_miss` names the exact covered `criterion` and
+quotes its evidence reference or behavioral assertion in `basis_quote`.
+`infrastructure` requires `instance_id`; its occurrence is attributed to the
+instance, omits the work-item attribution, and does not affect the change escape
+rate. Every recorded assessment requires the incident evidence reference and
+quote. Pending classifications remain explicit.
+
+A revert's occurrence identity is its revert commit SHA and its quote names the
+landed commit. A scheduled failure's identity is the existing scheduled evidence
+occurrence key and its reference is the run URL. It must quote an existing red
+scheduled-suite report; candidate inclusion or the pinned head alone is not
+causal attribution. A reopen assessment references the actual workflow event.
+Occurrence kind, detection time and source reference are stable across
+assessments. Repeated assessments count once; the latest assessment wins.
+A human browser-session caller can set `human_override: true` to replace the
+cause, and a subsequent agent assessment cannot replace that override.
+The discussion retains actor and evidence history. These writes never file
+issues, alter deduplication, reopen work or move workflow state. Existing
+scheduled-suite issue reporting remains the sole failure filing owner.
+
+### Organization attempt activity
+
+`GET /api/v2/organizations/{organization}/activity` and the `activity` MCP read
+serve the same tracker projection under current organization and project grants.
+Optional `project_id` and `runner_id` filters apply to running attempts, finished
+attempts and typical durations. `limit` bounds only finished attempts (default
+100, maximum 200). `from` and `to` accept RFC3339 timestamps or UTC dates, default
+to the last seven days, and must describe at most 90 days ending no later than now.
+
+`running[]` contains every visible attempt with a live lease, regardless of the
+recent window or analytics population cap. Rows identify the item, number, title,
+project, runner and attempt, with role in `stage`, current `phase`, attempt start,
+last recorded phase start in `stage_started_at`, and `stage_elapsed_seconds` at
+`observed_at`. Available links include `session_id`, live `workspace_ids`,
+`change_id` and `pull_request_url`. `finished[]` uses the same identities and
+links, plus `outcome`, `finished_at` and `stage_duration_seconds`. It is ordered
+by finish time descending, then attempt id descending, within `[from,to)`.
+Expired or released running leases project as interrupted, matching per-item
+attempt reads; their finish is the earlier lease release or expiry.
+
+`typical_durations[]` groups the Reports attempt population by project and role,
+combining models and efforts. It includes `count`, `seconds`, `p50_seconds` and
+`p90_seconds`, using the same sum of closed phase intervals for succeeded and
+failed attempts and the same percentile interpolation as Reports. Roles with no
+positive closed duration are omitted. The recent window selects overlapping
+attempts as Reports does; durations are not clipped to the window. Each project
+uses the existing 1,000-attempt analytics population cap. Clipping, missing,
+malformed or dropped phase history sets `partial`; missing timing fields are
+omitted rather than replaced with zero. The read adds no stored state or polling;
+clients refresh through the existing project event stream.
+
+### Ordered attempts and recovery
+
+`GET /work-items/{item}?view=recovery` with
+`X-Detent-Recovery-Projection: bounded` reads candidate recovery in one bounded
+response. The complete encoded response, including JSON escaping and envelope,
+fits the existing 1 MiB SDK limit. Source version, frozen policy identity/gates, claim/checkpoint identities, latest
+implementation/acceptance criteria and hold summary retain their authority.
+Command outputs use the existing excerpts and `output_truncated`. Security audit
+summary and finding prose use bounded excerpts marked `text_truncated`, preserving
+audit identity, verdict and every retained finding's ID, status and severity.
+If mandatory review identities alone exceed the review budget, reviews are omitted
+as a group and the exact hold summary and `read.omitted` remain authoritative;
+consume the original records through continuation before acting on that evidence.
+Landing audits share a 64 KiB budget across version and attempt receipt copies.
+An audit that exceeds the remaining budget retains its identity and verdict but
+marks `run_omitted` and omits the run. That incomplete run
+cannot satisfy audit validity; the precomputed hold summary and receipt gate
+result remain authoritative. `read.omitted` names each affected landing path;
+continuation retains the complete original run, including all finding states.
+Discussion
+and ordinary Change evidence have row and byte budgets; `read.omitted` identifies
+context available through `work_comments`, `get_change`, attempt reads and the
+scoped `read.detail_path`. Recovery consumers must read omitted context needed
+for their decision through those owners and follow their cursors.
+
+If combined evidence exceeds the response budget, `read.omitted` identifies
+projected frozen policy details or further omitted evidence. Complete policy
+remains in its original version record; a projected descriptor is not a policy
+approval document. Clients advertising `X-Detent-Recovery-Body: fragments` may
+receive `read.issue_body` with an authenticated cursor, digest and encoded byte
+count instead of inline instructions. This addresses only the `issue_body`
+record through the existing continuation. Its cursor also pins the issue
+revision. The SDK verifies scope, revision, contiguous offsets, record length
+and digest, decodes at most 256 KiB of issue body, and restores it before returning
+successful recovery. Failure aborts candidate hydration. Older clients retain
+complete inline instructions or an explicit refusal, never a successful partial
+issue. Optional retained history is never automatically reconstructed.
+
+`GET /work-items/{item}?view=recovery&limit=1` explicitly reads retained evidence,
+one record fragment per response. `continuation` identifies the scoped item,
+`section`, `record_id`, original `version_id`, base64 `data` (at most 64 KiB
+decoded), `offset`, `total_bytes`, record `sha256` and `next_cursor`. The cursor
+traverses reviews, checks, Change discussion, issue discussion, attempts,
+versions and Change metadata. Each read retrieves one record, not the whole
+history; large records continue before advancing. `section: complete` ends the
+traversal. Cursors retain the existing credential/query binding, pin the current
+Change version and refuse an edited record during fragmentation. Clients consume
+individual records; candidate hydration never reassembles the complete history.
+The authenticated worker `work_item` tool exposes this continuation with
+`project_id`, canonical `reference` and `view: "recovery"`. Repeat with the
+returned `data.next_cursor` as `cursor` until `data.section` is `complete`.
+The full ordinary review, command output, frozen historical policy and retained
+discussion remain available through this selector when other reads return
+excerpts or refuse a record that exceeds their result bound.
+
+Plain recovery reads retain their original contract and response-size refusal.
+Older Hubs ignore the projection header: a new runner still reads small recovery
+and preserves the original size refusal for oversized recovery, without a retry.
+Deploy the Hub before runners to enable bounded hydration; Hub rollback restores
+that same explicit refusal for oversized work. Older runners retain their prior
+behavior against either Hub version. No runner identity or configuration changes
+are needed for either order.
+
+The `fenced_run_history` capability extends schema 1 with a positive decimal-string
+`data.sequence` and `identity: {role, backend, model}`. Identity components are
+bounded to 128 identifier characters. The server derives machine, runner and Hub
+session identity from the authenticated lease. The policy digest remains pinned.
+One lease binds one ordered attempt; a run can span successive fenced attempts of
+the same issue. Sequence 1 must be `run.started`; subsequent sequences are
+contiguous. `run.finished` closes the attempt and cannot finish a successor.
+An identical sequence replay returns success without adding history, even when
+the command key changes. Changed content, gaps, identity changes, repeated starts
+and progress after completion conflict. Client occurrence times never order events.
+Legacy schema 1 events without sequence remain readable and writable for legacy
+attempts, but cannot be mixed into an ordered attempt.
+
+With `native_pre_provider_failure`, a failure before provider startup may begin
+and close an attempt with `run.finished` at sequence 1, without provider
+`identity`. It requires `terminal_failure` and positive local attempt/generation
+attribution in `runtime`; provider activity, usage, checkpoints, finalization,
+disposition and completion responses are excluded. The existing lease, runner,
+project and pinned-policy checks still apply. The terminal diagnostic retains
+its observation time, `stage: pre_provider` and a bounded redacted diagnostic.
+Attribution follows the recorded error class: infrastructure failures belong to
+the instance, while issue configuration and source recovery refusals belong to
+the issue. Timing alone does not establish ownership; unclassified failures leave
+attribution explicitly unavailable. Hook diagnostics contain only the hook name
+and exit status; hook output, commands, environment values and local paths are
+omitted.
+Existing attempt, runtime and MCP reads expose this receipt independently of a
+provider session. Older runners and unsupported Hubs retain explicit unavailable
+history; no attempt or provider metadata is backfilled.
+
+For native Code and Rework turns with a valid final `detent-status`, ordered
+`run.finished` data includes a `disposition` with `status`, `reason_code` when
+reported, blocker and human-action indicators, and `final_summary`. The summary
+contains the text before the final status fence, bounded to 8 KiB with UTF-8
+preserved. Attempts and recovery reads retain this disposition. Non-complete
+completion comments include the same summary and the reported reason; human-action
+parking comments preserve them through the existing human-attention path.
+
+`GET /work-items/{item}/attempts` uses the same authorized pagination contract as
+history. Attempts are ordered by the existing monotonic lease fence. The response
+contains effective identity/policy, last accepted sequence, server timestamps,
+terminal outcome and the latest retained checkpoint. A running attempt whose lease
+is released or expired reads as `interrupted`. Hub restart retains both the
+projection and append-only history; expired leases and attempts are not deleted.
+Pages are bounded to 1 MiB of encoded JSON, including continuation; a single
+record that cannot fit is explicitly unavailable rather than skipped.
+`view=blockers` omits only runtime observations at the SQL projection boundary
+and uses the existing 64 KiB history-page budget. Attempt reads also accept
+`view=recorded_blockers`, which applies the same projection and budget and also
+omits uploaded attachment evidence; the runner uses it for recorded blocker
+authority during observed-state and epic transition refresh. Fences, identity,
+status, revision, disposition and checkpoint remain intact in both views.
+`GET /work-items/{item}/history?view=blockers` keeps every event's identity,
+actor, ordering and timestamp plus revision, transition and run fence/attempt
+fields, before content/runtime omission. This preserves edit and operator hold
+evidence for the same blocker read. Full attempt, history and runtime reads
+retain their existing detail contracts and validation/landing evidence. Cursors
+are bound to the view as well as the authorized project, item and caller.
+
+The native scheduler hydrates full issue content, paginated discussion, attempts
+and history, including legacy events, before dispatch. Runner prompts receive this
+Hub context without consulting GitHub issue APIs. Checkpoints may carry the last
+reported typed Change/version/head reference; it is not an independently verified
+current Change or a review/merge grant. Use the authoritative
+[Change/version reads](#native-change-requests) for current delivery evidence;
+absent checkpoint references are omitted.
+
+Ordered `run.checkpointed` events require a bounded `handoff` object:
+
+| Field | Accepted values or format |
+| --- | --- |
+| `resume` | `resume_session`, `fresh_checkout`, `manual_recovery` |
+| `storage` | `git_ref`, `local_only` (legacy), `customer_store` |
+| `ref`, `commit_sha`, `tree_sha`, `base_sha` | Required with `git_ref` (`base_sha` optional): a `refs/detent/checkpoints/` ref and hexadecimal Git IDs; forbidden otherwise |
+| `availability` | `available`, `missing`, `inaccessible`, `unverified` |
+| `worktree_state` | `clean`, `dirty`, `unpushed`, `unknown` |
+| `head_sha`, `expected_head_sha`, `workspace_digest` | Optional hexadecimal Git commit IDs or workspace digest |
+| `external_effect` | `none`, `git_push`, `pr_create`, `provider_turn` |
+| `effect_state` | `none`, `pending`, `confirmed`, `ambiguous` |
+| `effect_id` | Typed opaque `effect_` identity for an external effect |
+| `change` | Optional typed `change_id`, `version_id`, and immutable `head_sha` |
+
+Customer-store checkpoints require artifact IDs and cannot assert `available`:
+independent durable receipt/integrity/access verification follows the
+[artifact access contract](artifact-access-contract.md). IDs convey neither a
+download capability nor proof of ownership or availability. Hub never receives
+workspace paths, provider session state, manifest contents, source, diffs, raw
+transcripts, storage credentials, signed URLs or artifact bytes through handoffs.
+
+A `git_ref` checkpoint names work the runner pushed to the project's own Git
+remote (INV-17): a commit whose parent is the item branch head and whose tree
+holds every uncommitted change, force-pushed with plain `git push` to
+`refs/detent/checkpoints/<work_item_id>`. The item branch is never rewritten,
+the ref raises no branch push event, and Hub stores only the reference. Runners
+push at each stage end, after agent turns that changed the worktree and at
+most five minutes apart while files change; an unchanged tree is skipped and a
+failed push is logged and retried at the next trigger without failing the job.
+Excluded paths stay on the machine; credential content or more than 20 MiB of
+unpublished objects refuses the push. Terminal workspace cleanup deletes the ref.
+
+Any runner restores the newest recorded `git_ref` checkpoint into a fresh
+workspace by fetching its exact commit; an identical local worktree is reused and
+any other is quarantined. Provider session resume is only an optimisation for the
+runner that still holds the session; otherwise a fresh session starts on the
+restored workspace. A legacy `local_only` checkpoint whose workspace is not on the
+claiming runner starts fresh from the branch or current Change version. Ambiguous
+Git/PR effects still require reconciliation by their source runner.
+
+Recovery placement never routes by where earlier work ran. It refuses only
+checkpoints reported missing or inaccessible, a current Change version without a
+verified Hub source bundle (recaptured on its source runner), and an uncertain
+Git/PR effect, which waits for its source runner. Missing source produces a
+recovery blocker rather than Human Review readiness.
+
+`GET /work-items/{item}/source-recovery` reports the source runner, checkpoint,
+current immutable version, retained-source availability, execution quiescence,
+selected destination and eligible destination runners. Runtime and explanation
+reads, including MCP `explain_item`, include the same recovery facts.
+`POST /work-items/{item}/source-recovery` and MCP `transfer_item` require work-write
+and runner-administration authority, a command request identity, the expected
+issue revision and exact `version_id`. The selected `destination_runner_id` is
+recorded and audited but no longer routes claims: any eligible runner restores
+the source. The command and its read are retired with INV-17 source transfer.
+The command records an issue edit and reuses dispatch generation without changing
+workflow lanes, human/delivery holds, Change versions, validation or reviews.
+
+Transfer requires acknowledged terminal execution and release of every lease,
+including a claim that has not started. Expiry is not quiescence. Active,
+partitioned, archived or terminal work and uncertain Git/PR effects are refused.
+It does not revoke Git credentials, force an unreachable process to stop, or
+recover unavailable copies.
+
+Native executions revalidate the pinned policy and current lease before startup,
+provider turns and epilogue hooks. Lease responses include `server_time`; the
+local deadline uses the remaining server lifetime minus request elapsed time and
+a safety margin (10% of TTL, capped at five seconds). Replaying an existing claim
+does not incorrectly grant a fresh TTL, and clock skew cannot extend authority.
+Renewal failure does not extend it. Loss of authority cancels the provider context;
+reconnection cannot revive that context. External epilogue hooks are skipped on
+claim loss, and local retention remains allowed. Hub outages use the existing
+scheduler backoff; no independent local scheduler starts and failure retry counts
+are preserved. Once ordered execution exists, worker issue/comment/dependency/
+workflow mutations also require the current `lease_id` and `fencing_token`.
+Off-lease human collaboration uses operator authority. Exact command replays may
+return a previously committed response after expiry, but perform no new mutation.
+
+Database fencing is not an exactly-once guarantee for external effects. An accepted
+Git push, PR creation or provider request can outlive a lost response or race
+cancellation. In-flight provider tool calls are bounded by process cancellation,
+not an atomic transaction with Hub. Reconcile an uncertain push against the exact
+remote ref and expected head, reuse an existing PR only after verifying its head
+branch, and use provider idempotency/session lookup when available. Never blindly
+repeat an ambiguous external write. Existing expected-ref/head and worktree
+preservation paths remain authoritative. The client retains an unacknowledged event
+and replays its exact sequence and command before advancing; a restart retrieves
+durable attempts rather than assuming the last request failed.
+
+## Worker connector inventory and compatibility
+
+`internal/hubclient/native_connector.go` supplies the existing connector interfaces:
+
+| Orchestration or agent operation | Native route and behavior |
+| --- | --- |
+| Candidate discovery and adoption | Existing Hub scheduler, candidate query and fenced lease writer |
+| Refresh by issue ID or workflow state | Full native issue detail or paginated list |
+| Create issue, update body, title, assignee or priority | Typed issue mutation with revision check |
+| State update | Configured native transition |
+| Create/update workpad or discussion comment | Native comment mutation with edit revision |
+| Read comments/events for subsequent workers | Consume every authorized comment/history page |
+| Comment author authorization | Locally authenticated human provenance; imports confer no authority |
+| Add/remove native dependencies | Scoped, revision-checked graph mutation |
+
+Unsupported generic fields and absent optional connector capabilities fail
+explicitly. No native connector method delegates to a GitHub issue connector.
+GitHub repository/PR/CI/review/merge capabilities remain separate integrations;
+native Change Requests link to these integrations through optional external PR
+references and retain their identity when no GitHub PR exists.
+
+Schema migration retains existing issue/repository integer keys, GitHub node IDs,
+issue numbers, queue entries, dependencies, leases/fencing, work events and outbox
+links. Compatibility repositories receive stable project aliases in the local
+organization under the existing instance-administrator boundary. Project grants
+are an explicit administrator decision, never inferred from a current login.
+Existing v1 clients keep their compatibility IDs and content authority. Native
+rows have no mandatory repository or GitHub issue reference and cannot be fetched
+by guessing their integer keys through v1. Compatibility event history remains
+in v1; no arbitrary historical payload is automatically copied to v2.
+
+## Native Change Requests
+
+The `change_requests` capability adds stable `change_...` records to a project.
+Each record has a primary issue, additional issue links in the same project,
+title/discussion, and an ordered set of immutable `version_...` records. These
+records work in native and GitHub-compatible projects without changing issue-field
+ownership. Creating a Change Request does not create a PR or authorize a merge.
+
+A runner opens a native item's Change Request when a work run finishes with
+commits, under the run's lease, and then publishes the run's head as the
+change's version: `base_sha` and `merge_base_sha` are the attempt diff's base,
+`repository` is the https form of the checkout's origin remote, and `code`
+names the head commit under that repository with `availability` `unverified`.
+The runner also captures a Git bundle of the finalized head, excluding its base
+history, and publishes `source` metadata with base/head identities, bundle and
+raw Git diff SHA-256 digests, format and byte count, plus a base64 `source_bundle`.
+The Hub stores these bytes atomically with the fenced version and serves them
+through its version-scoped source read. Bundles are limited to 20 MiB; publication
+requests permit 28 MiB to accommodate base64 encoding. Version metadata reads
+contain no bundle bytes. Captured source excludes workspace setup and credentials.
+
+A rework run whose head and policy already match the current version reuses
+that version, including its existing review identity. Another head, a policy
+update, or explicit republication of a legacy version with retained source
+creates a new version with current validation. A forge
+commit URI marked `unverified` never establishes source availability. Rework and
+landing retrieve retained source through the scoped Hub read, verify its digests
+and Git identities, then use the existing refresh and validation path. An older
+committed attempt checkpoint does not supersede the authoritative
+current Change: a clean checkout at its recovered current head starts a fresh
+session, even when the older checkpoint has another head or workspace digest.
+Dirty work, manual recovery requirements, and pending or ambiguous forge effects
+retain their recovery requirements. Lease fencing and current-version publication
+checks remain mandatory, and an older review cannot validate a new head. A legacy
+version without retained bytes must exist in the authorized checkout; otherwise
+recovery refuses a fresh base checkout and requests resumption on the source-owning
+runner to republish the exact head with source capture.
+
+A version the Hub refuses (no https remote, unavailable source, a stale review policy) is
+reported on the run's completion comment and the Change Request stays a draft
+until the next successful run publishes one.
+
+Native issue `external_references` and `work_relationships` preserve provider
+`id` provenance and include `url`, `repository` and `number` when durable GitHub
+source identity is available. Imported identities use the source repository and
+GitHub number, independently of the native issue number. Linked identities use
+the canonical linked source URL.
+
+Change detail includes optional `source_issues`, deduplicated from the Change
+Request's canonical issue delivery links. The runner uses these references for
+fully qualified `Closes owner/repository#number` lines in landing PRs, without
+querying upstream issues. Reusing an open PR preserves its body and appends
+missing references; already merged PRs retain their historical attribution.
+Native-only changes have no synthetic source references.
+
+All paths below follow `/api/v2/organizations/{organization}/projects/{project}`.
+Mutations require the existing `idempotency_key`; workers publishing versions
+also supply their current `lease_id`, `fencing_token`, `run_id`, and `attempt_id`.
+
+| Method and suffix | Authority and result |
+| --- | --- |
+| `GET /work-items/{item}/changes` | Project-scoped linked Change Requests |
+| `POST /work-items/{item}/release-pick` | Project operator; associate a verified existing release PR with a dependent native delivery issue |
+| `POST /work-items/{item}/changes` | Worker/operator; `title`, `body`, optional `linked_issues` |
+| `GET /work-items/{item}/changes/{change}` | Consistent detail with versions, decisions, checks, discussion and current summary |
+| `POST /work-items/{item}/changes/{change}/versions` | Publish through the primary issue with `expected_version_id` |
+| `GET /work-items/{item}/changes/{change}/versions/{version}/source` | Worker/operator; bounded immutable Git bundle from the authorized project and Change version |
+| `POST /work-items/{item}/changes/{change}/discussion` | Append `body`, optional `version_id`; only operators can import `provenance` |
+| `POST /work-items/{item}/changes/{change}/versions/{version}/reviews` | Operator decision: `approved`, `changes_requested`, or `commented`, plus optional `body` |
+| `POST /work-items/{item}/changes/{change}/versions/{version}/checks` | Credential pinned in the immutable expected check set |
+| `POST /work-items/{item}/changes/{change}/versions/{version}/landing` | Worker under its lease: `merge_sha`, `base_ref`, `method`; records the landed commit and finishes the primary issue |
+| `GET /change-review-policy` | Inspect the approved native review/CI expectations |
+| `PUT /change-review-policy` | Self-hosted instance administrator, or hosted owner/admin with a target-project write grant; compare `expected_review_policy_id` and approve `policy` |
+
+Hosted approval requires an active organization owner/admin membership, a valid
+human session and CSRF token, and a write grant for the target project. Runner
+management grants are not required. Bearer tokens cannot replace human membership.
+The server rechecks the session, membership role and project grant inside the
+mutation transaction, including before returning a cached approval response.
+
+Before publishing, an administrator approves a review policy tied to the current
+repository `policy_id`. Approving a native project's repository policy seeds the
+default review policy when the project has none: no CI check is pinned, and
+`require_review` follows the repository policy's `review.human` setting, which
+defaults to false. A review policy that pins no checks follows that setting: approving the
+repository policy again rewrites it to the default, and an approval that expects
+no review policy may replace it. A review policy an administrator shaped by
+pinning checks is never rewritten; it goes stale when the repository policy
+changes and must be approved again. A repository policy whose gates the default
+cannot satisfy (a required check count) seeds nothing. Hub
+migration 40 applies the same rule once to every project with an approved
+repository policy, so projects approved before seeding existed can publish.
+Its `require_review` setting cannot weaken a repository
+human-review gate. `required_checks` cannot fall below the repository check count,
+and explicit independent checks retain their independent authority. Every check pins `name`,
+`principal_id` (an existing token with a project grant), `workflow_id`,
+`workflow_sha256`, `source` (`customer` or `independent`), and `max_age_seconds`
+(60 seconds to 7 days). Independent checks require operator credentials. Use a
+dedicated CI credential, kept outside the implementation runner's environment.
+
+The repository validator flag instead runs the existing validator agent in a fresh
+session after immutable publication. Its version-pinned verdict uses the review
+endpoint under the runner's fenced authority; the implementing session cannot
+submit its own verdict. A validator pass satisfies the validator gate, while
+human approval and explicit checks remain separate requirements. Rework retains
+the findings on the version and returns the item to the existing Rework lane.
+No separately provisioned operator credential is required by this flag.
+
+Each validator review stores `criteria_evidence` and a derived `not_verified`
+list against its immutable version. Every acceptance criterion has a `criterion`,
+`kind` (`receipt`, `test`, `attachment`, or `not_verified`), and `reference`. Receipt entries
+name a successful host-observed command and its reviewed `head_sha` and `tree_sha`.
+Test entries name the file and test and describe the independent behavioral
+assertion in `behavior`; tests that restate the implementation are flagged and
+excluded. Missing, duplicate, or unsupported entries become `not_verified`.
+Native Codex validators can read issue comments and attachments through the existing
+scoped read owners. Image reads verify the complete content digest and display the
+image to the validator. Attachment entries cite the returned host `read_receipt`
+IDs in `receipt_ids`, name the attachment and digest, and describe the observed
+visual outcome and its relevance to the reviewed source in `behavior`. The review
+stores these reads in `attachment_reads`, with attachment provenance and review
+head/tree identities. Download success or worker prose does not establish visual
+acceptance. Older captures remain usable when the affected UI is unchanged.
+Complete UTF-8 `text/plain` attachments of at most 32768 bytes can also support
+nonvisual criteria. Diagnostic producers follow the
+[bounded evidence publication contract](api-mcp-setup.md): publish JSON as
+`text/plain` and preserve larger documents in ordered bounded parts. Unsupported
+MIME and oversized text return actionable `inspection_error` guidance during
+validation, without a complete-inspection receipt. A verified digest for a
+truncated preview does not establish complete inspection. The acceptance
+validator obtains its own review-bound receipts for every required part;
+ordinary implementation and Rework workers cannot issue them and must not edit
+source solely to obtain them. Inspection receipts prove observation in that
+review, not independent execution or that the captured source matches the
+reviewed source; validators assess that applicability separately.
+The Change review page shows this map and highlights the unverified list.
+`gate.validator.unverified_criteria` defaults to `rework`, naming every gap.
+Projects may select `pass-with-disclosure` to retain gaps while allowing a pass;
+the verdict, minimum score, and blocked severities still apply.
+
+These settings do not modify repository auto-promotion, opt-out, security audit,
+validator, external required review, or merge-method configuration.
+
+Version requests include lowercase `base_sha`, `head_sha`, `merge_base_sha`, the
+approved `policy_id`, a `repository` reference, a `code` reference, and optional
+`artifacts`. Worker versions identify a real fenced run/attempt. Human-authored
+versions may omit a run. `external`, when present, contains `provider: github`,
+the PR number as string `id`, and its `url`. The server snapshots the approved
+repository descriptor and review policy; workers cannot choose weaker checks.
+`expected_version_id` is empty for the first version and must match the current
+version thereafter. Reusing a command with different content or publishing from
+an old current version returns a conflict. New versions require new approval and
+fresh evidence even when a publisher reports the same head.
+
+Operator MCP exposes this same owner as `publish_change_version` in the
+`changes_artifacts` toolset. Supply `project_id`, `work_item_id`, `change_id`,
+`request_id`, `expected_version_id` (explicitly empty for the first version),
+`base_sha`, `head_sha`, `merge_base_sha`, `repository`, `policy_id`, and `code`,
+with optional `artifacts` and `external`. It accepts no run, attempt, lease,
+fencing, actor or producer fields. Current operator write grants and nested
+ownership are checked on execution and replay. `request_id` uses the same
+idempotency owner as the REST `idempotency_key`; identical retries across
+transports retain the original immutable version receipt.
+
+Optional `source_capture` contains the HTTP command's typed `source` metadata
+(`format`, `base_sha`, `head_sha`, `bundle_sha256`, `diff_sha256`, `bytes`);
+`source_bundle` contains its base64-encoded Git bundle. Both forward to the same
+source validation and immutable storage owner. `source_capture` is separate
+from the existing diff-read `source` selector. The complete MCP arguments,
+including metadata and base64 encoding, must fit the existing 64 KiB limit.
+Larger source captures require the existing authenticated HTTP command; MCP
+does not support the HTTP owner's full 20 MiB source limit. Publication retains
+source but does not schedule a validator, attest Code availability, or produce
+a reviewable diff bundle.
+
+The result includes `version` and `receipt` for the published version, `detail`
+for the live current Change and review/check summary, and `work_item_state` for
+the observed current lane. A replay after another publication retains its
+original version while reporting the newer current version. Publication runs
+directly with existing operator authority. Normal configured review/check
+requirements still apply; no-review/no-check versions can automatically promote
+through the existing owner. Unverified references remain unverified. An external
+PR reference preserves the repository integration's protection and landing
+checks; publication alone does not attest a worker success or a merge.
+
+Code, manifests, diff bundles, logs and other artifacts remain in customer storage.
+Hub retains only `kind`, `uri`, `sha256`, and `availability`. References support
+`https`, `s3`, or `gs`, without embedded credentials, query tokens or fragments.
+Kinds are `code`, `manifest`, `diff`, `test`, `log`, `checkpoint`, or `artifact`;
+availability is `available`, `missing`, `inaccessible`, or `unverified`. Availability
+is a report by the authenticated publisher, not a Hub download or independent
+verification. A future viewer can resolve these references using the same change
+and version IDs. Raw patches, source and artifact bytes are not API fields.
+
+Every version generates fresh `check_run_id` values. CI submits the expected
+`check_run_id`, `head_sha`, native `run_id` (empty for a human version without a
+run), `policy_id`, `config_digest`, `workflow_id`, `workflow_sha256`, and `source`,
+plus terminal `conclusion`, `completed_at`, and nonempty `evidence` references.
+The submitting credential must match the expectation. Completion cannot predate
+the version or be in the future. Only `success` with available, unexpired evidence
+can pass; skipped, cancelled, missing, inaccessible and stale results do not.
+An approved policy with no required checks reports `not_required`, never a
+synthetic success; its native review requirement still applies.
+Freshness is measured from completion, not delivery. The authenticated CI source
+is responsible for producing truthful results for the pinned workflow and head.
+
+Terminal results are immutable. Exact redelivery is idempotent even with a new
+command key; changing an existing result conflicts. Late callbacks remain attached
+to their original version and cannot move the current pointer. CI callbacks do not
+require a still-running implementation lease. To rerun validation, publish a new
+version with fresh check identities. Customer-run evidence is visibly distinct
+from independent validation and cannot satisfy an independent expectation.
+
+A `changes_requested` decision puts the review text on the primary issue as a
+comment by the reviewer, where the next run reads it with the rest of the
+discussion, and moves an issue waiting in review or in the landing lane back to
+a dispatchable working lane (`In Progress` when the workflow has it), so the
+runner picks it up again; an issue already being worked stays where it is. The
+rework run reuses the item's Change Request and publishes its new head as the
+next version.
+
+An `approved` decision that leaves the current version `reviewed` moves the
+primary issue to the landing lane: the lane named `Merging`, when the issue's
+lane may move there and it dispatches. The runner that holds the project claims
+the issue there and lands the reviewed head with its own credentials. By
+default it uses plain git: it fetches the base branch (the remote's default), verifies the
+worktree still stands at the reviewed head, combines the two by the approved
+policy's `merge_method` (a squash commit, a merge commit, or the head's commits
+replayed onto the base), and pushes the result to the base branch, refusing to
+move a base that changed underneath it. It then reports the commit through the
+landing route, and the Hub records it on the Change Request (`landed`, with the
+version, head, merge commit, base branch, method and actor), marks the summary
+`landed`, and moves the issue to the first terminal lane its lane may reach, in
+one transaction. A landed Change Request accepts no further review or landing.
+The Hub never holds git credentials and makes no forge API call to land.
+
+A landing the repository does not allow is refused, never worked around: a
+worktree that moved past the reviewed head, a reviewed head the checkout no
+longer has, a conflict with the base, a base that already contains the head, a
+base branch that moved during the landing, or a base branch the forge protects
+(a pull request requirement, a protected branch, a hook that declines). The
+runner reports the reason, and the orchestrator moves the issue back to the
+review lane with a comment that carries it, such as "allow the runner to push
+to develop, or enable GitHub pull request mode for this project". Only an
+infrastructure failure (the remote unreachable, the Hub refusing the report)
+fails the run and retries it.
+
+A project may opt in with `deliverable.github_pull_request: true` in its
+approved repository policy. For a github.com origin and an authenticated `gh`
+on the project runner, landing then publishes the reviewed attempt branch,
+finds or opens a pull request against the remote default branch, and asks
+GitHub to merge the exact reviewed head using the policy's `merge_method`.
+In the default `gate.landing_mode: per_landing`, the configured command gate
+runs before publication on a detached combination of that head and the fetched
+base. Nonzero exits retain command evidence and
+failing output and return to configured Rework through the existing landing
+refusal owner. Initial and retry preparation share the same executor. The base
+is refreshed before the merge request; in per-landing mode an observed advance
+refuses the request.
+GitHub's merge API pins the head, but provides no atomic expected-base field,
+so concurrent external base writes still depend on the repository's protection
+and serialized landing policy.
+
+Landing uses `gate.landing_mode: per_landing`; legacy `rolling_barrier`
+configuration is interpreted as per-landing validation. `gate.run` remains a
+scalar command string. Native finalization validates the exact reviewed head,
+and a rebased landing runs the short validation command on its integrated tree.
+The landing barrier endpoints are retired. Detent's project policy uses
+`gate.run: make check-landing` and requires operator re-approval in the Hub.
+Versions pinned to the retired rolling policy are stale and must return through
+Rework for fresh validation. Stop or drain old runners before this Hub upgrade,
+then update both sides and approve the replacement policy before resuming.
+A stale summary prevents new landing targets; it cannot recall Git credentials
+or a merge already authorized by an old runner.
+Scheduled validation supplies release evidence and never holds ordinary landing.
+
+GitHub's branch protection, required checks, and required reviews decide
+whether the merge succeeds. The runner verifies that the returned merge commit
+is on the base branch before reporting it to the Hub. A refused merge returns
+the issue to review with the GitHub reason; the reviewer can approve it again
+after fixing that condition. This mode uses the runner's `gh` credentials and
+does not give them to the Hub. The default remains plain git and requires no
+GitHub API access.
+
+Native approval never becomes a required GitHub review. Detail optionally reuses
+the existing projected `PullRequestSummary`, labels it as a snapshot, and identifies
+a mismatched external head. Existing protected-merge verification and the exact-head
+merge mutation remain authoritative; the native API has no auto-merge switch.
+
+`detent hub issue` exposes `changes`, `create-change`, `change`, `publish-change`,
+`review-change`, `check-change`, `discuss-change`, and `approve-review-policy`.
+The existing `--project`, `--organization`, `--hub-url`, `--identity-file`, and
+`--token-env` flags select the scope and credentials. Mutations read typed JSON
+from stdin. For example:
+
+```sh
+detent hub issue create-change wi_example --project prj_example <<'JSON'
+{"idempotency_key":"propose-work","title":"Proposed work","body":"Review context"}
+JSON
+detent hub issue changes wi_example --project prj_example
+detent hub issue change wi_example change_example --project prj_example
+```
+
+The Work board/list opens native issue detail, which links to Change Request
+detail. Detail provides version selection, stale/missing-evidence messages,
+discussion provenance, artifact availability, and issue/run navigation. Native
+run recovery uses published change references from ordered issue history rather
+than trusting a stale worker checkpoint to identify the current version.
+
+### Existing release-pick delivery
+
+`POST /work-items/{delivery}/release-pick` and operator MCP
+`associate_release_pick` use the same project-scoped native command. The caller
+needs current operator/admin authority and a write grant for the selected
+project. Runner and worker credentials cannot associate PRs. The project's
+approved policy must use GitHub PR landing and independent review (native
+review policy, validator, automated review, or security audit). This command
+never changes project policy, issue state, holds, assignees, or deployments.
+
+The API accepts `idempotency_key`, string `expected_revision`, and these fields:
+
+| Field | Required identity |
+| --- | --- |
+| `source_issue_id`, `source_change_id` | Same-project source issue and its primary, currently landed native Change |
+| `source_merge_sha` | The Change's recorded merge commit on `develop` |
+| `repository` | Exact enabled project repository URL, such as `https://github.com/example-org/example-project` |
+| `pr_number`, `head_ref`, `head_sha` | Existing open, non-draft PR and its exact branch/head in that repository |
+| `base_ref`, `base_sha` | Existing `release/vX.Y` branch and its current exact head |
+| `frozen_sha` | Frozen source boundary: the merge-base of the recorded release head and current `develop` |
+
+MCP accepts `project_id`, `work_item_id` (delivery), `request_id`, integer
+`expected_revision`, and a `release_pick` object containing the identity fields
+in the table. Native client callers use `AssociateReleasePick`.
+
+The delivery must already have the source as a typed required dependency, with
+dependency admission enabled. The source must be terminal with its native develop
+landing recorded. Active delivery leases, existing Changes, conflicting PR
+associations, stale revisions, and repository or provenance mismatches are
+refused without partial writes. A held delivery may be associated; its existing
+hold and admission predicates remain authoritative. Identical associations are
+idempotent and return the original owner receipt; conflicting replacements are
+refused. Current grants are checked even on replay.
+
+A machine-created delivery remains unconfirmed by default. An approved project
+`WORKFLOW.md` may delegate its bounded contract explicitly:
+
+```markdown
+## Release delivery contract
+Verified release picks of reviewed develop fixes may receive the approved delivery contract.
+
+### Acceptance criteria
+Deliver only the reviewed develop fix identified by the verified association,
+using its associated release PR. Do not add unrelated changes.
+
+### Must not break
+Preserve tests, provenance, human holds, independent review and landing gates.
+Do not reset the release branch, publish tags or deploy production.
+
+### How we know it worked
+The associated release pick passes its required checks and independent review.
+```
+
+Use exactly the project's effective required section names. `work_config` exposes
+this approved body and policy identity as `issue_contract.release_delivery`.
+The reporter copies those criteria when it files the Backlog delivery. After
+verification, association confirms only an exact match to the approved criteria;
+it preserves the original body, including diagnostic and provenance fences.
+It neither moves the issue nor clears a hold. Ordinary machine reports and
+unverified associations receive no confirmation. Replay retains the original
+receipt and cannot refresh or broaden a grant.
+
+Native admission checks the grant against the current policy, unchanged body,
+stored association, required source dependency and recorded develop landing.
+Changes invalidate delegated confirmation. An explicit human body save uses
+the existing human-confirmation path instead. Required checks and independent
+review of the release pick still run before landing.
+
+The configured repository transport verifies source ancestry on develop, the
+release branch head and frozen boundary, and the PR's exact head/base and
+repository. This thin slice accepts exactly one commit with one parent equal to
+the recorded release base, one exact `git cherry-pick -x` trailer naming the
+source merge, and the same file paths/status and added/deleted lines as the
+source patch (binary files require matching blob identities). Hunk line numbers
+and unchanged context may differ. Multi-commit PRs, truncated patch responses,
+and adapted conflict resolutions are refused. PR and branch identities are read
+again before native association. The existing landing owner rechecks the live
+PR, protection, review and gate evidence before merging.
+
+The receipt records the source issue/Change/merge, PR repository/head/base,
+frozen source boundary, new delivery Change, actor, and association time.
+Existing work-item reads expose `release_delivery`; existing Change and PR reads
+show the delivery independently. Association opens a draft Change. The normal
+runner captures the exact associated source bundle and publishes its immutable
+version with the existing PR reference. Publication refuses a different head,
+base, repository, or PR. Review and checks belong to that version, not the
+source fix. The landing workspace and gate use the recorded release branch;
+the squash message retains the source `-x` trailer. Ordinary source issues keep
+their normal base. A moved source needing a replacement PR requires a separate
+reviewed delivery; association does not adopt arbitrary new heads.
+
+## Retention, export and deletion design
+
+Collaboration content, content versions, typed events, idempotency responses and
+owner backups all contain retained data. REST mutation receipts expire after 24
+hours. This release has no automatic native content expiry or issue-deletion
+endpoint. Append-only triggers deliberately
+reject ordinary history deletion. [Self-hosted operations](hub-self-hosting.md)
+defines full-instance export/import, credential fencing on restore, whole-instance
+retirement and operator-managed backup expiry. Scoped purge remains unimplemented;
+append-only storage is not a promise of permanent retention.
+
+The existing archive/retention sweep compacts archived work, work that has been
+in a terminal state for more than 3 days, and conversations settled for more
+than 30 days. Active leases, unfinished executions, queued
+messages and pending questions exclude an aggregate. Each transaction examines
+at most four work items and four conversations, deleting at most 500 events per
+aggregate. It retains comments, content revisions, workflow transitions,
+scheduler decisions, attempt checkpoints and final observations, validation and
+landing evidence, messages, questions and command receipts. Superseded runtime
+observations, message updates and execution progress, streaming deltas,
+heartbeats and redundant conversation snapshots are removed. Retained work-item
+run events drop their activity spans and record `activity_spans_compacted` in
+the activity coverage notes. Conversation
+metadata changes keep their timeline boundaries.
+
+History pages and conversation snapshots carry an optional `compaction` summary
+with removed event counts by type, retained event count, removed payload bytes,
+last removed sequence, compacted activity event count and compaction time. Existing history cursors invalidate
+when their aggregate is compacted and instruct the reader to restart. Conversation
+SSE cursors behind a removed event receive `closed` with `cursor_expired`; clients
+fetch the current snapshot and resume from its cursor. Open work streams retain
+all events and their existing cursors. Ordinary collaboration updates and
+deletions remain rejected; retention replaces and restores the deletion and update
+triggers within its transaction, so a failed batch rolls back rows and enforcement.
+
+The first compaction records database and event-table sizes in the existing
+maintenance record and marks space reclamation pending. The online diff-body
+owner never invokes VACUUM: a quiet hour does not make VACUUM safe for tenant
+health checks. Reclaim space through offline operator maintenance after the
+first compaction has finished, with the tenant Hub quiesced and the database
+ownership lock held. Schedule that maintenance with the release owner and
+report the recorded before-compaction sizes, sizes before and after VACUUM,
+and retained event counts. Workers do not stop or maintain live tenant services.
+Later compaction frees pages for reuse without requesting another first-pass
+VACUUM.
+
+A future scoped deletion procedure must use the following contract:
+
+1. Authorize the organization and record the deletion scope outside the affected
+   content. Fence writers and active leases, then take an owner backup when
+   policy permits a temporary recovery copy. Export current issues, every content
+   revision, comments, history and identity mappings when requested; artifact
+   content must come from its separate authorized service.
+2. Run maintenance through the single database owner, with ordinary API writes
+   stopped. In one transaction, temporarily replace the append-only triggers
+   with maintenance-only enforcement, remove or redact affected current content,
+   revisions, event references, idempotency response bodies, legacy workpad/outbox
+   copies, webhook payload copies and affected graph links, and write permitted
+   content-free tombstones. Restore append-only triggers before committing and
+   verify foreign keys. A crash must roll back both the data and trigger changes.
+3. Retain a deletion ledger outside older backups. Do not reuse deleted IDs.
+   Any future content retention gap must invalidate old cursors with an explicit
+   snapshot/resync response rather than silently presenting incomplete history.
+4. Expire every affected backup according to the approved policy. Restore into an
+   isolated owner, replay the deletion ledger and rotate cursor/session authority
+   before exposing restored data or accepting claims. A restore must not resurrect
+   deleted content or accept a formerly valid lease.
+5. Record which artifact stores and external projections require separate deletion
+   and their outcomes. Database deletion does not erase a GitHub projection,
+   independently hosted artifact, exported file or customer backup.
+
+Privileged scoped purge is not a supported operation.
+The supported full-instance restore revokes copied credentials and releases leases;
+it does not implement scoped erasure or automatically replay a customer deletion
+ledger. Operators must retain backups deliberately and must not disable triggers
+on a running Hub as a substitute for supported deletion.
+
+## Provider capacity reports
+
+Enrolled native runners report provider capacity for their configured backends
+by default. The runner uses its instance name as the local account alias,
+advertises backend model identifiers, and refreshes an unknown availability
+observation on its existing heartbeat within the two-minute freshness window.
+It does not derive an account concurrency limit from its own slots. An explicit
+global client setting takes precedence over these default reports:
+
+```yaml
+client:
+  hub_url: https://hub.example.com
+  identity_file: /absolute/private/runner/identity.json
+  organization_id: org_example
+  provider_capacity_file: /absolute/private/runner/provider-capacity.json
+```
+
+The file is a JSON array written by an operator-managed local collector. Detent
+does not log into provider accounts or scrape billing pages to populate it. Use
+atomic file replacement when publishing a new observation. The collector maps
+each backend ID to the credentials already used by that local backend; reporting
+an alias never switches the backend's account. Each backend has exactly one local
+account in a report. Configure separate backend IDs for separately selected
+accounts through the existing agent routing configuration.
+
+```json
+[
+  {
+    "provider": "openai",
+    "backend": "codex",
+    "account_alias": "local-work",
+    "shared_account_alias": "team-subscription-a",
+    "models": ["gpt-5.6-sol", "gpt-6-astra"],
+    "model_details": [
+      {
+        "id": "gpt-6-astra",
+        "label": "GPT-6-Astra",
+        "provider": "openai",
+        "default": true,
+        "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+        "default_reasoning_effort": "low"
+      },
+      { "id": "gpt-5.6-sol", "legacy": true, "reasoning_efforts": ["low", "high"] }
+    ],
+    "max_concurrent": 2,
+    "availability": "unknown",
+    "observed_at": "2026-09-05T12:00:00Z"
+  }
+]
+```
+
+`model_details` is optional and advisory: it describes models `models` already advertises and never widens what capacity matches. The collector writes it; the runner does not yet fill it from its backends' model catalogues. Each entry describes one reported model at most once, with at most 16 distinct reasoning efforts in the backend's own order (the Hub does not check the order), a `default_reasoning_effort` that must be in that list when the list is non-empty, a label of at most 128 characters, and `legacy` set when the provider has named a successor. A report carrying detail for a model outside `models` is rejected. When a conversation's preferences change, the Hub checks them against fresh runner reports: an explicit model must be one a fresh report advertises or the Hub's configured `conversation.model`, which is accepted without any runner report, and an effort outside the fixed vocabulary is accepted only when that model's detail publishes it (docs/conversation/decisions.md section 14); `GET /app/bootstrap` does not republish it yet, so `preferences.models[]` stays empty.
+
+Only these fields, `model_details` and optional `reset_at` are accepted. Files are bounded to
+256 KiB, 32 backends and 128 model identifiers per backend. Aliases are opaque
+lowercase ASCII tokens, at most 64 characters; use no email addresses, API keys,
+login sessions, billing records or customer prompts. Provider/backend/model
+identifiers are bounded, case-sensitive tokens; use the same provider ID on every
+machine sharing an account. `models` must advertise the identifiers selected
+by local routing. An existing unpinned route uses the explicit `provider_default`
+capability; capacity never picks a different model or rewrites effort.
+
+`max_concurrent` is an optional operator-declared account bound on simultaneous
+reserved runs, between 1 and 10000. Omitted or zero means no known account limit;
+runner and host limits still apply. Never set it from one machine's slot count:
+adding a smaller runner must not lower the account's capacity. It is not a token
+balance or an estimate of transferable credits. `availability` is `available`,
+`exhausted` or `unknown`. Observations at
+least two minutes old, observations in the future, and reset hints reached at
+equality become `unknown`, never automatically `available`. Unknown quota permits
+dispatch only within any declared account concurrency bound and existing local brakes.
+An exhausted fresh observation waits for a refreshed report or its reset hint.
+
+Declare the same `provider` and `shared_account_alias` on every machine using the
+same provider account, even when local aliases or backend IDs differ. Hub scopes
+sharing to the organization, uses the lowest declared limit and honors exhaustion
+from any overlapping report. Distinct explicit aliases declare independent
+accounts. An omitted shared alias keeps the account local to its enrolled runner. Local
+accounts are identified by runner identity, provider and account alias; matching
+local alias text on different runners never combines their limits or usage.
+Only matching explicit shared aliases combine accounts across runners. Drain work before
+changing account mappings; existing leases retain their original reservation.
+
+Registration and heartbeats accept typed `provider_reports` on the native machine
+endpoints. Once a runner advertises reports, requests without selected candidates
+cannot bypass reservations. A missing/invalid configured report file defers
+dispatch; it does not silently disable capacity checks. Omitted heartbeat reports
+retain the last report, including its original observation time.
+
+`POST .../claims/preview` returns authorized candidates in the existing Hub queue
+order, in pages of up to 100 (`after`/`next` are opaque cursor values). The client
+uses the existing local role/model/override resolution, then includes
+`provider_candidates` (work item ID, revision and selected role/backend/model)
+in `POST .../claims`. Hub rechecks current issue revision, approved policy,
+organization/project authority, tags, fixed host, health, host capacity and
+provider compatibility inside the claim transaction. Capacity removes ineligible
+choices from that order; it does not reprioritize work or select a fallback model.
+The negotiated feature is `provider_capacity_reservations`.
+
+Hubs advertising `project_landing_capacity` accept nonnegative
+`landing_capacity` on claims, previews and lease renewal. Native GitHub landing runners send
+their existing configured Merging limit and delegate that lane ceiling to the
+Hub instead of applying it separately on each host. The claim transaction
+counts active project landing leases and pins the effective ceiling on the new
+lease. The strictest positive incoming or active-owner ceiling applies.
+Legacy leases count toward occupancy. Zero supplies no additional ceiling and
+retains existing behavior when no active owner declares one. Claim replay and
+renewal may tighten a positive pin but cannot widen it. An expired owner may renew only if the project
+has room; live owners are never preempted. Preview and selection use the same
+capacity predicate, and native-only landing batches retain their existing
+accounting. Direct code-to-landing continuations reserve the same capacity on
+their existing lease through acknowledged renewal before starting landing work.
+An occupied project refuses that transition without revoking the coding lease.
+Clients requiring this feature defer claims against older Hubs.
+Feature-aware multi-project selection does not borrow one project's incoming
+ceiling for another. An occupied foreign project's incoming ceiling is unknown,
+so its landing candidates cannot veto ready work in the requested project.
+An unoccupied foreign landing remains eligible for the existing project ranking;
+native-only batches and legacy requests retain their existing behavior.
+Runtime admission reads cannot assume an incoming ceiling when it was not
+reported. They retain a proven full refusal when active positive pins establish
+it; other occupied GitHub landing cases remain `unknown` with
+`project_landing_capacity` in the existing unavailable-predicate list.
+Unoccupied projects and native-only landings retain their usual readiness.
+
+Hubs advertising `native_dispatch_wait` also accept a preview `limit` of 1–100.
+Omitting it retains the 100-candidate page. The bound applies before issue
+hydration; a page can be empty with a nonzero `next` when current landing
+readiness excludes its ranked candidates. Follow `next` with the same filters.
+
+`GET .../claims/wait?after=<cursor>&wait=30` is an outbound, cancellable wait for
+the existing native candidate/claim owner. Enrolled runners need the `Claim`
+operation. `wait` is 1–30 seconds, defaulting to 30. The response is
+`{"cursor":"<opaque epoch and revision>"}`. An absent or older cursor returns
+immediately; an unchanged cursor waits for a postcommit change or the timeout.
+Changes in the authorized organization coalesce into a hint, including queue,
+dependency, policy, runner routing, capacity and lease-release changes. The
+hint has no claim authority. Reread through the existing scheduling refresh and
+claim transaction. Held requests hold no database resources. The runner keeps
+the cursor across reconnects, uses a dedicated 40-second request deadline,
+paces immediate responses to at most one per second and backs failed requests
+off from one to 30 seconds. Unchanged timeout cursors do not trigger refresh.
+Older Hubs retain the runner's existing timer refresh. Drain and shutdown cancel
+the wait. Existing progress/completion APIs and dashboard SSE remain unchanged.
+
+The claim response includes `provider_reservation`, pinned to the fenced lease.
+The client rechecks the local account and model immediately before `run.started`;
+Hub rechecks the shared pool while accepting the first ordered start. A changed
+identity or newly exhausted pool defers the start without spending the issue's
+failure budget. Existing local budgets, pools, host pressure and provider backoff
+still apply. Cancellation, failed preparation, hydration failure and normal
+release free capacity through the existing lease. Expiry frees abandoned
+reservations after restart; stale fencing tokens cannot release a successor's
+reservation. Lost acknowledgments remain idempotent. Capacity changes affect new
+starts and preserve active execution identity and history.
+
+These reservations coordinate enrolled Detent runs using reported accounts;
+external provider consumers still require fresh observations and local provider
+error handling. Fleet details show reports, shared usage and waiting reasons;
+run details show the selected role/backend/model/account and reason. `detent
+doctor` reports the same capacity view. There is no additional global banner.
+
+### Selective onboarding issue intake
+
+Native projects can import selected GitHub issues with runner credentials and
+GitHub transport disabled on Hub. Associate a matching runner checkout first.
+`GET /api/v2/organizations/:organization/projects/:project/onboarding/issue-intake`
+returns `batch` (nullable) and configured `lanes`. Administrator mutations use
+`POST` to the same path with `idempotency_key`, `revision`, and `action`:
+
+- `start`: begin one asynchronous job for all matching issues with a
+  `destination`, optional `labels`, `label_lanes`, and `include_closed`.
+  The Hub's GitHub App reads 100 issues per GraphQL page, including complete
+  bodies, labels, provenance and the first comment page. Additional discussion
+  pages are fetched before intake. The existing Hub maintenance worker applies
+  each page and persists progress. Runner fallback uses an enrolled runner
+  reporting the matching checkout only when the App is unavailable or lacks
+  repository access; `runner_id` may select that fallback explicitly.
+- `discover`: fetch one preview page using the same App-first transport.
+- `more`: request the next preview page within the plan's job limit.
+- `apply`: provide selected `numbers` and `destination`. A configured
+  non-dispatchable, nonterminal lane is the default. GitHub `detent:<lane>`
+  labels map to matching Cloud states unless `label_lanes` supplies a mapping;
+  other labels are copied. Conflicting lane labels fail that item. Dispatchable
+  destinations, including those selected by label, require
+  `allow_dispatch: true`. Existing source identities are reused without changes.
+- `retry`: resume failed discovery/items, optionally on another fallback
+  `runner_id`. Reported source retry deadlines must have elapsed. Completed
+  items are retained. `allow_dispatch: true` may confirm a previously refused
+  dispatchable destination; `destination` and `label_lanes` can correct failed
+  item routing. A retry rechecks the current plan's job limit.
+
+`start` and `discover` optionally accept a ProjectV2 source:
+
+```json
+{
+  "project_v2": {
+    "id": "PVT_example",
+    "status_lanes": {"Ready": "Todo", "Waiting": "Blocked", "Complete": "Done"}
+  },
+  "destination": "Backlog",
+  "allow_dispatch": true
+}
+```
+
+`id` is the board's GraphQL node ID. Supply 1–100 exact, case-sensitive
+Status-to-native-lane mappings. Discovery reads the board's single-select
+`Status` field, including archived items, through the existing App or runner
+transport and credentials. The selected credential must already have read
+access to that board; no additional credential or permission is requested.
+An inaccessible board fails discovery instead of silently dropping lane state.
+Without `project_v2`, intake performs no ProjectV2 reads and retains label routing.
+
+When supplied, ProjectV2 Status takes precedence over lane-label routing.
+Unmapped Status values, unset Status, and issues absent from the board use
+`destination`, even when a lane label matches. Previews expose `project_status`;
+item results report `unmapped_project_status` for this fallback (an empty string
+means missing Status or board membership). Other label-copying rules still apply.
+Dispatchable mapped lanes require `allow_dispatch: true` on `start` or `apply`.
+`apply` and `retry` may supply corrected `status_lanes` in `project_v2`, retaining
+the project ID selected before discovery. Omitting it retains the existing source
+and mapping. Completed and skipped items remain unchanged.
+An explicit retry routing correction also updates the lane of failed selected
+items created before snapshot intake, while preserving their native content.
+Items whose source snapshot is already complete retain their lane.
+
+The per-job size cap uses the plan catalog's `unarchived_issues` allowance:
+Free permits 200, Starter 2,000, Growth 10,000 and Scale 50,000. Unhosted Hubs
+permit 1,000. Source filters can narrow a repository to fit the cap. Normal
+organization capacity and storage allowances still apply to imported issues.
+
+Results include aggregate `progress` counts and per-item completion, failure,
+skip and retry information. MCP pages and command receipts omit issue bodies
+and source snapshots. The runner fallback reports up to 100 results to the
+worker-only `/onboarding/issue-intake/result` endpoint, whose receipt carries
+its next page task without waiting for another heartbeat. Each successful item
+commits its source snapshot, provenance, comments and completion checkpoint;
+failed items roll back independently. Native edits retain field ownership.
+Rate limits stop unstarted work until explicit retry, honoring source deadlines.
+No idle GitHub polling occurs. The wizard refreshes progress only on request.
+Reopening setup resumes persisted selection and results. Webhook intake of new
+issues creates linked issues in Triage, except for explicitly delegated,
+verified CI repair reports described below. New authoring and
+landing continue through native Hub operations, including the existing Done
+transaction; any later explicit source action keeps its own write authorization.
+
+### Trusted scheduled CI imports
+
+A native project's approved repository workflow may delegate admission of new
+GitHub Actions repair reports through its existing **Scheduled CI repair
+contract**. Before its five required subsections, the section must contain this
+exact authorization sentence:
+
+> New verified GitHub Actions CI repair reports enter Todo with Urgent priority.
+
+The repository's `WORKFLOW.md` supplies the five nonempty contract subsections:
+Acceptance criteria, Must not break, How we know it worked, Invariants touched,
+and Safety regression. The operator approves that exact workflow revision
+through the existing project policy owner. Merely editing a repository file or
+an issue does not grant this delegation. Projects without the approved sentence
+retain their existing confirmation rules; Detent's direct scheduled reporter
+keeps its existing project-specific delegation. Its release suites use one open
+stabilization owner per release series, with one bounded occurrence per failed
+job and the original replay identities. Native duplicate matching keeps that
+series owner separate from root-cause repair issues in the selected Detent
+project; existing repairs remain referenced with their ownership and holds
+intact. Develop and other projects retain their existing matching behavior.
+
+The producer opens an issue in the configured checkout repository using its
+GitHub Actions identity. Its body contains those same five section contents,
+a separate diagnostic-evidence heading, the existing `detent-origin` stamp
+(`doctor`, `github-actions`, stable problem fingerprint and run-attempt URL),
+and one `detent-checks` scheduled occurrence. That occurrence identifies the
+repository, run, attempt, failed job, job name, tested commit and conclusion.
+Place diagnostic text and occurrence metadata under the separate heading so
+they do not change the approved contract section digests. For example, use
+`example-org/example-project` as the fixture repository; production identity
+comes from the selected project.
+
+The signed `issues.opened` webhook is the automatic import path. Explicit
+`POST /work-items` / MCP `file_issue` with only `github_issue_url` and the normal
+request identity uses the same admission after the GitHub App fetches the full
+source. Caller-supplied native title, body or priority retains ordinary intake
+semantics. Historical bulk import and runner-supplied snapshots do not grant
+this delegation.
+
+The Hub requires the authenticated source author `github-actions[bot]`, a source
+repository equal to the configured checkout repository, and the existing
+importer's independent verification of the repository's CI workflow and branch.
+The approved repair contract may instead select one exact workflow and branch
+with this authorization sentence before its five subsections:
+
+> New verified GitHub Actions CI repair reports from `.github/workflows/ci.yaml` on `dev` enter Todo with Urgent priority.
+
+This selection comes only from the operator-approved project workflow, never
+from the imported report, labels or webhook payload. Paths must name a single
+YAML file directly under `.github/workflows/`; wildcards are not supported.
+The original authorization sentence retains `.github/workflows/ci.yml` on
+`develop` or `release/v*`. An explicit selection replaces those defaults and
+requires both the named path and branch to match exactly. For example,
+`example-org/example-project` may select `ci.yaml` on `dev` through its approved
+`WORKFLOW.md`; the same run remains ineligible without that selection.
+The approved contract and configured checkout repository binding are always
+required. The importer verifies
+the run attempt, repository and head repository, scheduled/push/manual event,
+tested head SHA and completed failed or timed-out job. The approved policy and
+checkout binding are rechecked during creation, and Todo must be dispatchable,
+nonterminal and not operator-only.
+Only then does a new report receive Todo, native priority `0` (Urgent), and
+confirmation of the bounded approved sections. Source diagnostics remain quoted
+as untrusted evidence. Labels such as `detent:todo` and `hotfix` confer no
+authority. No review, security, validator or landing gate changes.
+
+Incomplete, untrusted, held or unverifiable scheduled reports remain in Triage
+without delegated confirmation; their `github.imported` history records the
+refusal reason. Existing source identities retain native decisions. A matching
+open machine fingerprint receives one occurrence comment per occurrence key,
+preserving its body, state and priority; terminal matches remain untouched.
+Repeated deliveries cannot readmit, reprioritize or reconfirm existing issues.
+Producer delivery and this admission behavior are independently testable;
+automatic recovery requires both plus the approved project policy.
