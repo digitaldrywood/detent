@@ -236,34 +236,126 @@ grants through `/api/v2/tokens/{id}/grants`. Use individual operator credentials
 so author IDs remain attributable. Generic scoped bearer authentication works
 without hosted identity; do not assume an OIDC proxy can mint Hub credentials.
 
-Follow [Hub API enrollment](hub-api.md#scoped-runner-onboarding) for exact
-JSON requests and [repository policy](config.md#repository-policy-with-hub-execution)
-for approval. The supported sequence is:
+Create the organization/project and its workflow states as administrator before
+enrolling a runner. Approve the trusted repository/workflow descriptor through
+[repository policy](config.md#repository-policy-with-hub-execution). A runner
+cannot grant itself tags or repository access. An exact offline host stays
+queued; tags constrain routing and do not grant authority. Logical runners
+sharing a host share its capacity.
 
-1. Create the organization/project and its workflow states as administrator.
-2. On each runner run `detent hub runner init --hub-url https://hub.example.com --identity-file /private/runner/identity.json`.
-   Give the generated binding IDs to the administrator. Never copy one runner's
-   identity file to another machine.
-3. Create a one-use enrollment for those exact IDs, project grants and required
-   operations. Deliver it privately and run `detent hub runner enroll` with the
-   corresponding identity file, Hub URL and enrollment environment variable.
-4. Configure `client.hub_url`, `identity_file`, `organization_id` and
-   `native_projects` on each runner. Keep backend/provider login on that runner.
-5. Approve the trusted repository/workflow descriptor with `detent hub policy`.
-   Configure required tags or exact runner/machine IDs in repository policy;
-   set administrator-owned runner tags, project access and capacity through
-   `detent hub runner`. A runner cannot grant itself tags or repository access.
-6. Check two distinct runners against their selectors before enabling real work.
-   An exact offline host stays queued; tags are routing constraints and do not
-   grant authority. Logical runners sharing a host share its capacity.
+### Enroll a runner without the web app
 
-Enrollment grants last at most 900 seconds. Enrolled credentials last 24 hours
-from enrollment/renewal; renew before expiry through the supported runner CLI.
-Revocation is permanent for that identity. After expiry/revocation or migration,
-initialize a fresh binding and have an administrator enroll it, then update exact
-ID selectors and approve the resulting policy. Preserve old principal rows for
-history; never reactivate them by editing SQLite. See `detent hub runner --help`
-for renewal, rotation, revocation, routing and fleet inspection commands.
+Use the released binary on the runner host. No Cloud account or Enroll dialog is
+needed. Substitute your Hub URL, organization and project IDs in these examples.
+
+1. As an instance administrator, send an authenticated
+   `POST /api/v2/organizations/org_example/runner-enrollments` to your Hub with
+   this exact JSON body, replacing the project ID:
+
+   ```json
+   {
+     "project_ids": ["prj_example"],
+     "operations": ["read", "claim", "heartbeat", "events", "collaborate"],
+     "ttl_seconds": 300
+   }
+   ```
+
+   Omit `runner_id` and `machine_id`: this is token-first enrollment, binding
+   fresh host-generated IDs on redemption. The response contains `id`, `token`
+   and `expires_at`, with `Cache-Control: no-store`. The token is usable once
+   within 300 seconds; the supported TTL range is 1–900 seconds.
+
+   Alternatively, connect an authorized MCP client to this self-hosted Hub
+   using [API & MCP setup](api-mcp-setup.md), and call
+   `create_runner_enrollment` with these arguments (use a fresh `request_id`
+   for each new enrollment):
+
+   ```json
+   {
+     "project_id": "prj_example",
+     "request_id": "enroll-build-host-1",
+     "enrollment": {
+       "project_ids": ["prj_example"],
+       "operations": ["read", "claim", "heartbeat", "events", "collaborate"],
+       "ttl_seconds": 300
+     }
+   }
+   ```
+
+   Use a private originating connection and deliver the returned token through
+   private secret storage. Keep tokens out of transcripts, logs, repositories
+   and issue reports. The MCP token is returned only to its originating connection.
+
+2. On the runner host, load that token from private secret storage into the
+   environment variable `DETENT_RUNNER_ENROLLMENT_TOKEN`. Do not put its value
+   in shell history or any command-line argument. Run:
+
+   ```sh
+   detent hub runner register \
+     --url https://hub.example.com \
+     --organization org_example \
+     --name 'Build host' \
+     --capacity 1 \
+     --isolation-tier sandbox \
+     --config "$HOME/.config/detent-runner/global.yaml" \
+     --workspace-root "$HOME/detent-runner"
+   unset DETENT_RUNNER_ENROLLMENT_TOKEN
+   ```
+
+   Choose an absolute private `--config` path outside repositories and execution
+   workspaces. Registration stores the host identity in `identity.json` beside
+   that config. Never copy it to another host. Choose a `--workspace-root` owned
+   by this runner for managed checkouts; the example paths are also the defaults.
+   Registration writes the Hub connection and identity configuration, and fetches
+   allowed project routing from the Hub. Keep provider login on the runner; model
+   selection comes from organization/project settings. Use `native-trusted`
+   instead of `sandbox` only for full agent access on a dedicated machine.
+
+3. Start the runner with the config you just created:
+
+   ```sh
+   detent --config "$HOME/.config/detent-runner/global.yaml" --headless
+   ```
+
+   For a background service, use `detent hub runner register --service` with the
+   same flags instead; it installs and starts the runner service. Use only one
+   running owner of this config. Keep the `runner_id` and `machine_id` printed
+   by registration for inspection and any exact policy selectors.
+
+4. From your authorized MCP client, call `runner_project_diagnostics`:
+
+   ```json
+   {"project_id":"prj_example","runner_id":"runner_example"}
+   ```
+
+   Replace `runner_example` with the returned runner ID. Inspect its connection,
+   project setup and local admission observations, including observation times
+   and unavailable fields. An offline runner or missing setup is not verified
+   readiness; correct the reported setup or policy problem and read again.
+   Selecting the runner explicitly avoids ambiguity when several runners report.
+
+### Credential lapse and re-enrollment
+
+Enrolled credentials last 24 hours from enrollment or renewal. The runner
+renews its credential during normal operation. After a host has been offline
+past that window, restart it with its existing config: renewal permits elapsed
+expiry while the identity and grants remain valid. Revocation is permanent;
+renewal cannot restore revoked authority.
+
+If renewal is refused, or you are migrating to a new host, have an administrator
+create a fresh one-use enrollment as above. Register with a new private config
+directory (for example, `$HOME/.config/detent-runner-replacement/global.yaml`)
+and an unused workspace root, supplying the token through
+`DETENT_RUNNER_ENROLLMENT_TOKEN` again. New paths generate a fresh identity;
+rerunning registration against the old identity cannot take over its reserved
+IDs. Stop the old runner before starting its replacement, update any exact
+runner/machine selectors and approve the resulting policy. Verify the new ID
+with `runner_project_diagnostics`. Preserve old principal rows for history;
+never reactivate them by editing SQLite.
+
+See [Hub API enrollment](hub-api.md#scoped-runner-onboarding) for the separate
+`init`/`enroll` flow when IDs must be bound before token creation, and
+`detent hub runner --help` for renewal, rotation, revocation and fleet inspection.
 
 ## Model selection
 
