@@ -1,0 +1,709 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/instancelock"
+)
+
+func TestValidationQueueCancellation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	t.Parallel()
+	for _, olderWaiter := range []bool{false, true} {
+		t.Run(fmt.Sprintf("older_waiter=%t", olderWaiter), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
+			defer cancel()
+			path := filepath.Join(t.TempDir(), "validation.lock")
+			holder := acquireTestLock(t, path)
+			if olderWaiter {
+				older, err := registerValidationWaiter(ctx, path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { older.lock.Close() })
+			}
+			waitingCtx, stopWaiting := context.WithCancel(ctx)
+			defer stopWaiting()
+			writer := newNotifyingWriter()
+			done := startValidationWaiter(waitingCtx, path, writer)
+			select {
+			case <-writer.notified:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			stopWaiting()
+			select {
+			case result := <-done:
+				if !errors.Is(result.err, context.Canceled) || result.lock != nil {
+					t.Fatalf("canceled waiter = %+v", result)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			inspection, err := instancelock.Inspect(path)
+			if err != nil || inspection.Status != instancelock.StatusHeld {
+				t.Fatalf("holder after waiter cancellation = %+v, %v", inspection, err)
+			}
+			next, err := registerValidationWaiter(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { next.lock.Close() })
+			position, size, err := validationPosition(ctx, path, next.name)
+			want := 1
+			if olderWaiter {
+				want = 2
+			}
+			if err != nil || position != want || size != want {
+				t.Fatalf("queue after cancellation = (%d, %d, %v), want (%d, %d, nil)", position, size, err, want, want)
+			}
+			if err := holder.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestValidationQueueDeadlines(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	t.Parallel()
+	for _, stage := range []string{"registration", "validation"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "validation.lock")
+				heldPath := path
+				if stage == "registration" {
+					heldPath += ".queue.lock"
+				}
+				acquireTestLock(t, heldPath)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				var stderr bytes.Buffer
+				lock, _, err := acquireValidationLockWithTimeouts(ctx, path, &stderr, time.Second, time.Minute, validationPosition)
+				if !errors.Is(err, context.DeadlineExceeded) || lock != nil {
+					t.Fatalf("deadline result = %v, %v", lock, err)
+				}
+				if !strings.Contains(err.Error(), "wait") {
+					t.Fatalf("deadline lacks waiting context: %v", err)
+				}
+				inspection, err := instancelock.Inspect(heldPath)
+				if err != nil || inspection.Status != instancelock.StatusHeld {
+					t.Fatalf("deadline released live lock: %+v, %v", inspection, err)
+				}
+			})
+		})
+	}
+}
+
+func TestValidationQueueContextEndsAfterPosition(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		wantErr error
+	}{
+		{name: "cancellation", wantErr: context.Canceled},
+		{name: "deadline", wantErr: context.DeadlineExceeded},
+	} {
+		for _, held := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/held=%t", tt.name, held), func(t *testing.T) {
+				t.Parallel()
+				synctest.Test(t, func(t *testing.T) {
+					path := filepath.Join(t.TempDir(), "validation.lock")
+					if held {
+						acquireTestLock(t, path)
+					}
+					before, err := instancelock.Inspect(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+					defer cancel()
+					var ticket string
+					lock, waited, err := acquireValidationLockWithPosition(ctx, path, io.Discard, func(ctx context.Context, path, name string) (int, int, error) {
+						position, size, err := validationPosition(ctx, path, name)
+						if err != nil || position != 1 || size != 1 {
+							t.Fatalf("position lookup = (%d, %d, %v), want (1, 1, nil)", position, size, err)
+						}
+						ticket = name
+						if errors.Is(tt.wantErr, context.Canceled) {
+							cancel()
+						}
+						<-ctx.Done()
+						return position, size, nil
+					})
+					if lock != nil {
+						t.Cleanup(func() { lock.Close() })
+						t.Fatal("context ended before acquisition but validation acquired the lock")
+					}
+					if !errors.Is(err, tt.wantErr) || waited || ticket == "" {
+						t.Fatalf("acquisition = (waited=%t, ticket=%q, %v), want %v after position lookup", waited, ticket, err, tt.wantErr)
+					}
+					if !strings.Contains(err.Error(), "wait") {
+						t.Errorf("context error lacks waiting context: %v", err)
+					}
+					after, err := instancelock.Inspect(path)
+					if err != nil || after.Status != before.Status || after.Owner != before.Owner {
+						t.Fatalf("validation ownership changed: before=%+v after=%+v error=%v", before, after, err)
+					}
+					if !held {
+						if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+							t.Fatalf("context-ended invocation touched validation lock: %v", err)
+						}
+					}
+					inspection, err := instancelock.Inspect(filepath.Join(path+".queue", ticket))
+					if err != nil || inspection.Status == instancelock.StatusHeld {
+						t.Fatalf("waiter ticket remains held: %+v, %v", inspection, err)
+					}
+					next, err := registerValidationWaiter(t.Context(), path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer next.lock.Close()
+					position, size, err := validationPosition(t.Context(), path, next.name)
+					if err != nil || position != 1 || size != 1 {
+						t.Fatalf("queue after context ended = (%d, %d, %v), want (1, 1, nil)", position, size, err)
+					}
+				})
+			})
+		}
+	}
+}
+
+func TestValidationQueueCanceledBeforeAcquisition(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	path := filepath.Join(t.TempDir(), "validation.lock")
+	lock, _, err := acquireValidationLock(ctx, path, io.Discard)
+	if !errors.Is(err, context.Canceled) || lock != nil {
+		t.Fatalf("already canceled acquisition = %v, %v", lock, err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("already canceled invocation touched validation lock: %v", err)
+	}
+}
+
+func TestValidationWaitDeadlineDoesNotReleaseActiveLock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "validation.lock")
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		lock, _, err := acquireValidationLock(ctx, path, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lock.Close()
+		<-ctx.Done()
+		inspection, err := instancelock.Inspect(path)
+		if err != nil || inspection.Status != instancelock.StatusHeld {
+			t.Fatalf("wait deadline released active validation: %+v, %v", inspection, err)
+		}
+	})
+}
+
+func TestValidationQueueProcessRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+	for _, mode := range []string{"waiter", "registration", "holder", "crashed holder"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
+			defer cancel()
+			path := filepath.Join(t.TempDir(), "validation.lock")
+			command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestValidationQueueProcessHelper$")
+			command.Env = append(os.Environ(), "DETENT_CHECKLOCK_QUEUE_HELPER="+path, "DETENT_CHECKLOCK_QUEUE_MODE="+mode, "GOCOVERDIR="+t.TempDir())
+			ready := newNotifyingWriter()
+			var stderr bytes.Buffer
+			command.Stdout, command.Stderr = ready, &stderr
+			input, err := command.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := command.Start(); err != nil {
+				t.Fatal(err)
+			}
+			processDone := make(chan struct{})
+			var processErr error
+			go func() {
+				processErr = command.Wait()
+				close(processDone)
+			}()
+			t.Cleanup(func() {
+				input.Close()
+				cancel()
+				<-processDone
+			})
+			select {
+			case <-ready.notified:
+			case <-processDone:
+				t.Fatalf("helper exited before acquiring: %v: %s", processErr, &stderr)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			if mode != "registration" {
+				waiter, err := registerValidationWaiter(ctx, path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				position, _, err := validationPosition(ctx, path, waiter.name)
+				want := 1
+				if mode == "waiter" {
+					want = 2
+				}
+				if err != nil || position != want {
+					t.Fatalf("live helper queue position = %d, %v, want %d", position, err, want)
+				}
+				waiter.lock.Close()
+			}
+			if mode == "holder" || mode == "crashed holder" {
+				inspection, err := instancelock.Inspect(path)
+				if err != nil || inspection.Status != instancelock.StatusHeld || inspection.Owner.PID != command.Process.Pid {
+					t.Fatalf("active process owner = %+v, %v", inspection, err)
+				}
+			}
+			if _, err := io.WriteString(input, "exit\n"); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-processDone:
+				if processErr != nil {
+					t.Fatalf("helper failed: %v: %s", processErr, &stderr)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			lock, _, err := acquireValidationLock(ctx, path, io.Discard)
+			if err != nil {
+				t.Fatalf("acquire after helper exit: %v", err)
+			}
+			defer lock.Close()
+			inspection, err := instancelock.Inspect(path)
+			if err != nil || inspection.Owner.PID != os.Getpid() {
+				t.Fatalf("owner handoff = %+v, %v", inspection, err)
+			}
+		})
+	}
+}
+
+func TestValidationQueueProcessHelper(t *testing.T) {
+	path := os.Getenv("DETENT_CHECKLOCK_QUEUE_HELPER")
+	if path == "" {
+		t.Skip("helper process")
+	}
+	mode := os.Getenv("DETENT_CHECKLOCK_QUEUE_MODE")
+	var lock *instancelock.Lock
+	var err error
+	switch mode {
+	case "waiter":
+		var waiter validationWaiter
+		waiter, err = registerValidationWaiter(t.Context(), path)
+		lock = waiter.lock
+	case "registration":
+		lock, err = instancelock.Acquire(path + ".queue.lock")
+	default:
+		lock, err = instancelock.Acquire(path)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintln(os.Stdout, "ready")
+	if _, err := io.ReadFull(os.Stdin, make([]byte, len("exit\n"))); err != nil {
+		t.Fatal(err)
+	}
+	if mode == "holder" {
+		if err := lock.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	os.Exit(0)
+}
+
+func TestValidationQueueDiagnostics(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
+	defer cancel()
+	path := filepath.Join(t.TempDir(), "validation.lock")
+	acquireTestLock(t, path)
+	waitingCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	writer := newNotifyingWriter()
+	done := startValidationWaiter(waitingCtx, path, writer)
+	select {
+	case <-writer.notified:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	stop()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	output := writer.data.String()
+	for _, field := range []string{"position=1", "queued=1", "owner=held", fmt.Sprintf("owner_pid=%d", os.Getpid()), "owner_since=", "waited="} {
+		if !strings.Contains(output, field) {
+			t.Errorf("diagnostic %q missing %q", output, field)
+		}
+	}
+	if strings.Contains(output, filepath.Dir(path)) {
+		t.Fatalf("diagnostic exposes repository path: %q", output)
+	}
+}
+
+func acquireTestLock(t *testing.T, path string) *instancelock.Lock {
+	t.Helper()
+	lock, err := instancelock.Acquire(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := lock.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return lock
+}
+
+func TestValidationQueueCapacity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess queue capacity and handoff integration")
+	}
+
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "validation.lock")
+	for i := range validationQueueLimit {
+		acquireTestLock(t, filepath.Join(path+".queue", fmt.Sprintf("%020d.lock", i+1)))
+	}
+	if _, err := registerValidationWaiter(t.Context(), path); err == nil || !strings.Contains(err.Error(), "queue is full") {
+		t.Fatalf("full queue registration error = %v", err)
+	}
+}
+
+func TestValidationWaiterPruning(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		failures  int
+		cancel    bool
+		wantCalls int
+		wantErr   error
+	}{
+		{name: "removed", wantCalls: 1},
+		{name: "unlocked handle still closing", failures: 1, wantCalls: 2},
+		{name: "permanent failure", failures: 5, wantCalls: 5, wantErr: os.ErrPermission},
+		{name: "canceled retry", failures: 1, cancel: true, wantCalls: 1, wantErr: context.Canceled},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				calls := 0
+				err := pruneValidationWaiter(ctx, "waiter.lock", func(string) error {
+					calls++
+					if tt.cancel {
+						cancel()
+					}
+					if calls <= tt.failures {
+						return os.ErrPermission
+					}
+					return nil
+				})
+				if !errors.Is(err, tt.wantErr) || calls != tt.wantCalls {
+					t.Fatalf("pruning = (%d calls, %v), want (%d calls, %v)", calls, err, tt.wantCalls, tt.wantErr)
+				}
+			})
+		})
+	}
+}
+
+func TestValidationWaiterPruningOpenHandle(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "waiter.lock")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { file.Close() })
+	calls := 0
+	err = pruneValidationWaiter(t.Context(), path, func(path string) error {
+		calls++
+		err := os.Remove(path)
+		if calls == 1 {
+			if closeErr := file.Close(); closeErr != nil {
+				t.Fatal(closeErr)
+			}
+		}
+		return err
+	})
+	wantCalls := 1
+	if runtime.GOOS == "windows" {
+		wantCalls = 2
+	}
+	if err != nil || calls != wantCalls {
+		t.Fatalf("prune open handle = %v after %d attempts, want nil after %d", err, calls, wantCalls)
+	}
+}
+
+func TestValidationQueueRejectsInvalidState(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"unexpected", "xxxxxxxxxxxxxxxxxxxx.lock", "00000000000000000001.lock"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "validation.lock")
+			if err := os.MkdirAll(filepath.Join(path+".queue", name), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := registerValidationWaiter(t.Context(), path); err == nil || !strings.Contains(err.Error(), "invalid validation queue") {
+				t.Fatalf("invalid queue registration error = %v", err)
+			}
+			guard := acquireTestLock(t, path+".queue.lock")
+			if err := guard.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestValidationQueueHealthyHandoffs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "validation.lock")
+		holder := acquireTestLock(t, path)
+		var older []validationWaiter
+		for range 3 {
+			waiter, err := registerValidationWaiter(t.Context(), path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { waiter.lock.Close() })
+			older = append(older, waiter)
+		}
+		var stderr bytes.Buffer
+		started := time.Now()
+		calls := 0
+		lock, waited, err := acquireValidationLockWithPosition(t.Context(), path, &stderr, func(ctx context.Context, path, name string) (int, int, error) {
+			if calls > 0 {
+				time.Sleep(6 * time.Minute)
+				if err := holder.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if calls < 4 {
+					if err := older[calls-1].lock.Close(); err != nil {
+						t.Fatal(err)
+					}
+					holder = acquireTestLock(t, path)
+				}
+			}
+			calls++
+			return validationPosition(ctx, path, name)
+		})
+		if err != nil {
+			t.Fatalf("healthy handoffs lost queue progress after %s: %v", time.Since(started), err)
+		}
+		defer lock.Close()
+		if !waited || time.Since(started) < 24*time.Minute || strings.Count(stderr.String(), "reason=owner_handoff") != 3 {
+			t.Fatalf("handoffs: waited=%t elapsed=%s diagnostics=%s", waited, time.Since(started), &stderr)
+		}
+	})
+}
+
+func TestValidationQueueWaitBudgets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		activity   string
+		maxWait    time.Duration
+		wantWait   time.Duration
+		wantReason string
+	}{
+		{name: "owner starts after queueing", activity: "owner starts", maxWait: time.Minute, wantWait: 1500 * time.Millisecond, wantReason: "no validation owner handoff"},
+		{name: "owner output appears", activity: "output appears", maxWait: time.Minute, wantWait: 1500 * time.Millisecond, wantReason: "no validation owner handoff"},
+		{name: "live stalled holder", maxWait: time.Minute, wantWait: time.Second, wantReason: "no validation owner handoff"},
+		{name: "queue advancement renews held owner wait", activity: "cancel older", maxWait: time.Minute, wantWait: 1500 * time.Millisecond, wantReason: "no validation owner handoff"},
+		{name: "new arrivals do not renew wait", activity: "new waiter", maxWait: time.Minute, wantWait: time.Second, wantReason: "no validation owner handoff"},
+		{name: "handoffs stop at total bound", activity: "handoff", maxWait: 2 * time.Second, wantWait: 2 * time.Second, wantReason: "total queue wait limit reached"},
+		{name: "cancellation after handoff", activity: "cancel", maxWait: time.Minute, wantWait: time.Second, wantReason: "context canceled"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				path := filepath.Join(t.TempDir(), "validation.lock")
+				var holder *instancelock.Lock
+				if tt.activity != "owner starts" {
+					holder = acquireTestLock(t, path)
+				}
+				older, err := registerValidationWaiter(ctx, path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer older.lock.Close()
+				var stderr bytes.Buffer
+				started := time.Now()
+				calls := 0
+				var ticket string
+				lock, _, err := acquireValidationLockWithTimeouts(ctx, path, &stderr, time.Second, tt.maxWait, func(ctx context.Context, path, name string) (int, int, error) {
+					ticket = name
+					if calls > 0 {
+						time.Sleep(400 * time.Millisecond)
+						switch tt.activity {
+						case "owner starts":
+							if calls == 1 {
+								holder = acquireTestLock(t, path)
+							}
+						case "output appears":
+							if calls == 1 {
+								recorder := newValidationActivityRecorder(path, io.Discard)
+								recorder.observe([]byte("test output\n"))
+							}
+						case "handoff", "cancel":
+							if err := holder.Close(); err != nil {
+								t.Fatal(err)
+							}
+							holder = acquireTestLock(t, path)
+							if tt.activity == "cancel" && calls == 2 {
+								cancel()
+							}
+						case "cancel older":
+							if err := older.lock.Close(); err != nil {
+								t.Fatal(err)
+							}
+						case "new waiter":
+							waiter, err := registerValidationWaiter(t.Context(), path)
+							if err != nil {
+								t.Fatal(err)
+							}
+							t.Cleanup(func() { waiter.lock.Close() })
+						}
+					}
+					calls++
+					return validationPosition(ctx, path, name)
+				})
+				wantErr := context.DeadlineExceeded
+				if tt.activity == "cancel" {
+					wantErr = context.Canceled
+				}
+				if lock != nil || !errors.Is(err, wantErr) || !strings.Contains(err.Error(), tt.wantReason) || time.Since(started) != tt.wantWait {
+					t.Fatalf("wait result: lock=%v err=%v elapsed=%s; want %s after %s", lock, err, time.Since(started), tt.wantReason, tt.wantWait)
+				}
+				if (tt.activity == "handoff" || tt.activity == "cancel" || tt.activity == "owner starts") && !strings.Contains(stderr.String(), "reason=owner_handoff") {
+					t.Fatalf("missing renewal reason: %s", &stderr)
+				}
+				if tt.activity != "handoff" && tt.activity != "cancel" && tt.activity != "owner starts" && tt.activity != "cancel older" && tt.activity != "output appears" && strings.Contains(stderr.String(), "renewing") {
+					t.Fatalf("non-progress renewed wait: %s", &stderr)
+				}
+				inspection, err := instancelock.Inspect(path)
+				if err != nil || inspection.Status != instancelock.StatusHeld {
+					t.Fatalf("wait expiration released holder: %+v, %v", inspection, err)
+				}
+				inspection, err = instancelock.Inspect(filepath.Join(path+".queue", ticket))
+				if err != nil || inspection.Status == instancelock.StatusHeld {
+					t.Fatalf("expired ticket remains live: %+v, %v", inspection, err)
+				}
+				if err := older.lock.Close(); err != nil {
+					t.Fatal(err)
+				}
+				next, err := registerValidationWaiter(t.Context(), path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer next.lock.Close()
+				if _, err := os.Stat(filepath.Join(path+".queue", ticket)); next.name != ticket && !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("retry did not prune expired ticket: %v", err)
+				}
+			})
+		})
+	}
+}
+
+func TestValidationQueueUnheldAdvancement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "validation.lock")
+		var older []validationWaiter
+		for range 3 {
+			waiter, err := registerValidationWaiter(t.Context(), path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { waiter.lock.Close() })
+			older = append(older, waiter)
+		}
+		var stderr bytes.Buffer
+		started := time.Now()
+		calls := 0
+		lock, _, err := acquireValidationLockWithTimeouts(t.Context(), path, &stderr, time.Second, time.Minute, func(ctx context.Context, path, name string) (int, int, error) {
+			if calls > 0 {
+				time.Sleep(500 * time.Millisecond)
+				if err := older[calls-1].lock.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls++
+			return validationPosition(ctx, path, name)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lock.Close()
+		if time.Since(started) <= time.Second || strings.Count(stderr.String(), "reason=queue_advanced_without_owner") != 2 {
+			t.Fatalf("queue progress: elapsed=%s diagnostics=%s", time.Since(started), &stderr)
+		}
+		time.Sleep(2 * time.Minute)
+		inspection, err := instancelock.Inspect(path)
+		if err != nil || inspection.Status != instancelock.StatusHeld {
+			t.Fatalf("wait budgets affected active gate: %+v, %v", inspection, err)
+		}
+	})
+}

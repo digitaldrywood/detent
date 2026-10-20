@@ -1,0 +1,10 @@
+Detent is licensed under the Functional Source License, Version 1.1, with
+Apache License 2.0 as the future license (FSL-1.1-ALv2), starting with the first
+release tagged after this change. All releases tagged before this change remain
+under the MIT License as published with those tags.
+
+Third-party components retain their own licenses. This includes the T3 Code
+portions described in web/conversation/LICENSE.t3code and
+web/conversation/PROVENANCE.md, the bundled dependency notices in
+static/app/conversation/THIRD_PARTY_LICENSES.txt, and Go module dependencies
+under their respective licenses.
