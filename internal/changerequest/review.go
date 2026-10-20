@@ -121,7 +121,11 @@ func CurrentPolicyIdentities(version *tracker.ChangeVersion, approved policy.Des
 		return policyID, reviewID
 	}
 	for _, check := range rules.RequiredChecks {
-		if !slices.Contains(version.ReviewPolicy.RequiredChecks, check) {
+		if !slices.ContainsFunc(version.ReviewPolicy.RequiredChecks, func(prior tracker.ChangeCheckSpec) bool {
+			return prior.Name == check.Name && prior.PrincipalID == check.PrincipalID &&
+				prior.WorkflowID == check.WorkflowID && prior.WorkflowSHA256 == check.WorkflowSHA256 &&
+				prior.Source == check.Source && prior.MaxAgeSeconds <= check.MaxAgeSeconds
+		}) {
 			return policyID, reviewID
 		}
 	}

@@ -227,6 +227,9 @@ func TestSummarizePolicyAndExternalAuthority(t *testing.T) {
 		{name: "check freshness tightened", stale: true, edit: func(_ *tracker.ChangeVersion, _ *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
 			r.RequiredChecks[0].MaxAgeSeconds = 60
 		}},
+		{name: "check freshness relaxed", edit: func(_ *tracker.ChangeVersion, _ *policy.Descriptor, r *tracker.ChangeReviewPolicy) {
+			r.RequiredChecks[0].MaxAgeSeconds = 7200
+		}},
 		{name: "review newly required", stale: true, edit: func(v *tracker.ChangeVersion, _ *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
 			v.ReviewPolicy.RequireReview = false
 		}},
