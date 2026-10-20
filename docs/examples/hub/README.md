@@ -1,11 +1,23 @@
 # Hub deployment examples and shared-site target
 
-[Caddyfile](Caddyfile) and [detent-hub.service](detent-hub.service) are currently
+[Caddyfile](Caddyfile), [detent-hub.service](detent-hub.service) and the macOS
+[Hub LaunchAgent](com.digitaldrywood.detent.hub.plist) are currently
 supported **customer-operated, free self-hosting** examples. They serve a single
 Hub at the customer's chosen origin with scoped bearer auth. Follow the
 [self-hosting runbook](../../hub-self-hosting.md) for installation, credentials,
 backup and recovery. They require no Detent subscription or billing connectivity.
 Changing their hostname to cloud.detent.build does not create the shared product.
+
+For a Hub and runner on one machine, follow the
+[macOS and Linux walkthrough](../../hub-self-hosting.md#single-machine-hub-and-runner).
+The Hub LaunchAgent runs in a dedicated standard account, separate from the
+unprivileged runner account. It needs absolute paths customized for the Hub
+account, a private token file and pre-created log directories inaccessible to
+the runner. Check the service examples with
+`python3 -m unittest scripts/hub_examples_test.py`; this parses the plist, builds
+the current CLI and invokes both service commands with `--help`, and exercises
+file-to-environment token loading without starting a Hub. Prepare the embedded
+[conversation assets](../../development.md#conversation-assets) before this check.
 
 The operator-hosted product has one public site at `https://cloud.detent.build`,
 a shared identity/provisioning entry and metadata registry, and dedicated private
