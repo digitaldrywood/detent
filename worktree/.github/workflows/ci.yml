@@ -1,0 +1,590 @@
+name: CI
+
+on:
+  pull_request:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Run the full suite even when this SHA has completed CI
+        required: false
+        type: boolean
+        default: false
+      fail_job:
+        description: Force one job to fail after its normal checks
+        required: false
+        type: choice
+        default: none
+        options: [none, verify-fast]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      should_run: ${{ steps.scope.outputs.should_run }}
+      release_branch: ${{ steps.scope.outputs.release_branch }}
+      develop_sha: ${{ steps.scope.outputs.develop_sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - id: scope
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force || false }}
+          FAIL_JOB: ${{ inputs.fail_job || 'none' }}
+        run: |
+          set -euo pipefail
+          release_branch=""
+          if [[ "$GITHUB_REF" == refs/heads/release/* ]]; then
+            release_branch="${GITHUB_REF#refs/heads/}"
+            develop_sha="$GITHUB_SHA"
+          elif [[ "$GITHUB_REF" == refs/heads/develop ]]; then
+            develop_sha="$GITHUB_SHA"
+          else
+            develop_sha="$(git ls-remote origin refs/heads/develop | cut -f1)"
+          fi
+          echo "release_branch=$release_branch" >> "$GITHUB_OUTPUT"
+          test -n "$develop_sha"
+          echo "develop_sha=$develop_sha" >> "$GITHUB_OUTPUT"
+          echo "Validation SHA: $develop_sha"
+          should_run=true
+          force="$FORCE"
+          if [[ "$FAIL_JOB" != none ]]; then
+            force=true
+          fi
+          if [[ "$force" == true || -n "$release_branch" ]]; then
+            echo "Preflight decision: run; develop_sha=$develop_sha; current_run_id=$GITHUB_RUN_ID; force=true; fail_job=$FAIL_JOB"
+          else
+            prior_run_id="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?status=completed&branch=develop&head_sha=$develop_sha&per_page=100" | jq -r --arg current_run_id "$GITHUB_RUN_ID" '[.[].workflow_runs[] | select(.head_branch == "develop" and (.event == "schedule" or .event == "workflow_dispatch") and (.id | tostring) != $current_run_id and .conclusion != "cancelled")] | first | .id // empty')"
+            if [[ -n "$prior_run_id" ]]; then
+              should_run=false
+              echo "Preflight decision: skip; develop_sha=$develop_sha; prior_run_id=$prior_run_id; current_run_id=$GITHUB_RUN_ID"
+            else
+              echo "Preflight decision: run; develop_sha=$develop_sha; prior_run_id=none; current_run_id=$GITHUB_RUN_ID"
+            fi
+          fi
+          echo "should_run=$should_run" >> "$GITHUB_OUTPUT"
+
+  invariants:
+    needs: preflight
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
+    name: Invariant Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+      - uses: ./.github/actions/prepare-conversation
+
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          key: invariants
+      - name: Exercise required invariant behaviors
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence invariants make check-invariants
+
+  lint:
+    needs: preflight
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+
+      - uses: ./.github/actions/prepare-conversation
+
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          key: lint
+
+      - name: Cache golangci-lint
+        uses: actions/cache@v5
+        with:
+          path: tmp/tools/golangci-lint
+          key: golangci-lint-${{ runner.os }}-go1.26.9-${{ hashFiles('.golangci-version') }}
+
+      - name: Cache golangci-lint analysis
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-lint-analysis-${{ runner.os }}-${{ hashFiles('.golangci.yml', 'go.sum') }}
+          restore-keys: |
+            golangci-lint-analysis-${{ runner.os }}-
+
+      - name: Run golangci-lint
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence lint make lint
+
+  verify-fast:
+    needs: preflight
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.preflight.outputs.should_run == 'true') }}
+    name: Verify build and vet
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.sha || needs.preflight.outputs.develop_sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/prepare-conversation
+
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          key: verify-fast
+
+      - name: Build
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence build go build ./...
+
+      - name: Vet
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            check_with_evidence windows-build-amd64 env GOOS=windows GOARCH=amd64 go build ./...
+            check_with_evidence windows-vet env GOOS=windows GOARCH=amd64 go vet ./...
+            check_with_evidence windows-build-arm64 env GOOS=windows GOARCH=arm64 go build ./...
+          else
+            check_with_evidence vet make vet
+          fi
+
+      - name: Audit all Go packages with NilAway and the reviewed baseline
+        if: github.event_name != 'pull_request'
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          python3 -m unittest scripts/nilaway_changed_test.py
+          source scripts/check-evidence.sh
+          check_with_evidence nilaway-changed make nilaway-changed
+
+      - name: Verify landing gate concurrency and failure propagation
+        if: github.event_name != 'pull_request'
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: python3 -m unittest scripts/check_land_test.py
+
+      - name: Force acceptance probe failure
+        if: github.event_name == 'workflow_dispatch' && inputs.fail_job == 'verify-fast'
+        run: exit 1
+
+  generated:
+    needs: preflight
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
+    name: Generated sources
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/prepare-conversation
+
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          key: generated
+
+      - name: Generate documentation and verify committed SQL sources
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence generated make check-generated
+
+      - name: Check integrated migration versions
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence migrations make check-migrations
+
+  app:
+    needs: preflight
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
+    name: Cloud client
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/conversation/package-lock.json
+
+      - name: Verify Cloud client sources and generated assets
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence app make check-app
+
+  verify-race:
+    needs: preflight
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
+    name: Verify race (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: 1/5, key: race-1, shard: 1/5}
+          - {name: 2/5, key: race-2, shard: 2/5}
+          - {name: 3/5, key: race-3, shard: 3/5}
+          - {name: 4/5, key: race-4, shard: 4/5}
+          - {name: 5/5, key: race-5, shard: 5/5}
+          - {name: hub 1/4, key: race-hub-1, shard: hub-1}
+          - {name: hub 2/4, key: race-hub-2, shard: hub-2}
+          - {name: hub 3/4, key: race-hub-3, shard: hub-3}
+          - {name: hub 4/4, key: race-hub-4, shard: hub-4}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+      - uses: ./.github/actions/prepare-conversation
+
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          key: verify-${{ matrix.key }}
+      - name: Race test the short unit suite
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence race make test-race RACE_SHARD=${{ matrix.shard }}
+
+      - name: Repeat subprocess lifecycle readiness
+        if: matrix.key == 'race-1'
+        run: go test -race ./internal/claudecode ./internal/codex -run '^(TestRunTurnCancellationKillsChildProcessGroup|TestRunTurnDetectsExitedParentWithInheritedStdout|TestLocalTransportCloseKillsChildProcessGroup|TestLocalTransportReapsChildAfterParentExits)$' -count=20 -timeout=5m
+
+  test-cover:
+    needs: preflight
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
+    name: Test Coverage (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: 1/4, key: 1, shard: 1/4}
+          - {name: 2/4, key: 2, shard: 2/4}
+          - {name: 3/4, key: 3, shard: 3/4}
+          - {name: 4/4, key: 4, shard: 4/4}
+          - {name: hub 1/4, key: hub-1, shard: hub-1}
+          - {name: hub 2/4, key: hub-2, shard: hub-2}
+          - {name: hub 3/4, key: hub-3, shard: hub-3}
+          - {name: hub 4/4, key: hub-4, shard: hub-4}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+
+      - uses: ./.github/actions/prepare-conversation
+
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          key: test-cover-${{ matrix.key }}
+
+      - name: Check coverage
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence coverage make test-cover COVER_SHARD=${{ matrix.shard }} COVER_SKIP_HUB=1
+
+      - name: Upload workspace test evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-cover-evidence-${{ matrix.key }}
+          path: |
+            tmp/workspace-cover-evidence
+            tmp/coverage.out
+          if-no-files-found: warn
+          retention-days: 14
+
+  security:
+    needs: preflight
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+
+      - uses: ./.github/actions/prepare-conversation
+
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          key: security
+
+      - name: Run govulncheck and gosec
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence security make security
+
+  browser-visual-shard:
+    needs: preflight
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
+    name: Browser Visual (${{ matrix.shard }}/3)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          key: browser-visual-${{ matrix.shard }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Build Detent visual test binary
+        run: make build
+
+      - name: Build browser preview test binaries
+        run: |
+          go test -c -o tmp/hubserver-preview.test ./internal/hubserver
+          go test -c -o tmp/startup-preview.test ./internal/cli
+
+      - name: Run full browser journeys
+        env:
+          DETENT_BINARY: ${{ github.workspace }}/tmp/detent
+          DETENT_HOSTED_PREVIEW_BINARY: ${{ github.workspace }}/tmp/hubserver-preview.test
+          DETENT_STARTUP_PREVIEW_BINARY: ${{ github.workspace }}/tmp/startup-preview.test
+          TMPDIR: ${{ runner.temp }}
+        run: npm run test:visual -- --shard=${{ matrix.shard }}/3
+
+      - name: Upload browser visual evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-visual-evidence-${{ matrix.shard }}
+          path: |
+            tmp/playwright-evidence
+            ${{ runner.temp }}/playwright-evidence
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Successful retries still contain failed-attempt diagnostics.
+      - name: Upload browser visual failure artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-visual-failure-artifacts-${{ matrix.shard }}
+          path: |
+            tmp/playwright-report
+            tmp/playwright-results
+          if-no-files-found: ignore
+          retention-days: 14
+
+  installer-smoke:
+    needs: preflight
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
+    name: Installer Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+
+      - name: Resolve release installer version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(bash ./scripts/resolve-release-tag.sh)"
+          echo "DETENT_VERSION=$tag" >> "$GITHUB_ENV"
+
+      - name: Smoke release installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DETENT_INSTALL_DIR="$RUNNER_TEMP/detent/bin"
+          export DETENT_STATE_DIR="$RUNNER_TEMP/detent/state"
+          export DETENT_INSTALL_LOCK="$DETENT_STATE_DIR/install.lock"
+          export DETENT_INSTALL_MODE=release
+
+          output="$(sh ./install.sh 2>&1)"
+          printf '%s\n' "$output"
+          if grep -Fq "falling back to prepared source" <<< "$output"; then
+            echo "Release installer fell back to prepared source" >&2
+            exit 1
+          fi
+          grep -F "Verified checksum for detent_" <<< "$output"
+          grep -F "Installed Detent at $DETENT_INSTALL_DIR/detent" <<< "$output"
+          grep -F "Add $DETENT_INSTALL_DIR to PATH before running detent" <<< "$output"
+
+          test -x "$DETENT_INSTALL_DIR/detent"
+          grep -F "binary=$DETENT_INSTALL_DIR/detent" "$DETENT_INSTALL_LOCK"
+          grep -F "installed_at=" "$DETENT_INSTALL_LOCK"
+
+          "$DETENT_INSTALL_DIR/detent" version
+
+  goreleaser-snapshot:
+    needs: preflight
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
+    name: GoReleaser Snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          key: goreleaser
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/conversation/package-lock.json
+
+      - name: Prepare non-published snapshot provenance fixture
+        env:
+          CI_DEVELOP_SHA: ${{ needs.preflight.outputs.develop_sha }}
+        run: |
+          mkdir -p tmp
+          printf '{"schema":1,"repository":"%s","tag":"snapshot","commit":"%s","checks":[{"name":"snapshot packaging only","status":"completed","conclusion":"success"}]}\n' "$GITHUB_REPOSITORY" "$CI_DEVELOP_SHA" > tmp/detent_release_provenance.json
+
+      - name: Run GoReleaser snapshot
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean --skip=sign
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-prebuild:
+    needs: preflight
+    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
+    name: Release prebuild (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [darwin, linux, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v5
+        if: needs.preflight.outputs.release_branch != ''
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/prepare-conversation
+        if: needs.preflight.outputs.release_branch != ''
+
+      - uses: ./.github/actions/setup-go-cached
+        if: needs.preflight.outputs.release_branch != ''
+        with:
+          key: release-prebuild-${{ matrix.goos }}-${{ matrix.goarch }}
+
+      - name: Build release binary
+        if: needs.preflight.outputs.release_branch != ''
+        env:
+          CI_RELEASE_BRANCH: ${{ needs.preflight.outputs.release_branch }}
+          CI_DEVELOP_SHA: ${{ needs.preflight.outputs.develop_sha }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: bash scripts/release-prebuild.sh
+
+      - uses: actions/upload-artifact@v7
+        if: needs.preflight.outputs.release_branch != ''
+        with:
+          name: release-prebuilt-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: tmp/prebuilt
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  finalize:
+    name: Finalize scheduled validation
+    timeout-minutes: 5
+    needs: [preflight, invariants, lint, verify-fast, generated, app, verify-race, test-cover, security, browser-visual-shard, installer-smoke, goreleaser-snapshot, release-prebuild]
+    if: github.event_name != 'pull_request' && always() && !cancelled() && (needs.preflight.result == 'success' || needs.preflight.result == 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      issues: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.preflight.outputs.develop_sha }}
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          key: finalize
+      - name: Report source blockers at High and publish validated tag
+        env:
+          WORKFLOW_CANCELLED: ${{ job.status == 'cancelled' }}
+          GH_TOKEN: ${{ github.token }}
+          CI_DEVELOP_SHA: ${{ needs.preflight.outputs.develop_sha }}
+          CI_RELEASE_BRANCH: ${{ needs.preflight.outputs.release_branch }}
+          CI_SHOULD_RUN: ${{ needs.preflight.outputs.should_run }}
+          TMPDIR: ${{ runner.temp }}
+          DETENT_MCP_URL: https://cloud.detent.build/organizations/org_9e0e65eec07a6639979a/mcp
+          DETENT_PROJECT_ID: prj_6d4919bebd73446798e6cd807feda10e
+          DETENT_API_KEY: ${{ secrets.DETENT_API_KEY }}
+        run: bash scripts/scheduled-ci-finish.sh
+      - name: Retain scheduled reporting evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: scheduled-reporting-evidence
+          path: ${{ runner.temp }}/scheduled-ci-*
+          if-no-files-found: warn
+          retention-days: 14
