@@ -61,7 +61,7 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 			p.SourceDigest = policy.Digest([]byte("new source"))
 			p.Profile = "updated"
 		}},
-		{name: "merge method change preserves landing", policyChange: func(p *policy.Descriptor) { p.Gates.MergeMethod = "merge" }},
+		{name: "merge method change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.MergeMethod = "merge" }, wantStale: true},
 		{name: "validator change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.Validator = true }, wantStale: true},
 		{name: "required check floor change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.RequiredChecks++ }, wantStale: true},
 		{name: "GitHub CI contract change requires fresh review evidence", policyChange: func(p *policy.Descriptor) {

@@ -574,7 +574,20 @@ func readChangeSummary(ctx context.Context, query nativeQueryer, scope nativeSco
 }
 
 func (p changeSummaryPolicy) identities(version *tracker.ChangeVersion) (string, string) {
-	return changerequest.CurrentPolicyIdentities(version, p.approval.Policy, p.rules)
+	policyID, reviewID := p.approval.Policy.ID, p.rules.ID
+	if version != nil {
+		if version.Policy.Gates.LandingMode == "rolling_barrier" {
+			return "", reviewID
+		}
+		currentRules := p.rules
+		currentRules.PolicyID = policyID
+		if policyID != "" && p.rules.ID != "" && version.PolicyID == version.Policy.ID && version.ReviewPolicy.ID != "" &&
+			version.Policy.Gates == p.approval.Policy.Gates && version.ReviewPolicy.RequireReview == p.rules.RequireReview &&
+			slices.Equal(version.ReviewPolicy.RequiredChecks, p.rules.RequiredChecks) && changerequest.ValidatePolicy(currentRules, p.approval.Policy) == nil {
+			policyID, reviewID = version.PolicyID, version.ReviewPolicy.ID
+		}
+	}
+	return policyID, reviewID
 }
 
 func (p changeSummaryPolicy) summarize(detail tracker.ChangeDetail, now time.Time, priorApproval bool) tracker.ChangeSummary {

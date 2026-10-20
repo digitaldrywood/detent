@@ -95,6 +95,7 @@ func TestMakeCheckFastOverlapsWorktrees(t *testing.T) {
 		git("worktree", "add", "--detach", dir, "HEAD")
 		for file, content := range map[string]string{
 			"Makefile": string(makefile), ".golangci-version": "test\n", "go.mod": "module fixture\n",
+			"python3": "#!/bin/sh\nexit 0\n",
 			"go": `#!/bin/sh
 set -eu
 case "$*" in
@@ -265,6 +266,7 @@ func TestMakeCheckPreflightWithoutSharedLock(t *testing.T) {
 					write("invalid-invariants", "", 0o600)
 				}
 				write("git", "#!/bin/sh\npwd\n", 0o700)
+				write("python3", "#!/bin/sh\nexit 0\n", 0o700)
 				write("go", `#!/bin/sh
 set -eu
 case "$*" in
