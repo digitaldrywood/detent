@@ -15,7 +15,7 @@ import {
   supportCSRF,
   supportOrganization,
 } from "./account/Support.tsx";
-import { ClientContext } from "./client.ts";
+import { ClientProvider } from "./client.ts";
 import { ContentSecurity } from "./ContentSecurity.tsx";
 import { isDesignSystemPath, makeRouter } from "./router.tsx";
 import { isLoginPath, LoginCard } from "./routes.account.tsx";
@@ -55,7 +55,7 @@ function Failure({ message }: { message: string }): React.ReactElement {
       <p>{message}</p>
       <a
         className="text-primary underline-offset-4 hover:underline"
-        href={hubPath("/organization")}
+        href={hubPath("/work")}
       >
         Back to Detent
       </a>
@@ -112,9 +112,9 @@ function startOrganizationClient(): void {
       mount(
         <React.StrictMode>
           <RegistryProvider>
-            <ClientContext.Provider value={client}>
+            <ClientProvider client={client}>
               <RouterProvider router={router} />
-            </ClientContext.Provider>
+            </ClientProvider>
           </RegistryProvider>
         </React.StrictMode>,
       );
