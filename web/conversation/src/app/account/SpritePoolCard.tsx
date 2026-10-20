@@ -74,7 +74,7 @@ export function SpritePoolCard({ projectId, canManage, compact = false, attentio
       <p className="text-sm text-muted-foreground">{context}</p>
       {unavailable ? <Alert variant="error">
         <AlertTitle>{error === null ? "Could not load the pool." : "Could not save the pool."}</AlertTitle>
-        <AlertDescription>{failure?.isConflict ? "The pool settings changed. Reload the saved settings before trying again." : "Try loading the organization’s pool settings again."}
+        <AlertDescription>{failure?.isConflict ? "The pool settings changed. Reload the saved settings before trying again." : failure?.status === 422 ? failure.message : "Try loading the organization’s pool settings again."}
           <div><Button type="button" size="sm" variant="outline" disabled={pending || pool.loading} onClick={() => void reload()}>{pool.loading ? "Retrying…" : "Retry"}</Button></div>
         </AlertDescription>
       </Alert> : <>
