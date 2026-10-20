@@ -19,9 +19,9 @@ func TestScheduledTaskDefinition(t *testing.T) {
 	for _, test := range []struct {
 		name, binary, config, home, wantCommand string
 	}{
-		{"spaces and backslashes", `C:\Program Files\Detent\detent.exe`, `C:\Users\Example User\runner\global.yaml`, `C:\Users\Example User`, `& 'C:\Program Files\Detent\detent.exe' '--config' 'C:\Users\Example User\runner\global.yaml' '--headless' >> 'C:\Users\Example User\runner\logs\service.out.log' 2>> 'C:\Users\Example User\runner\logs\service.err.log'`},
-		{"shell metacharacters and unicode", `C:\Tools & Apps\detent.exe`, `C:\Users\Example's $user\配置\global.yaml`, `C:\Users\Example's $user`, `& 'C:\Tools & Apps\detent.exe' '--config' 'C:\Users\Example''s $user\配置\global.yaml' '--headless' >> 'C:\Users\Example''s $user\配置\logs\service.out.log' 2>> 'C:\Users\Example''s $user\配置\logs\service.err.log'`},
-		{"unicode quote injection", `C:\Tools‘\detent.exe`, `C:\Users\x’; Start-Process calc; #‚‛\global.yaml`, `C:\Users\Example`, `& 'C:\Tools‘‘\detent.exe' '--config' 'C:\Users\x’’; Start-Process calc; #‚‚‛‛\global.yaml' '--headless' >> 'C:\Users\x’’; Start-Process calc; #‚‚‛‛\logs\service.out.log' 2>> 'C:\Users\x’’; Start-Process calc; #‚‚‛‛\logs\service.err.log'`},
+		{"spaces and backslashes", `C:\Program Files\Detent\detent.exe`, `C:\Users\Example User\runner\global.yaml`, `C:\Users\Example User`, `& 'C:\Program Files\Detent\detent.exe' '--config' 'C:\Users\Example User\runner\global.yaml' '--headless'`},
+		{"shell metacharacters and unicode", `C:\Tools & Apps\detent.exe`, `C:\Users\Example's $user\配置\global.yaml`, `C:\Users\Example's $user`, `& 'C:\Tools & Apps\detent.exe' '--config' 'C:\Users\Example''s $user\配置\global.yaml' '--headless'`},
+		{"unicode quote injection", `C:\Tools‘\detent.exe`, `C:\Users\x’; Start-Process calc; #‚‛\global.yaml`, `C:\Users\Example`, `& 'C:\Tools‘‘\detent.exe' '--config' 'C:\Users\x’’; Start-Process calc; #‚‚‛‛\global.yaml' '--headless'`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -72,7 +72,7 @@ func TestScheduledTaskDefinition(t *testing.T) {
 				t.Fatal(task.Actions.Exec.Arguments)
 			}
 			script := decodePowerShell(t, strings.TrimPrefix(task.Actions.Exec.Arguments, prefix))
-			for _, want := range []string{test.wantCommand, `$env:DETENT_SERVICE_MANAGER = 'scheduled-task'`, `$env:PATH = 'C:\Tools;C:\Program Files\Provider'`, `$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'`, `exit $LASTEXITCODE`} {
+			for _, want := range []string{test.wantCommand, `$env:DETENT_SERVICE_MANAGER = 'scheduled-task'`, `$env:PATH = 'C:\Tools;C:\Program Files\Provider'`, `exit $LASTEXITCODE`} {
 				if !strings.Contains(script, want) {
 					t.Errorf("script %q missing %q", script, want)
 				}
@@ -186,6 +186,52 @@ func TestScheduledTaskLifecycle(t *testing.T) {
 			}
 			if _, err := os.Stat(definition.Path); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("uninstall left definition: %v", err)
+			}
+		})
+	}
+}
+
+func TestScheduledTaskInstallWithStaleDefinition(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"missing", "3", "access denied"} {
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			cfg := normalizeConfig(Config{GOOS: "windows", UID: "S-1-5-21-1234", ConfigPath: filepath.Join(root, "global.yaml"), HomeDir: root})
+			registrations := 0
+			cfg.RunCommand = func(_ context.Context, _ string, args ...string) (string, error) {
+				script := decodePowerShell(t, args[3])
+				if strings.Contains(script, ".RegisterTask(") {
+					registrations++
+					return "", nil
+				}
+				if state == "access denied" {
+					return "", errors.New("access denied")
+				}
+				return state, nil
+			}
+			manager := newScheduledTaskManager(cfg)
+			definition := manager.Definition()
+			if err := os.WriteFile(definition.Path, []byte("stale definition"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := manager.Install(t.Context())
+			if state == "missing" {
+				if err != nil || registrations != 1 {
+					t.Fatalf("repair install: registrations=%d error=%v", registrations, err)
+				}
+				data, err := os.ReadFile(definition.Path)
+				if err != nil || !strings.Contains(string(data), "<LogonTrigger>") {
+					t.Fatalf("replacement definition: %s, %v", data, err)
+				}
+			} else {
+				if err == nil || registrations != 0 {
+					t.Fatalf("replaced task without proving absence: registrations=%d error=%v", registrations, err)
+				}
+				data, err := os.ReadFile(definition.Path)
+				if err != nil || string(data) != "stale definition" {
+					t.Fatalf("existing definition changed: %s, %v", data, err)
+				}
 			}
 		})
 	}

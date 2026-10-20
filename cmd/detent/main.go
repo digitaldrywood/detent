@@ -33,17 +33,21 @@ func main() {
 		os.Exit(gobudget.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
 	}
 	exitCode, restartBinary := runCLIResult(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	manager := service.ManagerFromProcessEnvironment(runtime.GOOS, os.LookupEnv)
+	os.Exit(finishCLI(exitCode, restartBinary, manager, restartProcess))
+}
+
+func finishCLI(exitCode int, restartBinary string, manager service.ManagerName, restart func(string, []string, []string) error) int {
 	if exitCode == cli.ExitSuccess && restartBinary != "" {
-		manager := service.ManagerFromProcessEnvironment(runtime.GOOS, os.LookupEnv)
-		if manager == service.ManagerLaunchd || manager == service.ManagerSystemd {
-			os.Exit(cli.ExitGeneral)
+		if manager == service.ManagerLaunchd || manager == service.ManagerSystemd || manager == service.ManagerScheduledTask {
+			return cli.ExitGeneral
 		}
-		if err := restartProcess(restartBinary, os.Args, os.Environ()); err != nil {
+		if err := restart(restartBinary, os.Args, os.Environ()); err != nil {
 			slog.Error("restart updated Detent process", "binary", restartBinary, "error", err)
-			os.Exit(cli.ExitGeneral)
+			return cli.ExitGeneral
 		}
 	}
-	os.Exit(exitCode)
+	return exitCode
 }
 
 func runCLI(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {

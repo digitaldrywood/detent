@@ -68,7 +68,23 @@ func (m *scheduledTaskManager) Install(ctx context.Context) (Definition, error) 
 	}
 	definition := m.Definition()
 	if err := writeDefinition(definition); err != nil {
-		return Definition{}, err
+		if !errors.Is(err, os.ErrExist) {
+			return Definition{}, err
+		}
+		inspection, inspectErr := m.Inspect(ctx)
+		if inspectErr != nil {
+			return Definition{}, inspectErr
+		}
+		info, statErr := os.Lstat(definition.Path)
+		if inspection.Present || statErr != nil || !info.Mode().IsRegular() {
+			return Definition{}, errors.Join(err, statErr)
+		}
+		if err := os.Remove(definition.Path); err != nil {
+			return Definition{}, err
+		}
+		if err := writeDefinition(definition); err != nil {
+			return Definition{}, err
+		}
 	}
 	_, err := m.run(ctx, `$xml = [System.IO.File]::ReadAllText(`+shell.QuotePowerShellArg(definition.Path)+`); $null = $folder.RegisterTask(`+shell.QuotePowerShellArg(m.Info().Unit)+`, $xml, 2, `+shell.QuotePowerShellArg(m.cfg.UID)+`, $null, 3, $null)`)
 	if err != nil {
@@ -125,12 +141,11 @@ func (m *scheduledTaskManager) run(ctx context.Context, script string) (string, 
 }
 
 func scheduledTaskXML(cfg Config) string {
-	stdout, stderr := LogPaths(cfg)
 	arguments := make([]string, 0, len(cfg.Arguments))
 	for _, argument := range cfg.Arguments {
 		arguments = append(arguments, shell.QuotePowerShellArg(argument))
 	}
-	script := `$env:` + ManagerEnvironment + ` = ` + shell.QuotePowerShellArg(string(ManagerScheduledTask)) + `; $env:PATH = ` + shell.QuotePowerShellArg(cfg.Path) + `; $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'; & ` + shell.QuotePowerShellArg(cfg.BinaryPath) + ` ` + strings.Join(arguments, " ") + ` >> ` + shell.QuotePowerShellArg(stdout) + ` 2>> ` + shell.QuotePowerShellArg(stderr) + `; exit $LASTEXITCODE`
+	script := `$env:` + ManagerEnvironment + ` = ` + shell.QuotePowerShellArg(string(ManagerScheduledTask)) + `; $env:PATH = ` + shell.QuotePowerShellArg(cfg.Path) + `; & ` + shell.QuotePowerShellArg(cfg.BinaryPath) + ` ` + strings.Join(arguments, " ") + `; exit $LASTEXITCODE`
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>` + html.EscapeString(cfg.UID) + `</UserId></LogonTrigger></Triggers>

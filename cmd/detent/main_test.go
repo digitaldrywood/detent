@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/cli"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/service"
 )
 
 func TestProtocolProbeWithoutScratch(t *testing.T) {
@@ -575,5 +576,40 @@ func collectCommandsWithoutExamples(cmd *cobra.Command, missing *[]string) {
 	}
 	for _, child := range cmd.Commands() {
 		collectCommandsWithoutExamples(child, missing)
+	}
+}
+
+func TestFinishCLIUpdateRestart(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name                string
+		manager             service.ManagerName
+		code                int
+		binary              string
+		restartErr          error
+		wantCode, wantCalls int
+	}{
+		{name: "scheduled task", manager: service.ManagerScheduledTask, binary: "detent.exe", wantCode: cli.ExitGeneral},
+		{name: "launchd", manager: service.ManagerLaunchd, binary: "detent", wantCode: cli.ExitGeneral},
+		{name: "systemd", manager: service.ManagerSystemd, binary: "detent", wantCode: cli.ExitGeneral},
+		{name: "manual", manager: service.ManagerManual, binary: "detent", wantCalls: 1},
+		{name: "manual restart failure", binary: "detent", restartErr: errors.New("exec failed"), wantCode: cli.ExitGeneral, wantCalls: 1},
+		{name: "ordinary shutdown", manager: service.ManagerScheduledTask},
+		{name: "failed command", manager: service.ManagerScheduledTask, code: cli.ExitValidation, binary: "detent.exe", wantCode: cli.ExitValidation},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			calls := 0
+			got := finishCLI(test.code, test.binary, test.manager, func(binary string, args, env []string) error {
+				calls++
+				if binary != test.binary {
+					t.Fatalf("restart binary = %q", binary)
+				}
+				return test.restartErr
+			})
+			if got != test.wantCode || calls != test.wantCalls {
+				t.Fatalf("exit=%d restart calls=%d, want %d/%d", got, calls, test.wantCode, test.wantCalls)
+			}
+		})
 	}
 }
