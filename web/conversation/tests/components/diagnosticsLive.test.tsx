@@ -97,7 +97,7 @@ it("puts shared host totals and every runner before grouped typed findings witho
   const draining = within(attention).getByText("Not taking work because project settings could not be loaded").closest("article")!;
   expect(within(draining).getAllByRole("link").map((link) => link.textContent)).toEqual(["Example build host"]);
   expect(within(draining).getByText("This runner is draining. This runner cannot prepare work with these settings.")).toBeTruthy();
-  expect(within(attention).getByRole("link", { name: "Review policy" }).getAttribute("href")).toBe("/settings/integrations?project=prj_main");
+  expect(within(attention).getByRole("link", { name: "Review policy" }).getAttribute("href")).toBe("/settings/projects/prj_main/workflow");
   expect(within(attention).getByText("Example project", { exact: false })).toBeTruthy();
   for (const text of ["policy_digest", "git error_output", "Instrumentation coverage", "Configuration that shapes these numbers", "Check local workflow"]) expect(view.container.textContent).not.toContain(text);
   const totals = within(live).getAllByTestId("runner-capacity").map((row) => row.textContent);
@@ -178,7 +178,7 @@ it("keeps read-only policy review with its administrator and does not group unre
   render(<DiagnosticsView {...viewProps} runners={[...runners, { ...runners[0]!, id: "runner_four", machine_id: "host_four", display_name: "Example worker", problems: [{ ...problem, check: "different check" }] }]} />);
   const attention = screen.getByRole("region", { name: "Needs attention" });
   expect(within(attention).queryByRole("link", { name: "Review policy" })).toBeNull();
-  expect(within(attention).getByText("Organization administrator: review the project's approved policy in Settings → Integrations.")).toBeTruthy();
+  expect(within(attention).getByText("Organization administrator: review the project's approved policy in Settings → Projects → Workflow.")).toBeTruthy();
   expect(within(attention).getAllByText("Project settings could not be loaded")).toHaveLength(2);
   expect(screen.queryByRole("button", { name: /Approve|Update runner|Remove runner/ })).toBeNull();
 });

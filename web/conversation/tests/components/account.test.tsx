@@ -736,7 +736,7 @@ describe("the project settings", () => {
       return Promise.resolve(Response.json({ code: "not_found", message: "Not available" }, { status: 404 }));
     }));
     const navigate = vi.fn();
-    const root = createRootRoute({ component: () => <><Projects /><ProjectSettingsRoute projectId={project.id} onNavigate={navigate} /></> });
+    const root = createRootRoute({ component: () => <><Projects /><ProjectSettingsRoute projectId={project.id} tab="danger" onNavigate={navigate} /></> });
     const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
     render(<ClientProvider client={client}><RouterProvider router={router as never} /></ClientProvider>);
     await user.click(await screen.findByRole("button", { name: "Delete project" }));

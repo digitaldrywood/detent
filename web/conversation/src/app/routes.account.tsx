@@ -23,6 +23,7 @@ import { DEFAULT_SECTION } from "./settings/sections.tsx";
 import { usePageTitle } from "./pageTitle.ts";
 
 const SettingsScreen = lazyRouteComponent(() => import("./routes.account.screens.tsx"), "SettingsScreen");
+const ProjectSettingsScreen = lazyRouteComponent(() => import("./routes.account.screens.tsx"), "ProjectSettingsScreen");
 const SetupScreen = lazyRouteComponent(() => import("./routes.account.screens.tsx"), "SetupScreen");
 const UsageRoute = lazyRouteComponent(() => import("./usage/UsagePage.tsx"), "UsageRoute");
 const ActivityRoute = lazyRouteComponent(() => import("./activity/ActivityPage.tsx"), "ActivityRoute");
@@ -59,6 +60,8 @@ export const ACCOUNT_ROUTE_PATHS = [
   "/settings",
   "/settings/$section",
   "/settings/organization/$organizationPage",
+  "/settings/projects/$project",
+  "/settings/projects/$project/$tab",
   "/usage",
   "/reports",
   "/reports/$tab",
@@ -103,6 +106,8 @@ export function accountRoutes(rootRoute: AnyRoute): AnyRoute[] {
       }
     } }),
     createRoute({ getParentRoute, path: "/settings/organization/$organizationPage", component: SettingsScreen }),
+    createRoute({ getParentRoute, path: "/settings/projects/$project", component: ProjectSettingsScreen }),
+    createRoute({ getParentRoute, path: "/settings/projects/$project/$tab", component: ProjectSettingsScreen }),
     createRoute({ getParentRoute, path: "/usage", component: UsageRoute }),
     createRoute({ getParentRoute, path: "/reports", component: ReportsRoute }),
     createRoute({
@@ -122,9 +127,9 @@ export function accountRoutes(rootRoute: AnyRoute): AnyRoute[] {
       beforeLoad: ({ params }) => {
         const { project } = params as { project: string };
         throw redirect({
-          to: "/settings/$section",
-          params: { section: "integrations" },
-          search: { project },
+          to: "/settings/projects/$project/$tab",
+          params: { project, tab: "general" },
+          replace: true,
         });
       },
     }),

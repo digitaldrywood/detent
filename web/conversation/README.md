@@ -181,7 +181,7 @@ their own are redirects into the matching section.
 | `/settings/organization` | Members, roles, project grants, invitations, the switcher and the support banner | `GET /members` |
 | `/settings/projects` | The project list and New project | `GET /projects` |
 | `/settings/runners` | Provider capacity folded across the fleet, and the host cards | `GET /fleet` |
-| `/settings/integrations?project=` | The repository binding, the GitHub integration and the approved policy, one project at a time | `GET {nativeBase}/integration`, `GET {nativeBase}/policy` |
+| `/settings/projects/:project/:tab` | Project settings split across General, Repository & GitHub, Workflow, Models, Runners & Sprites, and Danger zone | `GET {nativeBase}/integration`, `GET {nativeBase}/policy` |
 | `/settings/plan` | The effective plan and its allowances | `GET /plan` |
 | `/settings/billing` | The subscription, the portal and the configured prices | `GET /billing` |
 | `/settings/keybindings` | The shortcuts this client binds | nothing |
@@ -190,7 +190,7 @@ their own are redirects into the matching section.
 | `/projects/:project/setup` | The artifact's screen 5 over the four onboarding steps | `GET {nativeBase}/onboarding` |
 | `/organization` | Redirects to `/settings/organization` |  |
 | `/fleet` | Redirects to `/settings/runners` |  |
-| `/projects/:project/settings` | Redirects to `/settings/integrations?project=` |  |
+| `/projects/:project/settings` | Redirects to `/settings/projects/:project/general` |  |
 
 The settings navigation is T3's, in the place T3 puts it: the window's
 sidebar. Their `AppSidebarLayout` swaps the thread sidebar for

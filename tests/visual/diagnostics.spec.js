@@ -251,7 +251,7 @@ for (const theme of ["light", "dark"]) {
       await expect(attention).toContainText("Optional project");
       await expect(attention).toContainText("Not taking work because project settings could not be loaded");
       await expect(attention).toContainText("Example project");
-      await expect(attention.getByRole("link", { name: "Review policy" })).toHaveAttribute("href", `/settings/integrations?project=${hub.fixture.project_id}`);
+      await expect(attention.getByRole("link", { name: "Review policy" })).toHaveAttribute("href", `/settings/projects/${hub.fixture.project_id}/workflow`);
       await expect(page.getByText("Instrumentation coverage", { exact: true })).toHaveCount(0);
       await expect(page.getByText(/policy_digest|git command error_output/)).toHaveCount(0);
       await expect(page.getByRole("button", { name: "Refresh diagnostics" })).toBeEnabled();

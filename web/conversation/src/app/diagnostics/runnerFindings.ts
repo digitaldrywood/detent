@@ -1,3 +1,4 @@
+import { projectSettingsPath } from "../settings/projectSettings.ts";
 import type { AccountProject, FleetRunner } from "../../contracts/account.ts";
 
 const PROBLEMS: Record<string, { summary: string; impact: string; action: string; projectSettings?: boolean }> = {
@@ -35,12 +36,12 @@ export function runnerFindings(runners: readonly FleetRunner[], projects: readon
       }
       const project = projects.find((entry) => entry.id === problem.project_id);
       const content = PROBLEMS[problem.code] ?? { summary: "Runner check needs attention", impact: "This runner may be unable to prepare work.", action: "Runner operator: inspect the failed local check in the runner's logs." };
-      const destination = content.projectSettings && project && canManage ? `/settings/integrations?project=${encodeURIComponent(project.id)}` : null;
+      const destination = content.projectSettings && project && canManage ? projectSettingsPath(project, "workflow") : null;
       rows.set(id, {
         id, runners: [runner], project: project?.name ?? (problem.project_id ? "Project unavailable to you" : "Assigned projects"),
         summary: stopped.length > 0 ? `Not taking work because ${content.summary.charAt(0).toLowerCase()}${content.summary.slice(1)}` : content.summary,
         impact: stopped.length > 0 ? `This runner is ${stopped.join(" and ")}. ${content.impact}` : content.impact,
-        action: content.projectSettings && !destination ? "Organization administrator: review the project's approved policy in Settings → Integrations." : content.action,
+        action: content.projectSettings && !destination ? "Organization administrator: review the project's approved policy in Settings → Projects → Workflow." : content.action,
         destination,
       });
     }

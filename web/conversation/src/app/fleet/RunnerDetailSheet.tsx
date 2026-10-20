@@ -1,3 +1,5 @@
+import { projectSettingsPath } from "../settings/projectSettings.ts";
+import { hubPath } from "../../runtime/basePath.ts";
 import { billingLabel, ProviderUsage } from "./ProviderUsage.tsx";
 import React from "react";
 
@@ -167,7 +169,7 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
                   <p>All current and future projects</p>
                   <p className="text-xs text-muted-foreground">Conversion keeps this runner’s identity, provider logins and running work. Project rank overrides are kept. Each additional repository policy needs approval before it can run here.</p>
                   {choices.filter((project) => savedRouting.scope === "organization" || !savedRouting.project_ids.includes(project.id)).map((project) => <p key={project.id} className="text-xs">
-                    <a className="text-primary underline underline-offset-2" href={`/projects/${encodeURIComponent(project.id)}/settings`}>Review policy for {project.name}</a>
+                    <a className="text-primary underline underline-offset-2" href={hubPath(projectSettingsPath(project, "workflow"))}>Review policy for {project.name}</a>
                   </p>)}
                 </div> : <>
                 <div className="divide-y divide-border/50 rounded-lg border border-border/60">
