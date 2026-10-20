@@ -112,7 +112,7 @@ func failureFromAttempt(a tracker.NativeRunData, status string) (string, string)
 			return "landing refused: " + a.Runtime.Landing.RefusalKind, "merge"
 		}
 	}
-	if f := a.TerminalFailure; f != nil && f.Error != "" {
+	if f := a.TerminalFailure; f != nil && f.Error != "" && status != "cancelled" {
 		return f.Error, nativeFailureClass(*f)
 	}
 	if r := a.Runtime; r != nil && r.Landing != nil && r.Landing.GateFailed && r.Landing.Gate != nil {

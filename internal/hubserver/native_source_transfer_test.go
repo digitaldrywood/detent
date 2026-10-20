@@ -206,6 +206,17 @@ func TestNativeSourceTransfer(t *testing.T) {
 				for range 2 {
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, ack), http.StatusOK)
 				}
+				var status, raw string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT status, data_json FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&status, &raw); err != nil {
+					t.Fatal(err)
+				}
+				var acknowledged tracker.NativeRunData
+				if err := json.Unmarshal([]byte(raw), &acknowledged); err != nil {
+					t.Fatal(err)
+				}
+				if failure := acknowledged.TerminalFailure; status != "cancelled" || failure == nil || failure.ErrorClass != "lease_released" || failure.Stage != "lease_release" || !strings.HasSuffix(failure.Error, "release reason: cancelled") || failure.ObservedAt.IsZero() {
+					t.Fatalf("cancelled attempt ended without its release cause: status=%s failure=%+v", status, failure)
+				}
 			}
 			if test.held {
 				labels := []string{"human-owned"}
