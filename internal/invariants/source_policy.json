@@ -41,7 +41,7 @@
     "token_ceiling_circuit_breaker"
   ],
   "dynamic_functions": {
-    "internal/orchestrator/native_completion.go:completeNativeChangeRun": "f0f8896d6242e8bcc0bed3c45bb5ea15d4235ba72dd5cecf7bed281b32b12c67",
+    "internal/orchestrator/native_completion.go:completeNativeChangeRun": "e004bc301adf637892fe33b0a7fbb35ea38191771f75f220908acaa312bd7b42",
     "internal/orchestrator/autopromote_tick.go:applyStaleMergingPullRequestDecision": "4f13339935e0cb0d2a4b05727c20224f8bf8b6b685ded22e0ba6134f84ac0bc3",
     "internal/orchestrator/autopromote_tick.go:applyStaleMergedPullRequestDecision": "b244fe108d32adec7c008795a08c6c1ebf0cb78cfa9fe1232c832a5c00fd45e1",
     "internal/orchestrator/autopromote_tick.go:applyStaleTodoPullRequestDecision": "bc21a3871b4509cd8118ed97b4ef7d1f1158770ef60210badb2a35aa536b96c2",
