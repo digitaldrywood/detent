@@ -453,12 +453,12 @@ func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item stri
 		return tracker.Page[tracker.NativeAttempt]{}, err
 	}
 	view := params.Get("view")
-	if view != "" && view != "blockers" {
-		return tracker.Page[tracker.NativeAttempt]{}, nativeInvalid("view supports blockers")
+	if view != "" && view != "blockers" && view != "recorded_blockers" {
+		return tracker.Page[tracker.NativeAttempt]{}, nativeInvalid("view supports blockers or recorded_blockers")
 	}
 	budget := 1 << 20
 	dataColumn := "a.data_json"
-	if view == "blockers" {
+	if view != "" {
 		budget = operatortool.WorkHistoryPageBytes
 		dataColumn = "json_remove(a.data_json, '$.runtime')"
 	}
@@ -505,7 +505,7 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fe
 			hasMore = true
 			break
 		}
-		if view != "blockers" {
+		if view != "recorded_blockers" {
 			if err := readAttachmentEvidence(ctx, s.database.reader, scope, item, &attempt.NativeRunData); err != nil {
 				return tracker.Page[tracker.NativeAttempt]{}, err
 			}

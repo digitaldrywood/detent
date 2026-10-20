@@ -114,7 +114,7 @@ func TestNativeRefreshOversizedAttemptDetails(t *testing.T) {
 						w.WriteHeader(http.StatusForbidden)
 						return
 					}
-					if r.URL.Query().Get("view") != "blockers" {
+					if r.URL.Query().Get("view") != "recorded_blockers" {
 						_, _ = w.Write(full)
 						return
 					}
