@@ -94,6 +94,9 @@ func (t *coordinatorToolset) actionContext(ctx context.Context, record conversat
 	if json.Unmarshal(message.Data, &data) != nil || data.ConnectionID == "" {
 		return nil, operatortool.ErrAccessDenied
 	}
+	if age := t.coordinator.service.server.config.now().Sub(message.CreatedAt); age >= 0 && age <= coordinatorTurnTimeout {
+		ctx = context.WithValue(ctx, operatorAccessTimeKey{}, message.CreatedAt)
+	}
 	service := t.coordinator.service.server.operatorChat
 	if err := service.RestoreConnection(ctx, data.ConnectionID); err != nil {
 		return nil, err
