@@ -639,10 +639,10 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error
 	e.data.Disposition = e.preparedDisposition
 	e.data.TerminalFailure = nil
 	if outcome != "succeeded" {
-		e.data.TerminalFailure = e.preparedFailure
-		if e.data.TerminalFailure == nil {
-			e.data.TerminalFailure = e.finalizationFailure(preparationErr)
+		if e.preparedFailure == nil {
+			e.preparedFailure = e.finalizationFailure(preparationErr)
 		}
+		e.data.TerminalFailure = e.preparedFailure
 	}
 	if finalization := e.preparedFinalization(); finalization != nil {
 		e.data.Finalization = finalization
