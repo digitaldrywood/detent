@@ -2405,173 +2405,175 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			issue := testIssue("issue-operator-move", "digitaldrywood/detent#1482", tt.from)
-			unrelated := testIssue("issue-unrelated-blocked", "digitaldrywood/detent#1483", "Blocked")
-			resident := testIssue("resident", "digitaldrywood/detent#1484", "Todo")
-			tracker := &operatorMoveConnector{fakeConnector: newFakeConnector()}
-			tracker.setStateIssues(issue, unrelated)
-			if tt.missing {
-				tracker.setStateIssues(unrelated)
-			}
-			if tt.degraded {
-				tracker.setCandidates(issue)
-			}
-			if tt.capacity {
-				tracker.setCandidates(resident)
-			}
-			if tt.fail {
-				tracker.writeErr = errors.New("operator lane write failed")
-			}
-			runner := newBlockingRunner()
-			orch, err := orchestrator.New(orchestrator.Config{
-				PollInterval:        time.Hour,
-				MaxConcurrentAgents: 1,
-				ActiveStates:        []string{"Todo", "Rework"},
-				ObservedStates:      []string{"Blocked"},
-				TerminalStates:      []string{"Done", "Cancelled"},
-			}, orchestrator.Dependencies{
-				Connector: tracker,
-				Runner:    runner,
-			})
-			if err != nil {
-				t.Fatalf("New() error = %v", err)
-			}
-			stop := runOrchestrator(t, orch)
-			defer stop()
-
-			waitForState(t, orch, func(state orchestrator.State) bool {
-				_, unrelatedBlocked := state.Blocked[unrelated.ID]
-				return unrelatedBlocked && !state.LastRefreshAt.IsZero()
-			})
-			if tt.capacity {
-				if request := receiveRunRequest(t, runner.started); request.Issue.ID != resident.ID {
-					t.Fatalf("initial RunRequest.Issue = %#v", request.Issue)
+			synctest.Test(t, func(t *testing.T) {
+				issue := testIssue("issue-operator-move", "digitaldrywood/detent#1482", tt.from)
+				unrelated := testIssue("issue-unrelated-blocked", "digitaldrywood/detent#1483", "Blocked")
+				resident := testIssue("resident", "digitaldrywood/detent#1484", "Todo")
+				tracker := &operatorMoveConnector{fakeConnector: newFakeConnector()}
+				tracker.setStateIssues(issue, unrelated)
+				if tt.missing {
+					tracker.setStateIssues(unrelated)
 				}
-				tracker.setCandidates(resident, issue)
-			} else if !tt.missing {
-				tracker.setCandidates(issue)
-			}
-			if tt.draining {
-				if err := orch.Drain(t.Context()); err != nil {
-					t.Fatalf("Drain() error = %v", err)
+				if tt.degraded {
+					tracker.setCandidates(issue)
 				}
-			}
-			if tt.quiesced {
-				orch.BeginDrain()
-			}
-			if tt.degraded {
-				tracker.issueStateRefreshFailures.Store(1)
-				if err := tracker.UpdateIssueState(t.Context(), issue.ID, tt.to); err != nil {
-					t.Fatalf("UpdateIssueState() error = %v", err)
+				if tt.capacity {
+					tracker.setCandidates(resident)
 				}
-			}
-			baseline, err := orch.State(t.Context())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tt.stalledRefill {
-				tracker.refillStarted = make(chan struct{})
-				tracker.refillRelease = make(chan struct{})
-				tracker.stallRefill.Store(true)
-			}
-			before := tracker.fetchCandidateCalls()
-			move := orchestrator.OperatorMoveRequest{
-				IssueID:      issue.ID,
-				Identifier:   issue.Identifier,
-				FromState:    tt.requestFrom,
-				ToState:      tt.to,
-				WriteTracker: !tt.noWrite,
-				Remove:       tt.remove,
-				Reason:       "backlog_admission",
-			}
-			if tt.foreign {
-				move.Tracker = newFakeConnector(issue)
-			}
-			result, err := orch.ReconcileOperatorMove(t.Context(), move)
-			if !errors.Is(err, tracker.writeErr) {
-				t.Fatalf("ReconcileOperatorMove() error = %v, want %v", err, tracker.writeErr)
-			}
-			if result.Reconciled != (tt.degraded || tt.foreign || tt.remove || tt.stalledRefill) || result.BlockedCleared != (tt.degraded || tt.stalledRefill) {
-				t.Fatalf("ReconcileOperatorMove() = %#v", result)
-			}
-			if tt.stalledRefill {
-				release := sync.OnceFunc(func() { close(tracker.refillRelease) })
-				defer release()
-				select {
-				case <-tracker.refillStarted:
-				case <-time.After(slowCIIntegrationWaitTimeout):
-					t.Fatal("move did not reach refill")
+				if tt.fail {
+					tracker.writeErr = errors.New("operator lane write failed")
 				}
-				ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
-				state, err := orch.State(ctx)
-				cancel()
+				runner := newBlockingRunner()
+				orch, err := orchestrator.New(orchestrator.Config{
+					PollInterval:        time.Hour,
+					MaxConcurrentAgents: 1,
+					ActiveStates:        []string{"Todo", "Rework"},
+					ObservedStates:      []string{"Blocked"},
+					TerminalStates:      []string{"Done", "Cancelled"},
+				}, orchestrator.Dependencies{
+					Connector: tracker,
+					Runner:    runner,
+				})
 				if err != nil {
-					t.Fatalf("State() during stalled refill: %v", err)
+					t.Fatalf("New() error = %v", err)
 				}
-				if state.RefreshProgress.Stage != "" || !state.RuntimeObservation.IsZero() {
-					t.Fatal("operator refill acquired a refresh or completion observation")
+				stop := runOrchestrator(t, orch)
+				defer stop()
+
+				waitForState(t, orch, func(state orchestrator.State) bool {
+					_, unrelatedBlocked := state.Blocked[unrelated.ID]
+					return unrelatedBlocked && !state.LastRefreshAt.IsZero()
+				})
+				if tt.capacity {
+					if request := receiveRunRequest(t, runner.started); request.Issue.ID != resident.ID {
+						t.Fatalf("initial RunRequest.Issue = %#v", request.Issue)
+					}
+					tracker.setCandidates(resident, issue)
+				} else if !tt.missing {
+					tracker.setCandidates(issue)
 				}
-				if !state.LastRefreshAt.Equal(baseline.LastRefreshAt) || !reflect.DeepEqual(state.RefreshSources, baseline.RefreshSources) {
-					t.Fatal("snapshot read advanced tracker freshness")
-				}
-				if _, blocked := state.Blocked[issue.ID]; blocked {
-					t.Fatal("confirmed move retained blocked ownership during refill")
-				}
-				found := false
-				for _, boardIssue := range state.BoardIssues {
-					if boardIssue.ID == issue.ID {
-						found = boardIssue.State == tt.to
+				if tt.draining {
+					if err := orch.Drain(t.Context()); err != nil {
+						t.Fatalf("Drain() error = %v", err)
 					}
 				}
-				if !found {
-					t.Fatal("confirmed move absent during refill")
+				if tt.quiesced {
+					orch.BeginDrain()
 				}
-				release()
-			}
-			if tt.degraded {
-				tracker.setStateIssues()
-				if _, err := orch.RequestRefresh(t.Context()); err != nil {
-					t.Fatalf("RequestRefresh() error = %v", err)
+				if tt.degraded {
+					tracker.issueStateRefreshFailures.Store(1)
+					if err := tracker.UpdateIssueState(t.Context(), issue.ID, tt.to); err != nil {
+						t.Fatalf("UpdateIssueState() error = %v", err)
+					}
 				}
-			}
-			if tt.wantDispatch {
-				request := receiveRunRequest(t, runner.started)
-				if request.Issue.ID != issue.ID || request.Issue.State != tt.to {
-					t.Fatalf("RunRequest.Issue = %#v, want moved %s issue", request.Issue, tt.to)
+				baseline, err := orch.State(t.Context())
+				if err != nil {
+					t.Fatal(err)
 				}
-			}
-			state, err := orch.State(t.Context())
-			if err != nil {
-				t.Fatalf("State() error = %v", err)
-			}
-			wantReads := 0
-			if tt.wantRefill {
-				wantReads = 1
-			}
-			if got := tracker.fetchCandidateCalls() - before; got != wantReads {
-				t.Fatalf("candidate reads after move = %d, want %d before ordinary poll", got, wantReads)
-			}
-			if !tt.wantDispatch {
-				if _, running := state.Running[issue.ID]; running {
-					t.Fatalf("moved issue dispatched: %#v", state.Running)
+				if tt.stalledRefill {
+					tracker.refillStarted = make(chan struct{})
+					tracker.refillRelease = make(chan struct{})
+					tracker.stallRefill.Store(true)
 				}
-			}
-			if _, ok := state.Blocked[unrelated.ID]; !ok {
-				t.Fatalf("Blocked[%q] missing after item-scoped reconcile", unrelated.ID)
-			}
-			if tt.degraded {
-				if _, ok := state.Blocked[issue.ID]; ok {
-					t.Fatalf("Blocked[%q] restored by degraded refresh", issue.ID)
+				before := tracker.fetchCandidateCalls()
+				move := orchestrator.OperatorMoveRequest{
+					IssueID:      issue.ID,
+					Identifier:   issue.Identifier,
+					FromState:    tt.requestFrom,
+					ToState:      tt.to,
+					WriteTracker: !tt.noWrite,
+					Remove:       tt.remove,
+					Reason:       "backlog_admission",
 				}
-				if remaining := tracker.issueStateRefreshFailures.Load(); remaining != 0 {
-					t.Fatalf("issue-state refresh failures remaining = %d, want 0", remaining)
+				if tt.foreign {
+					move.Tracker = newFakeConnector(issue)
 				}
-				snapshot := state.Snapshot(time.Now())
-				if snapshot.Counts.Blocked != 1 || len(snapshot.Blocked) != 1 || snapshot.Blocked[0].ID != unrelated.ID {
-					t.Fatalf("blocked snapshot = count %d rows %#v, want unrelated issue only", snapshot.Counts.Blocked, snapshot.Blocked)
+				result, err := orch.ReconcileOperatorMove(t.Context(), move)
+				if !errors.Is(err, tracker.writeErr) {
+					t.Fatalf("ReconcileOperatorMove() error = %v, want %v", err, tracker.writeErr)
 				}
-			}
-			close(runner.release)
+				if result.Reconciled != (tt.degraded || tt.foreign || tt.remove || tt.stalledRefill) || result.BlockedCleared != (tt.degraded || tt.stalledRefill) {
+					t.Fatalf("ReconcileOperatorMove() = %#v", result)
+				}
+				if tt.stalledRefill {
+					release := sync.OnceFunc(func() { close(tracker.refillRelease) })
+					defer release()
+					select {
+					case <-tracker.refillStarted:
+					case <-time.After(slowCIIntegrationWaitTimeout):
+						t.Fatal("move did not reach refill")
+					}
+					ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+					state, err := orch.State(ctx)
+					cancel()
+					if err != nil {
+						t.Fatalf("State() during stalled refill: %v", err)
+					}
+					if state.RefreshProgress.Stage != "" || !state.RuntimeObservation.IsZero() {
+						t.Fatal("operator refill acquired a refresh or completion observation")
+					}
+					if !state.LastRefreshAt.Equal(baseline.LastRefreshAt) || !reflect.DeepEqual(state.RefreshSources, baseline.RefreshSources) {
+						t.Fatal("snapshot read advanced tracker freshness")
+					}
+					if _, blocked := state.Blocked[issue.ID]; blocked {
+						t.Fatal("confirmed move retained blocked ownership during refill")
+					}
+					found := false
+					for _, boardIssue := range state.BoardIssues {
+						if boardIssue.ID == issue.ID {
+							found = boardIssue.State == tt.to
+						}
+					}
+					if !found {
+						t.Fatal("confirmed move absent during refill")
+					}
+					release()
+				}
+				if tt.degraded {
+					tracker.setStateIssues()
+					if _, err := orch.RequestRefresh(t.Context()); err != nil {
+						t.Fatalf("RequestRefresh() error = %v", err)
+					}
+				}
+				if tt.wantDispatch {
+					request := receiveRunRequest(t, runner.started)
+					if request.Issue.ID != issue.ID || request.Issue.State != tt.to {
+						t.Fatalf("RunRequest.Issue = %#v, want moved %s issue", request.Issue, tt.to)
+					}
+				}
+				state, err := orch.State(t.Context())
+				if err != nil {
+					t.Fatalf("State() error = %v", err)
+				}
+				wantReads := 0
+				if tt.wantRefill {
+					wantReads = 1
+				}
+				if got := tracker.fetchCandidateCalls() - before; got != wantReads {
+					t.Fatalf("candidate reads after move = %d, want %d before ordinary poll", got, wantReads)
+				}
+				if !tt.wantDispatch {
+					if _, running := state.Running[issue.ID]; running {
+						t.Fatalf("moved issue dispatched: %#v", state.Running)
+					}
+				}
+				if _, ok := state.Blocked[unrelated.ID]; !ok {
+					t.Fatalf("Blocked[%q] missing after item-scoped reconcile", unrelated.ID)
+				}
+				if tt.degraded {
+					if _, ok := state.Blocked[issue.ID]; ok {
+						t.Fatalf("Blocked[%q] restored by degraded refresh", issue.ID)
+					}
+					if remaining := tracker.issueStateRefreshFailures.Load(); remaining != 0 {
+						t.Fatalf("issue-state refresh failures remaining = %d, want 0", remaining)
+					}
+					snapshot := state.Snapshot(time.Now())
+					if snapshot.Counts.Blocked != 1 || len(snapshot.Blocked) != 1 || snapshot.Blocked[0].ID != unrelated.ID {
+						t.Fatalf("blocked snapshot = count %d rows %#v, want unrelated issue only", snapshot.Counts.Blocked, snapshot.Blocked)
+					}
+				}
+				close(runner.release)
+			})
 		})
 	}
 }

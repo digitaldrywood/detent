@@ -5,6 +5,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -13,73 +14,75 @@ import (
 )
 
 func TestClaimingOverlappingOrchestratorsDispatchOnlyTieBreakWinner(t *testing.T) {
-	now := time.Date(2026, 6, 2, 15, 0, 0, 0, time.UTC)
-	issue := claimTestIssue("issue-1")
-	store := newClaimTestStore([]connector.Issue{issue})
-	attempts := make(chan string, 2)
-	release := make(chan struct{})
-	store.assigneeHook = func(ctx context.Context, issueID string, login string) error {
-		select {
-		case attempts <- login:
-		case <-ctx.Done():
-			return ctx.Err()
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Date(2026, 6, 2, 15, 0, 0, 0, time.UTC)
+		issue := claimTestIssue("issue-1")
+		store := newClaimTestStore([]connector.Issue{issue})
+		attempts := make(chan string, 2)
+		release := make(chan struct{})
+		store.assigneeHook = func(ctx context.Context, issueID string, login string) error {
+			select {
+			case attempts <- login:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
-		select {
-		case <-release:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
+
+		ctx := t.Context()
+
+		alphaRunner := newClaimBlockingRunner()
+		betaRunner := newClaimBlockingRunner()
+		alpha := newClaimTestOrchestrator(t, claimTestConfig("alpha", "alpha"), claimTestConnector{store: store, login: "alpha"}, alphaRunner)
+		beta := newClaimTestOrchestrator(t, claimTestConfig("beta", "beta"), claimTestConnector{store: store, login: "beta"}, betaRunner)
+		alphaState := newState(alpha.cfg)
+		betaState := newState(beta.cfg)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			alpha.tick(ctx, &alphaState, now)
+		}()
+		go func() {
+			defer wg.Done()
+			beta.tick(ctx, &betaState, now)
+		}()
+
+		owners := []string{
+			receiveClaimAttempt(t, attempts),
+			receiveClaimAttempt(t, attempts),
 		}
-	}
+		sort.Strings(owners)
+		store.setAssignees(issue.ID, owners)
+		close(release)
+		wg.Wait()
 
-	ctx := t.Context()
-
-	alphaRunner := newClaimBlockingRunner()
-	betaRunner := newClaimBlockingRunner()
-	alpha := newClaimTestOrchestrator(t, claimTestConfig("alpha", "alpha"), claimTestConnector{store: store, login: "alpha"}, alphaRunner)
-	beta := newClaimTestOrchestrator(t, claimTestConfig("beta", "beta"), claimTestConnector{store: store, login: "beta"}, betaRunner)
-	alphaState := newState(alpha.cfg)
-	betaState := newState(beta.cfg)
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		alpha.tick(ctx, &alphaState, now)
-	}()
-	go func() {
-		defer wg.Done()
-		beta.tick(ctx, &betaState, now)
-	}()
-
-	owners := []string{
-		receiveClaimAttempt(t, attempts),
-		receiveClaimAttempt(t, attempts),
-	}
-	sort.Strings(owners)
-	store.setAssignees(issue.ID, owners)
-	close(release)
-	wg.Wait()
-
-	started := []RunRequest{}
-	if request, ok := receiveOptionalClaimRun(alphaRunner.started); ok {
-		started = append(started, request)
-	}
-	if request, ok := receiveOptionalClaimRun(betaRunner.started); ok {
-		started = append(started, request)
-	}
-	if len(started) != 1 {
-		t.Fatalf("started runners = %d, want 1: %#v", len(started), started)
-	}
-	if started[0].SelectorContext.InstanceLogin != "alpha" {
-		t.Fatalf("started owner = %q, want alpha", started[0].SelectorContext.InstanceLogin)
-	}
-	if _, ok := alphaState.Running[issue.ID]; !ok {
-		t.Fatalf("alpha Running[%q] missing", issue.ID)
-	}
-	if _, ok := betaState.Running[issue.ID]; ok {
-		t.Fatalf("beta Running[%q] present", issue.ID)
-	}
+		started := []RunRequest{}
+		if request, ok := receiveOptionalClaimRun(alphaRunner.started); ok {
+			started = append(started, request)
+		}
+		if request, ok := receiveOptionalClaimRun(betaRunner.started); ok {
+			started = append(started, request)
+		}
+		if len(started) != 1 {
+			t.Fatalf("started runners = %d, want 1: %#v", len(started), started)
+		}
+		if started[0].SelectorContext.InstanceLogin != "alpha" {
+			t.Fatalf("started owner = %q, want alpha", started[0].SelectorContext.InstanceLogin)
+		}
+		if _, ok := alphaState.Running[issue.ID]; !ok {
+			t.Fatalf("alpha Running[%q] missing", issue.ID)
+		}
+		if _, ok := betaState.Running[issue.ID]; ok {
+			t.Fatalf("beta Running[%q] present", issue.ID)
+		}
+	})
 }
 
 func TestClaimingReclaimsStaleLease(t *testing.T) {
