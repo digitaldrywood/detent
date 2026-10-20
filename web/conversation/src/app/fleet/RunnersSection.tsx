@@ -164,8 +164,9 @@ export function RunnersSettings({ runnerId, onNavigate, onRunnerName }: { readon
   }
   async function removeRunner(runner: FleetRunner): Promise<void> {
     await api.removeRunner(runner.id);
-    await reloadRunner();
+    if (fleet.value) fleet.set({ ...fleet.value, runners: fleet.value.runners.filter((entry) => entry.id !== runner.id) });
     if (runnerId) onNavigate?.("/settings/runners");
+    void fleet.refresh();
   }
 
   return (

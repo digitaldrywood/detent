@@ -65,6 +65,51 @@ function labelsFor(items: readonly SettingsNavItem[]): readonly string[] {
 }
 
 describe("runner detail routes", () => {
+  it.each([
+    { detail: false, refreshFails: false },
+    { detail: false, refreshFails: true },
+    { detail: true, refreshFails: false },
+    { detail: true, refreshFails: true },
+  ])("preserves removal before fleet refresh settles (detail=$detail, refreshFails=$refreshFails)", async ({ detail, refreshFails }) => {
+    const runner = { ...FLEET.runners[0]!, claim_refusal_reason: "", state: "active" };
+    const sibling = FLEET.runners[1]!;
+    let removed = false;
+    let finishRefresh!: (response: Response) => void;
+    const refresh = new Promise<Response>((resolve) => { finishRefresh = resolve; });
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        removed = true;
+        return new Response(null, { status: 204 });
+      }
+      if (String(input).endsWith("/fleet")) {
+        return removed ? (await refresh).clone() : Response.json({ ...FLEET, editable: true, runners: [runner, sibling] });
+      }
+      return Response.json([]);
+    });
+    vi.stubGlobal("fetch", fetch);
+    const { router } = renderSidebarNav(detail ? `/settings/runners/${runner.id}` : "/settings/runners", {
+      ...OWNER_ACCOUNT,
+      bootstrap: { organization: OWNER_ACCOUNT.account.organization, actor: OWNER_ACCOUNT.account.actor },
+    }, null, true);
+    if (detail) fireEvent.click(await screen.findByRole("button", { name: "Remove runner" }));
+    else {
+      fireEvent.click(await screen.findByRole("button", { name: `More actions for ${runner.display_name}` }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Remove runner" }));
+    }
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Remove runner" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(router.state.location.pathname).toBe("/settings/runners");
+    expect(screen.queryByRole("button", { name: `Manage ${runner.display_name}` })).toBeNull();
+    expect(screen.getByRole("button", { name: `Manage ${sibling.display_name}` })).toBeTruthy();
+    await act(async () => {
+      finishRefresh(refreshFails ? new Response(null, { status: 503 }) : Response.json({ ...FLEET, editable: true, runners: [sibling] }));
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("button", { name: `Manage ${runner.display_name}` })).toBeNull();
+    expect(screen.getByRole("button", { name: `Manage ${sibling.display_name}` })).toBeTruthy();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
+  });
+
   it.each([true, false])("loads a direct runner link with Settings / Runners breadcrumb (present: %s)", async (present) => {
     const runner = { ...FLEET.runners[0]!, claim_refusal_reason: "", state: "active" };
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(String(input).includes("include=host_metrics") ? [] : { ...FLEET, runners: present ? [runner] : [] }), { status: 200, headers: { "content-type": "application/json" } })));
