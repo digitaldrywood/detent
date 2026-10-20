@@ -138,11 +138,25 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 		rateLimit      bool
 		mcp            bool
 		importDisabled bool
-	}{{name: "partial import and native edit"}, {name: "429 after first import", rateLimit: true}, {name: "explicit mixed open and closed history", closed: true}, {name: "MCP bounded intake receipts and authority", mcp: true}, {name: "manual import disabled", importDisabled: true}} {
+		projectLane    string
+		unmapped       bool
+	}{{name: "partial import and native edit"}, {name: "429 after first import", rateLimit: true}, {name: "explicit mixed open and closed history", closed: true}, {name: "MCP bounded intake receipts and authority", mcp: true}, {name: "manual import disabled", importDisabled: true}, {name: "corrected project mapping for precreated issue", projectLane: "Backlog"}, {name: "corrected dispatchable project mapping requires confirmation", projectLane: "Todo"}, {name: "corrected unmapped project status uses destination", projectLane: "Backlog", unmapped: true}} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newBatchFixture(t)
-			f.preview(t, test.closed)
+			if test.projectLane == "" {
+				f.preview(t, test.closed)
+			} else {
+				source := &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}
+				f.command(t, tracker.GitHubBatchCommand{Action: "discover", ProjectV2: source}, http.StatusOK)
+				page := tracker.GitHubDiscoveryPage{Total: 3}
+				for _, number := range []int{12, 13, 14} {
+					preview := previewIssue(number, false)
+					preview.ProjectStatus = "Ready"
+					page.Issues = append(page.Issues, preview)
+				}
+				f.report(t, tracker.GitHubBatchResult{Page: &page}, http.StatusOK)
+			}
 			if test.importDisabled {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET github_intake='disabled' WHERE id=?", f.project.ID); err != nil {
 					t.Fatal(err)
@@ -244,7 +258,16 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 			if test.rateLimit {
 				deadline = time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
 			}
-			f.report(t, tracker.GitHubBatchResult{Number: 13, Error: "Source context incomplete: private access or partial page", RetryAt: deadline}, http.StatusOK)
+			if test.projectLane != "" {
+				invalidSnapshot := batchSnapshot(13)
+				invalidSnapshot.Comments = append(invalidSnapshot.Comments, invalidSnapshot.Comments[0])
+				f.report(t, tracker.GitHubBatchResult{Number: 13, Snapshot: &invalidSnapshot}, http.StatusOK)
+				if f.batch.Items[1].Status != "failed" || f.batch.Items[1].WorkItemID == "" {
+					t.Fatalf("expected failed precreated import: %+v", f.batch.Items[1])
+				}
+			} else {
+				f.report(t, tracker.GitHubBatchResult{Number: 13, Error: "Source context incomplete: private access or partial page", RetryAt: deadline}, http.StatusOK)
+			}
 			if !test.rateLimit {
 				snapshot = batchSnapshot(14)
 				f.report(t, tracker.GitHubBatchResult{Number: 14, Snapshot: &snapshot}, http.StatusOK)
@@ -271,6 +294,9 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 			var native tracker.NativeIssue
 			decodeHubResponse(t, response, &native)
 			title, body := "Native task title", "Native body during retry"
+			if test.projectLane == "Todo" {
+				body += issueContractTestSections
+			}
 			edit := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "native-edit"}, ExpectedRevision: native.Revision, Title: &title, Body: &body}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(id), f.token, edit), http.StatusOK)
 			if test.rateLimit {
@@ -287,7 +313,23 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			f.command(t, tracker.GitHubBatchCommand{Action: "retry"}, http.StatusOK)
+			retry := tracker.GitHubBatchCommand{Action: "retry"}
+			if test.projectLane != "" {
+				retry.ProjectV2 = &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": test.projectLane}}
+				if test.unmapped {
+					retry.ProjectV2.StatusLanes = map[string]string{"Other": "Blocked"}
+				}
+				if test.projectLane == "Todo" {
+					f.command(t, retry, http.StatusUnprocessableEntity)
+					response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id), f.token, nil)
+					decodeHubResponse(t, response, &native)
+					if native.State != "Blocked" || f.batch.Items[1].Status != "failed" || f.heartbeat(t) != nil {
+						t.Fatalf("unconfirmed retry changed routing: issue=%+v item=%+v", native, f.batch.Items[1])
+					}
+					retry.AllowDispatch = true
+				}
+			}
+			f.command(t, retry, http.StatusOK)
 			snapshot = batchSnapshot(13)
 			f.report(t, tracker.GitHubBatchResult{Number: 13, Snapshot: &snapshot}, http.StatusOK)
 			if test.rateLimit {
@@ -301,8 +343,22 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id), f.token, nil)
 			decodeHubResponse(t, response, &native)
-			if native.Title != title || native.Body != body || native.State != "Backlog" || native.LinkedSource.Status != "complete" {
-				t.Fatalf("native ownership = %#v", native)
+			wantLane := "Backlog"
+			if test.projectLane != "" {
+				wantLane = test.projectLane
+				for _, index := range []int{0, 2} {
+					completed, _, err := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.batch.Items[index].WorkItemID))
+					if err != nil || completed.State != "Blocked" || f.batch.Items[index].Status != "completed" {
+						t.Fatalf("corrected mapping changed completed issue: %+v error=%v", completed, err)
+					}
+				}
+				unmapped := f.batch.Items[1].UnmappedProjectStatus
+				if (unmapped != nil) != test.unmapped || test.unmapped && *unmapped != "Ready" {
+					t.Fatalf("corrected mapping report=%+v", f.batch.Items[1])
+				}
+			}
+			if native.WorkItemID != id || native.Title != title || native.Body != body || native.State != wantLane || native.LinkedSource.Status != "complete" {
+				t.Fatalf("native ownership = %#v item=%+v", native, f.batch.Items[1])
 			}
 			var comments, count int
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", id).Scan(&comments); err != nil {
