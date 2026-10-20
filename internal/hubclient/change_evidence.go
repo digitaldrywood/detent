@@ -67,7 +67,11 @@ type validationUploader interface {
 }
 
 func uploadChangeValidation(ctx context.Context, uploader validationUploader, reservation artifact.Reservation, raw []byte) (artifact.Reference, error) {
+	limit := reservation.Bytes
 	reservation.Bytes = int64(len(raw)) + artifact.MaxManifestBytes + validationManifestBudget(len(raw), validationPartBytes)
+	if limit > 0 && reservation.Bytes > limit {
+		return artifact.Reference{}, fmt.Errorf("reserve Change validation: %d bytes exceed the configured artifact limit %d: %w", reservation.Bytes, limit, artifact.ErrQuota)
+	}
 	upload, err := uploader.Reserve(ctx, reservation)
 	if err != nil {
 		return artifact.Reference{}, fmt.Errorf("reserve Change validation: %w", err)

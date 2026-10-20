@@ -209,3 +209,17 @@ func TestUploadChangeValidationRefusesUnfundedPartLimit(t *testing.T) {
 		t.Fatalf("below-floor part limit: error=%v appended=%d", err, appended)
 	}
 }
+
+func TestUploadChangeValidationRespectsConfiguredArtifactLimit(t *testing.T) {
+	reserved := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reserved++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	client := &artifact.Client{Origin: server.URL, Token: func(context.Context) (string, error) { return "worker", nil }}
+	_, err := uploadChangeValidation(t.Context(), client, artifact.Reservation{Kind: "log", Key: "validation", Bytes: 4 << 20}, []byte(strings.Repeat("x", 3<<20+512<<10)))
+	if !errors.Is(err, artifact.ErrQuota) || reserved != 0 {
+		t.Fatalf("receipt beyond the configured artifact limit: error=%v reserve calls=%d", err, reserved)
+	}
+}
