@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -63,6 +64,13 @@ func newHubCommand(opts options) *cobra.Command {
 }
 
 func runnerServiceStarterFor(opts options) runnerServiceStarter {
+	return runnerServiceStarterForOS(opts, runtime.GOOS)
+}
+
+func runnerServiceStarterForOS(opts options, goos string) runnerServiceStarter {
+	if goos != "darwin" && goos != "linux" && goos != "windows" {
+		return nil
+	}
 	return func(cmd *cobra.Command, configPath string) error {
 		host, port := "", -1
 		if flagChanged(cmd, "port") {

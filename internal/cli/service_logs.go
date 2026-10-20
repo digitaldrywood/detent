@@ -21,7 +21,7 @@ type serviceLog struct {
 }
 
 func startServiceLogRetention(ctx context.Context, manager, configPath string, rotation logRotation, stdout, stderr *os.File) func() {
-	if manager != string(service.ManagerLaunchd) && manager != string(service.ManagerSystemd) {
+	if manager != string(service.ManagerLaunchd) && manager != string(service.ManagerSystemd) && manager != string(service.ManagerScheduledTask) {
 		return func() {}
 	}
 	if rotation.MaxSizeBytes <= 0 {
@@ -121,4 +121,20 @@ func (log serviceLog) retainWithCopy(rotation logRotation, copySnapshot func(io.
 		return err
 	}
 	return log.stream.Truncate(0)
+}
+
+func openScheduledTaskLogs(configPath string) (*os.File, *os.File, error) {
+	outPath, errPath := service.LogPaths(service.Config{ConfigPath: configPath})
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o700); err != nil {
+		return nil, nil, fmt.Errorf("create service log directory: %w", err)
+	}
+	stdout, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open service stdout: %w", err)
+	}
+	stderr, err := os.OpenFile(errPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, nil, errors.Join(fmt.Errorf("open service stderr: %w", err), stdout.Close())
+	}
+	return stdout, stderr, nil
 }

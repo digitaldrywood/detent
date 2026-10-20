@@ -102,7 +102,7 @@ func argQuoterForOS(shellName string, goos string) func(string) string {
 	if goos == "windows" {
 		switch {
 		case isPowerShell(base):
-			return quotePowerShellArg
+			return QuotePowerShellArg
 		case isPOSIXShell(base):
 			return quotePOSIXArg
 		default:
@@ -116,8 +116,18 @@ func quotePOSIXArg(arg string) string {
 	return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
 }
 
-func quotePowerShellArg(arg string) string {
-	return "'" + strings.ReplaceAll(arg, "'", "''") + "'"
+func QuotePowerShellArg(arg string) string {
+	var quoted strings.Builder
+	quoted.WriteByte('\'')
+	for _, char := range arg {
+		quoted.WriteRune(char)
+		switch char {
+		case '\'', '‘', '’', '‚', '‛':
+			quoted.WriteRune(char)
+		}
+	}
+	quoted.WriteByte('\'')
+	return quoted.String()
 }
 
 func quoteCmdArg(arg string) string {

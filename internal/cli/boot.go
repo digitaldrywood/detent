@@ -172,7 +172,11 @@ func defaultBoot(ctx context.Context, cfg BootConfig) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	stopLogRetention := startServiceLogRetention(ctx, os.Getenv(service.ManagerEnvironment), cfg.Global.Path, runtimeLogRotation(cfg.Runtime), os.Stdout, os.Stderr)
+	stdout, stderr := os.Stdout, os.Stderr
+	if cfg.serviceStdout != nil {
+		stdout, stderr = cfg.serviceStdout, cfg.serviceStderr
+	}
+	stopLogRetention := startServiceLogRetention(ctx, os.Getenv(service.ManagerEnvironment), cfg.Global.Path, runtimeLogRotation(cfg.Runtime), stdout, stderr)
 	defer stopLogRetention()
 	if cfg.Isolated == nil {
 		if err := validateHubStartup(ctx, cfg.Global, runtimeDeps{}); err != nil {

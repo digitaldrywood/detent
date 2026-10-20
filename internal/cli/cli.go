@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/pause"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/service"
 )
 
 var (
@@ -165,6 +166,8 @@ const (
 )
 
 type BootConfig struct {
+	serviceStdout    *os.File
+	serviceStderr    *os.File
 	Mode             BootMode
 	Global           globalconfig.Config
 	ConfigPathRule   globalconfig.PathRule
@@ -420,6 +423,20 @@ detent --format json config path`),
 			boot, err := resolveBootConfigWithRuntimeDeps(cmd.Context(), configPath, host, flags, opts, bootRuntimeDeps(opts), true)
 			if err != nil {
 				return err
+			}
+			if opts.lookupEnv(service.ManagerEnvironment) == string(service.ManagerScheduledTask) {
+				stdout, stderr, err := openScheduledTaskLogs(boot.Global.Path)
+				if err != nil {
+					return err
+				}
+				defer func() {
+					if err := errors.Join(stdout.Close(), stderr.Close()); err != nil {
+						slog.Warn("close service logs", "error", err)
+					}
+				}()
+				cmd.SetOut(stdout)
+				cmd.SetErr(stderr)
+				boot.serviceStdout, boot.serviceStderr = stdout, stderr
 			}
 			stdoutTTY := opts.stdoutTTY()
 			if opts.configureLog != nil {
