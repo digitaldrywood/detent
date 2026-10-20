@@ -1225,7 +1225,7 @@ func writeWindowsUpdateScript(dir string, source string, target string, backup s
 		return "", fmt.Errorf("create windows update script: %w", err)
 	}
 	scriptPath := script.Name()
-	raw := windowsUpdateScript(source, target, backup)
+	raw := windowsUpdateScript(source, target, backup, os.Getpid(), nil)
 	if _, err := script.WriteString(raw); err != nil {
 		closeErr := script.Close()
 		removeFile(scriptPath)
@@ -1249,10 +1249,16 @@ func writeWindowsUpdateScript(dir string, source string, target string, backup s
 	return scriptPath, nil
 }
 
-func windowsUpdateScript(source string, target string, backup string) string {
+func windowsUpdateScript(source string, target string, backup string, pid int, env map[string]string) string {
 	backupStep := ""
 	if strings.TrimSpace(backup) != "" {
 		backupStep = `copy /Y "%target%" "%backup%" >nul 2>nul
+if errorlevel 1 exit /b 1
+`
+	}
+	restartStep := ""
+	if envValue(env, "DETENT_SERVICE_MANAGER") == "scheduled-task" && strings.TrimSpace(envValue(env, "DETENT_SERVICE_TASK")) != "" {
+		restartStep = `powershell.exe -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $scheduler = New-Object -ComObject 'Schedule.Service'; $scheduler.Connect(); $task = $scheduler.GetFolder('\').GetTask($env:DETENT_SERVICE_TASK); $task.Stop(0); $null = $task.Run($null)"
 if errorlevel 1 exit /b 1
 `
 	}
@@ -1261,18 +1267,20 @@ setlocal DisableDelayedExpansion
 set "source=%s"
 set "target=%s"
 set "backup=%s"
+powershell.exe -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $old = Get-Process -Id %d -ErrorAction SilentlyContinue; if ($null -ne $old) { $old.WaitForExit() }; exit 0"
+if errorlevel 1 exit /b 1
 %sset /a attempts=0
 :retry
 move /Y "%%source%%" "%%target%%" >nul 2>nul
-if not exist "%%source%%" goto done
+if not errorlevel 1 goto done
 set /a attempts+=1
 if %%attempts%% GEQ 60 exit /b 1
 timeout /t 1 /nobreak >nul 2>nul
 goto retry
 :done
-del "%%~f0" >nul 2>nul
+%sdel "%%~f0" >nul 2>nul
 exit /b 0
-`, escapeBatchValue(source), escapeBatchValue(target), escapeBatchValue(backup), backupStep)
+`, escapeBatchValue(source), escapeBatchValue(target), escapeBatchValue(backup), pid, backupStep, restartStep)
 }
 
 func restorePreviousBinary(ctx context.Context, pending PendingUpdate, goos string) error {
@@ -1433,7 +1441,7 @@ func outputWriter(writer io.Writer) io.Writer {
 
 func updateAppliedMessage(status Status, goos string, releaseSwap bool) string {
 	if goos == "windows" {
-		return fmt.Sprintf("Updated Detent from %s to %s. The replacement will finish after Detent exits.", status.CurrentVersion, status.LatestVersion)
+		return fmt.Sprintf("Updated Detent from %s to %s. The replacement will finish after Detent exits. %s", status.CurrentVersion, status.LatestVersion, restartNote())
 	}
 	if releaseSwap {
 		return fmt.Sprintf(
