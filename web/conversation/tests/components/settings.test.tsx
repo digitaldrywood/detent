@@ -49,6 +49,7 @@ import { applyHubPaths, resetHubPaths } from "../../src/runtime/basePath.ts";
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   resetHubPaths();
@@ -1224,8 +1225,13 @@ describe("plan billing usage", () => {
     expect(screen.queryByText("Complimentary") !== null).toBe(fields.complimentary);
   });
 
-  it("groups excluded allowances and highlights an unoffered current plan before the offered tiers", async () => {
-    const legacy = { ...planFixture, name: "Legacy complimentary pilot", monthly_usd_cents: null,
+  it.each([
+    [null, "Custom"],
+    [undefined, "Custom"],
+    [0, "$0"],
+    [4900, "$49"],
+  ] as const)("groups excluded allowances and highlights an unoffered current plan priced at %s before the offered tiers", async (price, expectedPrice) => {
+    const legacy = { ...planFixture, name: "Legacy complimentary pilot", monthly_usd_cents: price,
       effective_base: { id: "pilot_free", version: 1 }, features: [],
       allowances: { ...planFixture.allowances, relay_bytes: 0, artifact_retained_bytes: 0, artifact_reserved_bytes: 0, artifact_bytes: 0, artifact_upload_bytes: 0, artifact_retention_seconds: 0 },
     };
@@ -1240,6 +1246,7 @@ describe("plan billing usage", () => {
     const current = within(comparison).getByText("Current").closest("[aria-current]")!;
     expect(current).toBe(within(comparison).getAllByRole("row")[1]);
     expect(current.className).toContain("ring-info");
+    expect(within(current as HTMLElement).getByText(expectedPrice)).toBeTruthy();
     expect(within(current as HTMLElement).getByText("Never expires")).toBeTruthy();
     expect(document.body.textContent).not.toContain("pilot_free");
     expect(within(comparison).getByText("Contact us")).toBeTruthy();
