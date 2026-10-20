@@ -574,7 +574,7 @@ func readOrganizationPlacementSnapshot(ctx context.Context, q nativeQueryer, sco
 		return result, err
 	}
 	result.Policy = placement
-	rows, err := q.QueryContext(ctx, `SELECT id FROM projects WHERE organization_id=? AND profile='native' ORDER BY scheduling_rank,id`, scope.organization)
+	rows, err := q.QueryContext(ctx, `SELECT id FROM projects p WHERE organization_id=? AND profile='native' ORDER BY EXISTS(SELECT 1 FROM project_sprite_allocations a WHERE a.organization_id=p.organization_id AND a.project_id=p.id) DESC,scheduling_rank,id`, scope.organization)
 	if err != nil {
 		return result, err
 	}

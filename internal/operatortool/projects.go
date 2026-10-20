@@ -51,13 +51,14 @@ type SpriteUsageInput struct {
 	Observations []usagecost.Observation `json:"observations"`
 }
 type SpritePoolInput struct {
-	Placement     *policy.Placement `json:"placement,omitempty"`
-	Bootstrap     *string           `json:"bootstrap,omitempty"`
-	IsolationTier *string           `json:"isolation_tier,omitempty"`
-	MinRunners    int               `json:"min_runners"`
-	MaxRunners    int               `json:"max_runners"`
-	IdleSeconds   int               `json:"idle_seconds,omitempty"`
-	Revision      int64             `json:"revision"`
+	ShareIdleCapacity *bool             `json:"share_idle_capacity,omitempty"`
+	Placement         *policy.Placement `json:"placement,omitempty"`
+	Bootstrap         *string           `json:"bootstrap,omitempty"`
+	IsolationTier     *string           `json:"isolation_tier,omitempty"`
+	MinRunners        int               `json:"min_runners"`
+	MaxRunners        int               `json:"max_runners"`
+	IdleSeconds       int               `json:"idle_seconds,omitempty"`
+	Revision          int64             `json:"revision"`
 }
 type SpriteAllocationInput struct {
 	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
