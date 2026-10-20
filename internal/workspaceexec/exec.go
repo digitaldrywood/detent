@@ -173,7 +173,7 @@ func (s *Service) Run(ctx context.Context, command string, emit func(workspacese
 	// started -- running in the worktree with nobody left to stop it.
 	procgroup.Configure(runCtx, cmd)
 
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		return Result{}, errors.Join(refuse(startCode(err), fmt.Errorf("start action: %w", err)), writer.Close(), reader.Close())
 	}
 	s.logger.Debug("workspace.action_started", "worktree", s.worktree, "shell", s.shell, "pid", cmd.Process.Pid)
@@ -193,7 +193,7 @@ func (s *Service) Run(ctx context.Context, command string, emit func(workspacese
 	if err := reader.Close(); err != nil {
 		s.logger.Debug("workspace.action_pipe_not_closed", "error", err)
 	}
-	waitErr := cmd.Wait()
+	waitErr := procgroup.Wait(cmd)
 	if waitErr != nil {
 		var exit *exec.ExitError
 		if !errors.As(waitErr, &exit) {
