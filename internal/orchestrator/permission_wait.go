@@ -130,12 +130,17 @@ func (o *Orchestrator) parkPermissionWait(ctx context.Context, state *State, eve
 	case permissionWaitCriteriaUnsatisfiable:
 		remedy = wait.Question + "\nThen move the issue to Rework."
 	}
+	cause := permissionWaitReason
+	if wait.Source == "terminal_detent_status" {
+		cause = "human_action"
+		remedy = wait.Question
+	}
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
 	}
 	parkEvent := event
 	parkEvent.Err = errors.New(detail)
-	if !o.blockHumanOwnedWorkerFailure(ctx, state, parkEvent, running, permissionWaitReason, detail, remedy, "worker_permission_wait") {
+	if !o.blockHumanOwnedWorkerFailure(ctx, state, parkEvent, running, cause, detail, remedy, "worker_permission_wait") {
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, errors.New("persist permission-wait hold failed"))
 		return true
 	}
@@ -150,7 +155,7 @@ func (o *Orchestrator) parkPermissionWait(ctx context.Context, state *State, eve
 	if diffStatsPresent(running.DiffStats) {
 		state.DiffStats[event.IssueID] = running.DiffStats
 	}
-	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalNoProgress, nil, permissionWaitReason, detail)
-	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalNoProgress, permissionWaitReason, detail, "blocked", wait.Question, map[string]any{permissionWaitReason: wait})
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalNoProgress, nil, cause, detail)
+	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalNoProgress, cause, detail, "blocked", wait.Question, map[string]any{cause: wait})
 	return true
 }
