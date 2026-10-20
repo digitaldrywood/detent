@@ -213,8 +213,101 @@ done
 		t.Fatal(err)
 	}
 	for _, path := range workflows {
+		if filepath.Base(path) == "windows-tests.yml" {
+			continue
+		}
 		if strings.Contains(readNormalizedFile(t, path), "windows-latest") {
-			t.Errorf("%s must not add a Windows runner", path)
+			t.Errorf("%s must not add a Windows runner outside the scheduled Windows workflow", path)
+		}
+	}
+}
+
+func TestCIScheduledWindowsTestsSeparateFromReleasePromotion(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		On   map[string]yaml.Node `yaml:"on"`
+		Jobs map[string]struct {
+			If     string    `yaml:"if"`
+			Needs  yaml.Node `yaml:"needs"`
+			RunsOn string    `yaml:"runs-on"`
+			Steps  []struct {
+				Uses string            `yaml:"uses"`
+				Run  string            `yaml:"run"`
+				With map[string]string `yaml:"with"`
+				Env  map[string]string `yaml:"env"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(readNormalizedFile(t, ".github/workflows/windows-tests.yml")), &workflow); err != nil {
+		t.Fatal(err)
+	}
+	if len(workflow.On) != 2 {
+		t.Fatalf("Windows workflow triggers = %v, want schedule and workflow_dispatch only", workflow.On)
+	}
+	for _, event := range []string{"schedule", "workflow_dispatch"} {
+		if _, ok := workflow.On[event]; !ok {
+			t.Errorf("Windows workflow missing %s trigger", event)
+		}
+	}
+	job, ok := workflow.Jobs["windows-go"]
+	if !ok || job.RunsOn != "windows-latest" {
+		t.Fatal("scheduled Windows tests must run on windows-latest")
+	}
+	if job.Needs.Kind != 0 {
+		t.Fatal("Windows tests must run independently of the full suite")
+	}
+	if job.If != "(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/develop'" {
+		t.Fatal("Windows tests must be schedule/dispatch-gated on develop")
+	}
+	var commands []string
+	var pinnedCheckout, goSetup bool
+	for _, step := range job.Steps {
+		commands = append(commands, step.Run)
+		pinnedCheckout = pinnedCheckout || (step.Uses == "actions/checkout@v5" && step.With["ref"] == "${{ github.sha }}")
+		goSetup = goSetup || (step.Uses == "actions/setup-go@v6" && step.With["go-version-file"] == "go.mod")
+	}
+	if !pinnedCheckout || !goSetup {
+		t.Fatal("Windows tests must use the event SHA and repository Go version")
+	}
+	for _, pkg := range []string{"shell", "procgroup", "service", "update", "runnerauth"} {
+		t.Run(pkg, func(t *testing.T) {
+			for _, command := range commands {
+				args := strings.Fields(command)
+				if strings.HasPrefix(command, "go test ") && slices.Contains(args, "-short") && slices.Contains(args, "./internal/"+pkg) {
+					return
+				}
+			}
+			t.Errorf("Windows short tests missing internal/%s", pkg)
+		})
+	}
+	installerTests := false
+	for _, command := range commands {
+		args := strings.Fields(command)
+		installerTests = installerTests || (strings.HasPrefix(command, "go test ") && strings.Contains(command, "^TestPowerShellInstallScript") && slices.Contains(args, ".") && !slices.Contains(args, "-short"))
+	}
+	if !installerTests {
+		t.Fatal("PowerShell installer tests must execute without -short")
+	}
+	report, ok := workflow.Jobs["report"]
+	if !ok || report.Needs.Value != "windows-go" || report.If != "always() && !cancelled() && needs.windows-go.result == 'failure'" {
+		t.Fatal("Windows failures must have an independent report job that excludes operator cancellation")
+	}
+	reporter := false
+	for _, step := range report.Steps {
+		if strings.Contains(step.Run, "go run ./tools/cifailure") && strings.Contains(step.Run, `select(.name == "Windows Go tests")`) && step.Env["CI_DEVELOP_SHA"] == "${{ github.sha }}" && step.Env["DETENT_API_KEY"] == "${{ secrets.DETENT_API_KEY }}" && step.Env["DETENT_MCP_URL"] != "" && step.Env["DETENT_PROJECT_ID"] != "" {
+			reporter = true
+		}
+	}
+	if !reporter {
+		t.Fatal("Windows failures must use the existing native scheduled per-job reporter with pinned source identity")
+	}
+	for _, path := range []string{".github/workflows/ci.yml", ".github/workflows/release.yml"} {
+		content := readNormalizedFile(t, path)
+		for _, forbidden := range []string{"windows-go", "windows-tests.yml"} {
+			if strings.Contains(content, forbidden) {
+				t.Errorf("%s must not depend on the scheduled Windows workflow", path)
+			}
 		}
 	}
 }
