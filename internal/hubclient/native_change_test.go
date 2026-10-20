@@ -2322,7 +2322,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "held publication reconciles lost create through new Runner lease", publication: "lost_create", rework: true, formal: true},
 		{name: "held publication reconciles lost push through new Runner lease", publication: "lost_push", rework: true, formal: true},
 		{name: "held implementation publication reconciles lost push on another Runner", publication: "lost_push", foreignRunner: true, staged: true},
-		{name: "held publication requires validator session authority on new Runner lease", publication: "lost_create", rework: true, formal: true, validator: "pass"},
+		{name: "held publication records a fresh validator decision on new Runner lease", publication: "lost_create", rework: true, formal: true, validator: "pass"},
 		{name: "confirmed publication retries pending validator on unchanged source", publication: "confirmed", rework: true, validator: "wait"},
 		{name: "confirmed publication retries validator rework after prerequisite repair", publication: "confirmed", rework: true, validator: "rework"},
 		{name: "confirmed publication reuses applicable passing native verdict", publication: "confirmed", rework: true, validator: "pass"},
@@ -3795,17 +3795,6 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				callsBefore := provider.calls
 				result, err = agent.Run(t.Context(), runner.RunRequest{Execution: &nativePublicationFixtureExecution{nativeExecution: owner, forge: forge, losePush: &losePush}, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
 				result.NativeChange = owner.NativeChange()
-				if genuinePublication && test.publication != "confirmed" {
-					var refusal *APIError
-					if !errors.As(err, &refusal) || refusal.Status != http.StatusUnprocessableEntity || refusal.Rejection == nil || refusal.Rejection.Category != "acceptance_validation" || refusal.Rejection.Field != "validator.session_id" || provider.calls != callsBefore+1 || owner.publication == nil || forgeCreates != 1 {
-						t.Fatalf("publication-only retry bypassed validator session authority: calls=%d error=%v", provider.calls-callsBefore, err)
-					}
-					detail, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
-					if readErr != nil || !reflect.DeepEqual(detail.Reviews, expected.Reviews) || detail.Change.CurrentVersion != expected.Change.CurrentVersion || detail.Summary.Status == "reviewed" {
-						t.Fatalf("publication-only retry manufactured validator readiness: detail=%+v error=%v", detail, readErr)
-					}
-					return
-				}
 				if test.publicationFault != "" && test.publicationFault != "policy" {
 					if err == nil && (result.NativeChange == nil || result.NativeChange.VersionError == "" && result.NativeChange.Error == "") || owner.publication != nil || forgeCreates != wantCreates || forgePull != prBefore || provider.calls != callsBefore {
 						t.Fatalf("unresolved publication was accepted or rewrote forge/source: fault=%s creates=%d publication=%v provider_calls=%d error=%v", test.publicationFault, forgeCreates, owner.publication != nil, provider.calls-callsBefore, err)

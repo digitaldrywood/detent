@@ -196,7 +196,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 	if current.Runtime != nil && current.Runtime.Activity != nil {
 		currentSession = current.Runtime.Activity.SessionID
 	}
-	validSession := current.Identity != nil && (current.Identity.Role == "code" || current.Identity.Role == "rework") && (currentSession > 0 || audit) && currentSession != result.SessionID
+	validSession := current.Identity != nil && (current.Identity.Role == "code" || current.Identity.Role == "rework") && currentSession != result.SessionID
 	if landingAudit {
 		validSession = current.Identity != nil && current.Identity.Role == "merge"
 	}
