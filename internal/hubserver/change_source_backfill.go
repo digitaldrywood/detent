@@ -6,7 +6,21 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
+
+func (s *Service) maintainChangeSources(ctx context.Context) {
+	deadline := time.Now().Add(analyticsBackfillBudget)
+	for time.Now().Before(deadline) && ctx.Err() == nil {
+		more, err := s.database.backfillChangeSource(ctx)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			s.config.Logger.WarnContext(ctx, "backfill change source encoding", "error", err)
+		}
+		if err != nil || !more {
+			return
+		}
+	}
+}
 
 func (d *database) backfillChangeSource(ctx context.Context) (bool, error) {
 	var versionID, changeID string

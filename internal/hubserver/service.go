@@ -481,9 +481,7 @@ func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 			s.maintainNativeBoard(ctx)
 		case <-ticker.C:
 			s.maintainNativeBoard(ctx)
-			if _, err := s.database.backfillChangeSource(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				s.config.Logger.WarnContext(ctx, "backfill change source encoding", "error", err)
-			}
+			s.maintainChangeSources(ctx)
 			now := s.config.now()
 			retryAnalytics := now.Sub(lastAnalyticsRetry) >= time.Hour
 			s.maintainAnalyticsRollups(ctx, now, retryAnalytics)

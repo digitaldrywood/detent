@@ -52,15 +52,6 @@ func TestChangeSourceBackfillPreservesReadersAndUsage(t *testing.T) {
 		}
 		sources[index].version, sources[index].bundle, expected = version, bundle, version.ID
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_sources_no_update"); err != nil {
-		t.Fatal(err)
-	}
-	for _, source := range sources {
-		version := source.version
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_sources SET bundle=? WHERE version_id=?", source.bundle, version.ID); err != nil {
-			t.Fatal(err)
-		}
-	}
 	migration, err := migrationFiles.ReadFile("migrations/20261020102500_change_source_encoding.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -68,9 +59,21 @@ func TestChangeSourceBackfillPreservesReadersAndUsage(t *testing.T) {
 	up, _, _ := strings.Cut(string(migration), "-- +goose Down")
 	up = strings.Replace(up, "DROP TRIGGER change_sources_no_update;", "", 1)
 	up, _, _ = strings.Cut(up, "CREATE INDEX")
-	if _, err := f.service.database.db.ExecContext(t.Context(), up); err != nil {
-		t.Fatal(err)
+	restoreLegacy := func() {
+		t.Helper()
+		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_sources_no_update"); err != nil {
+			t.Fatal(err)
+		}
+		for _, source := range sources {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_sources SET bundle=? WHERE version_id=?", source.bundle, source.version.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), up); err != nil {
+			t.Fatal(err)
+		}
 	}
+	restoreLegacy()
 	checkReaders := func() {
 		t.Helper()
 		for _, source := range sources {
@@ -158,6 +161,21 @@ func TestChangeSourceBackfillPreservesReadersAndUsage(t *testing.T) {
 	if !bytes.Equal(binaryStored, append([]byte(changeSourceMagic+"\x01\x00"), sources[2].bundle...)) {
 		t.Fatal("incompressible source did not retain its readable stored form")
 	}
+	restoreLegacy()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	f.service.maintainChangeSources(ctx)
+	if framedCount() != 0 {
+		t.Fatal("canceled maintenance changed a source")
+	}
+	f.service.maintainChangeSources(t.Context())
+	if got := framedCount(); got != len(sources) {
+		t.Fatalf("maintenance framed %d sources, want %d in one pass", got, len(sources))
+	}
+	if got := usage(); got != finalUsage {
+		t.Fatalf("maintenance usage=%d want=%d", got, finalUsage)
+	}
+	checkReaders()
 	for _, source := range sources {
 		version := source.version
 		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_sources SET bundle=? WHERE version_id=?", []byte(changeSourceMagic+"\x01\x01invalid"), version.ID); err == nil {
