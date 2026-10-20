@@ -43,10 +43,22 @@ func TestHostedNativeBulkExportLargeItem(t *testing.T) {
 		shapes = append(shapes, discussion{largeBody, 1, "Backlog"})
 	}
 	now := formatHubTime(time.Now())
-	for _, state := range []string{"Backlog", "Rework"} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES(?,?,?,?,?)", f.project, state, state, now, now); err != nil {
-			t.Fatal(err)
-		}
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	scope := nativeScope{organization: "org_security", project: f.project}
+	project, err := readNativeProject(t.Context(), tx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := append(project.States, tracker.NativeState{Name: "Backlog"}, tracker.NativeState{Name: "Rework"})
+	if err := applyNativeProjectStates(t.Context(), tx, scope, states, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 	expected := map[tracker.NativeWorkItemID]discussion{}
 	for index, shape := range shapes {
