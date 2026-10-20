@@ -276,6 +276,28 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 		}
 		if observation.Diagnostics != nil {
 			observation.Diagnostics.Redact()
+			for _, admission := range observation.Diagnostics.Admissions {
+				if admission.Result != "skipped" || admission.WorkItemRevision <= 0 || admission.ObservedAt.After(now) {
+					continue
+				}
+				var id tracker.WorkItemID
+				err := tx.QueryRowContext(ctx, `SELECT id FROM issues
+WHERE organization_id=? AND project_id=? AND native_id=? AND revision=?
+AND NOT EXISTS (SELECT 1 FROM collaboration_events
+ WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='scheduler.decision'
+ AND json_extract(data_json, '$.decision.runner_id')=? AND recorded_at>?)`,
+					scope.organization, scope.project, admission.IssueID, admission.WorkItemRevision,
+					scope.organization, scope.project, admission.IssueID, scope.credential.Runner.RunnerID, formatHubTime(admission.ObservedAt)).Scan(&id)
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
+				if err != nil {
+					return runnerauth.ProjectConfigurationRequest{}, err
+				}
+				if err := recordNativeSchedulingOutcome(ctx, tx, &scope, id, tracker.NativeSchedulerDecision{Source: "native_runner_admission", Outcome: admission.Result, Reason: admission.Predicate}, admission.ObservedAt); err != nil {
+					return runnerauth.ProjectConfigurationRequest{}, err
+				}
+			}
 		}
 		observation.ObservedAt = now
 		observation.RunnerID, observation.RunnerRevision = "", 0

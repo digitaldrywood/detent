@@ -2231,12 +2231,25 @@ func TestDispatchableSkipsDuplicatePullRequestWork(t *testing.T) {
 		ActiveStates:        []string{"Todo", "In Progress", "Rework", "Merging"},
 		TerminalStates:      []string{"Done"},
 	})
-	orch := Orchestrator{cfg: cfg}
+	delivery := dispatchTestIssueWithPullRequest("wi_delivery", "Todo", "OPEN")
+	delivery.Identifier = "prj_example#7"
+	delivery.DependencySource = connector.BlockedRefSourceNative
+	delivery.Metadata = map[string]string{"hub_profile": "native"}
+	delivery.PRRepository = "https://github.com/example-org/example-project"
+	delivery.BranchName = "pick/fix"
+	delivery.PullRequest = &connector.PullRequest{
+		Number: 7, URL: delivery.PRRepository + "/pull/7", State: "OPEN",
+		BranchName: delivery.BranchName, HeadSHA: strings.Repeat("a", 40),
+		BaseRef: "release/v1.2", BaseSHA: strings.Repeat("b", 40),
+	}
 
 	tests := []struct {
-		name  string
-		issue connector.Issue
-		want  bool
+		name              string
+		issue             connector.Issue
+		native            bool
+		githubPullRequest bool
+		want              bool
+		wantReason        string
 	}{
 		{
 			name:  "todo without pull request dispatches",
@@ -2244,9 +2257,28 @@ func TestDispatchableSkipsDuplicatePullRequestWork(t *testing.T) {
 			want:  true,
 		},
 		{
-			name:  "todo with open pull request skips",
-			issue: dispatchTestIssueWithPullRequest("issue-todo-open-pr", "Todo", "OPEN"),
-			want:  false,
+			name:       "github todo with open pull request skips",
+			issue:      dispatchTestIssueWithPullRequest("issue-todo-open-pr", "Todo", "OPEN"),
+			wantReason: dispatchSkipDuplicatePullRequest,
+		},
+		{
+			name:   "native release delivery without version dispatches",
+			issue:  delivery,
+			native: true,
+			want:   true,
+		},
+		{
+			name:              "native release delivery with PR policy dispatches",
+			issue:             delivery,
+			native:            true,
+			githubPullRequest: true,
+			want:              true,
+		},
+		{
+			name:       "native todo with merged pull request still reconciles",
+			issue:      dispatchTestIssueWithPullRequest("issue-native-merged-pr", "Todo", "MERGED"),
+			native:     true,
+			wantReason: dispatchSkipMergedPullRequest,
 		},
 		{
 			name:  "todo with unavailable pull request hydration skips",
@@ -2322,10 +2354,40 @@ func TestDispatchableSkipsDuplicatePullRequestWork(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			cfg := cfg
+			cfg.Policy.Gates.GitHubPullRequest = tt.githubPullRequest
+			attempts := &recordingWorkAttemptStore{}
+			orch := Orchestrator{cfg: cfg, workAttempts: attempts}
+			if tt.native {
+				orch.connector = &nativeWorkflowConnector{}
+			}
 			state := newState(cfg)
-			got := orch.dispatchable(tt.issue, &state, now)
-			if got != tt.want {
-				t.Fatalf("dispatchable() = %v, want %v", got, tt.want)
+			plan := orch.dispatchPlanner().plan(&state, []connector.Issue{tt.issue}, now, dispatchPlanHooks{
+				decision: func(decision dispatchPlanDecision) {
+					orch.logDispatchPlanDecision(t.Context(), &state, now, decision)
+				},
+			})
+			if got := len(plan.Dispatches) == 1; got != tt.want {
+				t.Fatalf("dispatchable = %v, want %v; decisions = %#v", got, tt.want, attempts.decisions)
+			}
+			if len(attempts.decisions) != 1 {
+				t.Fatalf("persisted decisions = %#v, want one", attempts.decisions)
+			}
+			decision := attempts.decisions[0]
+			if decision.IssueID != tt.issue.ID || decision.Selected != tt.want {
+				t.Fatalf("persisted decision = %#v, want issue %s selected=%v", decision, tt.issue.ID, tt.want)
+			}
+			if tt.wantReason != "" && (decision.Result != store.SchedulerDecisionResultSkipped || decision.Reason != tt.wantReason) {
+				t.Fatalf("persisted decision = %#v, want skipped with reason %s", decision, tt.wantReason)
+			}
+			if decision.Result == store.SchedulerDecisionResultSkipped {
+				issue := tt.issue
+				issue.Metadata = map[string]string{"hub_revision": "7"}
+				orch.recordLocalAdmission(t.Context(), &state, issue, now, false, decision.Reason, decision.Reason, nil)
+				diagnostics := state.ProjectDiagnostics(nil, now)
+				if len(diagnostics.Admissions) != 1 || diagnostics.Admissions[0].WorkItemRevision != 7 || diagnostics.Admissions[0].Predicate != decision.Reason {
+					t.Fatalf("heartbeat lost dispatch refusal: %+v", diagnostics.Admissions)
+				}
 			}
 		})
 	}

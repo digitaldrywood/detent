@@ -856,7 +856,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if mergedPullRequestReconciliationPending(issue, p.cfg) {
 		return dispatchableDecision{reason: dispatchSkipMergedPullRequest}
 	}
-	if duplicatePullRequestWork(issue, gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus) {
+	if p.duplicatePullRequestWork(issue) {
 		return dispatchableDecision{reason: dispatchSkipDuplicatePullRequest}
 	}
 	if authorization := p.authorizationDecision(issue); !authorization.Matched {

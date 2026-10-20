@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -114,6 +115,9 @@ func (o *Orchestrator) recordLocalAdmission(ctx context.Context, state *State, i
 		predicate = "local_candidate_ready"
 	}
 	observation := runnerauth.DiagnosticAdmission{IssueID: issue.ID, ObservedAt: now, Result: result, Predicate: predicate, ProviderRequirement: requirement, Unavailable: map[string]string{}, RepositoryReservations: []string{}}
+	if revision, err := strconv.ParseInt(issue.Metadata["hub_revision"], 10, 64); err == nil {
+		observation.WorkItemRevision = revision
+	}
 	if requirement == nil {
 		observation.Unavailable["provider_requirement"] = "not_resolved_at_this_predicate"
 	}

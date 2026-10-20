@@ -1486,7 +1486,7 @@ func validCandidate(issue connector.Issue) bool {
 		issue.AssignedToWorker
 }
 
-func duplicatePullRequestWork(issue connector.Issue, localStatus string) bool {
+func (p dispatchPlanner) duplicatePullRequestWork(issue connector.Issue) bool {
 	if issue.PullRequest == nil {
 		return false
 	}
@@ -1494,7 +1494,7 @@ func duplicatePullRequestWork(issue connector.Issue, localStatus string) bool {
 	case "merged":
 		return !staleMergedPullRequestHasFailedCIEvidence(issue.PullRequest, staleMergedPullRequestSummaryFromIssue(issue))
 	case "open":
-		return normalizeState(issue.State) == "todo" && !issue.PullRequest.HasMissingLocalStatus(localStatus)
+		return !p.nativeWorkflow && normalizeState(issue.State) == "todo" && !issue.PullRequest.HasMissingLocalStatus(gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus)
 	default:
 		return false
 	}

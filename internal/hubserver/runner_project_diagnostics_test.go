@@ -8,12 +8,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -21,6 +23,65 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
+
+func TestRunnerAdmissionPublishesNativeDecision(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "admission-history")
+	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
+	r.enroll(t)
+	first, second := f.create(t, "First delivery"), f.create(t, "Second delivery")
+	foreign := newNativeFixture(t, f.service, "", "foreign-admission")
+	foreignIssue := foreign.create(t, "Foreign delivery")
+	now := f.service.config.now()
+	view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now, Diagnostics: &runnerauth.ProjectDiagnostics{
+		ObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners", Counts: map[string]int{}, Unavailable: map[string]string{},
+		Admissions: []runnerauth.DiagnosticAdmission{
+			{IssueID: string(first.WorkItemID), WorkItemRevision: int64(first.Revision), ObservedAt: now, Result: "skipped", Predicate: "duplicate_pull_request_work"},
+			{IssueID: string(second.WorkItemID), WorkItemRevision: int64(second.Revision), ObservedAt: now, Result: "skipped", Predicate: "current_head_ci_wait"},
+			{IssueID: string(foreignIssue.WorkItemID), WorkItemRevision: int64(foreignIssue.Revision), ObservedAt: now, Result: "skipped", Predicate: "duplicate_pull_request_work"},
+		},
+	}}
+	post := func() {
+		t.Helper()
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view}), http.StatusOK)
+	}
+	post()
+	post()
+	call := hostedContextProtocol(t, f.service, changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID)), "http")
+	for i, issue := range []tracker.NativeIssue{first, second} {
+		var data tracker.CollaborationData
+		var raw, eventID string
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id, data_json FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&eventID, &raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(raw), &data); err != nil {
+			t.Fatal(err)
+		}
+		want := view.Diagnostics.Admissions[i].Predicate
+		if data.Decision == nil || data.Decision.Reason != want || data.Decision.Outcome != "skipped" || data.Decision.RunnerID != r.binding.RunnerID || data.Decision.WorkItemRevision != issue.Revision || !data.Decision.At.Equal(now) {
+			t.Fatalf("persisted decision = %+v", data.Decision)
+		}
+		payload := hostedContextData(t, call("tools/call", operatortool.ExplainItem, map[string]any{"project_id": string(f.project.ID), "reference": strconv.Itoa(issue.Number)}), false)
+		var explanation explain.IssueExplanation
+		if err := json.Unmarshal(payload, &explanation); err != nil {
+			t.Fatal(err)
+		}
+		if latest := explanation.Eligibility.Latest; latest == nil || latest.Reason != want || latest.EvidenceID != eventID || latest.Outcome != "skipped" {
+			t.Fatalf("explain_item lost refusal: %s", payload)
+		}
+	}
+	view.Diagnostics.Admissions[0].Predicate = "project_capacity_full"
+	view.Diagnostics.Admissions[0].WorkItemRevision++
+	view.Diagnostics.Admissions[1].IssueID = "wi_unknown"
+	post()
+	view.Diagnostics.Admissions[0].WorkItemRevision = int64(first.Revision)
+	view.Diagnostics.Admissions[0].ObservedAt = now.Add(-time.Second)
+	post()
+	var count int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE type='scheduler.decision'").Scan(&count); err != nil || count != 2 {
+		t.Fatalf("repeated or mismatched observations changed history: count=%d error=%v", count, err)
+	}
+}
 
 func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	var logs bytes.Buffer

@@ -39,6 +39,7 @@ type DiagnosticAttempt struct {
 
 type DiagnosticAdmission struct {
 	IssueID                string                        `json:"issue_id"`
+	WorkItemRevision       int64                         `json:"work_item_revision,string,omitempty"`
 	ObservedAt             time.Time                     `json:"observed_at"`
 	Result                 string                        `json:"result"`
 	Predicate              string                        `json:"predicate"`
