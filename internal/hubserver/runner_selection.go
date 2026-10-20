@@ -37,11 +37,6 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 		probe.LandingCapacity = nativeLandingCapacityUnknown
 	}
 	probe.Limit = 100
-	preferred, err := spriteAllocationRunnerProject(ctx, tx, scope, r.MachineID)
-	if err != nil {
-		return 0, false, err
-	}
-	var preferredHead tracker.WorkItemID
 	var heads []tracker.WorkItemID
 	var contractRefusal error
 projects:
@@ -145,9 +140,6 @@ projects:
 					}
 					return 0, false, err
 				}
-				if project == preferred {
-					preferredHead = id
-				}
 				heads = append(heads, id)
 				continue projects
 			}
@@ -156,9 +148,6 @@ projects:
 			}
 			projectQuery.After = projectIDs[len(projectIDs)-1]
 		}
-	}
-	if preferredHead != 0 {
-		return preferredHead, true, nil
 	}
 	var selected tracker.WorkItemID
 	if len(heads) > 0 {
