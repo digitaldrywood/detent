@@ -253,16 +253,20 @@ func (o *Orchestrator) completeNativeChangeRun(
 			if running.DiffStats.RecoveryStateAvailable {
 				retryState = cfg.ReworkState
 			}
-			retryState, allowed := nativeRetryLane(states, issue.State, retryState)
-			if !allowed {
-				return handoff(fmt.Errorf("native workflow allows no retry from %s", issue.State))
+			humanAction := ""
+			if staleRework {
+				humanAction = o.staleReworkHumanAction(event, change)
 			}
-			evidence := terminalAttemptFailureEvidence(running, store.WorkAttemptTerminalSuccess, terminalAttemptWithoutWorkProductReason, noWorkProductMessage, event.CompletedAt)
-			if _, parked := o.terminalAttemptRetryLimitReached(ctx, state, issue, terminalAttemptRetryLimitCause, true, firstNonBlank(event.Request.Mode, running.Mode), running.DiffStats, event.CompletedAt, evidence); parked {
+			evidence := terminalAttemptFailureEvidence(running, store.WorkAttemptTerminalSuccess, terminalAttemptWithoutWorkProductReason, firstNonBlank(humanAction, noWorkProductMessage), event.CompletedAt)
+			if _, parked := o.terminalAttemptRetryLimitReached(ctx, state, issue, terminalAttemptRetryLimitCause, true, firstNonBlank(event.Request.Mode, running.Mode), running.DiffStats, event.CompletedAt, humanAction, evidence); parked {
 				o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, terminalAttemptWithoutWorkProductReason, noWorkProductMessage, "completed", "provider completed; issue acceptance is not recorded", nativeChangeMetadata(change))
 				o.recordCompletionUsage(ctx, state, event, issue)
 				o.releaseClaim(state, issueID)
 				return true
+			}
+			retryState, allowed := nativeRetryLane(states, issue.State, retryState)
+			if !allowed {
+				return handoff(fmt.Errorf("native workflow allows no retry from %s", issue.State))
 			}
 			if normalizeState(issue.State) != normalizeState(retryState) {
 				if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, retryState, event.CompletedAt, terminalAttemptWithoutWorkProductReason, workflowLaneMetadata{}); err != nil {
@@ -418,6 +422,45 @@ func (o *Orchestrator) nativeReviewConversationRefusal(event runpkg.Completion, 
 		return ""
 	}
 	return runpkg.NativeReviewConversationRefusal(recovery)
+}
+
+func (o *Orchestrator) staleReworkHumanAction(event runpkg.Completion, change *runpkg.NativeChange) string {
+	var findings []string
+	execution := event.Request.Execution
+	if execution == nil {
+		if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
+			execution = source.RunExecution(event.IssueID)
+		}
+	}
+	if execution != nil {
+		recovery := execution.Recovery()
+		if detail := recovery.ChangeDetail; detail != nil && detail.Change.ID == change.ChangeID {
+			for _, review := range detail.Reviews {
+				if review.VersionID == change.VersionID && review.Decision == "changes_requested" {
+					findings = append(findings, review.ID)
+				}
+			}
+		}
+	}
+	for _, review := range []*gate.ValidatorResult{change.Validator, change.ImplementationReview} {
+		if review == nil || review.Verdict != gate.ValidatorVerdictRework {
+			continue
+		}
+		for _, finding := range review.Findings {
+			findings = append(findings, firstNonBlank(finding.URL, fmt.Sprintf("%s:%d %s", finding.Path, finding.Line, finding.Body)))
+		}
+	}
+	if change.SecurityAudit != nil && change.SecurityAudit.Verdict == "rework" {
+		for _, finding := range change.SecurityAudit.Run.Findings {
+			if finding.Status != "resolved" {
+				findings = append(findings, finding.ID)
+			}
+		}
+	}
+	if len(findings) == 0 {
+		findings = append(findings, "requested changes on Change "+change.ChangeID+" version "+change.VersionID)
+	}
+	return fmt.Sprintf("Review the standing findings [%s] left unresolved by Rework on unchanged head %s, then move the issue to Todo to authorize further work.", strings.Join(findings, "; "), firstNonBlank(change.HeadSHA, change.BaseSHA))
 }
 
 func (o *Orchestrator) observeNativeCompletion(ctx context.Context, event runpkg.Completion, accepted bool) {
