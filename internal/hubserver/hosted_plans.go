@@ -436,7 +436,6 @@ func (d *database) readHostedPlan(ctx context.Context, query nativeQueryer, ref 
 			}
 			if err == nil && d.runtimeVisible(capacityRuntime) {
 				plan.Allowances["unarchived_issues"] = max(plan.Allowances["unarchived_issues"], hostedOpenIssueGuard)
-				plan.Allowances["collaboration_bytes"] = max(plan.Allowances["collaboration_bytes"], 1<<30)
 				plan.Allowances["history_records"] = max(plan.Allowances["history_records"], 2000000)
 				for _, resource := range []string{"members", "projects", "repositories", "registered_runners", "connected_runners", "concurrent_work"} {
 					delete(plan.Allowances, resource)

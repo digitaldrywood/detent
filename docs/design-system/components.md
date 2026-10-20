@@ -373,7 +373,7 @@ Plan allowance consumption with human units, remaining capacity and visible warn
 - Kind: Primitive; status: available; id: `usage-meter`.
 - Import: `import { UsageMeter, formatUsageValue, usageMeterState, UsageUnit } from "~/components/ui/usage-meter";`
 - Source: [src/components/ui/usage-meter.tsx](../../web/conversation/src/components/ui/usage-meter.tsx).
-- Variants: none.
+- Variants: `layout`: `stacked`, `row`.
 - States: normal, warning, limit reached, not included, limit only, unlimited.
 - Keyboard: Static meter with an accessible label, formatted value and description; not focusable.
 - Avoid: Indeterminate loading (use Spinner) and actions (use Button).

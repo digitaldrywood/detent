@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -236,7 +237,13 @@ type hostedComparisonPlan struct {
 
 type hostedBillingUsageView struct {
 	OrganizationID  string                 `json:"organization_id"`
-	RenewsAt        time.Time              `json:"renews_at"`
+	EffectiveBase   PlanReference          `json:"effective_base"`
+	Name            string                 `json:"name"`
+	MonthlyUSDCents *int64                 `json:"monthly_usd_cents"`
+	Complimentary   bool                   `json:"complimentary"`
+	ExpiresAt       *time.Time             `json:"expires_at"`
+	RenewsAt        *time.Time             `json:"renews_at"`
+	CancelsAt       *time.Time             `json:"cancels_at"`
 	ChatUsage       chatUsageSummary       `json:"chat_usage"`
 	ChargedAIMicros int64                  `json:"charged_ai_micros"`
 	AICredits       *aiCreditView          `json:"ai_credits,omitempty"`
@@ -282,19 +289,64 @@ func (s *Service) hostedBillingUsageJSON(c echo.Context) error {
 		view.AICredits.History = []aiCreditTransaction{}
 		view.AICredits.CanAutoFund = false
 	}
-	renewsAt := time.Time{}
+	plan, complimentary, expiresAt, err := s.billingUsagePlan(c.Request().Context(), view.Entitlement)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	var renewsAt, cancelsAt *time.Time
 	subscription := view.State.Snapshot
 	if (subscription.Status == "active" || subscription.Status == "trialing") && !subscription.CancelAtPeriodEnd && subscription.CancelAt.IsZero() {
-		renewsAt = subscription.PeriodEnd
+		if !subscription.PeriodEnd.IsZero() {
+			renewsAt = &subscription.PeriodEnd
+		}
+	}
+	if subscription.Status == "active" || subscription.Status == "trialing" {
+		if !subscription.CancelAt.IsZero() {
+			cancelsAt = &subscription.CancelAt
+		} else if subscription.CancelAtPeriodEnd && !subscription.PeriodEnd.IsZero() {
+			cancelsAt = &subscription.PeriodEnd
+		}
 	}
 	return c.JSON(http.StatusOK, hostedBillingUsageView{
-		OrganizationID: view.OrganizationID, RenewsAt: renewsAt,
+		OrganizationID: view.OrganizationID, EffectiveBase: plan.PlanReference, Name: plan.Name, MonthlyUSDCents: plan.MonthlyUSDCents, Complimentary: complimentary, ExpiresAt: expiresAt, RenewsAt: renewsAt, CancelsAt: cancelsAt,
 		ChatUsage: view.ChatUsage, ChargedAIMicros: view.ChargedAIMicros, AICredits: view.AICredits,
 		ComparisonPlans: view.ComparisonPlans, CanCheckout: canBill && view.CanCheckout,
 		CanManage:       canBill && view.CanManage,
 		CanBuyCredits:   canBill && cfg != nil && !cfg.CheckoutDisabled && view.AICredits != nil && len(view.AICredits.Packs) > 0,
 		CheckoutPending: view.CheckoutPending,
 	})
+}
+
+func (s *Service) billingUsagePlan(ctx context.Context, entitlement HostedEntitlement) (HostedPlan, bool, *time.Time, error) {
+	plan, err := s.database.readHostedPlan(ctx, s.database.reader, entitlement.EffectiveBase)
+	if err != nil {
+		return HostedPlan{}, false, nil, err
+	}
+	if plan.Name == "" {
+		plan.Name = "Current plan"
+	}
+	complimentary := entitlement.Source != "subscription" && slices.Contains([]string{"pilot_free", "comp_team"}, plan.ID)
+	var expiry *time.Time
+	matched := false
+	now := s.config.now()
+	for _, grant := range entitlement.Grants {
+		if grant.RevokedAt != nil || grant.StartsAt.After(now) || grant.ExpiresAt != nil && !grant.ExpiresAt.After(now) {
+			continue
+		}
+		candidate, err := s.database.readHostedPlan(ctx, s.database.reader, grant.Plan)
+		if err != nil {
+			return HostedPlan{}, false, nil, err
+		}
+		if hostedCapacityPlan(grant.Plan) && candidate.Allowances["concurrent_work"] > plan.Allowances["concurrent_work"] {
+			plan, complimentary, expiry, matched = candidate, true, grant.ExpiresAt, true
+		} else if grant.Plan == plan.PlanReference && (entitlement.Source != "subscription" || matched) {
+			if !matched || expiry != nil && (grant.ExpiresAt == nil || grant.ExpiresAt.After(*expiry)) {
+				expiry = grant.ExpiresAt
+			}
+			complimentary, matched = true, true
+		}
+	}
+	return plan, complimentary, expiry, nil
 }
 
 func (s *Service) hostedPriceLabel(ctx context.Context, price HostedBillingPrice) string {
@@ -316,11 +368,11 @@ func (s *Service) readBillingView(ctx context.Context) (hostedBillingView, error
 	view := hostedBillingView{hostedBillingReport: report, Prices: []hostedBillingPriceView{}}
 	view.ComparisonPlans = []hostedComparisonPlan{}
 	if runtimePlans := s.database.plans(); runtimePlans != nil {
-		for _, configured := range runtimePlans.Plans {
-			if tier, ok := hostedTierFor(configured.PlanReference); !ok || !tier.offered || tier.ID == "free" {
+		for _, tier := range hostedTiers() {
+			if !tier.offered || !slices.ContainsFunc(runtimePlans.Plans, func(plan HostedPlan) bool { return plan.PlanReference == tier.PlanReference }) {
 				continue
 			}
-			plan, err := s.database.readHostedPlan(ctx, s.database.reader, configured.PlanReference)
+			plan, err := s.database.readHostedPlan(ctx, s.database.reader, tier.PlanReference)
 			if err != nil {
 				return hostedBillingView{}, err
 			}
