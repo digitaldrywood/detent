@@ -152,7 +152,7 @@ func (c *cloudDestination) comments(ctx context.Context, issue *cloudIssue) erro
 	cursor := ""
 	for {
 		var page operatortool.WorkReadResult[tracker.Page[tracker.NativeComment]]
-		if err := c.command(ctx, "work_comments", map[string]any{"project_id": c.project, "reference": string(issue.item.WorkItemID), "limit": 5, "cursor": cursor}, &page); err != nil {
+		if err := c.command(ctx, "work_comments", map[string]any{"project_id": c.project, "reference": string(issue.item.WorkItemID), "limit": scheduledListLimit, "cursor": cursor}, &page); err != nil {
 			return err
 		}
 		if page.ProjectID != c.project || page.Reference != string(issue.item.WorkItemID) || page.Data.Items == nil {
