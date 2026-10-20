@@ -945,8 +945,9 @@ Release automation requires `tracker.kind: github`, `tracker.repository: owner/r
 and `release.enabled: true`. It is unavailable for `hub_native` with either
 plain git delivery (`deliverable.github_pull_request: false`, the default) or
 GitHub pull request delivery (`deliverable.github_pull_request: true`). Config
-validation rejects `release.enabled: true` for native projects and reports a
-validation warning; leave `release.enabled: false` when migrating to `hub_native`.
+validation rejects `release.enabled: true` for native projects, including the
+release-unavailable warning in the returned error so creation and reload failures
+surface it. Leave `release.enabled: false` when migrating to `hub_native`.
 Opting into GitHub pull requests does not enable release automation.
 
 `observability.stranded_active_threshold_seconds` controls when Health and

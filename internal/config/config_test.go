@@ -4519,7 +4519,7 @@ func TestReleaseConfigValidation(t *testing.T) {
 				cfg.Tracker.Repository = "example-org/example-project"
 				cfg.Release.Enabled = true
 			},
-			want: "release.enabled requires tracker.kind github",
+			want: "warning: release.enabled: release automation is unavailable for tracker.kind hub_native",
 			warn: true,
 		},
 		{
@@ -4530,7 +4530,7 @@ func TestReleaseConfigValidation(t *testing.T) {
 				cfg.Deliverable.GitHubPullRequest = true
 				cfg.Release.Enabled = true
 			},
-			want: "release.enabled requires tracker.kind github",
+			want: "warning: release.enabled: release automation is unavailable for tracker.kind hub_native",
 			warn: true,
 		},
 		{
@@ -4583,6 +4583,9 @@ func TestReleaseConfigValidation(t *testing.T) {
 				t.Fatalf("ValidationWarnings() = %q, want release warning=%t", warnings, test.warn)
 			}
 			err := cfg.Validate()
+			if test.warn && (err == nil || !strings.Contains(err.Error(), releaseWarning)) {
+				t.Fatalf("Validate() error = %v, want release warning %q", err, releaseWarning)
+			}
 			if test.want == "" {
 				if err != nil {
 					t.Fatalf("Validate() error = %v", err)
