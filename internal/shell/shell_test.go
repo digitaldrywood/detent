@@ -174,6 +174,7 @@ func TestCommandSpecWithArgsQuotesForConfiguredShell(t *testing.T) {
 		{
 			name:     "windows cmd",
 			goos:     "windows",
+			shell:    "cmd",
 			wantName: "cmd",
 			wantArgs: []string{"/C", `claude ^"-p^" ^"--model^" ^"fable^" ^"Bash^(git^ ^*^)^" ^"quoted'value^" ^"percent^%value^"`},
 		},
