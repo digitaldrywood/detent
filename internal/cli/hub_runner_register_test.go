@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -138,6 +139,56 @@ func TestRunnerHubTarget(t *testing.T) {
 			}
 			if err != nil || base != test.wantBase || org != test.wantOrg {
 				t.Fatalf("runnerHubTarget(%q, %q) = %q, %q, %v; want %q, %q", test.url, test.organization, base, org, err, test.wantBase, test.wantOrg)
+			}
+		})
+	}
+}
+
+func TestHubRunnerRegisterRequiresServiceManagerBeforeEnrollment(t *testing.T) {
+	t.Parallel()
+	for _, goos := range []string{"freebsd", "plan9"} {
+		t.Run(goos, func(t *testing.T) {
+			t.Parallel()
+			hub := newRegisterHub(t, nil)
+			root := t.TempDir()
+			cmd := newHubRunnerRegisterCommand("test", func(string) string { return "" }, runnerServiceStarterForOS(options{}, goos))
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"--service", "--url", hub.server.URL + "/organizations/org_example", "--token", "det_enroll_example", "--config", filepath.Join(root, "global.yaml"), "--workspace-root", filepath.Join(root, "work")})
+			if err := cmd.Execute(); !errors.Is(err, servicepkg.ErrUnsupported) {
+				t.Fatalf("register error = %v, want unsupported service", err)
+			}
+			if got := hub.redeemed.Load(); got != 0 {
+				t.Fatalf("redeemed %d tokens without a service manager", got)
+			}
+		})
+	}
+}
+
+func TestRunnerStartCommand(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ goos, path, want string }{
+		{"windows", `C:\Users\Example's $user\runner\global.yaml`, `detent --config 'C:\Users\Example''s $user\runner\global.yaml' --headless`},
+		{"windows", `C:\runner\global.yaml`, `detent --config 'C:\runner\global.yaml' --headless`},
+		{"darwin", "/Users/example's folder/global.yaml", `detent --config '/Users/example'\''s folder/global.yaml' --headless`},
+		{"linux", "/home/example/global.yaml", "detent --config /home/example/global.yaml --headless"},
+	} {
+		t.Run(test.goos+test.path, func(t *testing.T) {
+			t.Parallel()
+			if got := runnerStartCommand(test.path, test.goos); got != test.want {
+				t.Fatalf("start command = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRunnerServiceSupportedPlatforms(t *testing.T) {
+	t.Parallel()
+	for _, goos := range []string{"windows", "darwin", "linux"} {
+		t.Run(goos, func(t *testing.T) {
+			t.Parallel()
+			if runnerServiceStarterForOS(options{}, goos) == nil {
+				t.Fatal("supported platform has no service starter")
 			}
 		})
 	}
