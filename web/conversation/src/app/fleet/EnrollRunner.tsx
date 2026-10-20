@@ -526,7 +526,7 @@ export function EnrollRunnerDialog({
                   </span>
                 </legend>
                 <NativeSelect aria-label="Runner scope" value={scope} onValueChange={(value) => setScope(value as "organization" | "projects")} options={[{ value: "organization", label: "All projects" }, { value: "projects", label: "Selected projects" }]} />
-                {scope === "organization" ? <p className="text-xs text-muted-foreground">Serves all current and future projects, subject to each project’s approved policy and capacity.</p> : projects.length === 0 ? (
+                {scope === "organization" ? <p className="text-xs text-muted-foreground">Serves all current and future projects, subject to each project’s access, routing and capacity.</p> : projects.length === 0 ? (
                   <p className="text-[13px] text-muted-foreground">
                     You can read no projects on this organization, so there is nothing to enroll a
                     runner for.
@@ -599,7 +599,7 @@ export function EnrollRunnerDialog({
                       <CopyableCommand value="gh auth login --hostname github.com --git-protocol https --web && gh auth setup-git && gh auth status --hostname github.com" label="the GitHub authentication command" />
                       The runner clones allowed repositories and runs their <code>hooks.runner_setup</code>. For a fresh runner, each managed checkout is <code>~/detent-runner/PROJECT_ID</code>, using the project’s exact Hub ID. Use the bootstrap’s printed paths for project-scoped enrollment. Verify the checkout and its origin before running dependencies there with repository-pinned tools; keep <code>cd</code> and dependency commands joined with <code>&amp;&amp;</code>.
                     </li>
-                    <li>Check the Hub’s runner connection, project setup and reported repository policy; approve policy only if offered. Re-run the same bootstrap with empty input after authentication, then inspect <code>sprite-env services get detent-runner</code>. Its installation checkpoint does not prove readiness. Confirm a small authorized Todo task publishes its real Change, then save a final checkpoint with <code>sprite-env checkpoints create</code>. If any step fails, use the bootstrap’s last completed step and resume command. See the <a className="underline" href="https://github.com/digitaldrywood/detent/blob/main/docs/sprite-runners.md">Sprite runner guide</a> for dependency and storage recovery.</li>
+                    <li>Check the Hub’s runner connection, project setup and reported repository configuration. Re-run the same bootstrap with empty input after authentication, then inspect <code>sprite-env services get detent-runner</code>. Its installation checkpoint does not prove readiness. Confirm a small authorized Todo task publishes its real Change, then save a final checkpoint with <code>sprite-env checkpoints create</code>. If any step fails, use the bootstrap’s last completed step and resume command. See the <a className="underline" href="https://github.com/digitaldrywood/detent/blob/main/docs/sprite-runners.md">Sprite runner guide</a> for dependency and storage recovery.</li>
                   </ol>
                 </>
               ) : <>

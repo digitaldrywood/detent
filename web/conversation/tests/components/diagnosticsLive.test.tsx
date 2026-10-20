@@ -75,13 +75,13 @@ const raw = "policy_digest git error_output ".repeat(200);
 const problem = { code: "settings_invalid", project_id: "prj_optional", subject: "workflow", check: "load settings", message: raw, error_output: raw, fix_hint: raw, first_seen: "2026-10-07T10:00:00Z" };
 const runners = [
   { ...base, id: "runner_one", machine_id: "host_one", display_name: "Example desktop", hostname: "desktop", state: "active", health: "online", capacity_health: "online", connection_health: "online", claim_refusal_reason: "", provider_capacity: [], host_capacity: 8, host_used: 1, capacity_limit: 8, reported_capacity: 8, problems: [problem] },
-  { ...base, id: "runner_two", machine_id: "host_two", display_name: "Example laptop", hostname: "laptop", state: "active", health: "online", capacity_health: "online", connection_health: "online", claim_refusal_reason: "", provider_capacity: [], host_capacity: 4, host_used: 1, capacity_limit: 4, reported_capacity: 4, problems: [{ ...problem, code: "policy_mismatch", project_id: "prj_main" }] },
+  { ...base, id: "runner_two", machine_id: "host_two", display_name: "Example laptop", hostname: "laptop", state: "active", health: "online", capacity_health: "online", connection_health: "online", claim_refusal_reason: "", provider_capacity: [], host_capacity: 4, host_used: 1, capacity_limit: 4, reported_capacity: 4, problems: [{ ...problem, code: "settings_rejected", project_id: "prj_main" }] },
   { ...base, id: "runner_three", machine_id: "host_three", display_name: "Example build host", hostname: "builder", state: "draining", health: "online", capacity_health: "online", connection_health: "online", claim_refusal_reason: "", provider_capacity: [], host_capacity: 8, host_used: 1, capacity_limit: 8, reported_capacity: 8, update: { status: "draining", desired: { version: "v1.0.0" } }, problems: [problem] },
 ];
 const viewProps = { report: decodeDiagnostics(report), runners, findings: [], pending: false, error: null, scope: "Example organization", range: "24h" as const, projects, onRangeChange: vi.fn(), onRefresh: vi.fn() };
 
 it("puts shared host totals and every runner before grouped typed findings without raw debug payloads", () => {
-  const view = render(<DiagnosticsView {...viewProps} canManage />);
+  const view = render(<DiagnosticsView {...viewProps} />);
   const live = screen.getByRole("region", { name: "Capacity right now" });
   const attention = screen.getByRole("region", { name: "Needs attention" });
   expect(live.compareDocumentPosition(attention) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -94,7 +94,8 @@ it("puts shared host totals and every runner before grouped typed findings witho
   const settings = within(attention).getByText("Project settings could not be loaded").closest("article")!;
   expect(within(settings).getByText("Optional project", { exact: false })).toBeTruthy();
   expect(within(settings).getAllByRole("link").map((link) => link.textContent)).toEqual(["Example desktop", "Example build host"]);
-  expect(within(attention).getByRole("link", { name: "Review policy" }).getAttribute("href")).toBe("/settings/integrations?project=prj_main");
+  expect(within(attention).getByText("Runner settings could not be applied")).toBeTruthy();
+  expect(within(attention).getByText("Runner operator: check routing cache permissions and configured host services.")).toBeTruthy();
   expect(within(attention).getByText("Example project", { exact: false })).toBeTruthy();
   for (const text of ["policy_digest", "git error_output", "Instrumentation coverage", "Configuration that shapes these numbers", "Check local workflow"]) expect(view.container.textContent).not.toContain(text);
   const totals = within(live).getAllByTestId("runner-capacity").map((row) => row.textContent);
@@ -171,11 +172,11 @@ it.each([true, false])("shows the Hub build and Version column only when updates
   }
 });
 
-it("keeps read-only policy review with its administrator and does not group unrelated checks", () => {
+it("keeps runner repair guidance read-only and does not group unrelated checks", () => {
   render(<DiagnosticsView {...viewProps} runners={[...runners, { ...runners[0]!, id: "runner_four", machine_id: "host_four", display_name: "Example worker", problems: [{ ...problem, check: "different check" }] }]} />);
   const attention = screen.getByRole("region", { name: "Needs attention" });
   expect(within(attention).queryByRole("link", { name: "Review policy" })).toBeNull();
-  expect(within(attention).getByText("Organization administrator: review the project's approved policy in Settings → Integrations.")).toBeTruthy();
+  expect(within(attention).getByText("Runner operator: check routing cache permissions and configured host services.")).toBeTruthy();
   expect(within(attention).getAllByText("Project settings could not be loaded")).toHaveLength(2);
   expect(screen.queryByRole("button", { name: /Approve|Update runner|Remove runner/ })).toBeNull();
 });
