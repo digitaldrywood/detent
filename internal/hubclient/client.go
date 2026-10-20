@@ -170,10 +170,21 @@ func (e *APIError) Error() string {
 }
 
 func (e *APIError) NativeTerminalFailure() tracker.NativeTerminalFailure {
-	if e != nil && e.Code == "invalid_request" && e.Rejection.TerminalStage() != "" {
+	if e.permanentInvalidRequest() && e.Rejection.TerminalStage() != "" {
 		return tracker.NativeTerminalFailure{Rejection: e.Rejection}
 	}
 	return tracker.NativeTerminalFailure{}
+}
+
+func (e *APIError) permanentInvalidRequest() bool {
+	if e == nil || e.Code != "invalid_request" || e.Status < http.StatusBadRequest || e.Status >= http.StatusInternalServerError {
+		return false
+	}
+	switch e.Status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusTooManyRequests:
+		return false
+	}
+	return true
 }
 
 func New(config Config) (*Client, error) {

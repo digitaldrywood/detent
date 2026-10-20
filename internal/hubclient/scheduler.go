@@ -344,7 +344,9 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 	var err error
 	if isNative {
 		if native.execution != nil {
-			if err := native.execution.finishPrepared(ctx); err != nil {
+			err = native.execution.finishPrepared(ctx)
+			var rejection *nativeCompletionRejection
+			if err != nil && !errors.As(err, &rejection) {
 				return err
 			}
 		}
@@ -354,7 +356,8 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 	} else {
 		err = s.client.Release(ctx, lease, reason)
 	}
-	if err != nil && !claimLost(err) {
+	var rejection *nativeCompletionRejection
+	if err != nil && !claimLost(err) && !errors.As(err, &rejection) {
 		return err
 	}
 	s.mu.Lock()
@@ -366,6 +369,9 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 	delete(s.nativeClaims, issueID)
 	delete(s.claimPolicies, issueID)
 	s.mu.Unlock()
+	if rejection != nil {
+		return err
+	}
 	return nil
 }
 

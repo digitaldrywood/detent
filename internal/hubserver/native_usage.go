@@ -59,7 +59,7 @@ func validateNativeRunUsage(request tracker.NativeRunEvent) error {
 			return err
 		}
 		if seen[key] {
-			return nativeInvalid("Usage names " + provider + " " + model + " twice")
+			return nativeInvalid("Usage entries must name distinct provider and model pairs")
 		}
 		seen[key] = true
 		if entry.Input < 0 || entry.CachedInput < 0 || entry.Output < 0 || entry.CostEstimate < 0 {
