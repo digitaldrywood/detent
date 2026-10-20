@@ -896,6 +896,9 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 			}
 			detail += recovery
 		}
+		if reason == terminalAttemptRetryLimitCause && strings.TrimSpace(blocked.RecoveryRemedy) != "" {
+			detail += ": " + strings.TrimSpace(blocked.RecoveryRemedy)
+		}
 		return dispatchableDecision{reason: dispatchSkipBlocked, detail: detail}
 	}
 	if reason := p.budgetRefusalWaitReason(state, issue.ID, now); reason != "" {
