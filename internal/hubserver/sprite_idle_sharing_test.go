@@ -155,6 +155,7 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 		{"opted in shares", true, false, true, true, false, "", http.StatusOK},
 		{"highest ranked fallback", true, false, true, true, false, "", http.StatusConflict},
 		{"own ready work takes precedence", true, true, true, true, false, "", http.StatusConflict},
+		{"own budget exhaustion permits sharing", true, true, true, true, false, "own monthly", http.StatusOK},
 		{"grants remain required", true, false, false, true, false, "", http.StatusNotFound},
 		{"target checkout remains required", true, false, true, false, false, "", http.StatusConflict},
 		{"sharing to another allocation", true, false, true, true, true, "", http.StatusOK},
@@ -232,13 +233,10 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 			if test.budget == "monthly" {
 				setMonthlyBudgetFixture(t, other, false, budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64)})
 			}
+			if test.budget == "own monthly" {
+				setMonthlyBudgetFixture(t, f, false, budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64)})
+			}
 			claim := providerClaim(r, foreign, "sharing")
-			if ranked.service != nil {
-				claim.ProviderCandidates = append(claim.ProviderCandidates, providerClaim(r, rankedIssue, "").ProviderCandidates[0])
-			}
-			if test.ownReady {
-				claim.ProviderCandidates = append(claim.ProviderCandidates, providerClaim(r, own, "").ProviderCandidates[0])
-			}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, other.base+"/claims", r.redemption.Credential, claim)
 			requireNativeStatus(t, response, test.status)
 			if test.status == http.StatusOK {
@@ -251,7 +249,7 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 			if ranked.service != nil {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, ranked.base+"/claims", r.redemption.Credential, providerClaim(r, rankedIssue, "ranked")), http.StatusOK)
 			}
-			if test.ownReady {
+			if test.ownReady && test.budget != "own monthly" {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, own, "own")), http.StatusOK)
 			}
 			allocation, err := readProjectSpriteAllocation(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
@@ -265,6 +263,9 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 				placement, err := readOrganizationPlacementSnapshot(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID}, f.service.config.now())
 				if err != nil || placement.SpriteFree != 1 || placement.Provisionable != 0 {
 					t.Fatalf("idle sharing provisioned extra capacity: %+v %v", placement, err)
+				}
+				if test.budget == "own monthly" {
+					setMonthlyBudgetFixture(t, f, false, budget.MonthlyPolicy{})
 				}
 				own = f.create(t, "new own ready work")
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, own, "return-own")), http.StatusOK)
