@@ -505,8 +505,10 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fe
 			hasMore = true
 			break
 		}
-		if err := readAttachmentEvidence(ctx, s.database.reader, scope, item, &attempt.NativeRunData); err != nil {
-			return tracker.Page[tracker.NativeAttempt]{}, err
+		if view != "blockers" {
+			if err := readAttachmentEvidence(ctx, s.database.reader, scope, item, &attempt.NativeRunData); err != nil {
+				return tracker.Page[tracker.NativeAttempt]{}, err
+			}
 		}
 		attempt.Identity = nativeAttemptDisplayIdentity(attempt)
 		attempt.Runtime = attempt.Runtime.WithoutActivitySpans()
