@@ -890,6 +890,19 @@ func (s *Service) transitionNativeIssue(c echo.Context) error {
 }
 
 func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope nativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
+	return s.transitionNativeIssueCommandWithChat(ctx, scope, item, request, "")
+}
+
+func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scope nativeScope, item string, request tracker.Transition, conversationID string) (json.RawMessage, error) {
+	if conversationID != "" {
+		issue, _, err := readNativeIssue(ctx, s.database.reader, scope, item)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.validateCoordinatorMoveAnswer(ctx, scope, issue, request.State, request.ReasonDetail); err != nil {
+			return nil, err
+		}
+	}
 	scope.action = operatortool.MoveItem
 	scope.actionItem, scope.actionTarget = item, request.State
 	recordedRecovery := request.Reason == "dependency_ready" && request.BlockerAttemptID != ""
@@ -898,7 +911,11 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 	contractRecovery := strings.ReplaceAll(request.ReasonDetail, " ", "_") == "recorded_blocker_recovery" && !recordedRecovery
 	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/workflow"), Item: item, RequireLease: !recordedRecovery && !contractHold && !contractRecovery, Feature: "collaboration"}
 	var heldLease tracker.LeaseID
-	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	payload := struct {
+		tracker.Transition
+		ConversationID string `json:"conversation_id,omitempty"`
+	}{request, conversationID}
+	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, payload, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		heldLease = ""
 		issue, internalID, err := readNativeIssue(ctx, tx, scope, item)
 		if err != nil {
@@ -991,6 +1008,13 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 			issue.IssueContract.ReturnState = ""
 		}
 		issue.State = request.State
+		if conversationID != "" && strings.TrimSpace(request.ReasonDetail) != "" {
+			actor := scope.actor()
+			provenance := &tracker.Provenance{Provider: "chat", ExternalID: conversationID + ":" + request.IdempotencyKey, AuthorID: actor.PrincipalID}
+			if _, err := insertNativeComment(ctx, tx, scope, issue, strings.TrimSpace(request.ReasonDetail), provenance, now); err != nil {
+				return nil, err
+			}
+		}
 		data := tracker.CollaborationData{BlockerAttemptID: request.BlockerAttemptID, FromState: from, ToState: issue.State, Reason: request.Reason, ReasonDetail: strings.TrimSpace(request.ReasonDetail)}
 		previousRevision := issue.Revision
 		issue, err = persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", data, now)
