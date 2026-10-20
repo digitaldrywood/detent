@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -163,7 +164,7 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 }
 
 func TestCloudProjectConfigurationOwner(t *testing.T) {
-	for _, scenario := range []string{"resume", "resume drained", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "entry personal drain", "entry service drain", "entry revoked drain", "entry expired drain", "entry member removed drain", "entry grant removed drain", "entry scoped drain", "entry service scoped drain", "entry downgraded drain", "entry service downgraded drain", "entry foreign organization drain", "entry rotated drain", "entry missing origin drain", "apply", "cloud apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale policy", "stale source", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
+	for _, scenario := range []string{"resume", "resume drained", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "entry personal drain", "entry service drain", "entry revoked drain", "entry expired drain", "entry member removed drain", "entry grant removed drain", "entry scoped drain", "entry service scoped drain", "entry downgraded drain", "entry service downgraded drain", "entry foreign organization drain", "entry rotated drain", "entry missing origin drain", "apply", "cloud apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale policy", "stale source", "stale runner", "foreign runner", "foreign project", "busy", "busy binding enable", "busy binding disable", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "project-configuration")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
@@ -444,12 +445,21 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: candidate.ID, Policy: forged}), http.StatusOK)
 				args.PolicyID = forged.ID
 			case "busy":
+				args.RequestID, args.AllowLocalBinding = "apply-policy", nil
+				view.UnsettledAttempts = 1
+				heartbeat()
+			case "busy binding enable", "busy binding disable":
+				if scenario == "busy binding disable" {
+					enabled = false
+					view.AllowLocalBinding = true
+					view.RestrictedBindingPolicy = &candidate
+				}
 				view.UnsettledAttempts = 1
 				heartbeat()
 			}
 			preview, previewErr := executor.projectConfigurationCommand(ctx, "apply_local_project_policy", args, true)
 			result, err = call("apply_local_project_policy", args)
-			refused := scenario == "stale configuration" || scenario == "stale policy" || scenario == "stale source" || scenario == "stale runner" || scenario == "foreign runner" || scenario == "foreign project" || scenario == "wrong candidate"
+			refused := scenario == "stale configuration" || scenario == "stale policy" || scenario == "stale source" || scenario == "stale runner" || scenario == "foreign runner" || scenario == "foreign project" || scenario == "wrong candidate" || strings.HasPrefix(scenario, "busy binding ")
 			if refused {
 				if scenario == "foreign runner" {
 					if !strings.Contains(string(preview.Content), `"source":"unavailable"`) || !strings.Contains(string(result.Content), `"source":"unavailable"`) {
@@ -457,6 +467,14 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 					}
 				} else if previewErr == nil || err == nil {
 					t.Fatalf("invalid request accepted: preview=%s %v apply=%s %v", preview.Content, previewErr, result.Content, err)
+				}
+				if strings.HasPrefix(scenario, "busy binding ") {
+					for _, refusal := range []error{previewErr, err} {
+						var conflict *nativeError
+						if !errors.As(refusal, &conflict) || conflict.Code != "policy_mismatch" {
+							t.Fatalf("binding refusal=%v", refusal)
+						}
+					}
 				}
 				if heartbeat().ProjectConfigurationRequest != nil {
 					t.Fatal("refusal reached runner")
@@ -501,7 +519,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				}
 				return
 			}
-			if snapshot.ProjectConfigurationRequest == nil || snapshot.ProjectConfigurationRequest.RequestID != args.RequestID || snapshot.ProjectConfigurationRequest.ProjectID != view.ProjectID {
+			if snapshot.ProjectConfigurationRequest == nil || snapshot.ProjectConfigurationRequest.RequestID != args.RequestID || snapshot.ProjectConfigurationRequest.ProjectID != view.ProjectID || !reflect.DeepEqual(snapshot.ProjectConfigurationRequest.AllowLocalBinding, args.AllowLocalBinding) {
 				t.Fatalf("delivery=%+v", snapshot)
 			}
 			queuedReplay, err := call("apply_local_project_policy", args)
@@ -509,6 +527,9 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				t.Fatalf("queued replay=%s %v", queuedReplay.Content, err)
 			}
 			view.RequestID, view.Saved, view.Applied, view.AllowLocalBinding = args.RequestID, true, true, true
+			if scenario == "busy" {
+				view.AllowLocalBinding = false
+			}
 			view.EffectivePolicy, view.ConfigRevision = &candidate, strings.Repeat("d", 64)
 			if scenario == "refused apply" {
 				view.Applied, view.Saved, view.AllowLocalBinding = false, false, false
