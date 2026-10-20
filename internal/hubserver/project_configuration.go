@@ -145,6 +145,9 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 			return operatortool.Result{}, policyMismatch("Approved policy changed; inspect the current policy and supply its expected_policy_id")
 		}
 		if args.AllowLocalBinding != nil {
+			if view.UnsettledAttempts != 0 {
+				return operatortool.Result{}, policyMismatch("Active or deferred work must settle before changing allow_local_binding")
+			}
 			candidate := view.RestrictedBindingPolicy
 			if *args.AllowLocalBinding {
 				candidate = view.LocalBindingPolicy
