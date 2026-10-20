@@ -6,7 +6,10 @@ import { SpritesCard } from "./SpritesCard.tsx";
 import { WorkflowRevisions } from "./WorkflowRevisions.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
+import { Alert, AlertTitle } from "../../components/ui/alert.tsx";
 import { AlertDialog, AlertDialogTrigger, AlertDialogPopup, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogClose } from "../../components/ui/alert-dialog.tsx";
+import { Input } from "../../components/ui/input.tsx";
+import { Label } from "../../components/ui/label.tsx";
 import { hubPath } from "../../runtime/basePath.ts";
 import { Textarea } from "../../components/ui/textarea.tsx";
 import type { ObservedPolicy, PolicyApproval, ProjectIntegration, ProjectOnboardingSummary } from "../../contracts/account.ts";
@@ -96,6 +99,9 @@ export function ProjectDeletionSettings({ projectName, pending, error, onDelete,
   readonly onDismiss: () => void;
 }): React.ReactElement {
   const [open, setOpen] = React.useState(false);
+  const [confirmation, setConfirmation] = React.useState("");
+  const confirmationId = React.useId();
+  const canDelete = !pending && confirmation.trim() === projectName;
   return (
     <SettingsSection title="Delete project">
       <SettingsRow title="Delete project" description="Remove this project from Detent Cloud. Active work must finish or be cancelled first."
@@ -103,21 +109,41 @@ export function ProjectDeletionSettings({ projectName, pending, error, onDelete,
           <AlertDialog open={open} onOpenChange={(next) => {
             if (pending) return;
             setOpen(next);
+            setConfirmation("");
             onDismiss();
           }}>
             <AlertDialogTrigger render={<Button size="sm" variant="destructive-outline" />}>Delete project</AlertDialogTrigger>
             <AlertDialogPopup>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete {projectName}?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  This removes {projectName} from Cloud and deletes its secrets and access grants. Issues, runs, Changes, conversations and stored artifacts are retained for audit but become inaccessible. Its name remains reserved, and retained storage still counts toward usage. The GitHub repository, its issues and PRs, other projects and shared runners are preserved. Finish or cancel active work, close workspaces, finish imports and GitHub writes, and remove provisioned Sprite pool members first. This cannot be undone.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <ControlError message={error} />
-              <AlertDialogFooter>
-                <AlertDialogClose disabled={pending} render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-                <Button variant="destructive" disabled={pending} onClick={onDelete}>{pending ? "Deleting…" : "Delete project"}</Button>
-              </AlertDialogFooter>
+              <form onSubmit={(event) => {
+                event.preventDefault();
+                if (canDelete) onDelete();
+              }}>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete {projectName}?</AlertDialogTitle>
+                  <Alert variant="error">
+                    <AlertTitle>This action cannot be undone.</AlertTitle>
+                  </Alert>
+                  <AlertDialogDescription render={<div />} className="text-left">
+                    <ul className="list-disc space-y-2 pl-4">
+                      <li>This removes {projectName} from Cloud and deletes its secrets and access grants.</li>
+                      <li>Issues, runs, Changes, conversations and stored artifacts are retained for audit but become inaccessible. Its name remains reserved, and retained storage still counts toward usage.</li>
+                      <li>The GitHub repository, its issues and PRs, other projects and shared runners are preserved.</li>
+                      <li>First, finish or cancel active work, close workspaces, finish imports and GitHub writes, and remove provisioned Sprite pool members.</li>
+                    </ul>
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <div className="space-y-3 px-6 pb-6">
+                  <Label htmlFor={confirmationId} className="inline-block leading-normal">
+                    To confirm, type <span className="font-mono">{projectName}</span> below
+                  </Label>
+                  <Input id={confirmationId} value={confirmation} onChange={(event) => setConfirmation(event.currentTarget.value)} disabled={pending} autoComplete="off" />
+                  <ControlError message={error} />
+                </div>
+                <AlertDialogFooter>
+                  <AlertDialogClose disabled={pending} render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+                  <Button type="submit" variant="destructive" disabled={!canDelete}>{pending ? "Deleting…" : "Delete project"}</Button>
+                </AlertDialogFooter>
+              </form>
             </AlertDialogPopup>
           </AlertDialog>
         }
