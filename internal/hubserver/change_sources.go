@@ -25,6 +25,10 @@ func (s *Service) changeSource(c echo.Context) error {
 	if err := s.database.reader.QueryRowContext(ctx, "SELECT bundle FROM change_sources WHERE version_id = ?", version.ID).Scan(&bundle); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	bundle, err = decodeChangeSource(bundle, version.Source.Bytes)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	if err := version.Source.Validate(version.BaseSHA, version.HeadSHA, bundle); err != nil {
 		return s.nativeAPIError(c, err)
 	}

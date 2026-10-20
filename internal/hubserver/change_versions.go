@@ -171,7 +171,11 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 		}
 	}
 	if version.Source != nil {
-		if _, err := tx.ExecContext(ctx, "INSERT INTO change_sources (version_id, bundle) VALUES (?, ?)", version.ID, request.SourceBundle); err != nil {
+		stored, err := encodeChangeSource(request.SourceBundle)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO change_sources (version_id, bundle) VALUES (?, ?)", version.ID, stored); err != nil {
 			return nil, err
 		}
 	}
