@@ -31,10 +31,13 @@ var nativeFailureAssignment = regexp.MustCompile(`[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*(
 
 func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	text := NativeFinalization{}
+	if f.ErrorClass == "git_push" {
+		f.Error, _ = publicGateOutput(f.Error)
+	}
 	first, _, _ := strings.Cut(f.Error, "\n")
 	f.Error = text.publicText(nativeFailureAssignment.ReplaceAllString(strings.TrimSpace(first), "[redacted]"))
 	switch f.ErrorClass {
-	case "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery", "acceptance_publication", "security_audit_publication", "event_publication", "finalization", "lease_released":
+	case "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery", "acceptance_publication", "security_audit_publication", "event_publication", "finalization", "lease_released", "git_push":
 	default:
 		f.ErrorClass = ""
 	}
@@ -60,8 +63,15 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	}
 	f.Source = "host_runner_completion"
 	f.Coverage = "recorded_execution_error_only; not_change_publication_or_issue_acceptance_or_lease_release; historical_metadata_not_backfilled"
+	diagnostic := f.Summary
 	f.Summary = "Runner execution failed; private error output omitted"
 	switch f.ErrorClass {
+	case "git_push":
+		diagnostic, _ = publicGateOutput(diagnostic)
+		f.Summary = text.publicText(nativeFailureAssignment.ReplaceAllString(strings.Join(strings.Fields(diagnostic), " "), "[redacted]"))
+		if f.Summary == "" {
+			f.Summary = "Git push failed; no diagnostic output recorded"
+		}
 	case "finalization":
 		f.Coverage = "recorded_finalization_error_only; historical_metadata_not_backfilled"
 		f.Summary = "Change finalization failed; private error output omitted"

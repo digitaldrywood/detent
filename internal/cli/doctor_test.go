@@ -6787,7 +6787,8 @@ func assertDoctorMissingCheck(t *testing.T, report doctorReport, name string) {
 
 func successfulDoctorDeps() doctorDeps {
 	return doctorDeps{
-		cacheCapacityBytes: func(string) (uint64, error) { return 1 << 50, nil },
+		gitLandingCredential: func(context.Context, string) error { return nil },
+		cacheCapacityBytes:   func(string) (uint64, error) { return 1 << 50, nil },
 		inspectCaches: func(context.Context) toolcache.Report {
 			return toolcache.Report{BuildPath: "/cache/build", ModulePath: "/cache/modules"}
 		},
