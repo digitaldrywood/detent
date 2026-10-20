@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -37,6 +38,15 @@ func (s *Service) registerOperatorTools(e *echo.Echo) {
 	if s.config.Hosted != nil {
 		e.Any("/mcp", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority)
 	}
+}
+
+type operatorAccessTimeKey struct{}
+
+func operatorAccessTime(ctx context.Context, now time.Time) time.Time {
+	if accepted, ok := ctx.Value(operatorAccessTimeKey{}).(time.Time); ok {
+		return accepted
+	}
+	return now
 }
 
 func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
@@ -98,7 +108,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 					return apiCredential{}, operatortool.ErrAccessDenied
 				}
 				if shared {
-					if claims.Kind != cloudassert.KindBrowser || !claims.AccessExpiresAt.After(s.config.now()) {
+					if claims.Kind != cloudassert.KindBrowser || !claims.AccessExpiresAt.After(operatorAccessTime(ctx, s.config.now())) {
 						return apiCredential{}, operatortool.ErrAccessDenied
 					}
 					current, _, err = s.hostedSharedCredential(ctx, session, credential.SessionHash, claims.Role)
