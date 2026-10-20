@@ -5,9 +5,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
@@ -145,42 +148,63 @@ func TestCIWindowsChecksUseExistingLinuxVetStep(t *testing.T) {
 			t.Errorf("%s must stay outside the PR guard", name)
 		}
 	}
-	vet := workflowBetween(t, job, "      - name: Vet\n", "\n      - name:")
-	for _, command := range []string{
-		"check_with_evidence vet make vet",
-		"check_with_evidence windows-build-amd64 env GOOS=windows GOARCH=amd64 go build ./...",
-		"check_with_evidence windows-vet env GOOS=windows GOARCH=amd64 go vet ./...",
-		"check_with_evidence windows-build-arm64 env GOOS=windows GOARCH=arm64 go build ./...",
-	} {
-		if !strings.Contains(vet, command) {
-			t.Errorf("existing Linux Vet step missing %q", command)
-		}
+	var parsed struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				If  string `yaml:"if"`
+				Run string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(workflow), &parsed); err != nil {
+		t.Fatal(err)
 	}
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "scripts"), 0o755); err != nil {
+	goRecorder := `#!/bin/sh
+if [ "$1" = env ]; then exit 0; fi
+operation=$1
+shift
+for target do
+    case "$target" in
+        -*) ;;
+        [0-9]*) ;;
+        *) printf '%s %s %s %s\n' "$GOOS" "$GOARCH" "$operation" "$target" >> "$CI_GO_CALLS" ;;
+    esac
+done
+`
+	if err := os.WriteFile(filepath.Join(root, "go"), []byte(goRecorder), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "scripts", "check-evidence.sh"), []byte("check_with_evidence() { printf '%s\\n' \"$*\"; }\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	script := strings.SplitN(vet, "        run: |\n", 2)[1]
 	for _, event := range []string{"pull_request", "schedule", "workflow_dispatch"} {
 		t.Run(event, func(t *testing.T) {
-			cmd := exec.CommandContext(t.Context(), "bash", "-e", "-c", script)
-			cmd.Dir = root
-			cmd.Env = append(os.Environ(), "GITHUB_EVENT_NAME="+event)
-			output, err := cmd.CombinedOutput()
+			calls := filepath.Join(t.TempDir(), "go-calls")
+			for _, step := range parsed.Jobs["verify-fast"].Steps {
+				if step.Run == "" || step.If != "" {
+					continue
+				}
+				cmd := exec.CommandContext(t.Context(), "bash", "-e", "-c", step.Run)
+				cmd.Env = append(os.Environ(),
+					"GITHUB_EVENT_NAME="+event,
+					"PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"),
+					"GOOS=linux", "GOARCH=amd64", "CI_GO_CALLS="+calls,
+				)
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("workflow script: %v\n%s", err, output)
+				}
+			}
+			data, err := os.ReadFile(calls)
 			if err != nil {
-				t.Fatalf("Vet step: %v\n%s", err, output)
+				t.Fatal(err)
 			}
-			want := "vet make vet\n"
+			got := strings.Split(strings.TrimSpace(string(data)), "\n")
+			want := []string{"linux amd64 vet ./..."}
 			if event == "pull_request" {
-				want = "windows-build-amd64 env GOOS=windows GOARCH=amd64 go build ./...\n" +
-					"windows-vet env GOOS=windows GOARCH=amd64 go vet ./...\n" +
-					"windows-build-arm64 env GOOS=windows GOARCH=arm64 go build ./...\n"
+				want = []string{"windows amd64 build ./...", "windows amd64 vet ./...", "windows arm64 build ./..."}
 			}
-			if string(output) != want {
-				t.Fatalf("Vet commands = %q, want %q", output, want)
+			slices.Sort(got)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Fatalf("Go operations = %q, want %q", got, want)
 			}
 		})
 	}
