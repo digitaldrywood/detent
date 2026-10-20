@@ -1694,7 +1694,6 @@ func Default() Config {
 			AutoAdmitMinConfidence: DefaultBacklogAdmissionAutoAdmitMinConfidence,
 		},
 		Hooks: Hooks{
-			Shell:     commandshell.Default(),
 			TimeoutMS: 60000,
 		},
 	}
@@ -2028,7 +2027,7 @@ func (c *Config) normalize() {
 	}
 	c.Server.Normalize()
 	c.Observability.Normalize()
-	c.Hooks.Shell = commandshell.Normalize(c.Hooks.Shell)
+	c.Hooks.Shell = strings.TrimSpace(c.Hooks.Shell)
 	c.ScheduleOwnership = c.NormalizedScheduleOwnership()
 	c.Intake.Normalize()
 	c.Retro.Normalize()

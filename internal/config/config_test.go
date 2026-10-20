@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1492,6 +1493,43 @@ Ticket prompt {{ issue.title }}
 	}
 }
 
+func TestParseWorkflowHookShellSurvivesWorkerTransfer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		shell string
+		want  string
+	}{
+		{name: "worker default"},
+		{name: "blank worker default", shell: "  "},
+		{name: "explicit PowerShell", shell: " pwsh ", want: "pwsh"},
+		{name: "explicit path", shell: `C:\Tools\bash.exe`, want: `C:\Tools\bash.exe`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			raw := fmt.Sprintf("---\ntracker:\n  kind: hub_native\nhooks:\n  shell: %q\n---\nPrompt\n", tt.shell)
+			workflow, err := ParseWorkflow([]byte(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var transferred Workflow
+			if err := json.Unmarshal(data, &transferred); err != nil {
+				t.Fatal(err)
+			}
+			if got := transferred.Config.Hooks.Shell; got != tt.want {
+				t.Fatalf("transferred hook shell = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseWorkflowRetroDefaultsAndValidation(t *testing.T) {
 	t.Parallel()
 
@@ -1887,8 +1925,8 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if strings.TrimSpace(cfg.Codex.Shell) == "" {
 		t.Fatal("Codex.Shell is blank, want per-OS default")
 	}
-	if strings.TrimSpace(cfg.Hooks.Shell) == "" {
-		t.Fatal("Hooks.Shell is blank, want per-OS default")
+	if cfg.Hooks.Shell != "" {
+		t.Fatalf("Hooks.Shell = %q, want default resolved on the executing worker", cfg.Hooks.Shell)
 	}
 	if cfg.Server.Host != "127.0.0.1" {
 		t.Fatalf("Server.Host = %q", cfg.Server.Host)
