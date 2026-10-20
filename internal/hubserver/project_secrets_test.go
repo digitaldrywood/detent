@@ -178,14 +178,14 @@ func TestProjectSecretPermissions(t *testing.T) {
 			poolPath := strings.TrimSuffix(base, "/secrets/"+flySpritesToken) + "/sprite-pool"
 			var pool spritePoolView
 			decodeHubResponse(t, f.api(t, "viewer", http.MethodGet, poolPath, nil, http.StatusOK), &pool)
-			f.api(t, "viewer", http.MethodPut, poolPath, spritePoolSettings{MaxRunners: 2, IdleSeconds: 300, Bootstrap: "true", Revision: pool.Revision}, status)
+			f.api(t, "viewer", http.MethodPut, poolPath, map[string]any{"max_runners": 2, "idle_seconds": 300, "bootstrap": "true", "revision": pool.Revision}, status)
 			organizationPoolPath := "/api/v2/organizations/" + f.service.config.Hosted.OrganizationID + "/sprite-pool"
 			decodeHubResponse(t, f.api(t, "viewer", http.MethodGet, organizationPoolPath, nil, http.StatusOK), &pool)
 			organizationStatus := status
 			if role == "viewer" {
 				organizationStatus = http.StatusForbidden
 			}
-			f.api(t, "viewer", http.MethodPut, organizationPoolPath, spritePoolSettings{MaxRunners: 2, IdleSeconds: 300, Bootstrap: "true", Revision: pool.Revision}, organizationStatus)
+			f.api(t, "viewer", http.MethodPut, organizationPoolPath, map[string]any{"max_runners": 2, "idle_seconds": 300, "bootstrap": "true", "revision": pool.Revision}, organizationStatus)
 			var reloaded spritePoolView
 			decodeHubResponse(t, f.api(t, "owner", http.MethodGet, organizationPoolPath, nil, http.StatusOK), &reloaded)
 			if status == http.StatusOK && (reloaded.MaxRunners != 2 || reloaded.Bootstrap != "true" || reloaded.Revision != pool.Revision+1) {
