@@ -6,8 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"sync"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -18,7 +22,105 @@ func Configure(_ context.Context, cmd *exec.Cmd) {
 	}
 }
 
-func GroupID(*exec.Cmd) int {
+type windowsJob struct {
+	job     windows.Handle
+	process windows.Handle
+}
+
+var windowsJobs = struct {
+	sync.Mutex
+	byPID map[int]windowsJob
+}{byPID: make(map[int]windowsJob)}
+
+func Start(cmd *exec.Cmd) error {
+	return startWindows(cmd, windows.AssignProcessToJobObject, resumeWindowsProcess)
+}
+
+func Wait(cmd *exec.Cmd) error {
+	groupID := GroupID(cmd)
+	return errors.Join(cmd.Wait(), Cleanup(groupID))
+}
+
+func startWindows(cmd *exec.Cmd, assign func(windows.Handle, windows.Handle) error, resume func(int) error) error {
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return fmt.Errorf("create worker job: %w", err)
+	}
+	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
+		return errors.Join(fmt.Errorf("configure worker job: %w", err), windows.CloseHandle(job))
+	}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	flags := cmd.SysProcAttr.CreationFlags
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
+	defer func() { cmd.SysProcAttr.CreationFlags = flags }()
+
+	windowsJobs.Lock()
+	err = cmd.Start()
+	if err != nil {
+		windowsJobs.Unlock()
+		return errors.Join(err, windows.CloseHandle(job))
+	}
+	process, err := openProcess(cmd.Process.Pid, windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE)
+	if err == nil {
+		err = assign(job, process)
+	}
+	if err == nil {
+		windowsJobs.byPID[cmd.Process.Pid] = windowsJob{job: job, process: process}
+		err = resume(cmd.Process.Pid)
+	}
+	if err != nil {
+		delete(windowsJobs.byPID, cmd.Process.Pid)
+	}
+	windowsJobs.Unlock()
+	if err != nil {
+		killErr := cmd.Process.Kill()
+		jobCloseErr := windows.CloseHandle(job)
+		_ = cmd.Wait()
+		var closeErr error
+		if process != 0 {
+			closeErr = windows.CloseHandle(process)
+		}
+		return errors.Join(fmt.Errorf("start worker job: %w", err), killErr, jobCloseErr, closeErr)
+	}
+	return nil
+}
+
+func resumeWindowsProcess(pid int) error {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	if err != nil {
+		return fmt.Errorf("inspect suspended worker threads: %w", err)
+	}
+	defer windows.CloseHandle(snapshot)
+	entry := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
+	for err := windows.Thread32First(snapshot, &entry); ; err = windows.Thread32Next(snapshot, &entry) {
+		if err != nil {
+			return fmt.Errorf("find suspended worker thread: %w", err)
+		}
+		if entry.OwnerProcessID != uint32(pid) {
+			continue
+		}
+		thread, err := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, entry.ThreadID)
+		if err != nil {
+			return fmt.Errorf("open suspended worker thread: %w", err)
+		}
+		_, resumeErr := windows.ResumeThread(thread)
+		return errors.Join(resumeErr, windows.CloseHandle(thread))
+	}
+}
+
+func GroupID(cmd *exec.Cmd) int {
+	if cmd == nil || cmd.Process == nil {
+		return 0
+	}
+	windowsJobs.Lock()
+	defer windowsJobs.Unlock()
+	if _, ok := windowsJobs.byPID[cmd.Process.Pid]; ok {
+		return cmd.Process.Pid
+	}
 	return 0
 }
 
@@ -37,15 +139,33 @@ func Deprioritize(cmd *exec.Cmd) error {
 	return nil
 }
 
-func TerminateTree(cmd *exec.Cmd, _ int) error {
+func TerminateTree(cmd *exec.Cmd, groupID int) error {
+	if groupID <= 0 && cmd != nil && cmd.Process != nil {
+		groupID = cmd.Process.Pid
+	}
+	windowsJobs.Lock()
+	defer windowsJobs.Unlock()
+	if job, ok := windowsJobs.byPID[groupID]; ok {
+		return windows.TerminateJobObject(job.job, 1)
+	}
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
 	return cmd.Process.Kill()
 }
 
-func Cleanup(int) error {
-	return nil
+func Cleanup(groupID int) error {
+	windowsJobs.Lock()
+	defer windowsJobs.Unlock()
+	job, ok := windowsJobs.byPID[groupID]
+	if !ok {
+		return nil
+	}
+	if err := windows.CloseHandle(job.job); err != nil {
+		return fmt.Errorf("close worker job: %w", err)
+	}
+	delete(windowsJobs.byPID, groupID)
+	return windows.CloseHandle(job.process)
 }
 
 func inspectProcess(pid int) (Identity, error) {
@@ -65,7 +185,8 @@ func inspectProcess(pid int) (Identity, error) {
 	if err != nil {
 		return Identity{}, fmt.Errorf("inspect process %d start time: %w", pid, err)
 	}
-	return Identity{PID: pid, StartedAt: startedAt}, nil
+	groupID := GroupID(&exec.Cmd{Process: &os.Process{Pid: pid}})
+	return Identity{PID: pid, GroupID: groupID, StartedAt: startedAt}, nil
 }
 
 func observeProcesses(identities []Identity) ([]Observation, error) {
@@ -100,10 +221,18 @@ func Terminate(_ context.Context, identity Identity, grace time.Duration) (Termi
 	if err != nil {
 		return "", fmt.Errorf("inspect process %d start time: %w", identity.PID, err)
 	}
-	if !sameIdentity(Identity{PID: identity.PID, StartedAt: startedAt}, identity) {
+	groupID := GroupID(&exec.Cmd{Process: &os.Process{Pid: identity.PID}})
+	if !sameIdentity(Identity{PID: identity.PID, GroupID: groupID, StartedAt: startedAt}, identity) {
 		return TerminationOutcomeStaleIdentity, nil
 	}
-	if err := windows.TerminateProcess(handle, 1); err != nil {
+	windowsJobs.Lock()
+	if job, ok := windowsJobs.byPID[identity.PID]; ok {
+		err = windows.TerminateJobObject(job.job, 1)
+	} else {
+		err = windows.TerminateProcess(handle, 1)
+	}
+	windowsJobs.Unlock()
+	if err != nil {
 		return "", fmt.Errorf("terminate process %d: %w", identity.PID, err)
 	}
 	if grace <= 0 {
