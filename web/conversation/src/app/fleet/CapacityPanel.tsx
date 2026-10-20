@@ -42,7 +42,6 @@ function runnerState(runner: FleetRunner): string {
   if (runner.update?.status === "draining") return "Finishing work before updating";
   if (runner.state === "draining") return "Finishing current work";
   if (runner.state === "disabled") return "Paused";
-  if (runner.problems?.some((problem) => problem.code === "policy_mismatch")) return "Project policy needs review";
   if (runner.claim_refusal_reason) return "Cannot take new work";
   if (runner.update?.status === "applying") return "Updating";
   if (runner.update?.status === "uncertain" || runner.update?.status === "refused") return "Update needs attention";

@@ -96,16 +96,16 @@ describe("runner rows", () => {
     expect(screen.queryByText(/Usage unknown|Reset unknown|Observation unknown|At risk|Stale/)).toBeNull();
   });
 
-  it.each([false, true])("shows policy problems independently of update warnings (%s)", (updateWarning) => {
+  it.each([false, true])("shows runner problems independently of update warnings (%s)", (updateWarning) => {
     const problem = {
-      code: "policy_mismatch", project_id: "prj_known",
-      message: "Project prj_known: Hub approved policy policy_approved does not permit runner policy policy_runner.",
-      fix_hint: "Approve the pending policy in the project's Integrations settings, or update the runner's project files to match the approved policy.",
+      code: "settings_rejected", project_id: "prj_known",
+      message: "The runner could not apply the Hub’s routing settings.",
+      fix_hint: "Check routing cache permissions and configured host services.",
       first_seen: "2026-10-08T15:07:53Z",
     };
     const { rerender } = render(<RunnersSectionView fleet={{ ...FLEET, runners: [{ ...RUNNER, problems: [problem], update: updateWarning ? { status: "uncertain", desired: { version: "1.2.4" } } : undefined }] }} now={NOW} />);
     const card = within(screen.getByTestId("host-card"));
-    expect(card.getByText("Needs human: policy mismatch")).toBeTruthy();
+    expect(card.getByText("Needs human: settings rejected")).toBeTruthy();
     expect(card.getByText(problem.message)).toBeTruthy();
     expect(card.getByText(problem.fix_hint)).toBeTruthy();
     if (updateWarning) {
@@ -118,8 +118,8 @@ describe("runner rows", () => {
   it("shows every runner problem on the card", () => {
     const problems = [
       { code: "backend_missing", message: "Codex is unavailable.", fix_hint: "Install Codex.", first_seen: "2026-10-08T15:07:53Z" },
-      { code: "policy_mismatch", project_id: "prj_known", message: "Known project policy differs.", fix_hint: "Approve the known project policy.", first_seen: "2026-10-08T15:07:53Z" },
-      { code: "policy_mismatch", project_id: "prj_second", message: "Second project policy differs.", fix_hint: "Update the second project's files.", first_seen: "2026-10-08T15:07:53Z" },
+      { code: "settings_invalid", project_id: "prj_known", message: "Known project settings are invalid.", fix_hint: "Check the known project’s workflow files.", first_seen: "2026-10-08T15:07:53Z" },
+      { code: "settings_invalid", project_id: "prj_second", message: "Second project settings are invalid.", fix_hint: "Check the second project’s workflow files.", first_seen: "2026-10-08T15:07:53Z" },
     ];
     renderSection({ ...FLEET, runners: [{ ...RUNNER, problems }] });
     const card = within(screen.getByTestId("host-card"));

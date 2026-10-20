@@ -102,7 +102,7 @@ export function firstRunSteps(facts: FirstRunFacts): readonly FirstRunStep[] {
       id: "setup",
       title: "Finish project setup",
       description:
-        "Approve the repository policy, check the runner host, and choose where artifact history lives.",
+        "Review the reported repository configuration, check the runner host, and choose where artifact history lives.",
       actionLabel: "Finish setup",
       done: facts.setupStepsLeft === 0,
       blockedReason: !hasProject

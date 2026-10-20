@@ -247,7 +247,7 @@ describe("the Enroll dialog", () => {
     }
     expect(instructions.textContent).toContain("claude auth login");
     expect(instructions.textContent).toContain("codex login --device-auth");
-    expect(instructions.textContent).toContain("approve policy only if offered");
+    expect(instructions.textContent).toContain("reported repository configuration");
     expect(instructions.textContent).toContain("gh auth login --hostname github.com --git-protocol https --web");
     expect(instructions.textContent).toContain("hooks.runner_setup");
     expect(instructions.textContent).toContain("installation checkpoint does not prove readiness");
