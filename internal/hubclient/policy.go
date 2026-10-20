@@ -49,16 +49,21 @@ func (c *Client) ApproveProjectPolicy(ctx context.Context, repository string, ch
 func (c *NativeClient) ProjectPolicy(ctx context.Context) (policy.Approval, error) {
 	state := c.heartbeatProject()
 	state.mu.Lock()
-	defer state.mu.Unlock()
 	if state.changes != nil && state.approvalSet {
-		return state.approval, state.approvalErr
+		approval, err := state.approval, state.approvalErr
+		state.mu.Unlock()
+		return approval, err
 	}
+	revision := state.approvalRev
+	state.mu.Unlock()
 	var approval policy.Approval
 	err := retryableProjectRead(ctx, c.client.request(ctx, http.MethodGet, c.base()+"/policy", nil, &approval))
+	state.mu.Lock()
+	defer state.mu.Unlock()
 	var failure *APIError
 	if c.client.runner != nil && (err == nil || errors.As(err, &failure) && failure.Code == "policy_mismatch") {
 		c.client.runner.setApprovedPolicy(c.project, approval.Policy.ID)
-		if state.changes != nil {
+		if state.changes != nil && state.approvalRev == revision {
 			state.approval, state.approvalErr, state.approvalSet = approval, err, true
 		}
 	}
@@ -189,6 +194,7 @@ func (s *Scheduler) reportObservedPolicy(ctx context.Context, project string, so
 	state := source.client.heartbeatProject()
 	state.mu.Lock()
 	state.approvalSet = false
+	state.approvalRev++
 	state.mu.Unlock()
 	return nil
 }

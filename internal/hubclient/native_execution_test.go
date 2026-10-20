@@ -173,25 +173,48 @@ func (f executionRoundTrip) RoundTrip(request *http.Request) (*http.Response, er
 }
 
 func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
-	for _, name := range []string{"expire", "renew", "renewal outage", "renew during native finish", "guard during native finish"} {
+	for _, name := range []string{"expire", "renew", "renewal outage", "renew during native finish", "guard during native finish", "budget wait", "budget wait loses lease"} {
 		renew := name == "renew"
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				descriptor := clientTestPolicy()
 				var offline atomic.Bool
+				var budgetWait atomic.Bool
+				var budgetReads, budgetRenewals atomic.Int32
+				var finished tracker.NativeRunEvent
 				transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					if offline.Load() {
 						return nil, errors.New("renewal disconnected")
 					}
 					body := []byte(`{}`)
 					if strings.HasSuffix(request.URL.Path, "/renew") {
+						if budgetWait.Load() {
+							budgetRenewals.Add(1)
+							if name == "budget wait" {
+								lease := tracker.NativeLease{ID: "lease", FencingToken: 1, PolicyID: descriptor.ID, ServerTime: time.Now(), RenewedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
+								body, err := json.Marshal(lease)
+								return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: request}, err
+							}
+						}
 						return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"stale_fencing_token"}`)), Request: request}, nil
 					}
 					if strings.HasSuffix(request.URL.Path, "/policy") {
+						if budgetWait.Load() && budgetReads.Add(1) == 1 {
+							return &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {"60"}}, Body: io.NopCloser(strings.NewReader(`{"code":"runner_request_budget","message":"Runner request budget exceeded; retry after the current minute"}`)), Request: request}, nil
+						}
 						var err error
 						body, err = json.Marshal(policy.Approval{Policy: descriptor})
 						if err != nil {
 							return nil, err
+						}
+					}
+					if strings.HasPrefix(name, "budget wait") && strings.HasSuffix(request.URL.Path, "/events") {
+						var event tracker.NativeRunEvent
+						if err := json.NewDecoder(request.Body).Decode(&event); err != nil {
+							return nil, err
+						}
+						if event.Type == "run.finished" {
+							finished = event
 						}
 					}
 					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: request}, nil
@@ -222,6 +245,37 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 						t.Fatal(err)
 					}
 					defer stop()
+				}
+				if strings.HasPrefix(name, "budget wait") {
+					scheduler.heartbeatInterval = 2 * time.Minute
+					scheduler.nativeHeartbeats[native.project] = time.Now()
+					if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+						t.Fatal(err)
+					}
+					budgetWait.Store(true)
+					start := time.Now()
+					execution.(*nativeExecution).HostOperation("policy.read", start, nil, true)
+					_, err := native.ProjectPolicy(guarded)
+					execution.(*nativeExecution).HostOperation("policy.read", time.Now(), err, false)
+					if budgetRenewals.Load() != 1 {
+						t.Fatalf("budget wait blocked lease renewal: renewals=%d reads=%d elapsed=%s error=%v cause=%v", budgetRenewals.Load(), budgetReads.Load(), time.Since(start), err, context.Cause(guarded))
+					}
+					if name == "budget wait loses lease" {
+						if !errors.Is(err, context.Canceled) || !errors.Is(context.Cause(guarded), runner.ErrExecutionAuthorityUnavailable) || budgetReads.Load() != 1 || time.Since(start) != 55*time.Second {
+							t.Fatalf("wait outlived lease: error=%v cause=%v reads=%d elapsed=%s", err, context.Cause(guarded), budgetReads.Load(), time.Since(start))
+						}
+						return
+					}
+					if err != nil || guarded.Err() != nil || budgetReads.Load() != 2 || time.Since(start) != time.Minute {
+						t.Fatalf("budget retry: error=%v cause=%v reads=%d elapsed=%s", err, context.Cause(guarded), budgetReads.Load(), time.Since(start))
+					}
+					if err := execution.Finish(guarded, "succeeded"); err != nil {
+						t.Fatal(err)
+					}
+					if finished.Data.Outcome != "succeeded" || finished.Data.Sequence != 2 {
+						t.Fatalf("attempt did not complete: %+v", finished)
+					}
+					return
 				}
 				if name == "renew during native finish" || name == "guard during native finish" {
 					claim := scheduler.nativeClaims[id]
