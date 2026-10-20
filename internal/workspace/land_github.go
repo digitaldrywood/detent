@@ -239,6 +239,9 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 	if opts.External != nil && (!exists || previous != head && previous != opts.ExternalHeadSHA) {
 		return githubLandingPull{}, false, false, refuse(LandRefusalHeadMoved, "the retained PR branch moved beyond its recorded source; preserve both sources and reconcile the PR before retrying publication")
 	}
+	if opts.UnresolvedEffect && exists && previous != head && (opts.External == nil || previous != opts.ExternalHeadSHA) {
+		return githubLandingPull{}, false, false, refuse(LandRefusalHeadMoved, fmt.Sprintf("the publication branch %s holds %s, not head %s of the unresolved publication write; preserve both sources and reconcile the branch before retrying publication", branch, previous, head))
+	}
 	headChanged := exists && previous != head
 	var pulls []githubLandingPull
 	query := "repos/" + repository + "/pulls?state=all&head=" + url.QueryEscape(owner+":"+branch) + "&per_page=100"
