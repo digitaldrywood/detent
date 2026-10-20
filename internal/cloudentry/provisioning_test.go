@@ -197,7 +197,7 @@ func newProvisioningFixtureWith(t *testing.T, maxTenants int, mutate func(*Alloc
 	for _, user := range []string{"member", "eve", "fay"} {
 		f.provider.users["user_"+user] = user + "@example.test"
 	}
-	f.launcher = &processLauncher{provider: f.provider, key: f.key, running: map[string]func(){}, transports: map[string]*http.Transport{}, useUnix: socketFixtureFits(root)}
+	f.launcher = &processLauncher{provider: f.provider, key: f.key, plans: capacityPlans(), running: map[string]func(){}, transports: map[string]*http.Transport{}, useUnix: socketFixtureFits(root)}
 	if configure != nil {
 		configure(f)
 	}
