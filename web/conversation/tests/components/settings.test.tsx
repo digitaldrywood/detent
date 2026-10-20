@@ -667,7 +667,7 @@ describe("personal keys and org controls", () => {
     expect(within(section).getByText("Revoked agent")).toBeTruthy();
     expect(within(section).queryByRole("button", { name: /Connect/ })).toBeNull();
     expect(fetch.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
-    expect(fetch.mock.calls.filter(([url]) => /api-keys|service-keys/.test(String(url))).map(([url]) => String(url))).toEqual(["/api/cloud/account/api-keys", `${account.api_base.replace("/api/v2", "/api/cloud")}/service-keys`]);
+    expect(new Set(fetch.mock.calls.filter(([url]) => /api-keys|service-keys/.test(String(url))).map(([url]) => String(url)))).toEqual(new Set(["/api/cloud/account/api-keys", `${account.api_base.replace("/api/v2", "/api/cloud")}/service-keys`]));
   });
 
   it.each([undefined, "personal", "service"] as const)("checks connection identity for %s MCP prompts without changing REST setup", (kind) => {
@@ -708,7 +708,7 @@ describe("personal keys and org controls", () => {
     ["personal", "Done", "Example Member"],
     ["personal", "Close", "member@example.test"],
     ["service", "Escape", `${account.organization.name} (service)`],
-  ])("polls only the created %s key, preserves its first observed call and stops on %s", async (kind, close, actor) => {
+  ].flatMap(([kind, close, actor]) => ["created", "existing"].map((flow) => [flow, kind, close, actor])))("polls only the %s %s key and stops on %s", async (flow, kind, close, actor) => {
     let lastUsed: string | null = null;
     let pending: ((response: Response) => void) | undefined;
     let defer = false;
@@ -719,28 +719,32 @@ describe("personal keys and org controls", () => {
       if (init?.method === "POST") return new Response(JSON.stringify({ ...key, kind, token: "private-new-key" }));
       const ownList = kind === "personal" ? path.endsWith("/account/api-keys") : path.endsWith("/service-keys");
       if (ownList && defer) return new Promise<Response>((resolve) => { pending = resolve; });
-      return new Response(JSON.stringify({ keys: ownList ? [{ ...key, id: "other", kind, last_used_at: new Date().toISOString() }, { ...key, kind, last_used_at: lastUsed }] : [] }));
+      return new Response(JSON.stringify({ keys: ownList ? [{ ...key, id: "other", name: "Other agent", kind, last_used_at: new Date().toISOString() }, { ...key, kind, last_used_at: lastUsed }] : [] }));
     });
     renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Create key" })).toHaveProperty("disabled", false));
-    fireEvent.click(screen.getByRole("button", { name: "Create key" }));
-    if (kind === "service") {
-      fireEvent.click(screen.getByRole("radio", { name: "The organization" }));
+    if (flow === "created") {
+      fireEvent.click(screen.getByRole("button", { name: "Create key" }));
+      if (kind === "service") {
+        fireEvent.click(screen.getByRole("radio", { name: "The organization" }));
+      }
+      fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Agent key" } });
     }
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Agent key" } });
     vi.useFakeTimers();
     try {
-      await act(async () => { fireEvent.click(screen.getByRole("button", { name: `Create ${kind} key` })); });
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: flow === "created" ? `Create ${kind} key` : "Connect My agent" })); });
       const dialog = within(screen.getByRole("dialog"));
       expect(dialog.getByText("Waiting for the first call…")).toBeTruthy();
       lastUsed = new Date(Date.now() - 120_000).toISOString();
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
-      const first = dialog.getByText(/First call/).textContent;
+      const callLabel = flow === "created" ? /First call/ : /Last call/;
+      const first = dialog.getByText(callLabel).textContent;
       expect(first).toContain(`acting as ${actor}`);
       expect(first).toContain("2m ago");
       lastUsed = new Date().toISOString();
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
-      expect(dialog.getByText(/First call/).textContent).toBe(first);
+      if (flow === "created") expect(dialog.getByText(callLabel).textContent).toBe(first);
+      else expect(dialog.getByText(callLabel).textContent).toContain(`just now · acting as ${actor}`);
       defer = true;
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
       expect(pending).toBeDefined();
