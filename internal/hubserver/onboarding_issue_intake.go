@@ -307,7 +307,8 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 					return nil, err
 				}
 			}
-			if request.AllowDispatch || request.Destination != "" || request.LabelLanes != nil || request.ProjectV2 != nil {
+			correctRouting := request.AllowDispatch || request.Destination != "" || request.LabelLanes != nil || request.ProjectV2 != nil
+			if correctRouting {
 				effective := request
 				if effective.Destination == "" {
 					effective.Destination = batch.Destination
@@ -344,6 +345,11 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 						batch.Items[index].RetryAt = ""
 						previewIndex := slices.IndexFunc(batch.Page.Issues, func(p tracker.GitHubIssuePreview) bool { return p.Number == item.Number })
 						if previewIndex >= 0 {
+							if correctRouting && item.WorkItemID != "" {
+								if err := correctBatchItemDestination(ctx, tx, scope, batch, &batch.Items[index], batch.Page.Issues[previewIndex], now); err != nil {
+									return nil, err
+								}
+							}
 							batch.Page.Issues[previewIndex].Snapshot = nil
 						}
 					}
@@ -711,6 +717,33 @@ func batchUnmappedProjectStatus(batch *tracker.GitHubBatch, preview tracker.GitH
 			return &preview.ProjectStatus
 		}
 	}
+	return nil
+}
+
+func correctBatchItemDestination(ctx context.Context, tx *sql.Tx, scope nativeScope, batch *tracker.GitHubBatch, item *tracker.GitHubBatchItem, preview tracker.GitHubIssuePreview, now time.Time) error {
+	issue, _, err := readNativeIssue(ctx, tx, scope, string(item.WorkItemID))
+	if err != nil {
+		return err
+	}
+	if issue.LinkedSource == nil || issue.LinkedSource.Status == "complete" {
+		return nil
+	}
+	project, err := readNativeProject(ctx, tx, scope)
+	if err != nil {
+		return err
+	}
+	destination, _, err := batchIssueDestination(project.States, batch, preview)
+	if err != nil {
+		return err
+	}
+	if issue.State != destination {
+		from := issue.State
+		issue.State = destination
+		if _, err := persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: destination, Reason: "user_requested"}, now); err != nil {
+			return err
+		}
+	}
+	item.UnmappedProjectStatus = batchUnmappedProjectStatus(batch, preview)
 	return nil
 }
 
