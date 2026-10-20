@@ -106,5 +106,9 @@ func nativeChangeSourceStored(ctx context.Context, q nativeQueryer, version trac
 	if err != nil {
 		return false, err
 	}
+	bundle, err = decodeChangeSource(bundle, version.Source.Bytes)
+	if err != nil {
+		return false, nil
+	}
 	return version.Source.Validate(version.BaseSHA, version.HeadSHA, bundle) == nil, nil
 }
