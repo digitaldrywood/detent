@@ -24,6 +24,11 @@ func nativeTerminalFailure(err error, at time.Time, turnStartRefused bool) *trac
 		failure = provider.NativeTerminalFailure()
 	}
 	failure.Error = err.Error()
+	var command *workspace.CommandError
+	if errors.As(err, &command) && command.Command == "git" && isGitPush(command.Args) {
+		failure.ErrorClass = "git_push"
+		failure.Summary = command.Output
+	}
 	var carrier backendErrorCarrier
 	if errors.As(err, &carrier) {
 		failure.Error = strings.TrimSpace(failure.Provider + " " + strings.ReplaceAll(failure.Operation, "/", "_") + ": " + carrier.BackendErrorMessage())
@@ -57,4 +62,11 @@ func nativeTerminalFailure(err error, at time.Time, turnStartRefused bool) *trac
 	failure.TurnStartRefused = turnStartRefused
 	public := failure.Public()
 	return &public
+}
+
+func isGitPush(args []string) bool {
+	if len(args) >= 2 && args[0] == "-C" {
+		args = args[2:]
+	}
+	return len(args) > 0 && args[0] == "push"
 }
