@@ -926,7 +926,7 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 		if err != nil {
 			return nil, err
 		}
-		if issue.Revision == previousRevision {
+		if issue.Revision == previousRevision && issue.State == "Blocked" && request.Reason == "user_requested" && scope.credential.Scope != apiScopeWorker {
 			data.Revision = issue.Revision
 			if err := appendNativeHistory(ctx, tx, scope, item, "workflow.transitioned", data, now); err != nil {
 				return nil, err

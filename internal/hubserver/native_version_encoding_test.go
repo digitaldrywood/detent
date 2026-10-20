@@ -262,6 +262,39 @@ func TestNativeNoOpRevisions(t *testing.T) {
 		})
 	}
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
+	states := nativeFixtureStates()
+	states[0].Transitions = append(states[0].Transitions, "Todo")
+	rawStates, err := json.Marshal(states)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", string(rawStates), f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, reason := range []string{"worker_progress", "dependency_ready", "user_requested"} {
+		t.Run("same state command "+reason, func(t *testing.T) {
+			var beforeVersions, beforeEvents int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", issue.WorkItemID, issue.WorkItemID).Scan(&beforeVersions, &beforeEvents); err != nil {
+				t.Fatal(err)
+			}
+			for index := range 2 {
+				response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("same-state-%s-%d", reason, index)}, ExpectedRevision: issue.Revision, State: issue.State, Reason: reason})
+				requireNativeStatus(t, response, http.StatusOK)
+				var result tracker.NativeIssue
+				decodeHubResponse(t, response, &result)
+				if result.Revision != issue.Revision || !result.UpdatedAt.Equal(issue.UpdatedAt) {
+					t.Fatalf("same-state command changed revision or timestamp: %+v", result)
+				}
+			}
+			var versions, events int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", issue.WorkItemID, issue.WorkItemID).Scan(&versions, &events); err != nil {
+				t.Fatal(err)
+			}
+			if versions != beforeVersions || events != beforeEvents {
+				t.Fatalf("same-state command wrote history: versions=%d/%d events=%d/%d", versions, beforeVersions, events, beforeEvents)
+			}
+		})
+	}
 	var beforeVersions, beforeEvents int
 	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", issue.WorkItemID, issue.WorkItemID).Scan(&beforeVersions, &beforeEvents); err != nil {
 		t.Fatal(err)
@@ -310,6 +343,20 @@ func TestNativeNoOpRevisions(t *testing.T) {
 	}
 	if versions != beforeVersions+3 || events != beforeEvents+3 {
 		t.Fatalf("expected one real issue edit, comment creation and comment edit: versions=%d/%d events=%d/%d", versions, beforeVersions, events, beforeEvents)
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "real-transition"}, ExpectedRevision: result.Revision, State: "In Progress", Reason: "user_requested"})
+	requireNativeStatus(t, response, http.StatusOK)
+	var transitioned tracker.NativeIssue
+	decodeHubResponse(t, response, &transitioned)
+	if transitioned.Revision != result.Revision+1 || transitioned.State != "In Progress" {
+		t.Fatalf("real transition did not advance once: %+v", transitioned)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "stale-transition"}, ExpectedRevision: result.Revision, State: "In Progress", Reason: "user_requested"}), http.StatusConflict)
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", issue.WorkItemID, issue.WorkItemID).Scan(&versions, &events); err != nil {
+		t.Fatal(err)
+	}
+	if versions != beforeVersions+4 || events != beforeEvents+4 {
+		t.Fatalf("real transition wrote extra history: versions=%d/%d events=%d/%d", versions, beforeVersions, events, beforeEvents)
 	}
 }
 
