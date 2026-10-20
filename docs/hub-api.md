@@ -2378,6 +2378,40 @@ hold and admission predicates remain authoritative. Identical associations are
 idempotent and return the original owner receipt; conflicting replacements are
 refused. Current grants are checked even on replay.
 
+A machine-created delivery remains unconfirmed by default. An approved project
+`WORKFLOW.md` may delegate its bounded contract explicitly:
+
+```markdown
+## Release delivery contract
+Verified release picks of reviewed develop fixes may receive the approved delivery contract.
+
+### Acceptance criteria
+Deliver only the reviewed develop fix identified by the verified association,
+using its associated release PR. Do not add unrelated changes.
+
+### Must not break
+Preserve tests, provenance, human holds, independent review and landing gates.
+Do not reset the release branch, publish tags or deploy production.
+
+### How we know it worked
+The associated release pick passes its required checks and independent review.
+```
+
+Use exactly the project's effective required section names. `work_config` exposes
+this approved body and policy identity as `issue_contract.release_delivery`.
+The reporter copies those criteria when it files the Backlog delivery. After
+verification, association confirms only an exact match to the approved criteria;
+it preserves the original body, including diagnostic and provenance fences.
+It neither moves the issue nor clears a hold. Ordinary machine reports and
+unverified associations receive no confirmation. Replay retains the original
+receipt and cannot refresh or broaden a grant.
+
+Native admission checks the grant against the current policy, unchanged body,
+stored association, required source dependency and recorded develop landing.
+Changes invalidate delegated confirmation. An explicit human body save uses
+the existing human-confirmation path instead. Required checks and independent
+review of the release pick still run before landing.
+
 The configured repository transport verifies source ancestry on develop, the
 release branch head and frozen boundary, and the PR's exact head/base and
 repository. This thin slice accepts exactly one commit with one parent equal to

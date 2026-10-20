@@ -17,8 +17,9 @@ import (
 )
 
 type nativeWorkIssueContract struct {
-	RequiredSections []string                   `json:"required_sections"`
-	ScheduledRepair  *nativeWorkScheduledRepair `json:"scheduled_repair,omitempty"`
+	RequiredSections []string                         `json:"required_sections"`
+	ScheduledRepair  *nativeWorkScheduledRepair       `json:"scheduled_repair,omitempty"`
+	ReleaseDelivery  *nativeReleaseDeliveryDelegation `json:"release_delivery,omitempty"`
 }
 
 type nativeWorkScheduledRepair struct {
@@ -95,6 +96,13 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
 		issueContract := nativeWorkIssueContract{RequiredSections: contract.Sections}
+		delivery, err := readReleaseDeliveryDelegation(ctx, s.database.reader, scope)
+		if err != nil {
+			return operatortool.Result{}, safeWorkReadError(err)
+		}
+		if delivery.Body != "" {
+			issueContract.ReleaseDelivery = &delivery
+		}
 		approval, approvalErr := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
 		if approvalErr == nil && approval.Policy.Authored != nil {
 			repairContract, err := config.ResolvePolicyIssueContract(approval.Policy)
