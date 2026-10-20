@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -22,8 +23,17 @@ import (
 func TestNativeRunEventRejectionsLogged(t *testing.T) {
 	var logs bytes.Buffer
 	f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Logger: slog.New(slog.NewJSONHandler(&logs, nil))}))
-	worker := f.worker(t, "worker")
-	lease := claimNativeAttempt(t, f.nativeFixture, worker, "machine", "session", f.issue.WorkItemID)
+	runner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+	runner.enroll(t)
+	publishCapacity(t, f.nativeFixture, runner, capacityReport(time.Now().UTC()))
+	worker := runner.redemption.Credential
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, providerClaim(runner, f.issue, "session"))
+	requireNativeStatus(t, response, http.StatusOK)
+	var lease tracker.NativeLease
+	decodeHubResponse(t, response, &lease)
+	if lease.ProviderReservation == nil {
+		t.Fatal("claim has no provider reservation")
+	}
 	start := nativeStartedEvent(lease)
 	path := f.base + "/work-items/" + string(f.issue.WorkItemID) + "/events"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, start), http.StatusOK)
@@ -95,6 +105,13 @@ func TestNativeRunEventRejectionsLogged(t *testing.T) {
 		{"runtime launch", "runtime_validation", "data.runtime.worker_launch", func(e *tracker.NativeRunEvent) {
 			e.Data.Runtime = &tracker.NativeRuntimeObservation{WorkerLaunch: &tracker.NativeWorkerLaunch{}}
 		}},
+		{"runtime launch policy", "execution_validation", "data.runtime.worker_launch.policy_id", func(e *tracker.NativeRunEvent) {
+			e.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", WorkerLaunch: &tracker.NativeWorkerLaunch{
+				PID: 1, ProcessStart: now, ExecutionVersion: "test", ExecutionCommit: strings.Repeat("a", 40),
+				ExecutionSHA256: strings.Repeat("b", 64), ControlVersion: "test", PolicyID: newNativeID("policy"),
+				Protocol: 1, SelectedAt: now,
+			}}
+		}},
 		{"runtime pipeline", "runtime_validation", "data.runtime.pipeline", func(e *tracker.NativeRunEvent) {
 			e.Data.Runtime = &tracker.NativeRuntimeObservation{PipelineDropped: -1}
 		}},
@@ -116,6 +133,22 @@ func TestNativeRunEventRejectionsLogged(t *testing.T) {
 		{"runtime landing", "runtime_validation", "data.runtime.landing", func(e *tracker.NativeRunEvent) {
 			e.Data.Runtime = landing()
 			e.Data.Runtime.Landing.HeadSHA = "sentinel-private"
+		}},
+		{"runtime REST bounds", "runtime_validation", "data.runtime.rest", func(e *tracker.NativeRunEvent) {
+			e.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", REST: &tracker.NativeRESTEvidence{Requests: -1}}
+		}},
+		{"runtime REST operation", "runtime_validation", "data.runtime.rest", func(e *tracker.NativeRunEvent) {
+			e.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", REST: &tracker.NativeRESTEvidence{
+				Windows: []tracker.NativeRESTWindow{{EndpointFamily: "sentinel-private"}},
+			}}
+		}},
+		{"runtime REST attribution", "runtime_validation", "data.runtime.rest", func(e *tracker.NativeRunEvent) {
+			e.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", REST: &tracker.NativeRESTEvidence{
+				Divergences: []tracker.NativeRESTDivergence{{Attribution: "sentinel-private"}},
+			}}
+		}},
+		{"runtime GitHub scope", "runtime_validation", "data.runtime.github", func(e *tracker.NativeRunEvent) {
+			e.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", GitHub: &tracker.NativeGitHubScope{Scope: "sentinel-private"}}
 		}},
 		{"terminal failure", "execution_validation", "data.terminal_failure", func(e *tracker.NativeRunEvent) {
 			e.Data.TerminalFailure = &tracker.NativeTerminalFailure{Error: "sentinel-private"}
@@ -167,6 +200,10 @@ func TestNativeRunEventRejectionsLogged(t *testing.T) {
 		{"machine owner", "owner_validation", "data", func(e *tracker.NativeRunEvent) { e.Data.MachineID = "other-machine" }},
 		{"session owner", "owner_validation", "data", func(e *tracker.NativeRunEvent) { e.Data.SessionID = "other-session" }},
 		{"runner owner", "owner_validation", "data", func(e *tracker.NativeRunEvent) { e.Data.RunnerID = "other-runner" }},
+		{"provider reservation ordering", "owner_validation", "data.sequence", func(e *tracker.NativeRunEvent) {
+			e.Data.Sequence, e.Data.Identity, e.Data.CompletionBody = 0, nil, ""
+			e.Data.Usage = []tracker.NativeUsage{{Provider: "sentinel-private", Model: "test-model"}}
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			event := start
