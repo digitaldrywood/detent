@@ -601,6 +601,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 					return nil
 				},
 				setupStore:    runtimeStore,
+				processStore:  runtimeStore,
 				logger:        logger,
 				runtimeConfig: globalConfigState.get,
 				intakeToken:   newRunnerIntakeTokenSource(runtimeGitHubToken.get, refreshGitHubToken),
