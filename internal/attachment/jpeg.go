@@ -50,12 +50,37 @@ func stripJPEGMetadata(content []byte) ([]byte, error) {
 		if length < 2 || length > len(content)-offset {
 			return nil, ErrInvalid
 		}
+		payload := content[offset+2 : offset+length]
 		offset += length
-		metadata := marker == 0xfe || marker >= 0xe1 && marker <= 0xef && marker != 0xe2 && marker != 0xee
-		if !metadata {
+		switch {
+		case marker >= 0xe0 && marker <= 0xef:
+			if colorData := jpegColorData(marker, payload); colorData != nil {
+				cleaned = append(cleaned, 0xff, marker)
+				cleaned = binary.BigEndian.AppendUint16(cleaned, uint16(len(colorData)+2))
+				cleaned = append(cleaned, colorData...)
+			}
+		case marker != 0xfe:
 			cleaned = append(cleaned, content[start:offset]...)
 		}
 		inScan = marker == 0xda
 	}
 	return nil, ErrInvalid
+}
+
+func jpegColorData(marker byte, payload []byte) []byte {
+	switch marker {
+	case 0xe0:
+		if bytes.HasPrefix(payload, []byte("JFIF\x00")) {
+			return []byte("JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00")
+		}
+	case 0xe2:
+		if len(payload) > 14 && bytes.HasPrefix(payload, []byte("ICC_PROFILE\x00")) && payload[12] > 0 && payload[12] <= payload[13] {
+			return payload
+		}
+	case 0xee:
+		if len(payload) >= 12 && bytes.HasPrefix(payload, []byte("Adobe")) && payload[11] <= 2 {
+			return payload[:12]
+		}
+	}
+	return nil
 }

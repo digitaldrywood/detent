@@ -47,6 +47,18 @@ func TestPrepare(t *testing.T) {
 	withICC := append([]byte{}, jpegData.Bytes()[:2]...)
 	withICC = append(withICC, icc...)
 	withICC = append(withICC, jpegData.Bytes()[2:]...)
+	withApplication := func(segments ...[]byte) []byte {
+		content := append([]byte{}, jpegData.Bytes()[:2]...)
+		for _, segment := range segments {
+			content = append(content, segment...)
+		}
+		return append(content, jpegData.Bytes()[2:]...)
+	}
+	jfif := []byte("JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00")
+	jfifThumbnail := append([]byte{}, jfif...)
+	jfifThumbnail[12], jfifThumbnail[13] = 1, 1
+	jfifThumbnail = append(jfifThumbnail, 0x12, 0x34, 0x56)
+	withJFIF := withApplication(jpegTestSegment(0xe0, jfif))
 	withMetadata := append([]byte{}, withICC[:2]...)
 	withMetadata = append(withMetadata, jpegTestSegment(0xe1, exif)...)
 	withMetadata = append(withMetadata, withICC[2:len(withICC)-2]...)
@@ -57,6 +69,13 @@ func TestPrepare(t *testing.T) {
 	progressive := jpegTestFixture(t, "progressive")
 	restart := jpegTestFixture(t, "restart")
 	cmyk := jpegTestFixture(t, "cmyk")
+	adobe := bytes.Index(cmyk, []byte{0xff, 0xee})
+	adobeEnd := adobe + 2 + int(binary.BigEndian.Uint16(cmyk[adobe+2:]))
+	adobeMetadata := append([]byte{}, cmyk[:adobe]...)
+	adobePayload := append([]byte{}, cmyk[adobe+4:adobeEnd]...)
+	adobePayload = append(adobePayload, []byte("private-thumbnail-sentinel")...)
+	adobeMetadata = append(adobeMetadata, jpegTestSegment(0xee, adobePayload)...)
+	adobeMetadata = append(adobeMetadata, cmyk[adobeEnd:]...)
 	secondScan := bytes.Index(progressive, []byte{0xff, 0xda}) + 2
 	secondScan += bytes.Index(progressive[secondScan:], []byte{0xff, 0xda})
 	progressiveMetadata := append([]byte{}, progressive[:secondScan]...)
@@ -86,11 +105,16 @@ func TestPrepare(t *testing.T) {
 		{name: "jpeg plain", declared: "image/jpeg", content: jpegData.Bytes(), wantJPEG: jpegData.Bytes(), media: "image/jpeg", image: true},
 		{name: "jpeg EXIF", declared: "image/jpeg", content: withEXIF, wantJPEG: jpegData.Bytes(), media: "image/jpeg", image: true},
 		{name: "jpeg ICC", declared: "image/jpeg", content: withICC, wantJPEG: withICC, media: "image/jpeg", image: true},
+		{name: "jpeg JFIF thumbnail", declared: "image/jpeg", content: withApplication(jpegTestSegment(0xe0, jfifThumbnail)), wantJPEG: withJFIF, media: "image/jpeg", image: true},
+		{name: "jpeg JFXX thumbnail", declared: "image/jpeg", content: withApplication(jpegTestSegment(0xe0, append([]byte("JFXX\x00\x10"), jpegData.Bytes()...))), wantJPEG: jpegData.Bytes(), media: "image/jpeg", image: true},
+		{name: "jpeg unrecognized application payloads", declared: "image/jpeg", content: withApplication(jpegTestSegment(0xe0, []byte("private-app0")), jpegTestSegment(0xe2, []byte("private-app2")), jpegTestSegment(0xee, []byte("private-app14"))), wantJPEG: jpegData.Bytes(), media: "image/jpeg", image: true},
+		{name: "jpeg invalid ICC chunk headers", declared: "image/jpeg", content: withApplication(jpegTestSegment(0xe2, []byte("ICC_PROFILE\x00")), jpegTestSegment(0xe2, []byte("ICC_PROFILE\x00\x00\x01private")), jpegTestSegment(0xe2, []byte("ICC_PROFILE\x00\x02\x01private"))), wantJPEG: jpegData.Bytes(), media: "image/jpeg", image: true},
 		{name: "jpeg mixed metadata", declared: "image/jpeg", content: withMetadata, wantJPEG: withICC, media: "image/jpeg", image: true},
 		{name: "jpeg polyglot", declared: "image/jpeg", content: append(append([]byte{}, jpegData.Bytes()...), []byte("<script>sentinel</script>")...), wantJPEG: jpegData.Bytes(), media: "image/jpeg", image: true},
 		{name: "jpeg progressive metadata between scans", declared: "image/jpeg", content: progressiveMetadata, wantJPEG: progressive, media: "image/jpeg", image: true},
 		{name: "jpeg restart markers", declared: "image/jpeg", content: restart, wantJPEG: restart, media: "image/jpeg", image: true},
 		{name: "jpeg Adobe CMYK", declared: "image/jpeg", content: cmyk, wantJPEG: cmyk, media: "image/jpeg", image: true},
+		{name: "jpeg Adobe trailing metadata", declared: "image/jpeg", content: adobeMetadata, wantJPEG: cmyk, media: "image/jpeg", image: true},
 		{name: "jpeg truncated scan", declared: "image/jpeg", content: jpegData.Bytes()[:jpegData.Len()-10], failure: ErrInvalid},
 		{name: "jpeg truncated metadata", declared: "image/jpeg", content: withEXIF[:10], failure: ErrInvalid},
 		{name: "jpeg pixel cap", declared: "image/jpeg", content: oversizeJPEG, failure: ErrInvalid},
