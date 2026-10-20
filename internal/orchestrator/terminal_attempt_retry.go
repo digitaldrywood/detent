@@ -47,30 +47,8 @@ func (o *Orchestrator) demoteTerminalAttemptRetry(
 		o.terminalAttemptClaimBlocksDemotion(ctx, issue, at) {
 		return issue, false, false
 	}
-	operatorReview := retryCause == terminalAttemptRetryLimitCause && o.cfg.Recovery.EffectiveTerminalAttemptRetryLimit() == 0
-	if !durable && operatorReview && state != nil && len(currentAttempts) > 0 {
-		current := currentAttempts[0]
-		if current.AttemptID > 0 {
-			o.upsertWorkAttemptSnapshot(state, current)
-		} else {
-			state.WorkAttempts = append([]telemetry.WorkAttempt{current}, state.WorkAttempts...)
-		}
-	}
-	if durable || operatorReview && len(currentAttempts) > 0 {
-		historyReader := o
-		if operatorReview {
-			historyReader = &Orchestrator{cfg: o.cfg}
-		}
-		count, latest, known := historyReader.consecutiveRetryCycleCount(ctx, state, issue, retryCause, at)
-		switch {
-		case !known:
-			o.recordRetryCycleHistoryUnavailable(state, issue, retryCause, at)
-		case count >= o.retryCycleFailureLimit(retryCause):
-			parked, ok := o.parkRetryCycleLimit(ctx, state, issue, runMode, diffStats, retryCause, count, latest, at)
-			if ok {
-				return parked, true, true
-			}
-		}
+	if parked, ok := o.terminalAttemptRetryLimitReached(ctx, state, issue, retryCause, durable, runMode, diffStats, at, currentAttempts...); ok {
+		return parked, true, true
 	}
 	targetState := terminalAttemptTodoState(o.cfg.ActiveStates)
 	if targetState == "" {
@@ -123,6 +101,49 @@ func (o *Orchestrator) demoteTerminalAttemptRetry(
 	return issue, true, false
 }
 
+// terminalAttemptRetryLimitReached parks the issue when its latest terminal
+// attempts reach the retry cycle limit for retryCause.
+func (o *Orchestrator) terminalAttemptRetryLimitReached(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	retryCause string,
+	durable bool,
+	runMode string,
+	diffStats DiffStats,
+	at time.Time,
+	currentAttempts ...telemetry.WorkAttempt,
+) (connector.Issue, bool) {
+	operatorReview := retryCause == terminalAttemptRetryLimitCause && o.cfg.Recovery.EffectiveTerminalAttemptRetryLimit() == 0
+	if !durable && operatorReview && state != nil && len(currentAttempts) > 0 {
+		current := currentAttempts[0]
+		if current.AttemptID > 0 {
+			o.upsertWorkAttemptSnapshot(state, current)
+		} else {
+			state.WorkAttempts = append([]telemetry.WorkAttempt{current}, state.WorkAttempts...)
+		}
+	}
+	if !durable && (!operatorReview || len(currentAttempts) == 0) {
+		return issue, false
+	}
+	historyReader, history := o, state
+	if operatorReview {
+		historyReader = &Orchestrator{cfg: o.cfg}
+	} else if durable && state != nil && len(currentAttempts) > 0 {
+		view := *state
+		view.WorkAttempts = append([]telemetry.WorkAttempt{currentAttempts[0]}, state.WorkAttempts...)
+		history = &view
+	}
+	count, latest, known := historyReader.consecutiveRetryCycleCount(ctx, history, issue, retryCause, at)
+	switch {
+	case !known:
+		o.recordRetryCycleHistoryUnavailable(state, issue, retryCause, at)
+	case count >= o.retryCycleFailureLimit(retryCause):
+		return o.parkRetryCycleLimit(ctx, state, issue, runMode, diffStats, retryCause, count, latest, at)
+	}
+	return issue, false
+}
+
 func terminalAttemptFailureEvidence(running Running, terminalState store.WorkAttemptTerminalState, errorClass, errorMessage string, at time.Time) telemetry.WorkAttempt {
 	return telemetry.WorkAttempt{
 		AttemptID:          running.WorkAttemptID,
@@ -165,6 +186,9 @@ func (o *Orchestrator) consecutiveRetryCycleCount(
 				TerminalState: store.WorkAttemptTerminalState(attempt.TerminalState), ErrorClass: attempt.ErrorClass,
 				Phase: attempt.Phase, MetricsJSON: attempt.MetricsJSON, WorkerMetadataJSON: attempt.WorkerMetadataJSON,
 			}) && !workAttemptHasPushedProduct(attempt) {
+				continue
+			}
+			if cause == terminalAttemptRetryLimitCause && planOnlyAttempt(attempt) {
 				continue
 			}
 			if !retryCycleAttemptMatches(attempt, cause) {
@@ -269,11 +293,19 @@ func retryCycleAttemptMatches(attempt telemetry.WorkAttempt, cause string) bool 
 	case terminalAttemptRetryLimitCause:
 		return strings.TrimSpace(attempt.ErrorClass) != workAttemptErrorWorkspace &&
 			strings.TrimSpace(attempt.ErrorClass) != "service_restart" &&
-			terminalAttemptRetryableFailure(attempt) &&
+			(terminalAttemptRetryableFailure(attempt) || strings.TrimSpace(attempt.ErrorClass) == terminalAttemptWithoutWorkProductReason) &&
 			!workAttemptHasPushedProduct(attempt)
 	default:
 		return false
 	}
+}
+
+// planOnlyAttempt reports a completed planning attempt. A plan is not source
+// work product, so it neither extends nor resets a no-work-product cycle.
+func planOnlyAttempt(attempt telemetry.WorkAttempt) bool {
+	return workAttemptRunMode(attempt) == RunModePlan &&
+		strings.EqualFold(strings.TrimSpace(attempt.TerminalState), string(store.WorkAttemptTerminalSuccess)) &&
+		!workAttemptHasPushedProduct(attempt)
 }
 
 func retryCycleCauseForAttempt(attempt telemetry.WorkAttempt) string {
