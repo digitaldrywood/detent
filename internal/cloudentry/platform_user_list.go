@@ -25,7 +25,7 @@ func pagePlatformUsers(result platformusers.Result, filters url.Values) platform
 			}
 		}
 		staff := user.PlatformRole != ""
-		noOrganization := len(user.Memberships) == 0
+		noOrganization := len(result.Unsearched) == 0 && len(user.Memberships) == 0
 		invited := len(user.Invitations) > 0
 		result.Counts.All++
 		if staff {

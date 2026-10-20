@@ -5,6 +5,7 @@ package cloudentry
 import (
 	"context"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -983,6 +984,37 @@ func TestPlatformUsersSearch(t *testing.T) {
 	if counts.Counts.All != 68 || counts.Counts.Staff != 3 || counts.Counts.Invited != 1 || counts.Counts.NoOrganization != 67 {
 		t.Fatalf("segment counts = %+v", counts.Counts)
 	}
+	db, err := sql.Open("sqlite", storeDSN(f.fixtures["org_alpha"].path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for i := range 900 {
+		email := fmt.Sprintf("large%03d@example.test", i)
+		if _, err := db.ExecContext(t.Context(), "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at,expires_at) VALUES(?,?,'org_alpha','member',?,?)", email, email, formatTime(now), formatTime(now.Add(time.Hour))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		query, first string
+		total        int
+	}{
+		{"", "cap59@example.test", 968},
+		{"q=large&sort=email", "large000@example.test", 900},
+		{"q=large&sort=email&page=18", "large850@example.test", 900},
+		{"q=large&segment=invited&sort=email&page=2", "large050@example.test", 900},
+		{"q=large&organization=org_alpha&sort=email&page=2", "large050@example.test", 900},
+		{"q=large899@example.test", "large899@example.test", 1},
+	} {
+		t.Run(test.query, func(t *testing.T) {
+			response, body := staff.get("/api/cloud/platform/users?" + test.query)
+			var result platformusers.Result
+			decodeJSON(t, body, &result)
+			if response.StatusCode != http.StatusOK || result.Total != test.total || len(result.Unsearched) != 0 || len(result.Users) == 0 || result.Users[0].Email != test.first {
+				t.Fatalf("large tenant = %d %+v", response.StatusCode, result)
+			}
+		})
+	}
 	original := f.service.config.transport
 	f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
 		if org.ID == "org_beta" {
@@ -995,5 +1027,15 @@ func TestPlatformUsersSearch(t *testing.T) {
 	decodeJSON(t, body, &partial)
 	if len(partial.Users) != 1 || len(partial.Users[0].Memberships) != 1 || len(partial.Unsearched) != 1 || partial.Unsearched[0].ID != "org_beta" {
 		t.Fatalf("partial = %+v", partial)
+	}
+	for _, query := range []string{"q=only", "q=only&segment=no_organization", "q=staff&segment=no_organization", "q=carol&segment=no_organization"} {
+		t.Run("partial "+query, func(t *testing.T) {
+			_, body := staff.get("/api/cloud/platform/users?" + query)
+			var result platformusers.Result
+			decodeJSON(t, body, &result)
+			if len(result.Unsearched) != 1 || result.Counts.NoOrganization != 0 || strings.Contains(query, "segment=") && result.Total != 0 {
+				t.Fatalf("unknown memberships classified as absent: %+v", result)
+			}
+		})
 	}
 }

@@ -96,9 +96,23 @@ WHERE CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 END ORDER BY 
 	tenantResults := make([]platformusers.TenantResult, len(ids))
 	searched := make([]bool, len(ids))
 	s.eachReadyTenant(ctx, ids, func(call context.Context, index int, organization Organization) {
-		status, body, err := s.serviceCall(call, organization, "/internal/v1/platform/users", query, nil)
-		if err == nil && status == http.StatusOK && json.Unmarshal(body, &tenantResults[index]) == nil {
-			searched[index] = true
+		request := query
+		for {
+			var page platformusers.TenantResult
+			status, body, err := s.serviceCall(call, organization, "/internal/v1/platform/users", request, nil)
+			if err != nil || status != http.StatusOK || json.Unmarshal(body, &page) != nil {
+				return
+			}
+			tenantResults[index].Members = append(tenantResults[index].Members, page.Members...)
+			tenantResults[index].Invitations = append(tenantResults[index].Invitations, page.Invitations...)
+			if page.NextCursor == "" {
+				searched[index] = true
+				return
+			}
+			if page.NextCursor <= request.After {
+				return
+			}
+			request.After = page.NextCursor
 		}
 	})
 	for index, organization := range ready {

@@ -10,6 +10,7 @@ const Limit = 50
 type Query struct {
 	Text  string `json:"q"`
 	Exact bool   `json:"-"`
+	After string `json:"after,omitempty"`
 }
 
 func Parse(text string) Query {
@@ -74,6 +75,7 @@ type TenantInvitation struct {
 }
 
 type TenantResult struct {
+	NextCursor  string             `json:"next_cursor,omitempty"`
 	Members     []TenantMember     `json:"members"`
 	Invitations []TenantInvitation `json:"invitations"`
 }
