@@ -127,6 +127,8 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"security audit old reviewer", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ReviewerDigest = "other" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"security audit implementing session", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ID = 41; r.SecurityAudit.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"security audit backend failure", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ExitStatus = securityaudit.ExitStatusFailed }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"security audit reconciliation without a provider session", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"security audit reconciliation reuses implementing session", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ID = 41; r.SecurityAudit.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"security audit landing pass", landingAudit, http.StatusOK, "reviewed", nil},
 		{"security audit landing after configuration change", landingAudit, http.StatusOK, "reviewed", nil},
 		{"security audit landing requires merge execution", landingAudit, http.StatusUnprocessableEntity, "reviewed", nil},
@@ -341,6 +343,16 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				event = merge
 				request.LeaseID, request.FencingToken = lease.ID, lease.FencingToken
 			}
+			if strings.HasPrefix(test.name, "security audit reconciliation") {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				lease = claimNativeAttempt(t, f, worker, "machine", "reconcile-session", issue.WorkItemID, descriptor.ID)
+				reconcile := nativeStartedEvent(lease)
+				reconcile.IdempotencyKey = "reconcile-start"
+				reconcile.Data.Identity.Role = "code"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, reconcile), http.StatusOK)
+				event = reconcile
+				request.LeaseID, request.FencingToken = lease.ID, lease.FencingToken
+			}
 			test.edit(&request)
 			stageReviews := 0
 			if test.stages != nil {
@@ -418,6 +430,32 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				want := runnerauth.PublicationRejection{Category: "acceptance_validation", Field: rejectionField}
 				if failure.Rejection == nil || *failure.Rejection != want {
 					t.Fatalf("rejection = %+v, want %+v", failure.Rejection, want)
+				}
+			}
+			auditRejectionField := map[string]string{
+				"security audit missing run":                                "run.id",
+				"security audit missing session":                            "session_id",
+				"security audit foreign issue":                              "run.issue_id",
+				"security audit foreign session":                            "session_id",
+				"security audit missing invocation":                         "run.invocation_id",
+				"security audit stale base":                                 "base_sha",
+				"security audit stale head":                                 "head_sha",
+				"security audit old reviewer":                               "run.reviewer_version",
+				"security audit backend failure":                            "run.exit_status",
+				"security audit implementing session":                       "execution_session",
+				"security audit reconciliation reuses implementing session": "execution_session",
+				"security audit landing stale version":                      "version_id",
+				"security audit landing requires merge execution":           "execution_session",
+			}[test.name]
+			if auditRejectionField != "" {
+				var failure hubclient.APIError
+				decodeHubResponse(t, response, &failure)
+				want := runnerauth.PublicationRejection{Category: "security_audit", Field: auditRejectionField}
+				if failure.Rejection == nil || *failure.Rejection != want || failure.Error() != want.DiagnosticError() {
+					t.Fatalf("audit rejection = %+v (%v), want %+v", failure.Rejection, failure.Error(), want)
+				}
+				if terminal := failure.NativeTerminalFailure().Public(); terminal.Rejection == nil || *terminal.Rejection != want || terminal.Stage != "security_audit_publication" || terminal.Attribution != "instance" {
+					t.Fatalf("audit terminal failure = %+v", terminal)
 				}
 			}
 			field := map[string]string{"security audit missing invocation": "invocation_id", "security audit missing run": "run.id", "security audit missing session": "session_id", "security audit foreign issue": "issue_id", "security audit foreign project": "project_id", "security audit foreign session": "session_id", "security audit stale base": "base_sha", "security audit stale head": "head_sha"}[test.name]
