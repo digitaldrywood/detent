@@ -56,9 +56,9 @@ func (e *nativeExecution) retainChangeValidation(ctx context.Context, input *tra
 	return nil
 }
 
-// minValidationPartBytes is the smallest artifact part size a validation
-// receipt upload supports; the reservation budgets its partial manifests for it.
-const minValidationPartBytes = 16 << 10
+// validationPartBytes is the largest part a validation receipt upload sends;
+// the reservation budgets partial manifests for parts of this size.
+const validationPartBytes = 64 << 10
 
 type validationUploader interface {
 	Reserve(context.Context, artifact.Reservation) (artifact.Upload, error)
@@ -67,18 +67,18 @@ type validationUploader interface {
 }
 
 func uploadChangeValidation(ctx context.Context, uploader validationUploader, reservation artifact.Reservation, raw []byte) (artifact.Reference, error) {
-	reservation.Bytes = int64(len(raw)) + artifact.MaxManifestBytes + validationManifestBudget(len(raw), minValidationPartBytes)
+	reservation.Bytes = int64(len(raw)) + artifact.MaxManifestBytes + validationManifestBudget(len(raw), validationPartBytes)
 	upload, err := uploader.Reserve(ctx, reservation)
 	if err != nil {
 		return artifact.Reference{}, fmt.Errorf("reserve Change validation: %w", err)
 	}
 	if upload.State != "complete" {
-		partBytes := 64 << 10
-		if upload.PartLimit > 0 {
-			if upload.PartLimit < minValidationPartBytes {
-				return artifact.Reference{}, fmt.Errorf("store Change validation: part limit %d is below %d: %w", upload.PartLimit, minValidationPartBytes, artifact.ErrQuota)
+		partBytes := validationPartBytes
+		if upload.PartLimit > 0 && upload.PartLimit < int64(partBytes) {
+			partBytes = int(upload.PartLimit)
+			if partBytes <= utf8.UTFMax || int64(len(raw))+validationManifestBudget(len(raw), partBytes) > reservation.Bytes {
+				return artifact.Reference{}, fmt.Errorf("store Change validation: part limit %d cannot carry a %d byte receipt within its reservation: %w", upload.PartLimit, len(raw), artifact.ErrQuota)
 			}
-			partBytes = int(min(int64(partBytes), upload.PartLimit))
 		}
 		for sequence, offset := 0, 0; offset < len(raw); sequence++ {
 			end := min(offset+partBytes, len(raw))

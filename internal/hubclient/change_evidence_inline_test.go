@@ -160,31 +160,39 @@ func TestRetainChangeValidationRejectsForeignServiceReference(t *testing.T) {
 }
 
 func TestUploadChangeValidationBudgetsPartialManifests(t *testing.T) {
-	organization, serviceID := artifact.NewID("org"), artifact.NewID("service")
-	service, err := artifact.NewService(t.Context(), artifact.Config{ServiceID: serviceID, OrganizationID: organization, Mode: "customer", DatabasePath: filepath.Join(t.TempDir(), "artifacts.db"), Policy: artifact.Policy{ID: "test", Limits: artifact.Limits{RetainedBytes: 64 << 20, ReservedBytes: 32 << 20, ArtifactBytes: 8 << 20, UploadBytes: minValidationPartBytes, RetentionSeconds: 3600}, AbandonedUploadSeconds: 600, DeletionRecordSeconds: 7200, BackupSeconds: 3600}}, &changeEvidenceStorage{objects: map[string][]byte{}}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := service.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	raw := []byte(strings.Repeat("validation receipt 世界\n", 80000))
-	if len(raw) < 2_000_000 {
-		t.Fatalf("payload must span many minimum-size parts: %d bytes", len(raw))
-	}
-	reservation := artifact.Reservation{ServiceID: serviceID, Mode: "customer", Scope: artifact.Scope{OrganizationID: organization, ProjectID: artifact.NewID("prj"), WorkItemID: artifact.NewID("wi"), RunID: artifact.NewID("run"), AttemptID: artifact.NewID("attempt")}, Key: "validation-budget", Kind: "log"}
-	reference, err := uploadChangeValidation(t.Context(), service, reservation, raw)
-	if err != nil {
-		t.Fatalf("minimum part limit upload: %v", err)
-	}
-	if reference.Bytes != int64(len(raw)) || reference.ServiceID != reservation.ServiceID {
-		t.Fatalf("reference = %+v", reference)
+	for _, test := range []struct {
+		name        string
+		uploadBytes int64
+		lines       int
+	}{
+		{name: "small admitted parts", uploadBytes: 16 << 10, lines: 30000},
+		{name: "large receipt with large admitted parts", uploadBytes: 1 << 20, lines: 120000},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			organization, serviceID := artifact.NewID("org"), artifact.NewID("service")
+			service, err := artifact.NewService(t.Context(), artifact.Config{ServiceID: serviceID, OrganizationID: organization, Mode: "customer", DatabasePath: filepath.Join(t.TempDir(), "artifacts.db"), Policy: artifact.Policy{ID: "test", Limits: artifact.Limits{RetainedBytes: 64 << 20, ReservedBytes: 32 << 20, ArtifactBytes: 8 << 20, UploadBytes: test.uploadBytes, RetentionSeconds: 3600}, AbandonedUploadSeconds: 600, DeletionRecordSeconds: 7200, BackupSeconds: 3600}}, &changeEvidenceStorage{objects: map[string][]byte{}}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := service.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			raw := []byte(strings.Repeat("validation receipt 世界\n", test.lines))
+			reservation := artifact.Reservation{ServiceID: serviceID, Mode: "customer", Scope: artifact.Scope{OrganizationID: organization, ProjectID: artifact.NewID("prj"), WorkItemID: artifact.NewID("wi"), RunID: artifact.NewID("run"), AttemptID: artifact.NewID("attempt")}, Key: "validation-budget", Kind: "log"}
+			reference, err := uploadChangeValidation(t.Context(), service, reservation, raw)
+			if err != nil {
+				t.Fatalf("%d byte receipt: %v", len(raw), err)
+			}
+			if reference.Bytes != int64(len(raw)) || reference.ServiceID != reservation.ServiceID {
+				t.Fatalf("reference = %+v", reference)
+			}
+		})
 	}
 }
 
-func TestUploadChangeValidationRefusesPartLimitBelowFloor(t *testing.T) {
+func TestUploadChangeValidationRefusesUnfundedPartLimit(t *testing.T) {
 	appended := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/uploads" {
