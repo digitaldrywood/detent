@@ -15,7 +15,7 @@ func readHealthRates(ctx context.Context, q nativeQueryer, organization tracker.
 		p := healthRateProject{ID: project.ID, Candidates: project.Candidates}
 		scope := nativeScope{organization: organization, project: tracker.ProjectID(p.ID)}
 		window := operatortool.AnalyticsWindow{From: now.Add(-healthBaselineWindow - healthLongWindow), To: now}
-		states, issues, partial, err := readAnalyticsResidenceHistory(ctx, q, scope, window)
+		states, issues, partial, err := readAnalyticsResidenceHistory(withAnalyticsLiveIssues(ctx), q, scope, window)
 		if err != nil {
 			return err
 		}

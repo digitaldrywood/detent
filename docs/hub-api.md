@@ -1250,6 +1250,21 @@ scheduled signal on the next health evaluation. Projects without any scheduled
 report history are excluded. Existing health reads, needs-attention surfaces
 and email delivery carry this flow finding; it creates no tracker issue.
 
+The `dependency_hold` flow finding reports delivery stalled when no candidate is
+claimable, a runner slot is free, nothing landed for thirty minutes, and, in
+a project that requires dependencies, dispatchable items have waited at least
+thirty minutes on dependencies held in non-dispatchable, non-terminal lanes. Its evidence counts `dependency_gated`, `held_blockers` and
+`free_slots`, and `work_item_ids` lists the held blockers.
+
+Rate signals listed in `baseline_unavailable` lack a comparable history, but
+absolute floors still report clear stalls with evidence reason
+`absolute_floor`: `retry_storm` at five same-signature failures in an hour (or
+twelve regardless of history), `stalled_active_item` after two hours without
+an attempt heartbeat, and `throughput_collapse` when nothing landed for six
+hours while Todo or active items have waited at least that long. Runner
+transitions that record `permission wait` or `lifetime limit` in their reason
+detail produce `unanswered_human_wait` and `lifetime_limit_hit`.
+
 Every work-item representation returned by create, get, list and update includes
 `web_url`. Hosted Hubs build this absolute link from the configured
 `hosted.public_url`, never from request Host or forwarding headers. Hosted

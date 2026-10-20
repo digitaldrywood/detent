@@ -29,6 +29,8 @@ func TestHealthRules(t *testing.T) {
 		{"unavailable runner", "every_candidate_refused", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 2, RefusalReasons: []string{"runner_heartbeat_stale", "runner_heartbeat_stale"}}}}, healthSnapshot{}},
 		{"human question", "unanswered_human_wait", healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Since: now.Add(-30*time.Minute - time.Nanosecond), Active: true}}}, healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Since: now.Add(-time.Hour)}}}},
 		{"permission wait", "unanswered_human_wait", healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Attempt: "attempt", Since: now.Add(-time.Hour), Active: true}}}, healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Attempt: "attempt", Since: now, Active: true}}}},
+		{"dependency hold", "dependency_hold", healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 3, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-time.Hour), LastLanding: now.Add(-30 * time.Minute)}}}, healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 3, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-time.Hour), LastLanding: now}}}},
+		{"dependency hold without landing history", "dependency_hold", healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 1, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-30 * time.Minute)}}}, healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 1, HoldSince: now.Add(-30 * time.Minute)}}}},
 		{"lifetime limit", "lifetime_limit_hit", healthSnapshot{Limits: []healthLimit{{Item: "item", Project: "project", Event: "event", Active: true}}}, healthSnapshot{Limits: []healthLimit{{Item: "item", Project: "project", Event: "recovered"}}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -67,6 +69,10 @@ func TestHealthRules(t *testing.T) {
 		{"saturated project runners with organization room", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 2, RefusalReasons: []string{"runner_capacity_full", "runner_capacity_full"}}, {ID: "other-project", FreeSlots: 1}}}},
 		{"recorded capacity backpressure", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 2, RefusalReasons: []string{"capacity_full", "capacity_full"}}}}},
 		{"missing refusal reason", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 1, RefusalReasons: []string{""}}}}},
+		{"dependency hold with a claimable candidate", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 1, FreeSlots: 1, DependencyGated: 1, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-time.Hour)}}}},
+		{"new dependency hold without landing history", healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 1, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-30*time.Minute + time.Nanosecond)}}}},
+		{"new dependency hold after an old landing", healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 1, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-time.Minute), LastLanding: now.Add(-24 * time.Hour)}}}},
+		{"dependency hold without free slots", healthSnapshot{Projects: []healthProject{{ID: "project", DependencyGated: 1, HeldCount: 1, HeldBlockers: []string{"held"}}}}},
 		{"wait exact threshold", healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Since: now.Add(-30 * time.Minute), Active: true}}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

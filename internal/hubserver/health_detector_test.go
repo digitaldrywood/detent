@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -342,12 +345,16 @@ func TestHealthReadFailurePreservesFindingsAndTick(t *testing.T) {
 
 func appendTestHealthEvent(t *testing.T, f nativeFixture, item tracker.NativeIssue, kind string, data tracker.CollaborationData, at time.Time) {
 	t.Helper()
+	appendTestHealthEventAs(t, f, tracker.Actor{Kind: "runner", PrincipalID: "runner-health"}, item, kind, data, at)
+}
+
+func appendTestHealthEventAs(t *testing.T, f nativeFixture, actor tracker.Actor, item tracker.NativeIssue, kind string, data tracker.CollaborationData, at time.Time) {
+	t.Helper()
 	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	actor := tracker.Actor{Kind: "runner", PrincipalID: "runner-health"}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, sourceActor: &actor}
 	if err := appendNativeHistory(t.Context(), tx, scope, string(item.WorkItemID), kind, data, at); err != nil {
 		t.Fatal(err)
@@ -744,5 +751,103 @@ func TestHealthSnapshotReadsWithoutTheWriter(t *testing.T) {
 	defer cancel()
 	if _, err := f.service.readHealthSnapshot(ctx, f.project.OrganizationID, time.Now().UTC()); err != nil {
 		t.Fatalf("health snapshot waited on the held writer: %v", err)
+	}
+}
+
+func TestHealthSnapshotCloudTransitionDetailAndDependencyHolds(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "cloud-detail-health")
+	addHealthBacklog(t, f)
+	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
+	waiting, recent, limited, explained := f.create(t, "waiting"), f.create(t, "recent"), f.create(t, "limited"), f.create(t, "explained")
+	gated, chained, held, active := f.create(t, "gated"), f.create(t, "chained"), f.create(t, "held"), f.create(t, "active")
+	sibling := f.create(t, "sibling")
+	appendTestHealthEvent(t, f, waiting, "workflow.transitioned", tracker.CollaborationData{Reason: "worker_progress", ReasonDetail: "permission wait"}, now.Add(-time.Hour))
+	appendTestHealthEvent(t, f, recent, "workflow.transitioned", tracker.CollaborationData{Reason: "worker_progress", ReasonDetail: "permission wait"}, now.Add(-time.Minute))
+	appendTestHealthEvent(t, f, limited, "workflow.transitioned", tracker.CollaborationData{Reason: "worker_progress", ReasonDetail: "lifetime limit"}, now.Add(-time.Hour))
+	appendTestHealthEventAs(t, f, tracker.Actor{Kind: "human", PrincipalID: "operator"}, explained, "workflow.transitioned", tracker.CollaborationData{Reason: "user_requested", ReasonDetail: "lifetime limit"}, now.Add(-time.Hour))
+	snapshot := healthSnapshot{}
+	if err := readHealthCurrentWaits(t.Context(), f.service.database.db, f.project.OrganizationID, now, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, finding := range evaluateHealth(now, snapshot) {
+		got[finding.Subject.ID] = finding.Signal
+	}
+	want := map[string]string{string(waiting.WorkItemID): "unanswered_human_wait", string(limited.WorkItemID): "lifetime_limit_hit"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings=%v want %v", got, want)
+	}
+
+	for i, edge := range []struct{ dependent, blocker tracker.NativeIssue }{{gated, held}, {chained, active}} {
+		request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprint("edge-", i)}, ExpectedRevision: edge.dependent.Revision, RelatedWorkItemID: edge.blocker.WorkItemID, Operation: "add"}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(edge.dependent.WorkItemID)+"/dependencies", f.token, request), http.StatusOK)
+	}
+	request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "hold"}, ExpectedRevision: held.Revision, State: "Backlog", Reason: "user_requested"}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(held.WorkItemID)+"/workflow", f.token, request), http.StatusOK)
+	var latestEdge string
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT max(created_at) FROM issue_dependencies").Scan(&latestEdge); err != nil {
+		t.Fatal(err)
+	}
+	edgeAt, err := parseTimeValue(latestEdge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	heldAt := edgeAt.Add(time.Hour)
+	siblingProject := tracker.ProjectID("prj_sibling_health")
+	for _, statement := range []string{
+		"INSERT INTO projects (id, organization_id, name, profile, states_json, require_dependencies, created_at, github_repository_enabled) SELECT ?, organization_id, 'sibling', profile, states_json, require_dependencies, created_at, github_repository_enabled FROM projects WHERE id = ?",
+		"INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) SELECT ?, source_name, detent_state, terminal, dispatchable, created_at, updated_at FROM workflow_states WHERE project_id = ?",
+	} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), statement, siblingProject, f.project.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	external, err := createNativeFixtureIssueTx(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: siblingProject}, tracker.CreateIssue{Title: "external", Body: issueContractTestSections, State: "Backlog"}, heldAt.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), "INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at) SELECT b.id, d.id, 'native', ?, ? FROM issues b, issues d WHERE b.native_id=? AND d.native_id=?", formatHubTime(heldAt.Add(time.Hour)), formatHubTime(heldAt.Add(time.Hour)), external.WorkItemID, sibling.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	appendTestHealthEventAs(t, f, tracker.Actor{Kind: "human", PrincipalID: "operator"}, held, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Backlog", Reason: "user_requested"}, heldAt)
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	gatedCount, heldCount, blockers, since, err := readHealthDependencyHolds(t.Context(), f.service.database.db, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gatedCount != 3 || heldCount != 2 || !reflect.DeepEqual(blockers, []string{string(held.WorkItemID)}) || !since.Equal(heldAt) {
+		t.Fatalf("gated=%d held=%d blockers=%v since=%v want %v", gatedCount, heldCount, blockers, since, heldAt)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_dependencies=0 WHERE id=?", f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if gatedCount, heldCount, blockers, since, err = readHealthDependencyHolds(t.Context(), f.service.database.db, scope); err != nil || gatedCount != 0 || heldCount != 0 || len(blockers) != 0 || !since.IsZero() {
+		t.Fatalf("ignored dependencies gated=%d held=%d blockers=%v since=%v err=%v", gatedCount, heldCount, blockers, since, err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE native_id IN (?,?)", active.WorkItemID, external.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	window := operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: f.service.config.now().Add(24 * time.Hour)}
+	for _, live := range []bool{false, true} {
+		ctx := t.Context()
+		if live {
+			ctx = withAnalyticsLiveIssues(ctx)
+		}
+		_, issues, _, err := readAnalyticsResidenceHistory(ctx, f.service.database.db, scope, window)
+		if err != nil {
+			t.Fatal(err)
+		}
+		present := slices.ContainsFunc(issues, func(issue analyticsResidenceIssue) bool { return issue.id == string(active.WorkItemID) })
+		if present == live || !slices.ContainsFunc(issues, func(issue analyticsResidenceIssue) bool { return issue.id == string(gated.WorkItemID) }) {
+			t.Fatalf("archived present=%v live=%v issues=%d", present, live, len(issues))
+		}
 	}
 }

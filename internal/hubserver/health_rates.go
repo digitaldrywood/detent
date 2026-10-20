@@ -14,6 +14,9 @@ import (
 // tolerates slow work, clamped to 2h/12h to avoid both noise and indefinite stalls.
 // Five times median spend plus $25 isolates material outliers; quarter-throughput
 // detects a large drop against the same weekday hours rather than a quiet shift.
+// Without enough history the absolute floors still report clear delivery stalls:
+// five same-signature failures in an hour, twelve regardless of baseline, an
+// active item silent past the stall minimum, and no landing for six hours.
 const (
 	healthBaselineWindow     = 7 * 24 * time.Hour
 	healthShortWindow        = time.Hour
@@ -35,6 +38,8 @@ const (
 	healthCostMultiplier     = 5
 	healthCostMinimum        = 25
 	healthThroughputFraction = 0.25
+	healthRetryCeiling       = 12
+	healthAbsoluteFloor      = "absolute_floor"
 )
 
 type healthRateAttempt struct {
@@ -258,9 +263,7 @@ func evaluateHealthRates(now time.Time, projects []healthRateProject) []healthFi
 }
 
 func healthRetryFindings(now time.Time, p healthRateProject, b healthRateBaseline) []healthFinding {
-	if len(b.RetryCounts) < healthBaselineSamples || len(b.RetryLong) < healthBaselineSamples {
-		return nil
-	}
+	baseline := len(b.RetryCounts) >= healthBaselineSamples && len(b.RetryLong) >= healthBaselineSamples
 	byItem := map[string][]healthRateAttempt{}
 	for _, a := range p.Attempts {
 		if healthInWindow(a.At, now.Add(-healthLongWindow), now) {
@@ -292,18 +295,23 @@ func healthRetryFindings(now time.Time, p healthRateProject, b healthRateBaselin
 				}
 			}
 		}
-		repeated := 0
+		repeated, relative := 0, false
 		for _, n := range signatures {
-			if float64(n) > healthQuantile(b.RetryCounts, healthBaselineQuantile) {
+			if baseline && float64(n) > healthQuantile(b.RetryCounts, healthBaselineQuantile) {
+				repeated, relative = max(repeated, n), relative || n >= healthRetryCount
+			} else if !baseline || n >= healthRetryCeiling {
 				repeated = max(repeated, n)
 			}
 		}
 		short, long := float64(failures[0])/float64(max(1, successes[0])), float64(failures[1])/float64(max(1, successes[1]))
-		if successes[0] > 0 && successes[1] > 0 && short > max(healthRetryRatio, healthQuantile(b.RetryShort, healthBaselineQuantile)) && long > max(healthRetryRatio, healthQuantile(b.RetryLong, healthBaselineQuantile)) {
-			repeated = max(repeated, failures[0])
+		if baseline && successes[0] > 0 && successes[1] > 0 && short > max(healthRetryRatio, healthQuantile(b.RetryShort, healthBaselineQuantile)) && long > max(healthRetryRatio, healthQuantile(b.RetryLong, healthBaselineQuantile)) {
+			repeated, relative = max(repeated, failures[0]), relative || failures[0] >= healthRetryCount
 		}
 		if repeated < healthRetryCount {
 			continue
+		}
+		if !relative {
+			evidence.Reason = healthAbsoluteFloor
 		}
 		slices.Sort(evidence.Signatures)
 		evidence.Signatures = slices.Compact(evidence.Signatures)
@@ -392,7 +400,7 @@ func healthStallFindings(now time.Time, p healthRateProject, b healthRateBaselin
 	}
 	out := []healthFinding{}
 	for _, t := range p.Timelines {
-		if t.issue.partial || !slices.Contains([]string{"In Progress", "Rework", "Merging"}, t.state) || len(b.Lanes[t.state]) < healthBaselineSamples {
+		if t.issue.partial || !slices.Contains([]string{"In Progress", "Rework", "Merging"}, t.state) {
 			continue
 		}
 		last := t.entered
@@ -402,11 +410,14 @@ func healthStallFindings(now time.Time, p healthRateProject, b healthRateBaselin
 				last, attempt = a.Heartbeat, a.ID
 			}
 		}
-		threshold := min(healthStallMaximum.Seconds(), max(healthStallMinimum.Seconds(), healthStallMultiplier*healthQuantile(b.Lanes[t.state], healthBaselineQuantile)))
+		threshold, reason := healthStallMinimum.Seconds(), healthAbsoluteFloor
+		if len(b.Lanes[t.state]) >= healthBaselineSamples {
+			threshold, reason = min(healthStallMaximum.Seconds(), max(healthStallMinimum.Seconds(), healthStallMultiplier*healthQuantile(b.Lanes[t.state], healthBaselineQuantile))), ""
+		}
 		if last.IsZero() || now.Sub(last).Seconds() <= threshold {
 			continue
 		}
-		evidence := healthEvidence{Values: map[string]float64{"heartbeat_gap_seconds": now.Sub(last).Seconds(), "threshold_seconds": threshold}}
+		evidence := healthEvidence{Reason: reason, Values: map[string]float64{"heartbeat_gap_seconds": now.Sub(last).Seconds(), "threshold_seconds": threshold}}
 		if attempt != "" {
 			evidence.AttemptIDs = []string{attempt}
 		}
@@ -519,7 +530,17 @@ func healthThroughputFinding(now time.Time, p healthRateProject, b healthRateBas
 			priorShort++
 		}
 	}
+	if b.ThroughputSamples < healthBaselineSamples {
+		waiting := 0
+		for _, t := range p.Timelines {
+			if !t.issue.partial && slices.Contains([]string{"Todo", "In Progress", "Rework", "Merging"}, t.state) && !t.entered.IsZero() && !t.entered.After(now.Add(-healthLongWindow)) {
+				waiting++
+			}
+		}
+		f := newHealthFinding("throughput_collapse", "flow", "project", p.ID, fmt.Sprintf("Delivery stalled. Nothing has landed in six hours while %d items have waited in Todo or active lanes for at least that long.", waiting), "The project operator inspects why ready and active work is not landing.", []string{p.ID}, healthEvidence{Reason: healthAbsoluteFloor, Counts: map[string]int{"landings_6h": long, "waiting_6h": waiting, "ready_work": p.Candidates}})
+		return f, long == 0 && waiting > 0
+	}
 	f := newHealthFinding("throughput_collapse", "flow", "project", p.ID, "Landings fell below a quarter of the same weekday-hour windows last week.", "The project operator inspects ready work and landing progress.", []string{p.ID}, healthEvidence{Counts: map[string]int{"landings_1h": short, "landings_6h": long, "last_week_1h": priorShort, "last_week_6h": priorLong, "ready_work": p.Candidates}})
 	f.Severity = "watch"
-	return f, b.ThroughputSamples >= healthBaselineSamples && p.Candidates > 0 && priorShort > 0 && float64(short) < healthThroughputFraction*float64(priorShort) && float64(long) < healthThroughputFraction*float64(priorLong)
+	return f, p.Candidates > 0 && priorShort > 0 && float64(short) < healthThroughputFraction*float64(priorShort) && float64(long) < healthThroughputFraction*float64(priorLong)
 }
