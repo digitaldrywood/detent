@@ -114,6 +114,11 @@ type NativeReviewContinuationExecution interface {
 	PrepareReview(context.Context, tracker.NativeChangeReference) error
 }
 
+type NativeSourceIterationExecution interface {
+	SourceReview(context.Context) (NativeChange, error)
+	PrepareSourceIteration(context.Context, tracker.NativeChangeReference) error
+}
+
 type SourceValidationExecution interface {
 	RecordSourceValidation(context.Context, gate.CommandResult) error
 }
@@ -373,6 +378,48 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		}
 	}
 	guarded = r.installDependencyReasonGenerator(guarded, req)
+	sourceReviewed := false
+	if normalizeRunMode(req.Mode) == RunModeImplement {
+		workflow, _, _, _ := r.runtimeSnapshot()
+		limit := workflow.Config.Agent.MaxTurns
+		if limit <= 0 {
+			limit = config.Default().Agent.MaxTurns
+		}
+		guarded = context.WithValue(guarded, sourceTurnBudgetKey{}, &sourceTurnBudget{remaining: limit})
+		if prepared, ok := req.Execution.(CompletionExecution); ok {
+			req.reviewSource = func(ctx context.Context, result *RunResult) (string, error) {
+				if err := prepared.PrepareFinish(ctx, "succeeded", result.FinalMessage, nil); err != nil {
+					return "", err
+				}
+				sourceReviewed = true
+				reviewRequest := req
+				reviewRequest.workspacePrepared = true
+				reviewErr := r.validateNativeChange(ctx, reviewRequest)
+				if source, ok := req.Execution.(NativeSourceIterationExecution); ok {
+					change, err := source.SourceReview(ctx)
+					if err != nil {
+						return "", errors.Join(reviewErr, err)
+					}
+					if change != (NativeChange{}) {
+						result.NativeChange = &change
+					}
+				}
+				if reviewErr != nil {
+					if errors.Is(reviewErr, ErrSessionTurnLimitExceeded) {
+						result.FinalMessage = sourceBudgetExhaustedMessage(result.FinalMessage)
+						return "", nil
+					}
+					return "", reviewErr
+				}
+				feedback := nativeSourceRework(result.NativeChange, result.FinalMessage)
+				if feedback != "" && sourceBudgetRemaining(ctx) == 0 {
+					result.FinalMessage = sourceBudgetExhaustedMessage(result.FinalMessage)
+					return "", nil
+				}
+				return feedback, nil
+			}
+		}
+	}
 	var result RunResult
 	var runErr error
 	if continuation := req.NativeReviewContinuation; continuation != nil {
@@ -394,6 +441,10 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	outcome := "succeeded"
 	if runErr != nil || result.FinalState != FinalStateCompleted {
 		outcome = "failed"
+	}
+	var implementationReviewErr *NativeImplementationReviewError
+	if errors.As(runErr, &implementationReviewErr) {
+		outcome = "interrupted"
 	}
 	if guarded.Err() != nil && outcome != "succeeded" {
 		outcome = "interrupted"
@@ -434,7 +485,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		if err != nil {
 			runErr = errors.Join(runErr, err)
 			outcome = "failed"
-		} else if outcome == "succeeded" {
+		} else if outcome == "succeeded" && !sourceReviewed {
 			if err := r.validateNativeChange(guarded, req); err != nil {
 				runErr = errors.Join(runErr, err)
 				outcome = "failed"
@@ -547,6 +598,25 @@ func nativePublicationRecovery(recovery tracker.NativeRecovery, local *workspace
 
 func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, turnStarted bool) error {
 	req.checkpointRefs.halt()
+	cleanup, err := r.prepareExecutionCompletion(ctx, req, backend, info, issue, resume, turnStarted)
+	r.finishExecution(ctx, req, backend, info, issue, cleanup)
+	return err
+}
+
+func (r *Runner) finishExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, cleanup bool) {
+	req.checkpointRefs.halt()
+	if !cleanup {
+		return
+	}
+	if req.Execution == nil {
+		ctx = context.WithoutCancel(ctx)
+	}
+	afterCtx, cancel := context.WithTimeout(ctx, r.afterRunTimeout)
+	defer cancel()
+	backend.AfterRun(afterCtx, info, issue)
+}
+
+func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, turnStarted bool) (bool, error) {
 	if req.finalizeNativeWork && !req.retainCheckpoint {
 		if execution, ok := req.Execution.(PublicationSourceExecution); ok {
 			publicationOptions := func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.LandOptions, error) {
@@ -595,13 +665,7 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 		}
 	}
 	if req.Execution == nil {
-		if req.retainCheckpoint {
-			return nil
-		}
-		afterCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-		defer cancel()
-		backend.AfterRun(afterCtx, info, issue)
-		return nil
+		return !req.retainCheckpoint, nil
 	}
 	finalizationErr := executionCancellation(req)
 	if req.finalizeNativeWork && !req.reviewOnly && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
@@ -713,25 +777,22 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 		cancel()
 		if err != nil && !errors.Is(err, workspace.ErrMissingWorkspace) {
 			r.logger.Warn("preserve native workspace failed", "issue_id", req.Issue.ID, "error", err)
-			return errors.Join(completionErr, ErrWorkspacePreparation, ErrNativeRecoveryRequired, err)
+			return false, errors.Join(completionErr, ErrWorkspacePreparation, ErrNativeRecoveryRequired, err)
 		}
 	}
 	checkpointCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 	defer cancel()
 	if err := req.Execution.Validate(checkpointCtx); err != nil {
-		return errors.Join(completionErr, err)
+		return false, errors.Join(completionErr, err)
 	}
 	if err := recordCheckpointRef(checkpointCtx, req.checkpointRefs, req.Execution, checkpoint); err != nil {
-		return errors.Join(completionErr, err)
+		return false, errors.Join(completionErr, err)
 	}
 	completionErr = errors.Join(completionErr, executionCancellation(req))
 	if completionErr != nil || checkpoint.WorktreeState != "clean" || req.retainCheckpoint || ctx.Err() != nil {
-		return errors.Join(completionErr, context.Cause(ctx))
+		return false, errors.Join(completionErr, context.Cause(ctx))
 	}
-	afterCtx, stop := context.WithTimeout(ctx, r.afterRunTimeout)
-	defer stop()
-	backend.AfterRun(afterCtx, info, issue)
-	return completionErr
+	return true, nil
 }
 
 func nativeLandingRework(recovery tracker.NativeRecovery) bool {
@@ -1069,7 +1130,7 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error
 	if routeErr != nil {
 		return routeErr
 	}
-	request := ValidatorRequest{SecurityAudit: input.SecurityAudit, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request := ValidatorRequest{workspacePrepared: req.workspacePrepared, SecurityAudit: input.SecurityAudit, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ToolExecution); ok {
 		tools, handler := source.AgentTools()
 		request.EvidenceTools = tools
@@ -1114,7 +1175,7 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (bool, 
 	if routeErr != nil {
 		return false, routeErr
 	}
-	request := ValidatorRequest{implementationReview: true, Discussion: input.Discussion, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request := ValidatorRequest{workspacePrepared: req.workspacePrepared, implementationReview: true, Discussion: input.Discussion, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ToolExecution); ok {
 		request.EvidenceTools, request.EvidenceHandler = source.AgentTools()
 	}

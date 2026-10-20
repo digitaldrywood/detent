@@ -620,8 +620,9 @@ func (e *agentDurationLimitError) Is(target error) bool {
 }
 
 type RunRequest struct {
-	workspaceBackend workspace.Backend
-	LandingBatch     *workspace.LandingBatchTicket `json:"-"`
+	workspacePrepared bool
+	workspaceBackend  workspace.Backend
+	LandingBatch      *workspace.LandingBatchTicket `json:"-"`
 	// DeferExecutionFinish leaves terminal publication with the claim owner so
 	// native collaboration and lane writes finish under the execution lease.
 	DeferExecutionFinish     bool
@@ -672,6 +673,7 @@ type RunRequest struct {
 	checkpointRefs            *checkpointRefs
 	executionCancellation     func() error
 	validationEvidenceSource  AttemptDiffSource
+	reviewSource              func(context.Context, *RunResult) (string, error)
 }
 
 type NativeReviewContinuation struct {
@@ -767,6 +769,7 @@ const (
 )
 
 type ValidatorRequest struct {
+	workspacePrepared    bool
 	SecurityAudit        *NativeSecurityAuditEvidence
 	Discussion           NativeReviewDiscussion
 	Evidence             []tracker.NativeEvidence
