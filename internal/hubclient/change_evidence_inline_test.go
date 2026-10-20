@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -155,5 +156,48 @@ func TestRetainChangeValidationRejectsForeignServiceReference(t *testing.T) {
 				t.Fatalf("foreign service reference: error=%v replaced=%t", err, input.Validation != &validation)
 			}
 		})
+	}
+}
+
+func TestUploadChangeValidationBudgetsPartialManifests(t *testing.T) {
+	organization, serviceID := artifact.NewID("org"), artifact.NewID("service")
+	service, err := artifact.NewService(t.Context(), artifact.Config{ServiceID: serviceID, OrganizationID: organization, Mode: "customer", DatabasePath: filepath.Join(t.TempDir(), "artifacts.db"), Policy: artifact.Policy{ID: "test", Limits: artifact.Limits{RetainedBytes: 64 << 20, ReservedBytes: 32 << 20, ArtifactBytes: 8 << 20, UploadBytes: minValidationPartBytes, RetentionSeconds: 3600}, AbandonedUploadSeconds: 600, DeletionRecordSeconds: 7200, BackupSeconds: 3600}}, &changeEvidenceStorage{objects: map[string][]byte{}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	raw := []byte(strings.Repeat("validation receipt 世界\n", 80000))
+	if len(raw) < 2_000_000 {
+		t.Fatalf("payload must span many minimum-size parts: %d bytes", len(raw))
+	}
+	reservation := artifact.Reservation{ServiceID: serviceID, Mode: "customer", Scope: artifact.Scope{OrganizationID: organization, ProjectID: artifact.NewID("prj"), WorkItemID: artifact.NewID("wi"), RunID: artifact.NewID("run"), AttemptID: artifact.NewID("attempt")}, Key: "validation-budget", Kind: "log"}
+	reference, err := uploadChangeValidation(t.Context(), service, reservation, raw)
+	if err != nil {
+		t.Fatalf("minimum part limit upload: %v", err)
+	}
+	if reference.Bytes != int64(len(raw)) || reference.ServiceID != reservation.ServiceID {
+		t.Fatalf("reference = %+v", reference)
+	}
+}
+
+func TestUploadChangeValidationRefusesPartLimitBelowFloor(t *testing.T) {
+	appended := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/uploads" {
+			_ = json.NewEncoder(w).Encode(artifact.Upload{ArtifactID: "artifact_" + strings.Repeat("a", 32), State: "uploading", PartLimit: 1 << 10})
+			return
+		}
+		appended++
+		_ = json.NewEncoder(w).Encode(artifact.Object{})
+	}))
+	defer server.Close()
+	client := &artifact.Client{Origin: server.URL, Token: func(context.Context) (string, error) { return "worker", nil }}
+	_, err := uploadChangeValidation(t.Context(), client, artifact.Reservation{Kind: "log", Key: "validation"}, []byte(strings.Repeat("x", 64<<10)))
+	if !errors.Is(err, artifact.ErrQuota) || appended != 0 {
+		t.Fatalf("below-floor part limit: error=%v appended=%d", err, appended)
 	}
 }

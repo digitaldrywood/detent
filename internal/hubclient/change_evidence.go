@@ -46,14 +46,38 @@ func (e *nativeExecution) retainChangeValidation(ctx context.Context, input *tra
 	reservation := a.reservation
 	reservation.Kind = "log"
 	reservation.Key = e.data.AttemptID + ":validation:" + artifact.Digest(raw)
-	reservation.Bytes = int64(len(raw)) + artifact.MaxManifestBytes
-	upload, err := a.client.Reserve(ctx, reservation)
+	reference, err := uploadChangeValidation(ctx, a.client, reservation, raw)
 	if err != nil {
-		return fmt.Errorf("reserve Change validation: %w", err)
+		return err
+	}
+	bounded.Pipeline = nil
+	bounded.EvidenceArtifact = &reference
+	input.Validation = &bounded
+	return nil
+}
+
+// minValidationPartBytes is the smallest artifact part size a validation
+// receipt upload supports; the reservation budgets its partial manifests for it.
+const minValidationPartBytes = 16 << 10
+
+type validationUploader interface {
+	Reserve(context.Context, artifact.Reservation) (artifact.Upload, error)
+	Append(context.Context, string, artifact.Part) (artifact.Object, error)
+	Finalize(context.Context, string, string, *artifact.Capture) (artifact.Reference, error)
+}
+
+func uploadChangeValidation(ctx context.Context, uploader validationUploader, reservation artifact.Reservation, raw []byte) (artifact.Reference, error) {
+	reservation.Bytes = int64(len(raw)) + artifact.MaxManifestBytes + validationManifestBudget(len(raw), minValidationPartBytes)
+	upload, err := uploader.Reserve(ctx, reservation)
+	if err != nil {
+		return artifact.Reference{}, fmt.Errorf("reserve Change validation: %w", err)
 	}
 	if upload.State != "complete" {
 		partBytes := 64 << 10
 		if upload.PartLimit > 0 {
+			if upload.PartLimit < minValidationPartBytes {
+				return artifact.Reference{}, fmt.Errorf("store Change validation: part limit %d is below %d: %w", upload.PartLimit, minValidationPartBytes, artifact.ErrQuota)
+			}
 			partBytes = int(min(int64(partBytes), upload.PartLimit))
 		}
 		for sequence, offset := 0, 0; offset < len(raw); sequence++ {
@@ -62,24 +86,35 @@ func (e *nativeExecution) retainChangeValidation(ctx context.Context, input *tra
 				end--
 			}
 			if end == offset {
-				return fmt.Errorf("store Change validation: %w", artifact.ErrQuota)
+				return artifact.Reference{}, fmt.Errorf("store Change validation: %w", artifact.ErrQuota)
 			}
 			part := artifact.Part{Sequence: sequence, MediaType: "text/plain; charset=utf-8", Data: raw[offset:end], SHA256: artifact.Digest(raw[offset:end])}
-			if _, err := a.client.Append(ctx, upload.ArtifactID, part); err != nil {
-				return fmt.Errorf("store Change validation: %w", err)
+			if _, err := uploader.Append(ctx, upload.ArtifactID, part); err != nil {
+				return artifact.Reference{}, fmt.Errorf("store Change validation: %w", err)
 			}
 			offset = end
 		}
 	}
-	reference, err := a.client.Finalize(ctx, upload.ArtifactID, "complete", nil)
+	reference, err := uploader.Finalize(ctx, upload.ArtifactID, "complete", nil)
 	if err != nil {
-		return fmt.Errorf("finalize Change validation: %w", err)
+		return artifact.Reference{}, fmt.Errorf("finalize Change validation: %w", err)
 	}
 	if reference.ServiceID != reservation.ServiceID || reference.Scope != reservation.Scope || reference.Kind != "log" || reference.State != "complete" || reference.Availability != "available" || reference.ArtifactID != upload.ArtifactID || reference.Bytes != int64(len(raw)) || !artifact.ValidHash(reference.SHA256, 64) {
-		return artifact.ErrIntegrity
+		return artifact.Reference{}, artifact.ErrIntegrity
 	}
-	bounded.Pipeline = nil
-	bounded.EvidenceArtifact = &reference
-	input.Validation = &bounded
-	return nil
+	return reference, nil
+}
+
+// validationDescriptorBytes bounds one serialized artifact object descriptor.
+const validationDescriptorBytes = 256
+
+// validationManifestBudget bounds the partial manifests a log upload retains:
+// every appended part seals a manifest that lists all parts so far.
+func validationManifestBudget(payload, partBytes int) int64 {
+	parts := payload/(partBytes-utf8.UTFMax) + 2
+	var budget int64
+	for count := 1; count <= parts; count++ {
+		budget += 2 * (2048 + int64(count*validationDescriptorBytes))
+	}
+	return budget
 }
