@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
+	"github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -476,7 +477,7 @@ func shellQuote(value string) string {
 func runnerStartCommand(configPath, goos string) string {
 	quoted := shellQuote(configPath)
 	if goos == "windows" {
-		quoted = "'" + strings.ReplaceAll(configPath, "'", "''") + "'"
+		quoted = shell.QuotePowerShellArg(configPath)
 	}
 	return fmt.Sprintf("detent --config %s --headless", quoted)
 }

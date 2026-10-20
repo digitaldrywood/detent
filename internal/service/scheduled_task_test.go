@@ -21,6 +21,7 @@ func TestScheduledTaskDefinition(t *testing.T) {
 	}{
 		{"spaces and backslashes", `C:\Program Files\Detent\detent.exe`, `C:\Users\Example User\runner\global.yaml`, `C:\Users\Example User`, `& 'C:\Program Files\Detent\detent.exe' '--config' 'C:\Users\Example User\runner\global.yaml' '--headless' >> 'C:\Users\Example User\runner\logs\service.out.log' 2>> 'C:\Users\Example User\runner\logs\service.err.log'`},
 		{"shell metacharacters and unicode", `C:\Tools & Apps\detent.exe`, `C:\Users\Example's $user\配置\global.yaml`, `C:\Users\Example's $user`, `& 'C:\Tools & Apps\detent.exe' '--config' 'C:\Users\Example''s $user\配置\global.yaml' '--headless' >> 'C:\Users\Example''s $user\配置\logs\service.out.log' 2>> 'C:\Users\Example''s $user\配置\logs\service.err.log'`},
+		{"unicode quote injection", `C:\Tools‘\detent.exe`, `C:\Users\x’; Start-Process calc; #‚‛\global.yaml`, `C:\Users\Example`, `& 'C:\Tools‘‘\detent.exe' '--config' 'C:\Users\x’’; Start-Process calc; #‚‚‛‛\global.yaml' '--headless' >> 'C:\Users\x’’; Start-Process calc; #‚‚‛‛\logs\service.out.log' 2>> 'C:\Users\x’’; Start-Process calc; #‚‚‛‛\logs\service.err.log'`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
