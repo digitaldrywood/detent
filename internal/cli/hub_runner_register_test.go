@@ -296,6 +296,7 @@ type registerHub struct {
 	heartbeat        atomic.Value
 	tier             atomic.Value
 	redeemed         atomic.Int32
+	requests         atomic.Int32
 	projects         map[tracker.ProjectID]string
 	cloneURLs        map[tracker.ProjectID]string
 	features         []string
@@ -312,6 +313,7 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 	}
 	hub.credential.Store("")
 	hub.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hub.requests.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		if !strings.HasPrefix(r.URL.Path, "/organizations/org_example/api/v2/organizations/org_example/") && !strings.HasPrefix(r.URL.Path, "/api/v2/organizations/org_example/") && !strings.HasSuffix(r.URL.Path, "/capabilities") {
 			t.Errorf("request outside the organization: %s", r.URL.Path)
@@ -401,13 +403,13 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 
 func runRegister(t *testing.T, env map[string]string, starter runnerServiceStarter, args ...string) (string, error) {
 	t.Helper()
-	return executeRegister(t, newHubRunnerRegisterCommandWithReporter("test", func(name string) string { return env[name] }, starter, runnerPrivateLocation, func(context.Context, globalconfig.Config, string) error { return nil }), args...)
+	return executeRegister(t, newHubRunnerRegisterCommandWithReporter("test", "linux", func(name string) string { return env[name] }, starter, runnerPrivateLocation, func(context.Context, globalconfig.Config, string) error { return nil }), args...)
 }
 
 // Registration fixtures stay under t.TempDir even when worker TMPDIR is inside this repository.
 func runRegisterInTestWorkspace(t *testing.T, env map[string]string, starter runnerServiceStarter, args ...string) (string, error) {
 	t.Helper()
-	return executeRegister(t, newHubRunnerRegisterCommandWithReporter("test", func(name string) string { return env[name] }, starter, func(string) error { return nil }, func(context.Context, globalconfig.Config, string) error { return nil }), args...)
+	return executeRegister(t, newHubRunnerRegisterCommandWithReporter("test", "linux", func(name string) string { return env[name] }, starter, func(string) error { return nil }, func(context.Context, globalconfig.Config, string) error { return nil }), args...)
 }
 
 func executeRegister(t *testing.T, command *cobra.Command, args ...string) (string, error) {
@@ -466,7 +468,7 @@ func TestHubRunnerRegisterServiceRuntime(t *testing.T) {
 					runnerCommand.RemoveCommand(child)
 				}
 			}
-			register := newHubRunnerRegisterCommandWithGitHubAuth("test", opts.lookupEnv, runnerServiceStarterFor(opts), func(string) error { return nil }, func(_ context.Context, cfg globalconfig.Config, _ string) error {
+			register := newHubRunnerRegisterCommandWithGitHubAuth("test", "linux", opts.lookupEnv, runnerServiceStarterFor(opts), func(string) error { return nil }, func(_ context.Context, cfg globalconfig.Config, _ string) error {
 				cfg.Port = &test.configPort
 				return globalconfig.Write(configPath, cfg)
 			}, func(context.Context) error { return nil })
@@ -594,23 +596,47 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 func TestHubRunnerRegisterAccessConfiguration(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name, selected, want string
+		name, goos, selected, want string
+		refused                    bool
 	}{
-		{"legacy default", "", "sandbox"},
-		{"sandbox", "sandbox", "sandbox"},
-		{"full access", "native-trusted", "native-trusted"},
+		{"linux default", "linux", "", "sandbox", false},
+		{"linux sandbox", "linux", "sandbox", "sandbox", false},
+		{"linux full access", "linux", "native-trusted", "native-trusted", false},
+		{"darwin default", "darwin", "", "sandbox", false},
+		{"darwin sandbox", "darwin", "sandbox", "sandbox", false},
+		{"darwin full access", "darwin", "native-trusted", "native-trusted", false},
+		{"windows default", "windows", "", "", true},
+		{"windows sandbox", "windows", "sandbox", "", true},
+		{"windows full access", "windows", "native-trusted", "native-trusted", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_site": "detent.build"})
+			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_site": "Example Project"})
 			root := t.TempDir()
 			config := filepath.Join(root, "config", "global.yaml")
 			args := []string{"--url", hub.server.URL + "/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", config, "--workspace-root", filepath.Join(root, "work")}
 			if test.selected != "" {
 				args = append(args, "--isolation-tier", test.selected)
 			}
-			starter := func(*cobra.Command, string) error { t.Error("unexpected service start"); return nil }
-			if output, err := runRegisterInTestWorkspace(t, nil, starter, args...); err != nil {
+			register := func(args ...string) (string, error) {
+				starter := func(*cobra.Command, string) error { t.Error("unexpected service start"); return nil }
+				command := newHubRunnerRegisterCommandWithReporter("test", test.goos, func(string) string { return "" }, starter, func(string) error { return nil }, func(context.Context, globalconfig.Config, string) error { return nil })
+				return executeRegister(t, command, args...)
+			}
+			output, err := register(args...)
+			if test.refused {
+				if err == nil || !strings.Contains(err.Error(), "sandbox is unavailable on Windows") || !strings.Contains(err.Error(), "--isolation-tier native-trusted") {
+					t.Fatalf("register error=%v, output=%s", err, output)
+				}
+				if hub.requests.Load() != 0 {
+					t.Fatal("unsupported tier contacted the Hub")
+				}
+				if _, err := os.Stat(filepath.Dir(config)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unsupported tier created runner files: %v", err)
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("register: %v\n%s", err, output)
 			}
 			path := filepath.Join(filepath.Dir(config), "identity.json")
@@ -619,7 +645,11 @@ func TestHubRunnerRegisterAccessConfiguration(t *testing.T) {
 				t.Fatalf("routing=%+v, Hub tier=%v, err=%v", cached, hub.tier.Load(), err)
 			}
 			before := mustRead(t, config)
-			if output, err := runRegisterInTestWorkspace(t, nil, starter, append(args, "--isolation-tier", "sandbox")...); err != nil {
+			retryTier := "sandbox"
+			if test.goos == "windows" {
+				retryTier = "native-trusted"
+			}
+			if output, err := register(append(args, "--isolation-tier", retryTier)...); err != nil {
 				t.Fatalf("retry: %v\n%s", err, output)
 			}
 			cached, err = runnerauth.LoadRoutingCache(path)
@@ -779,7 +809,7 @@ func TestHubRunnerRegisterVersionGuidance(t *testing.T) {
 			if err := os.Chmod(root, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			command := newHubRunnerRegisterCommandWithReporter(test.version, func(string) string { return "" }, func(*cobra.Command, string) error {
+			command := newHubRunnerRegisterCommandWithReporter(test.version, "linux", func(string) string { return "" }, func(*cobra.Command, string) error {
 				t.Fatal("service started without a checkout")
 				return nil
 			}, func(string) error { return nil }, func(context.Context, globalconfig.Config, string) error { return nil })
@@ -975,7 +1005,7 @@ func TestHubRunnerRegisterReportsBeforeService(t *testing.T) {
 				return nil
 			}
 			checks := 0
-			cmd := newHubRunnerRegisterCommandWithGitHubAuth("test", mapLookup(map[string]string{"GITHUB_TOKEN": test.envToken}), starter, func(string) error { return nil }, reporter, func(context.Context) error {
+			cmd := newHubRunnerRegisterCommandWithGitHubAuth("test", "linux", mapLookup(map[string]string{"GITHUB_TOKEN": test.envToken}), starter, func(string) error { return nil }, reporter, func(context.Context) error {
 				checks++
 				return test.authErr
 			})

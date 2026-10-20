@@ -47,11 +47,11 @@ func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, 
 }
 
 func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error) *cobra.Command {
-	return newHubRunnerRegisterCommandWithReporter(version, lookupEnv, startService, privateLocation, reportRunnerSetup)
+	return newHubRunnerRegisterCommandWithReporter(version, runtime.GOOS, lookupEnv, startService, privateLocation, reportRunnerSetup)
 }
 
-func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error) *cobra.Command {
-	return newHubRunnerRegisterCommandWithGitHubAuth(version, lookupEnv, startService, privateLocation, report, func(ctx context.Context) error {
+func newHubRunnerRegisterCommandWithReporter(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error) *cobra.Command {
+	return newHubRunnerRegisterCommandWithGitHubAuth(version, goos, lookupEnv, startService, privateLocation, report, func(ctx context.Context) error {
 		commandCtx, cancel := context.WithTimeout(ctx, runtimeCommandTimeout)
 		defer cancel()
 		_, err := defaultCommandRunner(commandCtx, "gh", "auth", "status")
@@ -59,7 +59,7 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 	})
 }
 
-func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error) *cobra.Command {
+func newHubRunnerRegisterCommandWithGitHubAuth(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error) *cobra.Command {
 	var hubURL, token, organization, name, configPath, workspaceRoot, isolationTier string
 	var capacity int
 	var service bool
@@ -88,6 +88,9 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 			}
 			if isolationTier != isolation.Sandbox && isolationTier != isolation.NativeTrusted {
 				return errors.New("--isolation-tier must be sandbox or native-trusted")
+			}
+			if goos == "windows" && isolationTier == isolation.Sandbox {
+				return errors.New("sandbox is unavailable on Windows; only Full access is supported: pass --isolation-tier native-trusted")
 			}
 			paths, err := resolveRunnerPaths(configPath, workspaceRoot, privateLocation)
 			if err != nil {
