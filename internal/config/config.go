@@ -598,9 +598,14 @@ func (c Config) USDBrakes() USDBrakes {
 	}
 }
 
+const nativeReleaseWarning = "release.enabled: release automation is unavailable for tracker.kind hub_native, including deliverable.github_pull_request: true; requires tracker.kind github"
+
 func (c Config) ValidationWarnings() []string {
 	var warnings []string
 	warnings = append(warnings, c.Agents.ModelSelectionWarnings()...)
+	if c.Release.Enabled && c.Tracker.Kind == TrackerHubNative {
+		warnings = append(warnings, nativeReleaseWarning)
+	}
 	if c.Workspace.legacyCacheStrategy {
 		warnings = append(warnings, "workspace.cache_strategy is unknown and ignored; remove it before the next release, which will reject it")
 	}
@@ -1769,7 +1774,11 @@ func (c *Config) Validate() error {
 	c.Observability.validate(&problems)
 	c.Release.validate("release", &problems)
 	if c.Release.Enabled && c.Tracker.Kind != TrackerGitHub {
-		problems = append(problems, "release.enabled requires tracker.kind github")
+		if c.Tracker.Kind == TrackerHubNative {
+			problems = append(problems, "warning: "+nativeReleaseWarning)
+		} else {
+			problems = append(problems, "release.enabled requires tracker.kind github")
+		}
 	}
 	if c.Release.Enabled && !validRepositoryName(c.Tracker.Repository) {
 		problems = append(problems, "tracker.repository must be owner/name when release.enabled is true")

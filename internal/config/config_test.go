@@ -3119,6 +3119,9 @@ func TestParseWorkflowGateSecurityAuditConfig(t *testing.T) {
 		{"explicit native opt out", "gate:\n  security_audit:\n    enabled: false\n", false},
 		{"explicit native enabled", "gate:\n  security_audit:\n    enabled: true\n", true},
 		{"partial audit config", "gate:\n  security_audit:\n    max_attempts: 4\n", true},
+		{"default native github pull request", "deliverable:\n  github_pull_request: true\n", true},
+		{"native github pull request opt out", "deliverable:\n  github_pull_request: true\ngate:\n  security_audit:\n    enabled: false\n", false},
+		{"native github pull request enabled", "deliverable:\n  github_pull_request: true\ngate:\n  security_audit:\n    enabled: true\n", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n" + test.setting + "---\nPrompt\n"))
@@ -4497,6 +4500,7 @@ func TestReleaseConfigValidation(t *testing.T) {
 		name   string
 		change func(*Config)
 		want   string
+		warn   bool
 	}{
 		{
 			name: "valid github policy",
@@ -4509,12 +4513,38 @@ func TestReleaseConfigValidation(t *testing.T) {
 			},
 		},
 		{
-			name: "requires github tracker",
+			name: "native direct git rejects release automation",
 			change: func(cfg *Config) {
 				cfg.Tracker.Kind = TrackerHubNative
+				cfg.Tracker.Repository = "example-org/example-project"
 				cfg.Release.Enabled = true
 			},
-			want: "release.enabled requires tracker.kind github",
+			want: "warning: release.enabled: release automation is unavailable for tracker.kind hub_native",
+			warn: true,
+		},
+		{
+			name: "native github pull request rejects release automation",
+			change: func(cfg *Config) {
+				cfg.Tracker.Kind = TrackerHubNative
+				cfg.Tracker.Repository = "example-org/example-project"
+				cfg.Deliverable.GitHubPullRequest = true
+				cfg.Release.Enabled = true
+			},
+			want: "warning: release.enabled: release automation is unavailable for tracker.kind hub_native",
+			warn: true,
+		},
+		{
+			name: "native direct git with release disabled",
+			change: func(cfg *Config) {
+				cfg.Tracker.Kind = TrackerHubNative
+			},
+		},
+		{
+			name: "native github pull request with release disabled",
+			change: func(cfg *Config) {
+				cfg.Tracker.Kind = TrackerHubNative
+				cfg.Deliverable.GitHubPullRequest = true
+			},
 		},
 		{
 			name: "green ci cannot be waived",
@@ -4547,7 +4577,15 @@ func TestReleaseConfigValidation(t *testing.T) {
 			t.Parallel()
 			cfg := Default()
 			test.change(&cfg)
+			warnings := cfg.ValidationWarnings()
+			const releaseWarning = "release.enabled: release automation is unavailable for tracker.kind hub_native, including deliverable.github_pull_request: true; requires tracker.kind github"
+			if got := slices.Contains(warnings, releaseWarning); got != test.warn {
+				t.Fatalf("ValidationWarnings() = %q, want release warning=%t", warnings, test.warn)
+			}
 			err := cfg.Validate()
+			if test.warn && (err == nil || !strings.Contains(err.Error(), releaseWarning)) {
+				t.Fatalf("Validate() error = %v, want release warning %q", err, releaseWarning)
+			}
 			if test.want == "" {
 				if err != nil {
 					t.Fatalf("Validate() error = %v", err)
