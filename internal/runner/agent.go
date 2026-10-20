@@ -2593,7 +2593,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			releaseWorkspace = func() {}
 			feedback, reviewErr := req.reviewSource(afterRunCtx, &result)
 			if usage, ok := runWorkspace.(workspace.Usage); ok {
-				release, err := usage.Use(ctx, workspaceIssue)
+				release, err := usage.Use(afterRunCtx, workspaceIssue)
 				if err != nil {
 					reviewErr = errors.Join(reviewErr, err)
 				} else {
