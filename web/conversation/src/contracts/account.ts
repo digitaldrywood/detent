@@ -925,13 +925,28 @@ export const SpritePool = Schema.Struct({
   idle_seconds: Schema.Number,
   bootstrap: Schema.String,
   revision: Schema.Number,
+  isolation_tier_unavailable_reason: Schema.optional(Schema.String),
+  runner_setup_declared: Schema.optional(Schema.NullOr(Schema.Boolean)),
   members: Schema.Array(Schema.Struct({
     name: Schema.String,
+    allocation_project_id: Schema.optional(Schema.String),
     state: Schema.String,
+    status: Schema.optional(Schema.String),
+    waiting_for: Schema.optional(Schema.Array(Schema.Struct({ check: Schema.String, command: Schema.String }))),
     bootstrap_log: Schema.String,
     runner_id: Schema.String,
     idle_since: Schema.String,
   })),
+});
+
+export const ProjectSpriteAllocation = Schema.Struct({
+  project_id: Schema.String,
+  managed: Schema.Boolean,
+  desired_count: Schema.Number,
+  allocated_count: Schema.Number,
+  shortfall: Schema.Number,
+  provision_failures: Schema.Number,
+  revision: Schema.String,
 });
 
 /** Provider secret presence; credentials are write-only. */

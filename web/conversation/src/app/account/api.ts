@@ -36,6 +36,7 @@ import {
   ProjectSecretStatus,
   SlackIntegrationStatus,
   SpritePool,
+  ProjectSpriteAllocation,
   ProjectsResponse,
   ReporterTemplates,
   OrganizationProjectRank,
@@ -338,8 +339,16 @@ export function makeAccountApi(options: AccountApiOptions) {
     // --- Project settings ---------------------------------------------------
     spritesSecret: (projectId: string) =>
       send(ProjectSecretStatus, "GET", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`),
-    spritePool: () =>
-      send(SpritePool, "GET", `${base}/sprite-pool`),
+    spritePool: (projectId?: string) =>
+      send(SpritePool, "GET", `${projectId ? project(projectId) : base}/sprite-pool`),
+    projectSpriteAllocation: (projectId: string) =>
+      send(ProjectSpriteAllocation, "GET", `${project(projectId)}/sprite-pool/allocation`),
+    setProjectSpriteAllocation: (input: { projectId: string; desiredCount: number; revision: string; key: string }) =>
+      send(ProjectSpriteAllocation, "PUT", `${project(input.projectId)}/sprite-pool/allocation`, {
+        desired_count: input.desiredCount,
+        expected_revision: input.revision,
+        idempotency_key: input.key,
+      }),
     setSpritePool: (settings: { min_runners: number; max_runners: number; idle_seconds: number; bootstrap: string; revision: number }) =>
       send(SpritePool, "PUT", `${base}/sprite-pool`, settings),
     setSpritesSecret: (projectId: string, token: string) =>
