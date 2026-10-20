@@ -1058,9 +1058,14 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 	if err := d.db.QueryRowContext(t.Context(), "SELECT record_json FROM hosted_plans WHERE id='pilot_free' AND version=1").Scan(&original); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "legacy-grant", Action: "grant", ExpectedRevision: 1, GrantID: "legacy", Plan: PlanReference{ID: "comp_team", Version: 1}, Scope: []string{"projects", "native_execution"}, Reason: "existing complimentary access"}); err != nil {
+	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "legacy-grant", Action: "grant", ExpectedRevision: 1, GrantID: "legacy", Plan: PlanReference{ID: "comp_team", Version: 1}, Scope: []string{"projects", "native_execution", "collaboration_bytes"}, Reason: "existing complimentary access"}); err != nil {
 		t.Fatal(err)
 	}
+	var originalGrant string
+	if err := d.db.QueryRowContext(t.Context(), "SELECT record_json FROM hosted_complimentary_grants WHERE id='legacy'").Scan(&originalGrant); err != nil {
+		t.Fatal(err)
+	}
+
 	plans := capacityHostedPlans()
 	if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 		t.Fatal(err)
@@ -1069,6 +1074,14 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 	if err := d.db.QueryRowContext(t.Context(), "SELECT record_json FROM hosted_plans WHERE id='pilot_free' AND version=1").Scan(&retained); err != nil {
 		t.Fatal(err)
 	}
+	var retainedGrant string
+	if err := d.db.QueryRowContext(t.Context(), "SELECT record_json FROM hosted_complimentary_grants WHERE id='legacy'").Scan(&retainedGrant); err != nil {
+		t.Fatal(err)
+	}
+	if retainedGrant != originalGrant {
+		t.Fatal("capacity seeding rewrote the legacy grant")
+	}
+
 	entitlement, err := d.hostedPlanUsage(t.Context(), time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -1076,6 +1089,27 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 	if retained != original || entitlement.Base.ID != "pilot_free" || len(entitlement.Grants) != 1 || entitlement.Allowances["unarchived_issues"] != 10000 || !slices.Contains(entitlement.Features, "native_execution") {
 		t.Fatalf("legacy migration = %#v", entitlement)
 	}
+	if entitlement.Allowances["collaboration_bytes"] != 128<<20 {
+		t.Fatalf("legacy storage changed: %d", entitlement.Allowances["collaboration_bytes"])
+	}
+	for _, test := range []struct {
+		ref   PlanReference
+		bytes int64
+	}{
+		{PlanReference{ID: "pilot_free", Version: 1}, 64 << 20}, {PlanReference{ID: "comp_team", Version: 1}, 128 << 20},
+		{PlanReference{ID: "free", Version: 1}, 1 << 30}, {PlanReference{ID: "starter", Version: 1}, 1 << 30}, {PlanReference{ID: "team", Version: 2}, 1 << 30}, {PlanReference{ID: "growth", Version: 2}, 1 << 30}, {PlanReference{ID: "scale", Version: 2}, 1 << 30},
+	} {
+		t.Run(test.ref.ID, func(t *testing.T) {
+			plan, err := d.readHostedPlan(t.Context(), d.reader, test.ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.Allowances["collaboration_bytes"] != test.bytes {
+				t.Fatalf("storage=%d, want %d", plan.Allowances["collaboration_bytes"], test.bytes)
+			}
+		})
+	}
+
 	for _, resource := range []string{"members", "projects", "concurrent_work"} {
 		if _, limited := entitlement.Allowances[resource]; limited {
 			t.Fatalf("legacy still limits %s", resource)
