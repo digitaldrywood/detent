@@ -26,7 +26,7 @@ func BillingCatalog() []Definition {
 		name, description, properties, required string
 		write, external                         bool
 	}{
-		{BillingStatus, "Read owner-only subscription status, approved prices, current allowances and recent safe billing audit.", "", "", false, false},
+		{BillingStatus, "Read owner-only subscription status, approved prices, current allowances, recent safe billing audit and day-grouped credit transactions. Pass next_cursor with the same from/to period for more credit rows.", `"limit":{"type":"integer","minimum":1,"maximum":100},"cursor":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}`, "", false, false},
 		{BillingUsage, "Read owner-only billing metadata, entitlement usage and cost drivers.", "", "", false, false},
 		{BillingExport, "Export owner-only subscription, allowance, usage and safe audit data with an export identifier and freshness.", "", "", false, false},
 		{HostedPlan, "Read the current organization plan and allowances with owner/admin dashboard authority.", "", "", false, false},
@@ -53,4 +53,11 @@ func BillingCatalog() []Definition {
 		tools = append(tools, Definition{Name: item.name, Description: item.description, InputSchema: json.RawMessage(`{"type":"object","properties":{` + properties + `},"additionalProperties":false` + required + `}`), Annotations: Annotations{ReadOnly: !item.write, Destructive: item.write && item.name != BudgetOverrideClear, Idempotent: true, OpenWorld: item.external}, Meta: ToolMetadata{Toolset: "billing_usage"}})
 	}
 	return tools
+}
+
+type BillingStatusArguments struct {
+	Limit  int    `json:"limit,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+	From   string `json:"from,omitempty"`
+	To     string `json:"to,omitempty"`
 }

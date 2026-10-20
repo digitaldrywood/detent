@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -115,4 +116,48 @@ func (p *billingResponseLossProvider) Checkout(ctx context.Context, request bill
 	}
 	p.sessions[request.IdempotencyKey] = session
 	return billing.Session{}, errors.New("credential-sensitive-value-sentinel: response lost after provider effect")
+}
+
+func TestBillingStatusCreditCursor(t *testing.T) {
+	t.Parallel()
+	for _, deployment := range []string{"shared", "dedicated"} {
+		t.Run(deployment, func(t *testing.T) {
+			f, ctx := newHostedKeyMCPFixture(t, deployment, "owner")
+			d := f.service.database
+			d.aiCreditMode = billing.ModeTest
+			if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'test',123)`, d.hostedOrganization); err != nil {
+				t.Fatal(err)
+			}
+			for index := range 3 {
+				if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,'test',?,123,'purchase',?)`, d.hostedOrganization, fmt.Sprintf("purchase-%d", index), int64(index+1)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cursor := ""
+			for index := range 3 {
+				args, err := json.Marshal(creditPageRequest{Limit: 1, Cursor: cursor})
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := (hostedOperatorExecutor{f.service}).Execute(ctx, operatortool.Call{Name: operatortool.BillingStatus, Arguments: args})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var read struct {
+					Billing hostedBillingView `json:"billing"`
+				}
+				if err := json.Unmarshal(result.Content, &read); err != nil {
+					t.Fatal(err)
+				}
+				credits := read.Billing.AICredits
+				if credits == nil || credits.TotalRows != 3 || len(credits.History) != 1 || credits.History[0].At.UnixMicro() != int64(3-index) {
+					t.Fatalf("billing=%+v", read)
+				}
+				if (credits.NextCursor == "") != (index == 2) {
+					t.Fatalf("cursor=%s index=%d", credits.NextCursor, index)
+				}
+				cursor = credits.NextCursor
+			}
+		})
+	}
 }
