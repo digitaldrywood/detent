@@ -1,3 +1,4 @@
+import { useProjectSettingsDirty } from "../settings/projectSettingsDirty.ts";
 import React from "react";
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
 import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
@@ -66,6 +67,7 @@ function ModelPicker({ label, value, models, disabled, onChange }: {
   const [other, setOther] = React.useState(false);
   const [custom, setCustom] = React.useState(value);
   const anchor = React.useRef<HTMLDivElement>(null);
+  useProjectSettingsDirty(other && custom !== value);
   const choices = models.filter((model) => model.id !== "auto");
   if (value && !choices.some((model) => model.id === value)) choices.push({ id: value, label: value, default: false, provider: "Saved model" });
   const groups = [...new Set(choices.map((model) => model.provider || "Other"))].map((provider) => ({
@@ -161,8 +163,9 @@ export function ModelSelectionSettings({ projectId, canManage }: {
   });
   const update = (next: CloudSelection) => { setDraft(next); setSaved(null); save.clearError(); };
   const disabled = !canManage || save.pending || (projectId !== undefined && !override);
-  if (draft === null) return <SettingsSection title="Model selection" tabIndex={canManage ? undefined : 0}><p role="status" className="px-3 text-sm text-muted-foreground">{resource.error?.message ?? "Loading model selection."}</p></SettingsSection>;
   const dirty = resource.value !== undefined && ((projectId !== undefined && override !== (resource.value.selection !== null)) || ((projectId === undefined || override) && JSON.stringify(draft) !== JSON.stringify(resource.value.effective)));
+  useProjectSettingsDirty(draft !== null && dirty);
+  if (draft === null) return <SettingsSection title="Model selection" tabIndex={canManage ? undefined : 0}><p role="status" className="px-3 text-sm text-muted-foreground">{resource.error?.message ?? "Loading model selection."}</p></SettingsSection>;
   const levels = ordered(draft.levels ?? {}, LEVEL_ORDER);
   const defaultLevel = draft.default_level ?? "normal";
   const modelOptions = [{ value: "normal", label: "Normal model" }, { value: "complex", label: "Complex model" }];

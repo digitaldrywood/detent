@@ -57,6 +57,10 @@ func (f *browserHostedFixture) appRequest(t *testing.T, account, method, path st
 func TestAppShellServing(t *testing.T) {
 	useAppClientFS(t, appClientBundle())
 	f := newBrowserHostedFixture(t, true)
+	var projectSlug string
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT slug FROM projects WHERE id=?", f.project).Scan(&projectSlug); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name     string
 		account  string
@@ -79,6 +83,11 @@ func TestAppShellServing(t *testing.T) {
 		{name: "viewer", account: "viewer", path: "/work", status: http.StatusOK, shell: true},
 		{name: "head", account: "owner", method: http.MethodHead, path: "/work", status: http.StatusOK, shell: true},
 		{name: "root", account: "owner", path: "/", status: http.StatusOK, shell: true},
+		{name: "project settings by slug", account: "owner", path: "/projects/" + projectSlug + "/settings", status: http.StatusOK, shell: true},
+		{name: "project settings by id", account: "owner", path: "/projects/" + f.project + "/settings", status: http.StatusOK, shell: true},
+		{name: "unknown project settings", account: "owner", path: "/projects/unknown-project/settings", status: http.StatusNotFound},
+		{name: "unauthorized project settings", account: "support-staff", path: "/projects/" + projectSlug + "/settings", status: http.StatusNotFound},
+		{name: "anonymous project settings", path: "/projects/" + projectSlug + "/settings", status: http.StatusSeeOther, location: "/login"},
 		{name: "project", account: "owner", path: "/projects/" + f.project, status: http.StatusOK, shell: true},
 		{name: "project issue", account: "owner", path: "/projects/" + f.project + "/issues/wi_any", status: http.StatusNotFound},
 		{name: "project issue change", account: "owner", path: "/projects/" + f.project + "/issues/wi_any/changes/chg_any", status: http.StatusNotFound},
