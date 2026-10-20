@@ -66,9 +66,16 @@ func (r UpdateRequest) Validate() error {
 	return nil
 }
 
+type UpdateFailure struct {
+	Request       UpdateRequest `json:"request"`
+	FailureReason string        `json:"failure_reason"`
+	ObservedAt    time.Time     `json:"observed_at"`
+}
+
 type UpdateReceipt struct {
 	ExecutionArtifact bool           `json:"execution_artifact,omitempty"`
 	DrainReason       string         `json:"drain_reason,omitempty"`
+	PreviousFailure   *UpdateFailure `json:"previous_failure,omitempty"`
 	FailureReason     string         `json:"failure_reason,omitempty"`
 	Running           *BuildEvidence `json:"running,omitempty"`
 	VerifiedTarget    *BuildEvidence `json:"verified_target,omitempty"`
@@ -78,7 +85,22 @@ type UpdateReceipt struct {
 	ObservedAt        time.Time      `json:"observed_at"`
 }
 
+func (r *UpdateReceipt) RetainPreviousFailure(previous *UpdateReceipt) {
+	if r == nil || r.PreviousFailure != nil || previous == nil {
+		return
+	}
+	if previous.Request.ID != r.Request.ID && previous.FailureReason != "" {
+		r.PreviousFailure = &UpdateFailure{Request: previous.Request, FailureReason: previous.FailureReason, ObservedAt: previous.ObservedAt}
+	} else if previous.PreviousFailure != nil {
+		failure := *previous.PreviousFailure
+		r.PreviousFailure = &failure
+	}
+}
+
 func (r UpdateReceipt) Validate() error {
+	if previous := r.PreviousFailure; previous != nil && (previous.Request.Validate() != nil || previous.FailureReason == "" || len(previous.FailureReason) > 512 || previous.ObservedAt.IsZero()) {
+		return errors.New("invalid previous update failure")
+	}
 	if len(r.DrainReason) > 512 || len(r.FailureReason) > 512 || r.Request.Validate() != nil || r.ObservedAt.IsZero() || !slices.Contains([]string{"applying", "draining", "refused", "uncertain", "applied", "restart_requested", "running"}, r.Status) {
 		return errors.New("invalid update receipt")
 	}
@@ -183,6 +205,9 @@ func (r Runner) UpdateView(now time.Time) UpdateView {
 		view.Status = "requested"
 		if r.Update.Receipt != nil && r.Update.Receipt.Request == *r.UpdateRequest {
 			view.Status = r.Update.Receipt.Status
+			if view.Status == "refused" && r.Update.Running.VerifiedRelease && strings.TrimPrefix(r.Update.Running.Version, "v") == strings.TrimPrefix(r.UpdateRequest.Version, "v") {
+				view.Status = "running"
+			}
 			if r.Update.Receipt.Running != nil && !r.Update.Running.Matches(*r.Update.Receipt.Running) {
 				view.Status = "drifted"
 			}

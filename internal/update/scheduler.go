@@ -127,11 +127,11 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 		cfg.Logger.Warn("load automatic update state failed", "path", cfg.StatePath, "error", err)
 	}
 	stateValid := err == nil && (loadedState.EnrolledReceipt == nil || !loadedState.EnrolledReceipt.AdvancedFollowHubRelease())
-	if receipt := loadedState.EnrolledReceipt; stateValid && receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && receipt.Running == nil && !receipt.ExecutionReady() {
+	if receipt := loadedState.EnrolledReceipt; stateValid && receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && !receipt.ExecutionReady() && (receipt.Running == nil || !cfg.RunningBuild.VerifiedRelease) {
 		switch {
 		case receipt.Status == "draining" || receipt.Status == "applying":
 			receipt.FailureReason = "Update was interrupted before completion"
-		case receipt.Applied != nil && !cfg.RunningBuild.Matches(*receipt.Applied), receipt.VerifiedTarget != nil && !cfg.RunningBuild.Matches(*receipt.VerifiedTarget):
+		case receipt.Applied != nil && (!cfg.RunningBuild.VerifiedRelease || !cfg.RunningBuild.Matches(*receipt.Applied)), receipt.VerifiedTarget != nil && (!cfg.RunningBuild.VerifiedRelease || !cfg.RunningBuild.Matches(*receipt.VerifiedTarget)):
 			receipt.FailureReason = "Update did not restart into the verified build"
 		}
 		if receipt.FailureReason != "" {
@@ -296,7 +296,7 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 		persistErr := s.recordCheckFailure(checkedAt, err)
 		return checked, fmt.Errorf("check for Detent update: %w", errors.Join(err, persistErr))
 	}
-	if !checked.UpdateAvailable {
+	if !checked.UpdateAvailable && !checked.RepairAvailable {
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "up_to_date"
 			status.LastCheckAt = &checkedAt
@@ -468,6 +468,10 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 }
 
 func (s *Scheduler) installControlLocked(ctx context.Context, opts ApplyOptions, version string) (Status, bool) {
+	comparison, err := CompareVersions(version, s.cfg.RunningBuild.Version)
+	if err != nil || comparison <= 0 {
+		return Status{}, false
+	}
 	s.mu.RLock()
 	pending := s.controlRestart
 	s.mu.RUnlock()

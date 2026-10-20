@@ -109,7 +109,7 @@ describe("runner rows", () => {
     expect(card.getByText(problem.message)).toBeTruthy();
     expect(card.getByText(problem.fix_hint)).toBeTruthy();
     if (updateWarning) {
-      expect(card.getByText(/Needs human: reinstall/)).toBeTruthy();
+      expect(card.getByText(/Needs human: run/)).toBeTruthy();
       expect(card.getByText("Update to 1.2.4 · Update needs attention")).toBeTruthy();
     }
     rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [{ ...RUNNER, problems: [] }] }} now={NOW} />);
@@ -173,8 +173,9 @@ describe("runner rows", () => {
     expect(screen.getByText(`Update to 1.2.4 · ${label}`)).toBeTruthy();
     expect(screen.queryByText(/waiting for \d+ jobs? to finish/)).toBeNull();
     if (status === "refused" || status === "uncertain") {
-      expect(screen.getByText(/Needs human: reinstall/)).toBeTruthy();
-      expect(screen.getByText("curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh")).toBeTruthy();
+      expect(screen.getByText(/Needs human: run/)).toBeTruthy();
+      expect(screen.getByText("detent update --yes")).toBeTruthy();
+      expect(screen.getByText(/this installed updater cannot repair it/)).toBeTruthy();
     }
   });
   it("changes the running version only after the replacement reports it", () => {
