@@ -51,8 +51,10 @@ func TestWindowsScratchInspectionConfirmsProcessExit(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
+	scratch := t.TempDir()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestWindowsScratchInspectionHelper$")
-	cmd.Env = append(os.Environ(), "DETENT_WINDOWS_INSPECTION_HELPER=1", "GOCOVERDIR="+t.TempDir())
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(), "DETENT_WINDOWS_INSPECTION_HELPER=1", "DETENT_WORKER_SCRATCH="+scratch, "GOCOVERDIR="+t.TempDir())
 	input, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -73,6 +75,21 @@ func TestWindowsScratchInspectionConfirmsProcessExit(t *testing.T) {
 	})
 	if _, err := io.ReadFull(output, make([]byte, 1)); err != nil {
 		t.Fatalf("wait for readiness: %v", err)
+	}
+	for _, tt := range []struct {
+		name string
+		root string
+		want bool
+	}{
+		{name: "scratch ownership", root: scratch, want: true},
+		{name: "working directory alone", root: cmd.Dir},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			matches, err := windowsScratchProcessMatches(ctx, cmd.Process.Pid, tt.root, "")
+			if err != nil || matches != tt.want {
+				t.Fatalf("scratch ownership = %t, error = %v, want %t", matches, err, tt.want)
+			}
+		})
 	}
 	p, err := process.NewProcessWithContext(ctx, int32(cmd.Process.Pid))
 	if err != nil {
