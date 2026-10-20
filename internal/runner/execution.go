@@ -515,9 +515,13 @@ func executionCheckpointPreservingPublication(execution Execution, state *worksp
 	return executionCheckpoint(state)
 }
 
+func publicationRecoveryRole(role string) bool {
+	return role == RoleCode || role == RoleRework
+}
+
 func nativePublicationRecovery(recovery tracker.NativeRecovery, local *workspace.RecoveryState, identity tracker.NativeExecutionIdentity, current *workspace.ChangeSource) bool {
 	previous := recovery.SourceAttempt()
-	if identity.Role != RoleRework || previous == nil || previous.Checkpoint == nil || !previous.Checkpoint.UncertainForgeEffect() || current == nil || local == nil {
+	if !publicationRecoveryRole(identity.Role) || previous == nil || previous.Checkpoint == nil || !previous.Checkpoint.UncertainForgeEffect() || current == nil || local == nil {
 		return false
 	}
 	checkpoint, version := previous.Checkpoint, current.Version

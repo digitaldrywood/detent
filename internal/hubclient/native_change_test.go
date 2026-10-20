@@ -2294,6 +2294,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		interactive          bool
 		hosted               bool
 		rework               bool
+		foreignRunner        bool
 		reopened             bool
 		formal               bool
 		failDetail           bool
@@ -2320,6 +2321,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "blocked SSH Rework retains staged source", finalMessage: instanceMessage, wantDisposition: instanceDisposition, rework: true, ssh: true, staged: true},
 		{name: "held publication reconciles lost create through new Runner lease", publication: "lost_create", rework: true, formal: true},
 		{name: "held publication reconciles lost push through new Runner lease", publication: "lost_push", rework: true, formal: true},
+		{name: "held implementation publication reconciles lost push on another Runner", publication: "lost_push", foreignRunner: true, staged: true},
 		{name: "held publication requires validator session authority on new Runner lease", publication: "lost_create", rework: true, formal: true, validator: "pass"},
 		{name: "confirmed publication retries pending validator on unchanged source", publication: "confirmed", rework: true, validator: "wait"},
 		{name: "confirmed publication retries validator rework after prerequisite repair", publication: "confirmed", rework: true, validator: "rework"},
@@ -3667,7 +3669,13 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				} else if err == nil || owner.data.Handoff == nil || owner.data.Handoff.ExternalEffect != wantEffect || owner.data.Handoff.EffectState != wantState || forgeCreates != wantCreates {
 					t.Fatalf("first Runner attempt did not preserve lost create: effect=%+v creates=%d error=%v", owner.data.Handoff, forgeCreates, err)
 				}
-				if test.staged {
+				if expected == nil {
+					current, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), owner.change.ChangeID)
+					if readErr != nil || len(current.Versions) != 1 {
+						t.Fatalf("implementation publication did not retain its version: %+v, %v", current.Versions, readErr)
+					}
+					expected = &current
+				} else if test.staged {
 					current, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
 					if readErr != nil || len(current.Versions) != len(expected.Versions)+1 || !reflect.DeepEqual(current.Reviews, expected.Reviews) || !reflect.DeepEqual(current.Checks, expected.Checks) {
 						t.Fatal("staged publication changed prior immutable evidence")
@@ -3718,7 +3726,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatal(err)
 				}
 				machineID := tracker.MachineID("machine-native-change")
-				if test.publicationFault == "foreign_source" {
+				if test.publicationFault == "foreign_source" || test.foreignRunner {
 					machineID = "foreign-machine"
 				}
 				h.scheduler, err = NewScheduler(h.scheduler.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: machineID, Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
@@ -3729,7 +3737,11 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					h.repolicy(t)
 				}
 				publicationRetry = true
-				candidates := h.candidatesIn(t, "Rework")
+				reconcileLane := "Rework"
+				if !test.rework {
+					reconcileLane = "In Progress"
+				}
+				candidates := h.candidatesIn(t, reconcileLane)
 				if test.publicationFault == "foreign_source" {
 					if len(candidates) != 1 {
 						t.Fatalf("foreign runner was not admitted to reconcile an uncertain publication: candidates=%d", len(candidates))
