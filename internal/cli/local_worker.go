@@ -187,10 +187,11 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		return result, errors.Join(err, input.Close())
 	}
 	cmd.Stdout, cmd.Stderr = childOutput, io.Discard
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		cancel()
 		return result, r.hostFailure("local", errors.Join(err, input.Close(), output.Close(), childOutput.Close()))
 	}
+	groupID := procgroup.GroupID(cmd)
 	childCloseErr := childOutput.Close()
 	identity, identityErr := procgroup.Inspect(cmd)
 	callbacks := r.LocalRunCallbacks(request)
@@ -206,7 +207,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	var groupErr error
 	go func() {
 		waitErr = cmd.Wait()
-		groupErr = errors.Join(procgroup.Cleanup(identity.GroupID), output.Close())
+		groupErr = errors.Join(procgroup.Cleanup(groupID), output.Close())
 		peer.Close()
 		close(exited)
 	}()
@@ -239,7 +240,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 			return errors.Join(closeErr, err)
 		}
 		if groupErr != nil {
-			groupErr = procgroup.Cleanup(identity.GroupID)
+			groupErr = procgroup.Cleanup(groupID)
 		}
 		if err := errors.Join(closeErr, groupErr); err != nil {
 			return err
