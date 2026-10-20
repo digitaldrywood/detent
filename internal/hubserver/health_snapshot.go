@@ -385,7 +385,7 @@ func readHealthCurrentWaits(ctx context.Context, q nativeQueryer, organization t
 		if reason == lifetimeLimitTransitionReason || actor == "runner" && detail == lifetimeLimitTransitionReason {
 			snapshot.Limits = append(snapshot.Limits, healthLimit{Item: item, Project: project, Event: event, Active: true})
 		}
-		if actor == "runner" && detail == permissionWaitTransitionReason {
+		if actor == "runner" && (detail == permissionWaitTransitionReason || detail == "human_action") {
 			since, err := parseTimeValue(recorded)
 			if err != nil {
 				return err

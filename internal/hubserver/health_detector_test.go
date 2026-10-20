@@ -432,6 +432,9 @@ func TestHealthSnapshotCurrentWaitAndLimitAuthority(t *testing.T) {
 	item := f.create(t, "waiting")
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	at := now.Add(-time.Hour)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,'Blocked','Blocked',0,0,?,?)", f.project.ID, formatHubTime(at), formatHubTime(at)); err != nil {
+		t.Fatal(err)
+	}
 	var itemID int64
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id=?", item.WorkItemID).Scan(&itemID); err != nil {
 		t.Fatal(err)
@@ -457,14 +460,31 @@ func TestHealthSnapshotCurrentWaitAndLimitAuthority(t *testing.T) {
 		name      string
 		supersede bool
 		limit     bool
+		action    bool
 		want      string
 	}{
 		{name: "permission action still authoritative", want: "unanswered_human_wait"},
+		{name: "human action transition precedes final attempt update", action: true, want: "unanswered_human_wait"},
 		{name: "new human revision supersedes attempt", supersede: true},
 		{name: "lifetime transition remains current", limit: true, want: "lifetime_limit_hit"},
 		{name: "recovered lifetime transition", want: ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.action {
+				defer func() {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,updated_at=? WHERE id='attempt-health'", string(raw), formatHubTime(at)); err != nil {
+						t.Fatal(err)
+					}
+					appendTestHealthEvent(t, f, item, "workflow.transitioned", tracker.CollaborationData{Revision: item.Revision, Reason: "worker_progress"}, at)
+				}()
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,updated_at=? WHERE id='attempt-health'", `{"disposition":{"status":"blocked","human_action":true}}`, formatHubTime(at.Add(time.Second))); err != nil {
+					t.Fatal(err)
+				}
+				appendTestHealthEvent(t, f, item, "workflow.transitioned", tracker.CollaborationData{Revision: item.Revision, ToState: "Blocked", Reason: "worker_progress", ReasonDetail: "human_action"}, at)
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Blocked') WHERE native_id=?", f.project.ID, item.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.supersede {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE native_id=?", item.WorkItemID); err != nil {
 					t.Fatal(err)

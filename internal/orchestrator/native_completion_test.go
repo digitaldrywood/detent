@@ -176,6 +176,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		wantHuman     bool
 		delegated     bool
 		wantQuestion  string
+		wantAction    string
+		wantWaitKind  string
 		noUsage       bool
 		change        *runpkg.NativeChange
 		states        []connector.WorkflowState
@@ -294,7 +296,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "four lane unreviewed version retains completion", change: waiting, states: fourLanes, humanReview: &no, wantDeferred: true},
 		{name: "four lane unfinished source settles without a Rework move", change: accepted, states: fourLanes, humanReview: &no, finalMessage: unfinishedReport, wantSettled: true},
 		{name: "reason only report settles without acceptance", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: "Source conflicts remain unresolved.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```", wantSettled: true},
-		{name: "human action comment retains agent reason and summary", change: accepted, states: workflow, finalMessage: "The operator must approve the migration.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: permission_wait\nblockers: []\nhuman_action: Approve the migration\n```", wantHuman: true, wantReason: "permission_wait", wantSummary: "The operator must approve the migration."},
+		{name: "human action comment retains agent reason and summary", change: accepted, states: workflow, finalMessage: "The operator must approve the migration.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: permission_wait\nblockers: []\nhuman_action: Approve the migration\n```", wantHuman: true, wantAction: "Approve the migration", wantReason: "permission_wait", wantSummary: "The operator must approve the migration."},
 		{name: "untyped instance limitation settles without acceptance", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: "Sandbox forbids TCP listeners; upstream fetch returned HTTP 403.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: instance_limitation\nblockers: []\nhuman_action: null\n```", wantSettled: true},
 		{name: "deferred cleanup deadline retains instance attribution", states: workflow, runErr: errors.Join(runpkg.ErrWorkerProcessReap, context.DeadlineExceeded), roundTrip: true, wantContinue: true},
 		{name: "deferred provider cancellation retains its outcome", states: workflow, runErr: context.Canceled, wantState: "In Review", wantTerminal: store.WorkAttemptTerminalCancelled, roundTrip: true},
@@ -372,8 +374,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "validator rework preserves prerequisite authority", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, humanReview: &no, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "prerequisite must finish"},
 		{name: "validator rework preserves reported human action", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "human_action: null", "human_action: Approve the consumer rollout"), wantState: "Blocked", wantComment: "issue acceptance is not recorded"},
 		{name: "validated optout remains in human review", change: accepted, states: landing, reviewed: &yes, optout: true, humanReview: &no, wantState: "In Review"},
+		{name: "terminal human question keeps action reason", change: &runpkg.NativeChange{}, states: workflow, finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Choose the storage architecture\n```", wantHuman: true, wantAction: "Choose the storage architecture", roundTrip: true},
+		{name: "permission wording in structured human action keeps action reason", change: &runpkg.NativeChange{}, states: workflow, finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: May I implement the storage architecture?\n```", wantHuman: true, wantAction: "May I implement the storage architecture?"},
+		{name: "implementation permission retains permission reason", change: &runpkg.NativeChange{}, states: workflow, finalMessage: "May I implement the assigned fix?", wantHuman: true, wantWaitKind: "implementation_permission"},
 		{name: "unchanged work with final approval question needs human", change: &runpkg.NativeChange{}, states: workflow, finalMessage: "May I merge?", wantHuman: true},
-		{name: "unchanged work with final structured blocker needs human", change: &runpkg.NativeChange{}, states: workflow, finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve the migration\n```", wantHuman: true},
+		{name: "unchanged work with final structured blocker needs human", change: &runpkg.NativeChange{}, states: workflow, finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve the migration\n```", wantHuman: true, wantAction: "Approve the migration"},
 		{name: "human attention without a produced change", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Choose the storage architecture", wantHuman: true},
 		{name: "human attention without final text", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, wantHuman: true, noUsage: true},
 		{name: "human attention with synthetic unchanged change", change: &runpkg.NativeChange{}, states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", wantHuman: true},
@@ -391,7 +396,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "native instance report preserves authentic published source", change: accepted, states: unfinishedWorkflow, sourceState: "Rework", finalMessage: instanceReport, wantInstance: true},
 		{name: "native instance report retains publication refusal with instance owner", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "policy mismatch"}, states: blockedLanding, humanReview: &no, finalMessage: instanceReport, wantInstance: true, roundTrip: true},
 		{name: "native273 malformed predicate settles without acceptance with disabled review", change: &runpkg.NativeChange{BaseSHA: head}, states: blockedLanding, humanReview: &no, finalMessage: strings.Replace(instanceReport, "    reason:", "    predicate: instance_available\n    reason:", 1), wantSettled: true, wantState: "Todo"},
-		{name: "instance and human action retain human owner", change: accepted, states: blockedLanding, humanReview: &no, finalMessage: strings.Replace(instanceReport, "human_action: null", "human_action: Approve the exception", 1), wantState: "Blocked", wantHuman: true},
+		{name: "instance and human action retain human owner", change: accepted, states: blockedLanding, humanReview: &no, finalMessage: strings.Replace(instanceReport, "human_action: null", "human_action: Approve the exception", 1), wantState: "Blocked", wantHuman: true, wantAction: "Approve the exception"},
 		{name: "instance and external blockers settle without acceptance with disabled review", change: accepted, states: blockedLanding, humanReview: &no, finalMessage: strings.Replace(instanceReport, "human_action: null", "  - ref: '#42'\n    reason: Await dependency\nhuman_action: null", 1), wantSettled: true},
 		{name: "malformed status report cannot accept unchanged work", change: &runpkg.NativeChange{BaseSHA: head}, lifecycle: "settle", states: fourLanes, humanReview: &no, roundTrip: true, finalMessage: "```detent-status\nschema: 99\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantSettled: true, wantState: "Todo"},
 		{name: "ordinary code fence cannot accept unchanged work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, finalMessage: "```text\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "In Review", wantComment: "no valid complete detent-status disposition"},
@@ -436,7 +441,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "prerequisite handoff respects a workflow without Blocked", states: fourLanes, finalMessage: prerequisiteReport, wantDeferred: true},
 		{name: "prerequisite retains blocked owner and publication refusal", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "policy mismatch"}, states: workflow, finalMessage: prerequisiteReport, humanReview: &no, wantState: "Blocked", wantComment: "policy mismatch", roundTrip: true},
 		{name: "no review Rework prerequisite retains readiness owner despite refusal", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, VersionError: "unrelated source provenance", VersionCode: "invalid_request"}, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "unrelated source provenance"},
-		{name: "human hold retains authority despite publication refusal", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "policy mismatch"}, states: blockedLanding, humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve the migration\n```", wantHuman: true},
+		{name: "human hold retains authority despite publication refusal", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "policy mismatch"}, states: blockedLanding, humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve the migration\n```", wantHuman: true, wantAction: "Approve the migration"},
 		{name: "malformed dirty prerequisite retains ordinary path", states: workflow, finalMessage: strings.Replace(prerequisiteReport, "schema: 1", "schema: 99", 1), wantOrdinary: true, wantContinue: true},
 		{name: "human owned dirty prerequisite retains ordinary path", states: workflow, finalMessage: strings.Replace(prerequisiteReport, "    reason:", "    owner: human\n    reason:", 1), wantOrdinary: true, wantContinue: true},
 		{name: "dirty tracked native Code keeps ordinary continuation", states: workflow, wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"source.go"}}},
@@ -1037,8 +1042,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 			}
 			if test.wantHuman {
+				cause := permissionWaitReason
+				if test.wantAction != "" {
+					cause = "human_action"
+				}
 				blocked, ok := state.Blocked[issue.ID]
-				if !ok || blocked.Reason != permissionWaitReason || blocked.Recovery.Owner != blockedRecoveryOwnerHuman || blocked.Recovery.WorkAttemptID != 42 {
+				if !ok || blocked.Reason != cause || blocked.Recovery.HoldReason != cause || blocked.Recovery.Owner != blockedRecoveryOwnerHuman || blocked.Recovery.WorkAttemptID != 42 {
 					t.Fatalf("human outcome = %#v, present = %t", blocked, ok)
 				}
 				if _, completed := state.Completed[issue.ID]; completed || len(tick.updates) != 1 || tick.updates[0].state != "Blocked" {
@@ -1047,26 +1056,41 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				if _, claimed := state.Claimed[issue.ID]; claimed || scheduling.releases < 1 {
 					t.Fatalf("claim retained = %t, releases = %d", claimed, scheduling.releases)
 				}
-				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalNoProgress || attempts.completions[0].ErrorClass != permissionWaitReason {
+				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalNoProgress || attempts.completions[0].ErrorClass != cause {
 					t.Fatalf("attempt completions = %#v", attempts.completions)
 				}
-				var metadata struct {
-					PermissionWait permissionWaitRecord `json:"permission_wait"`
-				}
-				if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &metadata); err != nil {
+				var records map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &records); err != nil {
 					t.Fatal(err)
 				}
-				if metadata.PermissionWait.WorkAttemptID != 42 || metadata.PermissionWait.SessionID != "native-session" || metadata.PermissionWait.Question == "" {
-					t.Fatalf("human outcome provenance = %#v", metadata.PermissionWait)
+				var wait permissionWaitRecord
+				if err := json.Unmarshal(records[cause], &wait); err != nil {
+					t.Fatal(err)
 				}
-				if test.wantQuestion != "" && (metadata.PermissionWait.Question != test.wantQuestion || metadata.PermissionWait.Kind != permissionWaitCriteriaUnsatisfiable || metadata.PermissionWait.Source != "acceptance_validator" || len(metadata.PermissionWait.Criteria) == 0 || blocked.Recovery.OperatorRemedy != test.wantQuestion+"\nThen move the issue to Rework.") {
-					t.Fatalf("criterion wait = %#v, remedy = %q, want %q", metadata.PermissionWait, blocked.Recovery.OperatorRemedy, test.wantQuestion)
+				if test.wantAction != "" && (wait.Question != test.wantAction || blocked.Recovery.OperatorRemedy != test.wantAction || wait.Source != "terminal_detent_status" || len(records[permissionWaitReason]) != 0) {
+					t.Fatalf("human action = %#v, remedy = %q", wait, blocked.Recovery.OperatorRemedy)
 				}
-				if test.wantQuestion == "" && metadata.PermissionWait.Kind == permissionWaitCriteriaUnsatisfiable {
-					t.Fatalf("worker permission wait recorded as criteria gate: %#v", metadata.PermissionWait)
+				if test.wantWaitKind != "" && wait.Kind != test.wantWaitKind {
+					t.Fatalf("wait kind = %q, want %q", wait.Kind, test.wantWaitKind)
+				}
+				if wait.WorkAttemptID != 42 || wait.SessionID != "native-session" || wait.Question == "" {
+					t.Fatalf("human outcome provenance = %#v", wait)
+				}
+				if test.wantQuestion != "" && (wait.Question != test.wantQuestion || wait.Kind != permissionWaitCriteriaUnsatisfiable || wait.Source != "acceptance_validator" || len(wait.Criteria) == 0 || blocked.Recovery.OperatorRemedy != test.wantQuestion+"\nThen move the issue to Rework.") {
+					t.Fatalf("criterion wait = %#v, remedy = %q, want %q", wait, blocked.Recovery.OperatorRemedy, test.wantQuestion)
+				}
+				if test.wantQuestion == "" && wait.Kind == permissionWaitCriteriaUnsatisfiable {
+					t.Fatalf("worker permission wait recorded as criteria gate: %#v", wait)
 				}
 				if state.TokenTotals.TotalTokens != 42 || state.DiffStats[issue.ID].HeadSHA != head {
 					t.Fatalf("telemetry lost: tokens = %#v, diff = %#v", state.TokenTotals, state.DiffStats[issue.ID])
+				}
+				if len(state.Retry) != 0 {
+					t.Fatalf("human outcome scheduled retry: %#v", state.Retry)
+				}
+				orch.retryDeferredCompletions(t.Context(), &state, now.Add(time.Hour))
+				if len(attempts.completions) != 1 || scheduling.releases != 1 {
+					t.Fatal("human completion replayed after settlement")
 				}
 				if orch.recoverCauseBlockedIssue(t.Context(), &state, blocked.Issue, now.Add(24*time.Hour)) {
 					t.Fatal("human outcome automatically recovered")
