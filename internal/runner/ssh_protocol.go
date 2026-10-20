@@ -215,7 +215,8 @@ func sshSentinels() []error {
 		ErrSessionDurationExceeded, ErrTurnDurationExceeded, ErrSessionTurnLimitExceeded,
 		ErrOperatorStopped, ErrMergeRevoked, ErrLaneRevoked, ErrCIUnavailable, ErrModelPermitUnavailable,
 		ErrMergeWorkerStartupTimeout, ErrMergeWorkerDurationExceeded, ErrAgentTurnCleanup, ErrWorkerProcessReap, ErrLandingNotReviewed, ErrValidatorInfrastructure,
-		ErrDeliverableRecoveryExhausted, ErrSubscriptionAuthRequired, ErrExecutionAuthorityUnavailable, ErrNativeRecoveryRequired}
+		ErrDeliverableRecoveryExhausted, ErrSubscriptionAuthRequired, ErrExecutionAuthorityUnavailable, ErrNativeRecoveryRequired,
+		ErrChangeSourceVersionSuperseded}
 }
 
 func encodeSSHError(err error) *sshError {
