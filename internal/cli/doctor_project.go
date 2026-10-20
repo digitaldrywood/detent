@@ -20,6 +20,7 @@ import (
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/skills"
 )
 
@@ -353,7 +354,7 @@ func checkDoctorProjectWithProgress(
 	workflowCheck := doctorCheck{
 		Name:              workflowCheckName,
 		Status:            doctorOK,
-		Detail:            doctorWorkflowDetail(project.Workflow, project, workflow.Config),
+		Detail:            doctorWorkflowDetail(project.Workflow, project, workflow.Config) + "; hook shell=" + commandshell.Normalize(workflow.Config.Hooks.Shell),
 		ProjectDefinition: doctorProjectDefinition(id, workflow.Definition),
 	}
 	if workflow.Definition.Layout == "" {

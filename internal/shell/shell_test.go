@@ -2,46 +2,84 @@ package shell
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 )
 
 func TestCommandSpecUsesPerOSDefaults(t *testing.T) {
-	t.Parallel()
-
 	tests := []struct {
-		name     string
-		goos     string
-		command  string
-		wantName string
-		wantArgs []string
+		name          string
+		goos          string
+		gitDir        string
+		bash          bool
+		bashDirectory bool
+		wsl           bool
+		shell         string
+		wantName      string
+		wantArgs      []string
 	}{
-		{
-			name:     "unix",
-			goos:     "linux",
-			command:  "printf ok",
-			wantName: "sh",
-			wantArgs: []string{"-c", "printf ok"},
-		},
-		{
-			name:     "windows",
-			goos:     "windows",
-			command:  "echo ok",
-			wantName: "cmd",
-			wantArgs: []string{"/C", "echo ok"},
-		},
+		{name: "linux", goos: "linux", gitDir: "cmd", bash: true, wantName: "sh", wantArgs: []string{"-c", "echo ok"}},
+		{name: "darwin", goos: "darwin", gitDir: "cmd", bash: true, wantName: "sh", wantArgs: []string{"-c", "echo ok"}},
+		{name: "git cmd directory", goos: "windows", gitDir: "cmd", bash: true, wantArgs: []string{"-c", "echo ok"}},
+		{name: "git bin directory", goos: "windows", gitDir: "bin", bash: true, wantArgs: []string{"-c", "echo ok"}},
+		{name: "git mingw64 directory", goos: "windows", gitDir: "mingw64/bin", bash: true, wantArgs: []string{"-c", "echo ok"}},
+		{name: "git mingw32 directory", goos: "windows", gitDir: "mingw32/bin", bash: true, wantArgs: []string{"-c", "echo ok"}},
+		{name: "git absent", goos: "windows", wantName: "cmd", wantArgs: []string{"/C", "echo ok"}},
+		{name: "only WSL bash", goos: "windows", wsl: true, wantName: "cmd", wantArgs: []string{"/C", "echo ok"}},
+		{name: "git without bash and WSL present", goos: "windows", gitDir: "cmd", wsl: true, wantName: "cmd", wantArgs: []string{"/C", "echo ok"}},
+		{name: "bash is a directory", goos: "windows", gitDir: "cmd", bashDirectory: true, wantName: "cmd", wantArgs: []string{"/C", "echo ok"}},
+		{name: "explicit powershell", goos: "windows", gitDir: "cmd", bash: true, shell: " pwsh ", wantName: "pwsh", wantArgs: []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "echo ok"}},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := CommandSpecForOS(tt.command, "", tt.goos)
-			if got.Name != tt.wantName {
-				t.Fatalf("Name = %q, want %q", got.Name, tt.wantName)
+			root := t.TempDir()
+			gitRoot := filepath.Join(root, "Program Files", "Git")
+			bash := filepath.Join(gitRoot, "bin", "bash.exe")
+			pathDirs := []string{root}
+			files := []string{}
+			if tt.gitDir != "" {
+				dir := filepath.Join(gitRoot, filepath.FromSlash(tt.gitDir))
+				gitName := "git"
+				if runtime.GOOS == "windows" {
+					gitName += ".exe"
+				}
+				files = append(files, filepath.Join(dir, gitName))
+				pathDirs = append(pathDirs, dir)
 			}
-			if !reflect.DeepEqual(got.Args, tt.wantArgs) {
-				t.Fatalf("Args = %#v, want %#v", got.Args, tt.wantArgs)
+			if tt.bash {
+				files = append(files, bash)
+			}
+			if tt.bashDirectory {
+				if err := os.MkdirAll(bash, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.wsl {
+				dir := filepath.Join(root, "Windows", "System32")
+				files = append(files, filepath.Join(dir, "bash.exe"))
+				pathDirs = append([]string{dir}, pathDirs...)
+			}
+			for _, file := range files {
+				if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(file, nil, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", strings.Join(pathDirs, string(os.PathListSeparator)))
+			t.Setenv("PATHEXT", ".EXE")
+			wantName := tt.wantName
+			if wantName == "" {
+				wantName = bash
+			}
+			got := CommandSpecForOS("echo ok", tt.shell, tt.goos)
+			if got.Name != wantName || !reflect.DeepEqual(got.Args, tt.wantArgs) {
+				t.Fatalf("CommandSpecForOS() = %#v, want name %q args %#v", got, wantName, tt.wantArgs)
 			}
 		})
 	}
@@ -136,6 +174,7 @@ func TestCommandSpecWithArgsQuotesForConfiguredShell(t *testing.T) {
 		{
 			name:     "windows cmd",
 			goos:     "windows",
+			shell:    "cmd",
 			wantName: "cmd",
 			wantArgs: []string{"/C", `claude ^"-p^" ^"--model^" ^"fable^" ^"Bash^(git^ ^*^)^" ^"quoted'value^" ^"percent^%value^"`},
 		},
