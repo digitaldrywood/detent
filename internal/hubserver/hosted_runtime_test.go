@@ -177,3 +177,96 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 		})
 	}
 }
+
+func TestHostedRuntimeReloadCatalogTransitions(t *testing.T) {
+	t.Parallel()
+	cloud := capacityHostedPlans()
+	for _, test := range []struct {
+		name    string
+		plans   *HostedPlansConfig
+		invalid bool
+	}{
+		{name: "omitted catalog"},
+		{name: "empty catalog", plans: &HostedPlansConfig{}},
+		{name: "partial catalog", plans: &HostedPlansConfig{WindowSeconds: 120}, invalid: true},
+	} {
+		for _, prepare := range []bool{false, true} {
+			name := test.name
+			if prepare {
+				name += "/prepared"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				f := newHostedSecurityFixture(t)
+				cfg := f.service.config
+				hosted := *cfg.Hosted
+				hosted.Plans = &cloud
+				cfg.Hosted = &hosted
+				cfg.DatabasePath = filepath.Join(t.TempDir(), "runtime.db")
+				s := openTestService(t, cfg)
+				before := s.database.plans()
+				update := HostedRuntimeUpdate{Plans: test.plans, Reason: "catalog transition"}
+				if prepare {
+					s.config.Hosted.SharedEntry = &HostedSharedEntry{}
+					s.database.configureRuntimePublication(s.config)
+					update.StageID = "00000000-0000-4000-8000-000000000002"
+				}
+				err := s.applyHostedRuntime(t.Context(), &update)
+				if test.invalid {
+					if err == nil || s.database.plans() != before {
+						t.Fatalf("invalid catalog changed runtime: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if prepare {
+					if s.database.plans() != before {
+						t.Fatal("preparation changed active plans")
+					}
+					publication := HostedRuntimePublication{Published: []string{update.StageID}, Tenants: map[string]HostedRuntimeUpdate{hosted.OrganizationID: update}}
+					raw, err := json.Marshal(publication)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(s.database.runtimeFile, raw, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if s.database.plans() != nil {
+					t.Fatal("catalog removal retained plan restrictions")
+				}
+				tx, err := s.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if err := s.database.checkHostedClaim(t.Context(), tx, time.Now()); err != nil {
+					t.Fatalf("disabled catalog restricted execution: %v", err)
+				}
+				if err := s.database.checkHostedGrowth(t.Context(), tx, nil, time.Now(), false); err != nil {
+					t.Fatalf("disabled catalog restricted growth: %v", err)
+				}
+				if err := s.database.requireHostedFeature(t.Context(), tx, "hosted_artifacts", time.Now()); err != nil {
+					t.Fatalf("disabled catalog restricted features: %v", err)
+				}
+				var base string
+				if err := tx.QueryRowContext(t.Context(), "SELECT base_id FROM hosted_plan_assignments WHERE organization_id=?", hosted.OrganizationID).Scan(&base); err != nil || base != "free" {
+					t.Fatalf("catalog removal changed stored assignment: %q %v", base, err)
+				}
+				if err := tx.Rollback(); err != nil {
+					t.Fatal(err)
+				}
+				restore := HostedRuntimeUpdate{Plans: &cloud, Reason: "restore catalog"}
+				if err := s.applyHostedRuntime(t.Context(), &restore); err != nil {
+					t.Fatal(err)
+				}
+				entitlement, err := s.database.hostedEntitlement(t.Context(), s.database.db, time.Now())
+				if err != nil || entitlement.Base != (PlanReference{ID: "free", Version: 1}) || entitlement.Allowances["concurrent_work"] != 2 {
+					t.Fatalf("restored Cloud entitlement = %+v, %v", entitlement, err)
+				}
+			})
+		}
+	}
+}

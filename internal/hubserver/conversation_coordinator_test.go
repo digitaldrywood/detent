@@ -1810,7 +1810,8 @@ func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 			f := newCoordinatorFixture(t, "free-chat")
 			d := f.service.database
 			d.hostedOrganization = f.organization
-			if err := d.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+			plans := capacityHostedPlans()
+			if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 				t.Fatal(err)
 			}
 			f.conversations.config.Model = "gpt-6-luna"

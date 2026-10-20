@@ -472,7 +472,8 @@ func TestCapacityTestPriceCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Plans = nil
+	plans := capacityHostedPlans()
+	cfg.Plans = &plans
 	cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_starter_test", Label: "Starter", Plan: PlanReference{ID: "starter", Version: 1}})
 	if err := cfg.validate(); err != nil {
 		t.Fatal(err)
@@ -514,7 +515,8 @@ func TestCapacityPaidPlanChanges(t *testing.T) {
 	f, provider := newHostedBillingFixture(t)
 	d := f.service.database
 	cfg := f.service.config.Hosted
-	cfg.Plans = nil
+	plans := capacityHostedPlans()
+	cfg.Plans = &plans
 	cfg.Billing.Prices = nil
 	for _, plan := range []PlanReference{{ID: "starter", Version: 1}, {ID: "team", Version: 2}, {ID: "growth", Version: 2}} {
 		cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_" + plan.ID, Label: plan.ID, Plan: plan})
