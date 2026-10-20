@@ -84,14 +84,7 @@ func windowsScratchProcessMatches(ctx context.Context, pid int, root string, own
 	if err != nil {
 		return false, scratchProcessInspectionError(ctx, pid, "scratch ownership", err, alive)
 	}
-	if workerScratchEnvironmentMatches(workerScratchOwnerRoots(root), environment) {
-		return true, nil
-	}
-	cwd, err := p.CwdWithContext(ctx)
-	if err != nil {
-		return false, scratchProcessInspectionError(ctx, pid, "directory", err, alive)
-	}
-	return filepath.IsAbs(cwd) && pathWithin(root, cwd), nil
+	return workerScratchEnvironmentMatches(workerScratchOwnerRoots(root), environment), nil
 }
 
 func windowsScratchProcessAlive(ctx context.Context, observe func(context.Context) (bool, error)) (bool, error) {

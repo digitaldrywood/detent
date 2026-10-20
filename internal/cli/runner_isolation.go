@@ -270,7 +270,7 @@ func runBackendProbe(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
 	var output boundedProbeOutput
 	cmd.Stdout = &output
 	cmd.Stderr = &output
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		return nil, err
 	}
 	groupID := procgroup.GroupID(cmd)
