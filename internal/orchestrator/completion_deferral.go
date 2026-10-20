@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -258,6 +259,22 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 	// Reuse completion rejection rather than enqueueing the same dead token.
 	if errors.Is(fenceErr, runpkg.ErrExecutionAuthorityUnavailable) {
 		o.rejectUnavailableCompletion(ctx, state, event, running, fenceErr, true)
+		return
+	}
+	var rejected interface {
+		NativeTerminalFailure() tracker.NativeTerminalFailure
+	}
+	if errors.As(fenceErr, &rejected) && rejected.NativeTerminalFailure().Public().Stage == "event_publication" {
+		failure := rejected.NativeTerminalFailure().Public()
+		err := o.abandonClaim(ctx, event.IssueID)
+		released := err == nil || errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) || errors.Is(err, ErrSchedulingClaimLost) || errors.As(err, &rejected) && rejected.NativeTerminalFailure().Public().Stage == "event_publication"
+		if !released {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+			return
+		}
+		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, failure.ErrorClass, failure.Error, "failed", failure.Summary)
+		o.clearLiveWorkAttemptState(state, telemetry.WorkAttempt{IssueID: event.IssueID, AttemptID: running.WorkAttemptID})
+		o.releaseClaim(state, event.IssueID)
 		return
 	}
 	deferredAt := o.clockNow().UTC()

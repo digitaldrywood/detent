@@ -229,5 +229,33 @@ func (s *Service) invalidNativeEventRequest(c echo.Context, err error) error {
 	if errors.As(err, &typeError) && (runnerauth.PublicationRejection{Category: "body_decode", Field: typeError.Field}).Valid() {
 		field = typeError.Field
 	}
-	return s.nativeAPIError(c, nativeRejection(nativeInvalid("Request body is invalid"), "body_decode", field))
+	return s.nativeRunEventError(c, tracker.NativeRunEvent{}, nativeRejection(nativeInvalid("Request body is invalid"), "body_decode", field))
+}
+
+func (s *Service) nativeRunEventError(c echo.Context, request tracker.NativeRunEvent, err error) error {
+	var failure *nativeError
+	if errors.As(err, &failure) && failure.status == http.StatusUnprocessableEntity {
+		rejection, ok := failure.Details["rejection"].(runnerauth.PublicationRejection)
+		if !ok || !rejection.Valid() {
+			rejection = runnerauth.PublicationRejection{Category: "event_validation"}
+			err = nativeRejection(err, rejection.Category, rejection.Field)
+		}
+		attempt := request.Data.AttemptID
+		if !validNativeID(attempt, "attempt") {
+			attempt = ""
+		}
+		scope := nativeRequestScope(c)
+		item := c.Param("item")
+		if !validNativeID(item, "wi") {
+			item = ""
+		}
+		reason := rejection.DiagnosticError()
+		if failure.publicMessage {
+			reason = failure.Message
+		}
+		s.config.Logger.Warn("native run event rejected", "code", failure.Code,
+			"category", rejection.Category, "field", rejection.Field, "reason", reason, "route", c.Path(),
+			"organization", scope.organization, "project", scope.project, "work_item", item, "attempt", attempt)
+	}
+	return s.nativeAPIError(c, err)
 }
