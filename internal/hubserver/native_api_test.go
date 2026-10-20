@@ -801,6 +801,43 @@ func TestNativeDependenciesAndTransitions(t *testing.T) {
 		})
 	}
 	for _, test := range []struct {
+		name, operation, relationship string
+		target                        tracker.NativeWorkItemID
+		changed                       bool
+	}{
+		{"duplicate dependency", "add", "dependency", b.WorkItemID, false},
+		{"absent dependency", "remove", "dependency", c.WorkItemID, false},
+		{"new related issue", "add", "related", b.WorkItemID, true},
+		{"duplicate related issue", "add", "related", b.WorkItemID, false},
+		{"absent related issue", "remove", "related", c.WorkItemID, false},
+		{"remove related issue", "remove", "related", b.WorkItemID, true},
+		{"removed related issue", "remove", "related", b.WorkItemID, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			current := readWorkItem(t, f, a.WorkItemID, "")
+			var beforeVersions, beforeEvents int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", a.WorkItemID, a.WorkItemID).Scan(&beforeVersions, &beforeEvents); err != nil {
+				t.Fatal(err)
+			}
+			request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: test.name}, ExpectedRevision: current.Revision, RelatedWorkItemID: test.target, Operation: test.operation, RelationshipType: test.relationship}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(a.WorkItemID)+"/dependencies", f.token, request)
+			requireNativeStatus(t, response, http.StatusOK)
+			var after tracker.NativeIssue
+			decodeHubResponse(t, response, &after)
+			increment := 0
+			if test.changed {
+				increment = 1
+			}
+			var versions, events int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE work_item_id=?),(SELECT count(*) FROM collaboration_events WHERE work_item_id=?)", a.WorkItemID, a.WorkItemID).Scan(&versions, &events); err != nil {
+				t.Fatal(err)
+			}
+			if after.Revision != current.Revision+tracker.Revision(increment) || versions != beforeVersions+increment || events != beforeEvents+increment {
+				t.Fatalf("relationship revision=%d/%d versions=%d/%d events=%d/%d", after.Revision, current.Revision, versions, beforeVersions, events, beforeEvents)
+			}
+		})
+	}
+	for _, test := range []struct {
 		name, state, reason, detail string
 		want                        int
 	}{

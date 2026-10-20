@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -270,16 +271,27 @@ func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScop
 			fields = append(fields, "title")
 		}
 		if request.Body != nil {
+			bodyChanged := issue.Body != *request.Body
 			issue.Body = *request.Body
-			if issue.IssueContract == nil {
+			if bodyChanged && issue.IssueContract == nil {
 				issue.IssueContract = &issuecontract.State{}
 			}
+			contractChanged := false
 			if scope.actor().Kind == "human" && scope.credential.HostedRole != "reporter" {
-				issue.IssueContract.ReleaseDelivery = nil
-				issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(issue.Body)
-				issue.IssueContract.RecordedAt = now
+				confirmed := config.IssueContractSectionDigests(issue.Body)
+				contract := issue.IssueContract
+				if contract == nil {
+					contract = &issuecontract.State{}
+				}
+				if bodyChanged || !maps.Equal(contract.ConfirmedSections, confirmed) {
+					contract.ReleaseDelivery = nil
+					contract.ConfirmedSections = confirmed
+					contract.RecordedAt = now
+					issue.IssueContract = contract
+					contractChanged = true
+				}
 			}
-			if issue.IssueContract.ReturnState != "" {
+			if (bodyChanged || contractChanged) && issue.IssueContract.ReturnState != "" {
 				contract, err := nativeIssueContract(ctx, tx, scope)
 				if err != nil {
 					return nil, err
@@ -450,6 +462,9 @@ func (s *Service) updateNativeCommentCommand(ctx context.Context, scope nativeSc
 		}
 		if !request.Deleted && (strings.TrimSpace(request.Body) == "" || len(request.Body) > 64<<10) {
 			return nil, nativeInvalid("Comment body must contain 1 byte to 64 KiB")
+		}
+		if comment.Body == request.Body && comment.Deleted == request.Deleted {
+			return comment, nil
 		}
 		comment.Body = request.Body
 		comment.Deleted = request.Deleted

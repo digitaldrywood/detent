@@ -12,6 +12,8 @@ import (
 
 	"github.com/pressly/goose/v3"
 	goosedb "github.com/pressly/goose/v3/database"
+
+	hubmigrations "github.com/digitaldrywood/detent/internal/hubserver/migrations"
 )
 
 const hubSchemaTable = "hub_schema_version"
@@ -166,6 +168,7 @@ func hubGoMigrations(loggers ...*slog.Logger) []*goose.Migration {
 			return migrateGitHubIssueReferences(ctx, tx, logger)
 		}}, nil),
 		goose.NewGoMigration(20261016204002, &goose.GoFunc{RunTx: migrateCloudWorkflowLanes}, nil),
+		goose.NewGoMigration(20261020103000, &goose.GoFunc{RunTx: migrateCollaborationDeltas}, nil),
 	}
 }
 
@@ -251,4 +254,10 @@ WHERE work_item_id IS NOT NULL AND visibility = 'shared'
     WHERE conversation_id = conversations.id AND from_visibility = 'private'
   )`)
 	return err
+}
+
+func migrateCollaborationDeltas(ctx context.Context, tx *sql.Tx) error {
+	return hubmigrations.CollaborationDeltas(ctx, tx, encodeNativeVersion, func(ctx context.Context, tx *sql.Tx, organization, project, item, record string, revision int64) ([]byte, error) {
+		return reconstructNativeVersion(ctx, tx, organization, project, item, record, revision)
+	}, recountCollaborationBytes)
 }

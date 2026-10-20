@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -710,7 +711,20 @@ func recordNativeChange(ctx context.Context, tx *sql.Tx, scope nativeScope, reco
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO collaboration_versions (organization_id, project_id, work_item_id, record_id, revision, record_json) VALUES (?, ?, ?, ?, ?, ?)", scope.organization, scope.project, workItemID, recordID, revision, encoded); err != nil {
+	var previous []byte
+	var previousEncoding string
+	if revision > 1 && int64(revision)%nativeVersionSnapshotInterval != 0 {
+		err := tx.QueryRowContext(ctx, `SELECT record_json, encoding FROM collaboration_versions
+WHERE organization_id=? AND project_id=? AND work_item_id=? AND record_id=? AND revision=?`, scope.organization, scope.project, workItemID, recordID, revision-1).Scan(&previous, &previousEncoding)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	version, encoding, err := encodeNativeVersion(previous, previousEncoding, []byte(encoded), int64(revision))
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO collaboration_versions (organization_id, project_id, work_item_id, record_id, revision, record_json, encoding) VALUES (?, ?, ?, ?, ?, ?, ?)", scope.organization, scope.project, workItemID, recordID, revision, string(version), encoding); err != nil {
 		return err
 	}
 	return appendNativeHistory(ctx, tx, scope, workItemID, eventType, data, now)
@@ -755,8 +769,6 @@ func persistNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, issu
 	if err := tx.QueryRowContext(ctx, "SELECT terminal FROM workflow_states WHERE project_id = ? AND detent_state = ?", scope.project, issue.State).Scan(&issue.Terminal); err != nil {
 		return issue, err
 	}
-	issue.Revision++
-	issue.UpdatedAt = now
 	if eventType == "workflow.transitioned" && data.FromState != issue.State {
 		awaitsFiler := issue.Profile == "native" && nativeDoneState(issue.State) && nativeHumanFiled(issue)
 		if awaitsFiler {
@@ -774,6 +786,16 @@ func persistNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, issu
 			issue.Verification = nil
 		}
 	}
+	current, _, err := readNativeIssue(ctx, tx, scope, string(issue.WorkItemID))
+	if err != nil {
+		return issue, err
+	}
+	issue.Revision, issue.UpdatedAt = current.Revision, current.UpdatedAt
+	if reflect.DeepEqual(issue, current) {
+		return current, nil
+	}
+	issue.Revision++
+	issue.UpdatedAt = now
 	verificationState, verifiedBy, verifiedAt := any(nil), any(nil), any(nil)
 	if issue.Verification != nil {
 		verificationState = issue.Verification.State
@@ -969,7 +991,23 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 			issue.IssueContract.ReturnState = ""
 		}
 		issue.State = request.State
-		return persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{BlockerAttemptID: request.BlockerAttemptID, FromState: from, ToState: issue.State, Reason: request.Reason, ReasonDetail: strings.TrimSpace(request.ReasonDetail)}, now)
+		data := tracker.CollaborationData{BlockerAttemptID: request.BlockerAttemptID, FromState: from, ToState: issue.State, Reason: request.Reason, ReasonDetail: strings.TrimSpace(request.ReasonDetail)}
+		previousRevision := issue.Revision
+		issue, err = persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", data, now)
+		if err != nil {
+			return nil, err
+		}
+		if issue.Revision == previousRevision && issue.State == "Blocked" && request.Reason == "user_requested" && scope.credential.Scope != apiScopeWorker {
+			data.Revision = issue.Revision
+			if err := appendNativeHistory(ctx, tx, scope, item, "workflow.transitioned", data, now); err != nil {
+				return nil, err
+			}
+			issue, _, err = readNativeIssue(ctx, tx, scope, item)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return issue, nil
 	})
 	if err == nil {
 		s.wakeSpriteRunnersAfter(scope, result)

@@ -211,6 +211,31 @@ func TestNativeReleaseDeliveryAssociation(t *testing.T) {
 			if *duplicate != original || f.verifier.calls != 1 {
 				t.Fatalf("duplicate=%+v original=%+v calls=%d", duplicate, original, f.verifier.calls)
 			}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
+			current, _, err := readNativeIssue(t.Context(), tx, scope, string(f.delivery.WorkItemID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var versionsBefore, eventsBefore int
+			if err := tx.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions),(SELECT count(*) FROM collaboration_events)").Scan(&versionsBefore, &eventsBefore); err != nil {
+				t.Fatal(err)
+			}
+			same, err := persistNativeIssue(t.Context(), tx, scope, current, "issue.edited", tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: associated.ChangeID, VersionID: associated.VersionID, HeadSHA: associated.HeadSHA}}, time.Now().UTC())
+			if err != nil || same.Revision != current.Revision {
+				t.Fatalf("same release reference changed revision: %d/%d %v", same.Revision, current.Revision, err)
+			}
+			var versionsAfter, eventsAfter int
+			if err := tx.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions),(SELECT count(*) FROM collaboration_events)").Scan(&versionsAfter, &eventsAfter); err != nil || versionsAfter != versionsBefore || eventsAfter != eventsBefore {
+				t.Fatalf("same release reference wrote history: versions=%d/%d events=%d/%d %v", versionsAfter, versionsBefore, eventsAfter, eventsBefore, err)
+			}
+			if err := tx.Rollback(); err != nil {
+				t.Fatal(err)
+			}
 			var views []tracker.PullRequestView
 			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.itemPath+"/pull-requests", f.token, nil), &views)
 			if len(views) != 1 || views[0].Number != 7 || views[0].Base.Ref != f.request.BaseRef || views[0].Head.SHA != f.request.HeadSHA {

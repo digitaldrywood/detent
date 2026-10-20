@@ -35,15 +35,13 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 	if comment != "" {
 		recordID = comment
 	}
-	var body string
-	err := s.database.reader.QueryRowContext(ctx, `SELECT record_json FROM collaboration_versions
-WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND record_id = ? AND revision = ?`, scope.organization, scope.project, item, recordID, revision).Scan(&body)
+	body, err := reconstructNativeVersion(ctx, s.database.reader, string(scope.organization), string(scope.project), item, recordID, revision)
 	if err != nil {
 		return nil, err
 	}
 	if recordID == item && (scope.credential.Scope != apiScopeAdmin || scope.credential.NativeOnly) {
 		var issue tracker.NativeIssue
-		if err := json.Unmarshal([]byte(body), &issue); err != nil {
+		if err := json.Unmarshal(body, &issue); err != nil {
 			return nil, err
 		}
 		for _, links := range []*[]tracker.NativeDependency{&issue.Blockers, &issue.Dependents, &issue.Related} {
@@ -75,7 +73,7 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND record_id 
 	}
 	if recordID == item {
 		var issue tracker.NativeIssue
-		if err := json.Unmarshal([]byte(body), &issue); err != nil {
+		if err := json.Unmarshal(body, &issue); err != nil {
 			return nil, err
 		}
 		issue.BlockedReason.Text, issue.UnblocksReason.Text = "", ""
