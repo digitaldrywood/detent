@@ -1,11 +1,15 @@
 package hubclient
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"os/exec"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -20,14 +25,26 @@ import (
 func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name             string
-		outcome          string
-		legacy           bool
-		hiddenDependency bool
-		hold             bool
-		loseRelease      bool
+		name                string
+		outcome             string
+		legacy              bool
+		hiddenDependency    bool
+		hold                bool
+		loseRelease         bool
+		released            bool
+		missingLaunch       bool
+		staleLaunch         bool
+		missingProcessProof bool
+		replacement         bool
 	}{
 		{name: "running"},
+		{name: "released source after restart", released: true},
+		{name: "released source preserves newer claim", released: true, replacement: true},
+		{name: "released interrupted source after restart", released: true, outcome: "interrupted"},
+		{name: "released held source after restart", released: true, hold: true},
+		{name: "released source without worker proof", released: true, missingLaunch: true},
+		{name: "released source without cleanup owner", released: true, missingProcessProof: true},
+		{name: "released source with stale worker identity", released: true, staleLaunch: true},
 		{name: "interrupted", outcome: "interrupted"},
 		{name: "legacy Hub running", legacy: true},
 		{name: "legacy Hub interrupted", outcome: "interrupted", legacy: true},
@@ -69,6 +86,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 			if err := runnerauth.Save(path, file); err != nil {
 				t.Fatal(err)
 			}
+			var providersStopped atomic.Bool
 			newScheduler := func() *Scheduler {
 				t.Helper()
 				client, err := New(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: h.admin.client.httpClient})
@@ -78,6 +96,11 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				scheduler, err := NewScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: identity.MachineID, Hostname: redemption.Hostname, Capacity: 1, Version: "test", BackendIsolation: redemption.BackendIsolation}, HeartbeatInterval: 30 * time.Second, LeaseTTL: 10 * time.Minute})
 				if err != nil {
 					t.Fatal(err)
+				}
+				if !test.missingProcessProof {
+					scheduler.releasedStopped = func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error) {
+						return providersStopped.Load(), nil
+					}
 				}
 				return scheduler
 			}
@@ -89,10 +112,71 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 			if err := execution.Start(t.Context(), executionIdentity); err != nil {
 				t.Fatal(err)
 			}
-			if err := execution.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: 41, Generation: 1, HeartbeatAt: time.Now(), Phase: "implementation"}); err != nil {
+			var launch *tracker.NativeWorkerLaunch
+			var stopWriter func()
+			if test.released {
+				cmd := exec.CommandContext(context.WithoutCancel(t.Context()), "git", "hash-object", "--stdin")
+				procgroup.Configure(t.Context(), cmd)
+				input, err := cmd.StdinPipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				worker, err := procgroup.Inspect(cmd)
+				if err != nil {
+					t.Fatal(err)
+				}
+				stopped := false
+				stopWriter = func() {
+					if stopped {
+						return
+					}
+					stopped = true
+					if err := input.Close(); err != nil {
+						t.Fatal(err)
+					}
+					if err := cmd.Wait(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				t.Cleanup(stopWriter)
+				if !test.missingLaunch {
+					if test.staleLaunch {
+						worker.StartedAt = worker.StartedAt.Add(-time.Hour)
+					}
+					launch = &tracker.NativeWorkerLaunch{PID: worker.PID, GroupID: worker.GroupID, ProcessStart: worker.StartedAt, PolicyID: h.descriptor.ID, ExecutionVersion: "test", ControlVersion: "test", ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), Protocol: 6, SelectedAt: time.Now()}
+				}
+			}
+			if err := execution.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{WorkerLaunch: launch, LocalAttemptID: 41, Generation: 1, HeartbeatAt: time.Now(), Phase: "implementation"}); err != nil {
 				t.Fatal(err)
 			}
 			checkpoint := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", WorkspaceDigest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", ExternalEffect: "none", EffectState: "none"}
+
+			var retained tracker.ChangeDetail
+			if test.released {
+				execution.SetRepository(nativeChangeRepository)
+				diff, _ := nativeChangeDiff(nativeChangeFixtureHead("b"), "README.md")(t.Context())
+				checkpoint.HeadSHA = diff.HeadSHA
+				checkpoint.WorktreeState = "clean"
+				execution.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+					return nativeChangeSourceFixture(ctx, t, base, head), nil
+				})
+				change, err := execution.openChange(t.Context(), diff)
+				if err != nil {
+					t.Fatal(err)
+				}
+				version, _, err := execution.publishChangeVersion(t.Context(), change, diff)
+				if err != nil {
+					t.Fatal(err)
+				}
+				checkpoint.Change = &tracker.NativeChangeReference{ChangeID: change, VersionID: version, HeadSHA: diff.HeadSHA}
+				retained, err = h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := execution.Checkpoint(t.Context(), checkpoint); err != nil {
 				t.Fatal(err)
 			}
@@ -103,12 +187,30 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 			}
 			original := execution.claim.lease
 			sequence := execution.data.Sequence
-			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "orchestrator_release"); err != nil {
+			if test.released {
+				if err := execution.claim.source.client.Release(t.Context(), original, "cancelled"); err != nil {
+					t.Fatal(err)
+				}
+				h.scheduler = newScheduler()
+				h.claim(t, issue.ID)
+				newer := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+				if err := newer.Start(t.Context(), executionIdentity); err != nil {
+					t.Fatal(err)
+				}
+				if err := newer.Finish(t.Context(), "failed"); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "orchestrator_release"); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "orchestrator_release"); err != nil {
 				t.Fatal(err)
 			}
-			candidates, err := otherScheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"Todo", "In Progress"}})
-			if err != nil || len(candidates) != 0 {
-				t.Fatalf("foreign claim = %+v, %v", candidates, err)
+			if !test.released {
+				candidates, err := otherScheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"Todo", "In Progress"}})
+				if err != nil || len(candidates) != 0 {
+					t.Fatalf("foreign claim = %+v, %v", candidates, err)
+				}
 			}
 			current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
 			if err != nil {
@@ -141,6 +243,100 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				if err != nil || !projected.DependencyReady || len(projected.Blockers) != 0 {
 					t.Fatalf("hidden blocker projection = %+v, %v", projected, err)
 				}
+			}
+
+			if test.released {
+				var replacement tracker.NativeLease
+				if test.replacement {
+					var err error
+					replacement, err = execution.claim.source.client.Claim(t.Context(), tracker.NativeClaim{PolicyID: h.descriptor.ID, WorkItemID: current.WorkItemID, MachineID: identity.MachineID, SessionID: "replacement", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+					if err != nil || replacement.FencingToken <= execution.claim.lease.FencingToken {
+						t.Fatalf("replacement claim = %+v, %v", replacement, err)
+					}
+				}
+				before, err := h.admin.Recovery(t.Context(), current.WorkItemID)
+				if err != nil || len(before.Attempts) != 2 {
+					t.Fatalf("before restart = %+v, %v", before.Attempts, err)
+				}
+				h.scheduler = newScheduler()
+				if err := h.scheduler.Heartbeat(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				live, err := h.admin.Recovery(t.Context(), current.WorkItemID)
+				if err != nil || live.Attempts[0].Outcome != test.outcome {
+					t.Fatalf("live writer acknowledged: %+v, %v", live.Attempts, err)
+				}
+				if test.staleLaunch {
+					return
+				}
+				stopWriter()
+				h.scheduler = newScheduler()
+				if err := h.scheduler.Heartbeat(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+
+				uncertain, err := h.admin.Recovery(t.Context(), current.WorkItemID)
+				if err != nil || uncertain.Attempts[0].Outcome != test.outcome {
+					t.Fatalf("unresolved provider writer acknowledged: %+v, %v", uncertain.Attempts, err)
+				}
+				providersStopped.Store(true)
+				h.scheduler = newScheduler()
+				if err := h.scheduler.Heartbeat(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				after, err := h.admin.Recovery(t.Context(), current.WorkItemID)
+				want := "cancelled"
+				if test.missingLaunch || test.missingProcessProof || runtime.GOOS == "windows" || runtime.GOOS == "plan9" || runtime.GOOS == "js" || runtime.GOOS == "wasip1" {
+					want = test.outcome
+				}
+				if err != nil || len(after.Attempts) != 2 || after.Attempts[0].Outcome != want || !reflect.DeepEqual(after.Attempts[0].Checkpoint, before.Attempts[0].Checkpoint) || !reflect.DeepEqual(after.Attempts[1].NativeRunData, before.Attempts[1].NativeRunData) || after.Issue.Revision != current.Revision || after.Issue.State != current.State {
+					t.Fatalf("released restart reconciliation = %+v, %v", after, err)
+				}
+
+				detail, err := h.admin.Change(t.Context(), current.WorkItemID, retained.Change.ID)
+				if err != nil || !reflect.DeepEqual(detail.Versions, retained.Versions) || !reflect.DeepEqual(detail.Reviews, retained.Reviews) || !reflect.DeepEqual(detail.Checks, retained.Checks) || detail.Change.CurrentVersion != retained.Change.CurrentVersion {
+					t.Fatalf("reconciliation changed immutable source or audit evidence: %+v, %v", detail, err)
+				}
+
+				if test.replacement {
+					runtime, err := h.admin.RuntimeEvidence(t.Context(), current.WorkItemID, "")
+					if err != nil || runtime.CurrentLease == nil || runtime.CurrentLease.ID != replacement.ID || runtime.CurrentLease.FencingToken != replacement.FencingToken {
+						t.Fatalf("acknowledgement changed newer authority: %+v, %v", runtime.CurrentLease, err)
+					}
+					if err := execution.claim.source.client.Release(t.Context(), replacement, "released"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var source tracker.NativeSourceRecovery
+				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/work-items/"+issue.ID+"/source-recovery", nil, &source); err != nil || source.Quiesced != (want == "cancelled") || source.HeadSHA != checkpoint.HeadSHA || source.VersionID != checkpoint.Change.VersionID {
+					t.Fatalf("retained source recovery = %+v, %v", source, err)
+				}
+				staleCheckpoint := checkpoint
+				staleCheckpoint.HeadSHA = strings.Repeat("c", 40)
+				if err := execution.Checkpoint(t.Context(), staleCheckpoint); err == nil {
+					t.Fatal("released writer mutated its checkpoint")
+				}
+				h.scheduler = newScheduler()
+				if err := h.scheduler.Heartbeat(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				replay, err := h.admin.Recovery(t.Context(), current.WorkItemID)
+				if err != nil || replay.Attempts[0].Sequence != after.Attempts[0].Sequence {
+					t.Fatalf("replay duplicated acknowledgement: %+v, %v", replay.Attempts, err)
+				}
+
+				if want == "cancelled" && !test.hold {
+					h.claim(t, issue.ID)
+					resumed := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+					recovered := resumed.Recovery().SourceAttempt()
+					if recovered == nil || recovered.AttemptID != execution.data.AttemptID || recovered.Checkpoint.Change.VersionID != retained.Change.CurrentVersion || resumed.claim.lease.FencingToken <= original.FencingToken {
+						t.Fatalf("ordinary claim lost retained source: %+v", recovered)
+					}
+					if err := resumed.Validate(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return
 			}
 			var dropped atomic.Bool
 			baseTransport := h.admin.client.httpClient.Transport

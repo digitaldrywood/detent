@@ -258,6 +258,10 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	if err := s.sendNativeMachineHeartbeat(ctx, source, machine, s.client.runner == nil || last.IsZero()); err != nil {
 		return err
 	}
+
+	if err := s.reconcileReleasedExecutions(ctx, source); err != nil {
+		return err
+	}
 	machine.HostMetrics = nil
 	s.mu.Lock()
 	s.nativeHeartbeats[project] = s.now()
@@ -523,6 +527,66 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	s.mu.Unlock()
 	s.syncLeaseHold(ctx)
 	return issues, nil
+}
+
+func (s *Scheduler) reconcileReleasedExecutions(ctx context.Context, source *NativeConnector) error {
+	if s.client.runner == nil || s.releasedStopped == nil {
+		return nil
+	}
+	file, err := runnerauth.Load(s.client.runner.path)
+	if err != nil {
+		return err
+	}
+	s.client.runner.routingMu.Lock()
+	var released []runnerauth.ReleasedExecution
+	if snapshot := s.client.runner.routing; snapshot != nil && snapshot.RunnerID == file.Identity.RunnerID && snapshot.ClaimState != nil {
+		released = slices.Clone(snapshot.ClaimState.ReleasedExecutions)
+	}
+	s.client.runner.routingMu.Unlock()
+	for _, reference := range released {
+		if reference.ProjectID != source.client.project {
+			continue
+		}
+		path, err := nativeItemPath(reference.WorkItemID)
+		if err != nil {
+			return err
+		}
+		var attempt tracker.NativeAttempt
+		if err := source.client.client.request(ctx, http.MethodGet, source.client.base()+path+"/attempts/"+reference.AttemptID, nil, &attempt); err != nil {
+			return err
+		}
+		if attempt.AttemptID != reference.AttemptID || attempt.MachineID != file.Identity.MachineID || attempt.RunnerID != file.Identity.RunnerID || attempt.ClaimReleasedAt == nil || attempt.Identity == nil || attempt.Outcome != "" && attempt.Outcome != "interrupted" || !attempt.Checkpoint.PreservesSource() || attempt.Runtime == nil || attempt.Runtime.WorkerLaunch == nil {
+			continue
+		}
+		launch := attempt.Runtime.WorkerLaunch
+		if launch.PID <= 0 || launch.GroupID <= 0 || launch.ProcessStart.IsZero() {
+			continue
+		}
+		s.mu.Lock()
+		claim, known := s.nativeClaims[string(reference.WorkItemID)]
+		s.mu.Unlock()
+		if known && claim.lease.ID == attempt.LeaseID {
+			continue
+		}
+		observations, err := procgroup.Observe([]procgroup.Identity{{PID: launch.PID, GroupID: launch.GroupID, StartedAt: launch.ProcessStart}})
+		if err != nil {
+			return err
+		}
+		if len(observations) != 1 || !observations[0].GroupObserved || observations[0].Alive || observations[0].Stale {
+			continue
+		}
+		stopped, err := s.releasedStopped(ctx, reference.WorkItemID, attempt)
+		if err != nil {
+			return err
+		}
+		if !stopped {
+			continue
+		}
+		if err := cancelNativeReleasedAttempt(ctx, source.client, reference.WorkItemID, attempt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, limit int) ([]tracker.NativeLease, error) {

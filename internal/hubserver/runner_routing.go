@@ -776,6 +776,34 @@ func readRunnerClaimState(ctx context.Context, db nativeQueryer, scope nativeSco
 		return err
 	}
 	state.PolicyIDs = map[tracker.ProjectID]string{scope.project: approved}
+
+	released, err := db.QueryContext(ctx, `SELECT DISTINCT a.work_item_id FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id JOIN lease_runners lr ON lr.lease_id=l.lease_id
+ WHERE a.organization_id=? AND a.project_id=? AND lr.runner_id=? AND l.machine_id=? AND l.released_at IS NOT NULL AND a.status IN ('running','interrupted') AND a.checkpoint_json IS NOT NULL ORDER BY a.work_item_id`, scope.organization, scope.project, snapshot.RunnerID, scope.credential.Runner.MachineID)
+	if err != nil {
+		return err
+	}
+	defer released.Close()
+	var items []tracker.NativeWorkItemID
+	for released.Next() {
+		var item tracker.NativeWorkItemID
+		if err := released.Scan(&item); err != nil {
+			return errors.Join(err, released.Close())
+		}
+		items = append(items, item)
+	}
+	if err := errors.Join(released.Err(), released.Close()); err != nil {
+		return err
+	}
+	for _, item := range items {
+		source, err := readNativeSourceCheckpoint(ctx, db, scope, string(item))
+		if err != nil {
+			return err
+		}
+		if source.Released.Valid && source.MachineID == scope.credential.Runner.MachineID && source.RunnerID == snapshot.RunnerID && (source.Status == "running" || source.Status == "interrupted") {
+			state.ReleasedExecutions = append(state.ReleasedExecutions, runnerauth.ReleasedExecution{ProjectID: scope.project, WorkItemID: item, AttemptID: source.AttemptID})
+		}
+	}
+
 	snapshot.ClaimState = &state
 	return nil
 }
