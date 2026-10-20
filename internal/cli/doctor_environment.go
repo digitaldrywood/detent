@@ -628,14 +628,17 @@ func checkDoctorGit(ctx context.Context, deps doctorDeps, environment doctorBina
 }
 
 func checkDoctorHookShell(shellName string, goos string, deps doctorDeps, environment doctorBinaryEnvironment) doctorCheck {
-	resolved := commandshell.ResolveForOS(shellName, goos, func(binary string) (string, error) {
+	deps = deps.withDefaults()
+	resolved, err := commandshell.ResolveForOS(shellName, goos, func(binary string) (string, error) {
 		return deps.resolveCommandOnPath(environment.CheckedPath, binary)
-	})
-	return doctorBinaryCheck(environment, doctorCheck{
-		Name:   "Hook shell",
-		Status: doctorOK,
-		Detail: resolved,
-	})
+	}, deps.statHookShell)
+	check := doctorCheck{Name: "Hook shell", Status: doctorOK, Detail: resolved}
+	if err != nil {
+		check.Status = doctorFail
+		check.Detail = err.Error()
+		check.Hint = "Install the declared shell on this runner or make it available on PATH."
+	}
+	return doctorBinaryCheck(environment, check)
 }
 
 func checkDoctorBinary(ctx context.Context, deps doctorDeps, environment doctorBinaryEnvironment, binary string, name string, arg string, hint string) doctorCheck {

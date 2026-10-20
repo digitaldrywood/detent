@@ -1503,6 +1503,8 @@ func TestParseWorkflowHookShellSurvivesWorkerTransfer(t *testing.T) {
 	}{
 		{name: "worker default"},
 		{name: "blank worker default", shell: "  "},
+		{name: "explicit bash", shell: "bash", want: "bash"},
+		{name: "explicit sh", shell: "sh", want: "sh"},
 		{name: "explicit PowerShell", shell: " pwsh ", want: "pwsh"},
 		{name: "explicit path", shell: `C:\Tools\bash.exe`, want: `C:\Tools\bash.exe`},
 	}
@@ -1514,6 +1516,10 @@ func TestParseWorkflowHookShellSurvivesWorkerTransfer(t *testing.T) {
 			workflow, err := ParseWorkflow([]byte(raw))
 			if err != nil {
 				t.Fatal(err)
+			}
+			workflow.Config.normalize()
+			if workflow.Config.Hooks.Shell != tt.want {
+				t.Fatalf("normalized hook shell = %q, want %q", workflow.Config.Hooks.Shell, tt.want)
 			}
 			data, err := json.Marshal(workflow)
 			if err != nil {

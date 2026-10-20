@@ -3,76 +3,49 @@ package cli
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 func TestCheckDoctorHookShell(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
-		name  string
-		goos  string
-		git   bool
-		bash  bool
-		wsl   bool
-		shell string
-		want  string
+		name     string
+		goos     string
+		shell    string
+		resolved string
+		files    fstest.MapFS
+		want     string
+		status   doctorStatus
 	}{
-		{name: "Git Bash present", goos: "windows", git: true, bash: true},
-		{name: "only WSL present", goos: "windows", wsl: true, want: "cmd"},
-		{name: "Git absent", goos: "windows", want: "cmd"},
-		{name: "Git without Bash", goos: "windows", git: true, wsl: true, want: "cmd"},
-		{name: "explicit pwsh", goos: "windows", git: true, bash: true, shell: "pwsh", want: "pwsh"},
-		{name: "darwin", goos: "darwin", git: true, bash: true, want: "sh"},
-		{name: "linux", goos: "linux", git: true, bash: true, want: "sh"},
+		{name: "windows default", goos: "windows", resolved: "cmd", want: "cmd", status: doctorOK},
+		{name: "declared bash on PATH", goos: "windows", shell: "bash", resolved: `D:\Tools\bash.exe`, want: `D:\Tools\bash.exe`, status: doctorOK},
+		{name: "declared bash standard install", goos: "windows", shell: "bash", files: fstest.MapFS{`C:\Program Files\Git\bin\bash.exe`: {}}, want: `C:\Program Files\Git\bin\bash.exe`, status: doctorOK},
+		{name: "declared bash missing", goos: "windows", shell: "bash", want: `hook_shell_unavailable: shell "bash"`, status: doctorFail},
+		{name: "declared sh missing", goos: "windows", shell: "sh", want: `hook_shell_unavailable: shell "sh"`, status: doctorFail},
+		{name: "explicit pwsh", goos: "windows", shell: "pwsh", resolved: "pwsh", want: "pwsh", status: doctorOK},
+		{name: "darwin", goos: "darwin", resolved: "/bin/sh", want: "/bin/sh", status: doctorOK},
+		{name: "linux", goos: "linux", resolved: "/bin/sh", want: "/bin/sh", status: doctorOK},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			root := t.TempDir()
-			gitDir := filepath.Join(root, "Program Files", "Git", "cmd")
-			bash := filepath.Join(root, "Program Files", "Git", "bin", "bash.exe")
-			wslDir := filepath.Join(root, "Windows", "System32")
-			files := []string{}
-			if tt.git {
-				gitName := "git"
-				if runtime.GOOS == "windows" {
-					gitName += ".exe"
-				}
-				files = append(files, filepath.Join(gitDir, gitName))
-			}
-			if tt.bash {
-				files = append(files, bash)
-			}
-			if tt.wsl {
-				files = append(files, filepath.Join(wslDir, "bash.exe"))
-			}
-			for _, file := range files {
-				if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(file, nil, 0o755); err != nil {
-					t.Fatal(err)
-				}
-			}
-			pathValue := strings.Join([]string{wslDir, gitDir}, string(os.PathListSeparator))
-			t.Setenv("PATH", pathValue)
-			t.Setenv("PATHEXT", ".EXE")
+			t.Parallel()
 			deps := doctorDeps{
 				resolveCommandOnPath: func(checkedPath string, binary string) (string, error) {
-					if checkedPath != pathValue {
-						t.Fatalf("PATH = %q, want %q", checkedPath, pathValue)
+					if checkedPath != "checked-path" {
+						t.Fatalf("PATH = %q", checkedPath)
 					}
-					return exec.LookPath(binary)
+					if tt.resolved == "" {
+						return "", exec.ErrNotFound
+					}
+					return tt.resolved, nil
 				},
+				statHookShell: func(name string) (os.FileInfo, error) { return tt.files.Stat(name) },
 			}
-			got := checkDoctorHookShell(tt.shell, tt.goos, deps, doctorBinaryEnvironment{CheckedPath: pathValue})
-			want := tt.want
-			if want == "" {
-				want = bash
-			}
-			if got.Name != "Hook shell" || got.Status != doctorOK || !strings.HasPrefix(got.Detail, want+"; ") {
-				t.Fatalf("checkDoctorHookShell() = %#v, want OK Hook shell %q", got, want)
+			got := checkDoctorHookShell(tt.shell, tt.goos, deps, doctorBinaryEnvironment{CheckedPath: "checked-path"})
+			if got.Name != "Hook shell" || got.Status != tt.status || !strings.HasPrefix(got.Detail, tt.want) {
+				t.Fatalf("checkDoctorHookShell() = %#v, want status %q shell %q", got, tt.status, tt.want)
 			}
 		})
 	}

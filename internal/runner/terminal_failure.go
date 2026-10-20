@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -42,6 +43,10 @@ func nativeTerminalFailure(err error, at time.Time, turnStartRefused bool) *trac
 		failure.Stage = "workspace_preparation"
 		if hook != nil {
 			failure.Error = fmt.Sprintf("workspace hook %s failed (exit status %d)", hook.Hook, hook.ExitCode)
+			var unavailable *shell.UnavailableError
+			if errors.As(err, &unavailable) {
+				failure.Error += ": " + unavailable.Error()
+			}
 		}
 	case errors.Is(err, ErrMergeWorkerStartupTimeout), failure.Operation == "initialize", failure.ErrorClass == "backend_startup":
 		failure.ErrorClass = "backend_startup"
