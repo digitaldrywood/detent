@@ -1,0 +1,95 @@
+name: Deploy staging
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy and smoke staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: staging
+      url: https://staging.cloud.detent.build
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.9'
+          cache: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-hub-binary
+          path: ${{ runner.temp }}/release-hub
+      - name: Identify deployment
+        id: source
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          version="$INPUT_VERSION"
+          test -n "$version"
+          {
+            echo "commit=$commit"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+      - name: Deploy to staging
+        id: deploy
+        env:
+          TMPDIR: ${{ runner.temp }}
+          SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.STAGING_SSH_KNOWN_HOSTS }}
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          set -euo pipefail
+          bash scripts/deploy-release.sh staging "$RELEASE_COMMIT" "$RELEASE_VERSION" 2>&1 | tee "$RUNNER_TEMP/release-staging.log"
+      - name: Smoke deployed release
+        id: smoke
+        env:
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          set -euo pipefail
+          python3 scripts/cloud-origin-smoke.py --environment staging --expected-version "$RELEASE_VERSION" --expected-commit "$RELEASE_COMMIT" 2>&1 | tee -a "$RUNNER_TEMP/release-staging.log"
+      - name: Exercise staging MCP tools
+        id: mcp_smoke
+        env:
+          TMPDIR: ${{ runner.temp }}
+          DETENT_RELEASE_ENVIRONMENT: staging
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
+          DETENT_SMOKE_API_KEY: ${{ secrets.DETENT_SMOKE_API_KEY }}
+          DETENT_MCP_URL: ${{ vars.DETENT_MCP_URL }}
+        run: |
+          set -euo pipefail
+          go run ./tools/cifailure 2>&1 | tee -a "$RUNNER_TEMP/release-staging.log"
+      - name: Report release failure at High
+        if: failure() && (steps.deploy.outcome == 'failure' || steps.smoke.outcome == 'failure' || steps.mcp_smoke.outcome == 'failure')
+        env:
+          DETENT_RELEASE_ENVIRONMENT: staging
+          DETENT_RELEASE_TAG: ${{ steps.source.outputs.version }}
+          CI_DEVELOP_SHA: ${{ steps.source.outputs.commit }}
+          DETENT_RELEASE_FAILURE_PHASE: ${{ steps.deploy.outcome == 'failure' && 'deploy' || 'smoke' }}
+          DETENT_MCP_URL: https://cloud.detent.build/organizations/org_9e0e65eec07a6639979a/mcp
+          DETENT_PROJECT_ID: prj_6d4919bebd73446798e6cd807feda10e
+          DETENT_API_KEY: ${{ secrets.DETENT_API_KEY }}
+        run: go run ./tools/cifailure < "$RUNNER_TEMP/release-staging.log" > "$RUNNER_TEMP/release-staging-report.jsonl"
+      - name: Retain deployment evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-staging-evidence
+          path: ${{ runner.temp }}/release-staging*
+          if-no-files-found: warn
+          retention-days: 14
