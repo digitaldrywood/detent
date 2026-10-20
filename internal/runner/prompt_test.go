@@ -98,7 +98,7 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 					t.Errorf("contract missing %q", want)
 				}
 			}
-			for _, want := range []string{"assigned source deliverable is staged and ready for host finalization", "all worker-owned pre-publication requirements are met", "not that the whole issue is Done", "final report precedes the runner-owned commit and immutable Change publication", "do not report in_progress or blocked solely", "An explicitly assigned existing post-integration owner does not require a new follow-up", "For an unchanged inspection or verified already-landed result, use complete only when the issue acceptance is met"} {
+			for _, want := range []string{"assigned source deliverable is staged and ready for host finalization", "all worker-owned pre-publication requirements are met", "not that the whole issue is Done", "final report precedes the runner-owned commit and immutable Change publication", "do not report in_progress or blocked solely", "diagnose a historical failure whose retained output is truncated or unavailable", "An explicitly assigned existing post-integration owner does not require a new follow-up", "For an unchanged inspection or verified already-landed result, use complete only when the issue acceptance is met"} {
 				if !strings.Contains(contract, want) {
 					t.Errorf("native source handoff contract missing %q", want)
 				}
@@ -1146,6 +1146,15 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 			name: "native host command evidence",
 			opts: ValidatorPromptOptions{VersionID: "version", HeadSHA: "head", Commands: []gate.CommandResult{{ReceiptID: "timing_build", Command: "cd frontend && pnpm build", HeadSHA: "head", TreeSHA: "tree", ExitCode: 0, Output: "build passed"}}},
 			want: []string{"host", `receipt_id="timing_build"`, "receipt_ids", "pnpm build", "build passed", "head=", "tree=", "exit=", "detent_run_validation", "Worker prose and human approval do not replace test evidence"},
+		},
+		{
+			name: "native failure superseded on the same tree",
+			opts: ValidatorPromptOptions{VersionID: "version", HeadSHA: "head", Commands: []gate.CommandResult{
+				{ReceiptID: "timing_failed", Command: "make check-landing", HeadSHA: "head", TreeSHA: "tree", ExitCode: 2, Output: "[earlier output truncated]", OutputTruncated: true},
+				{ReceiptID: "timing_passed", Command: "make check-landing", HeadSHA: "head", TreeSHA: "tree", ExitCode: 0, Output: "check-landing finished: exit=0"},
+			}},
+			want:      []string{`receipt_id="timing_failed"`, `receipt_id="timing_passed"`, "unless a later receipt of the same command passed on the same head and tree", "suspected flaky test under INV-19", "do not demand that Rework diagnose it beyond its retained output"},
+			forbidden: []string{"prevents a passing review, even if omitted from criteria_evidence. Use"},
 		},
 		{
 			name:      "native omitted patch reads pinned source",
