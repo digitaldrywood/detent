@@ -1,10 +1,35 @@
 // The client instance, shared through React context so components never
 // construct a second one (which would open a second connection).
 import React from "react";
+import * as Effect from "effect/Effect";
 
-import type { ConversationClient } from "../runtime/bootstrap.ts";
+import { lastAccountBootstrap, loadBootstrap, type ConversationClient } from "../runtime/bootstrap.ts";
 
 export const ClientContext = React.createContext<ConversationClient | null>(null);
+const RefreshBootstrapContext = React.createContext<(() => Promise<void>) | null>(null);
+
+export function ClientProvider({ client: initialClient, children }: {
+  readonly client: ConversationClient;
+  readonly children: React.ReactNode;
+}): React.ReactElement {
+  const [client, setClient] = React.useState(initialClient);
+  const refresh = React.useCallback(async () => {
+    const bootstrap = await loadBootstrap(initialClient.http.origin);
+    const account = lastAccountBootstrap();
+    await Effect.runPromise(initialClient.effects.refreshList());
+    setClient((current) => ({ ...current, bootstrap, account }));
+  }, [initialClient]);
+  return React.createElement(RefreshBootstrapContext.Provider, { value: refresh },
+    React.createElement(ClientContext.Provider, { value: client }, children));
+}
+
+export function useRefreshBootstrap(): () => Promise<void> {
+  const refresh = React.useContext(RefreshBootstrapContext);
+  return React.useCallback(async () => {
+    if (refresh === null) throw new Error("The bootstrap provider is not mounted.");
+    await refresh();
+  }, [refresh]);
+}
 
 export function useClient(): ConversationClient {
   const client = React.useContext(ClientContext);

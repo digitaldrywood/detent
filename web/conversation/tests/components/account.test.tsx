@@ -8,18 +8,22 @@
 // behaviour rather than the client it would otherwise be wired to.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
+import * as Schema from "effect/Schema";
+import * as Effect from "effect/Effect";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 
 import { decodeAccountBootstrap, type AccountBootstrap, type Member, type OnboardingStep } from "../../src/contracts/account.ts";
 import { SidebarWorkspacePicker, WorkspacePicker } from "../../src/components/sidebar/SidebarWorkspacePicker.tsx";
-import { ClientContext } from "../../src/app/client.ts";
-import type { ConversationClient } from "../../src/runtime/bootstrap.ts";
+import { ClientContext, ClientProvider, useClient } from "../../src/app/client.ts";
+import { makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
+import { Bootstrap } from "../../src/contracts/index.ts";
 import membersFixture from "../../src/contracts/fixtures/account-members.json";
 import { OrganizationMembersProvider } from "../../src/app/account/OrganizationMembers.tsx";
 import { MemberAccessSheet, ProjectAccessMatrix } from "../../src/app/account/MemberAccess.tsx";
 import accountFixture from "../../src/contracts/fixtures/account-bootstrap.json";
+import integrationFixture from "../../src/contracts/fixtures/account-integration.json";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
 import {
   LoginCard,
@@ -40,7 +44,7 @@ import { hubUrlNamesOrganization, parseCapacity, runnerNameFits, registerCommand
 import { EntrySignIn } from "../../src/app/entry/EntryScreens.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
 import { applyHubPaths, resetHubPaths } from "../../src/runtime/basePath.ts";
-import { noApprovedPolicy, saveMessage, WorkflowSettings, ProjectDeletionSettings } from "../../src/app/account/ProjectSettings.tsx";
+import { noApprovedPolicy, saveMessage, WorkflowSettings, ProjectDeletionSettings, ProjectSettingsRoute } from "../../src/app/account/ProjectSettings.tsx";
 import { allowanceRows, allowanceLabel } from "../../src/app/settings/Settings.tsx";
 import approval from "../../src/contracts/fixtures/account-policy.json";
 import { WorkflowRevisions } from "../../src/app/account/WorkflowRevisions.tsx";
@@ -690,6 +694,92 @@ describe("the wizard stepper", () => {
 });
 
 describe("the project settings", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetHubPaths();
+  });
+
+  it.each(["success", "refused", "refresh_refused", "refresh_network"] as const)("refreshes project and conversation lists or reloads app home after deletion (%s)", async (outcome) => {
+    const user = userEvent.setup();
+    const account = decodeAccountBootstrap(accountFixture);
+    const project = account.projects[0]!;
+    const remaining = { ...project, id: "proj_remaining", name: "Remaining project" };
+    const initial = { ...account, projects: [project, remaining] };
+    const client = makeClient({ bootstrap: Schema.decodeUnknownSync(Bootstrap)(initial), account: initial });
+    let finishConversations!: () => void;
+    const conversations = new Promise<void>((resolve) => { finishConversations = resolve; });
+    const refreshConversations = vi.spyOn(client.effects, "refreshList").mockImplementation(() => Effect.promise(() => conversations));
+    const assign = vi.fn();
+    vi.stubGlobal("location", { assign });
+    let current = client;
+    function Projects() {
+      current = useClient();
+      return <ul aria-label="Available projects">{current.account?.projects.map((item) => <li key={item.id}>{item.name}</li>)}</ul>;
+    }
+    let finishDelete!: (response: Response) => void;
+    const deletion = new Promise<Response>((resolve) => { finishDelete = resolve; });
+    let finishBootstrap!: (response: Response) => void;
+    let rejectBootstrap!: (cause: Error) => void;
+    const bootstrap = new Promise<Response>((resolve, reject) => { finishBootstrap = resolve; rejectBootstrap = reject; });
+    const refresh = vi.fn(() => bootstrap);
+    const remove = vi.fn(() => deletion);
+    vi.stubGlobal("fetch", vi.fn((input: string, init?: RequestInit) => {
+      if (input === "/app/bootstrap") return refresh();
+      if (input.endsWith(`/projects/${project.id}`) && init?.method === "DELETE") {
+        const body = JSON.parse(String(init.body));
+        expect(body.confirm_name).toBe(project.name);
+        expect(body.idempotency_key).toEqual(expect.any(String));
+        expect(body.idempotency_key.length).toBeGreaterThan(0);
+        return remove();
+      }
+      if (input.endsWith("/integration")) return Promise.resolve(Response.json(integrationFixture));
+      return Promise.resolve(Response.json({ code: "not_found", message: "Not available" }, { status: 404 }));
+    }));
+    const navigate = vi.fn();
+    const root = createRootRoute({ component: () => <><Projects /><ProjectSettingsRoute projectId={project.id} onNavigate={navigate} /></> });
+    const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
+    render(<ClientProvider client={client}><RouterProvider router={router as never} /></ClientProvider>);
+    await user.click(await screen.findByRole("button", { name: "Delete project" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete project" }));
+    expect(remove).toHaveBeenCalledOnce();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+    if (outcome === "refused") {
+      await act(async () => finishDelete(Response.json({ code: "conflict", message: "Finish active work first" }, { status: 409 })));
+      expect(within(screen.getByRole("alertdialog")).getByText("Finish active work first")).toBeTruthy();
+      expect(refresh).not.toHaveBeenCalled();
+      expect(navigate).not.toHaveBeenCalled();
+      expect(current.account?.projects).toEqual([project, remaining]);
+      expect(refreshConversations).not.toHaveBeenCalled();
+      expect(assign).not.toHaveBeenCalled();
+      return;
+    }
+    await act(async () => finishDelete(new Response(null, { status: 204 })));
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(navigate).not.toHaveBeenCalled();
+    if (outcome === "refresh_refused" || outcome === "refresh_network") {
+      await act(async () => {
+        if (outcome === "refresh_network") rejectBootstrap(new TypeError("Failed to fetch"));
+        else finishBootstrap(Response.json({ message: "Unavailable" }, { status: 503 }));
+      });
+      expect(assign).toHaveBeenCalledExactlyOnceWith("/work");
+      expect(navigate).not.toHaveBeenCalled();
+      expect(remove).toHaveBeenCalledOnce();
+      expect(refreshConversations).not.toHaveBeenCalled();
+      return;
+    }
+    await act(async () => finishBootstrap(Response.json({ ...accountFixture, projects: [remaining] })));
+    expect(refreshConversations).toHaveBeenCalledOnce();
+    expect(navigate).not.toHaveBeenCalled();
+    await act(async () => finishConversations());
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/work"));
+    expect(assign).not.toHaveBeenCalled();
+    expect(current.bootstrap.projects.map((item) => item.id)).toEqual([remaining.id]);
+    expect(current.account?.projects.map((item) => item.id)).toEqual([remaining.id]);
+    expect(within(screen.getByRole("list", { name: "Available projects" })).queryByText(project.name)).toBeNull();
+    expect(within(screen.getByRole("list", { name: "Available projects" })).getByText(remaining.name)).toBeTruthy();
+  });
+
   it("confirms the named deletion, cancels without a mutation, and keeps contextual failure feedback", async () => {
     const user = userEvent.setup();
     const onDelete = vi.fn();
