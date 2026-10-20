@@ -771,16 +771,18 @@ export function PlanSettings(): React.ReactElement {
                     <span
                       className={cn(
                         "tabular-nums",
-                        custom
+                        custom || candidate.monthly_usd_cents == null
                           ? "text-xs text-muted-foreground"
                           : "text-lg font-semibold",
                       )}
                     >
                       {custom
                         ? "Contact us"
-                        : formatUsd(
-                            (candidate.monthly_usd_cents ?? 0) / 100,
-                          ).replace(/\.00$/, "")}
+                        : candidate.monthly_usd_cents == null
+                          ? "Custom"
+                          : formatUsd(
+                              candidate.monthly_usd_cents / 100,
+                            ).replace(/\.00$/, "")}
                     </span>
                   </div>
                   <div className="col-span-2 flex flex-wrap gap-x-3 gap-y-1 md:contents">
