@@ -4185,6 +4185,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if readErr != nil || evidence.Attempt == nil || evidence.Attempt.Finalization == nil || evidence.Attempt.Finalization.VersionError != change.VersionError || evidence.Attempt.Finalization.VersionCode != change.VersionCode || evidence.Attempt.ClaimReleasedAt == nil {
 					t.Fatalf("publication refusal was omitted from the terminal receipt: %+v, %v", evidence.Attempt, readErr)
 				}
+				if f := evidence.Attempt.TerminalFailure; evidence.Attempt.Status != "failed" || f == nil || f.ErrorClass != "finalization" || f.Stage != "finalization" || f.Error != change.VersionCode+": "+change.VersionError {
+					t.Fatalf("failed finalization ended without its cause: status=%s failure=%+v", evidence.Attempt.Status, f)
+				}
 				detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
 				if err != nil || !reflect.DeepEqual(detail.Versions, expected.Versions) || detail.Change.CurrentVersion != expected.Change.CurrentVersion {
 					t.Fatalf("refused publication replaced an immutable version: %+v, %v", detail, err)

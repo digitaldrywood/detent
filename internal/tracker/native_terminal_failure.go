@@ -34,12 +34,12 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	first, _, _ := strings.Cut(f.Error, "\n")
 	f.Error = text.publicText(nativeFailureAssignment.ReplaceAllString(strings.TrimSpace(first), "[redacted]"))
 	switch f.ErrorClass {
-	case "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery", "acceptance_publication":
+	case "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery", "acceptance_publication", "finalization", "lease_released":
 	default:
 		f.ErrorClass = ""
 	}
 	switch f.Stage {
-	case "pre_provider", "workspace_preparation", "acceptance_publication":
+	case "pre_provider", "workspace_preparation", "acceptance_publication", "finalization", "lease_release":
 	default:
 		f.Stage = ""
 	}
@@ -61,6 +61,15 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	f.Source = "host_runner_completion"
 	f.Coverage = "recorded_execution_error_only; not_change_publication_or_issue_acceptance_or_lease_release; historical_metadata_not_backfilled"
 	f.Summary = "Runner execution failed; private error output omitted"
+	switch f.ErrorClass {
+	case "finalization":
+		f.Coverage = "recorded_finalization_error_only; historical_metadata_not_backfilled"
+		f.Summary = "Change finalization failed; private error output omitted"
+	case "lease_released":
+		f.Source = "hub_lease_release"
+		f.Coverage = "recorded_lease_release_only; historical_metadata_not_backfilled"
+		f.Summary = "Attempt lease was released before the attempt finished"
+	}
 	if f.Provider != "codex" {
 		f.Provider = ""
 		f.Operation, f.RPCCode, f.ProviderCode, f.MaxChars, f.ActualChars = "", nil, "", nil, nil
