@@ -418,7 +418,8 @@ test.describe("the work board", () => {
     await expect(utility).toBeEnabled();
     await utility.click();
     await expect(page).toHaveURL(/\/work\/changes$/);
-    await expect(page.getByTestId("changes-scope-note")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Pull requests", exact: true })).toBeVisible();
+    await expect(page.getByRole("main").getByRole("status")).toHaveText("Partial");
     await scan(page, "changes");
   });
 });
