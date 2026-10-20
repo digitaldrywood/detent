@@ -82,6 +82,9 @@ func TestTenantServingSupervision(t *testing.T) {
 func TestEntryHealthRequiresServingTenants(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
+	for _, tenant := range f.fixtures {
+		tenant.open(t.Context(), t)
+	}
 	for _, test := range []struct {
 		name         string
 		tenantStatus int
