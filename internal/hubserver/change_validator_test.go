@@ -451,7 +451,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				"security audit landing requires merge execution":           "execution_session",
 			}[test.name]
 			if auditRejectionField != "" {
-				var failure hubclient.APIError
+				failure := hubclient.APIError{Status: response.Code}
 				decodeHubResponse(t, response, &failure)
 				want := runnerauth.PublicationRejection{Category: "security_audit", Field: auditRejectionField}
 				if failure.Rejection == nil || *failure.Rejection != want || failure.Error() != want.DiagnosticError() {

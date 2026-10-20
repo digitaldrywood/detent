@@ -502,7 +502,7 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 			if !after.LastActivityAt.Equal(before.LastActivityAt) || !after.UpdatedAt.Equal(before.UpdatedAt) {
 				t.Fatalf("older event changed activity %s -> %s or updated %s -> %s", before.LastActivityAt, after.LastActivityAt, before.UpdatedAt, after.UpdatedAt)
 			}
-			title := "Older edit"
+			title := "Older edit " + formatHubTime(stamp)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "older-edit-" + formatHubTime(stamp)}, ExpectedRevision: after.Revision, Title: &title}), http.StatusOK)
 			edited := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
 			if !edited.LastActivityAt.Equal(latest) || !edited.UpdatedAt.Equal(stamp) {
