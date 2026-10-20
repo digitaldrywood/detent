@@ -14,6 +14,8 @@ func (r PublicationRejection) Valid() bool {
 	switch r.Category {
 	case "acceptance_validation":
 		return slices.Contains([]string{"review", "body", "policy.validator", "validator.version_id", "validator.submitted", "validator.session_id", "validator.repository", "validator.base_sha", "validator.head_sha", "validator.diff_digest", "validator.score", "validator.criteria_evidence", "decision", "source.identity", "implementation_review"}, r.Field)
+	case "security_audit":
+		return slices.Contains([]string{"review", "body", "decision", "verdict", "policy.security_audit", "version_id", "session_id", "repository", "base_sha", "head_sha", "diff_digest", "source.identity", "execution_session", "separate_session", "run", "run.id", "run.issue_id", "run.project_id", "run.repository", "run.pr_number", "run.base_sha", "run.head_sha", "run.reviewer_version", "run.exit_status", "run.diff_bytes", "run.output_bytes", "run.output_digest", "run.invocation_id", "run.worker_pid", "run.worker_pgid", "run.worker_started_at", "run.started_at", "run.completed_at", "run.summary", "run.verdict", "key.base_sha", "key.head_sha"}, r.Field)
 	case "event_validation":
 		return slices.Contains([]string{"", "schema_version", "type", "data", "data.runtime", "data.outcome", "data.artifact_ids"}, r.Field)
 	case "runtime_validation":
@@ -33,6 +35,19 @@ func (r PublicationRejection) Valid() bool {
 	default:
 		return false
 	}
+}
+
+func (r *PublicationRejection) TerminalStage() string {
+	if r == nil || !r.Valid() {
+		return ""
+	}
+	switch r.Category {
+	case "acceptance_validation":
+		return "acceptance_publication"
+	case "security_audit":
+		return "security_audit_publication"
+	}
+	return ""
 }
 
 func (r PublicationRejection) DiagnosticError() string {

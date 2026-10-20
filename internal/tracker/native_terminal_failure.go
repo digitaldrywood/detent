@@ -34,26 +34,26 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	first, _, _ := strings.Cut(f.Error, "\n")
 	f.Error = text.publicText(nativeFailureAssignment.ReplaceAllString(strings.TrimSpace(first), "[redacted]"))
 	switch f.ErrorClass {
-	case "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery", "acceptance_publication", "finalization", "lease_released":
+	case "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery", "acceptance_publication", "security_audit_publication", "finalization", "lease_released":
 	default:
 		f.ErrorClass = ""
 	}
 	switch f.Stage {
-	case "pre_provider", "workspace_preparation", "acceptance_publication", "finalization", "lease_release":
+	case "pre_provider", "workspace_preparation", "acceptance_publication", "security_audit_publication", "finalization", "lease_release":
 	default:
 		f.Stage = ""
 	}
-	if f.Rejection != nil && f.Rejection.Valid() && f.Rejection.Category == "acceptance_validation" {
+	if stage := f.Rejection.TerminalStage(); stage != "" {
 		rejection := *f.Rejection
 		f.Rejection = &rejection
 		f.Error = rejection.DiagnosticError()
-		f.Stage, f.ErrorClass = "acceptance_publication", "acceptance_publication"
+		f.Stage, f.ErrorClass = stage, stage
 	} else {
 		f.Rejection = nil
 	}
 	f.Attribution = ""
 	switch f.ErrorClass {
-	case "backend_startup", "protocol", "workspace_hook", "acceptance_publication":
+	case "backend_startup", "protocol", "workspace_hook", "acceptance_publication", "security_audit_publication":
 		f.Attribution = "instance"
 	case "issue_configuration", "source_recovery":
 		f.Attribution = "issue"

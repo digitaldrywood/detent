@@ -12,6 +12,8 @@ func TestTerminalPublicationRejectionAllowlist(t *testing.T) {
 		valid     bool
 	}{
 		{"acceptance", PublicationRejection{Category: "acceptance_validation", Field: "validator.version_id"}, true},
+		{"security audit", PublicationRejection{Category: "security_audit", Field: "execution_session"}, true},
+		{"security audit private field", PublicationRejection{Category: "security_audit", Field: "private-payload"}, false},
 		{"private category", PublicationRejection{Category: "private-payload", Field: "validator.version_id"}, false},
 		{"private field", PublicationRejection{Category: "acceptance_validation", Field: "private-payload token=credential"}, false},
 		{"other publication", PublicationRejection{Category: "version_validation", Field: "source"}, false},
@@ -26,7 +28,7 @@ func TestTerminalPublicationRejectionAllowlist(t *testing.T) {
 			}
 			if test.valid {
 				parsed, ok := ParsePublicationRejection(got.Error)
-				if !ok || parsed != test.rejection || got.Stage != "acceptance_publication" {
+				if !ok || parsed != test.rejection || got.Stage != test.rejection.TerminalStage() || got.Stage == "" {
 					t.Fatalf("rejection lost: %+v", got)
 				}
 				again := got.Public()

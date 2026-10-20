@@ -170,7 +170,7 @@ func (e *APIError) Error() string {
 }
 
 func (e *APIError) NativeTerminalFailure() tracker.NativeTerminalFailure {
-	if e != nil && e.Code == "invalid_request" && e.Rejection != nil && e.Rejection.Valid() && e.Rejection.Category == "acceptance_validation" {
+	if e != nil && e.Code == "invalid_request" && e.Rejection.TerminalStage() != "" {
 		return tracker.NativeTerminalFailure{Rejection: e.Rejection}
 	}
 	return tracker.NativeTerminalFailure{}

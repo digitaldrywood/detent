@@ -132,6 +132,13 @@ func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 			}
 			err = nativeRejection(err, "acceptance_validation", field)
 		}
+		if scope.credential.Scope == apiScopeWorker && request.SecurityAudit != nil {
+			field := "decision"
+			if len(request.Body) > 64<<10 {
+				field = "body"
+			}
+			err = securityAuditRejection("Review decision is invalid or body exceeds 64 KiB", field)
+		}
 		return nil, err
 	}
 	if change.CurrentLanding() != nil {
