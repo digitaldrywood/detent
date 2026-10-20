@@ -86,11 +86,11 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version, goos string, lookupEnv f
 			if capacity < 1 {
 				return errors.New("--capacity must be at least 1")
 			}
-			if isolationTier != isolation.Sandbox && isolationTier != isolation.NativeTrusted {
-				return errors.New("--isolation-tier must be sandbox or native-trusted")
-			}
-			if goos == "windows" && isolationTier == isolation.Sandbox {
-				return errors.New("sandbox is unavailable on Windows; only Full access is supported: pass --isolation-tier native-trusted")
+			if err := isolation.ValidateTier(isolationTier, goos); err != nil {
+				if errors.Is(err, isolation.ErrSandboxUnavailable) {
+					return fmt.Errorf("%w; pass --isolation-tier native-trusted", err)
+				}
+				return fmt.Errorf("--isolation-tier must be sandbox or native-trusted: %w", err)
 			}
 			paths, err := resolveRunnerPaths(configPath, workspaceRoot, privateLocation)
 			if err != nil {

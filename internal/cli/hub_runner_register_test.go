@@ -22,6 +22,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -625,7 +626,7 @@ func TestHubRunnerRegisterAccessConfiguration(t *testing.T) {
 			}
 			output, err := register(args...)
 			if test.refused {
-				if err == nil || !strings.Contains(err.Error(), "sandbox is unavailable on Windows") || !strings.Contains(err.Error(), "--isolation-tier native-trusted") {
+				if !errors.Is(err, isolation.ErrSandboxUnavailable) || !strings.Contains(err.Error(), "sandbox is unavailable on this platform") || !strings.Contains(err.Error(), "--isolation-tier native-trusted") {
 					t.Fatalf("register error=%v, output=%s", err, output)
 				}
 				if hub.requests.Load() != 0 {

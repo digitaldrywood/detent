@@ -145,8 +145,8 @@ func (s *Service) readRunnerProjectDiagnostics(ctx context.Context, scope native
 			return runnerauth.DiagnosticPage{}, operatortool.ErrInvalidArguments
 		}
 		page.ReceivedAt = view.ObservedAt
-		if r.OS == "windows" && r.IsolationTier == isolation.Sandbox {
-			page.Unavailable["isolation_tier"] = "Sandbox is unavailable on Windows; use Full access (native-trusted)."
+		if err := isolation.ValidateTier(r.IsolationTier, r.OS); err != nil {
+			page.Unavailable["isolation_tier"] = err.Error()
 		}
 		if r.ConnectionHealth != "online" {
 			page.Status = "offline"
