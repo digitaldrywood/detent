@@ -170,6 +170,10 @@ func TestRunnerStartCommand(t *testing.T) {
 	for _, test := range []struct{ goos, path, want string }{
 		{"windows", `C:\Users\Example's $user\runner\global.yaml`, `detent --config 'C:\Users\Example''s $user\runner\global.yaml' --headless`},
 		{"windows", `C:\runner\global.yaml`, `detent --config 'C:\runner\global.yaml' --headless`},
+		{"windows", `C:\x‘; Start-Process calc; #\global.yaml`, `detent --config 'C:\x‘‘; Start-Process calc; #\global.yaml' --headless`},
+		{"windows", `C:\x’; Start-Process calc; #\global.yaml`, `detent --config 'C:\x’’; Start-Process calc; #\global.yaml' --headless`},
+		{"windows", `C:\x‚; Start-Process calc; #\global.yaml`, `detent --config 'C:\x‚‚; Start-Process calc; #\global.yaml' --headless`},
+		{"windows", `C:\x‛; Start-Process calc; #\global.yaml`, `detent --config 'C:\x‛‛; Start-Process calc; #\global.yaml' --headless`},
 		{"darwin", "/Users/example's folder/global.yaml", `detent --config '/Users/example'\''s folder/global.yaml' --headless`},
 		{"linux", "/home/example/global.yaml", "detent --config /home/example/global.yaml --headless"},
 	} {
