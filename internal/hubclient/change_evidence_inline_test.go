@@ -111,3 +111,49 @@ func TestRetainChangeValidationHonorsUploadPartLimit(t *testing.T) {
 		t.Fatalf("parts=%d lost receipt bytes", len(parts))
 	}
 }
+
+func TestRetainChangeValidationRejectsForeignServiceReference(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	validation := gate.CommandResult{Command: "make check-land", HeadSHA: head, TreeSHA: strings.Repeat("d", 40), DurationNS: 1, Evidence: &gate.CommandEvidence{}, Output: "ok", Pipeline: &gate.PipelineEvidence{}}
+	for i := range 1024 {
+		timing := gate.PipelineTiming{Stage: "finalization", Command: "go test -short ./internal/example", HeadSHA: head, TreeSHA: validation.TreeSHA, StartedAt: time.Unix(1, int64(i)).UTC(), FinishedAt: time.Unix(2, int64(i)).UTC(), ExitCode: new(0), Execution: "executed"}
+		timing.ReceiptID = timing.ID()
+		validation.Pipeline.Timings = append(validation.Pipeline.Timings, timing)
+	}
+	full, err := json.Marshal(validation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactID := "artifact_" + strings.Repeat("a", 32)
+	for _, test := range []struct {
+		name      string
+		serviceID string
+		want      error
+	}{
+		{name: "reserved service is accepted", serviceID: "service_reserved"},
+		{name: "foreign service is refused", serviceID: "service_foreign", want: artifact.ErrIntegrity},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/v1/uploads":
+					_ = json.NewEncoder(w).Encode(artifact.Upload{ArtifactID: artifactID, State: "uploading"})
+				case strings.HasSuffix(r.URL.Path, "/parts"):
+					_ = json.NewEncoder(w).Encode(artifact.Object{})
+				default:
+					_ = json.NewEncoder(w).Encode(artifact.Reference{ServiceID: test.serviceID, ArtifactID: artifactID, Kind: "log", State: "complete", Availability: "available", Bytes: int64(len(full)), SHA256: artifact.Digest(full)})
+				}
+			}))
+			defer server.Close()
+			e := &nativeExecution{artifacts: nativeArtifacts{client: &artifact.Client{Origin: server.URL, Token: func(context.Context) (string, error) { return "worker", nil }}, reservation: artifact.Reservation{ServiceID: "service_reserved", Bytes: 4 << 20}}}
+			input := tracker.ChangeVersionInput{Validation: &validation}
+			err := e.retainChangeValidation(t.Context(), &input)
+			if test.want == nil && (err != nil || input.Validation.EvidenceArtifact == nil || input.Validation.EvidenceArtifact.ServiceID != "service_reserved") {
+				t.Fatalf("reserved service reference: error=%v validation=%+v", err, input.Validation.EvidenceArtifact)
+			}
+			if test.want != nil && (!errors.Is(err, test.want) || input.Validation != &validation) {
+				t.Fatalf("foreign service reference: error=%v replaced=%t", err, input.Validation != &validation)
+			}
+		})
+	}
+}

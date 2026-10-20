@@ -75,7 +75,7 @@ func (e *nativeExecution) retainChangeValidation(ctx context.Context, input *tra
 	if err != nil {
 		return fmt.Errorf("finalize Change validation: %w", err)
 	}
-	if reference.Scope != reservation.Scope || reference.Kind != "log" || reference.State != "complete" || reference.Availability != "available" || reference.ArtifactID != upload.ArtifactID || reference.Bytes != int64(len(raw)) || !artifact.ValidHash(reference.SHA256, 64) {
+	if reference.ServiceID != reservation.ServiceID || reference.Scope != reservation.Scope || reference.Kind != "log" || reference.State != "complete" || reference.Availability != "available" || reference.ArtifactID != upload.ArtifactID || reference.Bytes != int64(len(raw)) || !artifact.ValidHash(reference.SHA256, 64) {
 		return artifact.ErrIntegrity
 	}
 	bounded.Pipeline = nil
