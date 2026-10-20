@@ -16,6 +16,7 @@ func checkWorkflow(data []byte) error {
 	var workflow struct {
 		On   map[string]yaml.Node `yaml:"on"`
 		Jobs map[string]struct {
+			If    string    `yaml:"if"`
 			Needs yaml.Node `yaml:"needs"`
 			Steps []struct {
 				Run string `yaml:"run"`
@@ -26,13 +27,27 @@ func checkWorkflow(data []byte) error {
 		return err
 	}
 	for event := range workflow.On {
-		if event != "schedule" && event != "workflow_dispatch" {
+		if event != "schedule" && event != "workflow_dispatch" && event != "pull_request" {
 			return fmt.Errorf("INV-5 CI must not trigger on %s", event)
 		}
 	}
 	for _, event := range []string{"schedule", "workflow_dispatch"} {
 		if _, ok := workflow.On[event]; !ok {
 			return fmt.Errorf("INV-5 %s trigger missing", event)
+		}
+	}
+	if _, pr := workflow.On["pull_request"]; pr {
+		if _, ok := workflow.Jobs["verify-fast"]; !ok {
+			return errors.New("INV-5 PR validation must reuse verify-fast")
+		}
+		for name, job := range workflow.Jobs {
+			if name == "verify-fast" {
+				continue
+			}
+			const excludePR = "github.event_name != 'pull_request'"
+			if job.If != excludePR && !strings.HasPrefix(job.If, excludePR+" && ") {
+				return fmt.Errorf("INV-5 %s must exclude PR events", name)
+			}
 		}
 	}
 	finalize, ok := workflow.Jobs["finalize"]
@@ -96,6 +111,12 @@ func TestRepositoryHasNoPullRequestActions(t *testing.T) {
 		}
 		for _, event := range []string{"pull_request", "pull_request_target", "merge_group"} {
 			if _, ok := workflow.On[event]; ok {
+				if entry.Name() == "ci.yml" && event == "pull_request" {
+					if err := checkWorkflow(data); err != nil {
+						t.Error(err)
+					}
+					continue
+				}
 				if entry.Name() == "cla.yml" && event == "pull_request_target" && len(workflow.Jobs) == 1 {
 					job, ok := workflow.Jobs["cla"]
 					if ok && len(job.Steps) == 1 && job.Steps[0].Uses == "contributor-assistant/github-action@v2.6.1" && job.Steps[0].Run == "" {
@@ -110,13 +131,16 @@ func TestRepositoryHasNoPullRequestActions(t *testing.T) {
 
 func TestWorkflowViolations(t *testing.T) {
 	const jobs = "jobs:\n  test:\n    runs-on: ubuntu-latest\n  finalize:\n    needs: [test]\n    steps:\n      - run: bash scripts/scheduled-ci-finish.sh\n"
+	const prJobs = "jobs:\n  verify-fast:\n    runs-on: ubuntu-latest\n  finalize:\n    if: github.event_name != 'pull_request'\n    needs: [verify-fast]\n    steps:\n      - run: bash scripts/scheduled-ci-finish.sh\n"
 	for _, tt := range []struct {
 		name, workflow string
 		wantErr        bool
 	}{
 		{name: "valid", workflow: "on:\n  schedule:\n  workflow_dispatch:\n" + jobs},
 		{name: "push trigger", workflow: "on:\n  schedule:\n  workflow_dispatch:\n  push:\n" + jobs, wantErr: true},
-		{name: "pull request trigger", workflow: "on:\n  schedule:\n  workflow_dispatch:\n  pull_request:\n" + jobs, wantErr: true},
+		{name: "bounded pull request guard", workflow: "on:\n  schedule:\n  workflow_dispatch:\n  pull_request:\n" + prJobs},
+		{name: "pull request leaks full suite", workflow: "on:\n  schedule:\n  workflow_dispatch:\n  pull_request:\n" + strings.Replace(prJobs, "    if: github.event_name != 'pull_request'\n", "", 1), wantErr: true},
+		{name: "pull request trigger without guard", workflow: "on:\n  schedule:\n  workflow_dispatch:\n  pull_request:\n" + jobs, wantErr: true},
 		{name: "schedule missing", workflow: "on:\n  workflow_dispatch:\n" + jobs, wantErr: true},
 		{name: "dispatch missing", workflow: "on:\n  schedule:\n" + jobs, wantErr: true},
 		{name: "finalizer missing", workflow: "on:\n  schedule:\n  workflow_dispatch:\njobs:\n  test:\n    runs-on: ubuntu-latest\n", wantErr: true},

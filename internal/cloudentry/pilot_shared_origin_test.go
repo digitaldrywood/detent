@@ -38,8 +38,6 @@ import (
 
 const pilotOperatorToken = "detent_pilot_entitlement_operator_0123456789abcdef"
 
-const issueContractTestSections = "## Acceptance criteria\nComplete the requested work.\n## Must not break\nExisting behavior.\n## How we know it worked\nRun the project checks."
-
 type pilotTenantLauncher struct {
 	provider   *fakeProvider
 	billing    billing.Provider
@@ -374,13 +372,6 @@ func pilotDecode(t *testing.T, response pilotResponse, value any) {
 	}
 }
 
-func pilotPolicy() policy.Descriptor {
-	return policy.Descriptor{
-		SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")),
-		Gates: policy.Gates{Kind: "command", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("Plan Review")), AutomatedReview: "optional", MergeMethod: "squash"},
-	}.WithID()
-}
-
 type pilotRunner struct {
 	runnerauth.Binding
 	credential string
@@ -417,15 +408,6 @@ func (p *sharedOriginPilot) enrollRunner(t *testing.T, o, other pilotOrganizatio
 	redeemed := machine.request(http.MethodPost, o.api()+"/runner-enrollments/redeem", jsonBody(t, redemption), map[string]string{"Authorization": "Bearer " + enrollment.Token, "Content-Type": "application/json"})
 	pilotStatus(t, "runner redemption", redeemed, http.StatusCreated)
 	return pilotRunner{Binding: binding, credential: credential}
-}
-
-func jsonBody(t *testing.T, value any) io.Reader {
-	t.Helper()
-	raw, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return bytes.NewReader(raw)
 }
 
 func (p *sharedOriginPilot) machine(t *testing.T, method, path, token string, value any) pilotResponse {

@@ -1,6 +1,7 @@
 package cloudentry
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -29,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
@@ -36,6 +38,24 @@ const (
 	testPublicURL = "http://127.0.0.1:18017"
 	testAdminKey  = "detent_test_admin_token_0123456789abcdefghijklmnop"
 )
+
+const issueContractTestSections = "## Acceptance criteria\nComplete the requested work.\n## Must not break\nExisting behavior.\n## How we know it worked\nRun the project checks."
+
+func pilotPolicy() policy.Descriptor {
+	return policy.Descriptor{
+		SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")),
+		Gates: policy.Gates{Kind: "command", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("Plan Review")), AutomatedReview: "optional", MergeMethod: "squash"},
+	}.WithID()
+}
+
+func jsonBody(t *testing.T, value any) io.Reader {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bytes.NewReader(raw)
+}
 
 type fakeProvider struct {
 	organizations   map[string]auth.Organization

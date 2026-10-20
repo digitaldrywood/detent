@@ -168,9 +168,14 @@ is present; live queue settings require operator inspection.
 
 ## INV-5 — Local pull-request validation and scheduled release evidence
 
-This repository starts no validation workflow from `pull_request`,
-`pull_request_target` or `merge_group`, and requires no branch status check.
-The sole event exception is `.github/workflows/cla.yml`: its single job runs
+This repository requires no branch status check. The only PR validation is
+`.github/workflows/ci.yml` on `pull_request`: its existing Linux `verify-fast`
+job checks the PR merge commit with Windows amd64/arm64 cross-builds and amd64
+vet in its Vet step. Other jobs and broader checks do not run on PR events;
+the Windows commands do not run in the scheduled or manual full suite.
+No Windows VM, new job or landing gate is added.
+No validation workflow starts from `pull_request_target` or `merge_group`.
+The other event exception is `.github/workflows/cla.yml`: its single job runs
 only `contributor-assistant/github-action` without checking out or executing
 PR code, and owns signature records on the unprotected `cla-signatures` branch.
 
@@ -265,14 +270,18 @@ jobs without workflow cancellation remain reportable and never authorize a tag. 
 prepare conversation bundles and configuration references before deployment.
 
 **Enforcement:** checks assert outcomes only: no workflow triggers on
-`pull_request`, `pull_request_target` or `merge_group` except the `cla.yml`
-exception; `ci.yml` triggers only on `schedule` and `workflow_dispatch` and its
+`pull_request`, `pull_request_target` or `merge_group` except the bounded
+`ci.yml` Windows guard and the `cla.yml` exception; `ci.yml` triggers only on
+`pull_request`, `schedule` and `workflow_dispatch`, isolates its other jobs from
+PR events, and its
 finalize job needs every other job in the parsed workflow and runs
 `scripts/scheduled-ci-finish.sh`; the finalizer fails the run when any job
 concluded other than success and creates stable tags only after a green
 release-branch suite; and `release.yml` verifies provenance of the exact tagged
 commit before building. Checks must not pin workflow shape such as job
-conditions, schedules, shard counts, timeouts or command text.
+conditions, schedules, shard counts, timeouts or command text except where
+needed to enforce the bounded PR guard.
+`TestCIWindowsChecksUseExistingLinuxVetStep` in the repository root;
 `TestRepositoryWorkflow`, `TestRepositoryHasNoPullRequestActions`, and
 `TestWorkflowViolations` in `internal/invariants`;
 `TestReleaseWorkflowAuthenticatesExactCommitProvenance` in the repository root;
