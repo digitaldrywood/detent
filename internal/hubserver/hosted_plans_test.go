@@ -22,6 +22,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -461,20 +462,60 @@ func TestHostedMutationQuotaRollbackAndRetry(t *testing.T) {
 		{"event exhaustion", map[string]int64{"ingested_events": 0}, http.StatusTooManyRequests},
 		{"storage exhaustion", map[string]int64{"collaboration_bytes": 1}, http.StatusTooManyRequests},
 		{"history exhaustion", map[string]int64{"history_records": 0}, http.StatusTooManyRequests},
+		{"internal create failure", nil, http.StatusInternalServerError},
 		{"allowed", nil, http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newHostedSecurityFixture(t)
+			f, ctx := newHostedKeyMCPFixture(t, "dedicated", "owner")
 			hostedTestPlans(t, f.service, test.limits)
-			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
+			if test.want == http.StatusInternalServerError {
+				operatorSQL(t, f.hostedSecurityFixture, "CREATE TRIGGER refuse_issue BEFORE INSERT ON issues BEGIN SELECT RAISE(ABORT, 'private-title private-body credential-secret'); END")
+			}
 			request := map[string]any{"idempotency_key": "create", "title": "private-title", "body": "private-body" + issueContractTestSections, "state": "Todo"}
-			response := f.request(t, owner, http.MethodPost, f.base+"/work-items", request)
+			response := f.request(t, f.user, http.MethodPost, f.base+"/work-items", request)
 			requireNativeStatus(t, response, test.want)
+			if test.want != http.StatusOK {
+				var rest apiErrorResponse
+				decodeHubResponse(t, response, &rest)
+				if test.want == http.StatusTooManyRequests && (rest.Code != "allowance_exhausted" || !strings.Contains(rest.Message, "Hosted ") || !strings.Contains(rest.Message, "allowance reached (")) {
+					t.Fatalf("REST allowance refusal=%s", response.Body)
+				}
+				authority, err := operatorCatalog(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx = f.service.withOperatorCatalog(ctx, authority.credential, authority.identity.OrganizationID)
+				for _, transport := range []string{"stdio", "http"} {
+					t.Run(transport, func(t *testing.T) {
+						send := hostedContextProtocol(t, f.service, ctx, transport)
+						reply := send("tools/call", operatortool.FileIssue, map[string]any{"project_id": f.project, "request_id": "mcp-create", "title": request["title"], "description": request["body"], "state": "Todo"})
+						var result struct {
+							IsError bool                        `json:"isError"`
+							Refusal operatortool.AllowanceError `json:"structuredContent"`
+						}
+						if err := json.Unmarshal(reply.Result, &result); err != nil || len(reply.Error) != 0 || !result.IsError {
+							t.Fatalf("MCP refusal=%s %s err=%v", reply.Result, reply.Error, err)
+						}
+						if test.want == http.StatusTooManyRequests {
+							if result.Refusal.Code != "allowance_exhausted" || result.Refusal.Message != rest.Message || result.Refusal.HTTPStatus != http.StatusTooManyRequests {
+								t.Fatalf("MCP allowance=%s REST=%s", reply.Result, response.Body)
+							}
+						} else if rest.Code != "native_operation_failed" || result.Refusal.Code != "" || !strings.Contains(string(reply.Result), "reason_code service_unavailable") {
+							t.Fatalf("internal failure was not generic: MCP=%s REST=%s", reply.Result, response.Body)
+						}
+						for _, secret := range []string{"private-title", "private-body", "credential-secret"} {
+							if strings.Contains(string(reply.Result), secret) || strings.Contains(response.Body.String(), secret) {
+								t.Fatalf("create refusal exposed %q", secret)
+							}
+						}
+					})
+				}
+			}
 			var events, commands int
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_events),(SELECT count(*) FROM native_commands)").Scan(&events, &commands); err != nil {
 				t.Fatal(err)
 			}
-			if test.want == http.StatusTooManyRequests {
+			if test.want != http.StatusOK {
 				if events != 0 || commands != 0 {
 					t.Fatal("rejected mutation persisted data or idempotency receipt")
 				}
@@ -484,7 +525,7 @@ func TestHostedMutationQuotaRollbackAndRetry(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			requireNativeStatus(t, f.request(t, owner, http.MethodPost, f.base+"/work-items", request), http.StatusOK)
+			requireNativeStatus(t, f.request(t, f.user, http.MethodPost, f.base+"/work-items", request), http.StatusOK)
 			after, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
 			if err != nil {
 				t.Fatal(err)
