@@ -70,7 +70,7 @@ func SaveRoutingCache(identityPath string, snapshot RoutingSnapshot) (resultErr 
 	if err != nil || len(encoded) > 64<<10 {
 		return errors.New("runner routing cache exceeds its size limit")
 	}
-	file, err := os.CreateTemp(filepath.Dir(path), ".runner-routing-*")
+	file, err := createPrivateTemp(filepath.Dir(path), ".runner-routing-")
 	if err != nil {
 		return err
 	}
@@ -103,7 +103,7 @@ func LoadRoutingCache(identityPath string) (snapshot RoutingSnapshot, resultErr 
 	if !info.Mode().IsRegular() || runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 || info.Size() > 64<<10 {
 		return RoutingSnapshot{}, errors.New("runner routing cache must be a private regular file (0600)")
 	}
-	file, err := os.Open(path)
+	file, err := openPrivateFile(path, false)
 	if err != nil {
 		return RoutingSnapshot{}, err
 	}

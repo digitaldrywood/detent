@@ -1005,8 +1005,12 @@ machine. Stop that host and revoke provider/repository access separately if need
 ## Customer credential isolation and cleanup
 
 Keep runner identity in the service account's private config directory (0700)
-with a regular 0600 credential file. On Windows, provision the equivalent private
-service-account/profile ACLs; POSIX permission bits do not enforce Windows ACLs.
+with a regular 0600 credential file. On Windows, identity and routing-cache files
+are created with a protected DACL granting full control only to the current
+user SID, with inheritance disabled. Reads reject files with inherited access
+or additional access entries. Identity updates and routing-cache replacements
+resecure files written by older runners. Keep the service-account/profile
+directory private as well; POSIX permission bits do not enforce Windows ACLs.
 Do not expose the runner identity file, enrollment variable, Hub admin token,
 provider login directory or storage configuration through repository files,
 ordinary workspaces, shared caches, artifacts or verbose shell tracing.

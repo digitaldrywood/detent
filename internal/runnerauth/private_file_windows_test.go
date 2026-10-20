@@ -1,0 +1,117 @@
+package runnerauth
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+)
+
+func TestWindowsCredentialDACL(t *testing.T) {
+	t.Parallel()
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := user.User.Sid.String()
+	for _, kind := range []string{"identity", "routing cache"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			directory := t.TempDir()
+			setTestDACL(t, directory, "D:P(A;OICI;FA;;;"+sid+")(A;OICI;GR;;;WD)", true)
+			identityPath := filepath.Join(directory, "identity.json")
+			identity, err := Initialize(identityPath, "https://hub.example.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := identityPath
+			load := func() error {
+				_, err := Load(identityPath)
+				return err
+			}
+			write := func() error { return Save(identityPath, identity) }
+			if kind == "routing cache" {
+				path = RoutingCachePath(identityPath)
+				snapshot := RoutingSnapshot{RunnerID: identity.Identity.RunnerID, Revision: 1, Routing: Routing{DisplayName: "Runner", State: "active", CapacityLimit: 1}}
+				write = func() error { return SaveRoutingCache(identityPath, snapshot) }
+				load = func() error {
+					_, err := LoadRoutingCache(identityPath)
+					return err
+				}
+				if err := write(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertUserOnlyDACL(t, path, user.User.Sid)
+			if err := load(); err != nil {
+				t.Fatalf("fresh credential could not be loaded: %v", err)
+			}
+			for _, test := range []struct {
+				name, sddl string
+				protected  bool
+			}{
+				{"extra ACE", "D:P(A;;FA;;;" + sid + ")(A;;GR;;;WD)", true},
+				{"inherited ACL", "D:(A;;FA;;;" + sid + ")", false},
+				{"read-only ACE", "D:P(A;;GR;;;" + sid + ")", true},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					setTestDACL(t, path, test.sddl, test.protected)
+					if err := load(); err == nil || !strings.Contains(err.Error(), "icacls") {
+						t.Fatalf("unsafe DACL needs an actionable read error, got %v", err)
+					}
+					if err := write(); err != nil {
+						t.Fatalf("legacy credential could not be resecured: %v", err)
+					}
+					assertUserOnlyDACL(t, path, user.User.Sid)
+					if err := load(); err != nil {
+						t.Fatalf("resecured credential could not be loaded: %v", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func setTestDACL(t *testing.T, path, sddl string, protected bool) {
+	t.Helper()
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	information := windows.DACL_SECURITY_INFORMATION | windows.UNPROTECTED_DACL_SECURITY_INFORMATION
+	if protected {
+		information = windows.DACL_SECURITY_INFORMATION | windows.PROTECTED_DACL_SECURITY_INFORMATION
+	}
+	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.SECURITY_INFORMATION(information), nil, nil, dacl, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertUserOnlyDACL(t *testing.T, path string, sid *windows.SID) {
+	t.Helper()
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control, _, err := sd.Control()
+	if err != nil || control&windows.SE_DACL_PROTECTED == 0 {
+		t.Fatalf("DACL inheritance is not disabled: control=%x err=%v", control, err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil || dacl.AceCount != 1 {
+		t.Fatalf("DACL must have exactly one ACE: %v err=%v", dacl, err)
+	}
+	var ace *windows.ACCESS_ALLOWED_ACE
+	if err := windows.GetAce(dacl, 0, &ace); err != nil {
+		t.Fatal(err)
+	}
+	if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != 0 || ace.Mask != 0x1f01ff || !(*windows.SID)(unsafe.Pointer(&ace.SidStart)).Equals(sid) {
+		t.Fatalf("ACE must grant full control only to the current user: %v", ace)
+	}
+}
