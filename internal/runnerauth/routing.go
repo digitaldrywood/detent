@@ -51,11 +51,18 @@ type ClaimSlot struct {
 	RunnerID string          `json:"runner_id"`
 }
 
+type ReleasedExecution struct {
+	ProjectID  tracker.ProjectID        `json:"project_id"`
+	WorkItemID tracker.NativeWorkItemID `json:"work_item_id"`
+	AttemptID  string                   `json:"attempt_id"`
+}
+
 type ClaimState struct {
-	HostCapacity   int                          `json:"host_capacity"`
-	RunnerCapacity int                          `json:"runner_capacity"`
-	Slots          []ClaimSlot                  `json:"slots"`
-	PolicyIDs      map[tracker.ProjectID]string `json:"policy_ids"`
+	ReleasedExecutions []ReleasedExecution          `json:"released_executions,omitempty"`
+	HostCapacity       int                          `json:"host_capacity"`
+	RunnerCapacity     int                          `json:"runner_capacity"`
+	Slots              []ClaimSlot                  `json:"slots"`
+	PolicyIDs          map[tracker.ProjectID]string `json:"policy_ids"`
 }
 
 type RoutingSnapshot struct {

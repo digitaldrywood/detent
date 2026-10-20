@@ -28,6 +28,7 @@ import (
 )
 
 type hubSchedulingOptions struct {
+	processStore  releasedExecutionProcessStore
 	providerUsage *runner.ProviderUsage
 	applyProjects func(context.Context, globalconfig.Config) error
 	setupStore    store.ProjectRunnerSetupStore
@@ -145,6 +146,9 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		reportProblems = options[0].problems
 	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+		ReleasedStopped: func(ctx context.Context, item tracker.NativeWorkItemID, attempt tracker.NativeAttempt) (bool, error) {
+			return releasedExecutionWorkersStopped(ctx, setupOptions.processStore, item, attempt)
+		},
 		PrepareProject:      prepareProject,
 		RefreshProjects:     projects.refresh,
 		RunnerSetupDeclared: projects.runnerSetupDeclared,
