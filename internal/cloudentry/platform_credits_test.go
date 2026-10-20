@@ -43,7 +43,7 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 			f := newEntryFixture(t)
 			adminToken := "platform-entitlement-admin-0123456789abcdef"
 			f.service.config.Allocation = &AllocationConfig{EntitlementAdminToken: []byte(adminToken)}
-			alpha := f.tenant(t, "org_alpha")
+			alpha := f.fixtures["org_alpha"]
 			if err := alpha.service.Close(); err != nil {
 				t.Fatal(err)
 			}

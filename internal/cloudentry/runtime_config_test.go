@@ -46,7 +46,7 @@ func (h configurationLog) Handle(_ context.Context, record slog.Record) error {
 func entitlementFixture(t *testing.T, f entryFixture, token string) {
 	t.Helper()
 	for id, tenant := range f.fixtures {
-		if err := tenant.open(t.Context(), t).Close(); err != nil {
+		if err := tenant.service.Close(); err != nil {
 			t.Fatal(err)
 		}
 		tenant.config.Hosted.EntitlementAdministrator = "test-operator"
@@ -240,13 +240,13 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	if f.service.runtime.Load() != nil {
 		t.Fatal("invalid file replaced runtime")
 	}
-	plans := *f.tenant(t, "org_alpha").config.Hosted.Plans
+	plans := *f.fixtures["org_alpha"].config.Hosted.Plans
 	plan := plans.Plans[1]
 	plan.Version++
 	plans.Plans = append(plans.Plans, plan)
 	next := f.service.config
 	next.PublicURL = "https://changed.example.test"
-	next.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &plans, Prices: f.tenant(t, "org_alpha").config.Hosted.Billing.Prices}
+	next.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &plans, Prices: f.fixtures["org_alpha"].config.Hosted.Billing.Prices}
 	readings <- reading{config: next}
 	signals <- syscall.SIGHUP
 	awaitLog("configuration reloaded")

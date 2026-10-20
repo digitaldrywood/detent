@@ -843,7 +843,7 @@ func TestOwnerFreeAllowance(t *testing.T) {
 			t.Parallel()
 			f := newEntryFixture(t)
 			plans := hubserver.CheckoutHostedPlans(nil)
-			db, err := sql.Open("sqlite", storeDSN(f.tenant(t, "org_alpha").path))
+			db, err := sql.Open("sqlite", storeDSN(f.fixtures["org_alpha"].path))
 			if err != nil {
 				t.Fatal(err)
 			}
