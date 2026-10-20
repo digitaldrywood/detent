@@ -248,13 +248,21 @@ func TestSummarizePolicyAndExternalAuthority(t *testing.T) {
 		{name: "planning added", stale: true, edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
 			p.Gates.PlanEnabled = true
 		}},
-		{name: "plan review tightened", stale: true, edit: func(v *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+		{name: "plan review requires human approval", stale: true, edit: func(v *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			v.Policy.Gates.PlanEnabled, v.Policy.Gates.PlanReview = true, gate.PlanReviewBoth
+			p.Gates.PlanEnabled, p.Gates.PlanReview = true, gate.PlanReviewHuman
+		}},
+		{name: "plan review requires automated approval", stale: true, edit: func(v *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			v.Policy.Gates.PlanEnabled, v.Policy.Gates.PlanReview = true, gate.PlanReviewBoth
+			p.Gates.PlanEnabled, p.Gates.PlanReview = true, gate.PlanReviewAutomated
+		}},
+		{name: "plan review accepts automated or human approval", edit: func(v *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
 			v.Policy.Gates.PlanEnabled, v.Policy.Gates.PlanReview = true, gate.PlanReviewAutomated
 			p.Gates.PlanEnabled, p.Gates.PlanReview = true, gate.PlanReviewBoth
 		}},
-		{name: "plan review relaxed", edit: func(v *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
-			v.Policy.Gates.PlanEnabled, v.Policy.Gates.PlanReview = true, gate.PlanReviewBoth
-			p.Gates.PlanEnabled, p.Gates.PlanReview = true, gate.PlanReviewHuman
+		{name: "plan review accepts human or automated approval", edit: func(v *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
+			v.Policy.Gates.PlanEnabled, v.Policy.Gates.PlanReview = true, gate.PlanReviewHuman
+			p.Gates.PlanEnabled, p.Gates.PlanReview = true, gate.PlanReviewBoth
 		}},
 		{name: "external gate added", stale: true, edit: func(_ *tracker.ChangeVersion, p *policy.Descriptor, _ *tracker.ChangeReviewPolicy) {
 			p.Gates.GitHubPullRequest = true

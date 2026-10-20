@@ -144,7 +144,7 @@ func gatesSatisfied(version, current policy.Gates) bool {
 		current.GitHubCIDigest != "" && current.GitHubCIDigest != version.GitHubCIDigest {
 		return false
 	}
-	return !current.PlanEnabled || current.PlanReview == "" || current.PlanReview == version.PlanReview || version.PlanReview == gate.PlanReviewBoth
+	return !current.PlanEnabled || current.PlanReview == "" || current.PlanReview == version.PlanReview || current.PlanReview == gate.PlanReviewBoth
 }
 
 func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) tracker.ChangeSummary {
