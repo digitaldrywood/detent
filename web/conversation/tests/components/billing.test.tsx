@@ -158,11 +158,17 @@ describe("billing screen", () => {
     expect(screen.getByRole("link", { name: "Change plan →" }).getAttribute("href")).toBe("/settings/plan");
   });
 
-  it.each([false, true])("shows paid plan price and renewal or cancellation: %s", async (canceling) => {
-    renderBilling(fakeApi(report({ status: canceling ? "canceling" : "active", subscription: { subscription_id: "sub_example", price_id: "price_team", status: "active", period_end: "2099-11-01T00:00:00Z", cancel_at_period_end: canceling } }, { entitlement: { ...report().entitlement, name: "Team", monthly_usd_cents: 9900 } })));
+  it.each([
+    { status: "active", label: "Renews", date: "Nov 1, 2099" },
+    { status: "canceling", label: "Cancels", date: "Nov 1, 2099" },
+    { status: "trialing", label: "Trial ends", date: "Oct 20, 2099" },
+    { status: "grace", label: "Access until", date: "Oct 22, 2099" },
+    { status: "payment_failed", label: "Access until", date: "Oct 22, 2099" },
+  ])("shows paid plan price and the $status deadline", async ({ status, label, date }) => {
+    renderBilling(fakeApi(report({ status, access_until: "2099-10-20T00:00:00Z", grace_until: "2099-10-22T00:00:00Z", subscription: { subscription_id: "sub_example", price_id: "price_team", status: status === "trialing" ? "trialing" : "active", period_end: "2099-11-01T00:00:00Z", cancel_at_period_end: status === "canceling" } }, { entitlement: { ...report().entitlement, name: "Team", monthly_usd_cents: 9900 } })));
     expect(await screen.findByText("Team")).toBeTruthy();
     expect(screen.getByText("$99/mo")).toBeTruthy();
-    expect(screen.getByText(canceling ? /Cancels .*2099/ : /Renews .*2099/)).toBeTruthy();
+    expect(screen.getByText(`${label} ${date}`)).toBeTruthy();
     expect(screen.queryByText("Complimentary")).toBeNull();
   });
 
@@ -195,9 +201,9 @@ describe("billing screen", () => {
 
   it("formats grouped transactions and fetches the next cursor page on demand", async () => {
     const history = Array.from({ length: 10 }, (_, index) => ({ at: `2026-10-${String(25 - index).padStart(2, "0")}T12:00:00Z`, kind: "usage", amount_micros: index === 0 ? -123 : -12345, turns: index + 1 }));
-    const api = fakeApi(report({}, { ai_credits: credits({ history, total_rows: 11, next_cursor: "cursor-next" }), chat_usage: chatUsage }), credits({ history: [{ at: "2026-10-01T00:00:00Z", kind: "complimentary", amount_micros: 100_000_000 }], total_rows: 11 }));
+    const api = fakeApi(report({}, { ai_credits: credits({ history, total_rows: 12, next_cursor: "cursor-next" }), chat_usage: chatUsage }), credits({ history: [{ at: "2026-10-01T12:00:00Z", kind: "complimentary", amount_micros: 100_000_000 }, { at: "2026-10-01T00:00:00Z", kind: "purchase", amount_micros: 25_000_000 }], total_rows: 12 }));
     renderBilling(api);
-    expect(await screen.findByText("1–10 of 11 days")).toBeTruthy();
+    expect(await screen.findByText("1–10 of 12 transactions")).toBeTruthy();
     const table = screen.getByRole("table", { name: "Credit transactions" });
     expect(within(table).getAllByRole("row")).toHaveLength(11);
     expect(screen.getByText("Chat usage · 1 turn")).toBeTruthy();
@@ -208,14 +214,16 @@ describe("billing screen", () => {
     expect(csv).toContain("format=csv");
     expect(new URL(csv, "https://example.test").searchParams.get("from")).toBe(chatUsage.range.from);
     fireEvent.click(screen.getByRole("button", { name: "Next transactions" }));
-    expect(await screen.findByText("11–11 of 11 days")).toBeTruthy();
+    expect(await screen.findByText("11–12 of 12 transactions")).toBeTruthy();
     expect(screen.getByText("+$100.00")).toBeTruthy();
+    expect(screen.getByText("+$25.00")).toBeTruthy();
+    expect(screen.getByText("Credit purchase")).toBeTruthy();
     expect(api.calls.filter((call) => call.url.includes("cursor=cursor-next"))).toHaveLength(1);
     expect((screen.getByRole("button", { name: "Next transactions" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Previous transactions" }));
-    expect(await screen.findByText("1–10 of 11 days")).toBeTruthy();
+    expect(await screen.findByText("1–10 of 12 transactions")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Next transactions" }));
-    expect(await screen.findByText("11–11 of 11 days")).toBeTruthy();
+    expect(await screen.findByText("11–12 of 12 transactions")).toBeTruthy();
     expect(api.calls.filter((call) => call.url.includes("cursor=cursor-next"))).toHaveLength(1);
   });
 

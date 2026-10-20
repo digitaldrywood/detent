@@ -3,7 +3,7 @@ import { ChevronLeftIcon, ChevronRightIcon, DownloadIcon, LockKeyholeIcon, Refre
 import { Button } from "../../components/ui/button.tsx";
 import { Badge } from "../../components/ui/badge.tsx";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../../components/ui/input-group.tsx";
-import { MetricTile } from "../../components/ui/metric-tile.tsx";
+import { MetricTile, MetricTileGroup } from "../../components/ui/metric-tile.tsx";
 import { Select, SelectTrigger, SelectValue, SelectPopup, SelectItem } from "../../components/ui/select.tsx";
 import { Switch } from "../../components/ui/switch.tsx";
 import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from "../../components/ui/table.tsx";
@@ -27,10 +27,11 @@ export function BillingPlanStatus({ report }: { readonly report: BillingReport }
   const date = (value?: string | null) => value && !value.startsWith("0001-") && Number.isFinite(Date.parse(value)) ? value : null;
   const grant = plan.grants?.find((item) => item.plan.id === plan.effective_base.id && !item.revoked_at && !item.scope?.length && Date.parse(item.starts_at) <= Date.now() && (!item.expires_at || Date.parse(item.expires_at) > Date.now()));
   const expiry = complimentary ? date(grant?.expires_at) : null;
-  const renewal = date(state.subscription.cancel_at) ?? date(state.subscription.period_end) ?? date(state.paid_through);
-  const end = expiry ?? renewal;
-  const formatted = end === null ? null : new Date(end).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
   const failed = ["grace", "payment_failed"].includes(state.status);
+  const renewal = date(state.subscription.cancel_at) ?? date(state.subscription.period_end) ?? date(state.paid_through);
+  const end = expiry ?? (state.status === "trialing" ? date(state.access_until) : failed ? date(state.grace_until) ?? date(state.access_until) : renewal);
+  const deadlineLabel = state.status === "trialing" ? "Trial ends" : failed ? "Access until" : state.status === "canceling" || state.subscription.cancel_at_period_end || date(state.subscription.cancel_at) ? "Cancels" : "Renews";
+  const formatted = end === null ? null : new Date(end).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
   const price = complimentary ? 0 : plan.monthly_usd_cents;
   return <div className="min-w-0 space-y-1">
     <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -42,7 +43,7 @@ export function BillingPlanStatus({ report }: { readonly report: BillingReport }
       {state.status === "trialing" ? <Badge variant="info">Trial</Badge> : null}
     </div>
     {formatted === null ? null : <p className="flex items-center gap-1.5 text-xs text-muted-foreground"><span className={`size-1.5 shrink-0 rounded-full ${failed ? "bg-destructive" : "bg-success"}`} aria-hidden />
-      {expiry ? `Expires ${formatted} · ${Math.max(0, Math.ceil((Date.parse(expiry) - Date.now()) / 86400000))} days left` : `${state.status === "canceling" || state.subscription.cancel_at_period_end || date(state.subscription.cancel_at) ? "Cancels" : failed ? "Access until" : "Renews"} ${formatted}`}
+      {expiry ? `Expires ${formatted} · ${Math.max(0, Math.ceil((Date.parse(expiry) - Date.now()) / 86400000))} days left` : `${deadlineLabel} ${formatted}`}
     </p>}
   </div>;
 }
@@ -107,12 +108,12 @@ export function CreditSettings({ credits, report, refresh }: {
   };
   return <>
     <SettingsSection id="settings-ai-credits" title="AI credits">
-      <div className="grid grid-cols-2 divide-x divide-border/50 sm:grid-cols-4">
+      <MetricTileGroup>
         <MetricTile size="compact" className="p-4" label="Balance" value={<span className="inline-flex flex-wrap items-center gap-1.5"><span title={`$${(credits.balance_micros / 1_000_000).toFixed(6)}`}>{creditAmount(credits.balance_micros)}</span><Button size="icon-micro" variant="ghost-muted" aria-label="Refresh balance" disabled={reload.pending} onClick={() => void reload.call()}><RefreshCwIcon className="size-3.5" /></Button></span>} detail={credits.in_flight ? <Badge variant="info">Top-up pending</Badge> : undefined} />
         <MetricTile size="compact" className="p-4" label="Charged this period" value={creditAmount(report.charged_ai_micros ?? 0)} />
         <MetricTile size="compact" className="p-4" title={usage ? `Input: ${usage.input.toLocaleString()} · Cached input: ${usage.cached_input.toLocaleString()} · Output: ${usage.output.toLocaleString()} · Reasoning output: ${usage.reasoning_output.toLocaleString()}` : undefined} label={`Tokens · ${usage?.turns.toLocaleString() ?? 0} turns`} value={usage?.tokens.toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 2 }) ?? "0"} detail={usage?.unpriced_turns ? <Badge variant="outline">{usage.unpriced_turns} turns unpriced</Badge> : undefined} />
         <MetricTile size="compact" className="p-4" label="Auto top-up" value={credits.auto_enabled ? "On" : <span className="text-muted-foreground">Off</span>} />
-      </div>
+      </MetricTileGroup>
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
         <span className="font-medium">Buy credits</span>
         <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">{packSelect(buyPrice, setBuyPrice, "Buy credit pack", buy.pending || credits.packs.length === 0)}<Button size="sm" disabled={buy.pending || !buyPrice} onClick={() => void buy.call()}>{buy.pending ? "Opening…" : "Buy"}</Button></div>
@@ -144,7 +145,7 @@ export function CreditSettings({ credits, report, refresh }: {
           <TableHeader><TableRow><TableHead>Day</TableHead><TableHead>Activity</TableHead><TableHead className="text-right">Amount</TableHead></TableRow></TableHeader>
           <TableBody>{current.history.slice(0, 10).map((item, index) => <TableRow key={`${item.at}-${index}`}><TableCell title={item.at}>{dayLabel(item.at)}</TableCell><TableCell>{item.kind === "usage" ? `Chat usage · ${item.turns ?? 1} ${(item.turns ?? 1) === 1 ? "turn" : "turns"}` : labels[item.kind] ?? "Credit adjustment"}</TableCell><TableCell className={`text-right tabular-nums ${item.amount_micros > 0 ? "text-success-foreground" : ""}`} title={`$${(item.amount_micros / 1_000_000).toFixed(6)}`}>{item.amount_micros > 0 ? "+" : ""}{creditAmount(item.amount_micros)}</TableCell></TableRow>)}</TableBody>
         </Table>
-        <div className="flex items-center justify-between gap-3 px-4 py-2 text-xs text-muted-foreground"><span>{page * 10 + 1}–{page * 10 + Math.min(10, current.history.length)} of {total} days</span><div className="flex gap-1"><Button size="icon-xs" variant="outline" aria-label="Previous transactions" disabled={page === 0 || next.pending} onClick={() => setPage(page - 1)}><ChevronLeftIcon className="size-3.5" /></Button><Button size="icon-xs" variant="outline" aria-label="Next transactions" disabled={next.pending || (page + 1 >= pages.length && !current.next_cursor)} onClick={() => void next.call()}><ChevronRightIcon className="size-3.5" /></Button></div></div>
+        <div className="flex items-center justify-between gap-3 px-4 py-2 text-xs text-muted-foreground"><span>{page * 10 + 1}–{page * 10 + Math.min(10, current.history.length)} of {total} transactions</span><div className="flex gap-1"><Button size="icon-xs" variant="outline" aria-label="Previous transactions" disabled={page === 0 || next.pending} onClick={() => setPage(page - 1)}><ChevronLeftIcon className="size-3.5" /></Button><Button size="icon-xs" variant="outline" aria-label="Next transactions" disabled={next.pending || (page + 1 >= pages.length && !current.next_cursor)} onClick={() => void next.call()}><ChevronRightIcon className="size-3.5" /></Button></div></div>
       </>}
       <ControlError message={next.error?.message ?? null} />
     </SettingsSection>
