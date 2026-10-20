@@ -58,7 +58,7 @@ func (e *nativeExecution) RecoverChangeSource(ctx context.Context) (workspace.Ch
 	}
 	selected := e.Recovery().SourceVersionID
 	if selected != "" && selected != detail.Change.CurrentVersion {
-		return workspace.ChangeSource{}, errors.New("the transferred version differs from the current Change; re-read source recovery and reconcile the selected version before transfer")
+		return workspace.ChangeSource{}, runner.ErrChangeSourceVersionSuperseded
 	}
 	if detail.Change.CurrentVersion == "" {
 		return workspace.ChangeSource{}, nil
