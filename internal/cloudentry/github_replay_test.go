@@ -2,6 +2,7 @@ package cloudentry
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector/github"
@@ -70,34 +72,58 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			done := make(chan slog.Record, 1)
-			f := newEntryFixtureWithLogger(t, slog.New(replayTestHandler{Handler: slog.DiscardHandler, done: done}))
-			f.service.config.GitHubWebhookSecret = []byte("secret")
-			f.service.config.now = func() time.Time { return before }
-			f.service.config.transport = func(organization Organization) (http.RoundTripper, error) {
-				return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path != "/internal/v1/github/receipt" {
-						f.tenants[organization.Endpoint].ServeHTTP(w, r)
-						return
-					}
-					if test.receiptError {
-						w.WriteHeader(http.StatusServiceUnavailable)
-						return
-					}
-					var received *time.Time
-					if !test.noReceipt {
-						value := since
-						if test.noGap {
-							value = before
+			var receiptIDs []string
+			service, err := Open(t.Context(), Config{
+				Platform:  PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"},
+				PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry",
+				SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), Provider: newFakeProvider(),
+				StateDir: t.TempDir(), clientFS: fstest.MapFS{},
+				Logger:              slog.New(replayTestHandler{Handler: slog.DiscardHandler, done: done}),
+				GitHubWebhookSecret: []byte("secret"), now: func() time.Time { return before },
+				transport: func(organization Organization) (http.RoundTripper, error) {
+					return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.URL.Path != "/internal/v1/github/receipt" {
+							t.Errorf("unexpected tenant request %s", r.URL.Path)
+							w.WriteHeader(http.StatusNotFound)
+							return
 						}
-						if organization.ID == "org_beta" {
-							value = value.Add(-time.Hour)
+						receiptIDs = append(receiptIDs, organization.ID)
+						if test.receiptError {
+							w.WriteHeader(http.StatusServiceUnavailable)
+							return
 						}
-						received = &value
-					}
-					if err := json.NewEncoder(w).Encode(map[string]any{"received_at": received}); err != nil {
-						t.Error(err)
-					}
-				})}, nil
+						var received *time.Time
+						if !test.noReceipt {
+							value := since
+							if test.noGap {
+								value = before
+							}
+							if organization.ID == "org_beta" {
+								value = value.Add(-time.Hour)
+							}
+							received = &value
+						}
+						if err := json.NewEncoder(w).Encode(map[string]any{"received_at": received}); err != nil {
+							t.Error(err)
+						}
+					})}, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := service.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			for _, organization := range []Organization{
+				{ID: "org_alpha", ProviderID: "porg_alpha", Name: "Alpha", Endpoint: testSocketEndpoint("alpha.sock"), Generation: 1},
+				{ID: "org_beta", ProviderID: "porg_beta", Name: "Beta", Endpoint: testSocketEndpoint("beta.sock"), Generation: 1},
+			} {
+				if _, err := service.Registry().Register(t.Context(), organization); err != nil {
+					t.Fatal(err)
+				}
 			}
 			var mu sync.Mutex
 			var ids []string
@@ -165,7 +191,7 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 				}
 			}))
 			t.Cleanup(api.Close)
-			f.service.config.GitHubApp = &github.InstallationTokenConfig{AppID: "123", PrivateKey: privateKey, Endpoint: api.URL + "/graphql", HTTPClient: api.Client()}
+			service.config.GitHubApp = &github.InstallationTokenConfig{AppID: "123", PrivateKey: privateKey, Endpoint: api.URL + "/graphql", HTTPClient: api.Client()}
 			listener, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
@@ -173,7 +199,7 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			served := make(chan error, 1)
-			go func() { served <- f.service.serve(ctx, listener) }()
+			go func() { served <- service.serve(ctx, listener) }()
 			t.Cleanup(func() {
 				cancel()
 				if err := <-served; err != nil {
@@ -194,6 +220,12 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 				}
 			case <-ctx.Done():
 				t.Fatal("startup replay did not finish")
+			}
+			if !test.receiptError {
+				slices.Sort(receiptIDs)
+				if !slices.Equal(receiptIDs, []string{"org_alpha", "org_beta"}) {
+					t.Fatalf("tenant receipt requests = %v", receiptIDs)
+				}
 			}
 			client := &http.Client{Timeout: time.Second}
 			for range 3 {
