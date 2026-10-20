@@ -336,3 +336,32 @@ func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracke
 	e.change.Reviewed = detail.Change.CurrentVersion == e.change.VersionID && detail.Summary.Status == "reviewed"
 	return nil
 }
+
+func (e *nativeExecution) PrepareSourceIteration(ctx context.Context, expected tracker.NativeChangeReference) error {
+	if err := e.PrepareReview(ctx, expected); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.settled = false
+	e.change = nil
+	e.validation = nil
+	e.publication = nil
+	e.preparedFailure = nil
+	e.preparedOutcome, e.preparedMessage = "", ""
+	e.preparedDisposition = nil
+	e.data.Finalization = nil
+	return nil
+}
+
+func (e *nativeExecution) SourceReview(ctx context.Context) (runner.NativeChange, error) {
+	if err := e.Validate(ctx); err != nil {
+		return runner.NativeChange{}, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.change == nil {
+		return runner.NativeChange{}, nil
+	}
+	return *e.change, nil
+}

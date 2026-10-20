@@ -114,6 +114,11 @@ type NativeReviewContinuationExecution interface {
 	PrepareReview(context.Context, tracker.NativeChangeReference) error
 }
 
+type NativeSourceIterationExecution interface {
+	SourceReview(context.Context) (NativeChange, error)
+	PrepareSourceIteration(context.Context, tracker.NativeChangeReference) error
+}
+
 type SourceValidationExecution interface {
 	RecordSourceValidation(context.Context, gate.CommandResult) error
 }
@@ -373,6 +378,46 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		}
 	}
 	guarded = r.installDependencyReasonGenerator(guarded, req)
+	sourceReviewed := false
+	if normalizeRunMode(req.Mode) == RunModeImplement {
+		workflow, _, _, _ := r.runtimeSnapshot()
+		limit := workflow.Config.Agent.MaxTurns
+		if limit <= 0 {
+			limit = config.Default().Agent.MaxTurns
+		}
+		guarded = context.WithValue(guarded, sourceTurnBudgetKey{}, &sourceTurnBudget{remaining: limit})
+		if prepared, ok := req.Execution.(CompletionExecution); ok {
+			req.reviewSource = func(ctx context.Context, result *RunResult) (string, error) {
+				if err := prepared.PrepareFinish(ctx, "succeeded", result.FinalMessage, nil); err != nil {
+					return "", err
+				}
+				sourceReviewed = true
+				reviewErr := r.validateNativeChange(ctx, req)
+				if source, ok := req.Execution.(NativeSourceIterationExecution); ok {
+					change, err := source.SourceReview(ctx)
+					if err != nil {
+						return "", errors.Join(reviewErr, err)
+					}
+					if change != (NativeChange{}) {
+						result.NativeChange = &change
+					}
+				}
+				if reviewErr != nil {
+					if errors.Is(reviewErr, ErrSessionTurnLimitExceeded) {
+						result.FinalMessage = sourceBudgetExhaustedMessage(result.FinalMessage)
+						return "", nil
+					}
+					return "", reviewErr
+				}
+				feedback := nativeSourceRework(result.NativeChange, result.FinalMessage)
+				if feedback != "" && sourceBudgetRemaining(ctx) == 0 {
+					result.FinalMessage = sourceBudgetExhaustedMessage(result.FinalMessage)
+					return "", nil
+				}
+				return feedback, nil
+			}
+		}
+	}
 	var result RunResult
 	var runErr error
 	if continuation := req.NativeReviewContinuation; continuation != nil {
@@ -394,6 +439,10 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	outcome := "succeeded"
 	if runErr != nil || result.FinalState != FinalStateCompleted {
 		outcome = "failed"
+	}
+	var implementationReviewErr *NativeImplementationReviewError
+	if errors.As(runErr, &implementationReviewErr) {
+		outcome = "interrupted"
 	}
 	if guarded.Err() != nil && outcome != "succeeded" {
 		outcome = "interrupted"
@@ -434,7 +483,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		if err != nil {
 			runErr = errors.Join(runErr, err)
 			outcome = "failed"
-		} else if outcome == "succeeded" {
+		} else if outcome == "succeeded" && !sourceReviewed {
 			if err := r.validateNativeChange(guarded, req); err != nil {
 				runErr = errors.Join(runErr, err)
 				outcome = "failed"
