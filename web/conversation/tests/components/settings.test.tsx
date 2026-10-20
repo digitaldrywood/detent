@@ -495,12 +495,26 @@ describe("personal keys and org controls", () => {
     expect(screen.queryByRole("heading", { name: "Connect" })).toBeNull();
     expect(screen.queryByText("API and MCP access")).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("button", { name: "Connect My agent" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Copy MCP endpoint" }));
-    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(context.mcp_endpoint));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("https://cloud.example.test/mcp"));
     for (const [transport, label] of [["mcp", "MCP"], ["rest", "REST"]]) {
       fireEvent.click(screen.getByRole("button", { name: transport === "mcp" ? "MCP" : "REST API" }));
+      const copies = writeText.mock.calls.length;
       fireEvent.click(screen.getByRole("button", { name: `Copy ${label} setup prompt` }));
-      await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(keySetupPrompt(context.mcp_endpoint, transport === "rest")));
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(copies + 1));
+      const copiedPrompt = writeText.mock.lastCall![0];
+      expect(copiedPrompt).toContain("Store it privately as DETENT_API_KEY");
+      if (transport === "mcp") {
+        expect(copiedPrompt).toContain('Configure one Streamable HTTP MCP server at https://cloud.example.test/mcp, with bearer_token_env_var = "DETENT_API_KEY"');
+        expect(copiedPrompt).toContain('Call connection_info and confirm key.kind is "personal" or "service" and explain who it acts as before reporting success');
+        expect(copiedPrompt).not.toContain("Use Authorization: Bearer");
+      } else {
+        expect(copiedPrompt).toContain("Use Authorization: Bearer with that private environment variable at https://cloud.example.test/api/v2.");
+        expect(copiedPrompt).toContain("Read GET /api/v2/organizations");
+        expect(copiedPrompt).not.toContain("connection_info");
+        expect(copiedPrompt).not.toContain("https://cloud.example.test/mcp");
+      }
       const previewButton = screen.getByRole("button", { name: `Preview ${label} setup prompt` });
       fireEvent.click(previewButton);
       expect(screen.getByLabelText(`${label} setup prompt preview`).textContent).toBe(writeText.mock.lastCall![0]);
@@ -617,8 +631,23 @@ describe("personal keys and org controls", () => {
     }
     for (const [transport, label] of [["mcp", "MCP"], ["rest", "REST"]]) {
       fireEvent.click(dialog.getByRole("button", { name: transport === "mcp" ? "MCP" : "REST API" }));
+      const copies = writeText.mock.calls.length;
       fireEvent.click(dialog.getByRole("button", { name: `Copy ${label} setup prompt` }));
-      await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(keySetupPrompt(context.mcp_endpoint, transport === "rest", kind as "personal" | "service")));
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(copies + 1));
+      const copiedPrompt = writeText.mock.lastCall![0];
+      expect(copiedPrompt).toContain("Store it privately as DETENT_API_KEY");
+      if (transport === "mcp") {
+        expect(copiedPrompt).toContain('Configure one Streamable HTTP MCP server at https://cloud.example.test/mcp, with bearer_token_env_var = "DETENT_API_KEY"');
+        expect(copiedPrompt).toContain(kind === "personal"
+          ? 'Call connection_info and confirm key.kind is "personal", matching the key just created before reporting success'
+          : 'Call connection_info and confirm key.kind is "service", matching the key just created before reporting success');
+        expect(copiedPrompt).not.toContain("Use Authorization: Bearer");
+      } else {
+        expect(copiedPrompt).toContain("Use Authorization: Bearer with that private environment variable at https://cloud.example.test/api/v2.");
+        expect(copiedPrompt).toContain("Read GET /api/v2/organizations");
+        expect(copiedPrompt).not.toContain("connection_info");
+        expect(copiedPrompt).not.toContain("https://cloud.example.test/mcp");
+      }
       expect(dialog.getByLabelText(`${label} setup prompt preview`).textContent).toBe(writeText.mock.lastCall![0]);
       expect(writeText.mock.lastCall![0]).not.toContain("must-never-render");
     }
