@@ -1653,6 +1653,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 
 		recovered, recoverErr := source.RecoverChangeSource(ctx)
 		if recoverErr != nil && !checkpointRefCoversChangeSource(recoverErr, req.Execution.Recovery(), nativeLanding, false) {
+			if errors.Is(recoverErr, ErrChangeSourceVersionSuperseded) {
+				recoverErr = fmt.Errorf("%w: %w", ErrNativeRecoveryRequired, recoverErr)
+			}
 			return RunResult{}, fmt.Errorf("recover native Change source: %w", recoverErr)
 		}
 		if recoverErr != nil {

@@ -4411,17 +4411,21 @@ func TestRunnerClassifiesWorkspaceBranchHold(t *testing.T) {
 func TestRunnerClassifiesChangeSourceRefusal(t *testing.T) {
 	t.Parallel()
 	refusal := &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "the existing clean worktree differs from the recorded source base and head"}
+	transient := errors.New("Hub change read unavailable")
 	for _, test := range []struct {
 		name         string
 		source       bool
+		recoverError error
 		wantRecovery bool
 	}{
 		{name: "code attempt with retained source requires recovery", source: true, wantRecovery: true},
 		{name: "refusal without retained source stays workspace preparation"},
+		{name: "superseded transferred version requires recovery", source: true, recoverError: ErrChangeSourceVersionSuperseded, wantRecovery: true},
+		{name: "transient change read is not a recovery refusal", source: true, recoverError: transient},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			execution := &reworkReviewExecution{}
+			execution := &reworkReviewExecution{recoverError: test.recoverError}
 			if test.source {
 				execution.recovery.SourceVersionID = "version_1"
 				execution.source = workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version_1", ChangeID: "change_1"}}
@@ -4431,8 +4435,15 @@ func TestRunnerClassifiesChangeSourceRefusal(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = runner.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1375", State: "In Progress"}})
-			if !errors.Is(err, refusal) || errors.Is(err, ErrNativeRecoveryRequired) != test.wantRecovery || errors.Is(err, ErrWorkspacePreparation) == test.wantRecovery {
+			cause := error(refusal)
+			if test.recoverError != nil {
+				cause = test.recoverError
+			}
+			if !errors.Is(err, cause) || errors.Is(err, ErrNativeRecoveryRequired) != test.wantRecovery || errors.Is(err, ErrWorkspacePreparation) == (test.wantRecovery || test.recoverError != nil) {
 				t.Fatalf("source refusal error = %v", err)
+			}
+			if failure := nativeTerminalFailure(err, time.Now(), false); test.wantRecovery != (failure.ErrorClass == "source_recovery" && failure.Attribution == "issue") {
+				t.Fatalf("terminal failure = %#v", failure)
 			}
 		})
 	}

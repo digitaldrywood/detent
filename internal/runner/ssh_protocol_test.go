@@ -41,6 +41,7 @@ func TestSSHErrorRoundTrip(t *testing.T) {
 			return err.Error() == "setup: "+ErrWorkspacePreparation.Error()
 		}},
 		{"not found", store.ErrNotFound, store.ErrNotFound, nil},
+		{"superseded Change source", ErrChangeSourceVersionSuperseded, ErrChangeSourceVersionSuperseded, nil},
 		{"acceptance rejection", acceptanceRejectionError{}, nil, acceptanceFailure},
 		{"wrapped acceptance rejection", fmt.Errorf("%w: acceptance publication: %w", ErrValidatorInfrastructure, acceptanceRejectionError{}), ErrValidatorInfrastructure, acceptanceFailure},
 		{"cancelled", context.Canceled, context.Canceled, nil},

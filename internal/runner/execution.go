@@ -23,6 +23,7 @@ import (
 
 var ErrExecutionAuthorityUnavailable = errors.New("execution authority unavailable")
 var ErrNativeRecoveryRequired = errors.New("native checkpoint requires recovery")
+var ErrChangeSourceVersionSuperseded = errors.New("the transferred version differs from the current Change; re-read source recovery and reconcile the selected version before transfer")
 
 type Execution interface {
 	Guard(context.Context) (context.Context, func(), error)

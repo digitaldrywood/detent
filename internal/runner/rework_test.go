@@ -194,13 +194,14 @@ type reworkReviewExecution struct {
 	reviews         []gate.ValidatorResult
 	acceptance      []gate.ValidatorResult
 	recordError     error
+	recoverError    error
 	activitySession int64
 }
 
 func (*reworkReviewExecution) SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
 }
 func (e *reworkReviewExecution) RecoverChangeSource(context.Context) (workspace.ChangeSource, error) {
-	return e.source, nil
+	return e.source, e.recoverError
 }
 func (e *reworkReviewExecution) NativeChange() *NativeChange {
 	change := &NativeChange{Changed: true, ChangeID: e.source.Version.ChangeID, VersionID: e.source.Version.ID, HeadSHA: e.source.Version.HeadSHA}
