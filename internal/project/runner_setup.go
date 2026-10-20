@@ -88,7 +88,12 @@ func (s *RunnerSetup) Prepare(ctx context.Context, cfg globalconfig.Project) (er
 	cmd.Env = os.Environ()
 	cmd.WaitDelay = time.Second
 	s.logger.Info("running runner project setup", "runner_id", s.runnerID, "project_id", cfg.ID, "script", hooks.RunnerSetup, "content_hash", hash)
-	if err := cmd.Run(); err != nil {
+	err = procgroup.Start(cmd)
+	if err == nil {
+		groupID := procgroup.GroupID(cmd)
+		err = errors.Join(cmd.Wait(), procgroup.Cleanup(groupID))
+	}
+	if err != nil {
 		if setupCtx.Err() != nil {
 			err = setupCtx.Err()
 		}

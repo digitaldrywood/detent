@@ -187,7 +187,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		return result, errors.Join(err, input.Close())
 	}
 	cmd.Stdout, cmd.Stderr = childOutput, io.Discard
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		cancel()
 		return result, r.hostFailure("local", errors.Join(err, input.Close(), output.Close(), childOutput.Close()))
 	}
