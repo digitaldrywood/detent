@@ -52,7 +52,7 @@ func TestMachineCallRefusesOversizedTenantAnswers(t *testing.T) {
 			t.Parallel()
 			seed := make([]byte, ed25519.SeedSize)
 			service, err := Open(t.Context(), Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: newFakeProvider(),
-				StateDir: entryStateDir(t), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
+				StateDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
 				transport: func(Organization) (http.RoundTripper, error) { return sizedTransport{size: test.size}, nil }})
 			if err != nil {
 				t.Fatal(err)
