@@ -141,6 +141,14 @@ func TestAdminBackupBoundary(t *testing.T) {
 	if err := os.WriteFile(existing, []byte("preserve"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relativeOutput, err := filepath.Rel(workingDirectory, filepath.Join(t.TempDir(), "private-snapshot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for index, test := range []struct {
 		name, token string
 		body        any
@@ -151,10 +159,11 @@ func TestAdminBackupBoundary(t *testing.T) {
 		{"worker", "worker-backup-token", nil, http.StatusForbidden},
 		{"scoped admin", "scoped-backup-token", nil, http.StatusForbidden},
 		{"missing output", testHubAdminToken, map[string]string{}, http.StatusUnprocessableEntity},
+		{"relative output", testHubAdminToken, map[string]string{"output": relativeOutput}, http.StatusUnprocessableEntity},
 		{"unknown field", testHubAdminToken, map[string]string{"unknown": "private"}, http.StatusUnprocessableEntity},
 		{"source", testHubAdminToken, map[string]string{"output": service.database.path}, http.StatusConflict},
 		{"existing", testHubAdminToken, map[string]string{"output": existing}, http.StatusConflict},
-		{"invalid path", testHubAdminToken, map[string]string{"output": "private\x00path"}, http.StatusInternalServerError},
+		{"invalid path", testHubAdminToken, map[string]string{"output": filepath.Join(t.TempDir(), "private\x00path")}, http.StatusInternalServerError},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			output := filepath.Join(t.TempDir(), fmt.Sprintf("snapshot-%d.db", index))
@@ -175,6 +184,9 @@ func TestAdminBackupBoundary(t *testing.T) {
 	content, err := os.ReadFile(existing)
 	if err != nil || string(content) != "preserve" {
 		t.Fatalf("existing output changed: %q, %v", content, err)
+	}
+	if _, err := os.Stat(relativeOutput); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected relative backup created output: %v", err)
 	}
 	t.Run("hosted Cloud", func(t *testing.T) {
 		f := newHostedSecurityFixture(t)

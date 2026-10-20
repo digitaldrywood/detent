@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
-	"strings"
+	"path/filepath"
 
 	"github.com/labstack/echo/v4"
 )
@@ -13,8 +13,8 @@ func (s *Service) backupDatabase(c echo.Context) error {
 	var request struct {
 		Output string `json:"output"`
 	}
-	if err := decodeAPIJSON(c, &request); err != nil || strings.TrimSpace(request.Output) == "" {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_request", Message: "A new backup output path is required"})
+	if err := decodeAPIJSON(c, &request); err != nil || !filepath.IsAbs(request.Output) {
+		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_request", Message: "A new absolute backup output path is required"})
 	}
 	if err := s.Backup(c.Request().Context(), request.Output); err != nil {
 		if errors.Is(err, os.ErrExist) || errors.Is(err, ErrBackupSource) {
