@@ -51,6 +51,7 @@ func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.PUT("/api/v2/organizations/:organization/billing/credits/auto-fund", s.hostedCreditAutoFund)
 	e.POST("/webhooks/stripe", s.hostedStripeWebhook)
 	e.GET("/api/cloud/billing/subscription", s.hostedBillingExport)
+	e.GET("/api/v2/organizations/:organization/billing/credits/transactions", s.hostedCreditTransactions)
 	e.POST("/organization/create", s.createHostedOrganization)
 	e.POST("/organization/switch", s.switchHostedOrganization)
 	e.POST("/organization/invite", s.inviteHostedMember)
