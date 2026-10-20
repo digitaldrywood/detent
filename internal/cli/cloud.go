@@ -368,6 +368,8 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		}
 		restartAllocation := *config.Allocation
 		restartAllocation.Entitlements = nil
+		restartAllocation.AllowedEmails = nil
+		restartAllocation.AllowedDomains = nil
 		if restartAllocation.Billing != nil {
 			restartBilling := *restartAllocation.Billing
 			restartBilling.Prices = nil

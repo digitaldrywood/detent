@@ -63,7 +63,7 @@ func (s *Service) reloadConfiguration(ctx context.Context) error {
 	if err := next.validate(); err != nil {
 		return fmt.Errorf("validate cloud configuration: %w", err)
 	}
-	s.config.Logger.WarnContext(ctx, "cloud configuration settings require restart; retaining running values", "actor", "operator", "reason", "SIGHUP", "changed", !bytes.Equal(next.RestartSettings, s.config.RestartSettings), "settings", []string{"public_url", "listen", "state_directory", "assertion", "workos", "platform", "staff_emails", "support_actors", "entitlement_administrators", "attachments", "billing", "allocation.paths_and_capacity", "allocation.allowlist", "allocation.entitlement_credentials", "allocation.billing_except_prices"})
+	s.config.Logger.WarnContext(ctx, "cloud configuration settings require restart; retaining running values", "actor", "operator", "reason", "SIGHUP", "changed", !bytes.Equal(next.RestartSettings, s.config.RestartSettings), "settings", []string{"public_url", "listen", "state_directory", "assertion", "workos", "platform", "staff_emails", "support_actors", "entitlement_administrators", "attachments", "billing", "allocation.paths_and_capacity", "allocation.entitlement_credentials", "allocation.billing_except_prices"})
 	if s.config.Allocation == nil || next.Allocation == nil || next.Runtime == nil {
 		return errors.New("changing allocation availability requires a restart")
 	}
@@ -122,7 +122,8 @@ func (s *Service) reloadConfiguration(ctx context.Context) error {
 		return fmt.Errorf("publish runtime settings: %w", err)
 	}
 	s.currentRuntime()
-	s.config.Logger.InfoContext(ctx, "cloud configuration reloaded", "actor", "operator", "reason", "SIGHUP", "settings", []string{"allocation.entitlements", "allocation.billing.prices"})
+	s.allowlist.Store(&signupAllowlist{emails: slices.Clone(next.Allocation.AllowedEmails), domains: slices.Clone(next.Allocation.AllowedDomains)})
+	s.config.Logger.InfoContext(ctx, "cloud configuration reloaded", "actor", "operator", "reason", "SIGHUP", "settings", []string{"allocation.entitlements", "allocation.billing.prices", "allocation.allowlist"})
 	return nil
 }
 

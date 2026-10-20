@@ -109,6 +109,7 @@ func (c Config) validate() error {
 type Service struct {
 	notifications     *platformNotifications
 	runtime           atomic.Pointer[entryRuntime]
+	allowlist         atomic.Pointer[signupAllowlist]
 	reloadMu          sync.Mutex
 	keyMCP            *mcp.HTTPHandler
 	administration    *operatoradmin.Executor
