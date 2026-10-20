@@ -126,6 +126,12 @@ func (s *Service) keyTenantCall(ctx context.Context, key accessKey, org Organiza
 	if err != nil {
 		return nil, err
 	}
+	if status == http.StatusUnprocessableEntity {
+		var request operatortool.RequestError
+		if json.Unmarshal(raw, &request) == nil && request.Code != "" && request.Message != "" {
+			return nil, &request
+		}
+	}
 	if status != http.StatusOK {
 		var refusal apikey.Refusal
 		if json.Unmarshal(raw, &refusal) == nil && refusal.Code != "" {

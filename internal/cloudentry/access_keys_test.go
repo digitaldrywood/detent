@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -699,5 +701,90 @@ func TestAccessKeyMemberSettingsIsolation(t *testing.T) {
 		if response.Code != http.StatusNotFound {
 			t.Fatalf("other owner's key mutation=%d", response.Code)
 		}
+	}
+}
+
+func TestAccessKeyMCPPreservesMoveItemRequestErrors(t *testing.T) {
+	f := newEntryFixture(t)
+	const org = "org_alpha"
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=1 WHERE id=?", org); err != nil {
+		t.Fatal(err)
+	}
+	organization, err := f.service.registry.Organization(t.Context(), org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.fixtures[org].config.Hosted.SharedEntry.ResolveKey = func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
+		return f.service.resolveTenantKey(ctx, organization, origin)
+	}
+	owner := newBrowser(t, f.service.Handler())
+	owner.login("/organizations", "user_alice:")
+	key := createTestAccessKey(t, owner, "global", nil, "")
+	client := newBrowser(t, f.service.Handler())
+	call := func(name string, arguments map[string]any) (json.RawMessage, json.RawMessage, bool) {
+		t.Helper()
+		raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{"name": name, "arguments": arguments, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": mcp.ProtocolVersion, "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]string{"name": "move-errors", "version": "1"}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := attachmentRequest(t, client, http.MethodPost, "/mcp", bytes.NewReader(raw), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + key.Token, "Mcp-Protocol-Version": mcp.ProtocolVersion, "Mcp-Method": "tools/call", "Mcp-Name": name})
+		var frame struct {
+			Result struct {
+				IsError    bool            `json:"isError"`
+				Structured json.RawMessage `json:"structuredContent"`
+				Content    []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"result"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &frame) != nil || len(frame.Result.Content) != 1 {
+			t.Fatalf("%s response=%d %s", name, response.Code, response.Body.String())
+		}
+		return json.RawMessage(frame.Result.Content[0].Text), frame.Result.Structured, frame.Result.IsError
+	}
+	listed, _, failed := call("list_projects", map[string]any{"organization_id": org})
+	var projects struct {
+		Data struct {
+			Projects []struct {
+				ID string `json:"project_id"`
+			} `json:"projects"`
+		} `json:"data"`
+	}
+	if failed || json.Unmarshal(listed, &projects) != nil || len(projects.Data.Projects) == 0 {
+		t.Fatalf("projects=%s failed=%v", listed, failed)
+	}
+	project := projects.Data.Projects[0].ID
+	approveEntryFixturePolicy(t, owner, org, project)
+	created, _, failed := call(operatortool.FileIssue, map[string]any{"organization_id": org, "project_id": project, "request_id": "move-errors-create", "title": "Move error reporting", "description": issueContractTestSections})
+	var issue struct {
+		Data struct {
+			Number   int    `json:"number"`
+			Revision string `json:"revision"`
+		} `json:"data"`
+	}
+	if failed || json.Unmarshal(created, &issue) != nil || issue.Data.Number == 0 || issue.Data.Revision == "" {
+		t.Fatalf("file issue=%s failed=%v", created, failed)
+	}
+	for _, test := range []struct {
+		name, code, message string
+		arguments           map[string]any
+	}{
+		{"numeric revision", "invalid_request", "expected_revision: must be a string", map[string]any{"target_state": "Done", "expected_revision": 1}},
+		{"graph", "transition_not_allowed", "Workflow transition is not allowed", map[string]any{"target_state": "Missing lane", "expected_revision": issue.Data.Revision}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			arguments := map[string]any{"organization_id": org, "project_id": project, "identifier": strconv.Itoa(issue.Data.Number), "request_id": "move-errors-" + strings.ReplaceAll(test.name, " ", "-")}
+			for name, value := range test.arguments {
+				arguments[name] = value
+			}
+			text, structured, failed := call(operatortool.MoveItem, arguments)
+			var got operatortool.RequestError
+			if !failed || len(structured) == 0 || json.Unmarshal(structured, &got) != nil {
+				t.Fatalf("move text=%s structured=%s failed=%v", text, structured, failed)
+			}
+			if got.Code != test.code || got.Message != test.message {
+				t.Fatalf("move error=%+v want code=%q message=%q", got, test.code, test.message)
+			}
+		})
 	}
 }
