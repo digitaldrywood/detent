@@ -72,7 +72,7 @@ func initializeBinding(path, hubURL string, binding Binding) (File, error) {
 		return File{}, err
 	}
 	value := File{Schema: 1, HubURL: strings.TrimRight(hubURL, "/"), Identity: Identity{Binding: binding}, Credential: credential}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := createPrivateFile(path)
 	if err != nil {
 		return File{}, errors.New("runner identity could not be created; existing identities must not be overwritten")
 	}
@@ -108,6 +108,10 @@ func validatePrivateDirectory(path string) error {
 }
 
 func Load(path string) (result File, resultErr error) {
+	return loadIdentity(path, false)
+}
+
+func loadIdentity(path string, forUpdate bool) (result File, resultErr error) {
 	if err := validatePrivateDirectory(path); err != nil {
 		return File{}, err
 	}
@@ -115,9 +119,9 @@ func Load(path string) (result File, resultErr error) {
 	if err != nil || !info.Mode().IsRegular() || runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 || info.Size() > 32<<10 {
 		return File{}, errors.New("runner identity must be a private regular file (0600)")
 	}
-	file, err := os.Open(path)
+	file, err := openPrivateFile(path, forUpdate)
 	if err != nil {
-		return File{}, errors.New("runner identity is unavailable")
+		return File{}, err
 	}
 	defer func() { resultErr = errors.Join(resultErr, file.Close()) }()
 	var value File
@@ -140,14 +144,14 @@ func Load(path string) (result File, resultErr error) {
 }
 
 func Save(path string, value File) (resultErr error) {
-	previous, err := Load(path)
+	previous, err := loadIdentity(path, true)
 	if err != nil {
 		return err
 	}
 	if previous.Identity.Binding != value.Identity.Binding || previous.HubURL != value.HubURL || value.Schema != 1 || !ValidCredential(value.Credential) || value.PendingCredential != "" && !ValidCredential(value.PendingCredential) {
 		return errors.New("runner identity binding cannot be replaced")
 	}
-	file, err := os.CreateTemp(filepath.Dir(path), ".runner-identity-*")
+	file, err := createPrivateTemp(filepath.Dir(path), ".runner-identity-")
 	if err != nil {
 		return errors.New("runner identity update could not be created")
 	}
