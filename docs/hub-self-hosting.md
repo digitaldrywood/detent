@@ -101,8 +101,8 @@ uses `/usr/local/bin/detent`; replace that absolute executable path if your
 installation uses another location, such as `/opt/homebrew/bin/detent`.
 Through macOS Users & Groups, create a dedicated standard account for the Hub,
 separate from the runner account. Log in to that Hub account and run the
-following in its session. All `$HOME` paths in this subsection refer to the
-Hub account, including during maintenance:
+following in its session. During maintenance, use the account named in each
+step; `$HOME` and `id -u` must refer to that account:
 
 ```sh
 umask 077

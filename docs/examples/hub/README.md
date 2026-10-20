@@ -14,9 +14,10 @@ The Hub LaunchAgent runs in a dedicated standard account, separate from the
 unprivileged runner account. It needs absolute paths customized for the Hub
 account, a private token file and pre-created log directories inaccessible to
 the runner. Check the service examples with
-`python3 -m unittest scripts/hub_examples_test.py`; this parses the plist, checks
-both service commands against the Hub CLI flags and exercises file-to-environment
-token loading without starting a Hub.
+`python3 -m unittest scripts/hub_examples_test.py`; this parses the plist, builds
+the current CLI and invokes both service commands with `--help`, and exercises
+file-to-environment token loading without starting a Hub. Prepare the embedded
+[conversation assets](../../development.md#conversation-assets) before this check.
 
 The operator-hosted product has one public site at `https://cloud.detent.build`,
 a shared identity/provisioning entry and metadata registry, and dedicated private
