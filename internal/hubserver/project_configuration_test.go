@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
@@ -162,7 +163,7 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 }
 
 func TestCloudProjectConfigurationOwner(t *testing.T) {
-	for _, scenario := range []string{"resume", "resume drained", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "entry personal drain", "entry service drain", "entry revoked drain", "entry expired drain", "entry member removed drain", "entry grant removed drain", "entry scoped drain", "entry service scoped drain", "entry downgraded drain", "entry service downgraded drain", "entry foreign organization drain", "entry rotated drain", "entry missing origin drain", "apply", "cloud apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
+	for _, scenario := range []string{"resume", "resume drained", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "entry personal drain", "entry service drain", "entry revoked drain", "entry expired drain", "entry member removed drain", "entry grant removed drain", "entry scoped drain", "entry service scoped drain", "entry downgraded drain", "entry service downgraded drain", "entry foreign organization drain", "entry rotated drain", "entry missing origin drain", "apply", "cloud apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale policy", "stale source", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "project-configuration")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
@@ -409,12 +410,27 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				}
 				return
 			}
+			var activeLease tracker.NativeLease
+			var activeEvent tracker.NativeRunEvent
+			var activeWorker, activePath string
+			if scenario == "busy" {
+				item := f.create(t, "Running work")
+				activeWorker = f.worker(t, "active-worker")
+				activeLease = claimNativeAttempt(t, f, activeWorker, "active-machine", "active-session", item.WorkItemID)
+				activeEvent = nativeStartedEvent(activeLease)
+				activePath = f.base + "/work-items/" + string(item.WorkItemID)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, activePath+"/events", activeWorker, activeEvent), http.StatusOK)
+			}
 			enabled := true
 			args := operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: observed.RunnerID, ExpectedRunnerRevision: observed.RunnerRevision, RequestID: "enable-local-binding", ExpectedConfigRevision: observed.ConfigRevision, ExpectedPolicyID: current.ID, PolicyID: candidate.ID, SourceRevision: candidate.SourceRevision, AllowLocalBinding: &enabled}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: current.ID, Policy: candidate}), http.StatusOK)
 			switch scenario {
 			case "stale configuration":
 				args.ExpectedConfigRevision = strings.Repeat("b", 64)
+			case "stale policy":
+				args.ExpectedPolicyID = "policy_stale"
+			case "stale source":
+				args.SourceRevision = strings.Repeat("f", 64)
 			case "stale runner":
 				args.ExpectedRunnerRevision++
 			case "foreign runner":
@@ -431,19 +447,30 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				view.UnsettledAttempts = 1
 				heartbeat()
 			}
+			preview, previewErr := executor.projectConfigurationCommand(ctx, "apply_local_project_policy", args, true)
 			result, err = call("apply_local_project_policy", args)
-			refused := scenario == "stale configuration" || scenario == "stale runner" || scenario == "foreign runner" || scenario == "foreign project" || scenario == "busy" || scenario == "wrong candidate"
+			refused := scenario == "stale configuration" || scenario == "stale policy" || scenario == "stale source" || scenario == "stale runner" || scenario == "foreign runner" || scenario == "foreign project" || scenario == "wrong candidate"
 			if refused {
-				if err == nil && strings.Contains(string(result.Content), `"pending":true`) {
-					t.Fatal("invalid request was queued")
+				if scenario == "foreign runner" {
+					if !strings.Contains(string(preview.Content), `"source":"unavailable"`) || !strings.Contains(string(result.Content), `"source":"unavailable"`) {
+						t.Fatalf("foreign owner resolved: preview=%s apply=%s", preview.Content, result.Content)
+					}
+				} else if previewErr == nil || err == nil {
+					t.Fatalf("invalid request accepted: preview=%s %v apply=%s %v", preview.Content, previewErr, result.Content, err)
 				}
 				if heartbeat().ProjectConfigurationRequest != nil {
 					t.Fatal("refusal reached runner")
 				}
 				return
 			}
-			if err != nil || !strings.Contains(string(result.Content), `"pending":true`) {
-				t.Fatalf("queued=%s %v", result.Content, err)
+			if previewErr != nil || err != nil || !strings.Contains(string(result.Content), `"pending":true`) {
+				t.Fatalf("preview=%s %v queued=%s %v", preview.Content, previewErr, result.Content, err)
+			}
+			if scenario == "busy" {
+				var previewView runnerauth.ProjectConfiguration
+				if err := json.Unmarshal(preview.Content, &previewView); err != nil || previewView.UnsettledAttempts != 1 || previewView.Pending {
+					t.Fatalf("busy preview=%s %v", preview.Content, err)
+				}
 			}
 			switch scenario {
 			case "revoked issuer":
@@ -464,7 +491,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				}
 			}
 			snapshot := heartbeat()
-			if scenario != "apply" && scenario != "cloud apply" && scenario != "drained apply" && scenario != "running apply" && scenario != "refused apply" && scenario != "storage exhausted" {
+			if scenario != "apply" && scenario != "cloud apply" && scenario != "drained apply" && scenario != "running apply" && scenario != "busy" && scenario != "refused apply" && scenario != "storage exhausted" {
 				if snapshot.ProjectConfigurationRequest != nil {
 					t.Fatal("revoked or stale request reached runner")
 				}
@@ -497,6 +524,25 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			}
 			if heartbeat().ProjectConfigurationRequest != nil {
 				t.Fatal("acknowledged request repeated")
+			}
+			if scenario == "busy" {
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(activeLease.ID)+"/renew", activeWorker, tracker.NativeLeaseMutation{FencingToken: activeLease.FencingToken, TTLSeconds: 90})
+				requireNativeStatus(t, response, http.StatusOK)
+				var renewed tracker.NativeLease
+				decodeHubResponse(t, response, &renewed)
+				if renewed.PolicyID != current.ID || renewed.FencingToken != activeLease.FencingToken {
+					t.Fatalf("apply changed active lease identity: %+v", renewed)
+				}
+				activeEvent.Type, activeEvent.IdempotencyKey, activeEvent.Data.Sequence = "run.checkpointed", "after-policy-apply", 2
+				activeEvent.Data.Handoff = nativeTestCheckpoint()
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, activePath+"/events", activeWorker, activeEvent), http.StatusOK)
+				response = performHubAPIRequest(t, f.service, http.MethodGet, activePath+"/runtime", activeWorker, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var evidence tracker.NativeRuntimeEvidence
+				decodeHubResponse(t, response, &evidence)
+				if evidence.Attempt == nil || evidence.Attempt.PolicyID != current.ID || evidence.Attempt.Sequence != 2 {
+					t.Fatalf("apply changed running attempt policy: %+v", evidence.Attempt)
+				}
 			}
 			if scenario == "refused apply" {
 				view.RequestID, view.Constraint = "", ""
