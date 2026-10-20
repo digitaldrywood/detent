@@ -32,6 +32,10 @@ import { boardStats, isBlocked, isLive, type Lane, type WorkItemView } from "../
 
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { ClientContext } from "../../src/app/client.ts";
+import { ChangesPage } from "../../src/app/work/ChangesPage.tsx";
+import * as workHooks from "../../src/app/work/lib/useWork.ts";
+import * as appHooks from "../../src/app/App.tsx";
+import * as clientHooks from "../../src/app/client.ts";
 import { WorkBoard } from "../../src/app/work/WorkBoard.tsx";
 import { IssuePage } from "../../src/app/work/IssuePage.tsx";
 import { SidebarSearchProvider } from "../../src/app/adapters/sidebarData.tsx";
@@ -1912,5 +1916,151 @@ describe("current board execution", () => {
     render(<IssueCard item={view} showProject moves={[]} onOpen={vi.fn()} onMove={vi.fn()} now={NOW} />);
     if (label !== null) expect(screen.getByText(label)).toBeTruthy();
     expect(isLive(view)).toBe(running);
+  });
+});
+
+
+describe("the pull requests page", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  function changeItem(id: string, review: string, overrides: Partial<WorkItemView> = {}): WorkItemView {
+    return item({
+      id, number: 21, identifier: "example-project#21", projectId: "proj_alpha", projectName: "example-project",
+      updatedAt: "2026-09-09T10:00:00Z",
+      change: { id: `change_${id}`, number: 81, title: `Change ${id}`, state: review, review, url: "https://example.test/owner/repository/pull/81" },
+      attempt: { ...toAttemptView(ATTEMPTS)!, backend: "codex" },
+      ...overrides,
+    });
+  }
+
+  function renderChanges(items: WorkItemView[], options: { projectId?: string; loading?: boolean } = {}) {
+    vi.spyOn(appHooks, "useShell").mockReturnValue({ projectId: options.projectId ?? "" } as ReturnType<typeof appHooks.useShell>);
+    vi.spyOn(clientHooks, "useClient").mockReturnValue({
+      bootstrap: { projects: [{ id: "proj_alpha", name: "example-project" }] },
+    } as unknown as ReturnType<typeof clientHooks.useClient>);
+    vi.spyOn(workHooks, "useNow").mockReturnValue(NOW);
+    const reload = vi.fn();
+    const board = vi.spyOn(workHooks, "useBoard").mockReturnValue({ items, loading: options.loading ?? false, enriched: 0, reload } as unknown as ReturnType<typeof workHooks.useBoard>);
+    const root = createRootRoute({ component: ChangesPage });
+    const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
+    const view = render(<RouterProvider router={router} />);
+    return { ...view, router, reload, board };
+  }
+
+  it("counts only open review states, filters each tab and collapses groups under All", async () => {
+    const values = [
+      changeItem("evidence_one", "needs_evidence"), changeItem("evidence_two", "needs_evidence"),
+      changeItem("policy", "stale_policy"), changeItem("reviewed", "reviewed"), changeItem("draft", "draft"),
+      changeItem("merged", "reviewed", { change: { id: "merged", number: 82, title: "Merged change", state: "merged", review: "reviewed", url: null } }),
+      changeItem("landed", "reviewed", { change: { id: "landed", number: 83, title: "Landed change", state: "landed", review: "reviewed", url: null } }),
+      changeItem("unknown", "ready"), item({ change: null }),
+    ];
+    renderChanges(values);
+    await screen.findByRole("tab", { name: "All 5" });
+    expect(screen.getByText("5 open")).not.toBeNull();
+    expect(screen.getAllByTestId("changes-row")).toHaveLength(5);
+    expect(screen.queryByText("Merged change")).toBeNull();
+    expect(screen.queryByText("Landed change")).toBeNull();
+    expect(screen.queryByText("Change unknown")).toBeNull();
+    const group = screen.getByRole("button", { name: "Needs evidence 2" });
+    expect(group.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(group);
+    expect(group.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("button", { name: "Change evidence_one" })).toBeNull();
+    expect(screen.getAllByTestId("changes-row")).toHaveLength(3);
+    const staleGroup = screen.getByRole("button", { name: "Stale policy 1" });
+    expect(staleGroup.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(staleGroup);
+    expect(staleGroup.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("button", { name: "Change policy" })).toBeNull();
+    fireEvent.click(staleGroup);
+    expect(staleGroup.getAttribute("aria-expanded")).toBe("true");
+    for (const [label, count, title] of [
+      ["Needs evidence", 2, "Change evidence_one"], ["Stale policy", 1, "Change policy"],
+      ["Reviewed", 1, "Change reviewed"], ["Draft", 1, "Change draft"],
+    ] as const) {
+      fireEvent.click(screen.getByRole("tab", { name: `${label} ${count}` }));
+      expect(screen.getAllByTestId("changes-row")).toHaveLength(count);
+      expect(screen.getByRole("button", { name: title })).not.toBeNull();
+      expect(screen.queryByRole("button", { name: "Needs evidence 2" })).toBeNull();
+    }
+    fireEvent.click(screen.getByRole("tab", { name: "All 5" }));
+    expect(screen.queryByRole("button", { name: "Change evidence_one" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Needs evidence 2" }));
+    expect(screen.getAllByTestId("changes-row")).toHaveLength(5);
+  });
+
+  it.each(["", "proj_alpha"])("renders the fixed columns, agent, PR fallback and update time in scope %s", async (projectId) => {
+    renderChanges([
+      changeItem("codex", "needs_evidence"),
+      changeItem("claude", "reviewed", { attempt: { ...toAttemptView(ATTEMPTS)!, backend: "claude" } }),
+      changeItem("draft", "draft", { attempt: null, change: { id: "draft", title: "Native draft", state: "draft", review: "draft", number: null, url: null } }),
+    ], { projectId });
+    await screen.findByRole("table");
+    expect(screen.getAllByRole("columnheader").map((head) => head.textContent)).toEqual([
+      ...(projectId === "" ? ["Project"] : []), "PR", "Title", "Issue", "Agent", "Updated",
+    ]);
+    const rows = screen.getAllByTestId("changes-row");
+    const agentColumn = projectId === "" ? 4 : 3;
+    expect(within(rows[0]!).getAllByRole("cell")[agentColumn]!.textContent).toBe("Codex");
+    expect(within(rows[1]!).getAllByRole("cell")[agentColumn]!.textContent).toBe("Claude");
+    expect(within(rows[2]!).getAllByRole("cell")[agentColumn]!.textContent).toBe("");
+    expect(within(rows[2]!).getByText("—")).not.toBeNull();
+    expect(within(rows[2]!).queryByRole("link")).toBeNull();
+    expect(within(rows[0]!).getByText("2h")).not.toBeNull();
+    expect(screen.queryByTestId("changes-scope-note")).toBeNull();
+    expect(screen.queryByRole("button", { name: /sort/i })).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: /^(checks|CI|Review|Age)$/ })).toBeNull();
+  });
+
+  it("preserves title, issue and external host navigation", async () => {
+    const { router } = renderChanges([changeItem("navigation", "needs_evidence")]);
+    await screen.findByRole("button", { name: "Change navigation" });
+    const navigate = vi.spyOn(router, "navigate").mockResolvedValue(undefined);
+    const host = screen.getByRole("link", { name: "Open the pull request on the host" });
+    expect(host.getAttribute("href")).toBe("https://example.test/owner/repository/pull/81");
+    expect(host.getAttribute("rel")).toBe("noreferrer noopener");
+    fireEvent.click(screen.getByRole("button", { name: "Change navigation" }));
+    expect(navigate).toHaveBeenLastCalledWith({ to: "/work/i/$workItemId/changes/$changeId",
+      params: { workItemId: "navigation", changeId: "change_navigation" }, search: { project: "proj_alpha" } });
+    fireEvent.click(screen.getByRole("button", { name: "#21" }));
+    expect(navigate).toHaveBeenLastCalledWith({ to: "/work/i/$workItemId", params: { workItemId: "navigation" } });
+  });
+
+  it("keeps Partial details in a tooltip, reloads and explains stale policy", async () => {
+    const { reload } = renderChanges([changeItem("policy", "stale_policy")]);
+    const chip = await screen.findByTestId("connection-chip");
+    expect(chip.textContent).toBe("Partial");
+    expect(document.body.textContent).not.toContain("0 issues read");
+    fireEvent.keyDown(document, { key: "Tab" });
+    act(() => chip.focus());
+    expect(await screen.findByText("Only changes on the most recently updated unfinished issues are shown. Reload reads them again.")).not.toBeNull();
+    expect(document.body.textContent).not.toContain("0 issues read");
+    act(() => screen.getByRole("button", { name: "Stale policy 1" }).focus());
+    expect(await screen.findByText("The project's policy changed after this round was published. A new round is needed.")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it("shows the centered empty state with zero tab counts", async () => {
+    renderChanges([]);
+    await screen.findByText("No open pull requests");
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "All0", "Needs evidence0", "Stale policy0", "Reviewed0", "Draft0",
+    ]);
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByTestId("changes-row")).toBeNull();
+  });
+
+  it("shows skeleton tabs and rows in the fixed columns while loading", async () => {
+    renderChanges([], { loading: true });
+    await screen.findByRole("status", { name: "Loading pull requests" });
+    expect(screen.getByTestId("connection-chip").textContent).toBe("Loading");
+    expect(screen.getAllByTestId("changes-skeleton-row")).toHaveLength(6);
+    expect(within(screen.getAllByTestId("changes-skeleton-row")[0]!).getAllByRole("cell")).toHaveLength(6);
+    expect(screen.getAllByRole("columnheader").map((head) => head.textContent)).toEqual(["Project", "PR", "Title", "Issue", "Agent", "Updated"]);
+    expect(screen.queryByText("No open pull requests")).toBeNull();
+    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reload" })).toBeNull();
   });
 });

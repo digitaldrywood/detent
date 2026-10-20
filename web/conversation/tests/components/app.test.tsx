@@ -55,6 +55,24 @@ const sameRealmFetch: typeof globalThis.fetch = (input, init) => {
   return nativeFetch(input as string, rest);
 };
 
+function holdResponse(method: string, pathname: string) {
+  let receive = () => {};
+  let release = () => {};
+  const received = new Promise<void>((resolve) => { receive = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  const fetch = globalThis.fetch;
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await fetch(input, init);
+    if (new URL(String(input)).pathname === pathname && (init?.method ?? "GET") === method) {
+      await response.clone().arrayBuffer();
+      receive();
+      await released;
+    }
+    return response;
+  });
+  return { received, release };
+}
+
 interface MountOptions {
   readonly bootstrap?: (bootstrap: Bootstrap) => Bootstrap;
   readonly storedProject?: string;
@@ -122,6 +140,7 @@ async function control(path: string, body?: unknown): Promise<void> {
 
 describe("the conversation shell", () => {
   it.each([false, true])("restores saved-view project scope throughout the shell (direct entry: %s)", async (direct) => {
+    const savedViews = holdResponse("GET", "/api/v2/organizations/org_mock/work-views");
     const { router } = await mountApp({
       storedProject: "proj_alpha",
       path: direct ? "/work/views/view_1" : "/work/p/proj_alpha",
@@ -140,6 +159,11 @@ describe("the conversation shell", () => {
           });
         }
       },
+    });
+    await act(async () => {
+      await savedViews.received;
+      expect(screen.queryByRole("button", { name: "Beta saved view" })).toBeNull();
+      savedViews.release();
     });
     if (!direct) {
       await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("alpha"));
@@ -269,6 +293,7 @@ describe("the conversation shell", () => {
     ["proj_readonly", "proj_alpha", "alpha"],
     ["proj_beta", "proj_beta", "beta"],
   ])("starts a writable chat with stored project %j", async (stored, expectedId, expectedName) => {
+    const created = holdResponse("POST", `/api/v2/organizations/org_mock/projects/${expectedId}/conversations`);
     const { router, hub } = await mountApp({
       storedProject: stored,
       bootstrap: (bootstrap) => ({
@@ -282,7 +307,12 @@ describe("the conversation shell", () => {
     expect(screen.queryByText("Choose a project first")).toBeNull();
     await setComposerText(composer, "Start a writable chat");
     expect(screen.getByLabelText<HTMLButtonElement>("Send message").disabled).toBe(false);
-    fireEvent.keyDown(composer, { key: "Enter" });
+    await act(async () => {
+      fireEvent.keyDown(composer, { key: "Enter" });
+      await created.received;
+      expect(router.state.location.pathname).toBe("/chat");
+      created.release();
+    });
     await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/chat\/c\/conv_/));
     const conversationId = router.state.location.pathname.replace("/chat/c/", "");
     const response = await fetch(`${hub.url}/api/v2/organizations/org_mock/projects/${expectedId}/conversations/${conversationId}`);
