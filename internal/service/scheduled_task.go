@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf16"
+
+	"github.com/digitaldrywood/detent/internal/shell"
 )
 
 type scheduledTaskManager struct {
@@ -37,7 +39,7 @@ func (m *scheduledTaskManager) Definition() Definition {
 }
 
 func (m *scheduledTaskManager) Inspect(ctx context.Context) (Inspection, error) {
-	output, err := m.run(ctx, `try { $task = $folder.GetTask(`+powerShellQuote(m.Info().Unit)+`) } catch { if ($_.Exception.GetBaseException().HResult -eq -2147024894) { 'missing'; exit 0 }; throw }; [int]$task.State`)
+	output, err := m.run(ctx, `try { $task = $folder.GetTask(`+shell.QuotePowerShellArg(m.Info().Unit)+`) } catch { if ($_.Exception.GetBaseException().HResult -eq -2147024894) { 'missing'; exit 0 }; throw }; [int]$task.State`)
 	if err != nil {
 		return Inspection{}, err
 	}
@@ -68,7 +70,7 @@ func (m *scheduledTaskManager) Install(ctx context.Context) (Definition, error) 
 	if err := writeDefinition(definition); err != nil {
 		return Definition{}, err
 	}
-	_, err := m.run(ctx, `$xml = [System.IO.File]::ReadAllText(`+powerShellQuote(definition.Path)+`); $null = $folder.RegisterTask(`+powerShellQuote(m.Info().Unit)+`, $xml, 2, `+powerShellQuote(m.cfg.UID)+`, $null, 3, $null)`)
+	_, err := m.run(ctx, `$xml = [System.IO.File]::ReadAllText(`+shell.QuotePowerShellArg(definition.Path)+`); $null = $folder.RegisterTask(`+shell.QuotePowerShellArg(m.Info().Unit)+`, $xml, 2, `+shell.QuotePowerShellArg(m.cfg.UID)+`, $null, 3, $null)`)
 	if err != nil {
 		return Definition{}, errors.Join(err, os.Remove(definition.Path))
 	}
@@ -76,12 +78,12 @@ func (m *scheduledTaskManager) Install(ctx context.Context) (Definition, error) 
 }
 
 func (m *scheduledTaskManager) Start(ctx context.Context) error {
-	_, err := m.run(ctx, `$task = $folder.GetTask(`+powerShellQuote(m.Info().Unit)+`); if ($task.State -ne 4) { $null = $task.Run($null) }`)
+	_, err := m.run(ctx, `$task = $folder.GetTask(`+shell.QuotePowerShellArg(m.Info().Unit)+`); if ($task.State -ne 4) { $null = $task.Run($null) }`)
 	return err
 }
 
 func (m *scheduledTaskManager) Stop(ctx context.Context) error {
-	_, err := m.run(ctx, `$folder.GetTask(`+powerShellQuote(m.Info().Unit)+`).Stop(0)`)
+	_, err := m.run(ctx, `$folder.GetTask(`+shell.QuotePowerShellArg(m.Info().Unit)+`).Stop(0)`)
 	if err != nil {
 		return err
 	}
@@ -104,7 +106,7 @@ func (m *scheduledTaskManager) Uninstall(ctx context.Context) error {
 		if err := m.Stop(ctx); err != nil {
 			return err
 		}
-		if _, err := m.run(ctx, `$folder.DeleteTask(`+powerShellQuote(m.Info().Unit)+`, 0)`); err != nil {
+		if _, err := m.run(ctx, `$folder.DeleteTask(`+shell.QuotePowerShellArg(m.Info().Unit)+`, 0)`); err != nil {
 			return err
 		}
 	}
@@ -126,9 +128,9 @@ func scheduledTaskXML(cfg Config) string {
 	stdout, stderr := LogPaths(cfg)
 	arguments := make([]string, 0, len(cfg.Arguments))
 	for _, argument := range cfg.Arguments {
-		arguments = append(arguments, powerShellQuote(argument))
+		arguments = append(arguments, shell.QuotePowerShellArg(argument))
 	}
-	script := `$env:` + ManagerEnvironment + ` = ` + powerShellQuote(string(ManagerScheduledTask)) + `; $env:PATH = ` + powerShellQuote(cfg.Path) + `; $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'; & ` + powerShellQuote(cfg.BinaryPath) + ` ` + strings.Join(arguments, " ") + ` >> ` + powerShellQuote(stdout) + ` 2>> ` + powerShellQuote(stderr) + `; exit $LASTEXITCODE`
+	script := `$env:` + ManagerEnvironment + ` = ` + shell.QuotePowerShellArg(string(ManagerScheduledTask)) + `; $env:PATH = ` + shell.QuotePowerShellArg(cfg.Path) + `; $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'; & ` + shell.QuotePowerShellArg(cfg.BinaryPath) + ` ` + strings.Join(arguments, " ") + ` >> ` + shell.QuotePowerShellArg(stdout) + ` 2>> ` + shell.QuotePowerShellArg(stderr) + `; exit $LASTEXITCODE`
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>` + html.EscapeString(cfg.UID) + `</UserId></LogonTrigger></Triggers>
@@ -144,10 +146,6 @@ func scheduledTaskXML(cfg Config) string {
   <Actions Context="Runner"><Exec><Command>powershell.exe</Command><Arguments>-NoProfile -NonInteractive -EncodedCommand ` + encodePowerShell(script) + `</Arguments><WorkingDirectory>` + html.EscapeString(cfg.HomeDir) + `</WorkingDirectory></Exec></Actions>
 </Task>
 `
-}
-
-func powerShellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
 func encodePowerShell(script string) string {
