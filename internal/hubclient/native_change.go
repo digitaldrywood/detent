@@ -208,7 +208,7 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 		}
 		authorize := func(ctx context.Context) error {
 			if checkpoint := e.data.Handoff; checkpoint != nil && (checkpoint.EffectState == "pending" || checkpoint.EffectState == "ambiguous") && checkpoint.ExternalEffect != "git_push" && checkpoint.ExternalEffect != "pr_create" {
-				return fmt.Errorf("%w: PR publication has an unresolved external effect; preserve source and reconcile its checkpoint before resuming", ErrUnavailable)
+				return &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "PR publication has an unresolved " + checkpoint.ExternalEffect + " effect; preserve source and reconcile its checkpoint before resuming"}
 			}
 			if e.remaining() <= 0 {
 				if err := e.renew(ctx, 0); err != nil {
@@ -290,6 +290,7 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 				}
 			}
 		}
+		unresolvedAtStart := e.data.Handoff.UncertainForgeEffect()
 		effect := func(ctx context.Context, kind, state string, publication workspace.GitHubPublication) error {
 			check := authorize
 			if state == "pending" {
@@ -310,11 +311,11 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 				unresolved := binding
 				unresolved.External = tracker.ChangeExternalReference{}
 				if checkpoint.EffectID != unresolved.EffectID(checkpoint.ExternalEffect) || checkpoint.Change == nil || *checkpoint.Change != binding.SourceVersion {
-					return errors.New("unresolved publication effect differs from the current source identity; preserve source and reconcile its checkpoint before resuming")
+					return &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "unresolved publication effect differs from the current source identity; preserve source and reconcile its checkpoint before resuming"}
 				}
-			}
-			if state == "pending" && (checkpoint.EffectState == "pending" || checkpoint.EffectState == "ambiguous") {
-				return errors.New("PR publication has an unresolved external effect; reconcile the exact repository, branch, head and PR before retrying a write")
+				if state == "pending" && !unresolvedAtStart {
+					return errors.New("PR publication has an unresolved external effect; reconcile the exact repository, branch, head and PR before retrying a write")
+				}
 			}
 			if state == "confirmed" && kind == "git_push" && checkpoint.ExternalEffect == "pr_create" {
 				return nil
@@ -336,10 +337,11 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			}
 			return nil
 		}
-		publication, err := e.publicationSource(ctx, version, workspace.LandOptions{Authorize: authorizeStart, PublicationEffect: effect, External: external, ExternalHeadSHA: externalHead, PublicationPushes: pushes, SourceIssues: detail.SourceIssues})
+		publication, err := e.publicationSource(ctx, version, workspace.LandOptions{Authorize: authorizeStart, PublicationEffect: effect, External: external, ExternalHeadSHA: externalHead, PublicationPushes: pushes, SourceIssues: detail.SourceIssues, UnresolvedEffect: unresolvedAtStart})
 		if err != nil {
-			if e.data.Handoff != nil && e.data.Handoff.EffectState == "ambiguous" {
-				return fmt.Errorf("%w: required GitHub PR has an ambiguous publication response; retain source and reconcile the exact existing PR before another write: %w", ErrUnavailable, err)
+			var refusal *workspace.LandRefusal
+			if !unresolvedAtStart && !errors.As(err, &refusal) && e.data.Handoff != nil && e.data.Handoff.EffectState == "ambiguous" {
+				return fmt.Errorf("%w: required GitHub PR has an ambiguous publication response; the completion retry reconciles it against the forge before another write: %w", ErrUnavailable, err)
 			}
 			return fmt.Errorf("required GitHub PR is not ready; preserve source and resolve publication blocker: %w", err)
 		}

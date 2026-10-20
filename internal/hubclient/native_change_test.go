@@ -561,6 +561,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		reviewer                bool
 		requiredPR              bool
 		lostPRResponse          bool
+		lostPush                string
 		publicationWriteRefusal string
 		publicationFenceLoss    int
 		publicationFailure      string
@@ -598,6 +599,8 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "required PR refuses an unknown retained branch head", requiredPR: true, publicationReference: "unknown", publicationFailure: "identity", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 2},
 		{name: "required PR refuses unrelated ambiguous external effect", requiredPR: true, publicationUncertain: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "required PR no edit Rework preserves human hold", requiredPR: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "required PR retries a lost push absent from the forge", requiredPR: true, lostPush: "absent", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "required PR finishes a lost push over a diverged branch as head moved", requiredPR: true, lostPush: "diverged", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
 		{name: "required PR lost response adopts one PR under human hold", requiredPR: true, lostPRResponse: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "required PR refuses replaced version at persistence", requiredPR: true, publicationWriteRefusal: "version", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
 		{name: "required PR refuses lost fence at persistence", requiredPR: true, publicationWriteRefusal: "fence", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
@@ -897,7 +900,21 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				pushLost := false
 				publicationSource = func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+					if test.lostPush != "" && !pushLost {
+						record := opts.PublicationEffect
+						opts.PublicationEffect = func(ctx context.Context, kind, state string, publication workspace.GitHubPublication) error {
+							if kind != "git_push" || state != "pending" || pushLost {
+								return record(ctx, kind, state, publication)
+							}
+							pushLost = true
+							if err := record(ctx, kind, state, publication); err != nil {
+								return err
+							}
+							return errors.Join(errors.New("git push response lost before the remote recorded it"), record(ctx, kind, "ambiguous", publication))
+						}
+					}
 					if test.publicationFenceLoss > 0 {
 						authorize := opts.Authorize
 						calls := 0
@@ -919,7 +936,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 				t.Cleanup(func() {
 					wantCalls := 1
-					if test.publicationReference != "" && !test.publicationLanded || test.publicationUncertain || test.publicationFailure == "push" || test.publicationFenceLoss > 0 && test.publicationFenceLoss < 4 {
+					if test.publicationReference != "" && !test.publicationLanded || test.publicationUncertain || test.lostPush == "diverged" || test.publicationFailure == "push" || test.publicationFenceLoss > 0 && test.publicationFenceLoss < 4 {
 						wantCalls = 0
 					}
 					if readHead(info.Path) != head || readHead(source) != base || publicationCalls != wantCalls {
@@ -1367,8 +1384,8 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			}
 			if test.publicationUncertain {
 				owner := execution.(*nativeExecution)
-				if err := owner.PrepareFinish(guarded, test.outcome, "", nil); err != nil || owner.publication != nil || owner.data.Outcome != "" || owner.data.Handoff.ExternalEffect != "provider_turn" || owner.data.Handoff.EffectState != "ambiguous" || publicationCalls != 0 || !strings.Contains(owner.change.Error, "unresolved external effect") {
-					t.Fatalf("publication erased unrelated effect ambiguity: %+v, %v", owner.data, err)
+				if err := owner.PrepareFinish(guarded, test.outcome, "", nil); err != nil || owner.publication != nil || owner.data.Outcome != "" || owner.data.Handoff.ExternalEffect != "provider_turn" || owner.data.Handoff.EffectState != "ambiguous" || publicationCalls != 0 || owner.change.Error != "" || owner.change.VersionCode != workspace.LandRefusalHeadMoved || !strings.Contains(owner.change.VersionError, "unresolved provider_turn effect") {
+					t.Fatalf("unrelated effect ambiguity was not a recorded head_moved refusal: %+v, %+v, %v", owner.data, owner.change, err)
 				}
 				return
 			}
@@ -1415,6 +1432,22 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				owner.publication = nil
 				if err := owner.preparePRPublication(guarded, owner.change); err != nil || owner.publication == nil || *owner.publication != receipt || publicationCalls != 1 {
 					t.Fatalf("reopened publication replay duplicated or changed the new PR: %+v, %v, creates=%d", owner.publication, err, publicationCalls)
+				}
+			}
+			if test.lostPush != "" {
+				owner := execution.(*nativeExecution)
+				if err := owner.PrepareFinish(guarded, test.outcome, "", nil); err != nil || owner.publication != nil || owner.change.Error == "" || owner.data.Handoff.ExternalEffect != "git_push" || owner.data.Handoff.EffectState != "ambiguous" || owner.data.Outcome != "" {
+					t.Fatalf("lost push was not retained as an ambiguous effect: %+v, %v", owner.data, err)
+				}
+				if test.lostPush == "diverged" {
+					replacePublicationHead()
+					if err := owner.Finish(guarded, test.outcome); err != nil {
+						t.Fatalf("diverged publication branch held the lease as unavailable: %v", err)
+					}
+					if owner.change.Error != "" || owner.change.VersionCode != workspace.LandRefusalHeadMoved || owner.publication != nil || owner.data.Outcome != "failed" || publicationHead() != base {
+						t.Fatalf("diverged publication branch was not a recorded head_moved failure: change=%+v outcome=%q", owner.change, owner.data.Outcome)
+					}
+					return
 				}
 			}
 			if test.lostPRResponse {
@@ -2336,14 +2369,14 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "held publication refuses replaced version on new Runner lease", publication: "lost_create", publicationFault: "version", rework: true, formal: true},
 		{name: "held publication admits a foreign runner to reconcile", publication: "lost_create", publicationFault: "foreign_source", rework: true, formal: true},
 		{name: "held publication refuses unavailable source on new Runner lease", publication: "lost_create", publicationFault: "unavailable_source", rework: true, formal: true},
-		{name: "held publication refuses missing_pr on new Runner lease", publication: "lost_create", publicationFault: "missing_pr", rework: true, formal: true},
+		{name: "held publication repeats the write for missing_pr on new Runner lease", publication: "lost_create", publicationFault: "missing_pr", rework: true, formal: true},
 		{name: "held publication refuses wrong_base on new Runner lease", publication: "lost_create", publicationFault: "wrong_base", rework: true, formal: true},
 		{name: "held publication refuses wrong_repository on new Runner lease", publication: "lost_create", publicationFault: "wrong_repository", rework: true, formal: true},
 		{name: "held publication refuses wrong_head on new Runner lease", publication: "lost_create", publicationFault: "wrong_head", rework: true, formal: true},
 		{name: "held publication refuses wrong_branch on new Runner lease", publication: "lost_create", publicationFault: "wrong_branch", rework: true, formal: true},
 		{name: "held publication refuses multiple_prs on new Runner lease", publication: "lost_create", publicationFault: "multiple_prs", rework: true, formal: true},
 		{name: "held publication refuses unavailable_forge on new Runner lease", publication: "lost_create", publicationFault: "unavailable_forge", rework: true, formal: true},
-		{name: "held publication refuses missing_remote on new Runner lease", publication: "lost_create", publicationFault: "missing_remote", rework: true, formal: true},
+		{name: "held publication repeats the write for missing_remote on new Runner lease", publication: "lost_create", publicationFault: "missing_remote", rework: true, formal: true},
 		{name: "held publication refuses dirty_source on new Runner lease", publication: "lost_create", publicationFault: "dirty_source", rework: true, formal: true},
 		{name: "held publication refuses changed_head on new Runner lease", publication: "lost_create", publicationFault: "changed_head", rework: true, formal: true},
 		{name: "held publication survives configuration change on new Runner lease", publication: "lost_create", publicationFault: "policy", rework: true, formal: true},
@@ -3798,6 +3831,17 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				callsBefore := provider.calls
 				result, err = agent.Run(t.Context(), runner.RunRequest{Execution: &nativePublicationFixtureExecution{nativeExecution: owner, forge: forge, losePush: &losePush}, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
 				result.NativeChange = owner.NativeChange()
+				if test.publicationFault == "missing_pr" || test.publicationFault == "missing_remote" {
+					repeatedCreates := wantCreates
+					if test.publicationFault == "missing_pr" {
+						repeatedCreates++
+					}
+					branchHead, readErr := exec.CommandContext(t.Context(), "git", "-C", remote, "rev-parse", "refs/heads/"+oldPublicationBranch).Output()
+					if err != nil || readErr != nil || owner.publication == nil || owner.publication.HeadSHA != oldPublicationHead || forgeCreates != repeatedCreates || strings.TrimSpace(string(branchHead)) != oldPublicationHead || provider.calls != callsBefore {
+						t.Fatalf("absent forge write was not repeated exactly once: fault=%s creates=%d publication=%+v error=%v", test.publicationFault, forgeCreates, owner.publication, err)
+					}
+					return
+				}
 				if test.publicationFault != "" && test.publicationFault != "policy" {
 					if err == nil && (result.NativeChange == nil || result.NativeChange.VersionError == "" && result.NativeChange.Error == "") || owner.publication != nil || forgeCreates != wantCreates || forgePull != prBefore || provider.calls != callsBefore {
 						t.Fatalf("unresolved publication was accepted or rewrote forge/source: fault=%s creates=%d publication=%v provider_calls=%d error=%v", test.publicationFault, forgeCreates, owner.publication != nil, provider.calls-callsBefore, err)

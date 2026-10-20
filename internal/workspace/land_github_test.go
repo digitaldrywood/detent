@@ -314,6 +314,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		publicationPrior     bool
 		unknownPrior         bool
 		lostPushReceipt      bool
+		unresolvedEffect     bool
 		review               string
 	}{
 		{name: "pinned release refuses multiple source commits", method: "squash", external: true, pinnedBase: true, releaseMultiple: true, wantRefusal: LandRefusalHeadMoved},
@@ -354,6 +355,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "prepare refuses an unrecorded retained PR head", prepareOnly: true, external: true, publicationBranch: "manual/recovery", publicationPrior: true, unknownPrior: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
 		{name: "prepare refuses a different selected remote", prepareOnly: true, wrongRemote: "selected", method: "squash", wantRefusal: LandRefusalProtected},
 		{name: "prepare refuses a different push repository", prepareOnly: true, wrongRemote: "pushurl", method: "squash", wantRefusal: LandRefusalProtected},
+		{name: "prepare repeats an unresolved write over the recorded PR head", prepareOnly: true, external: true, publicationBranch: "manual/recovery", publicationPrior: true, unresolvedEffect: true, method: "squash"},
+		{name: "prepare refuses an unresolved write over a different branch head", prepareOnly: true, reworked: true, unresolvedEffect: true, preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
 		{name: "prepare refuses duplicate matching PRs", prepareOnly: true, duplicatePull: true, preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
 		{name: "landing refuses newer published head", remoteNewer: true, preservePublication: true, pullState: "open", method: "squash", wantRefusal: LandRefusalHeadMoved},
 		{name: "prepare refuses newer remote-only published head", prepareOnly: true, remoteNewer: true, remoteOnlyHead: true, preservePublication: true, pullState: "open", method: "squash", wantRefusal: LandRefusalHeadMoved},
@@ -981,6 +984,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				}
 			}
 			if test.prepareOnly {
+				opts.UnresolvedEffect = test.unresolvedEffect
 				authorityCalls := 0
 				authorityErr := errors.New("publication authority lost; resume under the current source owner")
 				if test.ambiguousEffect {
