@@ -1705,7 +1705,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, fmt.Errorf("%w: %w", ErrNativeRecoveryRequired, err)
 		}
 		var sourceRefusal *workspace.LandRefusal
-		if sourceRecovery && workspaceIssue.Source != nil && errors.As(err, &sourceRefusal) {
+		if workspaceIssue.Source != nil && errors.As(err, &sourceRefusal) {
 			return RunResult{}, fmt.Errorf("%w: recover reviewed source: %w", ErrNativeRecoveryRequired, err)
 		}
 		if nativeLanding && (IsCapacityError(err) || errors.Is(err, github.ErrRateLimited)) {

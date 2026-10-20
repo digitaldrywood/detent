@@ -99,6 +99,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		corrupt     bool
 		transferred bool
 		locked      bool
+		integrated  bool
 	}{
 		{name: "additional advertised ref", edit: editBundle(bytes.Replace(capture.Bundle, []byte("\n\n"), []byte("\n"+head+" refs/heads/extra\n\n"), 1))},
 		{name: "wrong advertised head", edit: editBundle(bytes.Replace(capture.Bundle, []byte(head+" HEAD"), []byte(base+" HEAD"), 1))},
@@ -113,6 +114,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		{name: "working source survives restoration", pending: "working"},
 		{name: "untracked source survives restoration", pending: "untracked"},
 		{name: "newer clean published head survives older source restoration", published: true},
+		{name: "integrated target head is preserved and restored", published: true, integrated: true},
 		{name: "superseded published source is preserved and restored", published: true, previous: true},
 		{name: "corrupt retained source preserves existing workspace", published: true, previous: true, corrupt: true},
 		{name: "superseded branch without workspace is preserved and restored", published: true, previous: true, absent: true},
@@ -151,13 +153,19 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 				}
 				runGit(t, source, "push", "origin", head+":refs/heads/retained-work")
 				runGit(t, dir, "fetch", "origin")
-				runGit(t, info.Path, "reset", "--hard", head)
+				start, publishedRef := head, "refs/heads/published-work-"+SafeKey(test.name)
+				if test.integrated {
+					start, publishedRef = base, "refs/heads/integration-"+SafeKey(test.name)
+					issue.ProgressBaseRef = strings.TrimPrefix(publishedRef, "refs/heads/")
+					initial.ProgressBaseRef = issue.ProgressBaseRef
+				}
+				runGit(t, info.Path, "reset", "--hard", start)
 				writeFileDiffFile(t, info.Path, "source.txt", "newer completed work\n")
 				runGit(t, info.Path, "add", "source.txt")
 				runGit(t, info.Path, "-c", "user.name=Recovery Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", test.name)
 				newer := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 				if test.published {
-					runGit(t, info.Path, "push", "origin", "HEAD:refs/heads/published-work-"+SafeKey(test.name))
+					runGit(t, info.Path, "push", "origin", "HEAD:"+publishedRef)
 					runGit(t, dir, "fetch", "origin")
 				}
 				before, err := backend.(RecoveryStateProvider).RecoveryState(t.Context(), info, initial)
@@ -174,7 +182,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 					runGit(t, dir, "worktree", "remove", info.Path)
 				}
 				restored, restoreErr := backend.Create(t.Context(), issue)
-				if (test.previous || test.transferred) && !test.corrupt {
+				if (test.previous || test.transferred || test.integrated) && !test.corrupt {
 					if restoreErr != nil {
 						t.Fatalf("restore superseded source: %v", restoreErr)
 					}

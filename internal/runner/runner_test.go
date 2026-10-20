@@ -4408,6 +4408,36 @@ func TestRunnerClassifiesWorkspaceBranchHold(t *testing.T) {
 	}
 }
 
+func TestRunnerClassifiesChangeSourceRefusal(t *testing.T) {
+	t.Parallel()
+	refusal := &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "the existing clean worktree differs from the recorded source base and head"}
+	for _, test := range []struct {
+		name         string
+		source       bool
+		wantRecovery bool
+	}{
+		{name: "code attempt with retained source requires recovery", source: true, wantRecovery: true},
+		{name: "refusal without retained source stays workspace preparation"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			execution := &reworkReviewExecution{}
+			if test.source {
+				execution.recovery.SourceVersionID = "version_1"
+				execution.source = workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version_1", ChangeID: "change_1"}}
+			}
+			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}}}, Workspace: &fakeWorkspaceBackend{createErr: refusal}, AgentBackend: &fakeCodexClient{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = runner.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1375", State: "In Progress"}})
+			if !errors.Is(err, refusal) || errors.Is(err, ErrNativeRecoveryRequired) != test.wantRecovery || errors.Is(err, ErrWorkspacePreparation) == test.wantRecovery {
+				t.Fatalf("source refusal error = %v", err)
+			}
+		})
+	}
+}
+
 func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 	t.Parallel()
 
