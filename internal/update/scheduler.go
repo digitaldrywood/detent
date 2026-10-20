@@ -487,9 +487,13 @@ func (s *Scheduler) installControlLocked(ctx context.Context, opts ApplyOptions,
 		return Status{}, false
 	}
 	s.mu.Lock()
-	s.controlRestart = &controlRestart{installed: installed, since: s.cfg.Now()}
+	since := s.cfg.Now()
+	if s.controlRestart != nil {
+		since = s.controlRestart.since
+	}
+	s.controlRestart = &controlRestart{installed: installed, since: since}
 	s.mu.Unlock()
-	s.cfg.Logger.Info("controller binary replaced; restart deferred until idle", "version", version)
+	s.cfg.Logger.Info("controller binary replaced; restart deferred until idle", "version", version, "pending_since", since)
 	return installed, true
 }
 
@@ -651,7 +655,11 @@ func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func
 			status.LastError = "Update restart request was declined"
 		})
 		s.mu.Lock()
-		s.controlRestart = &controlRestart{installed: applied, since: s.cfg.Now()}
+		since := s.cfg.Now()
+		if s.controlRestart != nil {
+			since = s.controlRestart.since
+		}
+		s.controlRestart = &controlRestart{installed: applied, since: since}
 		s.mu.Unlock()
 		s.cfg.Logger.Warn("Detent update applied; restart deferred because shutdown is already in progress or restart is unavailable", "version", applied.LatestVersion)
 		applied.FailureReason = "Update restart request was declined"

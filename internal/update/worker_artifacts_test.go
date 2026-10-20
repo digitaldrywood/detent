@@ -209,6 +209,7 @@ func TestSchedulerRestartsControllerBehindAppliedRelease(t *testing.T) {
 		advance time.Duration
 		idle    bool
 		accept  bool
+		release string
 	}
 	for _, test := range []struct {
 		name         string
@@ -221,6 +222,7 @@ func TestSchedulerRestartsControllerBehindAppliedRelease(t *testing.T) {
 		{name: "busy controller within deferral keeps serving", heartbeats: []heartbeat{{advance: time.Hour}, {advance: time.Hour}}, wantState: "applied"},
 		{name: "released worker leases restart into installed binary", heartbeats: []heartbeat{{advance: time.Minute}, {advance: time.Minute, idle: true, accept: true}, {advance: time.Minute, idle: true, accept: true}}, wantRestarts: []string{"verified-controller"}, wantState: "restart_requested", wantReserved: 1},
 		{name: "deferral elapsed requests graceful drain", heartbeats: []heartbeat{{advance: 5 * time.Hour}, {advance: time.Hour, accept: true}}, wantRestarts: []string{"verified-controller"}, wantState: "restart_requested"},
+		{name: "newer release keeps the original deferral deadline", heartbeats: []heartbeat{{advance: 4 * time.Hour}, {advance: time.Hour, release: "1.0.2"}, {advance: time.Hour, accept: true}}, wantRestarts: []string{"verified-controller"}, wantState: "restart_requested"},
 		{name: "declined restart retries", heartbeats: []heartbeat{{idle: true}, {idle: true, accept: true}}, wantRestarts: []string{"verified-controller", "verified-controller"}, wantState: "restart_requested", wantReserved: 1},
 		{name: "controller install refused never restarts", applyErr: ErrRefused, heartbeats: []heartbeat{{idle: true, accept: true}, {advance: 7 * time.Hour, accept: true}}, wantState: "applied"},
 	} {
@@ -259,16 +261,25 @@ func TestSchedulerRestartsControllerBehindAppliedRelease(t *testing.T) {
 			if observed.Receipt == nil || !observed.Receipt.ExecutionReady() || len(restarts) != 0 {
 				t.Fatalf("routine update restarted before idle or lost execution readiness: %+v restarts=%v", observed.Receipt, restarts)
 			}
+			applies := 1
 			for _, beat := range test.heartbeats {
 				current = beat
 				now = now.Add(beat.advance)
-				scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), nil)
+				var next *runnerauth.UpdateRequest
+				if beat.release != "" {
+					publish(beat.release)
+					updater.checkStatus.LatestVersion, updater.applyStatus.LatestVersion = beat.release, beat.release
+					revision := scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), nil).Revision
+					next = &runnerauth.UpdateRequest{ID: "update-" + beat.release, Service: "detent", Release: true, FollowHub: true, Version: beat.release, ExpectedBuildRevision: revision, RequestedAt: now}
+					applies++
+				}
+				scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), next)
 			}
 			if !slices.Equal(restarts, test.wantRestarts) || scheduler.Status().State != test.wantState {
 				t.Fatalf("restarts = %v state = %q, want %v %q", restarts, scheduler.Status().State, test.wantRestarts, test.wantState)
 			}
-			if updater.applyCalls != 1 {
-				t.Fatalf("controller binary installs = %d, want 1", updater.applyCalls)
+			if updater.applyCalls != applies {
+				t.Fatalf("controller binary installs = %d, want %d", updater.applyCalls, applies)
 			}
 			if reserved != test.wantReserved {
 				t.Fatalf("held idle reservations = %d, want %d", reserved, test.wantReserved)
