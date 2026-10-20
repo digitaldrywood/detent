@@ -917,7 +917,7 @@ func validateNativeWorkflowTransition(states []tracker.NativeState, current, tar
 		}
 	}
 	if !allowed {
-		return &nativeError{Code: "transition_not_allowed", Message: "Workflow transition is not allowed", status: http.StatusUnprocessableEntity}
+		return &nativeError{Code: "transition_not_allowed", Message: "Workflow transition is not allowed", status: http.StatusUnprocessableEntity, publicMessage: true}
 	}
 	return nil
 }
