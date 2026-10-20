@@ -36,7 +36,15 @@ func createPrivateFile(path string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return os.NewFile(uintptr(handle), path), nil
+	return checkedPrivateFile(handle, path)
+}
+
+func checkedPrivateFile(handle windows.Handle, path string) (*os.File, error) {
+	file := os.NewFile(uintptr(handle), path)
+	if err := validatePrivateDACL(handle); err != nil {
+		return nil, errors.Join(err, file.Close(), os.Remove(path))
+	}
+	return file, nil
 }
 
 func createPrivateTemp(directory, prefix string) (*os.File, error) {

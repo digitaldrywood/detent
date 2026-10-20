@@ -1,6 +1,7 @@
 package runnerauth
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,55 @@ import (
 
 	"golang.org/x/sys/windows"
 )
+
+func TestWindowsCreatedCredentialRequiresEnforcedDACL(t *testing.T) {
+	t.Parallel()
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := user.User.Sid.String()
+	for _, test := range []struct {
+		name, dacl string
+		access     uint32
+		message    string
+	}{
+		{"inheritance enabled", "D:(A;;FA;;;" + sid + ")", windows.GENERIC_WRITE, "icacls"},
+		{"extra ACE", "D:P(A;;FA;;;" + sid + ")(A;;GR;;;WD)", windows.GENERIC_WRITE, "icacls"},
+		{"inspection denied", "D:P(A;;FA;;;" + sid + ")", windows.FILE_WRITE_DATA, "could not be inspected"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "identity.json")
+			sd, err := windows.SecurityDescriptorFromString("O:" + sid + test.dacl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			name, err := windows.UTF16PtrFromString(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			attributes := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+			handle, err := windows.CreateFile(name, test.access, 0, &attributes, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			file, err := checkedPrivateFile(handle, path)
+			if file != nil {
+				if err := file.Close(); err != nil {
+					t.Fatal(err)
+				}
+				t.Fatal("unsafe file was returned for writing credentials")
+			}
+			if err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("unsafe creation needs a permissions error, got %v", err)
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unsafe empty credential file was not closed and removed: %v", err)
+			}
+		})
+	}
+}
 
 func TestWindowsCredentialDACL(t *testing.T) {
 	t.Parallel()
