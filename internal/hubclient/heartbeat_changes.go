@@ -27,6 +27,7 @@ type heartbeatProject struct {
 	approval    policy.Approval
 	approvalErr error
 	approvalSet bool
+	approvalRev uint64
 }
 
 func (c *Client) forgetHeartbeatItems(path string) {
@@ -70,6 +71,7 @@ func (c *NativeClient) applyHeartbeatChanges(changes *runnerauth.HeartbeatChange
 	state := c.heartbeatProject()
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	state.approvalRev++
 	if changes == nil || changes.Cursor == "" {
 		state.changes, state.cursor, state.loaded, state.approvalSet = nil, "", false, false
 	} else {

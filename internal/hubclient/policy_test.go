@@ -147,6 +147,81 @@ func clientTestPolicy() policy.Descriptor {
 	}.WithID()
 }
 
+func TestNativeProjectPolicyInvalidationDuringRead(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"observation", "heartbeat", "no invalidation"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			previous := clientTestPolicy()
+			updated := previous
+			updated.SourceDigest = policy.Digest([]byte("updated-source"))
+			updated = updated.WithID()
+			path := filepath.Join(t.TempDir(), "private", "identity.json")
+			identity, err := runnerauth.Initialize(path, "https://hub.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity.Identity.OrganizationID = "org_test"
+			identity.Identity.ProjectIDs = []tracker.ProjectID{"prj_test"}
+			identity.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
+			if err := runnerauth.Save(path, identity); err != nil {
+				t.Fatal(err)
+			}
+			var native *NativeClient
+			scheduler := &Scheduler{}
+			reads := 0
+			client, err := New(Config{URL: identity.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				w := httptest.NewRecorder()
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/policy/observed") {
+					w.WriteHeader(http.StatusNoContent)
+					return w.Result(), nil
+				}
+				if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/policy") {
+					t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+				reads++
+				approval := policy.Approval{Policy: updated}
+				if reads == 1 {
+					approval.Policy = previous
+					switch name {
+					case "observation":
+						if err := scheduler.reportObservedPolicy(r.Context(), "project", &NativeConnector{client: native}, policy.Observation{Descriptor: updated}); err != nil {
+							return nil, err
+						}
+					case "heartbeat":
+						native.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "updated", PolicyID: updated.ID})
+					}
+				}
+				if err := json.NewEncoder(w).Encode(approval); err != nil {
+					return nil, err
+				}
+				return w.Result(), nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err = client.Native("org_test", "prj_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			native.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "initial", PolicyID: previous.ID})
+			if approval, err := native.ProjectPolicy(t.Context()); err != nil || approval.Policy.ID != previous.ID {
+				t.Fatalf("in-flight policy: id=%s error=%v", approval.Policy.ID, err)
+			}
+			wantID, wantReads := updated.ID, 2
+			if name == "no invalidation" {
+				wantID, wantReads = previous.ID, 1
+			}
+			for range 2 {
+				if approval, err := native.ProjectPolicy(t.Context()); err != nil || approval.Policy.ID != wantID || reads != wantReads {
+					t.Fatalf("policy after %s: id=%s want=%s reads=%d want=%d error=%v", name, approval.Policy.ID, wantID, reads, wantReads, err)
+				}
+			}
+		})
+	}
+}
+
 func TestSchedulerRejectsMissingConfigurationBeforeWork(t *testing.T) {
 	if testing.Short() {
 		t.Skip("loopback network listener integration")
