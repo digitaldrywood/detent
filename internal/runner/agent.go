@@ -1550,7 +1550,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		reviewRecovery = nativeReviewResumeAttempt(req.Execution.Recovery(), gate.Effective(workflow.Config.Gate).Run)
 	}
 	publicationRecovery := false
-	if req.Execution != nil && mode == RunModeImplement && runRole(mode, req.Issue) == RoleRework {
+	if req.Execution != nil && mode == RunModeImplement && publicationRecoveryRole(runRole(mode, req.Issue)) {
 		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil {
 			publicationRecovery = previous.Checkpoint.UncertainForgeEffect()
 		}
@@ -1610,7 +1610,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	workspaceIssue.FreshCheckout = false
 	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework)
-	if source, ok := req.Execution.(ChangeSourceExecution); ok && (workspaceIssue.NativeRework || nativeLanding || reviewRecovery != nil || req.Execution.Recovery().SourceVersionID != "") {
+	if source, ok := req.Execution.(ChangeSourceExecution); ok && (workspaceIssue.NativeRework || nativeLanding || reviewRecovery != nil || publicationRecovery || req.Execution.Recovery().SourceVersionID != "") {
 		if local, ok := runWorkspace.(interface {
 			Existing(workspace.Issue) (workspace.Info, error)
 		}); ok {
