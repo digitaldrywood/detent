@@ -576,7 +576,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	instructions.SourceDigest = policy.Digest([]byte("changed instructions"))
 	instructions = instructions.WithID()
 	changed := hubTestPolicy()
-	changed.Gates.AutoPromote = true
+	changed.Gates.SecurityAudit = true
 	changed = changed.WithID()
 	for _, test := range []struct {
 		name   string

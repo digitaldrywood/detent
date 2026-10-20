@@ -519,6 +519,9 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 		if errors.Is(err, runner.ErrOperatorStopped) {
 			e.preparedOutcome = "interrupted"
 		}
+		if e.preparedFailure == nil && e.data.Identity != nil {
+			e.preparedFailure = e.finalizationFailure(err)
+		}
 		return err
 	}
 	return nil
@@ -634,13 +637,36 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error
 		e.preparedFailure = &public
 	}
 	e.data.Disposition = e.preparedDisposition
-	e.data.TerminalFailure = e.preparedFailure
+	e.data.TerminalFailure = nil
+	if outcome != "succeeded" {
+		if e.preparedFailure == nil {
+			e.preparedFailure = e.finalizationFailure(preparationErr)
+		}
+		e.data.TerminalFailure = e.preparedFailure
+	}
 	if finalization := e.preparedFinalization(); finalization != nil {
 		e.data.Finalization = finalization
 	}
 	finishErr := e.append(ctx, "run.finished", outcome, nil)
 	refresh = finishErr == nil
 	return errors.Join(preparationErr, finishErr)
+}
+
+func (e *nativeExecution) finalizationFailure(err error) *tracker.NativeTerminalFailure {
+	failure := tracker.NativeTerminalFailure{ErrorClass: "finalization", Stage: "finalization", ObservedAt: e.scheduler.now().UTC()}
+	switch change := e.change; {
+	case change != nil && change.VersionError != "":
+		failure.Error = strings.TrimPrefix(change.VersionCode+": "+change.VersionError, ": ")
+	case err != nil:
+		failure.Error = err.Error()
+	case change != nil && change.Error != "":
+		failure.Error = change.Error
+	default:
+		failure.ErrorClass, failure.Stage = "", ""
+		failure.Error = "attempt ended without a recorded runner error"
+	}
+	public := failure.Public()
+	return &public
 }
 
 func (e *nativeExecution) finishPrepared(ctx context.Context) error {

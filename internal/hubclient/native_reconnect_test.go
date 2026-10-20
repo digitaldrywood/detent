@@ -187,7 +187,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 					t.Fatalf("recovery=%+v, %v", recovery, err)
 				}
 				attempt := recovery.Attempts[0]
-				if recovery.Issue.State != current.State || recovery.Issue.Revision != current.Revision || attempt.ClaimReleasedAt == nil || attempt.Outcome != "cancelled" || attempt.Status != "cancelled" {
+				if recovery.Issue.State != current.State || recovery.Issue.Revision != current.Revision || attempt.ClaimReleasedAt == nil || attempt.Outcome != "cancelled" || attempt.Status != "cancelled" || attempt.TerminalFailure == nil || attempt.TerminalFailure.ErrorClass != "lease_released" || !strings.HasSuffix(attempt.TerminalFailure.Error, "release reason: cancelled") {
 					t.Fatalf("rejected recovery: state=%s revision=%d status=%s outcome=%s released=%v", recovery.Issue.State, recovery.Issue.Revision, attempt.Status, attempt.Outcome, attempt.ClaimReleasedAt)
 				}
 				candidates, err = newScheduler().FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local"})

@@ -75,6 +75,7 @@ func TestValidatorRecoveredSourceSearchDoesNotFailRequiredValidation(t *testing.
 	for _, test := range []struct {
 		name                                                                string
 		gateFails, checkFails, missingRead, missingEvidence, forgedEvidence bool
+		checkRecovers                                                       bool
 		firstRead, revision                                                 string
 		paged                                                               bool
 		want                                                                string
@@ -84,6 +85,7 @@ func TestValidatorRecoveredSourceSearchDoesNotFailRequiredValidation(t *testing.
 		{name: "pinned base read recovered", revision: "base", want: gate.ValidatorVerdictPass},
 		{name: "failed configured gate cannot be omitted", gateFails: true, want: gate.ValidatorVerdictWait},
 		{name: "failed required check cannot be omitted", checkFails: true, want: gate.ValidatorVerdictWait},
+		{name: "later pass of the same check on the same tree clears its failure", checkRecovers: true, want: gate.ValidatorVerdictPass},
 		{name: "failed required source receipt", missingRead: true, want: gate.ValidatorVerdictRework},
 		{name: "missing required source evidence", missingEvidence: true, want: gate.ValidatorVerdictRework},
 		{name: "unobserved receipt cannot substitute", forgedEvidence: true, want: gate.ValidatorVerdictRework},
@@ -126,6 +128,15 @@ func TestValidatorRecoveredSourceSearchDoesNotFailRequiredValidation(t *testing.
 			backend := &diagnosticCommandBackend{t: t, missingEvidence: test.missingEvidence, forgedEvidence: test.forgedEvidence}
 			if test.checkFails {
 				backend.calls = append(backend.calls, AgentToolCall{Name: "detent_run_validation", Arguments: json.RawMessage(`{"command":"git diff --exit-code HEAD~1 HEAD -- README.md"}`)})
+			}
+			if test.checkRecovers {
+				marker := filepath.Join(t.TempDir(), "ran")
+				raw, err := json.Marshal(map[string]string{"command": "test -f " + marker + " || { touch " + marker + "; exit 1; }"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				call := AgentToolCall{Name: "detent_run_validation", Arguments: raw}
+				backend.calls = append(backend.calls, call, call)
 			}
 			firstCall := read("read", first)
 			if test.missingRead {
@@ -193,6 +204,12 @@ func TestValidatorRecoveredSourceSearchDoesNotFailRequiredValidation(t *testing.
 			failed := result.Commands[1]
 			if test.checkFails {
 				failed = result.Commands[2]
+			}
+			if test.checkRecovers {
+				if result.Commands[1].ExitCode == 0 || result.Commands[2].ExitCode != 0 || result.Commands[1].TreeSHA != result.Commands[2].TreeSHA {
+					t.Fatalf("flaky check receipts not retained: %+v %+v", result.Commands[1], result.Commands[2])
+				}
+				failed = result.Commands[3]
 			}
 			if failed.ExitCode != 128 || !strings.Contains(failed.Output, "fatal: path") || failed.ReceiptID == "" || failed.HeadSHA != head || failed.TreeSHA != tree {
 				t.Fatalf("failed source read not retained: %+v", failed)
