@@ -120,7 +120,8 @@ export function AllowanceList({ rows }: { readonly rows: readonly AllowanceRow[]
 export function GeneralSettings(): React.ReactElement {
   const bootstrap = useAccountBootstrap();
   const api = useAccountApi();
-  const notifications = useResource(() => api.issueNotificationPreference(), [api]);
+  const selfHosted = bootstrap?.self_hosted ?? false;
+  const notifications = useResource(() => selfHosted ? Promise.resolve({ enabled: false }) : api.issueNotificationPreference(), [api, selfHosted]);
   const saveNotifications = useMutation(async (enabled: boolean) => {
     const value = await api.saveIssueNotificationPreference(enabled);
     notifications.set(value);
@@ -161,19 +162,19 @@ export function GeneralSettings(): React.ReactElement {
                   Platform console
                 </Button>
               ) : null}
-              <Button
+              {!selfHosted && <Button
                 size="sm"
                 variant="outline"
                 disabled={signOut.pending}
                 onClick={() => void signOut.call()}
               >
                 {signOut.pending ? "Signing out…" : "Sign out"}
-              </Button>
+              </Button>}
             </div>
           }
         />
         {bootstrap?.actor.role === "owner" || bootstrap?.actor.role === "admin" ? <ProjectRankSettings /> : null}
-        <SettingsRow
+        {!selfHosted && <SettingsRow
           id="settings-general-issue-notifications"
           title="Issue email notifications"
           description="Notify me about issues I filed or commented on."
@@ -183,7 +184,7 @@ export function GeneralSettings(): React.ReactElement {
             disabled={notifications.loading || notifications.error !== null || saveNotifications.pending}
             onCheckedChange={(enabled) => void saveNotifications.call(enabled)}
           />}
-        />
+        />}
         <ControlError message={(notifications.error ?? saveNotifications.error)?.message ?? null} />
         {bootstrap?.plan == null ? null : (
           <SettingsRow
@@ -826,10 +827,11 @@ export function SettingsRoute({
   const bootstrap = useAccountBootstrap();
   const canManage = bootstrap?.actor.can_manage ?? false;
   const supporting = bootstrap?.support != null;
+  const selfHosted = bootstrap?.self_hosted ?? false;
 
   const items = React.useMemo(
-    () => settingsNavItems({ canManage, supporting }),
-    [canManage, supporting],
+    () => settingsNavItems({ canManage, supporting, selfHosted }),
+    [canManage, supporting, selfHosted],
   );
   // A section the actor cannot read is not on the list, so asking for it by
   // path lands on the default rather than on an empty column.

@@ -18,6 +18,13 @@ import (
 func (s *Service) registerLocalAppRoutes(e *echo.Echo) {
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(detent.StaticFS()))))
 	s.registerAppRoutes(e)
+	e.GET(hostedOrganizationBase+"/project-rank", s.hostedProjectRank, s.localAppOnly)
+	e.PUT(hostedOrganizationBase+"/project-rank", s.updateHostedProjectRank, s.localAppOnly)
+	e.GET(hostedOrganizationBase+"/integrations/slack", s.getSlackIntegration, s.localAppOnly)
+	e.PUT(hostedOrganizationBase+"/integrations/slack", s.setSlackIntegration, s.localAppOnly)
+	e.POST(hostedOrganizationBase+"/integrations/slack/test", s.testSlackIntegration, s.localAppOnly)
+	e.GET(hostedOrganizationBase+"/release-notes", s.releaseNotesAPI, s.localAppOnly)
+	e.PUT(hostedOrganizationBase+"/release-notes/seen", s.releaseNotesAPI, s.localAppOnly)
 	e.GET("/projects/:project/events", s.hostedEvents, s.localAppOnly)
 	e.GET(hostedOrganizationBase+"/projects", s.listHostedProjects, s.localAppOnly)
 	e.GET(hostedOrganizationBase+"/members", s.localAppMembers, s.localAppOnly)
@@ -109,7 +116,7 @@ func (s *Service) localAppBootstrap(c echo.Context) error {
 		Organizations: []appBootstrapOrganization{}, Projects: []appBootstrapProject{},
 		Actor:     appBootstrapActor{PrincipalID: credential.ID, Subject: appSubject(credential), Email: credential.Name, Role: "admin", CanManage: true, CanManageRunners: true},
 		CSRFToken: "local", SignInPath: "/login", Version: s.config.Version,
-		Feature: s.appBootstrapFeature(),
+		Feature: s.appBootstrapFeature(), SelfHosted: true,
 	}
 	err = s.database.reader.QueryRowContext(ctx, "SELECT id,name,slug FROM organizations WHERE local=1").Scan(&payload.Organization.ID, &payload.Organization.Name, &payload.Organization.Slug)
 	if err != nil {
@@ -231,4 +238,12 @@ func (s *Service) localAppMembers(c echo.Context) error {
 		Members:     []hostedMemberView{{ID: appSubject(credential), UserID: appSubject(credential), Email: credential.Name, Role: "admin", Status: "active", Grants: []hostedMemberGrant{}}},
 		Invitations: []hostedInvitationView{},
 	})
+}
+
+func (s *Service) appAdministrator(c echo.Context) (apiCredential, error) {
+	if s.config.Hosted == nil {
+		credential, _, err := s.localAppCredential(c)
+		return credential, err
+	}
+	return s.hostedAdministrator(c)
 }

@@ -24,11 +24,11 @@ func readOrganizationProjectRank(ctx context.Context, db nativeQueryer, organiza
 func (s *Service) hostedProjectRank(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	_, err := s.hostedAdministrator(c)
+	_, err := s.appAdministrator(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	value, err := readOrganizationProjectRank(ctx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID))
+	value, err := readOrganizationProjectRank(ctx, s.database.reader, tracker.OrganizationID(s.appOrganizationID()))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -36,7 +36,7 @@ func (s *Service) hostedProjectRank(c echo.Context) error {
 }
 
 func (s *Service) updateHostedProjectRank(c echo.Context) error {
-	credential, err := s.hostedAdministrator(c)
+	credential, err := s.appAdministrator(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
@@ -52,7 +52,7 @@ func (s *Service) updateHostedProjectRank(c echo.Context) error {
 }
 
 func (s *Service) updateOrganizationProjectRankCommand(ctx context.Context, credential apiCredential, change projectRankChange) (any, error) {
-	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}
+	scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), credential: credential, requireHostedAdmin: true}
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, _ time.Time) (any, error) {
 		value, err := projectsettings.UpdateActiveRank(ctx, tx, scope.organization, change)
 		if errors.Is(err, projectsettings.ErrConflict) {

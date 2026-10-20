@@ -95,6 +95,10 @@ screens and APIs. Browser access requires an unrestricted administrator token;
 scoped operator and worker tokens remain API/MCP credentials. Bearer-token API
 and MCP access continue to work without a browser.
 
+Cloud billing, hosted API keys, member invitations and email notifications are
+not shown on a self-hosted Hub. Manage bearer credentials through the token API
+described below. There is no browser sign-out control for HTTP authentication.
+
 The browser caches HTTP authentication for its session; close the private window
 to clear it. Revoking or rotating a token takes effect on subsequent requests.
 Keep tokens out of URLs. Remote access still requires TLS or a trusted TLS

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -42,6 +43,10 @@ func TestLocalAppAuthentication(t *testing.T) {
 		{name: "organization name", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/name", token: testHubAdminToken, status: 200},
 		{name: "model selection", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/model-selection", token: testHubAdminToken, status: 200},
 		{name: "monthly budget", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/monthly-budget", token: testHubAdminToken, status: 200},
+		{name: "project rank", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/project-rank", token: testHubAdminToken, status: 200},
+		{name: "Slack integration", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/integrations/slack", token: testHubAdminToken, status: 200},
+		{name: "release notes", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/release-notes", token: testHubAdminToken, status: 200},
+		{name: "anonymous project rank", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/project-rank", status: 401},
 		{name: "local members", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/members", token: testHubAdminToken, status: 200},
 		{name: "sprite pool", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/sprite-pool", token: testHubAdminToken, status: 200},
 		{name: "secret metadata", path: "/api/v2/organizations/" + string(f.project.OrganizationID) + "/secrets/fly_sprites_token", token: testHubAdminToken, status: 200},
@@ -83,7 +88,7 @@ func TestLocalAppAuthentication(t *testing.T) {
 				if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 					t.Fatal(err)
 				}
-				if payload.Organization.ID != string(f.project.OrganizationID) || len(payload.Projects) != 2 || payload.CSRFToken == "" {
+				if payload.Organization.ID != string(f.project.OrganizationID) || len(payload.Projects) != 2 || payload.CSRFToken == "" || !payload.SelfHosted {
 					t.Fatalf("bootstrap=%+v", payload)
 				}
 				for _, project := range []string{string(f.project.ID), string(second.project.ID)} {
@@ -130,6 +135,42 @@ func TestLocalAppAuthentication(t *testing.T) {
 		decodeHubResponse(t, project, &created)
 		if created.Name != "Browser project" || len(created.States) == 0 {
 			t.Fatalf("created project=%+v", created)
+		}
+		f.service.releaseNotes = testReleaseBuilds()[2:]
+		f.service.config.Version = "1.2.0"
+		for _, token := range []string{testHubAdminToken, other.Token} {
+			request(token, http.MethodPut, base+"/release-notes/seen", `{}`)
+		}
+		f.service.releaseNotes = testReleaseBuilds()
+		f.service.config.Version = "1.2.1"
+		request(testHubAdminToken, http.MethodPut, base+"/release-notes/seen", `{}`)
+		for _, test := range []struct {
+			token  string
+			unread bool
+		}{{testHubAdminToken, false}, {other.Token, true}} {
+			var notes releaseNotesPage
+			decodeHubResponse(t, request(test.token, http.MethodGet, base+"/release-notes", ""), &notes)
+			if notes.HasUnread != test.unread || len(notes.Builds) != 3 {
+				t.Fatalf("release notes=%+v", notes)
+			}
+		}
+		var rank organizationProjectRank
+		decodeHubResponse(t, request(testHubAdminToken, http.MethodGet, base+"/project-rank", ""), &rank)
+		ids := []tracker.ProjectID{created.ID, second.project.ID, f.project.ID}
+		encoded, err := json.Marshal(projectRankChange{ExpectedRevision: rank.Revision, ProjectIDs: ids})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request(testHubAdminToken, http.MethodPut, base+"/project-rank", string(encoded))
+		decodeHubResponse(t, request(testHubAdminToken, http.MethodGet, base+"/project-rank", ""), &rank)
+		if !slices.Equal(rank.ProjectIDs, ids) {
+			t.Fatalf("project rank=%+v", rank)
+		}
+		request(testHubAdminToken, http.MethodPut, base+"/integrations/slack", `{"webhook":"","channel_name":"example-channel"}`)
+		var slack slackIntegrationStatus
+		decodeHubResponse(t, request(testHubAdminToken, http.MethodGet, base+"/integrations/slack", ""), &slack)
+		if slack.ChannelName != "example-channel" || slack.Webhook != "" {
+			t.Fatalf("Slack integration=%+v", slack)
 		}
 		owners := map[string]bool{}
 		for _, token := range []string{testHubAdminToken, other.Token} {

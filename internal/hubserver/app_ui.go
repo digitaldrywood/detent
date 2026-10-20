@@ -435,6 +435,7 @@ type appBootstrapPreferences struct {
 }
 
 type appBootstrap struct {
+	SelfHosted    bool                       `json:"self_hosted,omitempty"`
 	HasUnread     bool                       `json:"has_unread"`
 	Organization  appBootstrapOrganization   `json:"organization"`
 	Organizations []appBootstrapOrganization `json:"organizations"`
