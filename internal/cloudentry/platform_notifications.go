@@ -128,6 +128,10 @@ RETURNING event,entity_id,email,name,plan,occurred_at`, formatTime(s.config.now(
 				message.Body = fmt.Sprintf("Organization: %s\nCreator: %s\nPlan: %s\nTime: %s\n%s/platform/tenants/%s\n", notificationLine(name), notificationLine(email), plan, at, s.config.PublicURL, url.PathEscape(id))
 			}
 			if err := s.sendPlatformNotification(ctx, message); err != nil {
+				if errors.Is(err, context.Canceled) {
+					s.config.Logger.InfoContext(ctx, "platform notification delivery interrupted", "event", event, "error", err)
+					continue
+				}
 				s.config.Logger.ErrorContext(ctx, "platform notification delivery failed", "event", event, "error", err)
 			}
 		}
