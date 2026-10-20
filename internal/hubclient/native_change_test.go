@@ -1481,6 +1481,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				if finishErr != nil || publicationOwner.publication != nil || change == nil || change.VersionError == "" || change.Reviewed || change.VersionID != original.Change.CurrentVersion || !strings.Contains(change.VersionError, "preserve source") {
 					t.Fatalf("publication failure lost its actionable blocker or current source: %+v, %v", change, finishErr)
 				}
+				if (change.VersionCode == workspace.LandRefusalHeadMoved) != (test.publicationFailure == "identity") {
+					t.Fatalf("publication failure code = %q for %s refusal", change.VersionCode, test.publicationFailure)
+				}
 				h.complete(t, issue.ID, change)
 				if h.state(t, issue.ID) != h.review {
 					t.Fatal("publication blocker bypassed the existing review hold")

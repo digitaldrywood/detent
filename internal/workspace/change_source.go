@@ -284,8 +284,8 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 		if state.UnpushedCommits > 0 && !previous {
 			return false, nil
 		}
-		if state.HeadSHA != issue.Source.Version.BaseSHA && !previous {
-			return false, refuse(LandRefusalHeadMoved, "the existing clean worktree differs from the recorded source base and head; preserve its current head and reconcile the Change before recovery")
+		if state.HeadSHA != issue.Source.Version.BaseSHA && !previous && !l.headIntegrated(ctx, info.Path, issue, state.HeadSHA) {
+			return false, refuse(LandRefusalHeadMoved, fmt.Sprintf("the existing clean worktree head %s differs from the recorded source base and head of version %s; preserve its current head and reconcile the Change before recovery", state.HeadSHA, issue.Source.Version.ID))
 		}
 	}
 	if transferred || state.HeadSHA != issue.Source.Version.BaseSHA {
@@ -309,4 +309,13 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 	}
 	_, err = runGitAt(ctx, info.Path, "-c", "core.hooksPath="+os.DevNull, "reset", "--hard", issue.Source.Version.HeadSHA)
 	return false, err
+}
+
+func (l *LocalGit) headIntegrated(ctx context.Context, path string, issue Issue, head string) bool {
+	base, err := l.localProgressBase(ctx, path, issue)
+	if err != nil || !validLandingHead(base) {
+		return false
+	}
+	_, err = runGitAt(ctx, path, "merge-base", "--is-ancestor", head, base)
+	return err == nil
 }

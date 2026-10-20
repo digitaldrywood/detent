@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 var errNativeReviewPending = errors.New("waiting on review evidence for published Change version")
@@ -159,6 +160,8 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if o.completeRecordedInstanceBlockers(ctx, state, event, running, report) {
 		return true
 	}
+	publicationRefused := !humanReview && change != nil && change.VersionCode == workspace.LandRefusalHeadMoved
+	blocked = blocked || publicationRefused
 	accepted := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusComplete && len(report.Blockers) == 0 && report.HumanAction == ""
 	if change == nil && !blocked && !clearedBlockers && (humanReview || accepted || running.DiffStats.Status != "clean" || running.DiffStats.UnpushedCommits > 0) {
 		return false
@@ -223,7 +226,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 			}
 		}
 	}
-	unfinished := reviewChangesRequested || auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == ""
+	unfinished := !publicationRefused && (reviewChangesRequested || auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "")
 	if unfinished {
 		if rework, allowed := nativeRetryLane(states, issue.State, cfg.ReworkState); allowed {
 			target, ok = rework, true

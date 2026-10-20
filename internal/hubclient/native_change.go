@@ -182,7 +182,7 @@ func (e *nativeExecution) publishVersion(ctx context.Context, diff tracker.Attem
 	}
 	change.VersionID, change.VersionError, change.VersionCode, change.Reviewed = id, "", "", reviewed
 	if err := e.preparePRPublication(ctx, change); err != nil {
-		change.VersionError, change.VersionCode, change.Reviewed = err.Error(), hubErrorCode(err), false
+		change.VersionError, change.VersionCode, change.Reviewed = err.Error(), publicationErrorCode(err), false
 		return err
 	}
 	return nil
@@ -518,6 +518,14 @@ func nativeLeaseLost(err error) bool {
 	}
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && apiErr != nil && apiErr.Code == "stale_execution"
+}
+
+func publicationErrorCode(err error) string {
+	var refusal *workspace.LandRefusal
+	if errors.As(err, &refusal) && refusal.Kind == workspace.LandRefusalHeadMoved {
+		return refusal.Kind
+	}
+	return hubErrorCode(err)
 }
 
 func hubErrorCode(err error) string {

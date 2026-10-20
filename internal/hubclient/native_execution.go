@@ -578,7 +578,7 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 				e.change.Error = err.Error()
 			} else {
 				e.change.Error = ""
-				e.change.VersionError, e.change.VersionCode = err.Error(), hubErrorCode(err)
+				e.change.VersionError, e.change.VersionCode = err.Error(), publicationErrorCode(err)
 				e.settled = true
 			}
 		}
