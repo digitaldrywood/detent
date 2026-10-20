@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -25,6 +26,7 @@ func TestNativeTerminalFailureSignatureEvidence(t *testing.T) {
 		{"ordinary", errors.New("count 116 failed\nprivate continuation"), "", "count 116 failed"},
 		{"workspace", fmt.Errorf("%w: /private/worktree token=secret-value", ErrWorkspacePreparation), "workspace_hook", "workspace preparation failed: [redacted] [redacted]"},
 		{"hook diagnostic", &workspace.HookError{Hook: "after_create", Command: "SECRET=private-value missing-script", Dir: "/private/worktree", ExitCode: 127, Output: "script not found token=secret-value WORKSPACE_VALUE=private-value\nprivate continuation"}, "workspace_hook", "workspace hook after_create failed (exit status 127)"},
+		{"missing hook shell", &workspace.HookError{Hook: "after_create", ExitCode: -1, Err: &shell.UnavailableError{Shell: "bash"}}, "workspace_hook", `workspace hook after_create failed (exit status -1): hook_shell_unavailable: shell "bash" is unavailable on this runner`},
 		{"unlabelled hook output", &workspace.HookError{Hook: "after_create", ExitCode: 127, Output: "correcthorsebatterystaple"}, "workspace_hook", "workspace hook after_create failed (exit status 127)"},
 		{"issue configuration", &IssueConfigurationError{Field: "effort", Reason: "unsupported value"}, "issue_configuration", "agent override rejected: effort: unsupported value"},
 		{"source recovery", fmt.Errorf("%w: publication source changed before reconciliation", ErrNativeRecoveryRequired), "source_recovery", "native checkpoint requires recovery: publication source changed before reconciliation"},
@@ -50,6 +52,9 @@ func TestNativeTerminalFailureSignatureEvidence(t *testing.T) {
 			}
 			if test.name == "acceptance rejection" && (got.Stage != "acceptance_publication" || got.Attribution != "instance" || got.Rejection == nil || got.Rejection.Field != "validator.session_id") {
 				t.Fatalf("acceptance rejection lost: %+v", got)
+			}
+			if test.class == "workspace_hook" && (got.Attribution != "instance" || got.Stage != "workspace_preparation") {
+				t.Fatalf("hook failure lost instance attribution: %#v", got)
 			}
 			if public := got.Public(); public.Error != got.Error || public.ErrorClass != got.ErrorClass {
 				t.Fatalf("publication changed signature evidence: %#v", public)

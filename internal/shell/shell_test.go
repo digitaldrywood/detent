@@ -2,84 +2,61 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"os"
-	"path/filepath"
+	"os/exec"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 func TestCommandSpecUsesPerOSDefaults(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
-		name          string
-		goos          string
-		gitDir        string
-		bash          bool
-		bashDirectory bool
-		wsl           bool
-		shell         string
-		wantName      string
-		wantArgs      []string
+		name        string
+		goos        string
+		shell       string
+		path        map[string]string
+		files       fstest.MapFS
+		wantName    string
+		wantArgs    []string
+		wantMissing string
 	}{
-		{name: "linux", goos: "linux", gitDir: "cmd", bash: true, wantName: "sh", wantArgs: []string{"-c", "echo ok"}},
-		{name: "darwin", goos: "darwin", gitDir: "cmd", bash: true, wantName: "sh", wantArgs: []string{"-c", "echo ok"}},
-		{name: "git cmd directory", goos: "windows", gitDir: "cmd", bash: true, wantArgs: []string{"-c", "echo ok"}},
-		{name: "git bin directory", goos: "windows", gitDir: "bin", bash: true, wantArgs: []string{"-c", "echo ok"}},
-		{name: "git mingw64 directory", goos: "windows", gitDir: "mingw64/bin", bash: true, wantArgs: []string{"-c", "echo ok"}},
-		{name: "git mingw32 directory", goos: "windows", gitDir: "mingw32/bin", bash: true, wantArgs: []string{"-c", "echo ok"}},
-		{name: "git absent", goos: "windows", wantName: "cmd", wantArgs: []string{"/C", "echo ok"}},
-		{name: "only WSL bash", goos: "windows", wsl: true, wantName: "cmd", wantArgs: []string{"/C", "echo ok"}},
-		{name: "git without bash and WSL present", goos: "windows", gitDir: "cmd", wsl: true, wantName: "cmd", wantArgs: []string{"/C", "echo ok"}},
-		{name: "bash is a directory", goos: "windows", gitDir: "cmd", bashDirectory: true, wantName: "cmd", wantArgs: []string{"/C", "echo ok"}},
-		{name: "explicit powershell", goos: "windows", gitDir: "cmd", bash: true, shell: " pwsh ", wantName: "pwsh", wantArgs: []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "echo ok"}},
+		{name: "linux default", goos: "linux", path: map[string]string{"sh": "/bin/sh"}, wantName: "/bin/sh", wantArgs: []string{"-c", "echo ok"}},
+		{name: "darwin default", goos: "darwin", path: map[string]string{"sh": "/bin/sh"}, wantName: "/bin/sh", wantArgs: []string{"-c", "echo ok"}},
+		{name: "windows default with Git Bash installed", goos: "windows", path: map[string]string{"cmd": `C:\Windows\System32\cmd.exe`}, files: fstest.MapFS{`C:\Program Files\Git\bin\bash.exe`: {}}, wantName: `C:\Windows\System32\cmd.exe`, wantArgs: []string{"/C", "echo ok"}},
+		{name: "windows default without Git Bash", goos: "windows", path: map[string]string{"cmd": "cmd"}, wantName: "cmd", wantArgs: []string{"/C", "echo ok"}},
+		{name: "declared bash PATH first", goos: "windows", shell: "bash", path: map[string]string{"bash": `D:\Tools\bash.exe`}, files: fstest.MapFS{`C:\Program Files\Git\bin\bash.exe`: {}}, wantName: `D:\Tools\bash.exe`, wantArgs: []string{"-c", "echo ok"}},
+		{name: "declared bash standard Git install", goos: "windows", shell: "bash", files: fstest.MapFS{`C:\Program Files\Git\bin\bash.exe`: {}}, wantName: `C:\Program Files\Git\bin\bash.exe`, wantArgs: []string{"-c", "echo ok"}},
+		{name: "declared sh standard Git install", goos: "windows", shell: "sh", files: fstest.MapFS{`C:\Program Files\Git\bin\sh.exe`: {}}, wantName: `C:\Program Files\Git\bin\sh.exe`, wantArgs: []string{"-c", "echo ok"}},
+		{name: "declared bash missing", goos: "windows", shell: "bash", wantMissing: "bash"},
+		{name: "declared sh missing", goos: "windows", shell: "sh", wantMissing: "sh"},
+		{name: "bash is a directory", goos: "windows", shell: "bash", files: fstest.MapFS{`C:\Program Files\Git\bin\bash.exe`: {Mode: os.ModeDir}}, wantMissing: "bash"},
+		{name: "declared POSIX shell missing", goos: "linux", shell: "bash", wantMissing: "bash"},
+		{name: "explicit path does not fall back", goos: "windows", shell: `D:\Tools\bash.exe`, files: fstest.MapFS{`C:\Program Files\Git\bin\bash.exe`: {}}, wantMissing: `D:\Tools\bash.exe`},
+		{name: "explicit cmd", goos: "windows", shell: "cmd", path: map[string]string{"cmd": "cmd"}, wantName: "cmd", wantArgs: []string{"/C", "echo ok"}},
+		{name: "explicit PowerShell", goos: "windows", shell: " pwsh ", path: map[string]string{"pwsh": "pwsh"}, wantName: "pwsh", wantArgs: []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "echo ok"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			root := t.TempDir()
-			gitRoot := filepath.Join(root, "Program Files", "Git")
-			bash := filepath.Join(gitRoot, "bin", "bash.exe")
-			pathDirs := []string{root}
-			files := []string{}
-			if tt.gitDir != "" {
-				dir := filepath.Join(gitRoot, filepath.FromSlash(tt.gitDir))
-				gitName := "git"
-				if runtime.GOOS == "windows" {
-					gitName += ".exe"
+			t.Parallel()
+			lookPath := func(name string) (string, error) {
+				if resolved, ok := tt.path[name]; ok {
+					return resolved, nil
 				}
-				files = append(files, filepath.Join(dir, gitName))
-				pathDirs = append(pathDirs, dir)
+				return "", exec.ErrNotFound
 			}
-			if tt.bash {
-				files = append(files, bash)
-			}
-			if tt.bashDirectory {
-				if err := os.MkdirAll(bash, 0o755); err != nil {
-					t.Fatal(err)
+			got, err := resolveCommandSpecForOS("echo ok", tt.shell, tt.goos, lookPath, tt.files.Stat)
+			if tt.wantMissing != "" {
+				var unavailable *UnavailableError
+				if !errors.As(err, &unavailable) || unavailable.Shell != tt.wantMissing || !strings.Contains(err.Error(), "hook_shell_unavailable") {
+					t.Fatalf("error = %v, want unavailable shell %q", err, tt.wantMissing)
 				}
+				return
 			}
-			if tt.wsl {
-				dir := filepath.Join(root, "Windows", "System32")
-				files = append(files, filepath.Join(dir, "bash.exe"))
-				pathDirs = append([]string{dir}, pathDirs...)
-			}
-			for _, file := range files {
-				if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(file, nil, 0o755); err != nil {
-					t.Fatal(err)
-				}
-			}
-			t.Setenv("PATH", strings.Join(pathDirs, string(os.PathListSeparator)))
-			t.Setenv("PATHEXT", ".EXE")
-			wantName := tt.wantName
-			if wantName == "" {
-				wantName = bash
-			}
-			got := CommandSpecForOS("echo ok", tt.shell, tt.goos)
-			if got.Name != wantName || !reflect.DeepEqual(got.Args, tt.wantArgs) {
-				t.Fatalf("CommandSpecForOS() = %#v, want name %q args %#v", got, wantName, tt.wantArgs)
+			if err != nil || got.Name != tt.wantName || !reflect.DeepEqual(got.Args, tt.wantArgs) {
+				t.Fatalf("resolved command = %#v, %v, want name %q args %#v", got, err, tt.wantName, tt.wantArgs)
 			}
 		})
 	}
