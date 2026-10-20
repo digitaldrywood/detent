@@ -405,11 +405,41 @@ unsupported. Raw artifacts, TLS files, runner workspaces and provider credential
 are separate backups. Treat snapshots as sensitive customer data even though
 Hub bearer credentials are stored as hashes.
 
-Drain runners and stop the Hub before CLI maintenance. `backup` and `verify`
-acquire its ownership lock and fail if another owner is running. They check
+For routine backups without an outage, an instance administrator can ask the
+running self-hosted Hub to write a snapshot through its authenticated admin API.
+Create a private backup directory writable by the Hub service user, then send
+an absolute path on the **Hub host** (not the HTTP client's machine):
+
+```sh
+sudo -u detent-hub install -d -m 0700 /var/lib/detent-hub/backups
+curl --fail-with-body --request POST 'http://127.0.0.1:7777/api/v2/admin/backup' \
+  --header "Authorization: Bearer $DETENT_HUB_ADMIN_TOKEN" \
+  --header 'Content-Type: application/json' \
+  --data '{"output":"/var/lib/detent-hub/backups/<unique-snapshot>.db"}'
+sudo -u detent-hub /usr/bin/detent hub verify --database '/var/lib/detent-hub/backups/<unique-snapshot>.db'
+```
+
+Use HTTPS when calling through the reverse proxy. Only an unscoped instance
+administrator credential can create a backup; project credentials and runners
+cannot. The endpoint is unavailable on hosted Cloud Hubs. Success returns
+`204 No Content`; neither snapshot bytes nor the output path appear in the
+response body, including errors. A lost HTTP response does not establish whether
+the snapshot completed; inspect and verify the destination before repeating.
+
+The snapshot uses SQLite's online backup API on a dedicated reader connection
+with a fixed read transaction. It contains all writes committed when that read
+snapshot begins; later commits remain on the live Hub. Writes continue during
+the copy without holding the Hub writer connection. A long snapshot retains
+its WAL read position, so allow disk space for concurrent writes. The new file
+has `0600` permissions, existing destinations are never replaced, and failed or
+cancelled copies remove their incomplete output. Wait for successful completion
+before verifying or copying the file. No snapshot download endpoint is provided.
+
+Offline CLI maintenance remains supported. Drain runners and stop the Hub
+before using `hub backup` against its database. `backup` and `verify` acquire
+the source's ownership lock and fail if another owner is running. They check
 identity, integrity, foreign keys and supported schema without upgrading the
-source. The existing service-owned `Service.Backup` API remains available for
-embedded online snapshots; no unauthenticated backup-download endpoint is added.
+source.
 
 ```sh
 sudo systemctl stop detent-hub
@@ -419,16 +449,14 @@ sudo -u detent-hub /usr/bin/detent hub verify --database '/var/lib/detent-hub/ba
 sudo systemctl start detent-hub
 ```
 
-The running Hub holds its database in SQLite exclusive locking mode, so
-WAL-shipping replicators such as Litestream cannot attach to `hub.db` and fail
-with `database is locked`. Do not weaken the lock to enable them. For routine
-off-host copies, schedule a script (for example from a root-owned systemd timer
-at a quiet hour) that stops the Hub, runs `hub backup`, and starts the Hub again
-immediately, restarting it even when the backup fails. Only then run `hub verify`
-against the detached snapshot, compress it and upload that file to encrypted
-object storage. The Hub is unavailable while `hub backup` checks and copies the
-database, which grows with database size and storage speed; drain runners or
-choose a window where that outage cannot outlast active leases.
+The running Hub uses WAL with normal SQLite locking, while its application
+ownership lock prevents a second Hub from opening the database. This preserves
+live WAL replication such as Cloud's Litestream setup. For routine off-host
+copies, schedule the online admin operation, verify the detached snapshot,
+compress it and upload that file to encrypted object storage. Offline backups
+still make the Hub unavailable while checking and copying the database; restart
+it even when that backup fails and choose an outage window that cannot outlast
+active leases.
 
 Replace angle-bracket placeholders before execution. Backup output must not
 exist and must differ from the source. Copy only the completed snapshot to the

@@ -64,6 +64,9 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 	worker := s.requireAPIScope(apiScopeWorker)
 	operator := s.requireAPIScope(apiScopeOperator)
 	admin := s.requireAPIScope(apiScopeAdmin)
+	if s.config.Hosted == nil {
+		e.POST("/api/v2/admin/backup", s.backupDatabase, s.requireInstanceAdmin())
+	}
 	e.GET("/api/v1/repositories/:owner/:repo/policy", s.getProjectPolicy, read)
 	e.PUT("/api/v1/repositories/:owner/:repo/policy", s.approveProjectPolicy, s.requireInstanceAdmin())
 	e.DELETE("/api/v1/repositories/:owner/:repo/policy", s.revokeProjectPolicy, s.requireInstanceAdmin())

@@ -411,6 +411,14 @@ The bootstrap token is inserted only when the Hub database has no bootstrap cred
 
 The default listener is `127.0.0.1:7777`. A non-loopback `--listen` value is rejected unless either `--tls-cert` and `--tls-key` are both set or `--trusted-proxy` explicitly declares that a trusted reverse proxy terminates TLS. The proxy or host firewall must prevent clients from bypassing that proxy.
 
+Self-hosted instance administrators can call `POST /api/v2/admin/backup` with
+`{"output":"/private/backups/snapshot.db"}` to create an online SQLite snapshot
+on the Hub host. Success returns an empty `204` response. Output paths must be
+new, files are private (`0600`), and response bodies never contain the path or
+snapshot bytes. Project-scoped credentials cannot call it, and hosted Cloud
+Hubs do not expose it. See [backup and export](hub-self-hosting.md#backup-and-export)
+for snapshot consistency, offline maintenance and restore instructions.
+
 ## Local board migration
 
 An operator can import a read-only copy of a retired `local_sqlite` or
