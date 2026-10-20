@@ -7,7 +7,7 @@ import { WorkflowRevisions } from "./WorkflowRevisions.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
 import { AlertDialog, AlertDialogTrigger, AlertDialogPopup, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogClose } from "../../components/ui/alert-dialog.tsx";
-import { hubPath } from "../../runtime/basePath.ts";
+import { useRefreshBootstrap } from "../client.ts";
 import { Textarea } from "../../components/ui/textarea.tsx";
 import type { ObservedPolicy, PolicyApproval, ProjectIntegration, ProjectOnboardingSummary } from "../../contracts/account.ts";
 import {
@@ -465,12 +465,14 @@ export function ProjectSettingsRoute({
 }): React.ReactElement {
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
+  const refreshBootstrap = useRefreshBootstrap();
   const project = bootstrap?.projects.find((candidate) => candidate.id === projectId) ?? null;
   const canManage = bootstrap?.actor.can_manage ?? false;
   const remove = useMutation(async () => {
     if (project === null) return;
     await api.deleteProject({ projectId, name: project.name, key: newKey() });
-    globalThis.location.assign(hubPath("/organization"));
+    await refreshBootstrap();
+    onNavigate?.("/work");
   });
 
   const integration = useResource<ProjectIntegration>(
