@@ -105,6 +105,8 @@ type workflowLaneBlockedRecoveryMetadata struct {
 	WorkAttemptID           int64  `json:"work_attempt_id,omitempty"`
 	AttemptNumber           int    `json:"attempt_number,omitempty"`
 	AttemptError            string `json:"attempt_error,omitempty"`
+
+	StaleRework *staleReworkEvidence `json:"stale_rework,omitempty"`
 }
 
 func (m workflowLaneBlockedRecoveryMetadata) intentResumable() bool {
