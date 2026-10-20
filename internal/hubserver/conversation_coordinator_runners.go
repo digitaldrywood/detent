@@ -110,7 +110,7 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 			details := []string{description}
 			for _, project := range projects {
 				if r.Scope != "organization" && !slices.Contains(r.ProjectIDs, project) {
-					details = append(details, fmt.Sprintf("Review project %s: /projects/%s/settings", project, url.PathEscape(string(project))))
+					details = append(details, fmt.Sprintf("Review project %s: /settings/projects/%s/workflow", project, url.PathEscape(string(project))))
 				}
 			}
 			description = strings.Join(details, "\n")

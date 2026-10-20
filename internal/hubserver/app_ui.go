@@ -101,7 +101,11 @@ func (s *Service) appShell(c echo.Context) error {
 			if err != nil {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
-			scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(parts[1]), credential: credential}
+			var project tracker.ProjectID
+			if err := s.database.reader.QueryRowContext(c.Request().Context(), `SELECT p.id FROM projects p WHERE p.organization_id=? AND (p.id=? OR EXISTS(SELECT 1 FROM project_slugs a WHERE a.organization_id=p.organization_id AND a.project_id=p.id AND a.slug=?)) ORDER BY p.id=? DESC LIMIT 1`, s.config.Hosted.OrganizationID, parts[1], parts[1], parts[1]).Scan(&project); err != nil {
+				return s.nativeAPIError(c, nativeNotFound())
+			}
+			scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: project, credential: credential}
 			if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
 				return s.nativeAPIError(c, err)
 			}

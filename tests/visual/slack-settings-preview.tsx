@@ -18,7 +18,7 @@ const client = {
 const route = createRootRoute({ component: () => <ClientContext.Provider value={client}>
   <div className="flex h-dvh min-w-0 flex-col bg-background text-foreground">
     <header className="border-b border-border px-5 py-3"><h1 className="text-sm">Settings · Integrations</h1></header>
-    <IntegrationsSettings project={null} />
+    <IntegrationsSettings />
   </div>
 </ClientContext.Provider> });
 const router = createRouter({ routeTree: route });

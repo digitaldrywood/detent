@@ -30,7 +30,7 @@ test("organization model selection saves and survives reload", async ({ page }) 
 
 test("project overrides org selection and can restore inheritance", async ({ page }) => {
   await page.goto(hub.fixture.accounts.owner);
-  await page.goto(`${hub.fixture.url}/settings/integrations?project=${hub.fixture.project_id}`);
+  await page.goto(`${hub.fixture.url}/settings/projects/${hub.fixture.project_id}/models`);
   const override = page.getByRole("switch", { name: "Override organization model selection" });
   await expect(override).not.toBeChecked();
   await expect(page.getByRole("combobox", { name: "Normal model", exact: true })).toContainText("gpt-6-sol");
@@ -58,7 +58,7 @@ test("project overrides org selection and can restore inheritance", async ({ pag
 
 test("viewer can read model selection without editing", async ({ page }) => {
   await page.goto(hub.fixture.accounts.viewer);
-  for (const path of ["/settings/organization/models", `/settings/integrations?project=${hub.fixture.project_id}`]) {
+  for (const path of ["/settings/organization/models", `/settings/projects/${hub.fixture.project_id}/models`]) {
     await page.goto(`${hub.fixture.url}${path}`);
     await expect(page.getByRole("combobox", { name: "Normal model", exact: true })).toContainText("gpt-6-sol");
     await expect(page.getByRole("combobox", { name: "Normal model", exact: true })).toBeDisabled();

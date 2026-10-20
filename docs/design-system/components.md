@@ -511,7 +511,7 @@ The building blocks of Detent's app sidebar: provider, rail, groups and SidebarM
 
 ### Tabs
 
-Sections of one page that share a header, such as the Reports Overview, Flow, Quality, Cost and Failures tabs. The list scrolls horizontally on narrow screens; when each tab has its own URL, select the tab from the route and navigate in `onValueChange`.
+Sections of one page that share a header, such as Reports and per-project settings. Per-project settings use line-variant Tabs, one tab per URL. The list scrolls horizontally on narrow screens; when each tab has its own URL, select the tab from the route and navigate in `onValueChange`.
 
 - Kind: Primitive; status: available; id: `tabs`.
 - Import: `import { Tabs, TabsList, TabsTab, TabsPanel } from "~/components/ui/tabs";`
@@ -519,7 +519,7 @@ Sections of one page that share a header, such as the Reports Overview, Flow, Qu
 - Variants: `variant`: `line`, `segmented`.
 - States: selected, hover, focus-visible, disabled.
 - Keyboard: Base UI tabs: Tab enters the list, arrow keys move between tabs and select them, Home and End jump to the ends; the panel follows the list in reading order.
-- Avoid: A small set of view options inside a section (use ToggleGroup), right-panel surfaces (use Right panel tabs) and settings sections (use the settings navigation).
+- Avoid: A small set of view options inside a section (use ToggleGroup), right-panel surfaces (use Right panel tabs) and organization settings sections (use SettingsSidebarNav).
 - Related: [Toggle group](#toggle-group), [Right panel tabs](#right-panel-tabs), [Workspace page header](#workspace-page-header).
 
 ## Structure
@@ -1519,7 +1519,7 @@ Navigation between settings sections, built on the Sidebar primitive.
 - Variants: none.
 - States: active, hover, focus-visible.
 - Keyboard: Section links in document order.
-- Avoid: Tabs for settings sections.
+- Avoid: Tabs for organization settings sections; per-project settings use line-variant Tabs, one tab per URL, horizontally scrollable on narrow screens.
 - Related: [Settings layout](#settings-layout), [Sidebar primitive](#sidebar-primitive).
 
 ### Settings pages

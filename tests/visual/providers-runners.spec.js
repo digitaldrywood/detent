@@ -459,7 +459,7 @@ for (const width of [1440, 390]) {
     const sheet = page.getByRole("dialog", { name: "Build runner" });
     await sheet.getByRole("combobox", { name: "Runner scope" }).selectOption("organization");
     await expect(sheet.getByText("All current and future projects", { exact: true })).toBeVisible();
-    await expect(sheet.getByRole("link", { name: "Review policy for Second project" })).toHaveAttribute("href", "/projects/proj_second/settings");
+    await expect(sheet.getByRole("link", { name: "Review policy for Second project" })).toHaveAttribute("href", "/settings/projects/proj_second/workflow");
     await sheet.getByRole("button", { name: "Save runner" }).click();
     await expect(sheet).toHaveCount(0);
     expect(writes).toHaveLength(1);

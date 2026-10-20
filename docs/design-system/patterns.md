@@ -100,7 +100,7 @@ The composer has its own rounded shape and attached-banner geometry; do not appl
 
 ### Settings and forms
 
-One `SettingsRow` per setting: title, optional help and status, and a trailing control, inside a `SettingsSection` on a `SettingsPageContainer`. A row stacks below a 32rem container width and becomes two columns (`minmax(0,1fr)` and `minmax(10rem,auto)`, `gap-8`) from it; the row is a named container (`@container/settings-row`), because a settings panel's width does not follow the screen. Associate labels and help with their inputs and keep errors beside the field they affect. Reuse the existing reset and unavailable patterns where the setting supports them. Settings sections are navigated with `SettingsSidebarNav`, not tabs.
+One `SettingsRow` per setting: title, optional help and status, and a trailing control, inside a `SettingsSection` on a `SettingsPageContainer`. A row stacks below a 32rem container width and becomes two columns (`minmax(0,1fr)` and `minmax(10rem,auto)`, `gap-8`) from it; the row is a named container (`@container/settings-row`), because a settings panel's width does not follow the screen. Associate labels and help with their inputs and keep errors beside the field they affect. Reuse the existing reset and unavailable patterns where the setting supports them. Organization settings sections use `SettingsSidebarNav`. Per-project settings at `/settings/projects/<slug>/<tab>` use line-variant `Tabs`, one tab per URL, horizontally scrollable on narrow screens. The active tab scrolls into view, and unsaved section edits use a discard `AlertDialog` before tab, project or browser history navigation.
 
 ```tsx
 <div className="grid gap-1.5">

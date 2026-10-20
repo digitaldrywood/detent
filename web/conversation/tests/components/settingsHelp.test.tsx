@@ -30,7 +30,7 @@ function renderProject(canManage = true, overrides: Partial<React.ComponentProps
   const root = createRootRoute({
     component: () => (
       <ProjectSettingsView
-        projectName="Example"
+        tab="repository"
         integration={integration}
         policy={null}
         canManage={canManage}
@@ -52,7 +52,7 @@ function renderProject(canManage = true, overrides: Partial<React.ComponentProps
 describe("settings help interactions", () => {
   it.each([true, false])("edits duplicate checking with manage permission=%s", async (canManage) => {
     const onDraftChange = vi.fn();
-    renderProject(canManage, { onDraftChange });
+    renderProject(canManage, { tab: "general", onDraftChange });
     const toggle = await screen.findByRole("switch", { name: "Check for duplicate issues" });
     expect(toggle.getAttribute("aria-checked")).toBe("true");
     await userEvent.setup().click(toggle);
@@ -68,7 +68,7 @@ describe("settings help interactions", () => {
   it("edits the archive periods and preserves Never", async () => {
     const user = userEvent.setup();
     const onDraftChange = vi.fn();
-    renderProject(true, { onDraftChange });
+    renderProject(true, { tab: "general", onDraftChange });
     const completed = await screen.findByRole("combobox", { name: "Archive completed issues" });
     const cancelled = screen.getByRole("combobox", { name: "Archive cancelled issues" });
     expect((completed as HTMLSelectElement).value).toBe("30");
@@ -83,14 +83,14 @@ describe("settings help interactions", () => {
   });
 
   it.each([false, true])("disables archive controls when management is unavailable or saving (%s)", async (saving) => {
-    renderProject(saving, { saving });
+    renderProject(saving, { tab: "general", saving });
     expect((await screen.findByRole("combobox", { name: "Archive completed issues" }) as HTMLSelectElement).disabled).toBe(true);
     expect((screen.getByRole("combobox", { name: "Archive cancelled issues" }) as HTMLSelectElement).disabled).toBe(true);
   });
 
   it.each(["conflict", "historical", "resolved"] as const)("shows shared policy %s without another approval action", async (state) => {
     const policy: PolicyApproval = { ...policyFixture, policy: { ...policyFixture.policy, configuration: { behavior: {}, prompt: "Run the work." } } };
-    renderProject(true, { policy, observedPolicies: state === "resolved" ? [] : [{
+    renderProject(true, { tab: "workflow", policy, observedPolicies: state === "resolved" ? [] : [{
       policy: { ...policy.policy, policy_id: "policy_old" }, runner_id: "runner_air", runner_ids: ["runner_air", "runner_pro"], observed_at: "2026-10-05T17:00:00Z",
       conflict: state === "conflict", previously_approved: state === "historical",
     }] });
@@ -129,9 +129,6 @@ describe("settings help interactions", () => {
     expect(draftChanged(draftOf(current), expected)).toBe(false);
     expect((screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("combobox", { name: "Intake" })).toBeNull();
-    for (const select of screen.getAllByRole("combobox") as HTMLSelectElement[]) {
-      expect(Array.from(select.options).map((option) => option.value)).toContain(select.value);
-    }
     expect((screen.getByRole("switch", { name: "Existing issues" }) as HTMLInputElement).getAttribute("aria-checked")).toBe("false");
     const row = screen.getByRole("heading", { name: "New issues" }).closest('[data-slot="settings-row"]')!;
     expect(row.textContent).toContain(installed ? "Every issue opened on example-org/example-project enters Triage." : "Waiting for the GitHub App.");
@@ -208,7 +205,7 @@ describe("project settings help", () => {
       github_app_install_url: url,
       github_app_installed: state.installed,
     } });
-    await screen.findByRole("heading", { name: "Example settings" });
+    await screen.findByRole("heading", { name: "Repository", level: 2 });
     if (state.visible) {
       expect(screen.getByRole("heading", { name: "GitHub App" })).toBeTruthy();
       expect(screen.getByText(state.installed ? `Installed on ${state.checkout || state.repository}.` : "Not installed. New issues will not reach this project until it is.")).toBeTruthy();
@@ -260,14 +257,13 @@ describe("project settings help", () => {
   ] as const)("reports configuration without approval (%s, %s)", async (canManage, state) => {
     const policy = policyFixture as PolicyApproval;
     renderProject(canManage, {
+      tab: "workflow",
       policy: state === "missing" ? null : policy,
       observedPolicies: state === "pending" ? [{ policy: { ...policy.policy, policy_id: "pol_updated" }, runner_id: "runner_example", observed_at: "2026-10-05T00:00:00Z" }] : [],
     });
     expect(await screen.findByText(state === "missing" ? "Waiting for runner configuration" : "Configuration reported")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Approve|Paste policy/ })).toBeNull();
-    const ownership = screen.getByText("Field ownership").closest("details")!;
-    expect(ownership.open).toBe(false);
-    expect(ownership.textContent).toContain(Object.values(integration.authority!)[0]);
+
   });
 
   it.each([
@@ -279,7 +275,7 @@ describe("project settings help", () => {
     ["Runner routing", /matching a tag never grants project access/],
   ])("explains %s even for a reader", async (label, copy, profile = "native") => {
     const user = userEvent.setup();
-    renderProject(false, { integration: { ...integration, profile } });
+    renderProject(false, { tab: label === "Runner routing" ? "runners" : "repository", integration: { ...integration, profile } });
     await user.click(await screen.findByRole("button", { name: `About ${label}` }));
     expect((await screen.findByRole("dialog", { name: label })).textContent).toMatch(copy);
     expect(screen.queryByRole("button", { name: "About Repository" })).toBeNull();

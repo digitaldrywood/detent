@@ -1,3 +1,4 @@
+import { useProjectSettingsDirty } from "../settings/projectSettingsDirty.ts";
 import React from "react";
 import { MoreHorizontalIcon, PlusIcon, XIcon } from "lucide-react";
 
@@ -1053,6 +1054,7 @@ export function SlugSettings({ projectId, canManage }: { readonly projectId?: st
     void api.slug(projectId, shared).then(({ slug }) => { if (active) { setCurrent(slug); setDraft(slug); } }).catch((error: unknown) => { if (active) setError(String(error)); });
     return () => { active = false; };
   }, [api, projectId, shared]);
+  useProjectSettingsDirty(current !== "" && draft !== current);
   async function save(): Promise<void> {
     setBusy(true); setError(null);
     try {

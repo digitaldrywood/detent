@@ -14,7 +14,7 @@ test.afterEach(async () => {
 
 async function openWorkflow(page, account = "owner", projectId = hub.fixture.project_id) {
   await page.goto(hub.fixture.accounts[account]);
-  await page.goto(`${hub.fixture.url}/settings/integrations?project=${projectId}`);
+  await page.goto(`${hub.fixture.url}/settings/projects/${projectId}/workflow`);
   const workflow = page.locator("section").filter({ has: page.getByRole("heading", { name: "Workflow", exact: true }) });
   await expect(workflow.getByRole("heading", { name: "Workflow", exact: true })).toBeVisible();
   return workflow;

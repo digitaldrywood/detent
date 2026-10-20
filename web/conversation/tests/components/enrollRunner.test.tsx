@@ -222,7 +222,7 @@ describe("the Enroll dialog", () => {
       expect(screen.getByText(/No Sprites token is set/)).toBeTruthy();
       expect(screen.getByText(/No Sprites token is set/).textContent).toContain("for Build");
       expect(screen.getByText(/No Sprites token is set/).textContent).toContain("uncheck the project");
-      expect(screen.getByRole("link", { name: "Set a Sprites token" }).getAttribute("href")).toBe("/settings/integrations?project=project_build#sprites");
+      expect(screen.getByRole("link", { name: "Set a Sprites token" }).getAttribute("href")).toBe("/settings/projects/project_build/runners#sprites");
     } else {
       expect(screen.queryByRole("link", { name: "Set a Sprites token" })).toBeNull();
     }

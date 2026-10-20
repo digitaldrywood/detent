@@ -9,6 +9,7 @@ import {
 } from "../../app/settings/sections.tsx";
 import {
   settingsSearchItems,
+  projectSettingsSearchItems,
   settingsSectionPath,
   type SettingsPath,
   type SettingsSearchItem,
@@ -39,11 +40,12 @@ export function useSettingsNavItems(): readonly SettingsNavEntry[] {
 }
 
 export function useAvailableSettingsSearchItems(): readonly SettingsSearchItem[] {
+  const bootstrap = useAccountBootstrap();
   const { canManage, supporting } = useActor();
   return useMemo(() => {
     const reachable = settingsNavItems({ canManage, supporting })
       .filter((item) => item.disabled !== true && isSettingsSectionId(item.id))
       .map((item) => item.id as SettingsSectionId);
-    return settingsSearchItems(reachable);
-  }, [canManage, supporting]);
+    return [...settingsSearchItems(reachable), ...(reachable.includes("projects") ? projectSettingsSearchItems(bootstrap?.projects ?? []) : [])];
+  }, [bootstrap?.projects, canManage, supporting]);
 }

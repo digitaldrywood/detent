@@ -776,8 +776,8 @@
       "variants": { "variant": ["line", "segmented"] },
       "states": ["selected", "hover", "focus-visible", "disabled"],
       "keyboard": "Base UI tabs: Tab enters the list, arrow keys move between tabs and select them, Home and End jump to the ends; the panel follows the list in reading order.",
-      "use": "Sections of one page that share a header, such as the Reports Overview, Flow, Quality, Cost and Failures tabs. The list scrolls horizontally on narrow screens; when each tab has its own URL, select the tab from the route and navigate in `onValueChange`.",
-      "avoid": "A small set of view options inside a section (use ToggleGroup), right-panel surfaces (use Right panel tabs) and settings sections (use the settings navigation).",
+      "use": "Sections of one page that share a header, such as Reports and per-project settings. Per-project settings use line-variant Tabs, one tab per URL. The list scrolls horizontally on narrow screens; when each tab has its own URL, select the tab from the route and navigate in `onValueChange`.",
+      "avoid": "A small set of view options inside a section (use ToggleGroup), right-panel surfaces (use Right panel tabs) and organization settings sections (use SettingsSidebarNav).",
       "related": ["toggle-group", "right-panel-tabs", "workspace-page-header"]
     },
     {
@@ -1783,7 +1783,7 @@
       "states": ["active", "hover", "focus-visible"],
       "keyboard": "Section links in document order.",
       "use": "Navigation between settings sections, built on the Sidebar primitive.",
-      "avoid": "Tabs for settings sections.",
+      "avoid": "Tabs for organization settings sections; per-project settings use line-variant Tabs, one tab per URL, horizontally scrollable on narrow screens.",
       "related": ["settings-layout", "sidebar"]
     },
     {
