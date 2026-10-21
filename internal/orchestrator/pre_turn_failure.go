@@ -70,7 +70,8 @@ func preTurnFailureClass(event runpkg.Completion, running Running) string {
 	if (errors.Is(event.Err, runpkg.ErrWorkerProcessReap) || errors.Is(event.Err, runpkg.ErrWorkspacePreparation)) && !errors.Is(event.Err, context.Canceled) && running.Cancellation == nil && !issueConfigurationFailure(event.Err, "", "") {
 		return workAttemptErrorWorkspace
 	}
-	if errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired) {
+	nativeRecovery := errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired)
+	if nativeRecovery && (errors.Is(event.Err, runpkg.ErrExecutionAuthorityUnavailable) || strings.Contains(event.Err.Error(), ": policy_mismatch") || strings.Contains(event.Err.Error(), ": local_checkpoint_changed")) {
 		return ""
 	}
 	if issueConfigurationFailure(event.Err, "", "") || event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 || running.WorkProductPushed || running.Tokens.TotalTokens > 0 || event.Result.Tokens.TotalTokens > 0 {
@@ -96,6 +97,9 @@ func preTurnFailureClass(event runpkg.Completion, running Running) string {
 	var recoveryErr *runpkg.DeliverableRecoveryError
 	if errors.As(event.Err, &deliverableErr) || errors.As(event.Err, &recoveryErr) || runpkg.IsDeliverableConfigurationError(event.Err) || errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) || isGitHubRESTBudgetHeadroomError(event.Err) {
 		return ""
+	}
+	if nativeRecovery {
+		return workAttemptErrorWorkspace
 	}
 	if runnerWorkAttemptErrorClass(event.Err) == workAttemptErrorRunner {
 		return workAttemptErrorRunner
