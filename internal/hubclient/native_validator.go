@@ -336,6 +336,10 @@ func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracke
 	client, item := e.claim.source.client, e.claim.lease.WorkItemID
 	_, err := client.ReviewChange(ctx, item, changeID, versionID, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":security-audit:" + result.Run.InvocationID, LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken}, ExpectedVersionID: versionID, Decision: decision, Body: body.String(), SecurityAudit: &result})
 	if err != nil {
+		var refusal *APIError
+		if !result.Landing && errors.As(err, &refusal) && refusal.permanentInvalidRequest() && refusal.Rejection != nil && refusal.Rejection.Category == "security_audit" && (refusal.Rejection.Field == "run.reviewer_version" || refusal.Rejection.Field == "run.reviewer_digest") {
+			return &runner.NativeImplementationReviewError{Err: err}
+		}
 		return err
 	}
 	if result.Landing {
