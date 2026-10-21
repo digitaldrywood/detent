@@ -44,6 +44,7 @@ type spaces struct {
 	client *s3.Client
 	http   *http.Client
 	config Config
+	prefix string
 }
 
 func NewStorage(ctx context.Context, cfg Config, transport http.RoundTripper) (Storage, error) {
@@ -92,12 +93,12 @@ func (s *spaces) Put(ctx context.Context, key string, body io.ReadSeeker, size i
 	if err != nil {
 		return err
 	}
-	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(key), Body: body, ContentLength: aws.Int64(size), ContentType: aws.String(media), IfNoneMatch: aws.String("*"), ChecksumSHA256: aws.String(base64.StdEncoding.EncodeToString(checksum))})
+	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(s.prefix + key), Body: body, ContentLength: aws.Int64(size), ContentType: aws.String(media), IfNoneMatch: aws.String("*"), ChecksumSHA256: aws.String(base64.StdEncoding.EncodeToString(checksum))})
 	return err
 }
 
 func (s *spaces) Open(ctx context.Context, key string) (io.ReadCloser, error) {
-	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(key)})
+	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(s.prefix + key)})
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +106,7 @@ func (s *spaces) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 }
 
 func (s *spaces) Delete(ctx context.Context, key string) error {
-	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(key)})
+	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(s.prefix + key)})
 	if err != nil {
 		var api smithy.APIError
 		if errors.As(err, &api) && (api.ErrorCode() == "NotFound" || api.ErrorCode() == "NoSuchKey") {
@@ -113,7 +114,7 @@ func (s *spaces) Delete(ctx context.Context, key string) error {
 		}
 		return err
 	}
-	input := &s3.DeleteObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(key)}
+	input := &s3.DeleteObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(s.prefix + key)}
 	if version := aws.ToString(head.VersionId); version != "" {
 		input.VersionId = aws.String(version)
 	}
@@ -125,14 +126,18 @@ func (s *spaces) Walk(ctx context.Context, prefix string, visit func(Object) err
 	if !strings.HasPrefix(prefix, "orgs/") || !strings.HasSuffix(prefix, "/") {
 		return ErrInvalid
 	}
-	pages := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{Bucket: aws.String(s.config.Bucket), Prefix: aws.String(prefix)})
+	pages := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{Bucket: aws.String(s.config.Bucket), Prefix: aws.String(s.prefix + prefix)})
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		if err != nil {
 			return err
 		}
 		for _, object := range page.Contents {
-			key := aws.ToString(object.Key)
+			physical := aws.ToString(object.Key)
+			if !strings.HasPrefix(physical, s.prefix+prefix) {
+				return ErrInvalid
+			}
+			key := strings.TrimPrefix(physical, s.prefix)
 			if !strings.HasPrefix(key, prefix) {
 				return ErrInvalid
 			}
