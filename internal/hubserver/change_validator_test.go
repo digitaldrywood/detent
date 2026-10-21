@@ -175,6 +175,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"object-backed oversized body", func(r *tracker.ReviewChange) { objectOutput(r); r.Body = strings.Repeat("x", (64<<10)+1) }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"object-backed missing key", func(r *tracker.ReviewChange) { objectOutput(r); r.IdempotencyKey = "" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"object-backed storage rollback", objectOutput, http.StatusInternalServerError, "needs_evidence", nil},
+		{"object-backed storage exhausted", objectOutput, http.StatusTooManyRequests, "needs_evidence", nil},
 
 		{"separate session pass with multiple receipts", multipleReceipts, http.StatusOK, "reviewed", nil},
 		{"recovered source inspection retains failed read history", func(r *tracker.ReviewChange) {
@@ -445,8 +446,21 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if test.name == "object-backed storage exhausted" {
+				f.service.database.hostedOrganization = f.project.OrganizationID
+				plans := pilotHostedPlans()
+				plans.Plans[0].Allowances["collaboration_bytes"] = contentBefore
+				if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
 			requireNativeStatus(t, response, test.want)
+			if test.name == "object-backed storage exhausted" {
+				request.IdempotencyKey += "-another-output"
+				request.Validator.Commands[0].Output += "distinct rejected output"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request), http.StatusTooManyRequests)
+			}
 			if objects != nil && test.want != http.StatusOK {
 				var charged, registered int64
 				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'`).Scan(&charged); err != nil {
@@ -457,12 +471,16 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				}
 				objects.mu.Lock()
 				stored := len(objects.objects)
+				var storedBytes int64
+				for _, data := range objects.objects {
+					storedBytes += int64(len(data))
+				}
 				objects.mu.Unlock()
 				expectedObjects := 0
 				if test.name == "object-backed storage rollback" {
 					expectedObjects = 1
 				}
-				if charged != contentBefore || registered != 0 || stored != expectedObjects {
+				if charged != contentBefore+storedBytes || registered != int64(expectedObjects) || stored != expectedObjects {
 					t.Fatalf("rejected review retained output: charged=%d before=%d registered=%d objects=%d", charged, contentBefore, registered, stored)
 				}
 			}

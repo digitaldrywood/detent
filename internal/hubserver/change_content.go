@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -26,7 +27,7 @@ type changeContentKey struct{}
 type changeContent struct {
 	mu       sync.Mutex
 	call     entryauthority.ContentHandler
-	register func(context.Context, *sql.Tx, string, attachment.ArchiveReference) error
+	register func(context.Context, string, attachment.ArchiveReference) error
 	prepared map[string]attachment.ArchiveReference
 }
 
@@ -63,6 +64,9 @@ func prepareChangeContent(ctx context.Context, organization string, data []byte)
 	}
 	ref, compressed, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(data))
 	if err != nil {
+		return ref, err
+	}
+	if err := content.register(ctx, organization, ref); err != nil {
 		return ref, err
 	}
 	if _, err := content.call(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref, Data: compressed, Write: true}); err != nil {
@@ -111,7 +115,7 @@ func persistCommandOutput(ctx context.Context, tx *sql.Tx, organization string, 
 	if command == nil || command.Output == "" {
 		return nil
 	}
-	ref, err := preparedChangeContent(ctx, tx, organization, []byte(command.Output))
+	ref, err := preparedChangeContent(ctx, organization, []byte(command.Output))
 	if err != nil {
 		return err
 	}
@@ -308,7 +312,7 @@ func (s *Service) prepareReviewContent(c echo.Context, request tracker.ReviewCha
 	return nil
 }
 
-func preparedChangeContent(ctx context.Context, tx *sql.Tx, organization string, data []byte) (attachment.ArchiveReference, error) {
+func preparedChangeContent(ctx context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
 	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
 	if !ok {
 		return attachment.ArchiveReference{}, errors.New("immutable content storage unavailable")
@@ -319,23 +323,18 @@ func preparedChangeContent(ctx context.Context, tx *sql.Tx, organization string,
 	if !found {
 		return ref, errors.New("immutable content was not prepared before mutation")
 	}
-	if err := content.register(ctx, tx, organization, ref); err != nil {
-		return ref, err
-	}
 	return ref, nil
 }
 
-func (s *Service) registerChangeContent(ctx context.Context, tx *sql.Tx, organization string, ref attachment.ArchiveReference) error {
-	now, err := s.database.currentTime()
-	if err != nil {
-		return err
-	}
-	before, err := s.database.hostedConsumption(ctx, tx, now, "collaboration_bytes")
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO change_content_objects(organization_id,object_sha256,object_key,object_bytes,content_bytes) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING`, organization, ref.SHA256, ref.Key, ref.CompressedSize, ref.UncompressedSize); err != nil {
-		return err
-	}
-	return s.database.checkHostedGrowth(ctx, tx, before, now, false, "collaboration_bytes")
+func (s *Service) registerChangeContent(ctx context.Context, organization string, ref attachment.ArchiveReference) error {
+	return s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
+		before, err := s.database.hostedConsumption(ctx, tx, now, "collaboration_bytes")
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO change_content_objects(organization_id,object_sha256,object_key,object_bytes,content_bytes) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING`, organization, ref.SHA256, ref.Key, ref.CompressedSize, ref.UncompressedSize); err != nil {
+			return err
+		}
+		return s.database.checkHostedGrowth(ctx, tx, before, now, false, "collaboration_bytes")
+	})
 }
