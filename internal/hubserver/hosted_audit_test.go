@@ -69,13 +69,61 @@ func TestHostedAuditSecurityEvents(t *testing.T) {
 }
 
 func TestHostedAuditRetention(t *testing.T) {
+	t.Run("portable cutoffs across organizations", func(t *testing.T) {
+		f := newDefaultNativeFixture(t, Config{})
+		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organizations(id,name,created_at) VALUES('org_other_time','Other organization','2026-10-01T00:00:00Z')`); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+		for _, org := range []string{string(f.project.OrganizationID), "org_other_time"} {
+			for _, test := range []struct {
+				name, at string
+			}{
+				{"rollover", "2026-09-21T11:59:59.9996Z"},
+				{"last nanosecond", "2026-09-21T11:59:59.999999999Z"},
+				{"equal", "2026-09-21T12:00:00Z"},
+				{"offset equal", "2026-09-21T07:00:00-05:00"},
+				{"retained nanosecond", "2026-09-21T12:00:00.000000001Z"},
+			} {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at) VALUES(?,'session','actor','actor','',?,'','',200,?,?,?)`, org, test.name, formatHubTime(now), formatHubTime(now), test.at); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM time_index_progress WHERE owner='audit'`); err != nil {
+			t.Fatal(err)
+		}
+		for _, phase := range []string{"populated", "repeated"} {
+			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
+				t.Fatal(err)
+			}
+			for _, org := range []string{string(f.project.OrganizationID), "org_other_time"} {
+				var events string
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT group_concat(event,',') FROM (SELECT event FROM hosted_audit WHERE organization_id=? ORDER BY id)`, org).Scan(&events); err != nil {
+					t.Fatal(err)
+				}
+				if events != "equal,offset equal,retained nanosecond" {
+					t.Fatalf("%s %s retained %s", phase, org, events)
+				}
+				var text string
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT recorded_at FROM hosted_audit WHERE organization_id=? AND event='offset equal'`, org).Scan(&text); err != nil || text != "2026-09-21T07:00:00-05:00" {
+					t.Fatalf("timestamp text changed: %s err=%v", text, err)
+				}
+			}
+		}
+		var dangling int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_audit_times t LEFT JOIN hosted_audit a ON a.id=t.audit_id WHERE a.id IS NULL`).Scan(&dangling); err != nil || dangling != 0 {
+			t.Fatalf("dangling indexes=%d err=%v", dangling, err)
+		}
+	})
+
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
 	now := time.Date(2026, 10, 7, 22, 0, 0, 0, time.UTC)
 	day := 24 * time.Hour
 	insert := func(event string, at time.Time) {
 		t.Helper()
-		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at) VALUES('org_security','session','actor','actor','',?,'','',200,?,?,?)`, event, formatHubTime(now), formatHubTime(now.Add(time.Hour)), formatHubTime(at)); err != nil {
+		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,recorded_at_ns) VALUES('org_security','session','actor','actor','',?,'','',200,?,?,?,?)`, event, formatHubTime(now), formatHubTime(now.Add(time.Hour)), formatHubTime(at), at.UnixNano()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -101,8 +149,8 @@ func TestHostedAuditRetention(t *testing.T) {
 	}
 	backlog := commandReceiptPruneBatch + 7
 	if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
-INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at)
-SELECT 'org_security','session','actor','actor','','backlog '||i,'','',200,?,?,? FROM n`, backlog, formatHubTime(now), formatHubTime(now.Add(time.Hour)), formatHubTime(now.Add(-45*day))); err != nil {
+INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,recorded_at_ns)
+SELECT 'org_security','session','actor','actor','','backlog '||i,'','',200,?,?,?,? FROM n`, backlog, formatHubTime(now), formatHubTime(now.Add(time.Hour)), formatHubTime(now.Add(-45*day)), now.Add(-45*day).UnixNano()); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []struct {

@@ -259,37 +259,88 @@ type healthCycle struct {
 	Claims  int
 }
 
-func readHealthEvents(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, now time.Time, snapshot *healthSnapshot) error {
-	rows, err := q.QueryContext(ctx, `SELECT id,project_id,work_item_id,type,projection,recorded_at FROM (
+type healthTimeEvent struct {
+	id, project, item, kind, raw string
+	at                           time.Time
+}
+
+func readHealthTimeEvents(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, now time.Time) ([]healthTimeEvent, error) {
+	var complete bool
+	if err := q.QueryRowContext(ctx, `SELECT coalesce((SELECT complete FROM time_index_progress WHERE owner='health'),0)`).Scan(&complete); err != nil {
+		return nil, err
+	}
+	query := `SELECT id,project_id,work_item_id,type,projection,recorded_at FROM (
  SELECT id,project_id,work_item_id,type,json_object('decision',json_extract(data_json,'$.decision')) AS projection,recorded_at,julianday(recorded_at) AS event_order
  FROM collaboration_events WHERE organization_id=? AND type='scheduler.decision'
- AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<=julianday(?)
+ AND julianday(recorded_at)>=julianday(?)-1.0/86400 AND julianday(recorded_at)<=julianday(?)+1.0/86400
  UNION ALL
  SELECT id,project_id,work_item_id,type,json_object('run',json_object('runtime',json_object('landing',json_extract(data_json,'$.run.runtime.landing')))),recorded_at,julianday(recorded_at)
  FROM collaboration_events WHERE organization_id=? AND type IN ('run.finished','run.observed') AND json_extract(data_json,'$.run.runtime.landing.landed')=1
- AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<=julianday(?)
- ) ORDER BY event_order,id LIMIT ?`, organization, formatHubTime(now.Add(-healthInstanceWindow)), formatHubTime(now), organization, formatHubTime(now.Add(-healthHistoryWindow)), formatHubTime(now), healthReadLimit+1)
+ AND julianday(recorded_at)>=julianday(?)-1.0/86400 AND julianday(recorded_at)<=julianday(?)+1.0/86400
+ ) ORDER BY event_order,id LIMIT ?`
+	args := []any{organization, formatHubTime(now.Add(-healthInstanceWindow)), formatHubTime(now), organization, formatHubTime(now.Add(-healthHistoryWindow)), formatHubTime(now), healthReadLimit + 1}
+	if complete {
+		query = `SELECT e.id,e.project_id,e.work_item_id,t.type,
+ CASE t.type WHEN 'scheduler.decision' THEN json_object('decision',json_extract(e.data_json,'$.decision')) ELSE json_object('run',json_object('runtime',json_object('landing',json_extract(e.data_json,'$.run.runtime.landing')))) END,e.recorded_at
+ FROM (
+ SELECT event_id,type,recorded_at_ns FROM health_event_times WHERE organization_id=? AND type='scheduler.decision' AND recorded_at_ns>=? AND recorded_at_ns<=?
+ UNION ALL
+ SELECT event_id,type,recorded_at_ns FROM health_event_times WHERE organization_id=? AND type IN ('run.finished','run.observed') AND landed=1 AND recorded_at_ns>=? AND recorded_at_ns<=?
+ ) t JOIN collaboration_events e ON e.id=t.event_id ORDER BY t.recorded_at_ns,e.id LIMIT ?`
+		args = []any{organization, now.Add(-healthInstanceWindow).UnixNano(), now.UnixNano(), organization, now.Add(-healthHistoryWindow).UnixNano(), now.UnixNano(), healthReadLimit + 1}
+	}
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
-	cycles := map[string]healthCycle{}
+	var events []healthTimeEvent
 	count := 0
 	for rows.Next() {
-		var id, project, item, kind, raw, at string
-		if err := rows.Scan(&id, &project, &item, &kind, &raw, &at); err != nil {
-			return err
+		var e healthTimeEvent
+		var at string
+		if err := rows.Scan(&e.id, &e.project, &e.item, &e.kind, &e.raw, &at); err != nil {
+			return nil, err
 		}
 		count++
 		if count > healthReadLimit {
-			return errHealthReadLimit
+			return nil, errHealthReadLimit
 		}
+		e.at, err = parseTimeValue(at)
+		if err != nil {
+			return nil, err
+		}
+		window := healthHistoryWindow
+		if e.kind == "scheduler.decision" {
+			window = healthInstanceWindow
+		}
+		if e.at.Before(now.Add(-window)) || e.at.After(now) {
+			continue
+		}
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	slices.SortFunc(events, func(a, b healthTimeEvent) int {
+		if order := a.at.Compare(b.at); order != 0 {
+			return order
+		}
+		return strings.Compare(a.id, b.id)
+	})
+	return events, nil
+}
+
+func readHealthEvents(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, now time.Time, snapshot *healthSnapshot) error {
+	events, err := readHealthTimeEvents(ctx, q, organization, now)
+	if err != nil {
+		return err
+	}
+	cycles := map[string]healthCycle{}
+	for _, event := range events {
+		id, project, item, kind, raw, observed := event.id, event.project, event.item, event.kind, event.raw, event.at
 		var data tracker.CollaborationData
 		if err := json.Unmarshal([]byte(raw), &data); err != nil {
-			return err
-		}
-		observed, err := parseTimeValue(at)
-		if err != nil {
 			return err
 		}
 		for i := range snapshot.Projects {
@@ -323,9 +374,6 @@ func readHealthEvents(ctx context.Context, q nativeQueryer, organization tracker
 		}
 		cycle.Events = append(cycle.Events, id)
 		cycles[key] = cycle
-	}
-	if err := rows.Err(); err != nil {
-		return err
 	}
 	for i := range snapshot.Projects {
 		p := &snapshot.Projects[i]
