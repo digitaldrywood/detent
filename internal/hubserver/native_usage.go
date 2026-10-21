@@ -106,6 +106,9 @@ func recordAttemptUsage(ctx context.Context, tx *sql.Tx, scope nativeScope, requ
 			delta.Input, delta.CachedInput, delta.Output, delta.CostEstimate, currency, formatHubTime(now)); err != nil {
 			return fmt.Errorf("record attempt usage: %w", err)
 		}
+		if err := updateAttemptUsageSummary(ctx, tx, scope, attempt, delta); err != nil {
+			return err
+		}
 	}
 	return recordRunnerUsageCosts(ctx, tx, scope, request, prices, now)
 }
@@ -135,4 +138,12 @@ func usageDelta(total, recorded tracker.NativeUsage, prices UsageConfig) tracker
 // usagePeriod is the hour bucket a moment is filed under.
 func usagePeriod(at time.Time) string {
 	return at.UTC().Truncate(time.Hour).Format(usagePeriodLayout)
+}
+
+func updateAttemptUsageSummary(ctx context.Context, tx *sql.Tx, scope nativeScope, attempt string, delta tracker.NativeUsage) error {
+	_, err := tx.ExecContext(ctx, `UPDATE native_attempts SET input_tokens=input_tokens+?,cached_input_tokens=cached_input_tokens+?,output_tokens=output_tokens+?,cost_estimate=cost_estimate+? WHERE organization_id=? AND project_id=? AND id=? AND detail_attachment_id IS NOT NULL`, delta.Input, delta.CachedInput, delta.Output, delta.CostEstimate, scope.organization, scope.project, attempt)
+	if err != nil {
+		return fmt.Errorf("record attempt usage summary: %w", err)
+	}
+	return nil
 }

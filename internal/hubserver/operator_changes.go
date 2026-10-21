@@ -51,6 +51,7 @@ func (e hubOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.Defi
 	return out, nil
 }
 func (e hubOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
+	ctx = e.service.freshRunDetailContext(ctx)
 	s := e.service
 	if call.Name == operatortool.ConnectionInfo || call.Name == operatortool.ActionResult {
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {

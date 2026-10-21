@@ -149,6 +149,9 @@ func SharedEntryRequestBodyLimit(method, path string) int64 {
 	if len(parts) < 6 || parts[0] != "api" || parts[1] != "v2" || parts[2] != "organizations" || parts[4] != "projects" {
 		return cloudassert.MaxBodyBytes
 	}
+	if len(parts) == 9 && parts[6] == "work-items" && parts[8] == "events" {
+		return 8 * maxAPIRequestBodyBytes
+	}
 	if len(parts) == 11 && parts[6] == "work-items" && parts[8] == "changes" && parts[10] == "versions" {
 		return maxChangeVersionRequestBytes
 	}

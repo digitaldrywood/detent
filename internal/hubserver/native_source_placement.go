@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -34,7 +33,7 @@ WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.checkpoi
 		if err := rows.Scan(&source.AttemptID, &source.MachineID, &source.RunnerID, &source.RunnerName, &source.Status, &source.Released, &raw); err != nil {
 			return source, err
 		}
-		if err := json.Unmarshal([]byte(raw), &source.Checkpoint); err != nil {
+		if err := decodeRunCheckpoint(ctx, raw, &source.Checkpoint); err != nil {
 			return source, err
 		}
 		if source.Checkpoint.PreservesSource() {

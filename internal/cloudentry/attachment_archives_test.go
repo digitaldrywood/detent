@@ -158,6 +158,27 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 			if err := json.Unmarshal(response.Body.Bytes(), &ref); err != nil || ref.Validate(org) != nil {
 				t.Fatal("invalid archive reference")
 			}
+			allocation, err := f.service.registry.Organization(t.Context(), org)
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner := tenantDetailStore{service: f.service, allocation: allocation}
+			stored, err := owner.StoreDetail(t.Context(), org, []byte(content))
+			if err != nil || stored != ref {
+				t.Fatalf("tenant detail owner upload: %v", err)
+			}
+			detail, err := owner.ReadDetail(t.Context(), org, stored)
+			if err != nil || string(detail) != content {
+				t.Fatalf("tenant detail owner read: %v", err)
+			}
+			if _, err := owner.ReadDetail(t.Context(), "org_foreign", stored); err == nil {
+				t.Fatal("tenant owner accepted foreign detail")
+			}
+			stale := owner
+			stale.allocation.Generation++
+			if _, err := stale.StoreDetail(t.Context(), org, []byte(content)); err == nil {
+				t.Fatal("stale allocation uploaded detail")
+			}
 			if strings.Contains(response.Body.String(), "fixture-content-secret") || strings.Contains(response.Body.String(), "X-Amz-") {
 				t.Fatal("upload leaked archive data or credentials")
 			}

@@ -31,7 +31,7 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND json_extra
 		if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(data), &event.Data); err != nil {
+		if err := decodeRunHistory(ctx, data, &event.Data); err != nil {
 			return nil, err
 		}
 		if event.RecordedAt, err = parseTimeValue(at); err != nil {
