@@ -979,14 +979,15 @@ func TestCapacityCatalog(t *testing.T) {
 		cents      int64
 		priced     bool
 		concurrent int64
+		storage    int64
 	}{
-		{PlanReference{ID: "free", Version: 1}, 0, true, 2},
-		{PlanReference{ID: "starter", Version: 1}, 4900, true, 8},
-		{PlanReference{ID: "team", Version: 2}, 9900, true, 20},
-		{PlanReference{ID: "growth", Version: 2}, 24900, true, 50},
-		{PlanReference{ID: "scale", Version: 2}, 0, false, 100},
-		{PlanReference{ID: "growth", Version: 1}, 14900, true, 50},
-		{PlanReference{ID: "scale", Version: 1}, 39900, true, 100},
+		{PlanReference{ID: "free", Version: 1}, 0, true, 2, 1 << 30},
+		{PlanReference{ID: "starter", Version: 1}, 4900, true, 8, 25 << 30},
+		{PlanReference{ID: "team", Version: 2}, 9900, true, 20, 100 << 30},
+		{PlanReference{ID: "growth", Version: 2}, 24900, true, 50, 250 << 30},
+		{PlanReference{ID: "scale", Version: 2}, 0, false, 100, 1 << 30},
+		{PlanReference{ID: "growth", Version: 1}, 14900, true, 50, 1 << 30},
+		{PlanReference{ID: "scale", Version: 1}, 39900, true, 100, 1 << 30},
 	} {
 		t.Run(fmt.Sprintf("%s v%d", test.ref.ID, test.ref.Version), func(t *testing.T) {
 			plan, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, test.ref)
@@ -995,6 +996,9 @@ func TestCapacityCatalog(t *testing.T) {
 			}
 			if (plan.MonthlyUSDCents != nil) != test.priced || test.priced && *plan.MonthlyUSDCents != test.cents {
 				t.Fatalf("price = %v", plan.MonthlyUSDCents)
+			}
+			if plan.Allowances["collaboration_bytes"] != test.storage || plan.Allowances["history_records"] != 2000000 {
+				t.Fatalf("storage/history = %#v", plan.Allowances)
 			}
 			if plan.Allowances["concurrent_work"] != test.concurrent || plan.Allowances["unarchived_issues"] != 10000 || !slices.Contains(plan.Features, "native_execution") || slices.Contains(plan.Features, "model_choice") {
 				t.Fatalf("catalog = %#v", plan)
@@ -1097,7 +1101,7 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 		bytes int64
 	}{
 		{PlanReference{ID: "pilot_free", Version: 1}, 64 << 20}, {PlanReference{ID: "comp_team", Version: 1}, 128 << 20},
-		{PlanReference{ID: "free", Version: 1}, 1 << 30}, {PlanReference{ID: "starter", Version: 1}, 1 << 30}, {PlanReference{ID: "team", Version: 2}, 1 << 30}, {PlanReference{ID: "growth", Version: 2}, 1 << 30}, {PlanReference{ID: "scale", Version: 2}, 1 << 30},
+		{PlanReference{ID: "free", Version: 1}, 1 << 30}, {PlanReference{ID: "starter", Version: 1}, 25 << 30}, {PlanReference{ID: "team", Version: 2}, 100 << 30}, {PlanReference{ID: "growth", Version: 2}, 250 << 30}, {PlanReference{ID: "scale", Version: 2}, 1 << 30},
 	} {
 		t.Run(test.ref.ID, func(t *testing.T) {
 			plan, err := d.readHostedPlan(t.Context(), d.reader, test.ref)

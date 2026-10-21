@@ -149,6 +149,7 @@ type hostedTier struct {
 	name       string
 	cents      *int64
 	concurrent int64
+	storage    int64
 	offered    bool
 }
 
@@ -157,13 +158,13 @@ const hostedOpenIssueGuard = 10000
 func hostedTiers() []hostedTier {
 	price := func(cents int64) *int64 { return &cents }
 	return []hostedTier{
-		{PlanReference{ID: "free", Version: 1}, "Free", price(0), 2, true},
-		{PlanReference{ID: "starter", Version: 1}, "Starter", price(4900), 8, true},
-		{PlanReference{ID: "team", Version: 2}, "Team", price(9900), 20, true},
-		{PlanReference{ID: "growth", Version: 2}, "Growth", price(24900), 50, true},
-		{PlanReference{ID: "scale", Version: 2}, "Scale", nil, 100, true},
-		{PlanReference{ID: "growth", Version: 1}, "Growth", price(14900), 50, false},
-		{PlanReference{ID: "scale", Version: 1}, "Scale", price(39900), 100, false},
+		{PlanReference{ID: "free", Version: 1}, "Free", price(0), 2, 1 << 30, true},
+		{PlanReference{ID: "starter", Version: 1}, "Starter", price(4900), 8, 25 << 30, true},
+		{PlanReference{ID: "team", Version: 2}, "Team", price(9900), 20, 100 << 30, true},
+		{PlanReference{ID: "growth", Version: 2}, "Growth", price(24900), 50, 250 << 30, true},
+		{PlanReference{ID: "scale", Version: 2}, "Scale", nil, 100, 1 << 30, true},
+		{PlanReference{ID: "growth", Version: 1}, "Growth", price(14900), 50, 1 << 30, false},
+		{PlanReference{ID: "scale", Version: 1}, "Scale", price(39900), 100, 1 << 30, false},
 	}
 }
 
@@ -204,7 +205,7 @@ func capacityHostedPlans() HostedPlansConfig {
 	config.Plans = nil
 	for _, tier := range hostedTiers() {
 		allowances := maps.Clone(legacy[1].Allowances)
-		allowances["collaboration_bytes"], allowances["history_records"] = 1<<30, 2000000
+		allowances["collaboration_bytes"], allowances["history_records"] = tier.storage, 2000000
 		plan := tier.apply(HostedPlan{PlanReference: tier.PlanReference, Name: tier.name, MonthlyUSDCents: tier.cents, Features: []string{"collaboration", "github_integration"}, Allowances: allowances})
 		config.Plans = append(config.Plans, plan)
 	}
