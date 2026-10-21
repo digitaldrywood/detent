@@ -193,10 +193,11 @@ func (e *AuthorizedExecutor) Execute(ctx context.Context, call Call) (Result, er
 	// Decode the bounded resource selector before reaching any read service. The
 	// tool's own typed decoder still validates which fields its schema permits.
 	var selector struct {
-		ProjectID string `json:"project_id"`
-		Reference string `json:"reference"`
-		State     string `json:"state"`
-		Limit     int    `json:"limit"`
+		ProjectID string   `json:"project_id"`
+		Reference string   `json:"reference"`
+		State     string   `json:"state"`
+		Limit     int      `json:"limit"`
+		Include   []string `json:"include"`
 	}
 	if err := decodeArguments(call.Arguments, &selector); err != nil {
 		return Result{}, err
