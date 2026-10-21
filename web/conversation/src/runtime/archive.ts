@@ -1,7 +1,28 @@
-import { clearQueryCache, fetchArchiveQuery, invalidateArchiveRevision, scopeOf } from "../app/lib/queryCache.ts";
+import { clearArchiveCache, fetchArchiveQuery, invalidateArchiveRevision, scopeOf } from "../app/lib/queryCache.ts";
 import { ArchiveUnavailable, validateArchive, type ArchiveDescriptor } from "./archiveDecode.ts";
 
 type ArchiveFetch = (input: string, init?: RequestInit) => Promise<Response>;
+
+export function invalidateArchiveAccess(target: string, status: number): void {
+  if (status === 401 || status === 403) {
+    clearArchiveCache();
+    return;
+  }
+  if (status !== 404) return;
+  const path = new URL(target, globalThis.location?.origin ?? "http://localhost").pathname;
+  const item = path.match(/\/work-items\/([^/]+)/)?.[1];
+  if (item !== undefined) {
+    clearArchiveCache({ workItemId: decodeURIComponent(item) });
+    return;
+  }
+  const conversation = path.match(/\/conversations\/([^/]+)/)?.[1];
+  if (conversation !== undefined) {
+    clearArchiveCache({ sectionId: `conversation:${decodeURIComponent(conversation)}` });
+    return;
+  }
+  const attempt = path.match(/\/attempts\/([^/]+)\/diff/)?.[1];
+  if (attempt !== undefined) clearArchiveCache({ sectionId: `diff:${decodeURIComponent(attempt)}` });
+}
 
 function loadWorker(url: string, descriptor: ArchiveDescriptor, signal: AbortSignal): Promise<{ data?: unknown; expired?: boolean }> {
   return new Promise((resolve, reject) => {
@@ -35,7 +56,7 @@ export async function resolveArchivedResponse(value: unknown, target: string, fe
       if (signal?.aborted) throw new ArchiveUnavailable("cancelled");
       const response = await fetch(access.href, { credentials: "same-origin", cache: "no-store", signal: readSignal });
       if (!response.ok) {
-        if ([401, 403, 404].includes(response.status)) clearQueryCache();
+        invalidateArchiveAccess(access.href, response.status);
         throw new ArchiveUnavailable(`authorization HTTP ${response.status}`);
       }
       const grant = await response.json() as { url: string; sha256: string; expires_at: string };

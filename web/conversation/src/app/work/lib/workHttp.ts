@@ -1,5 +1,5 @@
 import { ArchiveUnavailable } from "../../../runtime/archiveDecode.ts";
-import { resolveArchivedResponse } from "../../../runtime/archive.ts";
+import { invalidateArchiveAccess, resolveArchivedResponse } from "../../../runtime/archive.ts";
 import { SavedWorkView, type SavedView, type SavedViewInput } from "./savedViewSchema.ts";
 // Same-origin HTTP for the hub's native work API.
 //
@@ -530,6 +530,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
       }
     }
     if (!response.ok) {
+      if (!signal?.aborted) invalidateArchiveAccess(target, response.status);
       if (!signal?.aborted && [401, 403].includes(response.status)) options.onAuthorizationRejected?.();
       const failure = errorFromBody(response.status, parsed);
       if (failure.code === "archive_unavailable") throw new ArchiveUnavailable("missing section");

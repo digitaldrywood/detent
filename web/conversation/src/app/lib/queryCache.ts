@@ -109,6 +109,16 @@ export function invalidateArchiveRevision(scope: QueryKey, revision: string): vo
   }
 }
 
+export function clearArchiveCache(resource?: { readonly workItemId?: string; readonly sectionId?: string }): void {
+  for (const [id, entry] of entries) {
+    if (classOf(entry.key) !== "archive") continue;
+    if (resource?.workItemId !== undefined && entry.key[4] !== resource.workItemId) continue;
+    if (resource?.sectionId !== undefined && entry.key[7] !== resource.sectionId && !(typeof entry.key[7] === "string" && entry.key[7].startsWith(resource.sectionId + ":"))) continue;
+    removeArchive(id);
+  }
+  emit();
+}
+
 function hash(key: QueryKey): string {
   return JSON.stringify(key);
 }

@@ -1,4 +1,4 @@
-import { resolveArchivedResponse } from "../archive.ts";
+import { invalidateArchiveAccess, resolveArchivedResponse } from "../archive.ts";
 // Same-origin HTTP client for the Detent conversation API.
 //
 // Written for this repository. It replaces the POC's WebSocket JSON-RPC
@@ -299,6 +299,7 @@ export function makeHttpClient(options: HttpClientOptions): DetentHttpClient {
             }
           }
           if (response.ok) parsed = await resolveArchivedResponse(parsed, target, doFetch, options);
+          else invalidateArchiveAccess(target, response.status);
           return { ok: response.ok, status: response.status, parsed };
         },
         catch: (cause) =>
