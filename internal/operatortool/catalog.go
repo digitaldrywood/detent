@@ -59,7 +59,7 @@ func Catalog() []Definition {
 		definition(FleetHealth, "Read live fleet health, capacity outages, failure breakers, rate limits, refresh state, and running counts.", `{"type":"object","properties":{},"additionalProperties":false}`),
 		definition(TelemetryUsage, "Read live token, spend, throughput, and per-project usage telemetry.", `{"type":"object","properties":{"project_id":{"type":"string"}},"additionalProperties":false}`),
 		definition(RecentActivity, "Read recent events and completed work retained in the current live telemetry snapshot, including merge timestamps. This is live-only activity, not the durable issue activity stream.", activitySchema),
-		definition(ExplainItem, "Explain an issue's current lane, latest transition reason, eligibility, active or latest attempt, sessions, pull request, required gate, freshness, and evidence from the versioned issue explanation read model.", `{"type":"object","required":["project_id","reference"],"properties":{"project_id":{"type":"string","minLength":1},"reference":{"type":"string","minLength":1}},"additionalProperties":false}`),
+		definition(ExplainItem, "Explain an issue's current lane, latest transition reason, eligibility, active or latest attempt, sessions, pull request, required gate, freshness, and evidence from the versioned issue explanation read model. Set include=[\"summary\"] for compact triage without capacity or validation output.", `{"type":"object","required":["project_id","reference"],"properties":{"project_id":{"type":"string","minLength":1},"reference":{"type":"string","minLength":1},"include":{"type":"array","maxItems":1,"items":{"type":"string","enum":["summary"]}}},"additionalProperties":false}`),
 	}
 }
 
