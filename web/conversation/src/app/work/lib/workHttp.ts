@@ -1,3 +1,5 @@
+import { ArchiveUnavailable } from "../../../runtime/archiveDecode.ts";
+import { resolveArchivedResponse } from "../../../runtime/archive.ts";
 import { SavedWorkView, type SavedView, type SavedViewInput } from "./savedViewSchema.ts";
 // Same-origin HTTP for the hub's native work API.
 //
@@ -182,7 +184,7 @@ export interface WorkHttp {
   readonly listIssuePicker: (input: { readonly projectId: string; readonly q?: string; readonly cursor?: string; readonly limit?: number; readonly signal?: AbortSignal }) => Promise<IssuePickerPage>;
   readonly getWorkItem: (projectId: string, itemId: string) => Promise<NativeIssue>;
   readonly getWorkItemById: (itemId: string, signal?: AbortSignal) => Promise<NativeIssue>;
-  readonly getWorkItemConversation: (projectId: string, itemId: string) => Promise<ConversationSnapshot>;
+  readonly getWorkItemConversation: (projectId: string, itemId: string, metadata?: boolean) => Promise<ConversationSnapshot>;
   readonly patchWorkItem: (input: {
     projectId: string;
     itemId: string;
@@ -498,7 +500,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     signal?: AbortSignal,
     keepalive = false,
   ): Promise<A> {
-    const headers: Record<string, string> = { Accept: "application/json" };
+    const headers: Record<string, string> = { Accept: "application/json", "X-Detent-Archive-Read": "1" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (MUTATIONS.has(method)) headers["X-CSRF-Token"] = options.csrfToken;
     let response: Response;
@@ -529,8 +531,12 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     }
     if (!response.ok) {
       if (!signal?.aborted && [401, 403].includes(response.status)) options.onAuthorizationRejected?.();
-      throw errorFromBody(response.status, parsed);
+      const failure = errorFromBody(response.status, parsed);
+      if (failure.code === "archive_unavailable") throw new ArchiveUnavailable("missing section");
+      throw failure;
     }
+    const archived = typeof parsed === "object" && parsed !== null && "archive" in parsed;
+    parsed = await resolveArchivedResponse(parsed, target, doFetch, options, signal);
     try {
       const decoded = Schema.decodeUnknownSync(schema)(parsed);
       if (MUTATIONS.has(method) && schema.ast === NativeIssue.ast) {
@@ -538,6 +544,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
       }
       return decoded;
     } catch (cause) {
+      if (archived) throw new ArchiveUnavailable("schema mismatch");
       throw new WorkApiError({
         status: response.status,
         code: "invalid",
@@ -640,8 +647,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
       send(NativeIssue, "GET", url(itemBase(projectId, itemId))),
     getWorkItemById: (itemId, signal) =>
       send(NativeIssue, "GET", url(`${options.apiBase}/work-items/${encodeURIComponent(itemId)}`), undefined, signal),
-    getWorkItemConversation: (projectId, itemId) =>
-      send(ConversationSnapshot, "GET", url(`${itemBase(projectId, itemId)}/conversation`)),
+    getWorkItemConversation: (projectId, itemId, metadata) =>
+      send(ConversationSnapshot, "GET", url(`${itemBase(projectId, itemId)}/conversation`, metadata === true ? { metadata: "true" } : undefined)),
     listLabels: (projectId) =>
       send(NativeLabelList, "GET", url(`${projectBase(projectId)}/labels`)),
     patchWorkItem: (input) =>

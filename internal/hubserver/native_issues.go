@@ -311,6 +311,9 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 		result.Issue = s.nativeIssueResponse(result.Issue)
 		return c.JSON(http.StatusOK, result)
 	}
+	if handled, err := s.archiveView(c, c.Param("item"), "issue", nil); handled {
+		return err
+	}
 	issue, _, err := readNativeIssue(ctx, s.database.reader, scope, c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)

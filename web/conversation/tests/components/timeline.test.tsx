@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { webcrypto } from "node:crypto";
+import { archiveFixture } from "../archiveFixture.ts";
+import { decodeArchive } from "../../src/runtime/archiveDecode.ts";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -22,7 +25,7 @@ import {
 /** An unlinked chat: answered by a coordinator turn, with no issue behind it. */
 const unlinked = { conversation: conversation({ work_item_id: null, work_item: null }) };
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 function renderTimeline(
   overrides: Parameters<typeof detail>[0] = {},
@@ -87,8 +90,15 @@ describe("Timeline", () => {
     expect(container.textContent).toContain("The split is ready.");
   });
 
-  it("renders a user bubble and an assistant turn", () => {
-    renderTimeline();
+  it.each(["hot", "archived"])("renders a user bubble and an assistant turn from %s history", async (storage) => {
+    vi.stubGlobal("crypto", webcrypto);
+    const baseline = detail();
+    let messages = baseline.messages;
+    if (storage === "archived") {
+      const archived = await archiveFixture({ messages }, "conversation:conv_example");
+      messages = (await decodeArchive(archived.response(), archived.descriptor) as { messages: typeof messages }).messages;
+    }
+    renderTimeline({ messages });
     expect(screen.getAllByTestId("user-turn")).toHaveLength(1);
     expect(screen.getAllByTestId("assistant-turn")).toHaveLength(1);
   });

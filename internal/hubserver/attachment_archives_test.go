@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,99 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
+
+func TestIssueArchiveViews(t *testing.T) {
+	t.Parallel()
+	f := newHostedSharedFixture(t)
+	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
+	limited := f.user(t, "limited", "member", "limited@example.test", "", "")
+	reporter := f.user(t, "reporter", "reporter", "reporter@example.test", "read", "")
+	var reporterPrincipal string
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id=?", reporter.identity.Subject).Scan(&reporterPrincipal); err != nil {
+		t.Fatal(err)
+	}
+	ref, _, err := attachment.PrepareArchive("org_security", 1, strings.NewReader(`{"schema_version":1,"section_id":"issue","data":{"body":"Archived body"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrf := cloudassert.CSRFToken("shared-"+owner.identity.Subject, "org_security")
+	for number := 1; number <= 2; number++ {
+		item := string(f.seedIssue(t, number))
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_json=json_object('kind','human','principal_id',?) WHERE native_id=?", reporterPrincipal, item); err != nil {
+			t.Fatal(err)
+		}
+		base := f.base + "/attachment-metadata/archives/" + item
+		raw, err := json.Marshal(map[string]any{"reference": ref})
+		if err != nil {
+			t.Fatal(err)
+		}
+		preflight := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: base + "/check", body: string(raw), csrf: csrf})
+		if preflight.Code != http.StatusOK {
+			t.Fatalf("preflight: %d %s", preflight.Code, preflight.Body.String())
+		}
+		raw, err = json.Marshal(ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: base, body: string(raw), csrf: csrf})
+		if stored.Code != http.StatusCreated {
+			t.Fatalf("store: %d %s", stored.Code, stored.Body.String())
+		}
+		_, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO issue_archive_sections(organization_id,project_id,work_item_id,archive_revision,section_id,attachment_id) SELECT organization_id,project_id,work_item_id,?, ?,attachment_id FROM attachment_archive_references WHERE organization_id=? AND project_id=? AND work_item_id=?`, 1, "issue", "org_security", f.project, item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := f.base + "/work-items/" + item
+		response := f.serve(t, hostedSharedRequest{user: &owner, target: path, headers: map[string]string{"X-Detent-Archive-Read": "1"}})
+		if response.Code != http.StatusOK {
+			t.Fatalf("detail: %d %s", response.Code, response.Body.String())
+		}
+		var envelope struct {
+			Archive issueArchiveSection `json:"archive"`
+			Current struct {
+				Body string `json:"body"`
+			} `json:"current"`
+			Projection string `json:"projection"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Archive.WorkItemID != item || envelope.Archive.SHA256 != ref.SHA256 || envelope.Archive.Revision != 1 || envelope.Current.Body != "" || envelope.Projection != "issue" {
+			t.Fatalf("unexpected descriptor: %s", response.Body.String())
+		}
+		for _, test := range []struct {
+			name, suffix string
+			user         *hostedSecurityUser
+			status       int
+		}{
+			{"current section", "?section=issue&revision=1", &owner, http.StatusOK},
+			{"superseded revision", "?section=issue&revision=2", &owner, http.StatusNotFound},
+			{"missing section", "?section=attempts&revision=1", &owner, http.StatusNotFound},
+			{"no section bypass", "", &owner, http.StatusNotFound},
+			{"limited project grant", "?section=issue&revision=1", &limited, http.StatusNotFound},
+			{"reporter private archive", "?section=issue&revision=1", &reporter, http.StatusNotFound},
+		} {
+			t.Run(test.name+item, func(t *testing.T) {
+				read := f.serve(t, hostedSharedRequest{user: test.user, target: base + "/" + ref.SHA256 + test.suffix})
+				if read.Code != test.status {
+					t.Fatalf("read: %d %s", read.Code, read.Body.String())
+				}
+			})
+		}
+		report := f.serve(t, hostedSharedRequest{user: &reporter, target: path, headers: map[string]string{"X-Detent-Archive-Read": "1"}})
+		if report.Code != http.StatusOK || strings.Contains(report.Body.String(), "access_path") || !strings.Contains(report.Body.String(), "private-body-sentinel") {
+			t.Fatalf("reporter detail: %d %s", report.Code, report.Body.String())
+		}
+		access, err := url.Parse(envelope.Archive.AccessPath)
+		if err != nil || access.Query().Get("section") != "issue" || access.Query().Get("revision") != "1" {
+			t.Fatalf("invalid access path: %q", envelope.Archive.AccessPath)
+		}
+		missing := f.serve(t, hostedSharedRequest{user: &owner, target: path + "/attempts", headers: map[string]string{"X-Detent-Archive-Read": "1"}})
+		if missing.Code != http.StatusServiceUnavailable || !strings.Contains(missing.Body.String(), "archive_unavailable") {
+			t.Fatalf("missing history: %d %s", missing.Code, missing.Body.String())
+		}
+	}
+}
 
 func TestAttachmentArchiveQuotaAndRetention(t *testing.T) {
 	t.Parallel()

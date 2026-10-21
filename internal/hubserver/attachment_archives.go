@@ -3,6 +3,8 @@ package hubserver
 import (
 	"context"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 
@@ -128,6 +130,32 @@ func (s *Service) readAttachmentArchive(c echo.Context) error {
 	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, c.Param("item")); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	section := c.QueryParam("section")
+	if section == "" {
+		var count int
+		if err := s.database.reader.QueryRowContext(ctx, `SELECT COUNT(*) FROM issue_archive_sections r JOIN attachments a ON a.id=r.attachment_id WHERE r.organization_id=? AND r.project_id=? AND r.work_item_id=? AND a.sha256=?`, scope.organization, scope.project, c.Param("item"), c.Param("digest")).Scan(&count); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if count != 0 {
+			return s.nativeAPIError(c, nativeNotFound())
+		}
+	}
+
+	if scope.credential.HostedRole == "reporter" {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	if section != "" {
+		descriptor, err := readIssueArchiveSection(ctx, s.database.reader, scope, c.Param("item"), section)
+		if err != nil || descriptor.SHA256 != c.Param("digest") || strconv.FormatInt(descriptor.Revision, 10) != c.QueryParam("revision") {
+			return s.nativeAPIError(c, nativeNotFound())
+		}
+		if strings.HasPrefix(section, "conversation:") {
+			if _, err := s.conversations.loadConversation(ctx, s.database.reader, scope, strings.TrimPrefix(section, "conversation:")); err != nil {
+				return s.nativeAPIError(c, err)
+			}
+		}
+	}
+
 	ref, err := scanAttachmentArchive(s.database.reader.QueryRowContext(ctx, `SELECT a.object_key,a.sha256,a.size,a.uncompressed_size,a.codec,a.schema_version,a.kind,a.retention_class
 FROM attachments a JOIN attachment_archive_references r ON r.attachment_id=a.id
 WHERE r.organization_id=? AND r.project_id=? AND r.work_item_id=? AND a.organization_id=r.organization_id AND a.kind='archive' AND a.sha256=?`, scope.organization, scope.project, c.Param("item"), c.Param("digest")))

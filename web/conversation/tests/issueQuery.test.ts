@@ -6,7 +6,7 @@ import type { WorkHttp } from "../src/app/work/lib/workHttp.ts";
 
 afterEach(() => clearQueryCache());
 
-function recordingHttp(projectId: string) {
+function recordingHttp(projectId: string, archived = false) {
   let settled = 0;
   const calls: { name: string; project: string | null; wave: number }[] = [];
   const call = <T>(name: string, project: string | null, value: T) => {
@@ -14,7 +14,7 @@ function recordingHttp(projectId: string) {
     return new Promise<T>((resolve) => setTimeout(() => { settled++; resolve(value); }, 0));
   };
   const http = {
-    getWorkItemById: (id: string) => call("item", null, { work_item_id: id, project_id: projectId }),
+    getWorkItemById: (id: string) => call("item", null, { work_item_id: id, project_id: projectId, ...(archived ? { archive_summary: { revision: "1", attempts: [] } } : {}) }),
     getProject: (id: string) => call("project", id, { project_id: id, states: [] }),
     listAttempts: (id: string) => call("attempts", id, { items: [{ attempt_id: `attempt_${id}` }] }),
     listHistory: (input: { projectId: string }) => call("history", input.projectId, { items: [] }),
@@ -26,9 +26,19 @@ function recordingHttp(projectId: string) {
 }
 
 describe("issue first paint", () => {
+  it("loads the archived summary and live comments without opening run or Change sections", async () => {
+    const { http, calls } = recordingHttp("project_archived", true);
+    const data = await readIssue(http, "wi_archived", null)(new AbortController().signal, () => {});
+    expect(data?.issue.archive_summary?.revision).toBe("1");
+    expect(data?.attempts).toEqual([]);
+    expect(data?.changes[0]?.record.change_id).toBe("change_1");
+    expect(calls.map((entry) => entry.name)).toContain("comments");
+    expect(calls.map((entry) => entry.name)).not.toContain("attempts");
+    expect(calls.map((entry) => entry.name)).not.toContain("change");
+  });
   it.each([
     { name: "an unknown project", hint: undefined, waves: 2 },
-    { name: "a known project", hint: "project_a", waves: 1 },
+    { name: "a known project", hint: "project_a", waves: 2 },
     { name: "a stale project hint", hint: "project_old", waves: 2 },
   ])("takes $waves sequential request waves for $name and loads change details after it", async ({ hint, waves }) => {
     const workItemId = `wi_${hint ?? "none"}`;
