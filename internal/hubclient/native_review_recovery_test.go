@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -30,12 +32,13 @@ import (
 
 type recoveringReviewAgent struct {
 	committingAgent
-	failStage      string
-	available      atomic.Bool
-	sourceCalls    atomic.Int32
-	securityCalls  atomic.Int32
-	validatorCalls atomic.Int32
-	malformed      bool
+	failStage       string
+	available       atomic.Bool
+	sourceCalls     atomic.Int32
+	securityCalls   atomic.Int32
+	validatorCalls  atomic.Int32
+	malformed       bool
+	securityVerdict string
 }
 
 func (a *recoveringReviewAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
@@ -64,7 +67,11 @@ func (a *recoveringReviewAgent) RunTurn(ctx context.Context, request runner.Agen
 		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 4242, GroupID: 4242, StartedAt: time.Now()}}); err != nil {
 			return runner.AgentTurnResult{}, err
 		}
-		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: `{"verdict":"pass","summary":"Reviewed immutable source","findings":[]}`}); err != nil {
+		output := `{"verdict":"pass","summary":"Reviewed immutable source","findings":[]}`
+		if a.securityVerdict == "rework" {
+			output = `{"verdict":"fail","summary":"Authorization bypass","findings":[{"id":"auth","severity":"p1","certainty":"confirmed","body":"Authorization bypass","path":"source.go"}]}`
+		}
+		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: output}); err != nil {
 			return runner.AgentTurnResult{}, err
 		}
 		return runner.AgentTurnResult{ThreadID: "security-thread", TurnID: "security-turn", AuthenticationMode: "api_key"}, nil
@@ -84,6 +91,7 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 	for _, test := range []struct {
 		name, stage, verdict string
 		refusal              string
+		publicationField     string
 		restore, malformed   bool
 		hostHandoff, stopped bool
 	}{
@@ -91,6 +99,10 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 		{name: "tool-directed host publication handoff", hostHandoff: true},
 		{name: "source", stage: "source"},
 		{name: "security", stage: "security"},
+		{name: "security reviewer version", stage: "security", publicationField: "run.reviewer_version"},
+		{name: "security reviewer digest", stage: "security", publicationField: "run.reviewer_digest"},
+		{name: "security source rejection", stage: "security", publicationField: "run.head_sha"},
+		{name: "security findings", stage: "security", verdict: "rework"},
 		{name: "validator", stage: "validator"},
 		{name: "stopped published source", stage: "validator", stopped: true},
 		{name: "restored security", stage: "security", restore: true},
@@ -154,6 +166,60 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 				}
 			})
 			provider := &recoveringReviewAgent{committingAgent: committingAgent{staged: true, complete: true, validator: "pass"}, failStage: test.stage, malformed: test.malformed}
+			var rejectedVersion tracker.ChangeVersion
+			var publicationRefusals atomic.Int32
+			if test.publicationField != "" {
+				provider.failStage = "publication"
+				transport := h.native.client.httpClient.Transport
+				h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/reviews") && !provider.available.Load() {
+						var review tracker.ReviewChange
+						if err := json.NewDecoder(request.Body).Decode(&review); err != nil {
+							return nil, err
+						}
+						if review.SecurityAudit != nil {
+							switch test.publicationField {
+							case "run.reviewer_version":
+								review.SecurityAudit.Run.ReviewerVersion = "old"
+							case "run.reviewer_digest":
+								review.SecurityAudit.Run.ReviewerDigest = "old"
+							case "run.head_sha":
+								review.SecurityAudit.Run.HeadSHA = strings.Repeat("a", 40)
+							}
+						}
+						raw, err := json.Marshal(review)
+						if err != nil {
+							return nil, err
+						}
+						if err := request.Body.Close(); err != nil {
+							return nil, err
+						}
+						request.Body = io.NopCloser(bytes.NewReader(raw))
+						request.ContentLength = int64(len(raw))
+						response, err := transport.RoundTrip(request)
+						if err != nil {
+							return nil, err
+						}
+						if response.StatusCode == http.StatusUnprocessableEntity {
+							publicationRefusals.Add(1)
+							if test.publicationField == "run.reviewer_digest" {
+								data, err := io.ReadAll(response.Body)
+								if err != nil {
+									return nil, err
+								}
+								if err := response.Body.Close(); err != nil {
+									return nil, err
+								}
+								data = bytes.ReplaceAll(data, []byte("run.reviewer_version"), []byte("run.reviewer_digest"))
+								response.Body = io.NopCloser(bytes.NewReader(data))
+								response.ContentLength = int64(len(data))
+							}
+						}
+						return response, nil
+					}
+					return transport.RoundTrip(request)
+				})
+			}
 			var previousVersion tracker.ChangeVersion
 			if test.hostHandoff {
 				info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
@@ -207,6 +273,8 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 			if test.verdict != "" {
 				if test.stage == "source" {
 					provider.sourceVerdict = test.verdict
+				} else if test.stage == "security" {
+					provider.securityVerdict = test.verdict
 				} else {
 					provider.validator = test.verdict
 				}
@@ -249,6 +317,29 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 					t.Fatalf("observe recovery: deferred=%v source=%d security=%d validator=%d error=%v", deferred, provider.sourceCalls.Load(), provider.securityCalls.Load(), provider.validatorCalls.Load(), err)
 				}
 				if state.Retry[issue.ID].CompletionDeferred {
+					if !deferred && test.publicationField != "" {
+						owner := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+						owner.mu.Lock()
+						outcome := owner.preparedOutcome
+						owner.mu.Unlock()
+						if publicationRefusals.Load() == 0 {
+							t.Fatal("audit publication rejection was not exercised")
+						}
+						if test.publicationField == "run.head_sha" {
+							if outcome != "failed" {
+								t.Fatalf("source rejection became reviewer continuation: %s", outcome)
+							}
+							return
+						}
+						if outcome != "interrupted" {
+							t.Fatalf("reviewer rejection failed the source attempt: outcome=%s", outcome)
+						}
+						detail, err := h.admin.currentChange(deadline, current.WorkItemID)
+						if err != nil || len(detail.Versions) != 1 || len(detail.Reviews) != 0 || detail.Summary.Status == "reviewed" {
+							t.Fatalf("rejected audit changed published source or became accepted: %+v, %v", detail, err)
+						}
+						rejectedVersion = detail.Versions[0]
+					}
 					if !deferred && test.stopped {
 						stopOrchestrator()
 						owner := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
@@ -422,6 +513,9 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 						t.Fatalf("invalid recovery: deferred=%v versions=%d reviews=%+v writable=%d", deferred, len(detail.Versions), detail.Reviews, provider.writableCalls)
 					}
 					version := detail.Versions[len(detail.Versions)-1]
+					if test.publicationField != "" && (version.ID != rejectedVersion.ID || version.BaseSHA != rejectedVersion.BaseSHA || version.HeadSHA != rejectedVersion.HeadSHA || detail.Reviews[0].SecurityAudit == nil || detail.Reviews[0].SecurityAudit.Run.ReviewerVersion != securityaudit.ReviewerVersion || detail.Reviews[0].SecurityAudit.Run.ReviewerDigest != securityaudit.ReviewerDigest()) {
+						t.Fatal("reviewer continuation replaced source or accepted outdated audit evidence")
+					}
 					if test.hostHandoff {
 						if detail.Versions[0].ID != previousVersion.ID || version.HeadSHA == previousVersion.HeadSHA || version.Validation == nil || version.Validation.HeadSHA != version.HeadSHA || version.Validation.TreeSHA == "" || version.Source == nil || version.Source.HeadSHA != version.HeadSHA {
 							t.Fatal("handoff lost old source or failed to validate the new source")
