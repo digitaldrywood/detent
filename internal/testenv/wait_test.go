@@ -18,12 +18,11 @@ func TestWaitContextInsideSynctestBubble(t *testing.T) {
 }
 
 type recordingTB struct {
-	ctx     context.Context
 	failure string
 }
 
-func (r *recordingTB) Helper()                  {}
-func (r *recordingTB) Context() context.Context { return r.ctx }
+func (r *recordingTB) Helper()        {}
+func (r *recordingTB) Cleanup(func()) {}
 func (r *recordingTB) Fatalf(format string, args ...any) {
 	r.failure = fmt.Sprintf(format, args...)
 }
@@ -46,7 +45,7 @@ func TestWaitUntil(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			tb := &recordingTB{ctx: tt.ctx}
+			tb := &recordingTB{}
 			calls := 0
 			WaitUntil(tb, tt.ctx, func() error {
 				calls++
@@ -69,7 +68,7 @@ func TestWaitContextEndsWithTest(t *testing.T) {
 	t.Parallel()
 	parent, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	tb := &recordingTB{ctx: parent}
+	tb := &recordingTB{}
 	ctx := WaitContext(t, parent)
 	if _, hasDeadline := t.Deadline(); hasDeadline {
 		if _, ok := ctx.Deadline(); !ok {
