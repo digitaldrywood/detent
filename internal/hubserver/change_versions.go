@@ -203,7 +203,7 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	}
 	if version.Source != nil {
 		if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
-			ref, err := preparedChangeContent(ctx, string(scope.organization), request.SourceBundle)
+			ref, err := preparedChangeContent(ctx, tx, string(scope.organization), request.SourceBundle)
 			if err != nil {
 				return nil, err
 			}

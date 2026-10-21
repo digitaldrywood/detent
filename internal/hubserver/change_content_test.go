@@ -23,6 +23,7 @@ import (
 )
 
 type changeObjectFixture struct {
+	writes  int
 	mu      sync.Mutex
 	objects map[string][]byte
 }
@@ -40,6 +41,7 @@ func (f *changeObjectFixture) call(ctx context.Context, request entryauthority.C
 		f.objects = make(map[string][]byte)
 	}
 	if request.Write {
+		f.writes++
 		if int64(len(request.Data)) != request.Reference.CompressedSize || artifact.Digest(request.Data) != request.Reference.SHA256 {
 			return nil, artifact.ErrIntegrity
 		}
