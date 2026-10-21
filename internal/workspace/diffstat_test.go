@@ -525,8 +525,10 @@ func TestLocalGitSeedReviewHeadUsesPullRequestRepository(t *testing.T) {
 		stalePullRef    bool
 		missingBranch   bool
 		wrongBranchHead bool
+		repositoryURL   bool
 	}{
 		{name: "pull ref in PR repository"},
+		{name: "Hub repository URL", repositoryURL: true},
 		{name: "stale pull ref uses PR repository branch", stalePullRef: true},
 		{name: "missing PR repository branch cannot use fork branch", stalePullRef: true, missingBranch: true},
 		{name: "wrong PR repository branch cannot use fork branch", stalePullRef: true, wrongBranchHead: true},
@@ -571,6 +573,9 @@ func TestLocalGitSeedReviewHeadUsesPullRequestRepository(t *testing.T) {
 			}
 			runGit(t, info.Path, "config", "url."+base+".insteadOf", "https://github.com/example-org/base.git")
 			issue.PullRequestRepository = "example-org/base"
+			if tt.repositoryURL {
+				issue.PullRequestRepository = "https://github.com/example-org/base"
+			}
 			issue.PullRequestHeadSHA = wanted
 			issue.PullRequestNumber = 119
 			issue.PullRequestBranch = "published-review"

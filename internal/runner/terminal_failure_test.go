@@ -31,6 +31,7 @@ func TestNativeTerminalFailureSignatureEvidence(t *testing.T) {
 		{"missing hook shell", &workspace.HookError{Hook: "after_create", ExitCode: -1, Err: &shell.UnavailableError{Shell: "bash"}}, "workspace_hook", `workspace hook after_create failed (exit status -1): hook_shell_unavailable: shell "bash" is unavailable on this runner`, ""},
 		{"unlabelled hook output", &workspace.HookError{Hook: "after_create", ExitCode: 127, Output: "correcthorsebatterystaple"}, "workspace_hook", "workspace hook after_create failed (exit status 127)", ""},
 		{"issue configuration", &IssueConfigurationError{Field: "effort", Reason: "unsupported value"}, "issue_configuration", "agent override rejected: effort: unsupported value", ""},
+		{"workspace recovery", fmt.Errorf("%w: %w", ErrWorkspacePreparation, ErrNativeRecoveryRequired), "workspace_hook", "workspace preparation failed: native checkpoint requires recovery", ""},
 		{"source recovery", fmt.Errorf("%w: publication source changed before reconciliation", ErrNativeRecoveryRequired), "source_recovery", "native checkpoint requires recovery: publication source changed before reconciliation", ""},
 		{"startup timeout", ErrMergeWorkerStartupTimeout, "backend_startup", "merge worker startup timed out", ""},
 		{"startup failure", backendcapacity.NewError(backendcapacity.Scope{}, backendcapacity.Details{Kind: backendcapacity.StartupFailureKind}, errors.New("start backend failed")), "backend_startup", "start backend failed", ""},
