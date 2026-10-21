@@ -208,11 +208,6 @@ func (s *Service) archiveStorageBinding(c echo.Context) error {
 	if b.Validate() != nil || attachment.ValidateArchiveEndpoint(ctx, b.Endpoint) != nil {
 		return attachmentError(c, http.StatusBadRequest, "invalid_binding", "Invalid storage binding endpoint or location")
 	}
-	s.attachmentMu.Lock()
-	defer s.attachmentMu.Unlock()
-	if err := s.ensureLegacyArchiveBinding(ctx, organization.ID); err != nil {
-		return attachmentError(c, http.StatusServiceUnavailable, "archive_storage_unavailable", "Archive storage is unavailable")
-	}
 	b.ID = "validating"
 	storage, err := s.bindingStorage(ctx, b)
 	if err != nil || storage.ConfigureArchiveReads(ctx, []string{s.config.PublicURL}) != nil {
@@ -223,6 +218,11 @@ func (s *Service) archiveStorageBinding(c echo.Context) error {
 		return attachmentError(c, http.StatusBadGateway, "archive_storage_unavailable", "Archive storage is unavailable")
 	}
 	b.Versioned = &versioned
+	s.attachmentMu.Lock()
+	defer s.attachmentMu.Unlock()
+	if err := s.ensureLegacyArchiveBinding(ctx, organization.ID); err != nil {
+		return attachmentError(c, http.StatusServiceUnavailable, "archive_storage_unavailable", "Archive storage is unavailable")
+	}
 	if err := s.auth.audit(ctx, claims.Subject, organization.ID, "archive_storage_bound"); err != nil {
 		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Storage audit is unavailable")
 	}

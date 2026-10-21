@@ -31,6 +31,89 @@ func (f archiveFailureTransport) RoundTrip(r *http.Request) (*http.Response, err
 	return f.next.RoundTrip(r)
 }
 
+type archiveValidationTransport struct {
+	next  http.RoundTripper
+	check func(*http.Request) error
+}
+
+func (f archiveValidationTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if err := f.check(r); err != nil {
+		return nil, err
+	}
+	return f.next.RoundTrip(r)
+}
+
+func TestArchiveBindingValidationIsolation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, stage, mutation string
+		status, bindings      int
+	}{
+		{name: "lifecycle discovery", stage: "lifecycle", status: http.StatusOK, bindings: 1},
+		{name: "versioning discovery", stage: "versioning", status: http.StatusOK, bindings: 1},
+		{name: "organization deleted during discovery", stage: "versioning", mutation: "deleting", status: http.StatusServiceUnavailable},
+		{name: "binding replaced during discovery", stage: "versioning", mutation: "rebind", status: http.StatusConflict, bindings: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			store := newSpacesFixture(t, false)
+			f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
+			f.service.config.ArchiveCredentials = func(context.Context, string, string) (attachment.Credentials, error) {
+				return attachment.Credentials{AccessKeyID: store.config().AccessKeyID, SecretAccessKey: store.config().SecretAccessKey}, nil
+			}
+			alice := newBrowser(t, f.service.Handler())
+			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			_, page := alice.get("/organizations/org_alpha/organization")
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleting' WHERE id='org_beta'"); err != nil {
+				t.Fatal(err)
+			}
+			checks := 0
+			f.service.config.attachmentTransport = archiveValidationTransport{next: store.transport, check: func(r *http.Request) error {
+				if !r.URL.Query().Has(test.stage) {
+					return nil
+				}
+				checks++
+				if !f.service.attachmentMu.TryLock() {
+					t.Error("customer capability discovery holds the shared attachment lock")
+					return errors.New("attachment lock unavailable during discovery")
+				}
+				f.service.attachmentMu.Unlock()
+				if err := f.service.finishDeletion(r.Context(), "org_beta"); err != nil {
+					return err
+				}
+				switch test.mutation {
+				case "deleting":
+					_, err := f.service.registry.store.db.ExecContext(r.Context(), "UPDATE organizations SET state='deleting' WHERE id='org_alpha'")
+					return err
+				case "rebind":
+					_, err := f.service.saveArchiveBinding(r.Context(), attachment.StorageBinding{Organization: "org_alpha", Backend: "s3", Endpoint: "https://8.8.8.8", Region: "region", Bucket: "private", Prefix: "winner/", CredentialReference: "reference"}, 0)
+					return err
+				}
+				return nil
+			}}
+			raw := `{"backend":"s3","endpoint":"https://1.1.1.1","region":"region","bucket":"private","credential_reference":"reference","expected_revision":0}`
+			response := attachmentRequest(t, alice, http.MethodPut, "/api/cloud/organizations/org_alpha/archive-storage", strings.NewReader(raw), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrfFrom(t, page)})
+			if response.Code != test.status || checks != 1 {
+				t.Fatalf("binding=%d checks=%d %s", response.Code, checks, response.Body.String())
+			}
+			organization, err := f.service.registry.Organization(t.Context(), "org_beta")
+			if err != nil || organization.State != "deleted" {
+				t.Fatalf("other organization deletion stalled: organization=%+v error=%v", organization, err)
+			}
+			var bindings int
+			if err := f.service.registry.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM archive_storage_bindings WHERE organization_id='org_alpha'").Scan(&bindings); err != nil || bindings != test.bindings {
+				t.Fatalf("bindings=%d error=%v", bindings, err)
+			}
+			if test.mutation == "rebind" {
+				binding, err := f.service.currentArchiveBinding(t.Context(), "org_alpha")
+				if err != nil || binding.Prefix != "winner/" {
+					t.Fatal("stale discovery replaced the newer binding")
+				}
+			}
+		})
+	}
+}
+
 func TestArchiveLegacyBindingSnapshot(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
