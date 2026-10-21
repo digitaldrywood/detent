@@ -281,7 +281,7 @@ describe("MCP setup", () => {
     };
     renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_example", csrfToken: activeAccount.csrf_token }, account: activeAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
     if (mount) {
-      await screen.findByRole("heading", { name: "Your personal keys" });
+      await screen.findByRole("tab", { name: /^Personal / });
       expect(screen.queryByRole("heading", { name: "Member keys" })).toBeNull();
       expect(screen.queryByRole("heading", { name: "Personal key policy" })).toBeNull();
       expect(fetch.mock.calls.some(([url]) => /external-keys|key-policy|service-keys/.test(String(url)))).toBe(false);
@@ -488,8 +488,10 @@ describe("personal keys and org controls", () => {
     });
     renderSidebarNav("/settings/mcp", { ...client, account: { ...account, actor: { ...account.actor, can_manage: canManage, role } } } as ConversationClient, <SettingsRoute section="mcp" />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Create key" })).toHaveProperty("disabled", false));
-    for (const title of ["API keys & MCP", "Your personal keys", "Connect an agent"]) expect(screen.getByRole("heading", { name: title })).toBeTruthy();
-    for (const title of ["Organization service keys", "Member keys"]) expect(Boolean(screen.queryByRole("heading", { name: title }))).toBe(canManage);
+    for (const title of ["API keys & MCP", "Connect an agent"]) expect(screen.getByRole("heading", { name: title })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Personal 1" })).toBeTruthy();
+    expect(Boolean(screen.queryByRole("tab", { name: "Service 0" }))).toBe(canManage);
+    expect(Boolean(screen.queryByRole("heading", { name: "Member keys" }))).toBe(canManage);
     expect(screen.getAllByRole("button", { name: "Create key" })).toHaveLength(1);
     expect(screen.getAllByRole("textbox", { name: "MCP endpoint value" })).toHaveLength(1);
     expect(screen.queryByRole("heading", { name: "Which key do I need?" })).toBeNull();
@@ -614,6 +616,7 @@ describe("personal keys and org controls", () => {
       ] : [] }));
     });
     renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
+    if (kind === "service") fireEvent.click(await screen.findByRole("tab", { name: "Service 2" }));
     fireEvent.click(await screen.findByRole("button", { name: "Connect My agent" }));
     const dialogElement = screen.getByRole("dialog");
     const dialog = within(dialogElement);
@@ -661,13 +664,64 @@ describe("personal keys and org controls", () => {
     expect(screen.getByRole("heading", { name: "Connect Other agent" })).toBeTruthy();
     expect(within(screen.getByRole("dialog")).getByText("Waiting for the first call…")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
-    const section = screen.getByRole("heading", { name: kind === "personal" ? "Your personal keys" : "Organization service keys" }).closest("section")!;
-    fireEvent.click(within(section).getByRole("button", { name: "Show revoked and expired keys" }));
-    expect(within(section).getByText("Expired agent")).toBeTruthy();
-    expect(within(section).getByText("Revoked agent")).toBeTruthy();
-    expect(within(section).queryByRole("button", { name: /Connect/ })).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show revoked and expired" }));
+    const table = within(screen.getByRole("table", { name: kind === "personal" ? "Personal keys" : "Service keys" }));
+    for (const name of ["Expired agent", "Revoked agent"]) {
+      const row = within(table.getByText(name).closest("tr")!);
+      expect(row.queryByRole("button", { name: /Connect|More actions/ })).toBeNull();
+    }
+    expect(table.getByRole("button", { name: "Connect My agent" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show revoked and expired" }));
+    expect(table.queryByText("Expired agent")).toBeNull();
+    expect(table.queryByText("Revoked agent")).toBeNull();
     expect(fetch.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
     expect(new Set(fetch.mock.calls.filter(([url]) => /api-keys|service-keys/.test(String(url))).map(([url]) => String(url)))).toEqual(new Set(["/api/cloud/account/api-keys", `${account.api_base.replace("/api/v2", "/api/cloud")}/service-keys`]));
+  });
+
+  it("switches compact key tables with active counts and expands effective reach only on request", async () => {
+    const lastUsed = new Date(Date.now() - 120_000).toISOString();
+    const personal = [
+      { ...key, last_used_at: lastUsed, effective_reach: [reach, ...["pending", "blocked", "inactive"].map((status) => ({ ...reach, organization_id: status, name: `${status} org`, status })), { ...reach, organization_id: "empty", name: "Empty org", projects: [] }] },
+      { ...key, id: "project", name: "Project agent", access_context: "project", organizations: [{ organization_id: reach.organization_id, project_access: "project", project_ids: [reach.projects[0]!.id] }] },
+      { ...key, id: "revoked", name: "Old personal", revoked_at: "2020-01-01T00:00:00Z" },
+    ];
+    const services = [
+      { ...key, id: "service", name: "CI agent", kind: "service", access_context: "selected", organizations: [{ organization_id: reach.organization_id, project_access: "all", project_ids: [] }] },
+      { ...key, id: "expired", name: "Old service", kind: "service", expires_at: "2020-01-01T00:00:00Z" },
+    ];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const path = String(url);
+      return new Response(JSON.stringify(path.endsWith("key-context") ? context : path.endsWith("key-policy") ? { personal_keys: "allowed" } : { keys: path.endsWith("/account/api-keys") ? personal : path.endsWith("service-keys") ? services : [] }));
+    });
+    renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
+    expect(await screen.findByRole("tab", { name: "Personal 2" })).toHaveProperty("ariaSelected", "true");
+    expect(screen.getByRole("tab", { name: "Service 1" })).toBeTruthy();
+    const personalTable = within(screen.getByRole("table", { name: "Personal keys" }));
+    expect(personalTable.getByText("All my orgs · 5")).toBeTruthy();
+    expect(personalTable.getByText(`One project: ${reach.projects[0]!.name}`)).toBeTruthy();
+    expect(personalTable.getByText("2m ago").title).toBe(new Date(lastUsed).toLocaleString());
+    expect(personalTable.queryByText(/Effective reach today/)).toBeNull();
+    const expand = personalTable.getByRole("button", { name: "Expand My agent" });
+    fireEvent.click(expand);
+    expect(expand.getAttribute("aria-expanded")).toBe("true");
+    expect(personalTable.getByText("Effective reach today · All my orgs")).toBeTruthy();
+    for (const status of ["Awaiting approval", "Blocked", "Inactive", "No project access"]) expect(personalTable.getByText(status)).toBeTruthy();
+    expect(personalTable.getByText(`${reach.projects[0]!.name} (write)`)).toBeTruthy();
+    fireEvent.click(personalTable.getByRole("button", { name: "Collapse My agent" }));
+    expect(personalTable.queryByText(/Effective reach today/)).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Service 1" }));
+    await waitFor(() => expect(screen.queryByRole("table", { name: "Personal keys" })).toBeNull());
+    const serviceTable = within(await screen.findByRole("table", { name: "Service keys" }));
+    expect(serviceTable.getByText("All org projects")).toBeTruthy();
+    expect(screen.getByText(`Service keys act as ${account.organization.name} for CI, bots and team servers. Owners and admins manage them; they keep working when their creator leaves.`)).toBeTruthy();
+    expect(serviceTable.queryByText("Old service")).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show revoked and expired" }));
+    expect(serviceTable.getByText(/^Expired /)).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Service 1" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: "Personal 2" }));
+    expect(screen.getByRole("table", { name: "Personal keys" }).textContent).toContain("Old personal");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show revoked and expired" }));
+    expect(screen.queryByText("Old personal")).toBeNull();
   });
 
   it.each([undefined, "personal", "service"] as const)("checks connection identity for %s MCP prompts without changing REST setup", (kind) => {
@@ -730,6 +784,10 @@ describe("personal keys and org controls", () => {
       }
       fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Agent key" } });
     }
+    if (flow === "existing" && kind === "service") {
+      fireEvent.click(screen.getByRole("tab", { name: "Service 2" }));
+      await screen.findByRole("button", { name: "Connect My agent" });
+    }
     vi.useFakeTimers();
     try {
       await act(async () => { fireEvent.click(screen.getByRole("button", { name: flow === "created" ? `Create ${kind} key` : "Connect My agent" })); });
@@ -766,7 +824,7 @@ describe("personal keys and org controls", () => {
   it("redirects the old personal-key URL to the shared page", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => new Response(JSON.stringify(String(url).endsWith("key-context") ? context : String(url).endsWith("key-policy") ? { personal_keys: "allowed" } : { keys: [] })));
     const { router } = renderSidebarNav("/settings/api-keys", client, null, true);
-    await screen.findByRole("heading", { name: "Your personal keys" });
+    await screen.findByRole("tab", { name: /^Personal / });
     expect(router.state.location.pathname).toBe("/settings/mcp");
     expect(screen.queryByRole("button", { name: "API keys" })).toBeNull();
   });
@@ -782,26 +840,29 @@ describe("personal keys and org controls", () => {
       return new Response(JSON.stringify({ keys: ownList ? [{ ...key, kind, ...(revoked ? { revoked_at: "2026-10-09T00:00:00Z" } : {}) }] : [] }));
     });
     renderSidebarNav("/settings/api-keys", client, <SettingsRoute section="api-keys" />);
+    if (kind === "service") fireEvent.click(await screen.findByRole("tab", { name: "Service 1" }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "More actions for My agent" }));
     if (kind === "personal") {
-      fireEvent.click(await screen.findByRole("button", { name: "Connect My agent" }));
-      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Rotate this key" }));
-      expect(screen.getByRole("alertdialog")).toBeTruthy();
+      await user.click(await screen.findByRole("menuitem", { name: "Rotate token" }));
+      expect(screen.getByRole("alertdialog").textContent).toContain("Rotate My agent?");
       expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
       fireEvent.click(screen.getByRole("button", { name: "Rotate key" }));
       await screen.findByLabelText("New API key");
       fireEvent.click(screen.getByRole("button", { name: "Done" }));
+      await user.click(screen.getByRole("button", { name: "More actions for My agent" }));
     } else {
-      await screen.findByRole("button", { name: "Revoke My agent" });
-      expect(screen.queryByRole("button", { name: "Rotate My agent" })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: "Rotate token" })).toBeNull();
     }
-    fireEvent.click(await screen.findByRole("button", { name: "Revoke My agent" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Revoke" }));
+    expect(screen.getByRole("alertdialog").textContent).toContain("Revoke My agent?");
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Revoke key" }));
-    await screen.findByText(`No active ${kind} keys`);
+    await screen.findByText(`No active ${kind} keys. Create a key for your agent or integration.`);
     expect(fetch.mock.calls.some(([url, init]) => url === "/api/cloud/account/api-keys/personal1/rotate" && init?.method === "POST")).toBe(kind === "personal");
     expect(fetch.mock.calls.some(([url, init]) => url === (kind === "personal" ? "/api/cloud/account/api-keys/personal1" : `${account.api_base.replace("/api/v2", "/api/cloud")}/service-keys/personal1`) && init?.method === "DELETE")).toBe(true);
-    const section = screen.getByRole("heading", { name: kind === "personal" ? "Your personal keys" : "Organization service keys" }).closest("section")!;
-    fireEvent.click(within(section).getByRole("button", { name: "Show revoked and expired keys" }));
-    expect(within(section).getByText("Revoked")).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show revoked and expired" }));
+    expect(screen.getByRole("table", { name: kind === "personal" ? "Personal keys" : "Service keys" }).textContent).toContain("Revoked");
   });
 
   it("loads the next member-key page and includes its pending keys", async () => {
@@ -834,7 +895,8 @@ describe("personal keys and org controls", () => {
       return new Response(JSON.stringify({ keys: path.endsWith("service-keys") ? [{ ...key, id: "service1", name: "Org integration", kind: "service", access_context: "selected", organizations: [{ organization_id: account.organization.id, project_access: "all", project_ids: null }] }] : [{ ...key, effective_reach: [{ ...reach, status }] }] }));
     });
     renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
-    await screen.findByRole("button", { name: "Revoke Org integration" });
+    fireEvent.click(await screen.findByRole("tab", { name: "Service 1" }));
+    expect(screen.getByRole("button", { name: "More actions for Org integration" })).toBeTruthy();
     expect(screen.getByRole("textbox", { name: "MCP endpoint value" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Copy MCP setup prompt" })).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Approve My agent" }));
