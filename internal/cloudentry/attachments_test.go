@@ -107,14 +107,14 @@ func newSpacesFixture(t *testing.T, public bool) *spacesFixture {
 			if r.Header.Get("Content-Type") != "application/gzip" && r.Header.Get("If-None-Match") != "*" {
 				t.Error("upload lacks conditional put")
 			}
-			if _, exists := f.objects[key]; exists {
-				w.WriteHeader(http.StatusPreconditionFailed)
-				return
-			}
 			content, err := io.ReadAll(r.Body)
 			if err != nil {
 				t.Error(err)
 				w.WriteHeader(500)
+				return
+			}
+			if previous, exists := f.objects[key]; exists && (r.Header.Get("Content-Type") != "application/gzip" || !bytes.Equal(content, previous.content)) {
+				w.WriteHeader(http.StatusPreconditionFailed)
 				return
 			}
 			f.objects[key] = spacesObject{content: content, created: time.Now()}

@@ -14,7 +14,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/diffbody"
@@ -324,39 +323,6 @@ func (s *Service) maintainAttemptDiffBodies(ctx context.Context, organization Or
 		}
 	}
 	return len(batch.Files) > 0, nil
-}
-
-func (s *Service) sweepDiffBodyOrphans(ctx context.Context, organization Organization) error {
-	prefix, err := attachment.OrganizationPrefix(organization.ID)
-	if err != nil {
-		return err
-	}
-	prefix += "attempt-diffs/"
-	return s.attachments.Walk(ctx, prefix, func(object attachment.Object) error {
-		if object.CreatedAt.After(s.config.now().Add(-attachment.OrphanTTL)) {
-			return nil
-		}
-		status, raw, err := s.serviceCall(ctx, organization, "/internal/v1/diff-bodies/exists", map[string]string{"key": object.Key}, nil)
-		if err != nil {
-			return err
-		}
-		if status != http.StatusOK {
-			return errors.New("diff body existence unavailable")
-		}
-		var value struct {
-			Exists *bool `json:"exists"`
-		}
-		if err := json.Unmarshal(raw, &value); err != nil {
-			return err
-		}
-		if value.Exists == nil {
-			return errors.New("diff body existence missing")
-		}
-		if *value.Exists {
-			return nil
-		}
-		return s.attachments.Delete(ctx, object.Key)
-	})
 }
 
 func (s *Service) maintainOrganizationDiffBodies(ctx context.Context) {
