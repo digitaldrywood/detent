@@ -590,6 +590,7 @@ export type RunnerLease = typeof RunnerLease.Type;
 export const RunnerAvailability = Schema.Struct({
   timezone: Schema.String,
   windows: Schema.Array(Schema.String),
+  window_slots: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Number))),
   hard_deadline: Schema.String,
 });
 export type RunnerAvailability = typeof RunnerAvailability.Type;
@@ -601,6 +602,7 @@ export const RunnerRouting = Schema.Struct({
   tags: Schema.Array(Schema.String),
   state: Schema.String,
   capacity_limit: Schema.Number,
+  project_capacity_limits: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Number))),
   project_ids: Schema.Array(Schema.String),
   isolation_tier: Schema.String,
   host_services: Schema.Array(Schema.String),
@@ -608,12 +610,38 @@ export const RunnerRouting = Schema.Struct({
 });
 export type RunnerRouting = typeof RunnerRouting.Type;
 
+export const RunnerCapacityConfiguration = Schema.Struct({
+  scope: Schema.String,
+  dispatch_constraint: Schema.String,
+  runner_id: Schema.String,
+  revision: Schema.Number,
+  desired: Schema.Number,
+  applied: Schema.NullOr(Schema.Struct({
+    revision: Schema.String, local_limit: Schema.Number, client_limit: Schema.Number,
+    runtime_limit: Schema.Number, manageable: Schema.Boolean,
+    constraint: Schema.optional(Schema.String), observed_at: Schema.String,
+  })),
+  effective: Schema.NullOr(Schema.Number),
+  status: Schema.String,
+  limits: Schema.Array(Schema.Struct({
+    owner: Schema.String, limit: Schema.NullOr(Schema.Number),
+    constraint: Schema.optional(Schema.String), observed_at: Schema.optional(Schema.String),
+    availability: Schema.optional(Schema.String),
+  })),
+  projects: Schema.optional(Schema.Record(Schema.String, Schema.Struct({
+    desired: Schema.NullOr(Schema.Number), applied: Schema.NullOr(Schema.Number),
+    effective: Schema.NullOr(Schema.Number), used: Schema.Number,
+  }))),
+});
+export type RunnerCapacityConfiguration = typeof RunnerCapacityConfiguration.Type;
+
 /**
  * One row of `GET /fleet`. `host_capacity`/`host_used` are the shared machine's
  * numbers and `capacity_limit`/`reported_capacity` the runner's own, which is
  * why the host card draws two meters rather than one.
  */
 export const FleetRunner = Schema.Struct({
+  capacity_configuration: Schema.optional(RunnerCapacityConfiguration),
   project_checkouts: Schema.optional(Schema.Record(Schema.String, Schema.Struct({ status: Schema.String, message: Schema.optional(Schema.String), fix_command: Schema.optional(Schema.String) }))),
   update: Schema.optional(Schema.Struct({
     status: Schema.String,

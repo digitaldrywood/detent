@@ -278,10 +278,10 @@ for (const width of [1440, 390]) {
     expect(box.x + box.width).toBe(width);
     if (width === 390) expect(box.width).toBe(width);
     await sheet.getByRole("radio", { name: "Draining Finishes what it has" }).check();
-    await sheet.getByRole("spinbutton", { name: "Jobs at once", exact: true }).fill("2");
+    await sheet.getByRole("spinbutton", { name: "Total runner slots", exact: true }).fill("2");
     await sheet.getByRole("button", { name: "Save runner" }).click();
     await expect(sheet).toHaveCount(0);
-    await expect(row).toContainText("draining · Limit 2");
+    await expect(row).toContainText("Requested total: 2 slots");
     await page.getByRole("button", { name: "Manage Build runner" }).click();
     sheet = page.getByRole("dialog", { name: "Build runner" });
     await expect(sheet.getByRole("alert")).toContainText(problem.message);
@@ -302,10 +302,10 @@ for (const width of [1440, 390]) {
     await expect(sheet.getByRole("checkbox", { name: "Preview project", exact: true })).toBeChecked();
     await expect(sheet.getByRole("checkbox", { name: "prj_unknown", exact: true })).toBeChecked();
     await sheet.getByRole("radio", { name: "Disabled Takes nothing" }).check();
-    await sheet.getByRole("spinbutton", { name: "Jobs at once", exact: true }).fill("0");
+    await sheet.getByRole("spinbutton", { name: "Total runner slots", exact: true }).fill("0");
     await sheet.getByRole("button", { name: "Save runner" }).click();
     await expect(sheet).toHaveCount(0);
-    await expect(row).toContainText("disabled · Limit 0");
+    await expect(row).toContainText("Requested total: 0 slots");
     expect(writes.map((write) => [write.state, write.capacity_limit])).toEqual([["draining", 2], ["draining", 2], ["disabled", 0]]);
     expect(writes[2].isolation_tier).toBe("native-trusted");
     expect(writes[2].project_ids).toEqual(["proj_preview", "prj_unknown"]);

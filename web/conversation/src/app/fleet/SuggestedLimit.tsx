@@ -34,7 +34,7 @@ export function SuggestedLimitBox({ suggestion, draftLimit, onUse }: {
         {offer ? <Button type="button" size="sm" onClick={() => onUse(shown.limit!)}>Use {shown.limit}</Button> : null}
       </div>
       {shown.reasons.length > 0 ? <ul className="list-disc space-y-0.5 pl-4 text-xs">{shown.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}
-      <p className="text-xs text-muted-foreground">Based on {shown.hours_covered} covered hours.{offer ? ` "Use ${shown.limit}" fills Jobs at once. Save runner applies it.` : ""}</p>
+      <p className="text-xs text-muted-foreground">Based on {shown.hours_covered} covered hours.{offer ? ` "Use ${shown.limit}" fills Total runner slots. Save runner requests it.` : ""}</p>
     </div>
   );
 }

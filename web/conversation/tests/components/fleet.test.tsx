@@ -14,6 +14,7 @@ import { resetRunnerNamesForTests, runnerDisplay, useRunnerNames } from "../../s
 import { parseRunnerWindow, serializeRunnerWindow } from "../../src/app/fleet/runnerSchedule.ts";
 import emptyFixture from "../../src/contracts/fixtures/account-fleet-empty.json";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
+import capacityFixture from "../../src/contracts/fixtures/account-runner-capacity.json";
 import bootstrapFixture from "../../src/contracts/fixtures/account-bootstrap.json";
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); resetRunnerNamesForTests(); window.history.replaceState(null, "", "/"); });
@@ -152,8 +153,9 @@ describe("runner rows", () => {
     expect([...dot.classList].filter((name) => name.startsWith("bg-"))).toEqual([tone]);
     expect(dot.classList.contains("motion-safe:animate-status-pulse")).toBe(pulse);
     expect([...dot.classList].filter((name) => name.startsWith("animate-"))).toEqual([]);
-    expect(screen.getByText(`${state} · Limit ${runner.capacity_limit}`)).toBeTruthy();
-    expect(screen.getByText(`${runner.leases.length} of ${runner.host_capacity} slots in use`)).toBeTruthy();
+    expect(screen.getByText(state)).toBeTruthy();
+    expect(screen.getByText(`Requested total: ${runner.capacity_limit} slots`)).toBeTruthy();
+    expect(screen.getByText(`Shared machine: ${runner.host_used} of ${runner.host_capacity} slots in use`)).toBeTruthy();
   });
 
   it.each([
@@ -531,9 +533,9 @@ describe("runner details", () => {
     expect(box.getByText("Suggested: 4 jobs at once")).toBeTruthy();
     expect(box.getByText(LOWER.reasons[0]!)).toBeTruthy();
     fireEvent.click(box.getByRole("button", { name: "Use 4" }));
-    expect((screen.getByRole("spinbutton") as HTMLInputElement).value).toBe("4");
+    expect((screen.getByRole("spinbutton", { name: "Total runner slots" }) as HTMLInputElement).value).toBe("4");
     expect(box.queryByRole("button")).toBeNull();
-    expect(box.queryByText(/fills Jobs at once/)).toBeNull();
+    expect(box.queryByText(/fills Total runner slots/)).toBeNull();
     expect(save).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(RUNNER, { ...ROUTING, capacity_limit: 4 }));
@@ -588,15 +590,19 @@ describe("runner details", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("round-trips allowed project IDs, including unreadable projects", async () => {
+  it.each([["prj_known", "prj_unknown"], ["prj_unknown"]])("shows and round-trips allowed project IDs, including unreadable projects: %s", async (...projectIds) => {
     const save = vi.fn().mockResolvedValue(undefined);
-    render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
+    const runner = { ...RUNNER, routing: { ...ROUTING, project_ids: projectIds } };
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [runner] }} projects={PROJECTS} onSaveRouting={save} />);
+    const row = within(screen.getByTestId("host-card"));
+    expect(row.getByText(/Unavailable project/)).toBeTruthy();
+    expect(row.queryByText("No projects reported")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     const sheet = screen.getByRole("dialog");
-    expect((within(sheet).getByRole("checkbox", { name: "Known project" }) as HTMLInputElement).checked).toBe(true);
+    expect((within(sheet).getByRole("checkbox", { name: "Known project" }) as HTMLInputElement).checked).toBe(projectIds.includes("prj_known"));
     expect((within(sheet).getByRole("checkbox", { name: "prj_unknown" }) as HTMLInputElement).checked).toBe(true);
     fireEvent.click(within(sheet).getByRole("button", { name: "Save runner" }));
-    await waitFor(() => expect(save).toHaveBeenCalledWith(RUNNER, ROUTING));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(runner, runner.routing));
   });
 
   it("saves a permitted runner when unrelated projects prevent org-wide editing", async () => {
@@ -606,7 +612,7 @@ describe("runner details", () => {
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     expect((screen.getByRole("checkbox", { name: "Known project" }) as HTMLInputElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("radio", { name: "Active Takes new work" }));
-    fireEvent.click(screen.getByRole("button", { name: "Decrease jobs at once" }));
+    fireEvent.click(screen.getByRole("button", { name: "Decrease total runner slots" }));
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(runner, expect.objectContaining({ state: "active", capacity_limit: 5, project_ids: ROUTING.project_ids })));
   });
@@ -667,7 +673,7 @@ describe("runner details", () => {
     expect(sheet.textContent).toContain("linux");
     expect(sheet.textContent).toContain("tcp:127.0.0.1:8080");
     expect(sheet.textContent).toContain("Sat-Sun 00:00-24:00");
-    expect(sheet.textContent).not.toContain("not reported");
+    expect(sheet.textContent).not.toContain("Tags are not reported");
   });
 
   it("shows project checkout failures and the authentication command on the runner sheet", () => {
@@ -701,22 +707,25 @@ describe("runner details", () => {
       .mockRejectedValueOnce(new AccountError({ status: 400, code: "invalid", message: "Invalid runner hours" }))
       .mockRejectedValueOnce(new AccountError({ status: 409, code: "conflict", message: "revision conflict" }))
       .mockResolvedValue(undefined);
-    const fresh = { ...RUNNER, revision: 8, routing: { ...ROUTING, state: "draining", capacity_limit: 3 } };
+    const fresh = { ...RUNNER, revision: 8, routing: { ...ROUTING, state: "draining", capacity_limit: 3, project_capacity_limits: { prj_known: 0 } } };
     const reload = vi.fn(async () => {
       rerender(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [fresh] }} projects={PROJECTS} onSaveRouting={save} onReloadRunner={reload} />);
     });
     const { rerender } = render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} onReloadRunner={reload} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
-    fireEvent.change(screen.getByLabelText("Jobs at once"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("Total runner slots"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("Known project maximum slots"), { target: { value: "4" } });
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
     const saveError = await screen.findByRole("alert");
     expect(saveError.textContent).toContain("Invalid runner hours");
     expect(saveError.closest('[data-slot="sheet-footer"]')).not.toBeNull();
-    expect((screen.getByLabelText("Jobs at once") as HTMLInputElement).value).toBe("10");
+    expect((screen.getByLabelText("Total runner slots") as HTMLInputElement).value).toBe("10");
+    expect((screen.getByLabelText("Known project maximum slots") as HTMLInputElement).value).toBe("4");
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("settings have been reloaded"));
     expect(reload).toHaveBeenCalledOnce();
-    expect((screen.getByLabelText("Jobs at once") as HTMLInputElement).value).toBe("3");
+    expect((screen.getByLabelText("Total runner slots") as HTMLInputElement).value).toBe("3");
+    expect((screen.getByLabelText("Known project maximum slots") as HTMLInputElement).value).toBe("0");
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
     await waitFor(() => expect(save).toHaveBeenLastCalledWith(fresh, fresh.routing));
   });
@@ -759,5 +768,123 @@ describe("runner problem reports", () => {
     if (connection_health === "offline") expect(view.container.querySelector('time[datetime="2026-09-10T12:03:00.000Z"]')).toBeTruthy();
     view.rerender(<RunnerProblems runner={{ ...RUNNER, problems: [] }} />);
     expect(view.container.textContent).toBe("");
+  });
+});
+
+
+describe("runner slot settings", () => {
+  const routing: RunnerRouting = { ...ROUTING, project_ids: PROJECTS.map((project) => project.id), project_capacity_limits: { prj_second: 0 }, project_ranks: { prj_known: 10 }, availability: { ...ROUTING.availability, window_slots: { "Mon-Fri 09:00-17:00": 3 } } };
+  const runner = decodeFleet({ ...FLEET, runners: [{ ...RUNNER, state: "draining", host_capacity: 8, host_used: 3, routing: { ...routing, state: "draining" }, capacity_configuration: capacityFixture }] }).runners[0]!;
+
+  it.each(["prj_known", "prj_second", null])("prunes unselected maxima when converting organization scope to projects: %s", async (selected) => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const organizationRunner = { ...runner, routing: { ...runner.routing!, scope: "organization" as const, project_ids: [], project_capacity_limits: { prj_known: 4, prj_second: 0 } } };
+    render(<RunnersSectionView fleet={{ ...FLEET, runners: [organizationRunner] }} projects={PROJECTS} onSaveRouting={save} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    fireEvent.change(screen.getByLabelText("Runner scope"), { target: { value: "projects" } });
+    if (selected) fireEvent.click(screen.getByRole("checkbox", { name: selected === "prj_known" ? "Known project" : "Second project" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(organizationRunner, {
+      ...organizationRunner.routing, scope: "projects", project_ids: selected ? [selected] : [],
+      project_capacity_limits: selected === "prj_known" ? { prj_known: 4 } : selected === "prj_second" ? { prj_second: 0 } : {},
+    }));
+  });
+
+  it("saves total and independent named maxima, reloads them, and leaves sibling settings and grants intact", async () => {
+    let fleet: FleetResponse = { ...FLEET, runners: [runner, { ...RUNNER, id: "runner_second", display_name: "Second runner", state: "disabled" }] };
+    const sibling = fleet.runners[1];
+    const save = vi.fn(async (saved, next) => {
+      fleet = { ...fleet, runners: fleet.runners.map((entry) => entry.id === saved.id ? { ...entry, revision: 8, routing: next, capacity_limit: next.capacity_limit } : entry) };
+      rerender(view());
+    });
+    const view = () => <RunnersSectionView fleet={fleet} projects={PROJECTS} onSaveRouting={save} />;
+    const { rerender, unmount } = render(view());
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    expect(screen.getByText("2 slots in use · effective maximum 6")).toBeTruthy();
+    expect(screen.getByText("1 slots in use · effective maximum 0")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Total runner slots"), { target: { value: "8" } });
+    fireEvent.change(screen.getByLabelText("Known project maximum slots"), { target: { value: "4" } });
+    fireEvent.change(screen.getByLabelText("Second project maximum slots"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Add tag"), { target: { value: "gpu" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(save).toHaveBeenCalledWith(runner, { ...runner.routing, capacity_limit: 8, project_capacity_limits: { prj_known: 4 }, tags: ["linux", "gpu"] });
+    expect(fleet.runners[1]).toBe(sibling);
+    unmount();
+    render(view());
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    expect((screen.getByLabelText("Total runner slots") as HTMLInputElement).value).toBe("8");
+    expect((screen.getByLabelText("Known project maximum slots") as HTMLInputElement).value).toBe("4");
+    expect((screen.getByLabelText("Second project maximum slots") as HTMLInputElement).value).toBe("");
+  });
+
+  it.each(["", "-1", "1.5", "10001", "1e2"])("refuses invalid counts without converting %s to zero", async (value) => {
+    const save = vi.fn();
+    render(<RunnersSectionView fleet={{ ...FLEET, runners: [runner] }} projects={PROJECTS} onSaveRouting={save} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    fireEvent.change(screen.getByLabelText("Total runner slots"), { target: { value } });
+    fireEvent.submit(screen.getByRole("button", { name: "Save runner" }).closest("form")!);
+    expect(screen.getByRole("alert").textContent).toContain("whole numbers from 0 to 10000");
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("accepts explicit zero and validates project maxima independently", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    render(<RunnersSectionView fleet={{ ...FLEET, runners: [runner] }} projects={PROJECTS} onSaveRouting={save} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    fireEvent.change(screen.getByLabelText("Total runner slots"), { target: { value: "0" } });
+    fireEvent.change(screen.getByLabelText("Known project maximum slots"), { target: { value: "10001" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Save runner" }).closest("form")!);
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Known project maximum slots"), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(runner, expect.objectContaining({ capacity_limit: 0, project_capacity_limits: { prj_known: 0, prj_second: 0 }, state: "draining" })));
+  });
+
+  it("retains drafts when a background refresh changes the revision and requires review", async () => {
+    const save = vi.fn();
+    const view = (revision: number) => <RunnersSectionView fleet={{ ...FLEET, runners: [{ ...runner, revision }] }} projects={PROJECTS} onSaveRouting={save} />;
+    const { rerender } = render(view(7));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    fireEvent.change(screen.getByLabelText("Known project maximum slots"), { target: { value: "4" } });
+    rerender(view(8));
+    expect((screen.getByLabelText("Known project maximum slots") as HTMLInputElement).value).toBe("4");
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Review latest settings" }));
+    expect((screen.getByLabelText("Known project maximum slots") as HTMLInputElement).value).toBe("");
+  });
+
+  it.each([false, true])("shows named scoped read-only maxima for organization scope %s", (organization) => {
+    const scoped = { ...runner, editable: false, routing: { ...routing, scope: organization ? "organization" as const : "projects" as const }, capacity_configuration: { ...runner.capacity_configuration!, projects: { ...runner.capacity_configuration!.projects, hidden: { desired: 9, applied: 9, effective: 6, used: 1 } } } };
+    render(<RunnersSectionView fleet={{ ...FLEET, runners: [scoped] }} projects={PROJECTS} onSaveRouting={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    const sheet = screen.getByRole("dialog");
+    expect(within(sheet).getByText("Known project maximum slots: Inherited total")).toBeTruthy();
+    expect(within(sheet).getByText("Second project maximum slots: 0")).toBeTruthy();
+    expect(sheet.querySelectorAll("input,select,textarea")).toHaveLength(0);
+    expect(sheet.textContent).not.toContain("hidden");
+  });
+
+  it.each([null, 3])("never treats a requested increase as effective with evidence %s", (effective) => {
+    const capacity = { ...capacityFixture, desired: 8, effective, status: "partially_applied", limits: [...capacityFixture.limits, { owner: "provider:codex", limit: 3, constraint: "Unmanaged provider ceiling" }] };
+    render(<RunnersSectionView fleet={decodeFleet({ ...FLEET, runners: [{ ...runner, capacity_configuration: capacity }] })} projects={PROJECTS} />);
+    const row = within(screen.getByTestId("host-card"));
+    expect(row.getByText("Requested total: 8 slots")).toBeTruthy();
+    expect(row.getByText(new RegExp(`Effective total: ${effective ?? "unknown"}.*Pending or constrained`))).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    expect(within(screen.getByRole("dialog")).getByText(/Unmanaged provider ceiling/)).toBeTruthy();
+    expect(row.queryByText("Effective total: 8 slots")).toBeNull();
+  });
+
+  it("sends maxima and total to routing with revision and idempotency, preserving unrelated settings", async () => {
+    const fetch = vi.fn(async () => new Response("{}", { status: 200 }));
+    const api = makeAccountApi({ origin: "https://hub.test", apiBase: "/api/v2/organizations/org_test", csrfToken: "test", fetch });
+    await api.setRunnerRouting({ runner: runner.id, revision: 7, displayName: runner.display_name, tags: routing.tags, state: "draining", capacityLimit: 8, projectIds: routing.project_ids, projectCapacityLimits: { prj_known: 4, prj_second: 0 }, projectRanks: routing.project_ranks, availability: routing.availability, isolationTier: routing.isolation_tier, hostServices: routing.host_services });
+    expect(fetch).toHaveBeenCalledOnce();
+    const [url, request] = fetch.mock.calls[0]! as unknown as [string, RequestInit];
+    expect(url).toBe(`https://hub.test/api/v2/organizations/org_test/runners/${runner.id}/routing`);
+    expect(request.method).toBe("PUT");
+    expect(JSON.parse(request.body as string)).toEqual({ expected_revision: 7, display_name: runner.display_name, tags: routing.tags, state: "draining", capacity_limit: 8, project_ids: routing.project_ids, project_capacity_limits: { prj_known: 4, prj_second: 0 }, project_ranks: routing.project_ranks, availability: routing.availability, isolation_tier: routing.isolation_tier, host_services: routing.host_services, idempotency_key: expect.any(String) });
   });
 });

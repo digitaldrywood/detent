@@ -9,6 +9,7 @@ import { formatRelativeTime, runnerUpdateStatusLabel } from "./format.ts";
 import { cn } from "../../lib/utils.ts";
 import { RunnerStatusDot } from "../../components/RunnerStatusDot.tsx";
 import type { RunnerProject } from "./RunnerDetailSheet.tsx";
+import { RunnerCapacity } from "./RunnerCapacity.tsx";
 
 export function HostCard({
   runner,
@@ -39,12 +40,14 @@ export function HostCard({
       ? "Draining work or installing"
       : runnerUpdateStatusLabel(runner.update.status)
     : undefined;
+  const runnerProjects = runner.routing?.scope === "organization" ? projects
+    : runner.routing?.project_ids.map((id) => projects.find((project) => project.id === id) ?? { id, name: "Unavailable project" }) ?? [];
   return (
     <article
       id={`runner-${runner.id}`}
       tabIndex={-1}
       data-testid="host-card"
-      className="grid min-w-0 gap-4 px-4 py-4 focus-visible:outline-2 focus-visible:outline-ring @[48rem]/runner-list:grid-cols-[minmax(0,1.2fr)_6rem_minmax(0,1fr)_7rem_minmax(0,1fr)_11rem] @[48rem]/runner-list:items-start"
+      className="grid min-w-0 gap-4 px-4 py-4 focus-visible:outline-2 focus-visible:outline-ring @[48rem]/runner-list:grid-cols-[minmax(0,1.2fr)_6rem_minmax(0,1fr)_10rem_minmax(0,1fr)_6rem] @[48rem]/runner-list:items-start"
     >
       <div className="flex min-w-0 items-start gap-2.5">
         <RunnerStatusDot runner={runner} className="mt-1.5" />
@@ -58,14 +61,18 @@ export function HostCard({
       <p className="text-xs text-muted-foreground">{runner.sprite ? "Fly Sprite" : "Own machine"}</p>
       <div className={cn("space-y-1 text-xs text-muted-foreground", runner.health === "needs_attention" && "text-warning-foreground")}>
         <p>{runner.claim_refusal_reason ? "Can’t take work" : health}</p>
-        <p>{runner.state} · Limit {runner.capacity_limit}</p>
+        <p>{runner.state}</p>
         <SuggestedLimitChip suggestion={suggestion} />
       </div>
       <div className="min-w-0 space-y-1 text-xs">
         <p className="text-muted-foreground @[48rem]/runner-list:sr-only">Running</p>
-        <p className="text-muted-foreground tabular-nums">{runner.leases.length} of {runner.host_capacity} slots in use</p>
+        <RunnerCapacity runner={runner} />
       </div>
-      <p className="break-words text-xs text-muted-foreground">{runner.routing?.project_ids.map((id) => projects.find((project) => project.id === id)?.name ?? "Unavailable project").join(", ") || "No projects reported"}</p>
+      <div className="min-w-0 space-y-1 break-words text-xs text-muted-foreground">{runnerProjects.map((project) => {
+        const capacity = runner.capacity_configuration?.projects?.[project.id];
+        const maximum = runner.routing?.project_capacity_limits?.[project.id];
+        return <p key={project.id}>{project.name}: {capacity?.used ?? "Unknown"} in use · maximum {maximum ?? "inherited"}{capacity ? ` · effective ${capacity.effective ?? "unknown"}` : ""}</p>;
+      })}{!runner.routing || (runner.routing.scope !== "organization" && runner.routing.project_ids.length === 0) ? "No projects reported" : null}</div>
       <div className="flex flex-wrap gap-2">
         <Button size="xs" variant="outline" aria-label={`Manage ${runner.display_name}`} onClick={onOpen}>Manage</Button>
         {onRemove ? <Button size="xs" variant="outline" aria-label={`Remove runner ${runner.display_name}`} onClick={onRemove}>Remove runner</Button> : null}

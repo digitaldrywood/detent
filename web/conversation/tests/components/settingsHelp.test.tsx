@@ -294,9 +294,9 @@ describe("runner settings help", () => {
     render(<RunnersSectionView fleet={{ ...fleet, editable: true, runners: [{ ...fleet.runners[0]!, editable: true, routing }] }} onSaveRouting={save} />);
     await user.click(screen.getByRole("button", { name: `Manage ${fleet.runners[0]!.display_name}` }));
     const sheet = screen.getByRole("dialog");
-    expect(sheet.textContent).toContain("The lower of the two wins");
+    expect(sheet.textContent).toContain("Runners on the same machine share its total ceiling");
     expect(sheet.textContent).toContain("Tags pick from allowed runners; they never grant a project.");
-    expect((screen.getByRole("spinbutton", { name: "Jobs at once" }) as HTMLInputElement).value).toBe("6");
+    expect((screen.getByRole("spinbutton", { name: "Total runner slots" }) as HTMLInputElement).value).toBe("6");
     expect(screen.getByRole("button", { name: "Remove tag linux" })).toBeTruthy();
     expect(save).not.toHaveBeenCalled();
   });

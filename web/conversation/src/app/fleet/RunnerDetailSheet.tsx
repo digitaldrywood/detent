@@ -18,6 +18,7 @@ import { RunnerProblems } from "./RunnerProblems.tsx";
 import { formatRelativeTime } from "./format.ts";
 import { parseRunnerWindow, serializeRunnerWindow, type RunnerHours } from "./runnerSchedule.ts";
 import { reportsSandbox, runnerAccessOptions, spriteSandboxUnavailableReason } from "./runnerAccess.ts";
+import { RunnerCapacity } from "./RunnerCapacity.tsx";
 
 export interface RunnerProject {
   readonly id: string;
@@ -54,6 +55,10 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
   readonly loadHostHistory?: LoadHostHistory;
 }): React.ReactElement {
   const [draft, setDraft] = React.useState(() => runnerRouting(runner));
+  const [editingRunner, setEditingRunner] = React.useState(runner);
+  const [total, setTotal] = React.useState(String(draft.capacity_limit));
+  const [projectLimits, setProjectLimits] = React.useState<Record<string, string>>(() => Object.fromEntries(Object.entries(draft.project_capacity_limits ?? {}).map(([id, limit]) => [id, String(limit)])));
+  const reloading = React.useRef(false);
   const [hours, setHours] = React.useState<readonly RunnerHours[]>(() => draft.availability.windows.map(parseRunnerWindow));
   const [scheduled, setScheduled] = React.useState(draft.availability.windows.length > 0);
   const [tag, setTag] = React.useState("");
@@ -67,12 +72,20 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
   const choices = [...projects, ...unknownIds.map((id) => ({ id, name: id }))];
   const timezoneOptions = React.useMemo(() => [...new Set(["", "UTC", draft.availability.timezone, ...Intl.supportedValuesOf("timeZone")])], [draft.availability.timezone]);
 
-  React.useEffect(() => {
+  function resetDraft(): void {
     const next = runnerRouting(runner);
+    setEditingRunner(runner);
     setDraft(next);
+    setTotal(String(next.capacity_limit));
+    setProjectLimits(Object.fromEntries(Object.entries(next.project_capacity_limits ?? {}).map(([id, limit]) => [id, String(limit)])));
     setHours(next.availability.windows.map(parseRunnerWindow));
     setScheduled(next.availability.windows.length > 0);
     setTag("");
+  }
+  React.useEffect(() => {
+    if (!reloading.current) return;
+    reloading.current = false;
+    resetDraft();
   }, [runner.id, runner.revision]);
 
   function update(next: Partial<RunnerRouting>): void {
@@ -80,6 +93,7 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
   }
   function toggleProject(id: string, checked: boolean): void {
     update({ project_ids: checked ? [...new Set([...draft.project_ids, id])] : draft.project_ids.filter((value) => value !== id) });
+    if (!checked) setProjectLimits((current) => { const next = { ...current }; delete next[id]; return next; });
   }
   function addTags(): readonly string[] {
     const tags = [...new Set([...draft.tags, ...tag.split(/[\s,]+/).filter(Boolean)])];
@@ -92,21 +106,38 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
   }
   async function submit(isolationTier = draft.isolation_tier): Promise<void> {
     if (!canEdit || saving || onSave === undefined) return;
+    if (runner.revision !== editingRunner.revision) {
+      setError("This runner changed while you were editing. Review the latest settings before saving.");
+      return;
+    }
+    const valid = (value: string) => /^\d+$/.test(value) && Number(value) <= 10000;
+    const allowedLimits = Object.entries(projectLimits).filter(([id]) => draft.scope === "organization" || draft.project_ids.includes(id));
+    if (!valid(total) || allowedLimits.some(([, value]) => value !== "" && !valid(value))) {
+      setError("Enter whole numbers from 0 to 10000. Total runner slots is required; an empty project maximum inherits the total.");
+      return;
+    }
+    const limits = Object.fromEntries(allowedLimits.filter(([, value]) => value !== "").map(([id, value]) => [id, Number(value)]));
+    const savedLimits = draft.project_capacity_limits ?? {};
+    const limitsChanged = Object.keys(limits).length !== Object.keys(savedLimits).length || Object.entries(limits).some(([id, value]) => savedLimits[id] !== value);
     const next: RunnerRouting = {
       ...draft, isolation_tier: isolationTier, tags: addTags(), host_services: draft.host_services.map((value) => value.trim()).filter(Boolean),
+      capacity_limit: Number(total),
+      ...(limitsChanged ? { project_capacity_limits: limits } : {}),
       availability: { ...draft.availability, windows: scheduled ? hours.map(serializeRunnerWindow) : [], hard_deadline: scheduled ? draft.availability.hard_deadline : "" },
     };
     setSaving(true);
     setError("");
     try {
-      await onSave(runner, next);
+      await onSave(editingRunner, next);
       onClose();
     } catch (cause) {
       if (cause instanceof AccountError && cause.isConflict && onReload !== undefined) {
         try {
+          reloading.current = true;
           await onReload();
           setError("This runner changed while you were editing. Its settings have been reloaded. Review them and save again.");
         } catch (reloadCause) {
+          reloading.current = false;
           setError(`This runner changed while you were editing. Could not reload it: ${reloadCause instanceof Error ? reloadCause.message : "Try again."}`);
         }
       } else setError(cause instanceof Error ? cause.message : "Runner settings could not be saved.");
@@ -126,7 +157,7 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
           <SheetDescription>{runner.hostname}, {runner.os} {runner.architecture}{runner.version ? `, Detent ${runner.version}` : ""}</SheetDescription>
           <p className="text-xs text-muted-foreground">Last check-in <time dateTime={runner.last_heartbeat_at}>{formatRelativeTime(runner.last_heartbeat_at, now)}</time></p>
         </SheetHeader>
-        <form className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        <form className="flex min-h-0 flex-1 flex-col" onInvalid={() => setError("Check the highlighted fields. Slot counts must be whole numbers from 0 to 10000; total runner slots is required.")} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
           <div className="min-h-0 flex-1 space-y-7 overflow-y-auto p-6 text-sm">
             {runner.claim_refusal_reason ? <div role="alert" data-testid="host-update" className="space-y-2 rounded-lg border border-warning/30 bg-warning/8 p-3">
               <p>{runner.claim_refusal_reason}</p><PathValue value={RUNNER_UPGRADE_COMMAND} />
@@ -153,14 +184,27 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
               <Section title="Capacity">
                 {canEdit ? (
                   <div className="flex items-center gap-2">
-                    <label htmlFor="runner-jobs" className="flex-1">Jobs at once</label>
-                    <Button aria-label="Decrease jobs at once" type="button" size="icon-sm" variant="outline" disabled={draft.capacity_limit <= 0} onClick={() => update({ capacity_limit: Math.max(0, draft.capacity_limit - 1) })}>−</Button>
-                    <input id="runner-jobs" className={cn(control, "w-24 text-center")} type="number" min={0} max={10000} step={1} required value={draft.capacity_limit} onChange={(event) => update({ capacity_limit: Number(event.target.value) })} />
-                    <Button aria-label="Increase jobs at once" type="button" size="icon-sm" variant="outline" disabled={draft.capacity_limit >= 10000} onClick={() => update({ capacity_limit: Math.min(10000, draft.capacity_limit + 1) })}>+</Button>
+                    <label htmlFor="runner-jobs" className="min-w-0 flex-1">Total runner slots</label>
+                    <Button aria-label="Decrease total runner slots" type="button" size="icon-sm" variant="outline" disabled={!total || Number(total) <= 0} onClick={() => setTotal(String(Math.max(0, Number(total) - 1)))}>−</Button>
+                    <input id="runner-jobs" className={cn(control, "w-24 text-center")} type="number" min={0} max={10000} step={1} required value={total} onChange={(event) => setTotal(event.target.value)} aria-describedby="runner-capacity-help" />
+                    <Button aria-label="Increase total runner slots" type="button" size="icon-sm" variant="outline" disabled={!total || Number(total) >= 10000} onClick={() => setTotal(String(Math.min(10000, Number(total) + 1)))}>+</Button>
                   </div>
-                ) : <p>Jobs at once: {draft.capacity_limit}</p>}
-                <p className="text-xs text-muted-foreground">The runner reports room for {runner.reported_capacity}. The lower of the two wins, and runners on the same machine share its slots. 0 stops new work.</p>
-                {suggestion ? <SuggestedLimitBox suggestion={suggestion} draftLimit={draft.capacity_limit} {...(canEdit ? { onUse: (limit: number) => update({ capacity_limit: limit }) } : {})} /> : null}
+                ) : <p>Total runner slots: {draft.capacity_limit}</p>}
+                <p id="runner-capacity-help" className="text-xs text-muted-foreground">0 stops new work. Lowering below usage lets existing jobs finish. Runners on the same machine share its total ceiling; changing this runner does not change sibling grants or the shared machine ceiling.</p>
+                <RunnerCapacity runner={runner} detailed />
+                {suggestion ? <SuggestedLimitBox suggestion={suggestion} draftLimit={Number(total)} {...(canEdit ? { onUse: (limit: number) => setTotal(String(limit)) } : {})} /> : null}
+              </Section>
+              <Section title="Maximum slots per project">
+                <p id="runner-project-capacity-help" className="text-xs text-muted-foreground">Maxima are not reservations. Empty inherits the total runner capacity; 0 stops new work for that project. Lowering below usage lets existing jobs finish.</p>
+                <div className="divide-y divide-border/50 rounded-lg border border-border/60">
+                  {projects.filter((project) => draft.scope === "organization" || draft.project_ids.includes(project.id)).map((project) => {
+                    const capacity = runner.capacity_configuration?.projects?.[project.id];
+                    return <div key={project.id} className="min-w-0 space-y-2 p-3">
+                      {canEdit ? <label className="block break-words">{project.name} maximum slots<input className={cn(control, "mt-1")} type="number" min={0} max={10000} step={1} placeholder="Inherit total" aria-describedby="runner-project-capacity-help" value={projectLimits[project.id] ?? ""} onChange={(event) => setProjectLimits((current) => ({ ...current, [project.id]: event.target.value }))} /></label> : <p className="break-words">{project.name} maximum slots: {draft.project_capacity_limits?.[project.id] ?? "Inherited total"}</p>}
+                      <p className="text-xs text-muted-foreground">{capacity?.used ?? "Unknown"} slots in use · effective maximum {capacity?.effective ?? "unknown"}</p>
+                    </div>;
+                  })}
+                </div>
               </Section>
               {loadHostHistory ? <HostLoad runnerId={runner.id} load={loadHostHistory} timezone={(runner.routing ?? runner).availability?.timezone || "UTC"} /> : null}
               <Section title="Allowed projects">
@@ -242,6 +286,7 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
           {canEdit ? (
             <SheetFooter className="block space-y-3">
               {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
+              {runner.revision !== editingRunner.revision ? <Button type="button" variant="outline" disabled={saving} onClick={() => { resetDraft(); setError("Latest settings loaded. Review them before saving."); }}>Review latest settings</Button> : null}
               <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                 <SheetClose render={<Button type="button" variant="outline" disabled={saving}>Cancel</Button>} />
                 <Button type="submit" disabled={saving || (scheduled && hours.length === 0)}>{saving ? "Saving…" : "Save runner"}</Button>
