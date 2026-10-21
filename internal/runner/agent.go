@@ -2083,7 +2083,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 					return RunResult{}, err
 				}
 			}
-			result.FinalMessage = reviewRecovery.CompletionBody
+			result.FinalMessage = fmt.Sprintf("Detent reused the completed disposition from attempt %s to resume review without rerunning implementation.\n\n%s", reviewRecovery.AttemptID, reviewRecovery.CompletionBody)
 		}
 		afterRunPending = false
 		err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, AgentResume{}, false)
