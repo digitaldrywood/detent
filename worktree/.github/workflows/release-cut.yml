@@ -1,0 +1,38 @@
+name: Cut release branch
+
+on:
+  schedule:
+    - cron: '37 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release series vX.Y (empty selects the next minor)
+        type: string
+        required: false
+      sha:
+        description: Explicit develop SHA (empty checks active/recent releases, then selects uncovered source)
+        type: string
+        required: false
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: release-cut
+  cancel-in-progress: false
+
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: develop
+          fetch-depth: 0
+      - name: Create release branch and run full CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_SHA: ${{ inputs.sha }}
+        run: bash scripts/release-cut.sh "$RELEASE_VERSION" "$RELEASE_SHA"
