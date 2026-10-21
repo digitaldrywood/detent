@@ -340,7 +340,7 @@ func (s *Service) postAttemptDiff(c echo.Context) error {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if err := tracker.ValidateDiffGeneration(request.Generation); err != nil {
-		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+		return s.nativeAPIError(c, nativePublicInvalid(err.Error()))
 	}
 	if request.Generation.Source != request.Producer.Kind {
 		return s.nativeAPIError(c, nativePublicInvalid("Generation source and producer kind must agree"))
@@ -572,7 +572,7 @@ func (s *Service) prepareDiffManifest(ctx context.Context, scope nativeScope, at
 	}
 	for _, file := range files {
 		if s.hostedShared() && file.Patch != "" {
-			return nativeInvalid("Shared diff bodies must arrive through object storage")
+			return nativePublicInvalid("Shared diff bodies must arrive through object storage")
 		}
 	}
 	if err := tx.Rollback(); err != nil {
