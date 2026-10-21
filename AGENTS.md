@@ -219,6 +219,10 @@ behavior-preserving refactor, or a private function exported only for a test
 are scheduled evidence only; no package, file or aggregate coverage floor
 exists, and no change is made to move a percentage.
 
+Tests never sleep or wait out a hard timeout: they wait on the condition they
+assert through a signal from the code under test, `testing/synctest`, or
+`testenv.WaitUntil`, bounded only by the `go test -timeout` deadline.
+
 Code that creates rows per key, member, organization, project or other entity
 is tested with at least two of those entities in the same database and scope,
 and asserts that both are usable. One row proves nothing about uniqueness.
