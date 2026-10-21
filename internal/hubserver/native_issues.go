@@ -743,8 +743,12 @@ func appendNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, wor
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO collaboration_events (id, organization_id, project_id, work_item_id, sequence, type, schema_version, actor_json, data_json, recorded_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)", newNativeID("evt"), scope.organization, scope.project, workItemID, sequence, eventType, actor, payload, formatHubTime(now))
-	return err
+	id := newNativeID("evt")
+	_, err = tx.ExecContext(ctx, "INSERT INTO collaboration_events (id, organization_id, project_id, work_item_id, sequence, type, schema_version, actor_json, data_json, recorded_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)", id, scope.organization, scope.project, workItemID, sequence, eventType, actor, payload, formatHubTime(now))
+	if err != nil {
+		return err
+	}
+	return insertHealthEventTime(ctx, tx, id, string(scope.organization), eventType, data, now)
 }
 
 func requireNativeEdit(issue tracker.NativeIssue, expected tracker.Revision) error {
