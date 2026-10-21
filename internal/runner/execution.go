@@ -535,6 +535,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	if changes, ok := req.Execution.(ChangeExecution); ok {
 		if change := changes.NativeChange(); change != nil {
 			copy := *change
+			copy.ReusedDispositionAttemptID = result.reusedDispositionAttemptID
 			result.NativeChange = &copy
 			if copy.SecurityAudit != nil && copy.SecurityAudit.Verdict == "wait" {
 				result.FinalMessage = copy.SecurityAudit.Run.CompletionMessage(result.FinalMessage)
@@ -1277,7 +1278,7 @@ func (*NativeImplementationReviewError) BackendErrorStatus() string { return "in
 
 func nativeReviewResumeAttempt(recovery tracker.NativeRecovery, command string) *tracker.NativeAttempt {
 	detail := recovery.ChangeDetail
-	if detail == nil || recovery.Change == nil || detail.Change.ID != recovery.Change.ChangeID || detail.Change.CurrentVersion != recovery.Change.VersionID || detail.Change.CurrentLanding() != nil || detail.Summary.Status == "stale_policy" || detail.Summary.NativeReview == "changes_requested" || nativeLandingRework(recovery) {
+	if detail == nil || recovery.Change == nil || detail.Change.ID != recovery.Change.ChangeID || detail.Change.CurrentVersion != recovery.Change.VersionID || detail.Change.CurrentLanding() != nil || detail.Summary.Status == "stale_policy" || detail.Summary.NativeReview == "changes_requested" || nativeLandingRework(recovery) || NativeReviewConversationRefusal(recovery) != "" {
 		return nil
 	}
 	if landing := nativeRecoveryLanding(recovery); landing != nil && (NativeLanding{Landed: landing.Landed, CI: landing.CI, GateFailed: landing.GateFailed, RefusalKind: landing.RefusalKind, Refusal: landing.Refusal}).RequiresRework() {
