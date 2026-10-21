@@ -120,7 +120,9 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 					t.Fatalf("wrong doctor context: %+v", c)
 				}
 				if tt.startup {
-					return runDoctorStartupPreflight(t.Context(), c, options{}, doctorDeps{})
+					return runDoctorStartupPreflight(t.Context(), c, options{}, doctorDeps{
+						gitLandingCredential: func(context.Context, string) error { return nil },
+					})
 				}
 				return doctorReport{Checks: []doctorCheck{{Status: tt.doctor, Detail: "secret-token PRIVATE WORKFLOW", Hint: "secret-hint"}}}
 			}, func(_ context.Context, b workflowconfig.AgentBackend) bool { auths++; return tt.auth })
