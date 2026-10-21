@@ -159,6 +159,7 @@ func (s *Service) tenantSpec(organization Organization) TenantSpec {
 		ResolveKey: func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
 			return s.resolveTenantKey(ctx, organization, origin)
 		},
+		ReadArchive: s.tenantArchiveReader(organization),
 		Check: func(ctx context.Context) error {
 			return s.checkTenant(ctx, organization)
 		},

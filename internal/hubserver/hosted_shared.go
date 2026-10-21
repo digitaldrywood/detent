@@ -24,10 +24,11 @@ import (
 const hostedSharedClaimsKey = "hosted_shared_claims"
 
 type HostedSharedEntry struct {
-	Issuer     string
-	PublicKeys []ed25519.PublicKey
-	Generation int64
-	ResolveKey entryauthority.Resolver
+	Issuer      string
+	PublicKeys  []ed25519.PublicKey
+	Generation  int64
+	ResolveKey  entryauthority.Resolver
+	ReadArchive entryauthority.ArchiveReader
 
 	verifier *cloudassert.Verifier
 }

@@ -680,6 +680,11 @@ WHERE id = ? AND conversation_id = ?`,
 // listMessages returns up to limit messages with seq below beforeSeq (or the
 // latest messages when beforeSeq is zero), ordered by seq ascending.
 func (s *conversationStore) listMessages(ctx context.Context, query nativeQueryer, conversationID string, beforeSeq int64, limit int) ([]conversationMessageRecord, error) {
+	var err error
+	query, err = archiveConversationQuery(ctx, query, conversationID, beforeSeq)
+	if err != nil {
+		return nil, err
+	}
 	if limit <= 0 {
 		limit = 50
 	}

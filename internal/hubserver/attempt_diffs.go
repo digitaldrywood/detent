@@ -383,13 +383,25 @@ func (s *Service) getAttemptDiff(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, result)
+	return nativeArchiveJSON(c, http.StatusOK, result)
 }
 
 func (s *Service) readAttemptDiff(ctx context.Context, scope nativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	record, err := readAttemptDiffGeneration(ctx, s.database.reader, scope, attemptID, source, seq)
+	if item == "" {
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT work_item_id FROM native_attempts WHERE organization_id=? AND project_id=? AND id=?", scope.organization, scope.project, attemptID).Scan(&item); err != nil {
+			return tracker.AttemptDiff{}, err
+		}
+	}
+	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
+		return tracker.AttemptDiff{}, err
+	}
+	query, err := archiveQuery(ctx, s.database.reader, item, "run", attemptID, 0)
+	if err != nil {
+		return tracker.AttemptDiff{}, err
+	}
+	record, err := readAttemptDiffGeneration(ctx, query, scope, attemptID, source, seq)
 	if err != nil {
 		return tracker.AttemptDiff{}, err
 	}
@@ -399,7 +411,7 @@ func (s *Service) readAttemptDiff(ctx context.Context, scope nativeScope, item, 
 	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, record.WorkItemID); err != nil {
 		return tracker.AttemptDiff{}, err
 	}
-	files, err := readAttemptDiffFiles(ctx, s.database.reader, record.ID)
+	files, err := readAttemptDiffFiles(ctx, query, record.ID)
 	if err != nil {
 		return tracker.AttemptDiff{}, err
 	}
@@ -427,7 +439,7 @@ func (s *Service) getWorkItemDiff(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, result)
+	return nativeArchiveJSON(c, http.StatusOK, result)
 }
 
 func (s *Service) readWorkItemDiff(ctx context.Context, scope nativeScope, item, source string) (tracker.WorkItemDiff, error) {

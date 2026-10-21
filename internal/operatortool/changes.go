@@ -43,6 +43,7 @@ var ErrServiceUnavailable = errors.New("change or artifact service is unavailabl
 // ChangeArguments is the typed application selector. Each tool allows only its
 // declared fields; credentials, producer provenance and leases are never input.
 type ChangeArguments struct {
+	ArchiveURL        bool                             `json:"archive_url,omitempty"`
 	ReleasePick       *tracker.ReleasePickInput        `json:"release_pick,omitempty"`
 	Escape            *tracker.QualityEscape           `json:"escape,omitempty"`
 	ProjectID         string                           `json:"project_id"`
@@ -88,6 +89,7 @@ type ChangeArguments struct {
 
 // ChangeResult contains bounded application data, never rendered HTML.
 type ChangeResult struct {
+	Archive         *tracker.ArchiveDescriptor  `json:"archive,omitempty"`
 	Fragment        *tracker.NativeRecoveryPage `json:"fragment,omitempty"`
 	ValidationAudit *tracker.ValidationAudit    `json:"validation_audit,omitempty"`
 	OrganizationID  string                      `json:"organization_id"`
@@ -192,6 +194,7 @@ func ChangeCatalog() []Definition {
 	props["offset"] = json.RawMessage(`{"type":"integer","minimum":0,"maximum":10000}`)
 	props["cursor"] = json.RawMessage(`{"type":"string","minLength":1,"maxLength":2048}`)
 	props["section"] = json.RawMessage(`{"type":"string","enum":["current","versions","reviews","checks","discussion"]}`)
+	props["archive_url"] = json.RawMessage(`{"type":"boolean"}`)
 	props["viewed"] = json.RawMessage(`{"type":"boolean"}`)
 	props["source"] = json.RawMessage(`{"type":"string","enum":["attempt","workspace"]}`)
 	props["binding"] = json.RawMessage(`{"type":"object","required":["service_id","origin","mode","hosted_opt_in","publisher_token_id"],"properties":{"service_id":{"type":"string","minLength":1,"maxLength":256},"origin":{"type":"string","minLength":1,"maxLength":2048},"mode":{"type":"string","enum":["customer","hosted"]},"hosted_opt_in":{"type":"boolean"},"publisher_token_id":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false}`)
@@ -202,6 +205,10 @@ func ChangeCatalog() []Definition {
 	props["policy"] = json.RawMessage(`{"type":"object","required":["policy_id","require_review","required_checks"],"properties":{"review_policy_id":{"type":"string","maxLength":256},"policy_id":{"type":"string","minLength":1,"maxLength":256},"require_review":{"type":"boolean"},"required_checks":{"type":"array","maxItems":256,"items":{"type":"object","required":["name","principal_id","workflow_id","workflow_sha256","source","max_age_seconds"],"properties":{"name":{"type":"string","minLength":1,"maxLength":256},"principal_id":{"type":"string","minLength":1,"maxLength":256},"workflow_id":{"type":"string","minLength":1,"maxLength":256},"workflow_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"source":{"type":"string","enum":["customer","independent"]},"max_age_seconds":{"type":"integer","minimum":60,"maximum":604800}},"additionalProperties":false}}},"additionalProperties":false}`)
 	var definitions []Definition
 	add := func(name, description, required, optional string, read, material bool) {
+		switch name {
+		case GetChange, GetChangeVersion, GetNativeRun, GetAttemptDiff, GetWorkItemDiff:
+			optional += " archive_url"
+		}
 		fields := map[string]json.RawMessage{"project_id": props["project_id"]}
 		req := []string{"project_id"}
 		for _, k := range strings.Fields(required) {

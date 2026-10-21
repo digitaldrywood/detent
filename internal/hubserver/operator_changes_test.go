@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -25,7 +26,9 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/logging"
@@ -1284,6 +1287,107 @@ func TestOperatorArtifactResults(t *testing.T) {
 			var repeated operatortool.ChangeResult
 			if json.Unmarshal(replay.Content, &repeated) != nil || repeated.Access == nil || repeated.Access.Grant.Token == token {
 				t.Fatal("replay must freshly authorize ephemeral access")
+			}
+		})
+	}
+}
+
+func TestOperatorArchivedChangeReads(t *testing.T) {
+	f := newChangeFixture(t, nil)
+	first := f.publish(t, "first", "")
+	second := f.publish(t, "second", first.ID)
+	versionPath := f.path + "/versions/" + second.ID
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, versionPath+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "archive-review"}, Decision: "commented", Body: "Retained implementation review evidence"}), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, versionPath+"/checks", f.token, changeTestResult(second)), http.StatusOK)
+	for i := range 3 {
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/discussion", f.token, tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprint("discussion-", i)}, VersionID: second.ID, Body: fmt.Sprint("Review discussion ", i)}), http.StatusOK)
+	}
+	at := f.service.config.now()
+	f.service.config.now = func() time.Time { return at }
+	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+	call := hostedContextProtocol(t, f.service, ctx, "stdio")
+	read := func(t *testing.T, name, section, version, cursor string) []byte {
+		t.Helper()
+		args := map[string]any{"project_id": string(f.project.ID), "work_item_id": string(f.issue.WorkItemID), "change_id": f.change.ID}
+		if name == operatortool.GetChange {
+			args["limit"] = 1
+		}
+		if name == operatortool.WorkItem {
+			args = map[string]any{"project_id": string(f.project.ID), "reference": string(f.issue.WorkItemID), "view": "recovery"}
+		}
+		if section != "" {
+			args["section"] = section
+		}
+		if version != "" {
+			args["version_id"] = version
+		}
+		if cursor != "" {
+			args["cursor"] = cursor
+		}
+		reply := call("tools/call", name, args)
+		var result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if json.Unmarshal(reply.Result, &result) != nil || result.IsError || len(result.Content) != 1 {
+			t.Fatalf("%s: %s %s", name, reply.Result, reply.Error)
+		}
+		return []byte(result.Content[0].Text)
+	}
+	cases := []struct {
+		name, section, version, cursor string
+		hot                            []byte
+	}{
+		{operatortool.GetChange, "current", "", "", nil},
+		{operatortool.GetChange, "versions", "", "", nil},
+		{operatortool.GetChange, "reviews", "", "", nil},
+		{operatortool.GetChange, "checks", "", "", nil},
+		{operatortool.GetChange, "discussion", "", "", nil},
+		{operatortool.GetChangeVersion, "", first.ID, "", nil},
+		{operatortool.WorkItem, "", "", "", nil},
+	}
+	for i := range cases {
+		cases[i].hot = read(t, cases[i].name, cases[i].section, cases[i].version, "")
+	}
+	var page operatortool.ChangeResult
+	if err := json.Unmarshal(cases[4].hot, &page); err != nil {
+		t.Fatal(err)
+	}
+	cursor := page.Read.Sections["discussion"].NextCursor
+	if cursor == "" {
+		t.Fatal("fixture did not exercise pagination")
+	}
+	cases = append(cases, struct {
+		name, section, version, cursor string
+		hot                            []byte
+	}{operatortool.GetChange, "discussion", "", cursor, read(t, operatortool.GetChange, "discussion", "", cursor)})
+	ref, data := publishTestSection(t, f.nativeFixture, string(f.issue.WorkItemID), "change", f.change.ID, 0, 0,
+		archiveTestTable(t, f.service, "change_versions", "change_id=?", f.change.ID),
+		archiveTestTable(t, f.service, "change_evidence", "change_id=?", f.change.ID))
+	for _, table := range []string{"change_versions", "change_evidence"} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER "+table+"_immutable"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE "+table+" SET record_json='{}' WHERE change_id=?", f.change.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fetches := 0
+	f.service.config.ArchiveReader = func(_ context.Context, got attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
+		fetches++
+		if got != ref {
+			t.Fatal("wrong archive")
+		}
+		return entryauthority.ArchiveResponse{Data: data}, nil
+	}
+	for i, test := range cases {
+		t.Run(fmt.Sprint(i, "/", test.name, "/", test.section), func(t *testing.T) {
+			fetches = 0
+			assertArchiveGolden(t, test.hot, read(t, test.name, test.section, test.version, test.cursor))
+			if fetches != 1 {
+				t.Fatalf("fetches=%d", fetches)
 			}
 		})
 	}

@@ -73,6 +73,7 @@ func (s *Service) readNativePageLimit(ctx context.Context, scope nativeScope, pa
 	params = cloned
 	params.Del("cursor")
 	params.Del("limit")
+	params.Del("archive_url")
 
 	fingerprint := scope.credential.ID + " " + path + "?" + params.Encode()
 	if scope.credential.HostedRole != "" {
@@ -124,6 +125,10 @@ func encodeNativeCursor(cursor nativeCursor, key []byte) (string, error) {
 }
 
 func validateNativeQuery(params url.Values, fields ...string) error {
+	fields = append(fields, "archive_url")
+	if value, present := params["archive_url"]; present && (len(value) != 1 || value[0] != "true" && value[0] != "false") {
+		return nativeInvalid("archive_url supports true or false")
+	}
 	allowed := map[string]bool{"limit": true, "cursor": true}
 	for _, field := range fields {
 		allowed[field] = true
@@ -473,7 +478,7 @@ func (s *Service) listNativeHistory(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, page)
+	return nativeArchiveJSON(c, http.StatusOK, page)
 }
 
 func (s *Service) readHistory(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.CollaborationEvent], error) {
@@ -529,7 +534,14 @@ func (s *Service) readHistory(ctx context.Context, scope nativeScope, item strin
 			return tracker.Page[tracker.CollaborationEvent]{}, nativeInvalid("History cursor is invalid")
 		}
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id, sequence, type, schema_version, actor_json, `+dataColumn+`, recorded_at FROM collaboration_events
+	var query nativeQueryer = tx
+	if view == "" {
+		query, err = archiveQuery(ctx, tx, item, "history", item, after+1)
+		if err != nil {
+			return tracker.Page[tracker.CollaborationEvent]{}, err
+		}
+	}
+	rows, err := query.QueryContext(ctx, `SELECT id, sequence, type, schema_version, actor_json, `+dataColumn+`, recorded_at FROM collaboration_events
 WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence > ? ORDER BY sequence LIMIT ?`, scope.organization, scope.project, item, after, limit+1)
 	if err != nil {
 		return tracker.Page[tracker.CollaborationEvent]{}, err
@@ -588,6 +600,15 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence >
 		event.Data.RelatedIssue = link
 	}
 	hasMore := len(page.Items) > limit
+	if state, ok := ctx.Value(nativeArchiveContextKey{}).(*nativeArchiveRead); ok && state.section != nil && state.last > 0 {
+		var subsequent bool
+		err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>?)
+OR EXISTS(SELECT 1 FROM native_archive_sections WHERE organization_id=? AND project_id=? AND work_item_id=? AND kind='history' AND first_sequence>?)`, scope.organization, scope.project, item, state.last, scope.organization, scope.project, item, state.last).Scan(&subsequent)
+		if err != nil {
+			return tracker.Page[tracker.CollaborationEvent]{}, err
+		}
+		hasMore = hasMore || subsequent
+	}
 	items := page.Items[:min(len(page.Items), limit)]
 	page.Items = []tracker.CollaborationEvent{}
 	for _, event := range items {

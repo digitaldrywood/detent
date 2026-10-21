@@ -72,6 +72,7 @@ type authorityServer struct {
 	binding Binding
 	budget  time.Duration
 	resolve func(Request) (cloudassert.Claims, error)
+	archive func(ArchiveRequest) (ArchiveResponse, error)
 }
 
 func (s *authorityServer) Handshake(binding Binding, result *Handshake) error {
@@ -101,7 +102,7 @@ type Parent struct {
 	done   chan struct{}
 }
 
-func Start(ctx context.Context, binding Binding, budget time.Duration, resolve Resolver) (*Parent, error) {
+func Start(ctx context.Context, binding Binding, budget time.Duration, resolve Resolver, archives ...ArchiveReader) (*Parent, error) {
 	parentRead, childWrite, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -120,7 +121,17 @@ func Start(ctx context.Context, binding Binding, budget time.Duration, resolve R
 		defer end()
 		return resolve(lookup, request.Origin)
 	}
-	if err := server.RegisterName("Authority", &authorityServer{binding: binding, budget: budget, resolve: current}); err != nil {
+	service := &authorityServer{binding: binding, budget: budget, resolve: current}
+	if len(archives) == 1 && archives[0] != nil {
+		service.archive = func(request ArchiveRequest) (ArchiveResponse, error) {
+			lookup, stop := context.WithTimeout(ctx, budget)
+			defer stop()
+			lookup, end := context.WithDeadline(lookup, request.Deadline)
+			defer end()
+			return archives[0](lookup, request.Reference, request.Presign)
+		}
+	}
+	if err := server.RegisterName("Authority", service); err != nil {
 		close(p.done)
 		return nil, errors.Join(err, p.Close())
 	}

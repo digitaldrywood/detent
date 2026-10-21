@@ -273,6 +273,16 @@ func (s *Service) readRecoveryEvidenceRecord(ctx context.Context, query nativeQu
 		kind := map[string]string{"reviews": "review", "checks": "check", "change_discussion": "discussion"}[section]
 		var content []byte
 		err := query.QueryRowContext(ctx, `SELECT sequence, COALESCE(version_id,''), record_json FROM change_evidence WHERE change_id = ? AND kind = ? AND sequence > ? ORDER BY sequence LIMIT 1`, cursor.Change, kind, cursor.After).Scan(&sequence, &version, &content)
+		if err != nil {
+			return sequence, "", version, nil, err
+		}
+		query, err = archiveQuery(ctx, query, item, "change", cursor.Change, 0)
+		if err != nil {
+			return sequence, "", version, nil, err
+		}
+		if _, archived := query.(*nativeArchiveQuery); archived {
+			err = query.QueryRowContext(ctx, "SELECT record_json FROM change_evidence WHERE change_id=? AND sequence=?", cursor.Change, sequence).Scan(&content)
+		}
 		return sequence, strconv.FormatInt(sequence, 10), version, content, err
 	case "discussion":
 		err := query.QueryRowContext(ctx, `SELECT sequence, id FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence > ? ORDER BY sequence LIMIT 1`, scope.organization, scope.project, item, cursor.After).Scan(&sequence, &id)
@@ -296,6 +306,10 @@ func (s *Service) readRecoveryEvidenceRecord(ctx context.Context, query nativeQu
 		value = attempt
 	case "versions":
 		err := query.QueryRowContext(ctx, `SELECT number, id FROM change_versions WHERE change_id = ? AND number > ? ORDER BY number LIMIT 1`, cursor.Change, cursor.After).Scan(&sequence, &id)
+		if err != nil {
+			return 0, "", "", nil, err
+		}
+		query, err = archiveQuery(ctx, query, item, "change", cursor.Change, 0)
 		if err != nil {
 			return 0, "", "", nil, err
 		}
@@ -564,6 +578,11 @@ func boundedRecoveryRecords[T any](records []T, budget int) ([]T, bool, error) {
 
 func (s *Service) readRecoveryChange(ctx context.Context, query nativeQueryer, scope nativeScope, item string, change tracker.ChangeRequest) (tracker.ChangeDetail, error) {
 	detail := tracker.ChangeDetail{Change: change, Checks: []tracker.ChangeCheck{}}
+	var err error
+	query, err = archiveQuery(ctx, query, item, "change", change.ID, 0)
+	if err != nil {
+		return detail, err
+	}
 	version, found, err := readNativeChangeVersion(ctx, query, change)
 	if err != nil {
 		return detail, err

@@ -231,3 +231,41 @@ func TestArchiveBucketPolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeArchiveSection(t *testing.T) {
+	for _, test := range []struct {
+		name, raw string
+		mutate    func(*ArchiveReference, *[]byte)
+		valid     bool
+	}{
+		{"valid", `{"schema_version":1,"organization_id":"org_example","project_id":"prj_example","work_item_id":"wi_example","section_id":"run_example","tables":[]}`, nil, true},
+		{"unknown schema", `{"schema_version":2,"organization_id":"org_example"}`, nil, false},
+		{"foreign organization", `{"schema_version":1,"organization_id":"org_other"}`, nil, false},
+		{"unknown field", `{"schema_version":1,"organization_id":"org_example","url":"http://169.254.169.254/"}`, nil, false},
+		{"trailing JSON", `{"schema_version":1,"organization_id":"org_example"}{}`, nil, false},
+		{"uncompressed limit", `{"schema_version":1,"organization_id":"org_example"}`, func(ref *ArchiveReference, _ *[]byte) { ref.UncompressedSize = MaxSectionBytes + 1 }, false},
+		{"incorrect size", `{"schema_version":1,"organization_id":"org_example"}`, func(ref *ArchiveReference, _ *[]byte) { ref.UncompressedSize++ }, false},
+		{"digest mismatch", `{"schema_version":1,"organization_id":"org_example"}`, func(_ *ArchiveReference, data *[]byte) { (*data)[0] ^= 1 }, false},
+		{"second gzip member", `{"schema_version":1,"organization_id":"org_example"}`, func(ref *ArchiveReference, data *[]byte) {
+			*data = append(*data, *data...)
+			ref.CompressedSize = int64(len(*data))
+			digest := sha256.Sum256(*data)
+			ref.SHA256 = hex.EncodeToString(digest[:])
+			ref.Key = "orgs/org_example/blobs/sha256/" + ref.SHA256[:2] + "/" + ref.SHA256
+		}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ref, data, err := PrepareArchive("org_example", 1, strings.NewReader(test.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.mutate != nil {
+				test.mutate(&ref, &data)
+			}
+			_, err = DecodeArchiveSection("org_example", ref, data)
+			if (err == nil) != test.valid {
+				t.Fatalf("decode error=%v valid=%v", err, test.valid)
+			}
+		})
+	}
+}

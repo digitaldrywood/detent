@@ -58,6 +58,9 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 	defer cancel()
 	defer func() {
 		if resultErr != nil {
+			if archive := nativeArchiveReadError(resultErr); archive != nil {
+				resultErr = archive
+			}
 			resultErr = fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), resultErr)
 		}
 	}()
@@ -66,6 +69,8 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 		return operatortool.ChangeResult{}, err
 	}
 	s := a.service
+	ctx = s.archiveContext(ctx, scope, args.ArchiveURL)
+	defer func() { value.Archive = nativeArchiveDescriptor(ctx) }()
 	result := a.result(scope, args)
 	switch name {
 	case operatortool.ArtifactLibrary:
@@ -127,7 +132,11 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 		} else {
 			if _, err = readChange(ctx, tx, scope, args.ItemID, args.ChangeID); err == nil {
 				var version tracker.ChangeVersion
-				version, err = readChangeVersion(ctx, tx, args.ChangeID, args.VersionID)
+				var query nativeQueryer
+				query, err = archiveQuery(ctx, tx, args.ItemID, "change", args.ChangeID, 0)
+				if err == nil {
+					version, err = readChangeVersion(ctx, query, args.ChangeID, args.VersionID)
+				}
 				result.Version = &version
 			}
 		}

@@ -207,7 +207,7 @@ func (s *Service) getNativeRuntime(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, result)
+	return nativeArchiveJSON(c, http.StatusOK, result)
 }
 
 func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
@@ -252,7 +252,8 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 		if err != nil || local <= 0 {
 			return e, nativeInvalid("Invalid attempt identity")
 		}
-		rows, err := query.QueryContext(ctx, "SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND json_extract(data_json, '$.runtime.local_attempt_id')=? LIMIT 2", scope.organization, scope.project, item, local)
+		rows, err := query.QueryContext(ctx, `SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND json_extract(data_json, '$.runtime.local_attempt_id')=?
+UNION SELECT subject_id FROM native_archive_sections WHERE organization_id=? AND project_id=? AND work_item_id=? AND kind='run' AND local_attempt_id=? LIMIT 2`, scope.organization, scope.project, item, local, scope.organization, scope.project, item, local)
 		if err != nil {
 			return e, err
 		}
@@ -282,6 +283,10 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 		e.Selection = "selected"
 	}
 	if attemptID != "" {
+		query, err = archiveQuery(ctx, query, item, "run", attemptID, 0)
+		if err != nil {
+			return e, err
+		}
 		a, err := readNativeAttempt(ctx, query, scope, item, attemptID, now)
 		if err != nil {
 			return e, err

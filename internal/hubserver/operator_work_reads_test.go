@@ -19,6 +19,8 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/mcp"
@@ -1201,4 +1203,172 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, runtimePath+"/runtime", f.token, nil), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, runtimePath+"/explanation", f.token, nil), http.StatusNotFound)
 
+}
+
+func TestOperatorArchivedWorkReads(t *testing.T) {
+	f := newAttemptDiffFixture(t)
+	requireNativeStatus(t, f.post(t, f.request(1, tracker.AttemptDiffFile{Path: "first.go", Status: "added", Additions: 1, Patch: "+first"}, tracker.AttemptDiffFile{Path: "second.go", Status: "added", Additions: 1, Patch: "+second"})), http.StatusAccepted)
+	f.event(t, "run.finished", 2, "succeeded")
+	at := f.service.config.now()
+	f.service.config.now = func() time.Time { return at }
+	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime',json(?)) WHERE id=?`, `{"local_attempt_id":42,"generation":1,"phase":"completed","heartbeat_at":"2026-10-21T00:00:00Z","phases":[],"phases_dropped":0}`, f.attempt); err != nil {
+		t.Fatal(err)
+	}
+	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+	call := hostedContextProtocol(t, f.service, ctx, "stdio")
+	read := func(t *testing.T, name string, args map[string]any) []byte {
+		t.Helper()
+		args["project_id"] = string(f.project.ID)
+		reply := call("tools/call", name, args)
+		var result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if json.Unmarshal(reply.Result, &result) != nil || result.IsError || len(result.Content) != 1 {
+			t.Fatalf("%s failed: %s %s", name, reply.Result, reply.Error)
+		}
+		return []byte(result.Content[0].Text)
+	}
+	item := string(f.issue.WorkItemID)
+	cases := []struct {
+		name    string
+		args    map[string]any
+		fetches int
+		hot     []byte
+	}{
+		{operatortool.WorkHistory, map[string]any{"reference": item, "limit": 1}, 1, nil},
+		{operatortool.WorkRuns, map[string]any{"reference": item}, 0, nil},
+		{operatortool.WorkAttemptReceipt, map[string]any{"reference": item, "native_attempt_id": f.attempt}, 1, nil},
+		{operatortool.WorkAttemptReceipt, map[string]any{"reference": item, "attempt_id": 42}, 1, nil},
+		{operatortool.WorkItem, map[string]any{"reference": item, "view": "recovery"}, 1, nil},
+		{operatortool.WorkVersion, map[string]any{"reference": item, "revision": 1}, 1, nil},
+		{operatortool.GetNativeRun, map[string]any{"work_item_id": item, "attempt_id": f.attempt}, 1, nil},
+		{operatortool.GetAttemptDiff, map[string]any{"work_item_id": item, "attempt_id": f.attempt, "limit": 1}, 1, nil},
+		{operatortool.GetWorkItemDiff, map[string]any{"work_item_id": item, "limit": 1}, 1, nil},
+	}
+	for i := range cases {
+		cases[i].hot = read(t, cases[i].name, cases[i].args)
+	}
+	var history struct {
+		Data tracker.Page[tracker.CollaborationEvent] `json:"data"`
+	}
+	if err := json.Unmarshal(cases[0].hot, &history); err != nil {
+		t.Fatal(err)
+	}
+	if history.Data.NextCursor == "" {
+		t.Fatal("missing pre-archive history cursor")
+	}
+	args := map[string]any{"reference": item, "limit": 1, "cursor": history.Data.NextCursor}
+	cases = append(cases, struct {
+		name    string
+		args    map[string]any
+		fetches int
+		hot     []byte
+	}{operatortool.WorkHistory, args, 1, read(t, operatortool.WorkHistory, args)})
+	var lastEvent int64
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT max(sequence) FROM collaboration_events WHERE work_item_id=?", item).Scan(&lastEvent); err != nil {
+		t.Fatal(err)
+	}
+	allHistory := read(t, operatortool.WorkHistory, map[string]any{"reference": item, "limit": 100})
+	historyTable := archiveTestTable(t, f.service, "collaboration_events", "work_item_id=?", item)
+	objects := map[string][]byte{}
+	for _, part := range []struct {
+		kind, subject string
+		first, last   int64
+		tables        []attachment.ArchiveTable
+	}{
+		{"run", f.attempt, 0, 0, []attachment.ArchiveTable{
+			archiveTestTable(t, f.service, "native_attempts", "id=?", f.attempt),
+			archiveTestTable(t, f.service, "native_attempt_events", "attempt_id=?", f.attempt),
+			archiveTestTable(t, f.service, "attempt_diffs", "attempt_id=?", f.attempt),
+			archiveTestTable(t, f.service, "attempt_diff_files", "diff_id IN (SELECT id FROM attempt_diffs WHERE attempt_id=?)", f.attempt),
+		}},
+		{"revision", item, 1, 1, []attachment.ArchiveTable{archiveTestTable(t, f.service, "collaboration_versions", "record_id=?", item)}},
+		{"history", item, 1, lastEvent, []attachment.ArchiveTable{historyTable}},
+	} {
+		ref, data := publishTestSection(t, f.nativeFixture, item, part.kind, part.subject, part.first, part.last, part.tables...)
+		objects[ref.Key] = data
+	}
+	for _, statement := range []string{
+		`UPDATE native_attempts SET data_json=json_remove(data_json,'$.runtime')`,
+		`DELETE FROM attempt_diff_files`,
+		`DROP TRIGGER collaboration_versions_no_delete`,
+		`DELETE FROM collaboration_versions`,
+		`DROP TRIGGER collaboration_events_no_update`,
+		`UPDATE collaboration_events SET data_json='{}' WHERE type='issue.created'`,
+	} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fetches := 0
+	f.service.config.ArchiveReader = func(_ context.Context, ref attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
+		fetches++
+		return entryauthority.ArchiveResponse{Data: objects[ref.Key]}, nil
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			fetches = 0
+			archived := read(t, test.name, test.args)
+			assertArchiveGolden(t, test.hot, archived)
+			if fetches != test.fetches {
+				t.Fatalf("section fetches=%d want %d", fetches, test.fetches)
+			}
+		})
+	}
+
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM native_archive_sections WHERE work_item_id=? AND kind='history'", item); err != nil {
+		t.Fatal(err)
+	}
+	boundary := len(historyTable.Rows) / 2
+	for _, part := range []struct{ start, end int }{{0, boundary}, {boundary, len(historyTable.Rows)}} {
+		table := historyTable
+		table.Rows = table.Rows[part.start:part.end]
+		index := slices.Index(table.Columns, "sequence")
+		var first, last int64
+		if err := json.Unmarshal(table.Rows[0][index], &first); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(table.Rows[len(table.Rows)-1][index], &last); err != nil {
+			t.Fatal(err)
+		}
+		ref, data := publishTestSection(t, f.nativeFixture, item, "history", item, first, last, table)
+		objects[ref.Key] = data
+	}
+	var want struct {
+		Data tracker.Page[tracker.CollaborationEvent] `json:"data"`
+	}
+	if err := json.Unmarshal(allHistory, &want); err != nil {
+		t.Fatal(err)
+	}
+	var events []tracker.CollaborationEvent
+	cursor := ""
+	pages := 0
+	for {
+		args := map[string]any{"reference": item, "limit": 100}
+		if cursor != "" {
+			args["cursor"] = cursor
+		}
+		fetches = 0
+		var page struct {
+			Data tracker.Page[tracker.CollaborationEvent] `json:"data"`
+		}
+		if err := json.Unmarshal(read(t, operatortool.WorkHistory, args), &page); err != nil {
+			t.Fatal(err)
+		}
+		if fetches != 1 || len(page.Data.Items) == 0 {
+			t.Fatalf("history page fetches=%d items=%d", fetches, len(page.Data.Items))
+		}
+		events = append(events, page.Data.Items...)
+		pages++
+		if page.Data.NextCursor == "" {
+			break
+		}
+		cursor = page.Data.NextCursor
+	}
+	if pages != 2 || !reflect.DeepEqual(events, want.Data.Items) {
+		t.Fatal("section pagination changed history records or anchors")
+	}
 }

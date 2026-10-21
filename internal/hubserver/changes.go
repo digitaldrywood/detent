@@ -417,7 +417,7 @@ func (s *Service) getChange(c echo.Context) error {
 	if err := tx.Commit(); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, result)
+	return nativeArchiveJSON(c, http.StatusOK, result)
 }
 
 func readChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScope, item, id string, now time.Time) (tracker.ChangeDetail, error) {
@@ -430,6 +430,10 @@ func readChangeDetailView(ctx context.Context, query nativeQueryer, scope native
 	result.Change, err = readChange(ctx, query, scope, item, id)
 	if err != nil {
 		return result, fmt.Errorf("load change: %w", err)
+	}
+	query, err = archiveQuery(ctx, query, item, "change", id, 0)
+	if err != nil {
+		return result, err
 	}
 	result.SourceIssues, err = readChangeSourceIssues(ctx, query, scope, id)
 	if err != nil {

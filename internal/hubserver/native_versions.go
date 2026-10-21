@@ -22,7 +22,7 @@ func (s *Service) getNativeVersion(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSONBlob(http.StatusOK, body)
+	return nativeArchiveJSON(c, http.StatusOK, body)
 }
 
 func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comment string, revision int64) (json.RawMessage, error) {
@@ -35,7 +35,11 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 	if comment != "" {
 		recordID = comment
 	}
-	body, err := reconstructNativeVersion(ctx, s.database.reader, string(scope.organization), string(scope.project), item, recordID, revision)
+	query, err := archiveQuery(ctx, s.database.reader, item, "revision", recordID, revision)
+	if err != nil {
+		return nil, err
+	}
+	body, err := reconstructNativeVersion(ctx, query, string(scope.organization), string(scope.project), item, recordID, revision)
 	if err != nil {
 		return nil, err
 	}
