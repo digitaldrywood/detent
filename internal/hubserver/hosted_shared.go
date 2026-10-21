@@ -142,9 +142,21 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 			if claims.Key == nil || bearer {
 				return c.NoContent(http.StatusUnauthorized)
 			}
-			if err := s.auditEntryKey(c, claims); err != nil {
+			request = request.WithContext(context.WithValue(request.Context(), entryKeyAuditContext{}, true))
+			c.SetRequest(request)
+			result := next(c)
+			status := c.Response().Status
+			if result != nil {
+				status = http.StatusInternalServerError
+				var failure *echo.HTTPError
+				if errors.As(result, &failure) {
+					status = failure.Code
+				}
+			}
+			if err := s.auditEntryKey(c, claims, status); err != nil {
 				return s.internalAPIError(c, "audit_unavailable", "Key audit is unavailable", err)
 			}
+			return result
 		}
 		return next(c)
 	}

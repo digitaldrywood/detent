@@ -285,13 +285,14 @@ func residenceSampleItem(sample analyticsResidenceSample, states map[string]trac
 // the requested points. An issue's sample at a point is its last edge earlier
 // in the point's hour, or else its last hourly sample before that hour.
 type analyticsResidenceFrames struct {
-	states  map[string]tracker.NativeState
-	ids     []string
-	points  map[int64]int
-	issues  map[string]int
-	samples []*analyticsResidenceSample
-	cutoffs map[string]residenceCutoff
-	clipped bool
+	retained map[string]time.Time
+	states   map[string]tracker.NativeState
+	ids      []string
+	points   map[int64]int
+	issues   map[string]int
+	samples  []*analyticsResidenceSample
+	cutoffs  map[string]residenceCutoff
+	clipped  bool
 }
 
 // residenceRow is one residence rollup row; edges sort by hour, AtNS and
@@ -355,6 +356,27 @@ func readAnalyticsResidenceFrames(ctx context.Context, q nativeQueryer, scope na
 	if err != nil {
 		return out, err
 	}
+	out.retained = map[string]time.Time{}
+	retained, err := q.QueryContext(ctx, `SELECT work_item_id,through_hour FROM analytics_residence_retention WHERE organization_id=? AND project_id=? AND through_hour>?`, scope.organization, scope.project, w.From.Unix())
+	if err != nil {
+		return out, err
+	}
+	defer retained.Close()
+	for retained.Next() {
+		var id string
+		var hour int64
+		if err := retained.Scan(&id, &hour); err != nil {
+			return out, err
+		}
+		at := time.Unix(hour, 0).UTC()
+		out.retained[id] = at
+		if at.Before(w.To) {
+			points = append(points, at)
+		}
+	}
+	if err := errors.Join(retained.Err(), retained.Close()); err != nil {
+		return out, err
+	}
 	issues, issueArgs := reportsIssueClause(ctx, "i.native_id")
 	rows, err := queryAnalyticsPopulation(ctx, q, "residence_issues", `SELECT native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND julianday(i.created_at)<julianday(?) AND (coalesce(ws.terminal,0)=0 OR julianday(i.updated_at)>=julianday(?))`+issues+` ORDER BY native_id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From)}, issueArgs...)...)
 	if err != nil {
@@ -394,6 +416,7 @@ func readAnalyticsResidenceFrames(ctx context.Context, q nativeQueryer, scope na
 		out.issues[id] = i
 	}
 	edges, hours := map[string][]residenceRow{}, map[string][]residenceRow{}
+	baselines := map[string]analyticsResidenceSample{}
 	ids, err := json.Marshal(out.ids)
 	if err != nil {
 		return out, err
@@ -409,7 +432,13 @@ func readAnalyticsResidenceFrames(ctx context.Context, q nativeQueryer, scope na
 			if err := rows.Scan(&metric, &dimension, &id, &row.hour, &row.atNS, &row.value, &row.raw); err != nil {
 				return err
 			}
-			if _, wanted := out.issues[id]; wanted && metric == "residence_edge" {
+			if metric == "residence_baseline" {
+				sample, err := row.decode()
+				if err != nil {
+					return err
+				}
+				baselines[dimension] = *sample
+			} else if _, wanted := out.issues[id]; wanted && metric == "residence_edge" {
 				edges[id] = append(edges[id], row)
 			} else if _, wanted := out.issues[dimension]; wanted && metric == "residence_hour" {
 				hours[dimension] = append(hours[dimension], row)
@@ -441,6 +470,12 @@ func readAnalyticsResidenceFrames(ctx context.Context, q nativeQueryer, scope na
 		string(ids), scope.organization, scope.project, firstHour)); err != nil {
 		return out, err
 	}
+	if err := read(q.QueryContext(ctx, `SELECT 'residence_baseline',p.work_item_id,'',r.hour,0,r.value,r.data_json
+FROM json_each(?) i JOIN analytics_residence_retention p ON p.organization_id=? AND p.project_id=? AND p.work_item_id=i.value
+JOIN analytics_hourly_rollups r ON r.rowid=(SELECT rowid FROM analytics_hourly_rollups WHERE organization_id=p.organization_id AND project_id=p.project_id AND metric='residence_hour' AND dimension=p.work_item_id AND hour<p.through_hour ORDER BY hour DESC LIMIT 1)`,
+		string(ids), scope.organization, scope.project)); err != nil {
+		return out, err
+	}
 	out.samples = make([]*analyticsResidenceSample, len(instants)*len(out.ids))
 	for issue, id := range out.ids {
 		if err := selectResidenceSamples(out.samples[issue:], len(out.ids), instants, edges[id], hours[id]); err != nil {
@@ -451,14 +486,21 @@ func readAnalyticsResidenceFrames(ctx context.Context, q nativeQueryer, scope na
 	var clipped []residenceClip
 	for _, id := range out.ids {
 		end := out.at(w.To, id)
-		allowed := min(remaining, end.Events)
+		baseline, archived := baselines[id]
+		events := max(0, end.Events-baseline.Events)
+		allowed := min(remaining, events)
 		remaining -= allowed
+		allowed += baseline.Events
 		if end.Events <= allowed {
 			continue
 		}
 		out.clipped = true
 		if page := analyticsPagingFromContext(ctx); page != nil {
 			page.next["residence_events"] = "residence_events:1000:" + strconv.Itoa(analyticsPopulationOffset(ctx, "residence_issues"))
+		}
+		if allowed == baseline.Events && archived {
+			out.cutoffs[id] = residenceCutoff{allowed: allowed, sample: baseline}
+			continue
 		}
 		clipped = append(clipped, residenceClip{ID: id, Allowed: allowed})
 	}
@@ -559,6 +601,10 @@ func summarizeResidenceFrames(frames analyticsResidenceFrames, from, to time.Tim
 	causes := map[string]operatortool.AnalyticsReworkCause{}
 	var system, held, queue, lead []float64
 	for _, id := range frames.ids {
+		from := maxTime(from, frames.retained[id])
+		if !from.Before(to) {
+			continue
+		}
 		end := frames.at(to, id)
 		begin := frames.at(from, id)
 		item := residenceSampleItem(end, frames.states, to)
@@ -683,6 +729,9 @@ func projectAnalyticsResidenceRollups(ctx context.Context, q nativeQueryer, scop
 		out.Unavailable = append(out.Unavailable, "lane_residence_and_unclaimed_waits_unavailable", "queue_time")
 	} else if frames.clipped {
 		out.Unavailable = append(out.Unavailable, "lane_residence_complete_population", "queue_time_complete_population")
+	}
+	if err := addAnalyticsResidenceHours(ctx, q, scope, out); err != nil {
+		return err
 	}
 	return projectResidencePipelineRollups(ctx, q, scope, frames, out)
 }
