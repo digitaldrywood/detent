@@ -146,6 +146,10 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 		}
 		return c.JSON(failure.status, failure)
 	}
+	var conflict *operatortool.ConflictError
+	if errors.As(err, &conflict) {
+		return c.JSON(http.StatusConflict, conflict)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return s.nativeAPIError(c, nativeNotFound())
 	}

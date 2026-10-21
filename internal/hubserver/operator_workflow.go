@@ -166,6 +166,11 @@ func (e nativeOperatorExecutor) executeWorkflowTransition(ctx context.Context, a
 
 func workflowExecutionFailure(err error) (chat.ActionExecution, error) {
 	safe := hubSafeChangeError(err)
+	if errors.Is(safe, mutation.ErrConflict) {
+		if conflict := operatorNativeConflict(err); conflict != nil {
+			safe = conflict
+		}
+	}
 	message := safe.Error()
 	var refusal *operatortool.RequestError
 	if errors.As(safe, &refusal) {

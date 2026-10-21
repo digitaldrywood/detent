@@ -1,14 +1,19 @@
 package hubserver
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -299,4 +304,187 @@ func TestMCPKeyIssueContract(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMCPKeyRevisionedWrites(t *testing.T) {
+	shared := newHostedSharedFixture(t)
+	f := shared.hostedSecurityFixture
+	user := f.user(t, "revision_owner", "owner", "revision-owner@example.test", "write", "")
+	issuer, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: user.identity.Hosted, Email: user.identity.Email}, apikey.HashToken(user.token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := nativeScope{organization: "org_security", project: f.project, credential: issuer}
+	key, err := f.service.createHostedAPIKeyFor(t.Context(), issuer, hostedKeyRequest{Kind: "personal", Name: "revision writes", Scope: apikey.ScopeWrite, NeverExpires: true, ProjectAccess: hostedProjectsAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := func(t *testing.T, name string) tracker.NativeIssue {
+		t.Helper()
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+				t.Error(err)
+			}
+		})
+		item, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: name, Body: issueContractTestSections, State: "Todo"}, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.database.commit(t.Context(), tx); err != nil {
+			t.Fatal(err)
+		}
+		return item
+	}
+	blocker := create(t, "blocker")
+	call := func(t *testing.T, name, requestID string, fields map[string]any) (json.RawMessage, bool) {
+		t.Helper()
+		fields["project_id"], fields["request_id"] = f.project, requestID
+		raw, err := json.Marshal(map[string]any{"name": name, "arguments": fields, "connection_id": "revision-writes"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := shared.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: "/internal/v1/keys/call", body: string(raw), mutate: func(claims *cloudassert.Claims) {
+			claims.Key = &apikey.KeyAuthority{ID: key.ID, Kind: "personal", Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: "all"}}
+			claims.Subject, claims.ProviderOrganization, claims.Role = user.identity.Subject, "org_provider", "owner"
+		}})
+		if response.Code != http.StatusOK {
+			requireNativeStatus(t, response, http.StatusConflict)
+			return json.RawMessage(response.Body.Bytes()), true
+		}
+		var result struct {
+			Data json.RawMessage `json:"data"`
+		}
+		decodeHubResponse(t, response, &result)
+		return result.Data, false
+	}
+
+	t.Run("revisioned writes", func(t *testing.T) {
+		for _, test := range []struct {
+			name, tool, relationship, operation string
+		}{
+			{"add dependency", operatortool.SetDependency, "dependency", "add"},
+			{"remove dependency", operatortool.SetDependency, "dependency", "remove"},
+			{"add related", operatortool.SetDependency, "related", "add"},
+			{"remove related", operatortool.SetDependency, "related", "remove"},
+			{"edit item", operatortool.EditItem, "", ""},
+			{"move item", operatortool.MoveItem, "", ""},
+			{"edit comment", operatortool.EditComment, "", ""},
+			{"restore item", operatortool.RestoreItem, "", ""},
+			{"verify fix", operatortool.VerifyFix, "", ""},
+			{"transfer item", operatortool.TransferItem, "", ""},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				item := create(t, test.name)
+				fields := map[string]any{"identifier": item.WorkItemID, "expected_revision": "1", "title": "Updated"}
+				raw, failed := call(t, operatortool.EditItem, test.name+" prepare", fields)
+				if err := json.Unmarshal(raw, &item); err != nil || failed || item.Revision != 2 {
+					t.Fatalf("prepare=%s failed=%t err=%v", raw, failed, err)
+				}
+				fields = map[string]any{"identifier": item.WorkItemID}
+				currentRevision := item.Revision
+				switch test.tool {
+				case operatortool.SetDependency:
+					fields["related"], fields["relationship_type"], fields["operation"] = blocker.WorkItemID, test.relationship, test.operation
+					if test.operation == "remove" {
+						seed := maps.Clone(fields)
+						seed["operation"], seed["expected_revision"] = "add", "2"
+						raw, failed := call(t, test.tool, test.name+" seed", seed)
+						if err := json.Unmarshal(raw, &item); err != nil || failed || item.Revision != 3 {
+							t.Fatalf("seed=%s failed=%t err=%v", raw, failed, err)
+						}
+						currentRevision = item.Revision
+					}
+				case operatortool.EditItem:
+					fields["title"] = "Corrected"
+				case operatortool.MoveItem:
+					fields["target_state"] = "Done"
+				case operatortool.TransferItem:
+					now := f.service.config.now()
+					machine := tracker.MachineID(newNativeID("machine"))
+					operatorSQL(t, f, `INSERT INTO machines(id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at,organization_id,token_id) VALUES(?,?,?,1,'test',?,?,?,?,?)`, machine, machine, machine, formatHubTime(now), formatHubTime(now), formatHubTime(now), scope.organization, issuer.ID)
+					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() {
+						if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+							t.Error(err)
+						}
+					})
+					input := changeTestInput()
+					input.Repository = "https://github.com/example-org/example-project"
+					if _, err := f.service.approveChangeReviewPolicyCommand(t.Context(), tx, scope, tracker.ApproveChangeReviewPolicy{Policy: tracker.ChangeReviewPolicy{PolicyID: input.PolicyID}}); err != nil {
+						t.Fatal(err)
+					}
+					input.AttemptID = seedHealthRateAttempt(t, tx, scope, item, string(machine), "succeeded", tracker.NativeRunData{PolicyID: input.PolicyID}, now, -1)
+					input.RunID = newNativeID("run")
+					if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET run_id=? WHERE id=?", input.RunID, input.AttemptID); err != nil {
+						t.Fatal(err)
+					}
+					bundle := changeTestSource(t, &input)
+					created, err := f.service.createChangeCommand(t.Context(), tx, scope, string(item.WorkItemID), tracker.CreateChange{Title: "Transfer source"}, now)
+					if err != nil {
+						t.Fatal(err)
+					}
+					change := created.(tracker.ChangeRequest)
+					published, err := f.service.publishChangeVersionCommand(t.Context(), tx, scope, string(item.WorkItemID), change.ID, tracker.PublishChangeVersion{ChangeVersionInput: input, SourceBundle: bundle}, now)
+					if err != nil {
+						t.Fatalf("publish source: %#v", err)
+					}
+					if err := f.service.database.commit(t.Context(), tx); err != nil {
+						t.Fatal(err)
+					}
+					fields["version_id"] = published.(tracker.ChangeVersion).ID
+				case operatortool.RestoreItem:
+					_, err := f.service.setNativeArchiveCommand(t.Context(), scope, string(item.WorkItemID), archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: "archive"}, ExpectedRevision: item.Revision}, true)
+					if err != nil {
+						t.Fatal(err)
+					}
+					currentRevision++
+				case operatortool.VerifyFix:
+					raw, failed := call(t, operatortool.MoveItem, "verification prepare", map[string]any{"identifier": item.WorkItemID, "expected_revision": "2", "target_state": "Done"})
+					if err := json.Unmarshal(raw, &item); err != nil || failed || item.Revision != 3 {
+						t.Fatalf("prepare verification=%s failed=%t err=%v", raw, failed, err)
+					}
+					currentRevision = item.Revision
+					fields["result"] = "verified"
+				case operatortool.EditComment:
+					raw, failed := call(t, operatortool.AddComment, test.name+" create", map[string]any{"identifier": item.WorkItemID, "body": "Original"})
+					var comment tracker.NativeComment
+					if err := json.Unmarshal(raw, &comment); err != nil || failed || comment.Revision != 1 {
+						t.Fatalf("create comment=%s failed=%t err=%v", raw, failed, err)
+					}
+					fields["comment_id"], fields["body"], fields["expected_revision"] = comment.ID, "Updated", "1"
+					raw, failed = call(t, test.tool, test.name+" prepare comment", maps.Clone(fields))
+					if err := json.Unmarshal(raw, &comment); err != nil || failed || comment.Revision != 2 {
+						t.Fatalf("prepare comment=%s failed=%t err=%v", raw, failed, err)
+					}
+					currentRevision = comment.Revision
+					fields["body"] = "Corrected"
+				}
+				fields["expected_revision"] = strconv.FormatInt(int64(currentRevision-1), 10)
+				raw, failed = call(t, test.tool, test.name+" stale", maps.Clone(fields))
+				var conflict operatortool.ConflictError
+				if err := json.Unmarshal(raw, &conflict); err != nil || !failed || conflict.Code != "revision_conflict" || conflict.CurrentRevision != int64(currentRevision) {
+					t.Fatalf("stale write=%s failed=%t err=%v", raw, failed, err)
+				}
+				fields["expected_revision"] = strconv.FormatInt(int64(currentRevision), 10)
+				raw, failed = call(t, test.tool, test.name+" fresh", maps.Clone(fields))
+				var result struct {
+					Revision tracker.Revision `json:"revision,string"`
+				}
+				if err := json.Unmarshal(raw, &result); err != nil || failed || result.Revision != currentRevision+1 {
+					t.Fatalf("fresh write=%s failed=%t err=%v", raw, failed, err)
+				}
+				replay, failed := call(t, test.tool, test.name+" fresh", maps.Clone(fields))
+				if failed || !bytes.Equal(raw, replay) {
+					t.Fatalf("replay=%s failed=%t want=%s", replay, failed, raw)
+				}
+			})
+		}
+	})
 }
