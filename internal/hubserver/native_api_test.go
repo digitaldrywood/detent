@@ -322,7 +322,8 @@ func TestNativeAPIError(t *testing.T) {
 					c := echo.New().NewContext(request, recorded)
 					c.SetPath(nativeBase + "/runners/:runner")
 					c.SetParamNames("organization", "project", "runner")
-					c.SetParamValues("org_example", "prj_example", "runner_example")
+					c.SetParamValues("private-organization", "private-project", "runner_example")
+					c.Set("native_scope", nativeScope{organization: "org_example", project: "prj_example"})
 					if err := service.nativeAPIError(c, fmt.Errorf("private-context: %w", test.err)); err != nil {
 						t.Fatal(err)
 					}
@@ -356,7 +357,7 @@ func TestNativeAPIError(t *testing.T) {
 								t.Errorf("log %s = %v, want %v", key, entry[key], want)
 							}
 						}
-						for _, private := range []string{"private-context", "private-target", "query-secret", "header-secret", "body-secret"} {
+						for _, private := range []string{"private-context", "private-target", "query-secret", "header-secret", "body-secret", "private-organization", "private-project"} {
 							if strings.Contains(logs.String(), private) || (test.name != "private validation" || hosted) && strings.Contains(recorded.Body.String(), private) {
 								t.Fatalf("private context escaped: %s", private)
 							}

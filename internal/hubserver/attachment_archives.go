@@ -57,7 +57,7 @@ func (s *Service) recordAttachmentArchive(c echo.Context) error {
 func (s *Service) writeAttachmentArchive(c echo.Context, ref attachment.ArchiveReference, publish bool) error {
 	scope := nativeRequestScope(c)
 	if ref.Validate(string(scope.organization)) != nil {
-		return s.nativeAPIError(c, nativeInvalid("Invalid archive reference"))
+		return s.nativeAPIError(c, nativePublicInvalid("Invalid archive reference"))
 	}
 	ctx := c.Request().Context()
 	tx, err := s.database.db.BeginTx(ctx, nil)

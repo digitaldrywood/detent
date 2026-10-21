@@ -127,7 +127,7 @@ func encodeNativeCursor(cursor nativeCursor, key []byte) (string, error) {
 func validateNativeQuery(params url.Values, fields ...string) error {
 	fields = append(fields, "archive_url")
 	if value, present := params["archive_url"]; present && (len(value) != 1 || value[0] != "true" && value[0] != "false") {
-		return nativeInvalid("archive_url supports true or false")
+		return nativePublicInvalid("archive_url supports true or false")
 	}
 	allowed := map[string]bool{"limit": true, "cursor": true}
 	for _, field := range fields {
