@@ -133,6 +133,7 @@ func TestEntryKeyCallReportsMoveItemRequestErrors(t *testing.T) {
 		return count
 	}
 	beforeRead := auditCount()
+	requireNativeStatus(t, f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: "/internal/v1/keys/catalog", mutate: mutate}), http.StatusOK)
 	requireNativeStatus(t, f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, target: f.base + "/work-items", mutate: mutate}), http.StatusOK)
 	encodedRead, err := json.Marshal(map[string]any{"name": operatortool.WorkItem, "arguments": map[string]any{"project_id": f.project, "reference": issue.WorkItemID}, "connection_id": "move-errors"})
 	if err != nil {
@@ -142,6 +143,21 @@ func TestEntryKeyCallReportsMoveItemRequestErrors(t *testing.T) {
 	if auditCount() != beforeRead {
 		t.Fatal("successful reads wrote audit rows")
 	}
+	operatorSQL(t, f.hostedSecurityFixture, "UPDATE hosted_members SET active=0 WHERE user_id=?", user.identity.Subject)
+	beforeCatalog := auditCount()
+	requireNativeStatus(t, f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: "/internal/v1/keys/catalog", mutate: mutate}), http.StatusForbidden)
+	if auditCount() != beforeCatalog+1 {
+		t.Fatalf("catalog refusal wrote %d audit rows", auditCount()-beforeCatalog)
+	}
+	var catalogOperation string
+	var catalogStatus int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT route,status FROM hosted_audit WHERE session_id=? ORDER BY id DESC LIMIT 1", key.ID).Scan(&catalogOperation, &catalogStatus); err != nil {
+		t.Fatal(err)
+	}
+	if catalogOperation != "POST /internal/v1/keys/catalog" || catalogStatus != http.StatusForbidden {
+		t.Fatalf("catalog audit operation=%s status=%d", catalogOperation, catalogStatus)
+	}
+	operatorSQL(t, f.hostedSecurityFixture, "UPDATE hosted_members SET active=1 WHERE user_id=?", user.identity.Subject)
 	move := func(requestID string, arguments map[string]any) *httptest.ResponseRecorder {
 		t.Helper()
 		arguments["project_id"], arguments["identifier"], arguments["request_id"] = f.project, issue.WorkItemID, requestID
@@ -274,12 +290,13 @@ func TestEntryKeyMutationAuditCommit(t *testing.T) {
 							cancel()
 						}
 					}
+					auditStartedAt := f.service.config.now().UnixNano()
 					f.service.Handler().ServeHTTP(writer, request)
 					var items, audits int
 					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE title=?", title).Scan(&items); err != nil {
 						t.Fatal(err)
 					}
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id=? AND event='key_call' AND recorded_at_ns=?", key.ID, f.service.config.now().UnixNano()).Scan(&audits); err != nil {
+					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id=? AND event='key_call' AND recorded_at_ns BETWEEN ? AND ?", key.ID, auditStartedAt, f.service.config.now().UnixNano()).Scan(&audits); err != nil {
 						t.Fatal(err)
 					}
 					wantItems, wantAudits := 0, 1
