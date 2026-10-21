@@ -129,12 +129,18 @@ func TestIsolationProbeCancellation(t *testing.T) {
 		cached, complete bool
 		workflowFailure  bool
 		innerTimeout     bool
+		completedPeer    string
 		workflowLoad     bool
 		cancel, killGit  bool
 	}{
 		{name: "unobserved cancellation"},
 		{name: "cached cancellation", cached: true},
 		{name: "cached inner timeout", cached: true, innerTimeout: true},
+		{name: "cached missing backend with incomplete peer", cached: true, innerTimeout: true, completedPeer: "backend_missing"},
+		{name: "cached missing sandbox with incomplete peer", cached: true, innerTimeout: true, completedPeer: "tier_unavailable"},
+		{name: "cached completed native peer with incomplete peer", cached: true, innerTimeout: true, completedPeer: "native_only"},
+		{name: "cached missing backend before aggregate timeout", cached: true, completedPeer: "backend_missing"},
+		{name: "cached missing sandbox before aggregate timeout", cached: true, completedPeer: "tier_unavailable"},
 		{name: "cached cancellation preserves workflow failure", cached: true, workflowFailure: true},
 		{name: "cached expired workflow load", cached: true, workflowLoad: true},
 		{name: "cached canceled workflow load", cached: true, workflowLoad: true, cancel: true},
@@ -166,6 +172,7 @@ func TestIsolationProbeCancellation(t *testing.T) {
 				completed := time.Now()
 				now := completed
 				calls := 0
+				followup := false
 				holds, releases := 0, 0
 				parent, cancel := context.WithCancel(t.Context())
 				if test.killGit {
@@ -179,13 +186,33 @@ func TestIsolationProbeCancellation(t *testing.T) {
 				}, isolationReport: func(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
 					calls++
 					if cached && calls == 1 {
-						return isolation.Report{"example-project/codex": {isolation.NativeTrusted, isolation.Sandbox}}, nil
+						report := isolation.Report{"example-project/codex": {isolation.NativeTrusted, isolation.Sandbox}}
+						if test.completedPeer != "" {
+							report["example-project/claude"] = []string{isolation.NativeTrusted, isolation.Sandbox}
+						}
+						return report, nil
 					}
 					if test.complete {
 						return isolation.Report{"example-project/codex": {isolation.NativeTrusted}}, nil
 					}
 					problem := runnerauth.Problem{Code: "backend_probe_failed", Subject: "example-project/codex", Check: "codex login status", Message: "Probe incomplete", ErrorOutput: "context deadline exceeded", FixHint: "Check the runner probe", ReportedAt: time.Now()}
 					problems := []runnerauth.Problem{problem}
+					report := isolation.Report{"example-project/codex": {}}
+					if test.completedPeer != "" {
+						report["example-project/claude"] = []string{}
+						peer := runnerauth.NewProblem(test.completedPeer)
+						peer.Subject = "example-project/claude"
+						if followup {
+							peer = problem
+							peer.Subject = "example-project/claude"
+						} else if test.completedPeer != "backend_missing" {
+							report["example-project/claude"] = []string{isolation.NativeTrusted}
+							peer.Subject += "/sandbox"
+						}
+						if followup || test.completedPeer != "native_only" {
+							problems = append(problems, peer)
+						}
+					}
 					if test.workflowFailure {
 						problems = append(problems, runnerauth.WorkflowLoadProblems("example-project", errors.New("parse workflow: invalid settings (signal: killed)"))...)
 					}
@@ -210,10 +237,10 @@ func TestIsolationProbeCancellation(t *testing.T) {
 						}
 						problems = append(problems, runnerauth.WorkflowLoadProblems(configured.ID, err)...)
 					}
-					if !test.innerTimeout {
+					if !test.innerTimeout && !followup {
 						<-ctx.Done()
 					}
-					return isolation.Report{"example-project/codex": {}}, problems
+					return report, problems
 				}}
 				if cached {
 					scheduler.probeIsolation(parent)
@@ -232,15 +259,28 @@ func TestIsolationProbeCancellation(t *testing.T) {
 					}
 					return
 				}
-				if report.Supports(isolation.NativeTrusted) != cached {
-					t.Fatalf("cancelled probe changed cached capabilities: %+v", report)
+				if report.Supports(isolation.NativeTrusted) != (cached && test.completedPeer != "backend_missing") {
+					t.Fatalf("probe changed readiness contrary to completed checks: %+v", report)
 				}
-				if cached && (!reflect.DeepEqual(report, isolation.Report{"example-project/codex": {isolation.NativeTrusted, isolation.Sandbox}}) || !scheduler.lastIsolationAt.Equal(completed)) {
+				wantReport := isolation.Report{"example-project/codex": {isolation.NativeTrusted, isolation.Sandbox}}
+				if test.completedPeer != "" {
+					wantReport["example-project/claude"] = []string{}
+					if test.completedPeer != "backend_missing" {
+						wantReport["example-project/claude"] = []string{isolation.NativeTrusted}
+					}
+				}
+				if cached && (!reflect.DeepEqual(report, wantReport) || !scheduler.lastIsolationAt.Equal(completed)) {
 					t.Fatalf("cancelled workflow load changed the completed probe: report=%+v at %v", report, scheduler.lastIsolationAt)
 				}
 				wantProblems := 2
 				if cached && !test.workflowFailure {
 					wantProblems = 1
+				}
+				if test.completedPeer != "" && test.completedPeer != "native_only" {
+					wantProblems++
+					if problems[0].Code != test.completedPeer {
+						t.Fatalf("completed prerequisite failure was dropped: %+v", problems)
+					}
 				}
 				if len(problems) != wantProblems {
 					t.Fatalf("partial probe problems were not consolidated: %+v", problems)
@@ -260,6 +300,14 @@ func TestIsolationProbeCancellation(t *testing.T) {
 				}
 				if !cached && scheduler.lastIsolation != nil {
 					t.Fatal("incomplete capabilities were cached as completed")
+				}
+				if test.completedPeer != "" {
+					followup = true
+					now = now.Add(time.Minute)
+					report, _ := scheduler.probeIsolation(t.Context())
+					if !reflect.DeepEqual(report, wantReport) {
+						t.Fatalf("later incomplete checks restored revoked capabilities: %+v, want %+v", report, wantReport)
+					}
 				}
 			}
 			if test.killGit {
