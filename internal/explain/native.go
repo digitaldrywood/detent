@@ -17,6 +17,7 @@ func FromNativeEvidence(e tracker.NativeRuntimeEvidence) IssueExplanation {
 		Sessions:     Sessions{Source: SourceUnavailable},
 		RequiredGate: Gate{State: GateUnavailable, SourceState: SourceUnavailable, Failures: []string{}, Running: []string{}},
 		Sources:      []SourceStatus{{Name: "native_item", State: SourceAvailable}}, Evidence: []EvidenceReference{}, Reasons: []Reason{}}
+	r.DecisionRequest = issue.DecisionRequest
 	if event := e.NativeCandidateExclusion; event != nil {
 		r.Sources = append(r.Sources, SourceStatus{Name: "native_candidate_exclusion", State: SourceAvailable})
 		r.Evidence = append(r.Evidence, EvidenceReference{ID: event.ID, Kind: EvidenceScheduler, ObservedAt: &event.RecordedAt})

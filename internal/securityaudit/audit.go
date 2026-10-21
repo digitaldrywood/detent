@@ -365,5 +365,19 @@ func (run Run) CompletionMessage(message string) string {
 	if err != nil {
 		return message
 	}
-	return action + "\n\n" + message + "\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: " + string(encoded) + "\n```"
+	return action + "\n\n" + message + "\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: " + string(encoded) + `
+decision_request:
+  summary: The security audit needs evidence to resolve its undetermined leads.
+  question: How should the unresolved security audit leads be resolved?
+  options:
+    - label: Supply evidence for the unresolved facts
+      consequence: Resume Rework with your evidence and repeat the security audit before landing.
+      recommended: true
+      return_state: Rework
+    - label: Repair the potential findings
+      consequence: Resume Rework to address the leads as defects and audit the resulting source.
+      return_state: Rework
+  custom_allowed: true
+  custom_return_state: Rework
+` + "```"
 }

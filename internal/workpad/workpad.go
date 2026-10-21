@@ -58,16 +58,17 @@ type ReviewDisposition struct {
 type Signal struct {
 	ReviewDispositions []ReviewDisposition `json:"review_dispositions,omitempty" yaml:"review_dispositions,omitempty"`
 	// UnknownKeys records ignored YAML field paths for diagnostics only.
-	UnknownKeys []string          `json:"unknown_keys,omitempty" yaml:"unknown_keys,omitempty"`
-	Source      string            `json:"source,omitempty" yaml:"source,omitempty"`
-	CommentURL  string            `json:"comment_url,omitempty" yaml:"comment_url,omitempty"`
-	Status      string            `json:"status,omitempty" yaml:"status,omitempty"`
-	ReasonCode  string            `json:"reason_code,omitempty" yaml:"reason_code,omitempty"`
-	Blockers    []Blocker         `json:"blockers,omitempty" yaml:"blockers,omitempty"`
-	HumanAction string            `json:"human_action,omitempty" yaml:"human_action,omitempty"`
-	RecordedAt  *time.Time        `json:"recorded_at,omitempty" yaml:"recorded_at,omitempty"`
-	Fields      map[string]string `json:"fields,omitempty" yaml:"fields,omitempty"`
-	Invalid     *Invalid          `json:"invalid,omitempty" yaml:"invalid,omitempty"`
+	UnknownKeys     []string          `json:"unknown_keys,omitempty" yaml:"unknown_keys,omitempty"`
+	Source          string            `json:"source,omitempty" yaml:"source,omitempty"`
+	CommentURL      string            `json:"comment_url,omitempty" yaml:"comment_url,omitempty"`
+	Status          string            `json:"status,omitempty" yaml:"status,omitempty"`
+	ReasonCode      string            `json:"reason_code,omitempty" yaml:"reason_code,omitempty"`
+	Blockers        []Blocker         `json:"blockers,omitempty" yaml:"blockers,omitempty"`
+	HumanAction     string            `json:"human_action,omitempty" yaml:"human_action,omitempty"`
+	DecisionRequest *DecisionRequest  `json:"decision_request,omitempty" yaml:"decision_request,omitempty"`
+	RecordedAt      *time.Time        `json:"recorded_at,omitempty" yaml:"recorded_at,omitempty"`
+	Fields          map[string]string `json:"fields,omitempty" yaml:"fields,omitempty"`
+	Invalid         *Invalid          `json:"invalid,omitempty" yaml:"invalid,omitempty"`
 }
 
 type Blocker struct {
@@ -110,6 +111,7 @@ type statusBlockYAML struct {
 	ReasonCode         string               `yaml:"reason_code"`
 	Blockers           []blockerYAML        `yaml:"blockers"`
 	HumanAction        *string              `yaml:"human_action"`
+	DecisionRequest    *DecisionRequest     `yaml:"decision_request"`
 	Fields             map[string]string    `yaml:"fields"`
 }
 
@@ -363,6 +365,14 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	if raw.HumanAction != nil {
 		humanAction = strings.TrimSpace(*raw.HumanAction)
 	}
+	if raw.DecisionRequest != nil {
+		if err := raw.DecisionRequest.Validate(); err != nil {
+			problems = append(problems, err.Error())
+		}
+		if raw.Status != StatusBlocked || humanAction == "" {
+			problems = append(problems, "decision_request requires status blocked and human_action")
+		}
+	}
 	reasonCode := normalizeReasonCode(raw.ReasonCode)
 	blockers := make([]Blocker, 0, len(raw.Blockers))
 	for index, blocker := range raw.Blockers {
@@ -489,6 +499,7 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 		ReasonCode:         reasonCode,
 		Blockers:           blockers,
 		HumanAction:        humanAction,
+		DecisionRequest:    raw.DecisionRequest,
 		Fields:             fields,
 	}
 	if refProblems > 0 {

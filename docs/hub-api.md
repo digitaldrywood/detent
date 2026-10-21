@@ -2019,6 +2019,29 @@ preserved. Attempts and recovery reads retain this disposition. Non-complete
 completion comments include the same summary and the reported reason; human-action
 parking comments preserve them through the existing human-attention path.
 
+A native blocked completion with `human_action` also supplies `decision_request`
+in its final status block. It contains a single-line `summary` and `question`,
+two to four `options` with `label`, `consequence`, `recommended` and
+`return_state`, exactly one recommended option, `custom_allowed: true`, and
+`custom_return_state`. Destinations are `Todo` or `Rework`. Missing or malformed
+requests are completion-contract refusals, retained with their reason for Rework;
+dependency-only blockers and backend permission waits retain their existing owners.
+
+The Hub stores requests and their ordered options in typed `decision_requests`
+and `decision_options` rows belonging to the terminal attempt. Full `work_item`
+and `explain_item` reads expose the current blocked item's `decision_request`,
+including its `attempt_id`. Historical human actions without a request remain
+readable as `human_action`.
+
+A human answers through the existing workflow command with `decision_answer`:
+`attempt_id` and either a zero-based `option` or a nonempty `custom` answer.
+The request still carries `expected_revision`, `state` and `reason: user_requested`.
+The owner checks the current blocked request and the selected destination, inserts
+the answer through the native comment owner, and moves the item in the same
+transaction. The typed request retains the answer comment ID so a later unrelated
+hold cannot resurrect the resolved question. Stale requests and mismatched destinations write neither a comment
+nor a transition; the mutation's existing idempotency key protects replay.
+
 `GET /work-items/{item}/attempts` uses the same authorized pagination contract as
 history. Attempts are ordered by the existing monotonic lease fence. The response
 contains effective identity/policy, last accepted sequence, server timestamps,
