@@ -824,6 +824,7 @@ type RunResult struct {
 	FinalState                 string
 	Output                     string
 	FinalMessage               string
+	ReusedDispositionAttemptID string
 	Model                      string
 	TurnStarted                bool
 	TurnStartRefused           bool
