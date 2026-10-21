@@ -1,0 +1,375 @@
+package cloudentry
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
+)
+
+type TenantSpec struct {
+	Organization Organization
+	Directory    string
+	Socket       string
+	PublicURL    string
+	Issuer       string
+	PublicKey    string
+	Check        func(context.Context) error
+	ResolveKey   entryauthority.Resolver
+	ReadArchive  entryauthority.ArchiveReader
+}
+
+type Launcher interface {
+	Start(context.Context, TenantSpec) error
+	Stop(string) error
+	Close() error
+	Failure(string) error
+}
+
+type TenantExitError struct {
+	Exits int
+	Cause error
+}
+
+func (e *TenantExitError) Error() string {
+	cause := "the process could not run"
+	if exit := (*exec.ExitError)(nil); errors.As(e.Cause, &exit) {
+		cause = exit.String()
+	} else if e.Cause == nil {
+		cause = "exited cleanly"
+	}
+	times := "once"
+	if e.Exits != 1 {
+		times = fmt.Sprintf("%d times in a row", e.Exits)
+	}
+	return fmt.Sprintf("the tenant Hub exited %s without staying up (last: %s)", times, cause)
+}
+
+type ExecLauncher struct {
+	Binary       string
+	Environment  []string
+	Configure    func(TenantSpec) ([]byte, error)
+	Logger       *slog.Logger
+	RestartLimit int
+
+	mu       sync.Mutex
+	closed   bool
+	running  map[string]*supervisedTenant
+	failures map[string]error
+	health   map[string]*tenantProcessHealth
+}
+
+type tenantProcessHealth struct {
+	startedAt time.Time
+	starts    []time.Time
+	observed  bool
+}
+
+func (l *ExecLauncher) Health(id string, now time.Time) (*int64, *int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.health[id]
+	if entry == nil {
+		return nil, nil
+	}
+	restarts := 0
+	for _, at := range entry.starts {
+		if !at.Before(now.Add(-24 * time.Hour)) {
+			restarts++
+		}
+	}
+	if entry.startedAt.IsZero() {
+		return nil, &restarts
+	}
+	uptime := max(int64(0), int64(now.Sub(entry.startedAt)/time.Second))
+	return &uptime, &restarts
+}
+
+const (
+	tenantStableUptime       = 5 * time.Minute
+	tenantProbeInterval      = 5 * time.Second
+	tenantUnavailableTimeout = 30 * time.Second
+	tenantStartupGrace       = 15 * time.Minute
+)
+
+type supervisedTenant struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func (l *ExecLauncher) Start(_ context.Context, spec TenantSpec) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return errors.New("tenant launcher is closed")
+	}
+	if l.running == nil {
+		l.running = make(map[string]*supervisedTenant)
+	}
+	if _, ok := l.running[spec.Organization.ID]; ok {
+		return nil
+	}
+	delete(l.failures, spec.Organization.ID)
+	config, err := l.Configure(spec)
+	if err != nil {
+		return err
+	}
+	if err := writePrivateFile(filepath.Join(spec.Directory, "tenant.yaml"), config); err != nil {
+		return err
+	}
+	token, err := tenantAdminToken(spec.Directory)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	tenant := &supervisedTenant{cancel: cancel, done: make(chan struct{})}
+	l.running[spec.Organization.ID] = tenant
+	go l.supervise(ctx, spec, token, tenant)
+	return nil
+}
+
+func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token string, tenant *supervisedTenant) {
+	defer close(tenant.done)
+	backoff := time.Second
+	exits := 0
+	// Only a tenant that has not yet served gives up at the limit: that is a
+	// provisioning failure the organization reports. A tenant that was ready,
+	// or has stayed up once, keeps restarting with backoff after a crash burst.
+	limited := spec.Organization.State != "ready"
+	for ctx.Err() == nil {
+		started := time.Now()
+		attempt, cancel := context.WithCancel(ctx)
+		cmd := exec.CommandContext(attempt, l.Binary, "hub", "serve", "--hosted-config", filepath.Join(spec.Directory, "tenant.yaml"),
+			"--database", filepath.Join(spec.Directory, "hub.db"), "--listen", "unix:"+spec.Socket) // #nosec G204 -- the operator-configured Detent binary runs with fixed arguments and no shell.
+		cmd.Env = append(append(baseEnvironment(), l.Environment...), "DETENT_HUB_ADMIN_TOKEN="+token)
+		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+		cmd.WaitDelay = 15 * time.Second
+		var authority *entryauthority.Parent
+		var err error
+		if spec.ResolveKey != nil {
+			authority, err = entryauthority.Start(attempt, entryauthority.Binding{Issuer: spec.Issuer, Organization: spec.Organization.ID, Generation: spec.Organization.Generation}, platformCallTimeout, spec.ResolveKey, spec.ReadArchive)
+			if err == nil {
+				cmd.ExtraFiles = authority.Files
+				cmd.Env = append(cmd.Env, entryauthority.BootstrapEnvironment+"="+entryauthority.BootstrapVersion)
+			}
+		}
+		if err == nil {
+			err = l.runTenant(attempt, spec, cmd, cancel)
+		}
+		if authority != nil {
+			err = errors.Join(err, authority.Close())
+		}
+		cancel()
+		if ctx.Err() != nil {
+			return
+		}
+		if time.Since(started) > tenantStableUptime {
+			backoff, exits, limited = time.Second, 0, false
+		}
+		exits++
+		if limited && exits >= l.restartLimit() {
+			l.giveUp(spec.Organization.ID, tenant, &TenantExitError{Exits: exits, Cause: err})
+			return
+		}
+		l.logger().Warn("tenant Hub exited; restarting", "organization", spec.Organization.ID, "error", err, "backoff", backoff, "exits", exits)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, time.Minute)
+	}
+}
+
+func (l *ExecLauncher) runTenant(ctx context.Context, spec TenantSpec, cmd *exec.Cmd, cancel context.CancelFunc) error {
+	err := cmd.Start()
+	for _, file := range cmd.ExtraFiles {
+		if closeErr := file.Close(); closeErr != nil {
+			l.logger().Warn("close inherited authority descriptor", "error", closeErr)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	l.mu.Lock()
+	if l.health == nil {
+		l.health = make(map[string]*tenantProcessHealth)
+	}
+	entry := l.health[spec.Organization.ID]
+	if entry == nil {
+		entry = &tenantProcessHealth{}
+		l.health[spec.Organization.ID] = entry
+	}
+	now := time.Now()
+	kept := entry.starts[:0]
+	for _, at := range entry.starts {
+		if !at.Before(now.Add(-24 * time.Hour)) {
+			kept = append(kept, at)
+		}
+	}
+	entry.starts = kept
+	if entry.observed {
+		entry.starts = append(entry.starts, now)
+	}
+	entry.observed, entry.startedAt = true, now
+	l.mu.Unlock()
+	defer func() {
+		l.mu.Lock()
+		entry.startedAt = time.Time{}
+		l.mu.Unlock()
+	}()
+	result := make(chan error, 1)
+	go func() { result <- cmd.Wait() }()
+	if spec.Check == nil {
+		return <-result
+	}
+	return l.waitTenant(ctx, spec, result, cancel)
+}
+
+func (l *ExecLauncher) waitTenant(ctx context.Context, spec TenantSpec, result <-chan error, cancel context.CancelFunc) error {
+	ticker := time.NewTicker(tenantProbeInterval)
+	defer ticker.Stop()
+	lastHealthy := time.Now()
+	served := false
+	for {
+		select {
+		case err := <-result:
+			return err
+		case <-ctx.Done():
+			return <-result
+		case <-ticker.C:
+			probe, stop := context.WithTimeout(ctx, platformCallTimeout)
+			err := spec.Check(probe)
+			stop()
+			if ctx.Err() != nil {
+				return <-result
+			}
+			if err == nil {
+				lastHealthy, served = time.Now(), true
+				continue
+			}
+			window := tenantUnavailableTimeout
+			if !served {
+				window = tenantStartupGrace
+			}
+			if time.Since(lastHealthy) < window {
+				continue
+			}
+			l.logger().Warn("tenant Hub unreachable; stopping for restart", "organization", spec.Organization.ID, "error", err)
+			cancel()
+			return errors.Join(fmt.Errorf("tenant Hub serving health: %w", err), <-result)
+		}
+	}
+}
+
+func (l *ExecLauncher) restartLimit() int {
+	if l.RestartLimit < 1 {
+		return 5
+	}
+	return l.RestartLimit
+}
+
+func (l *ExecLauncher) giveUp(id string, tenant *supervisedTenant, failure error) {
+	l.logger().Error("tenant Hub keeps exiting; supervision stopped", "organization", id, "error", failure, "cause", errors.Unwrap(failure))
+	tenant.cancel()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.running[id] != tenant {
+		return
+	}
+	delete(l.running, id)
+	if l.failures == nil {
+		l.failures = make(map[string]error)
+	}
+	l.failures[id] = failure
+}
+
+func (e *TenantExitError) Unwrap() error { return e.Cause }
+
+func (l *ExecLauncher) Failure(id string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.failures[id]
+}
+
+func (l *ExecLauncher) logger() *slog.Logger {
+	if l.Logger != nil {
+		return l.Logger
+	}
+	return slog.Default()
+}
+
+func (l *ExecLauncher) Stop(id string) error {
+	l.mu.Lock()
+	tenant, ok := l.running[id]
+	delete(l.failures, id)
+	l.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	tenant.cancel()
+	<-tenant.done
+	l.mu.Lock()
+	if l.running[id] == tenant {
+		delete(l.running, id)
+	}
+	l.mu.Unlock()
+	return nil
+}
+
+func (l *ExecLauncher) Close() error {
+	l.mu.Lock()
+	l.closed = true
+	ids := make([]string, 0, len(l.running))
+	for id, tenant := range l.running {
+		ids = append(ids, id)
+		tenant.cancel()
+	}
+	l.mu.Unlock()
+	var err error
+	for _, id := range ids {
+		err = errors.Join(err, l.Stop(id))
+	}
+	return err
+}
+
+func baseEnvironment() []string {
+	var result []string
+	for _, name := range []string{"PATH", "HOME", "TMPDIR", "LANG", "TZ"} {
+		if value, ok := os.LookupEnv(name); ok {
+			result = append(result, name+"="+value)
+		}
+	}
+	return result
+}
+
+func writePrivateFile(path string, contents []byte) error {
+	temporary := path + ".tmp"
+	if err := os.WriteFile(temporary, contents, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(temporary, path)
+}
+
+func tenantAdminToken(directory string) (string, error) {
+	path := filepath.Join(directory, "admin-token")
+	if raw, err := os.ReadFile(path); err == nil && len(raw) > 0 {
+		return string(raw), nil
+	} else if !errors.Is(err, os.ErrNotExist) && err != nil {
+		return "", err
+	}
+	token, err := apikey.GenerateToken()
+	if err != nil {
+		return "", err
+	}
+	return token, writePrivateFile(path, []byte(token))
+}

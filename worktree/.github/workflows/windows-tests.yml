@@ -1,0 +1,65 @@
+name: Scheduled Windows Go tests
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-go:
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/develop'
+    name: Windows Go tests
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Run Windows package tests
+        run: go test -short -timeout=5m ./internal/shell ./internal/procgroup ./internal/service ./internal/update ./internal/runnerauth
+      - name: Run PowerShell installer tests
+        if: ${{ !cancelled() }}
+        run: go test -timeout=5m -run '^TestPowerShellInstallScript' .
+
+  report:
+    needs: windows-go
+    if: always() && !cancelled() && needs.windows-go.result == 'failure'
+    name: Report Windows test failures
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          key: windows-report
+      - name: Report through the scheduled failure owner
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_DEVELOP_SHA: ${{ github.sha }}
+          TMPDIR: ${{ runner.temp }}
+          DETENT_MCP_URL: https://cloud.detent.build/organizations/org_9e0e65eec07a6639979a/mcp
+          DETENT_PROJECT_ID: prj_6d4919bebd73446798e6cd807feda10e
+          DETENT_API_KEY: ${{ secrets.DETENT_API_KEY }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" --jq '.jobs[] | select(.name == "Windows Go tests")' | jq -s . > "$TMPDIR/windows-ci-jobs.json"
+          go run ./tools/cifailure < "$TMPDIR/windows-ci-jobs.json" > "$TMPDIR/windows-ci-evidence.jsonl"
+      - name: Retain scheduled reporting evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-scheduled-reporting-evidence
+          path: ${{ runner.temp }}/windows-ci-*
+          if-no-files-found: warn
+          retention-days: 14

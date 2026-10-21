@@ -1,0 +1,2451 @@
+package orchestrator
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+)
+
+func TestTickPacesQuietProjectWhenGraphQLRemainingLow(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(17 * time.Minute)
+	cfg := normalizeConfig(Config{
+		PollInterval:        30 * time.Second,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &rateLimitConnector{
+		hasRateLimit: true,
+		rateLimit: connector.GraphQLRateLimit{
+			Limit:     5000,
+			Used:      4975,
+			Remaining: 25,
+			Cost:      4,
+			ResetAt:   resetAt,
+			UpdatedAt: now,
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("candidate reads = %d, want 1", tracker.fetchCandidateCalls)
+	}
+	if state.RateLimits.GitHubGraphQL.Remaining != 25 {
+		t.Fatal("missing budget snapshot")
+	}
+	if state.PollInterval != 5*time.Minute {
+		t.Fatalf("interval = %s, want 5m", state.PollInterval)
+	}
+	if !state.NextRefreshAt.Equal(now.Add(state.PollInterval)) {
+		t.Fatal("refresh not scheduled")
+	}
+	if _, _, ok := githubLookupBackoff(state.BackendOutages); ok {
+		t.Fatal("positive capacity created backoff")
+	}
+
+}
+
+func TestTickSkipsConnectorPollingDuringGitHubGraphQLPause(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(10 * time.Minute)
+	cfg := normalizeConfig(Config{
+		PollInterval:        30 * time.Second,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	state.RateLimits = &telemetry.RateLimits{
+		GitHubGraphQL: &telemetry.RateLimitBucket{
+			Remaining: 0,
+			Limit:     5000,
+			Used:      5000,
+			ResetAt:   &resetAt,
+		},
+	}
+	tracker := &rateLimitConnector{}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 0 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want 0 during pause", tracker.fetchCandidateCalls)
+	}
+	if tracker.fetchByStatesCalls != 0 {
+		t.Fatalf("FetchIssuesByStates() calls = %d, want 0 during pause", tracker.fetchByStatesCalls)
+	}
+	if state.PollInterval < 24*time.Second || state.PollInterval > 36*time.Second {
+		t.Fatalf("PollInterval = %s, want jittered initial backoff between 24s and 36s", state.PollInterval)
+	}
+}
+
+func TestTickPausesForGitHubGraphQLRetryAfterWithPrimaryRemaining(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        30 * time.Second,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &rateLimitConnector{
+		hasRateLimit: true,
+		rateLimit: connector.GraphQLRateLimit{
+			Limit:      5000,
+			Used:       120,
+			Remaining:  4880,
+			RetryAfter: 2 * time.Minute,
+			UpdatedAt:  now,
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if state.PollInterval < 24*time.Second || state.PollInterval > 36*time.Second {
+		t.Fatalf("PollInterval = %s, want jittered initial backoff between 24s and 36s", state.PollInterval)
+	}
+	if state.RateLimits == nil || state.RateLimits.GitHubGraphQL == nil {
+		t.Fatalf("RateLimits = %#v, want GitHub GraphQL retry-after snapshot", state.RateLimits)
+	}
+	if state.RateLimits.GitHubGraphQL.Remaining != 4880 {
+		t.Fatalf("GitHubGraphQL.Remaining = %d, want preserved primary remaining", state.RateLimits.GitHubGraphQL.Remaining)
+	}
+	if state.RateLimits.GitHubGraphQL.ResetInSeconds != 120 {
+		t.Fatalf("GitHubGraphQL.ResetInSeconds = %d, want 120", state.RateLimits.GitHubGraphQL.ResetInSeconds)
+	}
+}
+
+func TestTickPublishesAndLogsGitHubGraphQLCostSummary(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	cfg := normalizeConfig(Config{
+		PollInterval:               30 * time.Second,
+		MaxConcurrentAgents:        1,
+		ActiveStates:               []string{"Todo", "In Progress"},
+		TerminalStates:             []string{"Done", "Cancelled"},
+		GitHubGraphQLWarnRemaining: 500,
+	})
+	state := newState(cfg)
+	tracker := &rateLimitConnector{
+		usage: connector.GraphQLRateLimitUsage{
+			HasRateLimit: true,
+			RateLimit: connector.GraphQLRateLimit{
+				Limit:     5000,
+				Used:      4501,
+				Remaining: 499,
+				Cost:      3,
+				ResetAt:   resetAt,
+				UpdatedAt: now,
+			},
+			QueryCosts: []connector.GraphQLQueryCost{
+				{QueryType: "candidate_issues", Count: 1, Cost: 5},
+				{QueryType: "running_states", Count: 1, Cost: 3},
+			},
+			TotalQueries: 2,
+			TotalCost:    8,
+		},
+	}
+	var logs bytes.Buffer
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.resetUsageCalls != 0 || tracker.flushUsageCalls != 1 {
+		t.Fatalf("usage calls = reset %d flush %d, want reset 0 flush 1", tracker.resetUsageCalls, tracker.flushUsageCalls)
+	}
+	if state.RateLimits == nil || state.RateLimits.GitHubGraphQL == nil || state.RateLimits.GraphQLCost == nil {
+		t.Fatalf("RateLimits = %#v, want GitHub GraphQL bucket and cost summary", state.RateLimits)
+	}
+	if state.RateLimits.GitHubGraphQL.Cost != 8 {
+		t.Fatalf("GitHubGraphQL.Cost = %d, want cycle cost 8", state.RateLimits.GitHubGraphQL.Cost)
+	}
+	if state.RateLimits.GitHubGraphQL.ObservedAt == nil || !state.RateLimits.GitHubGraphQL.ObservedAt.Equal(now) {
+		t.Fatalf("GitHubGraphQL.ObservedAt = %v, want %v", state.RateLimits.GitHubGraphQL.ObservedAt, now)
+	}
+	if state.RateLimits.GraphQLCost.TotalCost != 8 || state.RateLimits.GraphQLCost.TotalQueries != 2 {
+		t.Fatalf("GraphQLCost = %#v, want cost 8 queries 2", state.RateLimits.GraphQLCost)
+	}
+	if state.RateLimits.GraphQLCost.LastHourCost != 8 || state.RateLimits.GraphQLCost.LastHourQueries != 2 {
+		t.Fatalf("GraphQLCost = %#v, want last-hour cost 8 queries 2", state.RateLimits.GraphQLCost)
+	}
+	if len(state.RateLimits.GraphQLCost.Contributors) != 2 {
+		t.Fatalf("GraphQLCost.Contributors = %#v, want 2 contributors", state.RateLimits.GraphQLCost.Contributors)
+	}
+
+	logOutput := logs.String()
+	for _, want := range []string{
+		"github graphql budget summary",
+		"cycle_cost=8",
+		"query_count=2",
+		"candidate_issues",
+		"github graphql budget below warning floor",
+		"warning_floor=500",
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("log output missing %q:\n%s", want, logOutput)
+		}
+	}
+}
+
+func TestRecordGraphQLUsageWindow(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		at          time.Time
+		usage       connector.GraphQLRateLimitUsage
+		wantQueries int64
+		wantCost    int64
+	}{
+		{
+			name:        "records first cycle",
+			at:          start,
+			usage:       connector.GraphQLRateLimitUsage{TotalQueries: 2, TotalCost: 8},
+			wantQueries: 2,
+			wantCost:    8,
+		},
+		{
+			name:        "accumulates cycles within hour",
+			at:          start.Add(30 * time.Minute),
+			usage:       connector.GraphQLRateLimitUsage{TotalQueries: 3, TotalCost: 5},
+			wantQueries: 5,
+			wantCost:    13,
+		},
+		{
+			name:        "retains boundary and expires older samples",
+			at:          start.Add(90 * time.Minute),
+			wantQueries: 3,
+			wantCost:    5,
+		},
+	}
+
+	state := State{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			queries, cost := recordGraphQLUsageWindow(&state, tt.usage, tt.at)
+			if queries != tt.wantQueries || cost != tt.wantCost {
+				t.Fatalf("recordGraphQLUsageWindow() = (%d, %d), want (%d, %d)", queries, cost, tt.wantQueries, tt.wantCost)
+			}
+		})
+	}
+}
+
+func TestTickPublishesGitHubGraphQLUnknownWithoutRateLimitSnapshot(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        30 * time.Second,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &rateLimitConnector{
+		usage: connector.GraphQLRateLimitUsage{
+			RateLimitStatus: connector.GraphQLRateLimitStatusUnknown,
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if state.RateLimits == nil || state.RateLimits.GitHubGraphQL == nil {
+		t.Fatalf("RateLimits = %#v, want GitHub GraphQL status bucket", state.RateLimits)
+	}
+	if state.RateLimits.GitHubGraphQL.Status != telemetry.RateLimitStatusUnknown {
+		t.Fatalf("GitHubGraphQL.Status = %q, want %q", state.RateLimits.GitHubGraphQL.Status, telemetry.RateLimitStatusUnknown)
+	}
+	if state.RateLimits.GitHubGraphQL.Limit != 0 || state.RateLimits.GitHubGraphQL.Remaining != 0 {
+		t.Fatalf("GitHubGraphQL = %#v, want status-only unknown bucket", state.RateLimits.GitHubGraphQL)
+	}
+}
+
+func TestTickPublishesGitHubGraphQLFailureStatusWithoutStaleRateLimitSnapshot(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	cfg := normalizeConfig(Config{
+		PollInterval:        30 * time.Second,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &rateLimitConnector{
+		hasRateLimit: true,
+		rateLimit: connector.GraphQLRateLimit{
+			Limit:     5000,
+			Used:      120,
+			Remaining: 4880,
+			ResetAt:   resetAt,
+			UpdatedAt: now.Add(-time.Minute),
+		},
+		usage: connector.GraphQLRateLimitUsage{
+			RateLimitStatus: connector.GraphQLRateLimitStatusExhausted,
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if state.RateLimits == nil || state.RateLimits.GitHubGraphQL == nil {
+		t.Fatalf("RateLimits = %#v, want GitHub GraphQL status bucket", state.RateLimits)
+	}
+	if state.RateLimits.GitHubGraphQL.Status != telemetry.RateLimitStatusExhausted {
+		t.Fatalf("GitHubGraphQL.Status = %q, want %q", state.RateLimits.GitHubGraphQL.Status, telemetry.RateLimitStatusExhausted)
+	}
+	if state.RateLimits.GitHubGraphQL.Limit != 0 || state.RateLimits.GitHubGraphQL.Remaining != 0 || state.RateLimits.GitHubGraphQL.Used != 0 {
+		t.Fatalf("GitHubGraphQL = %#v, want status-only bucket without stale quota", state.RateLimits.GitHubGraphQL)
+	}
+}
+
+func TestTickCarriesGitHubGraphQLCostRecordedBetweenRefreshes(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	cfg := normalizeConfig(Config{
+		PollInterval:        30 * time.Second,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &rateLimitConnector{
+		usage: connector.GraphQLRateLimitUsage{
+			HasRateLimit: true,
+			RateLimit: connector.GraphQLRateLimit{
+				Limit:     5000,
+				Used:      142,
+				Remaining: 4858,
+				Cost:      1,
+				ResetAt:   resetAt,
+				UpdatedAt: now,
+			},
+			QueryCosts: []connector.GraphQLQueryCost{
+				{QueryType: "default_blank_status", Count: 1, Cost: 1},
+			},
+			TotalQueries: 1,
+			TotalCost:    1,
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.resetUsageCalls != 0 {
+		t.Fatalf("ResetGraphQLRateLimitUsage() calls = %d, want 0", tracker.resetUsageCalls)
+	}
+	if state.RateLimits == nil || state.RateLimits.GraphQLCost == nil {
+		t.Fatalf("RateLimits = %#v, want carried GraphQL cost summary", state.RateLimits)
+	}
+	if state.RateLimits.GraphQLCost.TotalCost != 1 || state.RateLimits.GraphQLCost.TotalQueries != 1 {
+		t.Fatalf("GraphQLCost = %#v, want carried cost 1 query 1", state.RateLimits.GraphQLCost)
+	}
+	if got := state.RateLimits.GraphQLCost.Contributors; len(got) != 1 || got[0].QueryType != "default_blank_status" {
+		t.Fatalf("GraphQLCost.Contributors = %#v, want default_blank_status", got)
+	}
+}
+
+func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        30 * time.Second,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &rateLimitConnector{
+		restUsage: connector.RESTRateLimitUsage{
+			HasRateLimit: true,
+			RateLimit: connector.RESTRateLimit{
+				Limit:      5000,
+				Used:       122,
+				Remaining:  4878,
+				Resource:   "core",
+				RetryAfter: time.Minute,
+				UpdatedAt:  now,
+			},
+			Requests: []connector.RESTEndpointUsage{
+				{CredentialIdentity: "github-rest:shared", EndpointFamily: "label issues", Count: 1, Conditional: 1, NotModified: 1, Remaining: 4879, Limit: 5000, Resource: "core"},
+				{CredentialIdentity: "github-rest:shared", EndpointFamily: "issue comments", Count: 1, Billable: 1, Remaining: 4878, Limit: 5000, Resource: "core", RateLimited: true},
+			},
+			Budgets: []connector.RESTRateLimitBudget{
+				{CredentialIdentity: "github-rest:shared", EndpointFamily: "label issues", RateLimit: connector.RESTRateLimit{Limit: 5000, Remaining: 4879, Resource: "core", ResetAt: now.Add(time.Hour), UpdatedAt: now}},
+				{CredentialIdentity: "github-rest:shared", EndpointFamily: "issue comments", RateLimit: connector.RESTRateLimit{Limit: 5000, Remaining: 4878, Resource: "core", ResetAt: now.Add(2 * time.Hour), UpdatedAt: now}},
+			},
+			Divergences: []connector.RESTUsageDivergence{{
+				CredentialIdentity: "github-rest:shared", Resource: "core", Attribution: connector.RESTDivergenceExpectedShared,
+				ObservedRequests: 22, DetentRequests: 2, AttributedRequests: 20,
+				WindowStartedAt: now.Add(-time.Minute), LastObservedAt: now, ResetAt: now.Add(time.Hour),
+			}},
+			TotalRequests:       2,
+			ConditionalRequests: 1,
+			NotModifiedRequests: 1,
+			BillableRequests:    1,
+			RateLimited:         true,
+			BackoffUntil:        now.Add(time.Minute),
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.flushRESTUsageCalls != 2 {
+		t.Fatalf("FlushRESTRateLimitUsage() calls = %d, want pre-dispatch and post-maintenance observations", tracker.flushRESTUsageCalls)
+	}
+	if state.RateLimits == nil || state.RateLimits.GitHubREST == nil || state.RateLimits.RESTUsage == nil {
+		t.Fatalf("RateLimits = %#v, want GitHub REST bucket and usage summary", state.RateLimits)
+	}
+	if state.RateLimits.GitHubREST.Remaining != 4878 || state.RateLimits.GitHubREST.ResetInSeconds != 60 {
+		t.Fatalf("GitHubREST = %#v, want remaining 4878 reset 60s", state.RateLimits.GitHubREST)
+	}
+	if state.RateLimits.GitHubREST.Cost != 1 {
+		t.Fatalf("GitHubREST.Cost = %d, want one billable request", state.RateLimits.GitHubREST.Cost)
+	}
+	if state.RateLimits.RESTUsage.TotalRequests != 2 || !state.RateLimits.RESTUsage.RateLimited {
+		t.Fatalf("RESTUsage = %#v, want 2 requests and rate limited", state.RateLimits.RESTUsage)
+	}
+	if state.RateLimits.RESTUsage.ConditionalRequests != 1 || state.RateLimits.RESTUsage.NotModifiedRequests != 1 || state.RateLimits.RESTUsage.BillableRequests != 1 {
+		t.Fatalf("RESTUsage conditional breakdown = %#v, want one free 304 and one billable request", state.RateLimits.RESTUsage)
+	}
+	if len(state.RateLimits.RESTUsage.Contributors) != 2 || state.RateLimits.RESTUsage.Contributors[1].EndpointFamily != "issue comments" {
+		t.Fatalf("RESTUsage.Contributors = %#v, want issue comments contributor", state.RateLimits.RESTUsage.Contributors)
+	}
+	if got := state.RateLimits.RESTUsage.Divergences; len(got) != 1 || got[0].AttributedRequests != 20 || got[0].ResetAt == nil || !got[0].ResetAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("RESTUsage.Divergences = %#v, want shared credential window counters", got)
+	}
+	if len(state.RateLimits.GitHubRESTBudgets) != 2 || state.RateLimits.GitHubRESTBudgets[0].CredentialIdentity != "github-rest:shared" {
+		t.Fatalf("GitHubRESTBudgets = %#v, want attributed endpoint budgets", state.RateLimits.GitHubRESTBudgets)
+	}
+	if state.RateLimits.GitHubRESTBudgets[0].ResetAt == nil || state.RateLimits.GitHubRESTBudgets[1].ResetAt == nil || state.RateLimits.GitHubRESTBudgets[0].ResetAt.Equal(*state.RateLimits.GitHubRESTBudgets[1].ResetAt) {
+		t.Fatalf("GitHubRESTBudgets = %#v, want distinct endpoint reset windows", state.RateLimits.GitHubRESTBudgets)
+	}
+	if state.PollInterval != time.Minute {
+		t.Fatalf("PollInterval = %s, want explicit REST backoff 1m", state.PollInterval)
+	}
+
+	// A second usage flush must include maintenance without double-counting the
+	// pre-dispatch sample or reusing a previous refresh's usage when it is empty.
+	for _, before := range []int64{0, 2} {
+		for _, after := range []int64{0, 3} {
+			t.Run(fmt.Sprintf("maintenance_%d_after_%d_requests", after, before), func(t *testing.T) {
+				tracker := &rateLimitConnector{
+					restUsage:     connector.RESTRateLimitUsage{TotalRequests: before, BillableRequests: before},
+					restTailUsage: connector.RESTRateLimitUsage{HasRateLimit: true, RateLimit: connector.RESTRateLimit{Limit: 5000, Remaining: 4800, Resource: "core"}, TotalRequests: after, BillableRequests: after},
+				}
+				state := newState(cfg)
+				state.RateLimits = &telemetry.RateLimits{RESTUsage: &telemetry.RESTUsage{TotalRequests: 99, BillableRequests: 99}}
+				newRateLimitTestOrchestrator(cfg, tracker).tick(t.Context(), &state, now)
+				got := state.RateLimits.RESTUsage
+				want := before + after
+				if want == 0 {
+					if got != nil || state.RateLimits.GitHubREST.Cost != 0 {
+						t.Fatalf("empty refresh retained old usage: %+v bucket=%+v", got, state.RateLimits.GitHubREST)
+					}
+					return
+				}
+				if got == nil || got.TotalRequests != want || got.BillableRequests != want || state.RateLimits.GitHubREST.Cost != want {
+					t.Fatalf("maintenance usage=%+v bucket=%+v", got, state.RateLimits.GitHubREST)
+				}
+			})
+		}
+	}
+}
+
+func TestRESTUsageSummaryPresence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		usage      connector.RESTRateLimitUsage
+		want       bool
+		divergence string
+	}{
+		{name: "empty"},
+		{
+			name: "divergence only",
+			usage: connector.RESTRateLimitUsage{Divergences: []connector.RESTUsageDivergence{{
+				CredentialIdentity: "github-rest:shared",
+				Resource:           "core",
+				Attribution:        connector.RESTDivergenceExpectedShared,
+				ObservedRequests:   12,
+				AttributedRequests: 12,
+			}}},
+			want:       true,
+			divergence: "github-rest:shared",
+		},
+		{
+			name:  "rate limited only",
+			usage: connector.RESTRateLimitUsage{RateLimited: true},
+			want:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := restUsageSummary(tt.usage)
+			if (got != nil) != tt.want {
+				t.Fatalf("restUsageSummary() = %#v, want present %t", got, tt.want)
+			}
+			if tt.divergence == "" {
+				return
+			}
+			if len(got.Divergences) != 1 || got.Divergences[0].CredentialIdentity != tt.divergence {
+				t.Fatalf("restUsageSummary().Divergences = %#v, want credential %q", got.Divergences, tt.divergence)
+			}
+		})
+	}
+}
+
+func TestRESTUsageSummaryPreservesLocalDeferralClassification(t *testing.T) {
+	t.Parallel()
+
+	usage := restUsageSummary(connector.RESTRateLimitUsage{
+		HasRateLimit:   true,
+		FanoutDeferred: true,
+		Requests: []connector.RESTEndpointUsage{{
+			EndpointFamily: "issue comments",
+			BudgetScope:    "backlog_admission_reconciliation",
+			BudgetGate:     "fanout_cap",
+			Count:          1,
+			RetryAfter:     30 * time.Second,
+		}},
+		TotalRequests: 1,
+	})
+	if usage == nil || usage.RateLimited || !usage.FanoutDeferred || usage.ReserveHeld {
+		t.Fatalf("restUsageSummary() = %#v, want fanout-only local deferral", usage)
+	}
+	if len(usage.Contributors) != 1 ||
+		usage.Contributors[0].BudgetScope != "backlog_admission_reconciliation" ||
+		usage.Contributors[0].BudgetGate != "fanout_cap" ||
+		usage.Contributors[0].LastStatus != 0 {
+		t.Fatalf("contributors = %#v, want typed local fanout gate without HTTP status", usage.Contributors)
+	}
+}
+
+func TestReplaceRESTConsumerBudgetsPreservesWorkerBudget(t *testing.T) {
+	t.Parallel()
+
+	current := []telemetry.RESTBudget{
+		{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "orchestrator-old", Remaining: 100},
+		{Consumer: telemetry.RESTConsumerWorker, CredentialIdentity: "worker", Remaining: 3000},
+	}
+	replacement := []telemetry.RESTBudget{
+		{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "orchestrator-new", Remaining: 4000},
+	}
+
+	got := replaceRESTConsumerBudgets(current, replacement, telemetry.RESTConsumerOrchestrator)
+	if len(got) != 2 {
+		t.Fatalf("replaceRESTConsumerBudgets() = %#v, want two budgets", got)
+	}
+	if got[0].Consumer != telemetry.RESTConsumerWorker || got[0].CredentialIdentity != "worker" {
+		t.Fatalf("preserved budget = %#v, want worker budget", got[0])
+	}
+	if got[1].Consumer != telemetry.RESTConsumerOrchestrator || got[1].CredentialIdentity != "orchestrator-new" {
+		t.Fatalf("replacement budget = %#v, want new orchestrator budget", got[1])
+	}
+}
+
+func TestTickSkipsConnectorPollingDuringGitHubRESTBackoff(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(2 * time.Minute)
+	cfg := normalizeConfig(Config{
+		PollInterval:        30 * time.Second,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	state.RateLimits = &telemetry.RateLimits{
+		GitHubREST: &telemetry.RateLimitBucket{
+			Remaining:      4878,
+			Limit:          5000,
+			Used:           122,
+			ResetAt:        &resetAt,
+			ResetInSeconds: 120,
+		},
+		RESTUsage: &telemetry.RESTUsage{BackoffUntil: &resetAt},
+	}
+	tracker := &rateLimitConnector{}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 0 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want 0 during REST backoff", tracker.fetchCandidateCalls)
+	}
+	if tracker.fetchByStatesCalls != 0 {
+		t.Fatalf("FetchIssuesByStates() calls = %d, want 0 during REST backoff", tracker.fetchByStatesCalls)
+	}
+	if state.PollInterval != 2*time.Minute {
+		t.Fatalf("PollInterval = %s, want reset pause 2m", state.PollInterval)
+	}
+}
+
+func TestGitHubRESTAggregateDoesNotPauseDispatch(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 22, 0, 0, 0, time.UTC)
+	resetAt := now.Add(37 * time.Minute)
+	workflowResetAt := now.Add(2 * time.Minute)
+	issue := connector.Issue{
+		ID:               "issue-1211",
+		Identifier:       "digitaldrywood/detent#1211",
+		Title:            "Protect REST capacity",
+		State:            "In Progress",
+		AssignedToWorker: true,
+	}
+	cfg := normalizeConfig(Config{
+		Project:                scheduler.ProjectCandidate{ID: "detent"},
+		MaxConcurrentAgents:    1,
+		ActiveStates:           []string{"Todo", "In Progress"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		GitHubRESTMinReserve:   1000,
+		ContinuationRetryDelay: time.Minute,
+	})
+	state := newState(cfg)
+	state.RateLimits = &telemetry.RateLimits{GitHubREST: &telemetry.RateLimitBucket{
+		Limit:      5000,
+		Used:       5000,
+		Remaining:  0,
+		ResetAt:    &workflowResetAt,
+		ObservedAt: timePointer(now),
+	}, GitHubRESTBudgets: []telemetry.RESTBudget{
+		{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "github-rest:shared", EndpointFamily: "repository issues", Resource: "core", Limit: 5000, Used: 279, Remaining: 4721, ResetAt: &resetAt, ObservedAt: timePointer(now)},
+		{Consumer: telemetry.RESTConsumerOrchestrator, CredentialIdentity: "github-rest:shared", EndpointFamily: "workflow runs", Resource: "core", Limit: 5000, Used: 5000, Remaining: 0, ResetAt: &workflowResetAt, ObservedAt: timePointer(now)},
+	}}
+	state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: 2}
+	state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: 2}
+	restUsage := connector.RESTRateLimitUsage{
+		HasRateLimit: true,
+		RateLimit: connector.RESTRateLimit{
+			Limit: 5000, Used: 5000, Remaining: 0, Resource: "core", ResetAt: workflowResetAt, UpdatedAt: now,
+		},
+		Budgets: []connector.RESTRateLimitBudget{
+			{CredentialIdentity: "github-rest:shared", EndpointFamily: "repository issues", RateLimit: connector.RESTRateLimit{Limit: 5000, Used: 279, Remaining: 4721, Resource: "core", ResetAt: resetAt, UpdatedAt: now}},
+			{CredentialIdentity: "github-rest:shared", EndpointFamily: "workflow runs", RateLimit: connector.RESTRateLimit{Limit: 5000, Used: 5000, Remaining: 0, Resource: "core", ResetAt: workflowResetAt, UpdatedAt: now}},
+		},
+	}
+	tracker := &rateLimitConnector{candidates: []connector.Issue{issue}, restStatus: restUsage, restUsage: restUsage}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want unrelated aggregate window not to pause tick", tracker.fetchCandidateCalls)
+	}
+	dispatches := 0
+	orch.dispatchPlanner().plan(&state, []connector.Issue{issue}, now, dispatchPlanHooks{dispatch: func(dispatchAction) bool {
+		dispatches++
+		return true
+	}})
+	if dispatches != 1 {
+		t.Fatalf("dispatches = %d, want aggregate endpoint telemetry not to pause dispatch", dispatches)
+	}
+	if _, ok := activeGitHubRESTCapacityOutage(&state, now); ok {
+		t.Fatalf("BackendOutages = %#v, want no blanket GitHub REST outage", state.BackendOutages)
+	}
+	if state.RepeatedFailures[issue.ID].Count != 2 || state.InstantFailures[issue.ID].Count != 2 {
+		t.Fatalf("breakers changed: repeated=%#v instant=%#v", state.RepeatedFailures, state.InstantFailures)
+	}
+	snapshot := state.Snapshot(now)
+	if len(snapshot.BackendOutages) != 0 {
+		t.Fatalf("snapshot BackendOutages = %#v, want no GitHub REST banner", snapshot.BackendOutages)
+	}
+	if _, _, ok := githubLookupBackoff(state.BackendOutages); ok {
+		t.Fatalf("BackendOutages = %#v, want no lookup backoff from unrelated workflow budget", state.BackendOutages)
+	}
+}
+
+func TestWorkerGitHubRESTReservePausesDispatchAboveTrackerFloor(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 15, 23, 21, 0, 0, time.UTC)
+	resetAt := now.Add(39 * time.Minute)
+	issue := connector.Issue{
+		ID:               "issue-1929-dispatch",
+		Identifier:       "gopher-corp#521",
+		Title:            "Protect worker REST headroom",
+		State:            "In Progress",
+		URL:              "https://github.test/gopher-corp/issues/521",
+		AssignedToWorker: true,
+	}
+	cfg := normalizeConfig(Config{
+		Project:              scheduler.ProjectCandidate{ID: "gopher-corp"},
+		MaxConcurrentAgents:  1,
+		ActiveStates:         []string{"Todo", "In Progress"},
+		TerminalStates:       []string{"Done", "Cancelled"},
+		GitHubRESTMinReserve: 1000,
+	})
+	state := newState(cfg)
+	state.RateLimits = &telemetry.RateLimits{
+		GitHubREST: &telemetry.RateLimitBucket{
+			Limit: 5000, Used: 3991, Remaining: 1009, ResetAt: &resetAt, ObservedAt: timePointer(now),
+		},
+		GitHubRESTBudgets: []telemetry.RESTBudget{{
+			Consumer: telemetry.RESTConsumerSharedPool, CredentialIdentity: "github-rest:worker",
+			EndpointFamily: "shared credential pool", Resource: "core", Limit: 5000, Used: 3991,
+			Remaining: 1009, MinRemainingReserve: 1250, ResetAt: &resetAt, ObservedAt: timePointer(now),
+		}},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, &rateLimitConnector{})
+	orch.syncGitHubRESTCapacityOutage(&state, now)
+
+	dispatches := 0
+	var decision dispatchPlanDecision
+	orch.dispatchPlanner().plan(&state, []connector.Issue{issue}, now, dispatchPlanHooks{
+		dispatch: func(dispatchAction) bool {
+			dispatches++
+			return true
+		},
+		decision: func(candidate dispatchPlanDecision) {
+			decision = candidate
+		},
+	})
+
+	if dispatches != 0 {
+		t.Fatalf("dispatches = %d, want 0 below worker reserve", dispatches)
+	}
+	if decision.SkipReason != dispatchSkipGitHubRESTCapacity {
+		t.Fatalf("SkipReason = %q, want %q", decision.SkipReason, dispatchSkipGitHubRESTCapacity)
+	}
+	outage, ok := activeGitHubRESTCapacityOutage(&state, now)
+	if !ok || !outage.ResumeAt.Equal(resetAt) || !strings.Contains(outage.Reason, "1250") {
+		t.Fatalf("GitHub REST outage = %#v, want worker reserve wait until %s", outage, resetAt)
+	}
+}
+
+func TestWorkerGitHubRESTHeadroomCompletionDefersWithoutBreakerStrike(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 15, 23, 22, 25, 0, time.UTC)
+	resetAt := time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC)
+	issue := implementProgressIssueWithoutPR()
+	issue.ID = "issue-1929-completion"
+	issue.Identifier = "gopher-corp#521"
+	cfg := normalizeConfig(Config{
+		Project:             scheduler.ProjectCandidate{ID: "gopher-corp"},
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	attempts := &implementProgressAttemptStore{}
+	orch := &Orchestrator{
+		cfg:          cfg,
+		connector:    &implementProgressConnector{},
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue: issue, Attempt: 4, WorkAttemptID: 42, Mode: runpkg.RunModeImplement,
+		StartedAt: now.Add(-42 * time.Second), DiffStats: DiffStats{Status: "clean"},
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-42 * time.Second)}
+	state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: instantFailureThreshold - 1}
+	state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: repeatedFailureThreshold - 1}
+	state.FailureBreaker.Failures["existing"] = []ProjectFailure{{IssueID: "other", At: now.Add(-time.Minute)}}
+	headroomErr := errors.New("run agent turn: worker github REST budget reached reserved headroom: consumer=shared_pool credential_identity=github-rest:worker remaining=1009 reserve=1250 reset_at=2026-08-16T00:00:00Z")
+	workerBudget := telemetry.RESTBudget{
+		Consumer: telemetry.RESTConsumerSharedPool, CredentialIdentity: "github-rest:worker",
+		EndpointFamily: "shared credential pool", Resource: "core", Limit: 5000, Used: 3991,
+		Remaining: 1009, MinRemainingReserve: 1250, ResetAt: &resetAt, ObservedAt: timePointer(now),
+	}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID: issue.ID, CompletedAt: now, RetryAttempt: 5, RetryDelay: 5 * time.Minute,
+		Request: runpkg.RunRequest{Issue: issue, Attempt: 4, Mode: runpkg.RunModeImplement},
+		Result: runpkg.RunResult{
+			FinalState: runpkg.FinalStateFailed,
+			DiffStats:  DiffStats{Status: "clean"},
+			RateLimits: &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{workerBudget}},
+		},
+		Err: headroomErr,
+	})
+
+	if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalCapacity {
+		t.Fatalf("completions = %#v, want one capacity terminal", attempts.completions)
+	}
+	if attempts.completions[0].ErrorClass != githubRESTCapacityError || !strings.Contains(attempts.completions[0].WorkerMetadataJSON, `"github_rest_wait"`) {
+		t.Fatalf("completion = %#v, want durable GitHub REST wait metadata", attempts.completions[0])
+	}
+	retry, ok := state.Retry[issue.ID]
+	wantRetryAt := resetAt.Add(backendCapacityResetJitter)
+	if !ok || retry.Attempt != 4 || !retry.DueAt.Equal(wantRetryAt) {
+		t.Fatalf("Retry[%q] = %#v, want same-attempt retry at %s", issue.ID, retry, wantRetryAt)
+	}
+	if got := state.InstantFailures[issue.ID].Count; got != instantFailureThreshold-1 {
+		t.Fatalf("instant failure count = %d, want unchanged", got)
+	}
+	if got := state.RepeatedFailures[issue.ID].Count; got != repeatedFailureThreshold-1 {
+		t.Fatalf("repeated failure count = %d, want unchanged", got)
+	}
+	if got := len(state.FailureBreaker.Failures["existing"]); got != 1 || state.FailureBreaker.Active() {
+		t.Fatalf("FailureBreaker = %#v, want existing evidence unchanged and inactive", state.FailureBreaker)
+	}
+	if _, blocked := state.Blocked[issue.ID]; blocked {
+		t.Fatalf("Blocked[%q] present after capacity deferral", issue.ID)
+	}
+}
+
+func TestRecoverDurableWorkerGitHubRESTWait(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 15, 23, 30, 0, 0, time.UTC)
+	resetAt := time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC)
+	retryAt := resetAt.Add(backendCapacityResetJitter)
+	issue := connector.Issue{ID: "issue-1929-restart", Identifier: "gopher-corp#521", State: "In Progress"}
+	metadata := `{"github_rest_wait":{"consumer":"shared_pool","credential_identity":"github-rest:worker","remaining":1009,"limit":5000,"reserve":1250,"reset_at":"` + resetAt.Format(time.RFC3339) + `","retry_at":"` + retryAt.Format(time.RFC3339) + `"}}`
+	attempts := &recordingWorkAttemptStore{recent: []store.WorkAttempt{{
+		ID: 1929, ProjectID: "gopher-corp", IssueID: issue.ID, Identifier: issue.Identifier,
+		Lane: issue.State, AttemptNumber: 4, Status: store.WorkAttemptStatusTerminal,
+		CompletedAt: now.Add(-time.Minute), TerminalState: store.WorkAttemptTerminalCapacity,
+		ErrorClass: githubRESTCapacityError, ErrorMessage: "worker GitHub REST reserve reached",
+		WorkerMetadataJSON: metadata,
+	}}}
+	cfg := normalizeConfig(Config{
+		Project: scheduler.ProjectCandidate{ID: "gopher-corp"}, ActiveStates: []string{"Todo", "In Progress"},
+		TerminalStates: []string{"Done"}, MaxConcurrentAgents: 1,
+	})
+	orch := &Orchestrator{
+		cfg: cfg, connector: &rateLimitConnector{issuesByID: []connector.Issue{issue}},
+		workAttempts: attempts, logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+
+	orch.recoverDurableWorkAttempts(context.Background(), &state, now)
+
+	retry, ok := state.Retry[issue.ID]
+	if !ok || retry.Attempt != 4 || !retry.DueAt.Equal(retryAt) || !retry.CapacityScope.Matches(githubRESTCapacityScope) {
+		t.Fatalf("Retry[%q] = %#v, want restored REST capacity wait", issue.ID, retry)
+	}
+	if outage, ok := activeGitHubRESTCapacityOutage(&state, now); !ok || !outage.ResumeAt.Equal(resetAt) {
+		t.Fatalf("BackendOutages = %#v, want restored REST outage until %s", state.BackendOutages, resetAt)
+	}
+	if terminalAttemptRetryableFailure(telemetryWorkAttempt(attempts.recent[0], now)) {
+		t.Fatal("durable GitHub REST wait treated as a generic terminal retry")
+	}
+}
+
+func TestGitHubRESTWaitMetadataFromAttempt(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC)
+	retryAt := resetAt.Add(backendCapacityResetJitter)
+	validMetadata := `{"github_rest_wait":{"consumer":"shared_pool","credential_identity":"github-rest:worker","remaining":1009,"limit":5000,"reserve":1250,"reset_at":"` + resetAt.Format(time.RFC3339) + `","retry_at":"` + retryAt.Format(time.RFC3339) + `"}}`
+	tests := []struct {
+		name     string
+		attempt  store.WorkAttempt
+		wantWait bool
+	}{
+		{
+			name: "capacity wait",
+			attempt: store.WorkAttempt{
+				TerminalState: store.WorkAttemptTerminalCapacity,
+				ErrorClass:    githubRESTCapacityError, WorkerMetadataJSON: validMetadata,
+			},
+			wantWait: true,
+		},
+		{
+			name: "generic failure",
+			attempt: store.WorkAttempt{
+				TerminalState: store.WorkAttemptTerminalFailure,
+				ErrorClass:    githubRESTCapacityError, WorkerMetadataJSON: validMetadata,
+			},
+		},
+		{
+			name: "missing credential",
+			attempt: store.WorkAttempt{
+				TerminalState:      store.WorkAttemptTerminalCapacity,
+				ErrorClass:         githubRESTCapacityError,
+				WorkerMetadataJSON: `{"github_rest_wait":{"consumer":"worker","reserve":1250,"reset_at":"` + resetAt.Format(time.RFC3339) + `","retry_at":"` + retryAt.Format(time.RFC3339) + `"}}`,
+			},
+		},
+		{
+			name: "retry before reset",
+			attempt: store.WorkAttempt{
+				TerminalState:      store.WorkAttemptTerminalCapacity,
+				ErrorClass:         githubRESTCapacityError,
+				WorkerMetadataJSON: `{"github_rest_wait":{"consumer":"worker","credential_identity":"github-rest:worker","reserve":1250,"reset_at":"` + resetAt.Format(time.RFC3339) + `","retry_at":"` + resetAt.Add(-time.Second).Format(time.RFC3339) + `"}}`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			wait, ok := githubRESTWaitMetadataFromAttempt(tt.attempt)
+			if ok != tt.wantWait {
+				t.Fatalf("githubRESTWaitMetadataFromAttempt() ok = %v, want %v", ok, tt.wantWait)
+			}
+			if ok && (!wait.ResetAt.Equal(resetAt) || !wait.RetryAt.Equal(retryAt)) {
+				t.Fatalf("githubRESTWaitMetadataFromAttempt() = %#v, want reset %s retry %s", wait, resetAt, retryAt)
+			}
+		})
+	}
+}
+
+func TestTickDetectsGitHubRESTExhaustionBeforeDispatch(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 22, 0, 0, 0, time.UTC)
+	resetAt := now.Add(30 * time.Minute)
+	issue := connector.Issue{
+		ID:               "issue-1211-tick",
+		Identifier:       "digitaldrywood/detent#1211",
+		Title:            "Stop same-cycle dispatch",
+		State:            "In Progress",
+		AssignedToWorker: true,
+	}
+	cfg := normalizeConfig(Config{
+		Project:                scheduler.ProjectCandidate{ID: "detent"},
+		PollInterval:           30 * time.Second,
+		MaxConcurrentAgents:    1,
+		ActiveStates:           []string{"Todo", "In Progress"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		GitHubRESTMinReserve:   1000,
+		ContinuationRetryDelay: time.Minute,
+	})
+	tracker := &rateLimitConnector{
+		candidates: []connector.Issue{issue},
+		restUsage: connector.RESTRateLimitUsage{
+			HasRateLimit: true,
+			RateLimit: connector.RESTRateLimit{
+				Limit: 5000, Used: 5000, Remaining: 0, Resource: "core", ResetAt: resetAt, UpdatedAt: now,
+			},
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+	state := newState(cfg)
+
+	orch.tick(context.Background(), &state, now)
+
+	if len(state.Running) != 0 {
+		t.Fatalf("Running = %#v, want no paid dispatch after same-cycle exhaustion", state.Running)
+	}
+	if _, ok := activeGitHubRESTCapacityOutage(&state, now); ok {
+		t.Fatalf("BackendOutages = %#v, want no blanket GitHub REST capacity outage", state.BackendOutages)
+	}
+	if _, outage, ok := githubLookupBackoff(state.BackendOutages); !ok || outage.Trigger != githubLookupTriggerREST {
+		t.Fatalf("BackendOutages = %#v, want endpoint lookup backoff", state.BackendOutages)
+	}
+	if state.PollInterval < 24*time.Second || state.PollInterval > 36*time.Second || !state.NextRefreshAt.Equal(now.Add(state.PollInterval)) {
+		t.Fatalf("refresh = interval %s next %v, want jittered initial lookup backoff", state.PollInterval, state.NextRefreshAt)
+	}
+}
+
+func TestRunCompletionDuringGitHubRESTCapacityOutageDoesNotStrikeBreakers(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 22, 0, 0, 0, time.UTC)
+	resetAt := now.Add(20 * time.Minute)
+	issue := implementProgressIssueWithoutPR()
+	cfg := normalizeConfig(Config{
+		Project:                scheduler.ProjectCandidate{ID: "detent"},
+		AutoPromote:            AutoPromoteConfig{NoProgressLimit: 3},
+		ActiveStates:           []string{"Todo", "In Progress"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		GitHubRESTMinReserve:   1000,
+		ContinuationRetryDelay: time.Minute,
+	})
+	attempts := &implementProgressAttemptStore{}
+	orch := &Orchestrator{
+		cfg:          cfg,
+		connector:    &implementProgressConnector{},
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.RateLimits = &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{{
+		Consumer: telemetry.RESTConsumerSharedPool, CredentialIdentity: "github-rest:worker",
+		EndpointFamily: "shared credential pool", Resource: "core", Limit: 5000, Used: 5000,
+		Remaining: 0, MinRemainingReserve: 1000, ResetAt: &resetAt, ObservedAt: timePointer(now),
+	}}}
+	orch.syncGitHubRESTCapacityOutage(&state, now)
+	state.Running[issue.ID] = Running{
+		Issue:         issue,
+		Attempt:       2,
+		WorkAttemptID: 42,
+		Mode:          runpkg.RunModeImplement,
+		StartedAt:     now.Add(-5 * time.Minute),
+		DiffStats:     DiffStats{Status: "clean"},
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-5 * time.Minute)}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:      issue.ID,
+		CompletedAt:  now,
+		RetryAttempt: 3,
+		Request:      runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+		Result:       runpkg.RunResult{FinalState: runpkg.FinalStateFailed, DiffStats: DiffStats{Status: "clean"}},
+		Err:          errors.New("gh pr create: HTTP 403 API rate limit exceeded"),
+	})
+
+	if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalCapacity {
+		t.Fatalf("completions = %#v, want one capacity terminal", attempts.completions)
+	}
+	retry, ok := state.Retry[issue.ID]
+	if !ok || retry.Attempt != 2 || !retry.DueAt.Equal(resetAt) {
+		t.Fatalf("Retry[%q] = %#v, want same-attempt retry at reset", issue.ID, retry)
+	}
+	if retry.Issue.State != "Todo" {
+		t.Fatalf("Retry[%q].Issue.State = %q, want Todo", issue.ID, retry.Issue.State)
+	}
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present during terminal REST-capacity retry", issue.ID)
+	}
+	if len(state.RepeatedFailures) != 0 || len(state.InstantFailures) != 0 {
+		t.Fatalf("breakers = repeated %#v instant %#v, want no strikes", state.RepeatedFailures, state.InstantFailures)
+	}
+	if _, ok := state.Completed[issue.ID]; ok {
+		t.Fatalf("Completed[%q] present during capacity outage", issue.ID)
+	}
+}
+
+func TestTickPacesQuietProjectBelowRESTReserve(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	cfg := normalizeConfig(Config{
+		PollInterval:                  30 * time.Second,
+		MaxConcurrentAgents:           1,
+		ActiveStates:                  []string{"Todo", "In Progress"},
+		ObservedStates:                []string{"Human Review", "Blocked"},
+		TerminalStates:                []string{"Done", "Cancelled"},
+		WorkspaceCleanupSweepInterval: time.Minute,
+		GitHubRESTMinReserve:          1000,
+		GitHubGraphQLMinReserve:       1000,
+	})
+	state := newState(cfg)
+	state.RateLimits = &telemetry.RateLimits{
+		GitHubREST: &telemetry.RateLimitBucket{
+			Remaining: 900,
+			Limit:     5000,
+			Used:      4100,
+			ResetAt:   &resetAt,
+		},
+	}
+	tracker := &rateLimitConnector{}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		reaper:    rateLimitWorkspaceReaper{},
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+	finishTestWorkspaceCleanup(t, orch, &state)
+
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("candidate reads = %d, want 1", tracker.fetchCandidateCalls)
+	}
+	if _, _, ok := githubLookupBackoff(state.BackendOutages); ok {
+		t.Fatal("positive capacity created backoff")
+	}
+	if state.PollInterval != time.Minute {
+		t.Fatalf("interval = %s, want 1m", state.PollInterval)
+	}
+
+}
+
+func TestGitHubBudgetReserveDecisionUsesCurrentRateLimitWindow(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 18, 0, 0, 0, time.UTC)
+	activeReset := now.Add(time.Hour)
+	expiredReset := now.Add(-time.Minute)
+	tests := []struct {
+		name         string
+		rateLimits   *telemetry.RateLimits
+		wantDegraded bool
+	}{
+		{
+			name: "active aggregate REST window is telemetry only",
+			rateLimits: &telemetry.RateLimits{GitHubREST: &telemetry.RateLimitBucket{
+				Limit: 5000, Remaining: 900, ResetAt: &activeReset,
+			}},
+		},
+		{
+			name: "expired REST window",
+			rateLimits: &telemetry.RateLimits{GitHubREST: &telemetry.RateLimitBucket{
+				Limit: 5000, Remaining: 900, ResetAt: &expiredReset,
+			}},
+		},
+		{
+			name: "active GraphQL window",
+			rateLimits: &telemetry.RateLimits{GitHubGraphQL: &telemetry.RateLimitBucket{
+				Limit: 5000, Remaining: 900, ResetAt: &activeReset,
+			}},
+			wantDegraded: true,
+		},
+		{
+			name: "expired GraphQL window",
+			rateLimits: &telemetry.RateLimits{GitHubGraphQL: &telemetry.RateLimitBucket{
+				Limit: 5000, Remaining: 900, ResetAt: &expiredReset,
+			}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{
+				GitHubRESTMinReserve:    1000,
+				GitHubGraphQLMinReserve: 1000,
+			})
+			state := newState(cfg)
+			state.RateLimits = test.rateLimits
+			orch := newRateLimitTestOrchestrator(cfg, &rateLimitConnector{})
+
+			if got := orch.githubBudgetReserveDecision(&state, now).degraded; got != test.wantDegraded {
+				t.Fatalf("githubBudgetReserveDecision().degraded = %v, want %v", got, test.wantDegraded)
+			}
+		})
+	}
+}
+
+func TestTickAllowsConditionalPollingBelowRESTReserve(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	issue := connector.Issue{ID: "I_1133", Identifier: "digitaldrywood/detent#1133", State: "Human Review"}
+	cfg := normalizeConfig(Config{
+		PollInterval:            time.Minute,
+		MaxConcurrentAgents:     1,
+		ActiveStates:            []string{"Todo", "In Progress"},
+		ObservedStates:          []string{"Human Review", "Blocked"},
+		TerminalStates:          []string{"Done"},
+		GitHubRESTMinReserve:    1000,
+		GitHubGraphQLMinReserve: 1000,
+	})
+	state := newState(cfg)
+	state.Pipeline = []connector.Issue{issue}
+	state.LastWorkspaceCleanupAt = now
+	state.RateLimits = &telemetry.RateLimits{
+		GitHubREST: &telemetry.RateLimitBucket{
+			Remaining: 900,
+			Limit:     5000,
+			Used:      4100,
+			ResetAt:   &resetAt,
+		},
+	}
+	base := &rateLimitConnector{stateIssues: []connector.Issue{issue}}
+	tracker := &conditionalRateLimitConnector{rateLimitConnector: base}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if base.fetchCandidateCalls != 1 || base.fetchByStatesCalls != 1 {
+		t.Fatalf("fetch calls = candidates %d states %d, want conditional cycle", base.fetchCandidateCalls, base.fetchByStatesCalls)
+	}
+	if _, _, ok := githubLookupBackoff(state.BackendOutages); ok {
+		t.Fatal("conditional reads suppressed by reserve")
+	}
+
+}
+
+func TestTickReconcilesStaleBlockedStatusBelowGitHubReserve(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	issue := connector.Issue{
+		ID:         "I_98",
+		Identifier: "digitaldrywood/detent#98",
+		Title:      "Clear stale blocked status",
+		State:      "In Progress",
+	}
+	blockedIssue := issue
+	blockedIssue.State = "Blocked"
+	blockedIssue.BlockerReason = "waiting on human input"
+	cfg := normalizeConfig(Config{
+		PollInterval:            30 * time.Second,
+		MaxConcurrentAgents:     1,
+		ActiveStates:            []string{"Todo", "In Progress"},
+		ObservedStates:          []string{"Human Review", "Blocked"},
+		TerminalStates:          []string{"Done", "Cancelled"},
+		GitHubRESTMinReserve:    1000,
+		GitHubGraphQLMinReserve: 1000,
+	})
+	state := newState(cfg)
+	state.RateLimits = &telemetry.RateLimits{
+		GitHubREST: &telemetry.RateLimitBucket{
+			Remaining: 900,
+			Limit:     5000,
+			Used:      4100,
+			ResetAt:   &resetAt,
+		},
+	}
+	state.Running[issue.ID] = Running{Issue: issue, StartedAt: now.Add(-time.Minute)}
+	state.Blocked[issue.ID] = Blocked{
+		Issue:     blockedIssue,
+		Reason:    blockedStatusReason(blockedIssue, cfg.TerminalStates),
+		BlockedAt: now.Add(-time.Hour),
+		Source:    BlockedSourceProjectStatus,
+	}
+	tracker := &rateLimitConnector{candidates: []connector.Issue{issue}}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("candidate reads = %d, want 1", tracker.fetchCandidateCalls)
+	}
+	if _, ok := state.Blocked[issue.ID]; ok {
+		t.Fatal("stale blocked status retained after fresh candidate read")
+	}
+	if state.PollInterval != cfg.PollInterval {
+		t.Fatalf("active interval = %s, want %s", state.PollInterval, cfg.PollInterval)
+	}
+
+}
+
+func TestTickSkipsObservedPollingBelowGraphQLReserve(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	cfg := normalizeConfig(Config{
+		PollInterval:            30 * time.Second,
+		MaxConcurrentAgents:     1,
+		ActiveStates:            []string{"Todo", "In Progress"},
+		ObservedStates:          []string{"Human Review"},
+		TerminalStates:          []string{"Done", "Cancelled"},
+		GitHubGraphQLMinReserve: 1000,
+		GitHubRESTMinReserve:    1000,
+	})
+	state := newState(cfg)
+	state.RateLimits = &telemetry.RateLimits{
+		GitHubGraphQL: &telemetry.RateLimitBucket{
+			Remaining: 900,
+			Limit:     5000,
+			Used:      4100,
+			ResetAt:   &resetAt,
+		},
+	}
+	tracker := &rateLimitConnector{}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want fresh candidate lookup below reserve", tracker.fetchCandidateCalls)
+	}
+	if tracker.fetchByStatesCalls != 0 {
+		t.Fatalf("FetchIssuesByStates() calls = %d, want observed polling skipped", tracker.fetchByStatesCalls)
+	}
+	if tracker.fetchByStatesLimitCalls != 0 {
+		t.Fatalf("FetchIssuesByStatesLimit() calls = %d, want observed probe skipped", tracker.fetchByStatesLimitCalls)
+	}
+}
+
+func TestTickInactiveProjectUsesBoundedObservedProbe(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        30 * time.Second,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		ObservedStates:      []string{"Blocked", "Human Review", "Merging"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &rateLimitConnector{}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want 1", tracker.fetchCandidateCalls)
+	}
+	if tracker.fetchByStatesLimitCalls != 1 {
+		t.Fatalf("FetchIssuesByStatesLimit() calls = %d, want 1", tracker.fetchByStatesLimitCalls)
+	}
+	if tracker.fetchByStatesCalls != 0 {
+		t.Fatalf("FetchIssuesByStates() calls = %d, want 0 for inactive project", tracker.fetchByStatesCalls)
+	}
+}
+
+func TestReapWorkspacesVerifiesKnownWorkspaceIssueIDsBeforeStateSweep(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	running := connector.Issue{ID: "I_666", Identifier: "digitaldrywood/detent#666", State: "In Progress"}
+	done := running
+	done.State = "Done"
+	cfg := normalizeConfig(Config{
+		PollInterval:                  30 * time.Second,
+		MaxConcurrentAgents:           1,
+		ActiveStates:                  []string{"Todo", "In Progress"},
+		ObservedStates:                []string{"Human Review"},
+		TerminalStates:                []string{"Done", "Cancelled"},
+		WorkspaceCleanupSweepInterval: time.Minute,
+	})
+	state := newState(cfg)
+	state.Running[running.ID] = Running{
+		Issue:         running,
+		WorkspacePath: "/tmp/detent-workspaces/issue-666",
+		StartedAt:     now.Add(-time.Hour),
+	}
+	tracker := &rateLimitConnector{issuesByID: []connector.Issue{done}}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+	orch.reaper = rateLimitWorkspaceReaper{}
+
+	orch.reapWorkspacesIfDue(context.Background(), &state, now)
+
+	if tracker.fetchByIDCalls != 1 {
+		t.Fatalf("FetchIssueStatesByIDs() calls = %d, want 1", tracker.fetchByIDCalls)
+	}
+	if tracker.fetchByStatesCalls != 0 {
+		t.Fatalf("FetchIssuesByStates() calls = %d, want 0 when known workspace IDs are verified", tracker.fetchByStatesCalls)
+	}
+	if _, ok := state.Running[running.ID]; !ok {
+		t.Fatalf("Running[%q] removed before worker completion", running.ID)
+	}
+}
+
+func TestReapWorkspacesFallsBackToStateSweepWhenKnownWorkspaceIssueIDFetchFails(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	running := connector.Issue{ID: "I_666", Identifier: "digitaldrywood/detent#666", State: "In Progress"}
+	terminal := connector.Issue{ID: "I_667", Identifier: "digitaldrywood/detent#667", State: "Done"}
+	cfg := normalizeConfig(Config{
+		PollInterval:                  30 * time.Second,
+		MaxConcurrentAgents:           1,
+		ActiveStates:                  []string{"Todo", "In Progress"},
+		ObservedStates:                []string{"Human Review"},
+		TerminalStates:                []string{"Done", "Cancelled"},
+		WorkspaceCleanupSweepInterval: time.Minute,
+	})
+	state := newState(cfg)
+	state.Running[running.ID] = Running{
+		Issue:         running,
+		WorkspacePath: "/tmp/detent-workspaces/issue-666",
+		StartedAt:     now.Add(-time.Hour),
+	}
+	tracker := &rateLimitConnector{
+		fetchByIDErr: errors.New("github transient error: status 502"),
+		stateIssues:  []connector.Issue{terminal},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+	orch.reaper = rateLimitWorkspaceReaper{}
+
+	orch.reapWorkspacesIfDue(context.Background(), &state, now)
+	orch.reapDueWorkspacesAfterRefresh(context.Background(), &state, now)
+
+	if tracker.fetchByIDCalls != 1 {
+		t.Fatalf("FetchIssueStatesByIDs() calls = %d, want 1", tracker.fetchByIDCalls)
+	}
+	if tracker.fetchByStatesLimitCalls != 1 {
+		t.Fatalf("FetchIssuesByStatesLimit() calls = %d, want bounded fallback state sweep", tracker.fetchByStatesLimitCalls)
+	}
+	if tracker.fetchByStatesCalls != 0 {
+		t.Fatalf("FetchIssuesByStates() calls = %d, want bounded fallback state sweep", tracker.fetchByStatesCalls)
+	}
+	if _, ok := state.ReapedWorkspaces[terminal.ID]; !ok {
+		t.Fatalf("ReapedWorkspaces[%q] missing after fallback state sweep", terminal.ID)
+	}
+	if !rateLimitRecentEventContains(state.RecentEvents, "workspace_cleanup_fetch_failed", "status 502") {
+		t.Fatalf("RecentEvents = %#v, want cleanup fetch failure event", state.RecentEvents)
+	}
+	if state.LastRefreshError != "" || !state.LastRefreshErrorAt.IsZero() {
+		t.Fatalf("refresh error = %q at %v, want none for cleanup fallback", state.LastRefreshError, state.LastRefreshErrorAt)
+	}
+}
+
+func TestReapWorkspacesStillSweepsWhenKnownWorkspaceIsActive(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	running := connector.Issue{ID: "I_666", Identifier: "digitaldrywood/detent#666", State: "In Progress"}
+	terminal := connector.Issue{ID: "I_667", Identifier: "digitaldrywood/detent#667", State: "Done"}
+	cfg := normalizeConfig(Config{
+		PollInterval:                  30 * time.Second,
+		MaxConcurrentAgents:           1,
+		ActiveStates:                  []string{"Todo", "In Progress"},
+		ObservedStates:                []string{"Human Review"},
+		TerminalStates:                []string{"Done", "Cancelled"},
+		WorkspaceCleanupSweepInterval: time.Minute,
+	})
+	state := newState(cfg)
+	state.Running[running.ID] = Running{
+		Issue:         running,
+		WorkspacePath: "/tmp/detent-workspaces/issue-666",
+		StartedAt:     now.Add(-time.Hour),
+	}
+	tracker := &rateLimitConnector{
+		issuesByID:  []connector.Issue{running},
+		stateIssues: []connector.Issue{terminal},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+	orch.reaper = rateLimitWorkspaceReaper{}
+
+	orch.reapWorkspacesIfDue(context.Background(), &state, now)
+	orch.reapDueWorkspacesAfterRefresh(context.Background(), &state, now)
+
+	if tracker.fetchByIDCalls != 1 {
+		t.Fatalf("FetchIssueStatesByIDs() calls = %d, want 1", tracker.fetchByIDCalls)
+	}
+	if tracker.fetchByStatesLimitCalls != 1 {
+		t.Fatalf("FetchIssuesByStatesLimit() calls = %d, want bounded due sweep after active known workspace", tracker.fetchByStatesLimitCalls)
+	}
+	if tracker.fetchByStatesCalls != 0 {
+		t.Fatalf("FetchIssuesByStates() calls = %d, want bounded due sweep after active known workspace", tracker.fetchByStatesCalls)
+	}
+	if _, ok := state.ReapedWorkspaces[terminal.ID]; !ok {
+		t.Fatalf("ReapedWorkspaces[%q] missing after due sweep", terminal.ID)
+	}
+}
+
+func TestReapWorkspacesScopesScheduledCleanupFetch(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name              string
+		lastCleanupAt     time.Time
+		wantProbeCalls    int
+		wantFallbackCalls int
+		wantStates        []string
+	}{
+		{
+			name:              "cleanup interval not due",
+			lastCleanupAt:     now,
+			wantProbeCalls:    1,
+			wantFallbackCalls: 0,
+			wantStates:        []string{"done", "cancelled"},
+		},
+		{
+			name:              "cleanup interval due",
+			wantProbeCalls:    1,
+			wantFallbackCalls: 0,
+			wantStates:        []string{"done", "cancelled", "human review", "blocked"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{
+				ActiveStates:                  []string{"Todo", "In Progress"},
+				ObservedStates:                []string{"Human Review", "Blocked"},
+				TerminalStates:                []string{"Done", "Cancelled"},
+				WorkspaceCleanupSweepInterval: 10 * time.Minute,
+			})
+			state := newState(cfg)
+			state.LastWorkspaceCleanupAt = test.lastCleanupAt
+			base := &rateLimitConnector{}
+			tracker := &cleanupProbeConnector{rateLimitConnector: base}
+			orch := newRateLimitTestOrchestrator(cfg, tracker)
+			orch.reaper = rateLimitWorkspaceReaper{}
+
+			orch.reapWorkspacesIfDue(context.Background(), &state, now)
+			orch.reapDueWorkspacesAfterRefresh(context.Background(), &state, now)
+
+			if tracker.probeCalls != test.wantProbeCalls {
+				t.Fatalf("FetchIssueStateProbe() calls = %d, want %d", tracker.probeCalls, test.wantProbeCalls)
+			}
+			if base.fetchByStatesCalls != test.wantFallbackCalls {
+				t.Fatalf("FetchIssuesByStates() calls = %d, want %d", base.fetchByStatesCalls, test.wantFallbackCalls)
+			}
+			if tracker.limit != 100 {
+				t.Fatalf("FetchIssueStateProbe() limit = %d, want 100", tracker.limit)
+			}
+			if strings.Join(tracker.states, ",") != strings.Join(test.wantStates, ",") {
+				t.Fatalf("FetchIssueStateProbe() states = %#v, want %#v", tracker.states, test.wantStates)
+			}
+		})
+	}
+}
+
+func TestTickPrioritizesStatusDriftBeforeBulkTrackerReads(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		ActiveStates:                  []string{"Todo", "In Progress"},
+		ObservedStates:                []string{"Human Review"},
+		TerminalStates:                []string{"Done"},
+		WorkspaceCleanupSweepInterval: 10 * time.Minute,
+	})
+	state := newState(cfg)
+	tracker := &orderedTickConnector{rateLimitConnector: &rateLimitConnector{}}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+	orch.reaper = rateLimitWorkspaceReaper{}
+
+	orch.tick(context.Background(), &state, now)
+	finishTestWorkspaceCleanup(t, orch, &state)
+
+	if len(tracker.calls) == 0 || tracker.calls[0] != "status_drift" {
+		t.Fatalf("tracker call order = %#v, want status drift first", tracker.calls)
+	}
+}
+
+func TestTickStopsBulkTrackerReadsAfterGraphQLRateLimit(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:               30 * time.Second,
+		ActiveStates:               []string{"Todo", "In Progress"},
+		TerminalStates:             []string{"Done"},
+		GitHubGraphQLMinReserve:    1000,
+		GitHubGraphQLWarnRemaining: 1500,
+	})
+	state := newState(cfg)
+	tracker := &orderedTickConnector{
+		rateLimitConnector: &rateLimitConnector{},
+		statusDriftErr:     errors.New("API rate limit already exceeded"),
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 0 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want 0 after status drift rate limit", tracker.fetchCandidateCalls)
+	}
+	if got := tracker.calls; len(got) != 1 || got[0] != "status_drift" {
+		t.Fatalf("tracker call order = %#v, want only status drift", got)
+	}
+}
+
+func TestTickStopsBulkTrackerReadsAfterRESTRateLimit(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		Project:             scheduler.ProjectCandidate{ID: "detent"},
+		PollInterval:        30 * time.Second,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done"},
+		MaxConcurrentAgents: 1,
+	})
+	state := newState(cfg)
+	tracker := &orderedTickConnector{
+		rateLimitConnector: &rateLimitConnector{},
+		statusDriftErr:     errors.New("API rate limit already exceeded"),
+		statusDriftREST:    true,
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 0 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want 0 after REST rate limit", tracker.fetchCandidateCalls)
+	}
+	if _, outage, ok := githubLookupBackoff(state.BackendOutages); !ok || outage.Trigger != githubLookupTriggerREST {
+		t.Fatalf("BackendOutages = %#v, want REST-triggered lookup backoff", state.BackendOutages)
+	}
+}
+
+func TestGitHubLookupBackoffDelay(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		attempt int
+		minimum time.Duration
+		maximum time.Duration
+	}{
+		{name: "initial", attempt: 1, minimum: 24 * time.Second, maximum: 36 * time.Second},
+		{name: "second", attempt: 2, minimum: 48 * time.Second, maximum: 72 * time.Second},
+		{name: "fifth", attempt: 5, minimum: 384 * time.Second, maximum: 576 * time.Second},
+		{name: "capped", attempt: 20, minimum: 12 * time.Minute, maximum: 15 * time.Minute},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := githubLookupBackoffDelay(tt.attempt, "detent\x00github")
+			if got < tt.minimum || got > tt.maximum {
+				t.Fatalf("githubLookupBackoffDelay(%d) = %s, want %s..%s", tt.attempt, got, tt.minimum, tt.maximum)
+			}
+			if repeated := githubLookupBackoffDelay(tt.attempt, "detent\x00github"); repeated != got {
+				t.Fatalf("repeated delay = %s, want deterministic %s", repeated, got)
+			}
+		})
+	}
+}
+
+func TestGitHubLookupBackoffDelayAfterSecondaryExpiry(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{"connector", "telemetry"} {
+		t.Run(source, func(t *testing.T) {
+			now := time.Now()
+			tracker := &rateLimitConnector{hasRateLimit: true, rateLimit: connector.GraphQLRateLimit{Limit: 5000, Remaining: 3000, BackoffUntil: now.Add(-time.Minute)}}
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 4})
+			orch := newRateLimitTestOrchestrator(cfg, tracker)
+			state := newState(cfg)
+			if source == "connector" {
+				tracker.rateLimitStatus = connector.GraphQLRateLimitStatusBackoff
+			} else {
+				state.RateLimits = &telemetry.RateLimits{GitHubGraphQL: &telemetry.RateLimitBucket{Status: telemetry.RateLimitStatusBackoff, Limit: 5000, Remaining: 3000}}
+			}
+			if !orch.githubLookupBackoffGate(t.Context(), &state, now) {
+				t.Fatal("fresh backoff ignored after secondary deadline expired")
+			}
+		})
+	}
+}
+
+func TestGitHubLookupBackoffAllowsDispatch(t *testing.T) {
+	t.Parallel()
+
+	providerScope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	tests := []struct {
+		name             string
+		state            *State
+		capacityProbeKey string
+		want             bool
+	}{
+		{name: "no state", want: true},
+		{name: "no outage", state: &State{}, want: true},
+		{
+			name: "provider outage without lookup state",
+			state: &State{BackendOutages: map[string]BackendOutage{
+				providerScope.Key(): {Scope: providerScope},
+			}},
+			want: true,
+		},
+		{
+			name: "rate limit blocks provider canary",
+			state: &State{BackendOutages: map[string]BackendOutage{
+				githubLookupBackoffScope.Key(): {
+					Scope:           githubLookupBackoffScope,
+					Kind:            githubLookupBackoffKind,
+					Trigger:         githubLookupTriggerGraphQL,
+					LastProbeResult: githubLookupProbeResultBackingOff,
+				},
+			}},
+			capacityProbeKey: "codex",
+		},
+		{
+			name: "provider canary due",
+			state: &State{BackendOutages: map[string]BackendOutage{
+				githubLookupBackoffScope.Key(): {
+					Scope:           githubLookupBackoffScope,
+					Kind:            githubLookupBackoffKind,
+					Trigger:         githubLookupTriggerProvider,
+					LastProbeResult: githubLookupProbeResultProviderDue,
+				},
+			}},
+			capacityProbeKey: "codex",
+			want:             true,
+		},
+		{
+			name: "ordinary attempt while provider canary due",
+			state: &State{BackendOutages: map[string]BackendOutage{
+				githubLookupBackoffScope.Key(): {
+					Scope:           githubLookupBackoffScope,
+					Kind:            githubLookupBackoffKind,
+					Trigger:         githubLookupTriggerProvider,
+					LastProbeResult: githubLookupProbeResultProviderDue,
+				},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := githubLookupBackoffAllowsDispatch(tt.state, tt.capacityProbeKey); got != tt.want {
+				t.Fatalf("githubLookupBackoffAllowsDispatch() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGitHubLookupBackoffProbesAndRecoversGradually(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	cfg := normalizeConfig(Config{
+		Project:                 scheduler.ProjectCandidate{ID: "detent"},
+		MaxConcurrentAgents:     4,
+		GitHubGraphQLMinReserve: 1000,
+	})
+	tracker := &rateLimitConnector{
+		rateLimitStatus: connector.GraphQLRateLimitStatusExhausted,
+		probeRateLimits: []connector.GraphQLRateLimit{
+			{Limit: 5000, Used: 5000, Remaining: 0, ResetAt: resetAt},
+			{Limit: 5000, Used: 4500, Remaining: 500, ResetAt: resetAt},
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+	var logs bytes.Buffer
+	orch.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	state := newState(cfg)
+
+	if !orch.githubLookupBackoffGate(context.Background(), &state, now) {
+		t.Fatal("initial githubLookupBackoffGate() = false, want backoff")
+	}
+	_, first, ok := githubLookupBackoff(state.BackendOutages)
+	if !ok || first.ProbeAttempts != 1 {
+		t.Fatalf("first backoff = %#v, want attempt 1", first)
+	}
+	tracker.rateLimitStatus = ""
+	if !orch.githubLookupBackoffGate(context.Background(), &state, first.NextProbeAt.Add(-time.Nanosecond)) {
+		t.Fatal("githubLookupBackoffGate() before probe = false, want backoff")
+	}
+	if tracker.probeCalls != 0 {
+		t.Fatalf("probe calls before deadline = %d, want 0", tracker.probeCalls)
+	}
+	if !orch.githubLookupBackoffGate(context.Background(), &state, first.NextProbeAt) {
+		t.Fatal("low-capacity githubLookupBackoffGate() = false, want continued backoff")
+	}
+	_, second, ok := githubLookupBackoff(state.BackendOutages)
+	if !ok || second.ProbeAttempts != 2 || !second.NextProbeAt.After(first.NextProbeAt) {
+		t.Fatalf("second backoff = %#v, want later attempt 2", second)
+	}
+	if orch.githubLookupBackoffGate(context.Background(), &state, second.NextProbeAt) {
+		t.Fatal("healthy githubLookupBackoffGate() = true, want recovery")
+	}
+	if _, _, active := githubLookupBackoff(state.BackendOutages); active {
+		t.Fatalf("BackendOutages = %#v, want lookup backoff cleared", state.BackendOutages)
+	}
+	recovery := state.DispatchRecoveries[dispatchRecoveryGitHubLookup]
+	if recovery.Status != dispatchRecoveryStatusRamping || recovery.Limit != 1 {
+		t.Fatalf("DispatchRecoveries[%q] = %#v, want one-at-a-time ramp", dispatchRecoveryGitHubLookup, recovery)
+	}
+	for _, want := range []string{"github lookup backoff scheduled", "trigger=github_graphql_rate_limit", "delay=", "next_probe_at="} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("log output missing %q:\n%s", want, logs.String())
+		}
+	}
+}
+
+func TestGitHubRESTLookupBackoffUsesRESTProbe(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	cfg := normalizeConfig(Config{
+		Project:              scheduler.ProjectCandidate{ID: "detent"},
+		MaxConcurrentAgents:  4,
+		GitHubRESTMinReserve: 1000,
+	})
+	tracker := &rateLimitConnector{
+		restStatus: connector.RESTRateLimitUsage{
+			RateLimited:  true,
+			BackoffUntil: now.Add(time.Minute),
+		},
+		restProbeRateLimits: []connector.RESTRateLimit{
+			{Limit: 5000, Used: 5000, Remaining: 0, ResetAt: resetAt},
+			{Limit: 5000, Used: 4500, Remaining: 500, ResetAt: resetAt},
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+	state := newState(cfg)
+
+	if !orch.githubLookupBackoffGate(context.Background(), &state, now) {
+		t.Fatal("initial githubLookupBackoffGate() = false, want REST backoff")
+	}
+	_, first, ok := githubLookupBackoff(state.BackendOutages)
+	if !ok || first.Trigger != githubLookupTriggerREST {
+		t.Fatalf("first backoff = %#v, want REST trigger", first)
+	}
+	if !orch.githubLookupBackoffGate(context.Background(), &state, first.NextProbeAt) {
+		t.Fatal("low-capacity REST probe recovered backoff")
+	}
+	_, second, ok := githubLookupBackoff(state.BackendOutages)
+	if !ok || second.ProbeAttempts != 2 {
+		t.Fatalf("second backoff = %#v, want attempt 2", second)
+	}
+	if orch.githubLookupBackoffGate(context.Background(), &state, second.NextProbeAt) {
+		t.Fatal("healthy REST probe kept backoff active")
+	}
+	if tracker.restProbeCalls != 2 || tracker.probeCalls != 0 {
+		t.Fatalf("probe calls = REST %d GraphQL %d, want REST 2 GraphQL 0", tracker.restProbeCalls, tracker.probeCalls)
+	}
+}
+
+func TestGitHubRESTFanoutDeferralDoesNotStartLookupBackoff(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 4, 9, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	cfg := normalizeConfig(Config{
+		Project:              scheduler.ProjectCandidate{ID: "leadpipe"},
+		MaxConcurrentAgents:  4,
+		GitHubRESTMinReserve: 1000,
+	})
+	tracker := &rateLimitConnector{
+		restStatus: connector.RESTRateLimitUsage{
+			HasRateLimit:   true,
+			FanoutDeferred: true,
+			RateLimit: connector.RESTRateLimit{
+				Limit:     5000,
+				Used:      390,
+				Remaining: 4610,
+				ResetAt:   resetAt,
+			},
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+	state := newState(cfg)
+
+	if orch.githubLookupBackoffGate(t.Context(), &state, now) {
+		t.Fatal("githubLookupBackoffGate() = true for a local fanout deferral")
+	}
+	if _, _, active := githubLookupBackoff(state.BackendOutages); active {
+		t.Fatalf("BackendOutages = %#v, want no provider lookup backoff", state.BackendOutages)
+	}
+}
+
+func TestTickBacksOffGitHubLookupsDuringProviderOutage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		Project:             scheduler.ProjectCandidate{ID: "detent"},
+		PollInterval:        30 * time.Second,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done"},
+		MaxConcurrentAgents: 2,
+	})
+	state := newState(cfg)
+	providerScope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	state.BackendOutages[providerScope.Key()] = BackendOutage{
+		Scope:       providerScope,
+		Kind:        string(backendcapacity.ErrorTypeUsageLimit),
+		Reason:      "provider responses unavailable",
+		DetectedAt:  now.Add(-time.Minute),
+		ResumeAt:    now.Add(5 * time.Minute),
+		NextProbeAt: now.Add(5 * time.Minute),
+	}
+	tracker := &rateLimitConnector{}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 0 || tracker.fetchByStatesCalls != 0 {
+		t.Fatalf("tracker calls = candidates %d states %d, want none", tracker.fetchCandidateCalls, tracker.fetchByStatesCalls)
+	}
+	if _, outage, ok := githubLookupBackoff(state.BackendOutages); !ok || outage.Trigger != githubLookupTriggerProvider {
+		t.Fatalf("BackendOutages = %#v, want provider-triggered lookup backoff", state.BackendOutages)
+	}
+}
+
+func TestProviderLookupProbeWindowIsSingleUse(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}})
+	state := newState(cfg)
+	providerScope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	state.BackendOutages[providerScope.Key()] = BackendOutage{
+		Scope:       providerScope,
+		NextProbeAt: now,
+	}
+	state.BackendOutages[githubLookupBackoffScope.Key()] = BackendOutage{
+		Scope:           githubLookupBackoffScope,
+		Kind:            githubLookupBackoffKind,
+		Trigger:         githubLookupTriggerProvider,
+		NextProbeAt:     now,
+		ProbeAttempts:   3,
+		LastProbeResult: githubLookupProbeResultProviderDue,
+	}
+	orch := newRateLimitTestOrchestrator(cfg, &rateLimitConnector{})
+
+	orch.finalizeGitHubLookupProviderProbe(&state, now)
+
+	_, outage, ok := githubLookupBackoff(state.BackendOutages)
+	if !ok || outage.ProbeAttempts != 4 || !outage.NextProbeAt.After(now) || outage.LastProbeResult != githubLookupProbeResultBackingOff {
+		t.Fatalf("lookup backoff = %#v, want next step after one due window", outage)
+	}
+}
+
+func TestTickProviderProbeWindowReachesCandidateFetch(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		Project:             scheduler.ProjectCandidate{ID: "detent"},
+		PollInterval:        30 * time.Second,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done"},
+		MaxConcurrentAgents: 1,
+	})
+	state := newState(cfg)
+	providerScope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	state.BackendOutages[providerScope.Key()] = BackendOutage{
+		Scope:       providerScope,
+		NextProbeAt: now,
+	}
+	state.BackendOutages[githubLookupBackoffScope.Key()] = BackendOutage{
+		Scope:         githubLookupBackoffScope,
+		Kind:          githubLookupBackoffKind,
+		Trigger:       githubLookupTriggerProvider,
+		NextProbeAt:   now,
+		ProbeAttempts: 1,
+	}
+	tracker := &rateLimitConnector{}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want provider canary window to reach candidate fetch", tracker.fetchCandidateCalls)
+	}
+	_, outage, ok := githubLookupBackoff(state.BackendOutages)
+	if !ok || outage.ProbeAttempts != 2 || outage.LastProbeResult != githubLookupProbeResultBackingOff {
+		t.Fatalf("lookup backoff = %#v, want single-use probe window followed by next step", outage)
+	}
+}
+
+func TestTickReconcilesRunningIssuesOnSlowerCadence(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	issue := connector.Issue{ID: "I_260", Identifier: "digitaldrywood/detent#260", State: "In Progress"}
+	cfg := normalizeConfig(Config{
+		PollInterval:        30 * time.Second,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{Issue: cloneIssue(issue)}
+	tracker := &rateLimitConnector{issuesByID: []connector.Issue{issue}}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+	orch.tick(context.Background(), &state, now.Add(30*time.Second))
+	orch.tick(context.Background(), &state, now.Add(2*time.Minute))
+
+	if tracker.fetchByIDCalls != 2 {
+		t.Fatalf("FetchIssueStatesByIDs() calls = %d, want first tick plus slower cadence", tracker.fetchByIDCalls)
+	}
+}
+
+func newRateLimitTestOrchestrator(cfg Config, tracker connector.Connector) *Orchestrator {
+	return &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+}
+
+func rateLimitRecentEventContains(events []telemetry.ActivityEvent, event string, message string) bool {
+	for _, candidate := range events {
+		if candidate.Event == event && strings.Contains(candidate.Message, message) {
+			return true
+		}
+	}
+	return false
+}
+
+type rateLimitConnector struct {
+	candidates              []connector.Issue
+	stateIssues             []connector.Issue
+	issuesByID              []connector.Issue
+	rateLimit               connector.GraphQLRateLimit
+	hasRateLimit            bool
+	usage                   connector.GraphQLRateLimitUsage
+	restUsage               connector.RESTRateLimitUsage
+	restTailUsage           connector.RESTRateLimitUsage
+	restStatus              connector.RESTRateLimitUsage
+	restProbeRateLimits     []connector.RESTRateLimit
+	restProbeErrs           []error
+	restProbeCalls          int
+	rateLimitStatus         string
+	probeRateLimits         []connector.GraphQLRateLimit
+	probeErrs               []error
+	probeCalls              int
+	resetUsageCalls         int
+	flushUsageCalls         int
+	flushRESTUsageCalls     int
+	fetchCandidateCalls     int
+	fetchByStatesCalls      int
+	fetchByStatesLimitCalls int
+	fetchByIDCalls          int
+	fetchByIDErr            error
+}
+
+type conditionalRateLimitConnector struct {
+	*rateLimitConnector
+}
+
+type cleanupProbeConnector struct {
+	*rateLimitConnector
+	probeCalls int
+	states     []string
+	limit      int
+}
+
+func (c *cleanupProbeConnector) FetchIssueStateProbe(_ context.Context, states []string, limit int) ([]connector.Issue, error) {
+	c.probeCalls++
+	c.states = append([]string(nil), states...)
+	c.limit = limit
+	return cloneIssues(c.stateIssues), nil
+}
+
+type orderedTickConnector struct {
+	*rateLimitConnector
+	calls           []string
+	statusDriftErr  error
+	statusDriftREST bool
+}
+
+func (c *orderedTickConnector) FetchStatusDrift(context.Context) (connector.StatusDrift, error) {
+	c.calls = append(c.calls, "status_drift")
+	if c.statusDriftErr != nil {
+		if c.statusDriftREST {
+			c.restStatus = connector.RESTRateLimitUsage{RateLimited: true}
+		} else {
+			c.rateLimitStatus = connector.GraphQLRateLimitStatusExhausted
+		}
+	}
+	return connector.StatusDrift{}, c.statusDriftErr
+}
+
+func (c *orderedTickConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	c.calls = append(c.calls, "candidates")
+	return c.rateLimitConnector.FetchCandidateIssues(ctx)
+}
+
+func (c *orderedTickConnector) FetchIssuesByStates(ctx context.Context, states []string) ([]connector.Issue, error) {
+	c.calls = append(c.calls, "states")
+	return c.rateLimitConnector.FetchIssuesByStates(ctx, states)
+}
+
+func (c *orderedTickConnector) FetchIssueStateProbe(ctx context.Context, states []string, limit int) ([]connector.Issue, error) {
+	c.calls = append(c.calls, "probe")
+	return c.FetchIssuesByStatesLimit(ctx, states, limit)
+}
+
+func (*conditionalRateLimitConnector) ConditionalPollingEnabled() bool {
+	return true
+}
+
+func (c *rateLimitConnector) Name() string {
+	return "rate-limit"
+}
+
+func (c *rateLimitConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	c.fetchCandidateCalls++
+	return cloneIssues(c.candidates), nil
+}
+
+func (c *rateLimitConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	c.fetchByStatesCalls++
+	return cloneIssues(c.stateIssues), nil
+}
+
+func (c *rateLimitConnector) FetchIssuesByStatesLimit(context.Context, []string, int) ([]connector.Issue, error) {
+	c.fetchByStatesLimitCalls++
+	return cloneIssues(c.stateIssues), nil
+}
+
+func (c *rateLimitConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	c.fetchByIDCalls++
+	if c.fetchByIDErr != nil {
+		return nil, c.fetchByIDErr
+	}
+	return cloneIssues(c.issuesByID), nil
+}
+
+func (c *rateLimitConnector) CreateComment(context.Context, string, string) error {
+	return nil
+}
+
+func (c *rateLimitConnector) UpdateIssueState(context.Context, string, string) error {
+	return nil
+}
+
+func (c *rateLimitConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (c *rateLimitConnector) SetField(context.Context, string, string, string) error {
+	return nil
+}
+
+func (c *rateLimitConnector) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
+	return c.rateLimit, c.hasRateLimit
+}
+
+func (c *rateLimitConnector) GraphQLRateLimitStatus() string {
+	return c.rateLimitStatus
+}
+
+func (c *rateLimitConnector) ProbeGraphQLRateLimit(context.Context) (connector.GraphQLRateLimit, error) {
+	index := c.probeCalls
+	c.probeCalls++
+	if index < len(c.probeErrs) && c.probeErrs[index] != nil {
+		return connector.GraphQLRateLimit{}, c.probeErrs[index]
+	}
+	if index < len(c.probeRateLimits) {
+		return c.probeRateLimits[index], nil
+	}
+	return connector.GraphQLRateLimit{}, errors.New("unexpected GraphQL rate-limit probe")
+}
+
+func (c *rateLimitConnector) ResetGraphQLRateLimitUsage() {
+	c.resetUsageCalls++
+	c.usage = connector.GraphQLRateLimitUsage{}
+}
+
+func (c *rateLimitConnector) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
+	c.flushUsageCalls++
+	return c.usage
+}
+
+func (c *rateLimitConnector) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
+	c.flushRESTUsageCalls++
+	usage := c.restUsage
+	c.restUsage = connector.RESTRateLimitUsage{}
+	if c.flushRESTUsageCalls == 2 {
+		usage = c.restTailUsage
+	}
+	return usage
+}
+
+func (c *rateLimitConnector) RESTRateLimitStatus() connector.RESTRateLimitUsage {
+	return c.restStatus
+}
+
+func (c *rateLimitConnector) ProbeRESTRateLimit(_ context.Context, minimumRemaining int64) (connector.RESTRateLimit, error) {
+	index := c.restProbeCalls
+	c.restProbeCalls++
+	if index < len(c.restProbeErrs) && c.restProbeErrs[index] != nil {
+		return connector.RESTRateLimit{}, c.restProbeErrs[index]
+	}
+	if index < len(c.restProbeRateLimits) {
+		rateLimit := c.restProbeRateLimits[index]
+		if rateLimit.Remaining > minimumRemaining {
+			c.restStatus = connector.RESTRateLimitUsage{}
+		}
+		return rateLimit, nil
+	}
+	return connector.RESTRateLimit{}, errors.New("unexpected REST rate-limit probe")
+}
+
+type rateLimitWorkspaceReaper struct{}
+
+func (rateLimitWorkspaceReaper) ReapWorkspace(context.Context, connector.Issue) (WorkspaceReapResult, error) {
+	return WorkspaceReapResult{}, nil
+}
+
+func TestGitHubRESTResourceReserveLookupAdmission(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		resource    string
+		remaining   int64
+		rateLimited bool
+		backoff     bool
+		priorCore   bool
+		wantHeld    bool
+	}{
+		{name: "healthy search", resource: "search", remaining: 29},
+		{name: "core at reserve", resource: "core", remaining: 1000},
+		{name: "unnamed core at reserve", remaining: 1000},
+		{name: "healthy core", resource: "core", remaining: 1001},
+		{name: "exhausted search snapshot", resource: "search", wantHeld: true},
+		{name: "primary search throttle", resource: "search", rateLimited: true, wantHeld: true},
+		{name: "secondary search backoff", resource: "search", remaining: 29, backoff: true, wantHeld: true},
+		{name: "search preserves core reserve", resource: "search", remaining: 29, priorCore: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{GitHubRESTMinReserve: 1000})
+			usage := connector.RESTRateLimitUsage{HasRateLimit: true, RateLimited: tt.rateLimited,
+				RateLimit: connector.RESTRateLimit{Resource: tt.resource, Limit: 5000, Remaining: tt.remaining, ResetAt: now.Add(time.Hour)},
+			}
+			if tt.resource == "search" {
+				usage.RateLimit.Limit = 30
+			}
+			if tt.backoff {
+				usage.BackoffUntil = now.Add(time.Minute)
+			}
+			tracker := &rateLimitConnector{restStatus: usage, restUsage: usage}
+			orch := newRateLimitTestOrchestrator(cfg, tracker)
+			state := newState(cfg)
+			if tt.priorCore {
+				orch.captureGitHubRESTLookupProbe(&state, connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 900, ResetAt: now.Add(time.Hour)}, now)
+			}
+			if _, held := orch.currentGitHubLookupSignal(&state, now); held != tt.wantHeld {
+				t.Fatalf("live lookup held = %v, want %v", held, tt.wantHeld)
+			}
+			orch.captureConnectorRESTRateLimits(&state, now)
+			if _, held := orch.currentGitHubLookupSignal(&state, now); held != tt.wantHeld {
+				t.Fatalf("captured lookup held = %v, want %v", held, tt.wantHeld)
+			}
+		})
+	}
+}
+
+func TestGitHubRESTLookupReserveUsesEndpointFamilyWindows(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 13, 18, 19, 16, 0, time.UTC)
+	tests := []struct {
+		name              string
+		budgets           []connector.RESTRateLimitBudget
+		rateLimitedFamily string
+		wantHeld          bool
+	}{
+		{
+			name: "low workflow window does not hold issue lookups",
+			budgets: []connector.RESTRateLimitBudget{
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "repository issues", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4723, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "workflow runs", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 314, ResetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)}},
+			},
+		},
+		{
+			name: "low hydration window does not hold candidate lookups",
+			budgets: []connector.RESTRateLimitBudget{
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "issue comments", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 314, ResetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)}},
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "workflow runs", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4723, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
+			},
+		},
+		{
+			name: "low issue lookup window permits issue lookups",
+			budgets: []connector.RESTRateLimitBudget{
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "repository issues", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 314, ResetAt: time.Date(2026, 9, 13, 18, 19, 28, 0, time.UTC)}},
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "workflow runs", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4723, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
+			},
+		},
+		{
+			name: "check runs throttle does not hold candidate lookups",
+			budgets: []connector.RESTRateLimitBudget{
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "repository issues", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4723, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "check runs", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4721, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
+			},
+			rateLimitedFamily: "check runs",
+		},
+		{
+			name: "repository issues throttle holds candidate lookups",
+			budgets: []connector.RESTRateLimitBudget{
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "repository issues", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4723, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
+				{CredentialIdentity: "github-rest:test", EndpointFamily: "check runs", RateLimit: connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 4721, ResetAt: time.Date(2026, 9, 13, 19, 3, 56, 0, time.UTC)}},
+			},
+			rateLimitedFamily: "repository issues",
+			wantHeld:          true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			usage := connector.RESTRateLimitUsage{
+				HasRateLimit: true,
+				RateLimit:    tt.budgets[len(tt.budgets)-1].RateLimit,
+				Budgets:      tt.budgets,
+			}
+			if tt.rateLimitedFamily != "" {
+				usage.RateLimited = true
+				usage.Requests = []connector.RESTEndpointUsage{{
+					CredentialIdentity: "github-rest:test",
+					EndpointFamily:     tt.rateLimitedFamily,
+					Count:              1,
+					RateLimited:        true,
+					ResetAt:            now.Add(time.Minute),
+				}}
+				usage.TotalRequests = 1
+			}
+			cfg := normalizeConfig(Config{GitHubRESTMinReserve: 1000})
+			tracker := &rateLimitConnector{restStatus: usage, restUsage: usage}
+			orch := newRateLimitTestOrchestrator(cfg, tracker)
+			state := newState(cfg)
+
+			if _, held := orch.currentGitHubLookupSignal(&state, now); held != tt.wantHeld {
+				t.Fatalf("live lookup held = %v, want %v", held, tt.wantHeld)
+			}
+			orch.captureConnectorRESTRateLimits(&state, now)
+			tracker.restStatus = connector.RESTRateLimitUsage{}
+			if _, held := orch.currentGitHubLookupSignal(&state, now); held != tt.wantHeld {
+				t.Fatalf("captured lookup held = %v, want %v", held, tt.wantHeld)
+			}
+		})
+	}
+}
+
+func TestGitHubRESTResourceReserveLookupRecovery(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		resource  string
+		remaining int64
+		priorCore bool
+		wantHeld  bool
+	}{
+		{name: "healthy search", resource: "search", remaining: 29},
+		{name: "exhausted search", resource: "search", wantHeld: true},
+		{name: "core at reserve", resource: "core", remaining: 1000},
+		{name: "healthy core", resource: "core", remaining: 1001},
+		{name: "search preserves core reserve", resource: "search", remaining: 29, priorCore: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{GitHubRESTMinReserve: 1000})
+			limit := int64(5000)
+			if tt.resource == "search" {
+				limit = 30
+			}
+			tracker := &rateLimitConnector{restProbeRateLimits: []connector.RESTRateLimit{{Resource: tt.resource, Limit: limit, Remaining: tt.remaining, ResetAt: now.Add(time.Hour)}}}
+			orch := newRateLimitTestOrchestrator(cfg, tracker)
+			state := newState(cfg)
+			if tt.priorCore {
+				orch.captureGitHubRESTLookupProbe(&state, connector.RESTRateLimit{Resource: "core", Limit: 5000, Remaining: 900, ResetAt: now.Add(time.Hour)}, now)
+			}
+			outage := orch.advanceGitHubLookupBackoff(&state, BackendOutage{}, githubLookupSignal{trigger: githubLookupTriggerREST, reason: "rate limited"}, now, time.Time{})
+			if held := orch.githubLookupBackoffGate(t.Context(), &state, outage.NextProbeAt); held != tt.wantHeld {
+				t.Fatalf("recovery held = %v, want %v", held, tt.wantHeld)
+			}
+			if tracker.restProbeCalls != 1 {
+				t.Fatalf("REST probe calls = %d, want 1", tracker.restProbeCalls)
+			}
+		})
+	}
+}
+
+func TestGitHubLookupBackoffSecondaryDeadline(t *testing.T) {
+	t.Parallel()
+	for _, delay := range []time.Duration{time.Minute, 2 * time.Minute, 20 * time.Minute} {
+		t.Run(delay.String(), func(t *testing.T) {
+			now := time.Date(2026, 9, 16, 22, 0, 0, 0, time.UTC)
+			deadline := now.Add(delay)
+			quota := connector.GraphQLRateLimit{Limit: 5000, Remaining: 3000, BackoffUntil: deadline, UpdatedAt: now}
+			tracker := &rateLimitConnector{rateLimitStatus: connector.GraphQLRateLimitStatusBackoff, hasRateLimit: true, rateLimit: quota, probeRateLimits: []connector.GraphQLRateLimit{quota}}
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 4})
+			orch := newRateLimitTestOrchestrator(cfg, tracker)
+			state := newState(cfg)
+			if !orch.githubLookupBackoffGate(t.Context(), &state, now) {
+				t.Fatal("missing backoff")
+			}
+			_, outage, _ := githubLookupBackoff(state.BackendOutages)
+			if !outage.NextProbeAt.Equal(deadline) {
+				t.Fatalf("probe deadline = %s, want %s", outage.NextProbeAt, deadline)
+			}
+			if !orch.githubLookupBackoffGate(t.Context(), &state, deadline.Add(-time.Nanosecond)) || tracker.probeCalls != 0 {
+				t.Fatal("probe before deadline")
+			}
+			tracker.rateLimitStatus = "" // The client expires its own secondary status.
+			if orch.githubLookupBackoffGate(t.Context(), &state, deadline) {
+				t.Fatal("did not recover at deadline")
+			}
+			if _, allowed, _ := tryReserveDispatchRecovery(&state, "issue-1", deadline); !allowed {
+				t.Fatal("recovery did not admit canary")
+			}
+			orch.advanceDispatchRecovery(&state, "issue-1", deadline.Add(time.Second))
+			before := state.DispatchRecoveries[dispatchRecoveryGitHubLookup]
+			if before.Limit != 2 {
+				t.Fatalf("recovery limit = %d, want 2", before.Limit)
+			}
+			state.RateLimits = &telemetry.RateLimits{GitHubGraphQL: &telemetry.RateLimitBucket{Limit: 5000, Remaining: 3000}}
+			for i := 1; i <= 3; i++ {
+				if orch.githubLookupBackoffGate(t.Context(), &state, deadline.Add(time.Duration(i)*time.Minute)) {
+					t.Fatal("expired throttle restarted backoff")
+				}
+			}
+			after := state.DispatchRecoveries[dispatchRecoveryGitHubLookup]
+			if after.Limit != before.Limit || tracker.probeCalls != 1 {
+				t.Fatalf("recovery restarted: before %#v after %#v", before, after)
+			}
+		})
+	}
+}
+
+type cleanupIDProbeConnector struct {
+	*rateLimitConnector
+	probeCalls   int
+	requestedIDs []string
+}
+
+func (c *cleanupIDProbeConnector) FetchIssueStateProbeByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
+	c.probeCalls++
+	c.requestedIDs = append([]string(nil), ids...)
+	return cloneIssues(c.issuesByID), c.fetchByIDErr
+}
+
+func TestCleanupIDReadUsesProbeAndPreservesActiveOwnership(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"terminal", "routing", "running", "unknown", "error"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			issue := dispatchTestIssue("cleanup-id", "Done")
+			tracker := &cleanupIDProbeConnector{rateLimitConnector: &rateLimitConnector{issuesByID: []connector.Issue{issue}}}
+			state := newState(cfg)
+			switch mode {
+			case "routing":
+				tracker.issuesByID[0].State = "Todo"
+			case "running":
+				state.Running[issue.ID] = Running{Issue: issue}
+			case "unknown":
+				tracker.issuesByID = nil
+			case "error":
+				tracker.fetchByIDErr = errors.New("fresh metadata unavailable")
+			}
+			reaper := &cleanupSweepReaper{}
+			o := newRateLimitTestOrchestrator(cfg, tracker)
+			o.reaper = reaper
+			fetched, cleaned := o.reapWorkspaceIssueIDs(t.Context(), &state, []string{issue.ID}, time.Now())
+			if tracker.probeCalls != 1 || tracker.fetchByIDCalls != 0 || len(tracker.requestedIDs) != 1 || tracker.requestedIDs[0] != issue.ID {
+				t.Fatalf("probe=%d full=%d ids=%v", tracker.probeCalls, tracker.fetchByIDCalls, tracker.requestedIDs)
+			}
+			wantCleaned := mode == "terminal"
+			if fetched != (mode != "error") || cleaned != wantCleaned || (len(reaper.issues) > 0) != wantCleaned {
+				t.Fatalf("fetched=%v cleaned=%v reaped=%+v", fetched, cleaned, reaper.issues)
+			}
+		})
+	}
+}
