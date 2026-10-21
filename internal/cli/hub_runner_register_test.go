@@ -401,13 +401,13 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 
 func runRegister(t *testing.T, env map[string]string, starter runnerServiceStarter, args ...string) (string, error) {
 	t.Helper()
-	return executeRegister(t, newHubRunnerRegisterCommandWithReporter("test", func(name string) string { return env[name] }, starter, runnerPrivateLocation, func(context.Context, globalconfig.Config, string) error { return nil }), args...)
+	return executeRegister(t, newHubRunnerRegisterCommandWithServiceName("test", func(name string) string { return env[name] }, starter, runnerPrivateLocation, func(context.Context, globalconfig.Config, string) error { return nil }, func(context.Context) error { return nil }, testRunnerServiceName), args...)
 }
 
 // Registration fixtures stay under t.TempDir even when worker TMPDIR is inside this repository.
 func runRegisterInTestWorkspace(t *testing.T, env map[string]string, starter runnerServiceStarter, args ...string) (string, error) {
 	t.Helper()
-	return executeRegister(t, newHubRunnerRegisterCommandWithReporter("test", func(name string) string { return env[name] }, starter, func(string) error { return nil }, func(context.Context, globalconfig.Config, string) error { return nil }), args...)
+	return executeRegister(t, newHubRunnerRegisterCommandWithServiceName("test", func(name string) string { return env[name] }, starter, func(string) error { return nil }, func(context.Context, globalconfig.Config, string) error { return nil }, func(context.Context) error { return nil }, testRunnerServiceName), args...)
 }
 
 func executeRegister(t *testing.T, command *cobra.Command, args ...string) (string, error) {
@@ -466,10 +466,10 @@ func TestHubRunnerRegisterServiceRuntime(t *testing.T) {
 					runnerCommand.RemoveCommand(child)
 				}
 			}
-			register := newHubRunnerRegisterCommandWithGitHubAuth("test", opts.lookupEnv, runnerServiceStarterFor(opts), func(string) error { return nil }, func(_ context.Context, cfg globalconfig.Config, _ string) error {
+			register := newHubRunnerRegisterCommandWithServiceName("test", opts.lookupEnv, runnerServiceStarterFor(opts), func(string) error { return nil }, func(_ context.Context, cfg globalconfig.Config, _ string) error {
 				cfg.Port = &test.configPort
 				return globalconfig.Write(configPath, cfg)
-			}, func(context.Context) error { return nil })
+			}, func(context.Context) error { return nil }, testRunnerServiceName)
 			runnerCommand.AddCommand(register)
 			args := []string{"hub", "runner", "register", "--url", hub.server.URL + "/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--workspace-root", filepath.Join(root, "work"), "--service"}
 			output, err := executeRegister(t, command, append(args, test.flags...)...)
@@ -975,10 +975,10 @@ func TestHubRunnerRegisterReportsBeforeService(t *testing.T) {
 				return nil
 			}
 			checks := 0
-			cmd := newHubRunnerRegisterCommandWithGitHubAuth("test", mapLookup(map[string]string{"GITHUB_TOKEN": test.envToken}), starter, func(string) error { return nil }, reporter, func(context.Context) error {
+			cmd := newHubRunnerRegisterCommandWithServiceName("test", mapLookup(map[string]string{"GITHUB_TOKEN": test.envToken}), starter, func(string) error { return nil }, reporter, func(context.Context) error {
 				checks++
 				return test.authErr
-			})
+			}, testRunnerServiceName)
 			output, err := executeRegister(t, cmd, "--url", hub.server.URL+"/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--workspace-root", workspaces, "--service")
 			if err != nil || !reported || !started || checks != test.wantChecks {
 				t.Fatalf("reported=%v started=%v checks=%d err=%v", reported, started, checks, err)

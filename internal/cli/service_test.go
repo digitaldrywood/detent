@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -25,14 +26,34 @@ func TestStoppedManagedServiceUsesNonzeroExitCode(t *testing.T) {
 	}
 }
 
-func TestSystemdDefinitionArgumentsDecodesLiteralPercents(t *testing.T) {
+func TestServiceDefinitionArguments(t *testing.T) {
 	t.Parallel()
-
-	content := []byte(`ExecStart="/opt/detent%%worker" --config "/config/tenant%%2/global.yaml" --host "fe80::1%%eth0"`)
-	want := []string{"/opt/detent%worker", "--config", "/config/tenant%2/global.yaml", "--host", "fe80::1%eth0"}
-
-	if got := systemdDefinitionArguments(content); !reflect.DeepEqual(got, want) {
-		t.Fatalf("systemdDefinitionArguments() = %#v, want %#v", got, want)
+	for _, test := range []struct {
+		name, content string
+		parse         func([]byte) []string
+		want          []string
+	}{
+		{
+			name: "systemd literal percents", parse: systemdDefinitionArguments,
+			content: `ExecStart="/opt/detent%%worker" --config "/config/tenant%%2/global.yaml" --host "fe80::1%%eth0"`,
+			want:    []string{"/opt/detent%worker", "--config", "/config/tenant%2/global.yaml", "--host", "fe80::1%eth0"},
+		},
+		{
+			name: "launchd escaped config", parse: launchdDefinitionArguments,
+			content: `<plist><dict><key>ProgramArguments</key><array><string>/opt/detent</string><string>--config</string><string>/config/first &amp; second/global.yaml</string></array></dict></plist>`,
+			want:    []string{"/opt/detent", "--config", "/config/first & second/global.yaml"},
+		},
+		{
+			name: "launchd oversized definition", parse: launchdDefinitionArguments,
+			content: `<plist><dict><key>ProgramArguments</key><array><string>` + strings.Repeat("x", 1<<20) + `</string></array></dict></plist>`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := test.parse([]byte(test.content)); !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("arguments = %#v, want %#v", got, test.want)
+			}
+		})
 	}
 }
 
