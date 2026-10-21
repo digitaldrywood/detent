@@ -200,7 +200,7 @@ func (s *Service) readNativeRecoveryPage(ctx context.Context, scope nativeScope,
 	selection := recoveryEvidenceCursor{Change: change.ID, Version: change.CurrentVersion}
 	if cursor.After != "" {
 		if json.Unmarshal([]byte(cursor.After), &selection) != nil || selection.Section < 0 || selection.Section > 8 || selection.After < 0 || selection.Offset < 0 {
-			return tracker.NativeRecovery{}, nativeInvalid("Recovery cursor is invalid")
+			return tracker.NativeRecovery{}, nativePublicInvalid("Recovery cursor is invalid")
 		}
 		if selection.Change != change.ID || selection.Version != change.CurrentVersion {
 			return tracker.NativeRecovery{}, nativeConflict(0)
@@ -339,7 +339,7 @@ func (s *Service) readRecoveryEvidenceRecord(ctx context.Context, query nativeQu
 		}
 		value, sequence, id = change, 1, change.ID
 	default:
-		return 0, "", "", nil, nativeInvalid("Recovery section is invalid")
+		return 0, "", "", nil, nativePublicInvalid("Recovery section is invalid")
 	}
 	content, err := json.Marshal(value)
 	return sequence, id, version, content, err
@@ -418,7 +418,7 @@ func (s *Service) fitNativeRecovery(ctx context.Context, scope nativeScope, path
 	if ok, err := fits(); ok || err != nil {
 		return err
 	}
-	return nativeInvalid("Required recovery metadata exceeds the bounded response")
+	return nativePublicInvalid("Required recovery metadata exceeds the bounded response")
 }
 
 func projectNativeRecovery(result *tracker.NativeRecovery) error {

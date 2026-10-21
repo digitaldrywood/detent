@@ -86,7 +86,7 @@ func (s *Service) savedWorkViews(c echo.Context) error {
 		params := c.QueryParams()
 		for key, values := range params {
 			if key != "cursor" || len(values) != 1 || len(values[0]) > 100 {
-				return s.nativeAPIError(c, nativeInvalid("Invalid saved views cursor"))
+				return s.nativeAPIError(c, nativePublicInvalid("Invalid saved views cursor"))
 			}
 		}
 		ids, err := s.savedWorkViewIDs(readCtx, org, user, params.Get("cursor"))
@@ -110,7 +110,7 @@ func (s *Service) savedWorkViews(c echo.Context) error {
 			}
 			if len(encoded)+1 > maxSavedWorkViewsPageBytes {
 				if len(page.Views) == 0 {
-					return s.nativeAPIError(c, nativeInvalid("Saved view exceeds the page size limit"))
+					return s.nativeAPIError(c, nativePublicInvalid("Saved view exceeds the page size limit"))
 				}
 				page.NextCursor = page.Views[len(page.Views)-1].ID
 				break
@@ -128,7 +128,7 @@ func (s *Service) savedWorkViews(c echo.Context) error {
 			Favorite bool `json:"favorite"`
 		}
 		if err := decodeAPIJSON(c, &value); err != nil {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 		err = s.setSavedWorkFavorite(ctx, s.database.db, id, user, value.Favorite)
 		if err != nil {
@@ -149,11 +149,11 @@ func (s *Service) savedWorkViews(c echo.Context) error {
 	}
 	var v savedWorkView
 	if err := decodeAPIJSON(c, &v); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	v.Name = strings.TrimSpace(v.Name)
 	if !validSavedWorkView(v) {
-		return s.nativeAPIError(c, nativeInvalid("The view name, scope or display state is invalid"))
+		return s.nativeAPIError(c, nativePublicInvalid("The view name, scope or display state is invalid"))
 	}
 	if v.ProjectID != nil {
 		scope := nativeScope{organization: tracker.OrganizationID(org), project: tracker.ProjectID(*v.ProjectID), credential: credential}
@@ -334,14 +334,14 @@ func (s *Service) savedWorkViewSlots(ctx context.Context, org, user string) (int
 	var ownerSlot, organizationSlot int
 	err := s.database.reader.QueryRowContext(ctx, `WITH RECURSIVE slots(slot) AS (SELECT 0 UNION ALL SELECT slot+1 FROM slots WHERE slot+1<?) SELECT slot FROM slots WHERE NOT EXISTS(SELECT 1 FROM hosted_work_views WHERE organization_id=? AND owner_id=? AND owner_slot=slot) ORDER BY slot LIMIT 1`, maxSavedWorkViewsPerOwner, org, user).Scan(&ownerSlot)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, nativeInvalid("The saved view limit for this owner has been reached")
+		return 0, 0, nativePublicInvalid("The saved view limit for this owner has been reached")
 	}
 	if err != nil {
 		return 0, 0, err
 	}
 	err = s.database.reader.QueryRowContext(ctx, `WITH RECURSIVE slots(slot) AS (SELECT 0 UNION ALL SELECT slot+1 FROM slots WHERE slot+1<?) SELECT slot FROM slots WHERE NOT EXISTS(SELECT 1 FROM hosted_work_views WHERE organization_id=? AND organization_slot=slot) ORDER BY slot LIMIT 1`, maxSavedWorkViewsPerOrganization, org).Scan(&organizationSlot)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, nativeInvalid("The saved view limit for this organization has been reached")
+		return 0, 0, nativePublicInvalid("The saved view limit for this organization has been reached")
 	}
 	return ownerSlot, organizationSlot, err
 }

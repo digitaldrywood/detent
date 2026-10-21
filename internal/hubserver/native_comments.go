@@ -45,7 +45,7 @@ FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_
 func (s *Service) createNativeComment(c echo.Context) error {
 	var request tracker.CreateComment
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.createNativeCommentCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
 	if err != nil {
@@ -90,7 +90,7 @@ func insertNativeComment(ctx context.Context, tx *sql.Tx, scope nativeScope, iss
 func (s *Service) updateNativeComment(c echo.Context) error {
 	var request tracker.UpdateComment
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.updateNativeCommentCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("comment"), request)
 	if err != nil {

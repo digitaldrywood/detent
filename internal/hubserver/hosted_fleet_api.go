@@ -176,7 +176,7 @@ func (s *Service) hostedFleet(c echo.Context) error {
 			if raw := c.QueryParam(bound.name); raw != "" {
 				*bound.value, err = time.Parse(time.RFC3339, raw)
 				if err != nil {
-					return s.nativeAPIError(c, nativeInvalid("Host history timestamps must use RFC3339"))
+					return s.nativeAPIError(c, nativePublicInvalid("Host history timestamps must use RFC3339"))
 				}
 			}
 		}
@@ -479,7 +479,7 @@ func (s *Service) readHostedRunnerHostHistory(ctx context.Context, credential ap
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if runnerID == "" {
-		return nil, nativeInvalid("Runner ID is required for host history")
+		return nil, nativePublicInvalid("Runner ID is required for host history")
 	}
 	readable, err := s.hostedReadableProjects(ctx, credential)
 	if err != nil {

@@ -84,10 +84,10 @@ func (s *Service) readRunnerUpdate(ctx context.Context, scope nativeScope, resou
 
 func (s *Service) applyRunnerUpdateCommand(ctx context.Context, scope nativeScope, resource string, request runnerUpdateChange) (any, error) {
 	if request.ExpectedRevision < 1 || request.delivery("validate", s.config.now()).Validate() != nil || strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativeInvalid("A selected service, observed runner/build revision, release version and idempotency key are required")
+		return nil, nativePublicInvalid("A selected service, observed runner/build revision, release version and idempotency key are required")
 	}
 	if !request.Confirm {
-		return nil, &nativeError{Code: "confirmation_required", Message: "Confirm the selected runner update and coordinated restart", status: http.StatusPreconditionRequired}
+		return nil, &nativeError{Code: "confirmation_required", Message: "Confirm the selected runner update and coordinated restart", status: http.StatusPreconditionRequired, publicMessage: true}
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -154,7 +154,7 @@ func (s *Service) applyRunnerUpdateCommand(ctx context.Context, scope nativeScop
 func (s *Service) storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, scope nativeScope, report *runnerauth.UpdateObservation, protocol int, version, platform, architecture string, now time.Time) error {
 	if report != nil {
 		if report.Validate() != nil || protocol != 2 || strings.TrimPrefix(report.Running.Version, "v") != strings.TrimPrefix(version, "v") || report.Running.OS != platform || report.Running.Architecture != architecture {
-			return nativeInvalid("Update observation must identify this runner's actual process and supported protocol")
+			return nativePublicInvalid("Update observation must identify this runner's actual process and supported protocol")
 		}
 		runner, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
 		if err != nil {
@@ -251,7 +251,7 @@ func (s *Service) getRunnerUpdate(c echo.Context) error {
 func (s *Service) applyRunnerUpdate(c echo.Context) error {
 	var request runnerUpdateChange
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok {
