@@ -676,6 +676,13 @@ func (s *conversationStore) updateMessage(ctx context.Context, tx *sql.Tx, messa
 	if err != nil {
 		return err
 	}
+	if message.Kind == conversation.MessageTool && message.Actor.Kind == conversation.ActorCoordinator {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_tool_revisions(conversation_id,message_id,revision,text,tool,item_id,status)
+SELECT conversation_id,id,revision,text,COALESCE(json_extract(data_json,'$.tool'),''),COALESCE(json_extract(data_json,'$.item_id'),''),COALESCE(json_extract(data_json,'$.status'),'')
+FROM conversation_messages WHERE conversation_id=? AND id=? AND kind='tool' AND json_extract(actor_json,'$.kind')='coordinator' AND content_attachment_id=''`, message.ConversationID, message.ID); err != nil {
+			return fmt.Errorf("preserve inline tool revision: %w", err)
+		}
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE conversation_messages SET text = ?, data_json = ?, delivery = ?, attempt_id = ?, thread_id = ?, turn_id = ?, provider_item_id = ?, actor_json = ?, updated_at = ?, content_attachment_id = ?, revision = revision+1
 WHERE id = ? AND conversation_id = ?`,
 		storedText, storedData, message.Delivery, message.AttemptID, message.ThreadID, message.TurnID, message.ProviderItemID, actor, conversationTime(message.UpdatedAt), contentID,
