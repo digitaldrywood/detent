@@ -8,6 +8,10 @@ import {
   AlertDialogTitle,
 } from "../../components/ui/alert-dialog.tsx";
 import React from "react";
+import { ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
+import { Tabs, TabsList, TabsTab, TabsPanel } from "../../components/ui/tabs.tsx";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../../components/ui/table.tsx";
+import { Menu, MenuTrigger, MenuPopup, MenuItem } from "../../components/ui/menu.tsx";
 import type {
   AccessKey,
   CreatedAccessKey,
@@ -58,6 +62,27 @@ export function lastKeyUse(value: string | null | undefined): React.ReactNode {
   );
 }
 
+function keyAccessSummary(apiKey: AccessKey, context?: KeyContext | null): string {
+  if (apiKey.kind === "personal" && apiKey.access_context === "global") {
+    return `All my orgs · ${apiKey.effective_reach?.length ?? 0}`;
+  }
+  const organizations = apiKey.organizations ?? [];
+  const org = organizations[0];
+  if (organizations.length === 1 && org) {
+    if (org.project_access === "all") {
+      return apiKey.kind === "service" ? "All org projects" : "This org";
+    }
+    if (org.project_ids.length === 1) {
+      const projectId = org.project_ids[0];
+      const reach = apiKey.effective_reach?.find((item) => item.organization_id === org.organization_id)
+        ?? context?.organizations.find((item) => item.organization_id === org.organization_id);
+      return `One project: ${reach?.projects.find((project) => project.id === projectId)?.name ?? projectId}`;
+    }
+    return `${org.project_ids.length} selected projects`;
+  }
+  return `${organizations.length} selected orgs`;
+}
+
 export function KeyScope({
   apiKey,
   context,
@@ -65,45 +90,31 @@ export function KeyScope({
   readonly apiKey: AccessKey;
   readonly context?: KeyContext | null;
 }) {
+  const scope = apiKey.access_context === "global" && apiKey.kind === "personal"
+    ? "All my orgs"
+    : keyAccessSummary(apiKey, context);
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap gap-1.5">
-        <Badge variant="outline">
-          {apiKey.kind === "service"
-            ? "Organization projects"
-            : apiKey.access_context === "global"
-              ? "All my orgs"
-              : "Selected orgs"}
-        </Badge>
-        {(apiKey.organizations ?? []).map((org) => (
-          <Badge key={org.organization_id} variant="outline">
-            {context?.organizations.find(
-              (item) => item.organization_id === org.organization_id,
-            )?.name ?? org.organization_id}
-            :{" "}
-            {org.project_access === "all"
-              ? "All projects"
-              : `${org.project_ids.length} selected ${org.project_ids.length === 1 ? "project" : "projects"}`}
-          </Badge>
-        ))}
-      </div>
-      {apiKey.effective_reach && (
-        <div className="space-y-1 text-xs text-muted-foreground">
-          <p>Effective reach today</p>
-          {apiKey.effective_reach.length === 0 && (
-            <p>No organization access today.</p>
-          )}
+    <div className="space-y-2 text-xs text-muted-foreground">
+      <p>Effective reach today · {scope}</p>
+      {apiKey.effective_reach?.length === 0 && <p>No organization access today.</p>}
+      {apiKey.effective_reach && apiKey.effective_reach.length > 0 && (
+        <div className="divide-y divide-border rounded-lg border border-border">
           {apiKey.effective_reach.map((org) => (
-            <p key={org.organization_id} className="break-words">
-              {org.name} ·{" "}
-              {org.status === "pending"
-                ? "Awaiting approval"
-                : org.status === "blocked"
-                  ? "Blocked"
-                  : org.status === "inactive"
-                    ? "Inactive"
-                    : `${org.role} · ${org.projects.length ? org.projects.map((project) => `${project.name}${project.can_write ? " (write)" : " (read)"}`).join(", ") : "No project access"}`}
-            </p>
+            <div key={org.organization_id} className="grid grid-cols-[minmax(0,1fr)_minmax(4rem,auto)_minmax(0,2fr)] gap-4 px-3 py-2">
+              <span className="break-words text-foreground">{org.name}</span>
+              <span>{org.role}</span>
+              <span className="break-words">
+                {org.status === "pending"
+                  ? "Awaiting approval"
+                  : org.status === "blocked"
+                    ? "Blocked"
+                    : org.status === "inactive"
+                      ? "Inactive"
+                      : org.projects.length
+                        ? org.projects.map((project) => `${project.name}${project.can_write ? " (write)" : " (read)"}`).join(", ")
+                        : "No project access"}
+              </span>
+            </div>
           ))}
         </div>
       )}
@@ -540,8 +551,9 @@ export function APIKeysMCPSettings() {
   const [selections, setSelections] = React.useState<
     readonly KeyOrganization[]
   >([]);
-  const [personalHistory, setPersonalHistory] = React.useState(false);
-  const [serviceHistory, setServiceHistory] = React.useState(false);
+  const [showHistory, setShowHistory] = React.useState(false);
+  const [keyTab, setKeyTab] = React.useState("personal");
+  const [expandedKeys, setExpandedKeys] = React.useState<ReadonlySet<string>>(new Set());
   const [transport, setTransport] = React.useState("mcp");
   const [connectId, setConnectId] = React.useState<string | null>(null);
   const currentApi = React.useRef(api);
@@ -564,6 +576,8 @@ export function APIKeysMCPSettings() {
     setCreated(null);
     setAction(null);
     setConnectId(null);
+    setKeyTab("personal");
+    setExpandedKeys(new Set());
     Promise.all([list(), api.keyContext()])
       .then(([listed, choices]) => {
         if (!current) return;
@@ -721,128 +735,93 @@ export function APIKeysMCPSettings() {
         (org.project_ids.length === 0 ||
           (org.project_access === "project" && org.project_ids.length !== 1)),
     );
-  function renderKeys(
-    kind: "personal" | "service",
-    listed: readonly AccessKey[],
-  ) {
-    const history = kind === "personal" ? personalHistory : serviceHistory;
-    const setShowHistory =
-      kind === "personal" ? setPersonalHistory : setServiceHistory;
+  function renderKeys(kind: "personal" | "service", listed: readonly AccessKey[]) {
+    const visible = listed.filter((key) => showHistory || !inactive(key));
     return (
-      <SettingsSection
-        title={
-          kind === "personal"
-            ? "Your personal keys"
-            : "Organization service keys"
-        }
-      >
-        {!loaded && !error && (
-          <SettingsRow title="Loading API keys…" role="status" />
-        )}
-        {loaded &&
-          listed.filter((key) => (history ? inactive(key) : !inactive(key)))
-            .length === 0 && (
-            <SettingsRow
-              title={
-                history
-                  ? "No inactive keys"
-                  : kind === "service"
-                    ? "No active service keys"
-                    : "No active personal keys"
-              }
-              description={
-                history
-                  ? "Revoked and expired keys appear here."
-                  : "Create a key for your agent or integration."
-              }
-            />
-          )}
-        {listed
-          .filter((key) => (history ? inactive(key) : !inactive(key)))
-          .map((key) => (
-            <SettingsRow
-              key={key.id}
-              title={
-                <span className="flex flex-wrap items-center gap-2 break-words">
-                  {key.name}
-                  <Badge variant="outline">{key.permission}</Badge>
-                  <Badge variant="outline">
-                    {key.kind === "personal" ? "Personal" : "Service"}
-                  </Badge>
-                  {inactive(key) && (
-                    <Badge variant="outline">
-                      {key.revoked_at ? "Revoked" : "Expired"}
-                    </Badge>
-                  )}
-                </span>
-              }
-              description={
-                <span>
-                  {lastKeyUse(key.last_used_at)} ·{" "}
-                  {key.expires_at
-                    ? `Expires ${new Date(key.expires_at).toLocaleDateString()}`
-                    : "Never expires"}
-                </span>
-              }
-              status={<KeyScope apiKey={key} context={context} />}
-              control={
-                !inactive(key) && (
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      size="xs"
-                      variant="outline"
-                      disabled={!context || busy}
-                      aria-label={`Connect ${key.name}`}
-                      onClick={() => setConnectId(key.id)}
-                    >
-                      Connect
-                    </Button>
-                    {key.kind === "personal" && (
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        disabled={busy}
-                        aria-label={`Rotate ${key.name}`}
-                        onClick={() => {
-                          setDialogError(null);
-                          setAction({ key, rotate: true });
-                        }}
-                      >
-                        Rotate
-                      </Button>
-                    )}
-                    <Button
-                      size="xs"
-                      variant="destructive-outline"
-                      disabled={busy}
-                      aria-label={`Revoke ${key.name}`}
-                      onClick={() => {
-                        setDialogError(null);
-                        setAction({ key, rotate: false });
-                      }}
-                    >
-                      Revoke
-                    </Button>
-                  </div>
-                )
-              }
-            />
-          ))}
-        {loaded && (
-          <SettingsRow
-            title="Key history"
-            control={
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={() => setShowHistory(!history)}
-              >
-                {history ? "Show active keys" : "Show revoked and expired keys"}
-              </Button>
-            }
-          />
-        )}
-      </SettingsSection>
+      <TabsPanel value={kind} className="space-y-2 pt-3">
+        <p className="text-xs text-muted-foreground">
+          {kind === "personal"
+            ? "Personal keys act as you: edits are recorded as you, and the key stops working if you leave an organization."
+            : `Service keys act as ${account?.organization.name ?? "the organization"} for CI, bots and team servers. Owners and admins manage them; they keep working when their creator leaves.`}
+        </p>
+        <div className="overflow-hidden rounded-xl border border-border">
+          <Table aria-label={kind === "personal" ? "Personal keys" : "Service keys"}>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Permission</TableHead>
+                <TableHead>Access</TableHead>
+                <TableHead>Last used</TableHead>
+                <TableHead>Expires</TableHead>
+                <TableHead><span className="sr-only">Actions</span></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {!loaded && !error && <TableRow><TableCell colSpan={6}><span role="status">Loading API keys…</span></TableCell></TableRow>}
+              {loaded && visible.length === 0 && (
+                <TableRow><TableCell colSpan={6} className="whitespace-normal text-muted-foreground">
+                  No active {kind} keys. Create a key for your agent or integration.
+                </TableCell></TableRow>
+              )}
+              {visible.map((key) => {
+                const isInactive = inactive(key);
+                const expanded = expandedKeys.has(key.id);
+                const reachId = `key-reach-${kind}-${key.id}`;
+                return (
+                  <React.Fragment key={key.id}>
+                    <TableRow className={isInactive ? "text-muted-foreground" : undefined}>
+                      <TableCell>
+                        <div className="flex items-center gap-1">
+                          <Button size="icon-xs" variant="ghost-muted" aria-label={`${expanded ? "Collapse" : "Expand"} ${key.name}`} aria-expanded={expanded} aria-controls={reachId}
+                            onClick={() => setExpandedKeys((current) => {
+                              const next = new Set(current);
+                              if (expanded) next.delete(key.id);
+                              else next.add(key.id);
+                              return next;
+                            })}>
+                            {expanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+                          </Button>
+                          <span className="font-medium">{key.name}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell>{key.permission}</TableCell>
+                      <TableCell>{keyAccessSummary(key, context)}</TableCell>
+                      <TableCell>
+                        <span className="inline-flex items-center gap-1.5 text-muted-foreground" title={key.last_used_at ? new Date(key.last_used_at).toLocaleString() : undefined}>
+                          <span aria-hidden="true" className={`size-1.5 shrink-0 rounded-full ${!key.last_used_at ? "bg-muted-foreground/40" : now - new Date(key.last_used_at).getTime() < 86_400_000 ? "bg-success-foreground" : "bg-muted-foreground"}`} />
+                          {key.last_used_at ? formatRelativeTimeLabel(key.last_used_at) : "Never"}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        {key.revoked_at
+                          ? `Revoked ${new Date(key.revoked_at).toLocaleDateString()}`
+                          : key.expires_at
+                            ? `${isInactive ? "Expired " : ""}${new Date(key.expires_at).toLocaleDateString()}`
+                            : "Never"}
+                      </TableCell>
+                      <TableCell>
+                        {!isInactive && <div className="flex items-center justify-end gap-1">
+                          <Button size="xs" variant="outline" disabled={!context || busy} aria-label={`Connect ${key.name}`} onClick={() => setConnectId(key.id)}>Connect</Button>
+                          <Menu>
+                            <MenuTrigger render={<Button size="icon-xs" variant="ghost-muted" />} disabled={busy} aria-label={`More actions for ${key.name}`}>
+                              <MoreHorizontal aria-hidden="true" />
+                            </MenuTrigger>
+                            <MenuPopup align="end">
+                              {kind === "personal" && <MenuItem onClick={() => { setDialogError(null); setAction({ key, rotate: true }); }}>Rotate token</MenuItem>}
+                              <MenuItem variant="destructive" onClick={() => { setDialogError(null); setAction({ key, rotate: false }); }}>Revoke</MenuItem>
+                            </MenuPopup>
+                          </Menu>
+                        </div>}
+                      </TableCell>
+                    </TableRow>
+                    {expanded && <TableRow><TableCell colSpan={6} className="whitespace-normal"><div id={reachId} className="px-6 pb-2"><KeyScope apiKey={key} context={context} /></div></TableCell></TableRow>}
+                  </React.Fragment>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+      </TabsPanel>
     );
   }
   return (
@@ -898,8 +877,20 @@ export function APIKeysMCPSettings() {
           </div>
         </SettingsSection>
         {error && <ControlError message={error} />}
-        {renderKeys("personal", keys)}
-        {canManage && renderKeys("service", serviceKeys)}
+        <Tabs value={keyTab} onValueChange={(value) => setKeyTab(String(value))}>
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <TabsList aria-label="Key type">
+              <TabsTab value="personal">Personal {keys.filter((key) => !inactive(key)).length}</TabsTab>
+              {canManage && <TabsTab value="service">Service {serviceKeys.filter((key) => !inactive(key)).length}</TabsTab>}
+            </TabsList>
+            <Label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Checkbox checked={showHistory} onCheckedChange={setShowHistory} />
+              Show revoked and expired
+            </Label>
+          </div>
+          {renderKeys("personal", keys)}
+          {canManage && renderKeys("service", serviceKeys)}
+        </Tabs>
         {canManage && <OrganizationKeyControls />}
       </SettingsPageContainer>
       <Dialog
