@@ -100,6 +100,10 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	var result workspace.LandResult
 	defer func() {
 		if runResult.NativeLanding != nil {
+			var command *workspace.CommandError
+			if runErr == nil && result.MergeSHA == "" && errors.As(err, &command) && command.Command == "git" && isGitPush(command.Args) {
+				runResult.landingPushError = err
+			}
 			if result.Gate.Command == "" && options.Validation != nil && options.Validation != target.Validation {
 				result.Gate = *options.Validation
 			}

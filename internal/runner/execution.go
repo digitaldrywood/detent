@@ -481,7 +481,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 				prepareCtx, prepareCancel = context.WithTimeoutCause(context.WithoutCancel(guarded), r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 			}
 		}
-		err := prepared.PrepareFinish(prepareCtx, outcome, result.FinalMessage, nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused))
+		err := prepared.PrepareFinish(prepareCtx, outcome, result.FinalMessage, nativeTerminalFailure(errors.Join(runErr, result.landingPushError), r.now(), result.TurnStartRefused))
 		prepareCancel()
 		if err != nil {
 			runErr = errors.Join(runErr, err)
@@ -496,7 +496,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 				}
 				// Deferred lease release publishes the prepared outcome after Run returns.
 				reprepareCtx, reprepareCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
-				reprepareErr := prepared.PrepareFinish(reprepareCtx, outcome, result.FinalMessage, nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused))
+				reprepareErr := prepared.PrepareFinish(reprepareCtx, outcome, result.FinalMessage, nativeTerminalFailure(errors.Join(runErr, result.landingPushError), r.now(), result.TurnStartRefused))
 				reprepareCancel()
 				runErr = errors.Join(runErr, reprepareErr)
 			}
