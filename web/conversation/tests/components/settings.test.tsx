@@ -282,7 +282,7 @@ describe("MCP setup", () => {
     renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_example", csrfToken: activeAccount.csrf_token }, account: activeAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
     if (mount) {
       await screen.findByRole("tab", { name: /^Personal / });
-      expect(screen.queryByRole("heading", { name: "Member keys" })).toBeNull();
+      expect(screen.queryByRole("tab", { name: /^Member keys/ })).toBeNull();
       expect(screen.queryByRole("heading", { name: "Personal key policy" })).toBeNull();
       expect(fetch.mock.calls.some(([url]) => /external-keys|key-policy|service-keys/.test(String(url)))).toBe(false);
       return;
@@ -491,7 +491,8 @@ describe("personal keys and org controls", () => {
     for (const title of ["API keys & MCP", "Connect an agent"]) expect(screen.getByRole("heading", { name: title })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Personal 1" })).toBeTruthy();
     expect(Boolean(screen.queryByRole("tab", { name: "Service 0" }))).toBe(canManage);
-    expect(Boolean(screen.queryByRole("heading", { name: "Member keys" }))).toBe(canManage);
+    expect(Boolean(screen.queryByRole("tab", { name: /^Member keys/ }))).toBe(canManage);
+    expect(screen.queryByRole("heading", { name: "Member keys" })).toBeNull();
     expect(screen.getAllByRole("button", { name: "Create key" })).toHaveLength(1);
     expect(screen.getAllByRole("textbox", { name: "MCP endpoint value" })).toHaveLength(1);
     expect(screen.queryByRole("heading", { name: "Which key do I need?" })).toBeNull();
@@ -865,24 +866,39 @@ describe("personal keys and org controls", () => {
     expect(screen.getByRole("table", { name: kind === "personal" ? "Personal keys" : "Service keys" }).textContent).toContain("Revoked");
   });
 
-  it("loads the next member-key page and includes its pending keys", async () => {
+  it("loads member-key pages without duplicates and flags pending keys only in this org", async () => {
+    const otherReach = { ...reach, organization_id: "org_other", name: "Other org", status: "pending", last_used_at: "2026-10-01T10:00:00Z" };
+    const firstKey = { ...key, last_used_at: "2026-10-02T10:00:00Z", effective_reach: [otherReach, reach] };
     const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const path = String(url);
       if (path.endsWith("key-context")) return new Response(JSON.stringify(context));
       if (path.endsWith("key-policy")) return new Response(JSON.stringify({ personal_keys: "approval" }));
-      if (path.includes("external-keys?cursor=")) return new Response(JSON.stringify({ keys: [{ ...key, id: "personal2", name: "Next page agent", effective_reach: [{ ...reach, status: "pending" }] }] }));
-      return new Response(JSON.stringify(path.endsWith("service-keys") ? { keys: [] } : { keys: [key], next_cursor: "personal1" }));
+      if (path.includes("external-keys?cursor=")) return new Response(JSON.stringify({ keys: [firstKey, { ...key, id: "personal2", name: "Next page agent", effective_reach: [otherReach, { ...reach, status: "pending" }] }] }));
+      return new Response(JSON.stringify(path.endsWith("service-keys") ? { keys: [] } : { keys: [firstKey], next_cursor: "personal1" }));
     });
     renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
-    fireEvent.click(await screen.findByRole("button", { name: "Load more member keys" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Member keys 1" }));
+    expect(screen.queryByRole("img", { name: "Keys awaiting approval" })).toBeNull();
+    expect(screen.queryByRole("group", { name: /awaiting approval/ })).toBeNull();
+    const table = within(screen.getByRole("table", { name: "Member keys" }));
+    expect(table.getByRole("row", { name: /My agent/ }).textContent).toContain("write · all projects");
+    expect(table.getByRole("row", { name: /My agent/ }).textContent).toContain("Never");
+    expect(table.queryByTitle(new Date(otherReach.last_used_at).toLocaleString())).toBeNull();
+    expect(table.queryByTitle(new Date(firstKey.last_used_at).toLocaleString())).toBeNull();
+    fireEvent.click(table.getByRole("button", { name: "Expand My agent" }));
+    expect(table.getByText("Other org")).toBeTruthy();
+    expect(table.getByText("Awaiting approval")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load more member keys" }));
     await screen.findByRole("button", { name: "Approve Next page agent" });
-    expect(screen.getByRole("button", { name: "Block My agent for this org" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Block Next page agent for this org" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /Member keys 2/ })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Keys awaiting approval" })).toBeTruthy();
+    expect(table.getAllByRole("button", { name: "Collapse My agent" })).toHaveLength(1);
+    expect(table.getByRole("button", { name: "More actions for Next page agent" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Load more member keys" })).toBeNull();
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith("/external-keys?cursor=personal1"))).toBe(true);
   });
 
-  it("saves org policy, approves pending keys and revokes only this org", async () => {
+  it("saves org policy, approves pending keys and blocks only this org from the queue or menu", async () => {
     applyHubPaths({ base_path: `/organizations/${account.organization.id}` });
     let policy = "approval";
     let status = "pending";
@@ -892,22 +908,40 @@ describe("personal keys and org controls", () => {
       if (path.endsWith("key-policy")) { if (init?.method === "PUT") policy = JSON.parse(String(init.body)).personal_keys; return new Response(JSON.stringify({ personal_keys: policy })); }
       if (path.endsWith("/approve")) { status = "allowed"; return new Response(null, { status: 204 }); }
       if (path.endsWith("/block")) { status = "blocked"; return new Response(null, { status: 204 }); }
-      return new Response(JSON.stringify({ keys: path.endsWith("service-keys") ? [{ ...key, id: "service1", name: "Org integration", kind: "service", access_context: "selected", organizations: [{ organization_id: account.organization.id, project_access: "all", project_ids: null }] }] : [{ ...key, effective_reach: [{ ...reach, status }] }] }));
+      return new Response(JSON.stringify({ keys: path.endsWith("service-keys") ? [] : [{ ...key, effective_reach: [{ ...reach, status }, { ...reach, organization_id: "org_other", name: "Other org", status: "pending" }] }] }));
     });
     renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
-    fireEvent.click(await screen.findByRole("tab", { name: "Service 1" }));
-    expect(screen.getByRole("button", { name: "More actions for Org integration" })).toBeTruthy();
-    expect(screen.getByRole("textbox", { name: "MCP endpoint value" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Copy MCP setup prompt" })).toBeTruthy();
-    fireEvent.click(await screen.findByRole("button", { name: "Approve My agent" }));
-    await screen.findByText("No keys awaiting approval");
-    fireEvent.change(screen.getByLabelText("Personal keys"), { target: { value: "blocked" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
-    await waitFor(() => expect(policy).toBe("blocked"));
+    fireEvent.click(await screen.findByRole("tab", { name: /^Member keys 1/ }));
+    expect(screen.getByRole("img", { name: "Keys awaiting approval" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "My agent awaiting approval" }).textContent).toContain("member@example.test · write · awaiting approval");
+    expect(screen.queryByText("Approval queue")).toBeNull();
+    expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
+    fireEvent.change(screen.getByLabelText("Personal keys in this organization"), { target: { value: "allowed" } });
+    expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", false);
+    fireEvent.change(screen.getByLabelText("Personal keys in this organization"), { target: { value: "approval" } });
+    expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
     fireEvent.click(screen.getByRole("button", { name: "Block My agent for this org" }));
+    expect(screen.getByText(/The key keeps its access to other organizations/)).toBeTruthy();
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith("/block"))).toBe(false);
+    const user = userEvent.setup();
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Keep access" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Approve My agent" }));
+    await waitFor(() => expect(screen.queryByRole("group", { name: "My agent awaiting approval" })).toBeNull());
+    expect(screen.queryByRole("img", { name: "Keys awaiting approval" })).toBeNull();
+    expect(screen.queryByText("No keys awaiting approval")).toBeNull();
+    expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("/external-keys/personal1/approve") && init?.method === "PUT")).toBe(true);
+    fireEvent.change(screen.getByLabelText("Personal keys in this organization"), { target: { value: "blocked" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true));
+    expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("/key-policy") && init?.method === "PUT" && JSON.parse(String(init.body)).personal_keys === "blocked")).toBe(true);
+    await user.click(screen.getByRole("button", { name: "More actions for My agent" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Block for this org" }));
     expect(screen.getByText(/The key keeps its access to other organizations/)).toBeTruthy();
     fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Block for this org" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    await screen.findByText("write · blocked");
+    expect(screen.queryByRole("button", { name: "More actions for My agent" })).toBeNull();
     expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("/external-keys/personal1/block") && init?.method === "PUT")).toBe(true);
     expect(fetch.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
   });
