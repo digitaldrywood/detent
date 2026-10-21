@@ -414,6 +414,9 @@ ORDER BY seq LIMIT ?`, conversationID, conversation.RoleUser, conversation.Messa
 	for i := range messages {
 		pointers = append(pointers, &messages[i])
 	}
+	if err := c.service.store.resolveMessageContents(ctx, query, pointers); err != nil {
+		return nil, err
+	}
 	if err := resolveMessageReferences(ctx, query, pointers); err != nil {
 		return nil, err
 	}
@@ -1153,6 +1156,12 @@ func (s *coordinatorTurnState) recordTool(ctx context.Context, update runner.Age
 	if err != nil {
 		return
 	}
+	prepared, err := s.coordinator.service.prepareConversationContents(ctx, s.conversationID, conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageTool, Text: summary, Data: data, Delivery: conversation.DeliveryCompleted})
+	if err != nil {
+		s.coordinator.logger.Warn("publish tool content", "error", err)
+		return
+	}
+	ctx = prepared
 	existing, known := s.toolMessages[update.ItemID]
 	err = s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
 		if known && update.ItemID != "" {
@@ -1233,20 +1242,26 @@ func (s *coordinatorTurnState) finish(ctx context.Context, outcome conversation.
 		userDelivery = conversation.DeliverySaved
 		failure = nil
 	}
+
+	s.assistant.Delivery = outcome
+	s.assistant.ThreadID = s.threadID
+	if outcome == conversation.DeliveryFailed {
+		data, err := json.Marshal(map[string]string{"error": execution.Error})
+		if err != nil {
+			return err
+		}
+		s.assistant.Data = data
+	}
+	prepared, err := s.coordinator.service.prepareConversationContents(ctx, s.conversationID, s.assistant)
+	if err != nil {
+		return err
+	}
+	ctx = prepared
 	return s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
 		if usage != nil {
 			if err := s.coordinator.service.server.database.recordConversationUsage(ctx, tx, *usage); err != nil {
 				return err
 			}
-		}
-		s.assistant.Delivery = outcome
-		s.assistant.ThreadID = s.threadID
-		if outcome == conversation.DeliveryFailed {
-			data, err := json.Marshal(map[string]string{"error": execution.Error})
-			if err != nil {
-				return err
-			}
-			s.assistant.Data = data
 		}
 		if err := s.coordinator.service.updateMessage(ctx, tx, s.assistant, now); err != nil {
 			return err

@@ -1066,6 +1066,11 @@ func (s *Service) commandCreateConversation(ctx context.Context, scope nativeSco
 	if err := service.authorizeWrite(ctx, s.database.reader, scope, fresh); err != nil {
 		return nil, err
 	}
+	prepared, err := service.prepareCommandContents(ctx, string(scope.organization), string(scope.project), scope.credential.ID, "", command)
+	if err != nil {
+		return nil, err
+	}
+	ctx = prepared
 	var record conversationRecord
 	notify := false
 	value, err := s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/conversations"), Feature: "collaboration"}, tracker.Mutation{IdempotencyKey: request.Key}, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
@@ -1151,6 +1156,20 @@ func (s *Service) commandPostConversation(ctx context.Context, scope nativeScope
 		return nil, bindErr
 	}
 	service := s.conversations
+	if service.store.contents != nil {
+		current, err := service.loadConversation(ctx, s.database.reader, scope, id)
+		if err != nil {
+			return nil, err
+		}
+		if err := service.authorizeWrite(ctx, s.database.reader, scope, current); err != nil {
+			return nil, err
+		}
+		prepared, err := service.prepareCommandContents(ctx, string(scope.organization), string(scope.project), scope.credential.ID, id, command)
+		if err != nil {
+			return nil, err
+		}
+		ctx = prepared
+	}
 	var record conversationRecord
 	var receipt *conversation.Receipt
 	replay := false

@@ -21,6 +21,63 @@ import (
 
 func TestEventCompactionWorkHistory(t *testing.T) {
 	t.Parallel()
+	t.Run("progress beyond the first candidate batch", func(t *testing.T) {
+		t.Parallel()
+		now := time.Date(2026, 10, 7, 8, 0, 0, 0, time.UTC)
+		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+		var items []tracker.NativeWorkItemID
+		for index := range 6 {
+			issue := f.create(t, fmt.Sprintf("history %d", index))
+			items = append(items, issue.WorkItemID)
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = tx.Rollback() })
+			for range 10 - index {
+				if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt_" + string(issue.WorkItemID)}}, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			issue.Archived = true
+			if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "issue.edited", tracker.CollaborationData{Operation: "archive"}, now); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for pass, want := range []int{4, 6} {
+			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
+				t.Fatal(err)
+			}
+			compacted := 0
+			for index, item := range items {
+				summary, err := readEventCompaction(t.Context(), f.service.database.reader, scope.organization, scope.project, "work_item", string(item))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if summary.RemovedEvents == 0 {
+					continue
+				}
+				compacted++
+				if summary.RemovedEvents != int64(9-index) || summary.RemovedByType["run.observed"] != int64(9-index) {
+					t.Fatalf("item %s lost history: %+v", item, summary)
+				}
+			}
+			if compacted != want {
+				t.Fatalf("pass %d compacted %d work items, want %d", pass+1, compacted, want)
+			}
+		}
+		plans, err := planEventCompaction(t.Context(), f.service.database.reader, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plans) != 0 {
+			t.Fatalf("completed work remains eligible for compaction: %d plans", len(plans))
+		}
+	})
 	for _, test := range []struct {
 		name             string
 		archived, leased bool
@@ -212,18 +269,20 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 func TestEventCompactionConversations(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		settled bool
-		age     int
-		status  conversation.ExecutionStatus
-		compact bool
+		name      string
+		settled   bool
+		age       int
+		status    conversation.ExecutionStatus
+		compact   bool
+		streaming bool
 	}{
-		{"settled past retention", true, 31, conversation.ExecutionCompleted, true},
-		{"active", false, 31, conversation.ExecutionCompleted, false},
-		{"recently settled", true, 29, conversation.ExecutionCompleted, false},
-		{"retention boundary", true, 30, conversation.ExecutionCompleted, false},
-		{"running", true, 31, conversation.ExecutionRunning, false},
-		{"unknown execution", true, 31, conversation.ExecutionUnknown, false},
+		{"settled past retention", true, 31, conversation.ExecutionCompleted, true, false},
+		{"active", false, 31, conversation.ExecutionCompleted, false, false},
+		{"recently settled", true, 29, conversation.ExecutionCompleted, false, false},
+		{"retention boundary", true, 30, conversation.ExecutionCompleted, false, false},
+		{"running", true, 31, conversation.ExecutionRunning, false, false},
+		{"unknown execution", true, 31, conversation.ExecutionUnknown, false, false},
+		{"still streaming", false, 0, conversation.ExecutionRunning, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -239,6 +298,9 @@ func TestEventCompactionConversations(t *testing.T) {
 			record = f.create(t, record)
 			tx := f.tx(t)
 			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "Final answer retained", Delivery: conversation.DeliveryCompleted, CreatedAt: at, UpdatedAt: at, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "test"}}
+			if test.streaming {
+				message.Delivery = conversation.DeliveryResponding
+			}
 			if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
 				t.Fatal(err)
 			}
@@ -274,8 +336,11 @@ func TestEventCompactionConversations(t *testing.T) {
 					t.Fatal(err)
 				}
 				want := 620
-				if test.compact {
-					want = 13
+				if !test.streaming {
+					want = 20
+					if test.compact {
+						want = 13
+					}
 					if pass == 0 {
 						want = 120
 					}
@@ -309,11 +374,14 @@ func TestEventCompactionConversations(t *testing.T) {
 			if test.compact && (summary.RemovedEvents != 607 || summary.RetainedEvents != 13) {
 				t.Fatalf("summary=%+v", summary)
 			}
-			if !test.compact && summary.RemovedEvents != 0 {
+			if !test.compact && !test.streaming && (summary.RemovedEvents != 600 || summary.RetainedEvents != 20) {
+				t.Fatalf("settled delta compaction=%+v", summary)
+			}
+			if test.streaming && summary.RemovedEvents != 0 {
 				t.Fatalf("protected conversation compacted: %+v", summary)
 			}
 			_, err = f.store.replayEvents(t.Context(), f.service.database.reader, record.ID, 0)
-			if test.compact != errors.Is(err, errConversationCursorExpired) {
+			if !test.streaming != errors.Is(err, errConversationCursorExpired) {
 				t.Fatalf("stale replay: %v", err)
 			}
 			events, err := f.store.replayEvents(t.Context(), f.service.database.reader, record.ID, 612)

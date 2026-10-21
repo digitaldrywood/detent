@@ -1,11 +1,13 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -15,6 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -39,7 +44,7 @@ type conversationWorkerFixture struct {
 	record    conversationRecord
 }
 
-func newConversationWorkerFixture(t *testing.T) *conversationWorkerFixture {
+func newConversationWorkerFixture(t *testing.T, contents ...attachment.ArchiveContentStore) *conversationWorkerFixture {
 	t.Helper()
 	fixture := &conversationWorkerFixture{now: time.Now().UTC().Truncate(time.Second)}
 	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour}, now: func() time.Time {
@@ -47,6 +52,9 @@ func newConversationWorkerFixture(t *testing.T) *conversationWorkerFixture {
 		defer fixture.mu.Unlock()
 		return fixture.now
 	}}
+	if len(contents) > 0 {
+		config.Conversation.ArchiveContents = contents[0]
+	}
 	f := newNativeFixture(t, openTestService(t, config), "", "conversation-worker")
 	fixture.nativeFixture = f
 	fixture.chat = f.service.conversations
@@ -686,6 +694,148 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 
 func TestConversationWorkerTurnEvents(t *testing.T) {
 	t.Parallel()
+	t.Run("immutable content and compact replay", func(t *testing.T) {
+		objects := &conversationContentFixture{}
+		f := newConversationWorkerFixture(t, objects)
+		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+		var logs bytes.Buffer
+		f.service.config.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+		user := f.queue(t, conversation.MessageText, "inline-user", "user text", nil)
+		first := strings.Repeat("streamed text ", 300)
+		second := "final suffix"
+		events := []map[string]any{{"type": "turn_started", "thread_id": "thread-content", "turn_id": "turn-content"}, {"type": "delta", "provider_item_id": "assistant-content", "text": first}, {"type": "delta", "provider_item_id": "assistant-content", "text": second}}
+		toolText := strings.Repeat("tool result ", 250)
+		for i := range 50 {
+			events = append(events, map[string]any{"type": "item", "kind": "tool", "summary": toolText, "provider_item_id": fmt.Sprintf("tool-%d", i), "data": map[string]string{"output": toolText}})
+		}
+		events = append(events, map[string]any{"type": "turn_completed", "turn_id": "turn-content", "status": "completed"})
+		objects.setFail(true)
+		before := f.load(t)
+		failed := f.turnEvents(t, events...)
+		if failed.Code < 500 {
+			t.Fatalf("publication failure accepted: %d", failed.Code)
+		}
+		after := f.load(t)
+		if after.EventSeq != before.EventSeq || len(f.messages(t)) != 1 {
+			t.Fatal("failed upload committed conversation content")
+		}
+		objects.setFail(false)
+		response := f.turnEvents(t, events...)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("turn response=%d logs=%s", response.Code, logs.String())
+		}
+		messages, err := f.chat.store.listMessages(t.Context(), f.service.database.reader, f.record.ID, 0, 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(messages) != 52 || messages[0].ID != user.ID || messages[0].Text != "user text" || messages[1].Text != first+second {
+			t.Fatalf("message content/order changed: %d messages, %v", len(messages), err)
+		}
+		for _, message := range messages[1:] {
+			if message.ContentID == "" {
+				t.Fatalf("message %s kept its content inline", message.ID)
+			}
+		}
+		var largeEvents, bodyCopies, inlineTools int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_events WHERE conversation_id=? AND length(CAST(body_json AS BLOB))+length(conversation_id)+length(type)+length(created_at)+8>2048`, f.record.ID).Scan(&largeEvents); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_events WHERE conversation_id=? AND (json_type(body_json,'$.text') IS NOT NULL OR json_type(body_json,'$.data') IS NOT NULL)`, f.record.ID).Scan(&bodyCopies); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_messages WHERE conversation_id=? AND role='system' AND (length(text)>256 OR data_json<>'{}' OR content_attachment_id='')`, f.record.ID).Scan(&inlineTools); err != nil {
+			t.Fatal(err)
+		}
+		if largeEvents != 0 || bodyCopies != 0 || inlineTools != 0 {
+			t.Fatalf("large events=%d body copies=%d inline tools=%d", largeEvents, bodyCopies, inlineTools)
+		}
+		replay, err := f.chat.store.replayEvents(t.Context(), f.service.database.reader, f.record.ID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var deltas string
+		var accepted []string
+		for _, event := range replay {
+			switch event.Type {
+			case conversation.EventMessageAccepted:
+				var message conversationMessageResource
+				if err := json.Unmarshal(event.Data, &message); err != nil {
+					t.Fatal(err)
+				}
+				accepted = append(accepted, message.ID)
+				if message.Role == conversation.RoleAssistant && message.Text != "" {
+					t.Fatal("accepted frame included future delta text")
+				}
+				if message.Role == conversation.RoleSystem && message.Text != toolText {
+					t.Fatal("tool replay content changed")
+				}
+			case conversation.EventMessageDelta:
+				var delta struct {
+					Text string `json:"text"`
+				}
+				if err := json.Unmarshal(event.Data, &delta); err != nil {
+					t.Fatal(err)
+				}
+				deltas += delta.Text
+			}
+		}
+		if deltas != first+second || len(accepted) != len(messages) {
+			t.Fatalf("replay changed: %d accepted, %d delta bytes", len(accepted), len(deltas))
+		}
+		for index, id := range accepted {
+			if id != messages[index].ID {
+				t.Fatal("replay reordered messages")
+			}
+		}
+		snapshot := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+f.record.ID+"/messages?limit=500", f.token, nil)
+		requireNativeStatus(t, snapshot, http.StatusOK)
+		var page conversationMessagesPage
+		decodeHubResponse(t, snapshot, &page)
+		if len(page.Messages) != len(messages) || page.Messages[1].Text != first+second {
+			t.Fatal("API did not hydrate external content")
+		}
+		operatorCtx := workspaceOperatorContext(t, f.service, f.token, string(f.project.OrganizationID), "content-read")
+		var operatorMessages []conversationMessageResource
+		var beforeCursor int64
+		for {
+			args := map[string]any{"project_id": f.project.ID, "conversation_id": f.record.ID, "limit": 5, "before": beforeCursor}
+			result, err := workspaceOperatorCall(t, f.service, operatorCtx, "list_conversation_messages", args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var operatorPage conversationMessagesPage
+			if err := json.Unmarshal(workspaceOperatorData(t, result), &operatorPage); err != nil {
+				t.Fatal(err)
+			}
+			operatorMessages = append(operatorPage.Messages, operatorMessages...)
+			if operatorPage.NextCursor == nil {
+				break
+			}
+			next, err := strconv.ParseInt(*operatorPage.NextCursor, 10, 64)
+			if err != nil || next <= 0 || (beforeCursor > 0 && next >= beforeCursor) {
+				t.Fatalf("MCP cursor failed to advance: %q", *operatorPage.NextCursor)
+			}
+			beforeCursor = next
+		}
+		if len(operatorMessages) != len(messages) {
+			t.Fatalf("MCP messages=%d want=%d", len(operatorMessages), len(messages))
+		}
+		for index, message := range operatorMessages {
+			if message.ID != messages[index].ID || message.Text != messages[index].Text {
+				t.Fatal("MCP message content or order changed")
+			}
+		}
+
+		output := httptest.NewRecorder()
+		stream := &conversationStream{response: echo.NewResponse(output, echo.New())}
+		head := f.load(t).EventSeq
+		cursor, err := stream.replay(t.Context(), f.chat.store, f.service.database.reader, f.record.ID, 0, head)
+		if err != nil || cursor != head || !strings.Contains(output.Body.String(), toolText) || !strings.Contains(output.Body.String(), second) {
+			t.Fatalf("SSE replay lost content: cursor=%d head=%d error=%v", cursor, head, err)
+		}
+
+	})
+
 	t.Run("registered runner middleware and fencing", func(t *testing.T) {
 		f := newConversationWorkerFixture(t)
 		f.release(t)
@@ -1244,20 +1394,40 @@ func TestConversationControlRouterWakeAndStop(t *testing.T) {
 // snapshot so its card renders locked instead of disappearing.
 func TestConversationWorkerQuestionSnapshot(t *testing.T) {
 	t.Parallel()
-	f := newConversationWorkerFixture(t)
+	f := newConversationWorkerFixture(t, &conversationContentFixture{})
 	requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 	requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-1"}), http.StatusAccepted)
 	requireNativeStatus(t, f.turnEvents(t, map[string]any{
 		"type": "question_opened", "request_id": "req-1", "thread_id": "thread-1", "turn_id": "turn-1",
 		"prompts": []map[string]any{
 			{"id": "surfaces", "header": "Surfaces", "question": "Which surfaces?", "options": []map[string]string{{"label": "Checkout lock"}, {"label": "Orphan lease"}}, "multiple": true},
-			{"id": "notes", "header": "Notes", "question": "Anything else?", "free_text": true},
+			{"id": "notes", "header": "Notes", "question": strings.Repeat("Details? ", 400), "free_text": true},
 		},
 	}), http.StatusAccepted)
 
 	questions := f.questions(t)
 	if len(questions) != 1 || len(questions[0].Prompts) != 2 {
 		t.Fatalf("questions = %#v", questions)
+	}
+	if questions[0].Prompts[1].Question != strings.Repeat("Details? ", 400) {
+		t.Fatal("pending prompt was truncated")
+	}
+	replay, err := f.chat.store.replayEvents(t.Context(), f.service.database.reader, f.record.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range replay {
+		if event.Type == conversation.EventQuestionOpened {
+			var question struct {
+				Prompts []conversation.Prompt `json:"questions"`
+			}
+			if err := json.Unmarshal(event.Data, &question); err != nil {
+				t.Fatal(err)
+			}
+			if len(question.Prompts) != 2 || question.Prompts[1].Question != questions[0].Prompts[1].Question {
+				t.Fatal("pending question replay lost content")
+			}
+		}
 	}
 	t.Run("multiple round trips through storage", func(t *testing.T) {
 		if !questions[0].Prompts[0].Multiple || questions[0].Prompts[1].Multiple {
@@ -1283,8 +1453,29 @@ func TestConversationWorkerQuestionSnapshot(t *testing.T) {
 
 	t.Run("a settled question stays in the snapshot", func(t *testing.T) {
 		question := questions[0]
-		f.queue(t, conversation.MessageAnswer, "answer-1", "", map[string]any{"question_id": question.ID, "answers": map[string][]string{"surfaces": {"Checkout lock"}, "notes": {"None"}}})
-		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
+		answer := strings.Repeat("Detailed answer ", 200)
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+f.record.ID+"/commands", f.token, conversation.Command{Key: "answer-1", Kind: conversation.CommandAnswer, QuestionID: question.ID, Answers: map[string][]string{"surfaces": {"Checkout lock"}, "notes": {answer}}, Expected: conversation.Expected{AttemptID: f.attempt}})
+		requireNativeStatus(t, response, http.StatusOK)
+		if err := f.service.maintainNativeRetention(t.Context(), f.now); err != nil {
+			t.Fatal(err)
+		}
+		controls := f.controls(t, 0, 0)
+		requireNativeStatus(t, controls, http.StatusOK)
+		var page conversationControlsResponse
+		decodeHubResponse(t, controls, &page)
+		found := false
+		for _, control := range page.Controls {
+			if control.Key == "answer-1" {
+				found = true
+				if control.Answers["notes"][0] != answer {
+					t.Fatal("external answer was not delivered in full")
+				}
+			}
+		}
+		if !found {
+			t.Fatal("undelivered answer disappeared")
+		}
+
 		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "control_result", "key": "answer-1", "status": "delivered"}), http.StatusAccepted)
 		ctx := t.Context()
 		db := f.service.database.db
@@ -1321,7 +1512,7 @@ func TestConversationBindReportsResume(t *testing.T) {
 	t.Parallel()
 	for _, protected := range []bool{false, true} {
 		t.Run(fmt.Sprintf("protected=%t", protected), func(t *testing.T) {
-			f := newConversationWorkerFixture(t)
+			f := newConversationWorkerFixture(t, &conversationContentFixture{})
 			body := f.bindBody()
 			body["thread_id"] = "thread-1"
 			requireNativeStatus(t, f.bind(t, body), http.StatusOK)
@@ -1511,6 +1702,29 @@ func TestConversationTurnEventBatchIsIdempotent(t *testing.T) {
 		}
 	})
 
+	t.Run("retired receipts reject late batches", func(t *testing.T) {
+		requireNativeStatus(t, f.unbind(t, "succeeded"), http.StatusOK)
+		f.release(t)
+		if err := f.service.maintainNativeRetention(t.Context(), f.now); err != nil {
+			t.Fatal(err)
+		}
+		var remaining int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_turn_batches WHERE attempt_id=?", f.attempt).Scan(&remaining); err != nil {
+			t.Fatal(err)
+		}
+		if remaining != 0 {
+			t.Fatalf("terminal attempt retained %d receipts", remaining)
+		}
+		before := f.load(t)
+		response := batch("batch-1", events...)
+		if response.Code < 400 || response.Code >= 500 {
+			t.Fatalf("late batch response=%d %s", response.Code, response.Body.String())
+		}
+		after := f.load(t)
+		if after.EventSeq != before.EventSeq || after.Revision != before.Revision {
+			t.Fatal("retired batch executed again")
+		}
+	})
 	t.Run("a batch key that is too long is refused", func(t *testing.T) {
 		requireConversationErrorCode(t, batch(strings.Repeat("k", 129), events...), http.StatusUnprocessableEntity, "invalid_request")
 	})

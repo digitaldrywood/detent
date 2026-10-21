@@ -93,7 +93,7 @@ func (d conversationResumeDecision) resumeThread() bool {
 // by the other kind of turn (decisions section 9.3). named reports that this
 // bind supplied the thread. Messages already handed over as pending controls
 // are left out so the runner does not see them twice.
-func (c *conversationService) resumeFor(ctx context.Context, tx *sql.Tx, record conversationRecord, scope nativeScope, thread string, named bool, coordinator bool, pending []conversationControl) (conversationResumeResource, error) {
+func (c *conversationService) resumeFor(ctx context.Context, tx nativeQueryer, record conversationRecord, scope nativeScope, thread string, named bool, coordinator bool, pending []conversationControl) (conversationResumeResource, error) {
 	decision := conversationResumeDecision{
 		RecordedRunnerID: record.ProviderThreadRunnerID,
 		RecordedOrigin:   record.ProviderThreadOrigin,
