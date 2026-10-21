@@ -88,7 +88,7 @@ type projectActionRunReceipt struct {
 // claims. It names the conflict, because the author's next move is to change
 // one of the two rather than to retry.
 func actionKeybindingTaken(keybinding, name string) error {
-	return nativeInvalid("The keybinding " + keybinding + " is already used by " + name)
+	return nativePublicInvalid("The keybinding " + keybinding + " is already used by " + name)
 }
 
 // actionRunReadOnly refuses a run on a workspace held read-only while its

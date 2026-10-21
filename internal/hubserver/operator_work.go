@@ -317,12 +317,12 @@ func operatorNativeConflict(err error) error {
 }
 
 func safeNativeWorkError(err error) error {
+	if conflict := operatorNativeConflict(err); conflict != nil {
+		return conflict
+	}
 	var refusal *nativeError
 	if errors.As(err, &refusal) && refusal.publicMessage {
 		return &operatortool.RequestError{Code: refusal.Code, Message: refusal.Message}
-	}
-	if conflict := operatorNativeConflict(err); conflict != nil {
-		return conflict
 	}
 	if safe := hubSafeChangeError(err); !errors.Is(safe, operatortool.ErrServiceUnavailable) {
 		return safe
