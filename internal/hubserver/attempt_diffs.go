@@ -277,7 +277,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		if err != nil {
 			return receipt, err
 		}
-		ref, err := preparedChangeContent(ctx, tx, string(scope.organization), data)
+		ref, err := preparedChangeContent(ctx, string(scope.organization), data)
 		if err != nil {
 			return receipt, err
 		}
