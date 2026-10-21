@@ -273,6 +273,12 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visi
 	if associated {
 		issue.ReleaseDelivery = &delivery
 	}
+	if err == nil && !compact && strings.EqualFold(issue.State, "Blocked") {
+		issue.DecisionRequest, _, err = readIssueDecision(ctx, query, scope, id)
+		if err == nil {
+			issue.HumanAction, err = readIssueHumanAction(ctx, query, scope, id)
+		}
+	}
 	return issue, internalID, err
 }
 
@@ -1040,6 +1046,11 @@ func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scop
 		if err := validateNativeWorkflowTransition(project.States, issue.State, request.State, scope.credential.Scope); err != nil {
 			return nil, err
 		}
+		if request.DecisionAnswer != nil {
+			if err := recordDecisionAnswer(ctx, tx, scope, issue, request, now); err != nil {
+				return nil, err
+			}
+		}
 		from := issue.State
 		if signal, ok := workpad.SignalFromComment(request.ReasonDetail, "", ""); ok && signal != nil && signal.Invalid == nil && signal.Fields["issue_contract_return_state"] != "" {
 			if signal.Status != workpad.StatusBlocked || signal.HumanAction == "" {
@@ -1053,6 +1064,9 @@ func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scop
 			issue.IssueContract.ReturnState = ""
 		}
 		issue.State = request.State
+		if !strings.EqualFold(issue.State, "Blocked") {
+			issue.DecisionRequest, issue.HumanAction = nil, ""
+		}
 		if conversationID != "" && strings.TrimSpace(request.ReasonDetail) != "" {
 			actor := scope.actor()
 			provenance := &tracker.Provenance{Provider: "chat", ExternalID: conversationID + ":" + request.IdempotencyKey, AuthorID: actor.PrincipalID}

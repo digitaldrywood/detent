@@ -160,6 +160,11 @@ type CompletionExecution interface {
 
 func NativeCompletionSignalFromMessage(message string) (*workpad.Signal, bool) {
 	signal, reported := workpad.SignalFromComment(message, "", "")
+	if reported && signal != nil && signal.Invalid == nil && signal.Status == workpad.StatusBlocked && signal.HumanAction != "" {
+		if err := signal.DecisionRequest.Validate(); err != nil {
+			signal.Invalid = &workpad.Invalid{Message: err.Error()}
+		}
+	}
 	if reported && signal != nil && signal.Invalid == nil && hostPublicationOnly(signal) {
 		signal.Status, signal.ReasonCode, signal.Blockers = workpad.StatusComplete, "", nil
 	}
@@ -168,6 +173,9 @@ func NativeCompletionSignalFromMessage(message string) (*workpad.Signal, bool) {
 
 func NativeDispositionFromMessage(message string) *tracker.NativeDisposition {
 	signal, reported := NativeCompletionSignalFromMessage(message)
+	if reported && signal != nil && signal.Invalid != nil && (strings.Contains(signal.Invalid.Message, "decision_request") || strings.Contains(signal.Invalid.Message, "blocked completion with human_action")) {
+		return &tracker.NativeDisposition{Status: workpad.StatusInProgress, ReasonCode: "invalid_workpad_signal", FinalSummary: signal.Invalid.Message}
+	}
 	if !reported || signal == nil || signal.Invalid != nil {
 		return nil
 	}

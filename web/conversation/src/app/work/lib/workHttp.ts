@@ -16,6 +16,7 @@ import { SavedWorkView, type SavedView, type SavedViewInput } from "./savedViewS
 // `X-CSRF-Token` from the bootstrap payload, which the hosted boundary
 // requires of any non-GET without an `Authorization` header.
 import * as Schema from "effect/Schema";
+import type { DecisionAnswer } from "../../../contracts/decision.ts";
 import { HealthFindingsRead, IssueExplanation } from "../../../contracts/diagnostics.ts";
 import { ConversationSnapshot } from "../../../contracts/conversation.ts";
 
@@ -211,6 +212,7 @@ export interface WorkHttp {
     expectedRevision: string;
     state: string;
     reason?: TransitionReason;
+    decisionAnswer?: DecisionAnswer;
   }) => Promise<NativeIssue>;
   readonly verifyFix: (input: {
     projectId: string;
@@ -667,6 +669,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         idempotency_key: input.key,
         expected_revision: input.expectedRevision,
         state: input.state,
+        ...(input.decisionAnswer === undefined ? {} : { decision_answer: input.decisionAnswer }),
         // A person moving a card is `user_requested` and nothing else: the
         // other two reasons belong to the scheduler and claiming one here
         // would put a lie in the history.
