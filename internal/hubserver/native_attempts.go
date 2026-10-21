@@ -632,7 +632,7 @@ func (s *Service) getNativeAttempt(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, result)
+	return nativeArchiveJSON(c, http.StatusOK, result)
 }
 
 func (s *Service) readNativeAttempt(ctx context.Context, scope nativeScope, item, id string) (tracker.NativeAttempt, error) {
@@ -654,6 +654,11 @@ func readNativeAttempt(ctx context.Context, q nativeQueryer, scope nativeScope, 
 }
 
 func readNativeAttemptRecord(ctx context.Context, q nativeQueryer, scope nativeScope, item, id string, now time.Time) (tracker.NativeAttempt, error) {
+	var err error
+	q, err = archiveQuery(ctx, q, item, "run", id, 0)
+	if err != nil {
+		return tracker.NativeAttempt{}, err
+	}
 	rows, err := q.QueryContext(ctx, `SELECT a.data_json,a.status,a.started_at,a.updated_at,a.checkpoint_json,a.artifact_ids_json,l.expires_at,l.released_at,l.renewed_at,a.work_item_revision,a.dispatch_generation FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.id=?`, scope.organization, scope.project, item, id)
 	if err != nil {
 		return tracker.NativeAttempt{}, err

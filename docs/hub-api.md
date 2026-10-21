@@ -2930,3 +2930,53 @@ preserving its body, state and priority; terminal matches remain untouched.
 Repeated deliveries cannot readmit, reprioritize or reconfirm existing issues.
 Producer delivery and this admission behavior are independently testable;
 automatic recovery requires both plus the approved project policy.
+
+### Archived detail sections
+
+Deep API and MCP reads use one Hub section resolver. SQLite selects an
+organization/project/work-item reference from `native_archive_sections` and the
+attachment catalog; a caller cannot supply an object key or download URL. The
+Hub reads through the tenant's inherited Cloud Entry channel. Entry owns storage
+credentials and signing and checks the current allocation generation. The Hub
+verifies the compressed digest, both sizes, schema and a single gzip member
+before querying the section. Each call fetches at most one section, limited to
+4 MiB uncompressed. An unavailable, invalid or incompatible section produces an
+explicit `archive` availability result instead of an empty successful history.
+
+A schema-1 section has `schema_version`, `organization_id`, `project_id`,
+`work_item_id`, `section_id` and `tables`. Each table has `name`, `columns` and
+`rows`. Columns start with `rowid`, followed by the current SQLite columns in
+schema order, including generated columns. Rows contain JSON scalar SQL values.
+Only the run, Change, revision, history or conversation tables permitted for that section
+are accepted; organization, project, item and parent identities must match the
+catalog. The resolver overlays these records on a read-only SQLite snapshot.
+Primary keys identify payload stubs; original row IDs remain ordering anchors.
+Current issue visibility, relationship filtering and conversation authorization
+continue to use live SQLite records.
+
+The archive publisher retains run identities, diff headers, Change version and
+evidence identities, and conversation/message identities needed by existing
+selectors, foreign keys and recovery cursors. It registers each section only
+after the attachment owner's immutable work-item reference is published. Run
+sections record `local_attempt_id` when present. Revision sections contain the
+checkpoint and deltas required to reconstruct every revision in their inclusive
+`first_sequence`/`last_sequence` range. Conversation ranges use original message
+sequences; a `before` read selects the range immediately preceding that sequence.
+Private conversations remain live and never use a shared section. Storage
+archival is independent of the issue's board-visibility `archived` flag.
+
+Reads that resolve a section add an `archive` descriptor with `availability`,
+`section_ids` and the compressed `sha256`. `archive_url: true` on supported MCP
+reads, or `archive_url=true` on API reads, requests a five-minute URL when the
+principal has unrestricted native administrator authority or an organization
+owner/admin browser session. Filtered principals
+receive the normal authorized fields without a raw section URL. URL presentation
+does not change a native pagination cursor's scope.
+
+Issue lists, run summaries, comments and factual timeline projections stay in SQLite.
+Full history pages can resolve a history section using the original event sequences;
+continuations cross section boundaries without returning retired payload stubs.
+Issue/comment search retains its existing FTS index and bounded matched snippets;
+its external-content view reads canonical issue and comment bodies. The document
+identity table contains no second body copy. Archived tool output and logs are
+not indexed.

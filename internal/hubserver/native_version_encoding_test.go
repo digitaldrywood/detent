@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	hubmigrations "github.com/digitaldrywood/detent/internal/hubserver/migrations"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -141,6 +143,37 @@ func TestNativeVersionRoundTrip(t *testing.T) {
 			if _, err := f.service.readVersion(t.Context(), scope, string(issue.WorkItemID), "", count+1); !errors.Is(err, sql.ErrNoRows) {
 				t.Fatalf("missing revision error=%v", err)
 			}
+			ref, section := publishTestSection(t, f, string(issue.WorkItemID), "revision", recordID, 1, count, archiveTestTable(t, f.service, "collaboration_versions", "record_id=?", recordID))
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER IF EXISTS collaboration_versions_no_delete"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM collaboration_versions WHERE record_id=?", recordID); err != nil {
+				t.Fatal(err)
+			}
+			fetches := 0
+			f.service.config.ArchiveReader = func(_ context.Context, got attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
+				fetches++
+				if got != ref {
+					t.Fatal("wrong revision archive")
+				}
+				return entryauthority.ArchiveResponse{Data: section}, nil
+			}
+			for _, revision := range []int64{1, 2, nativeVersionSnapshotInterval - 1, nativeVersionSnapshotInterval, nativeVersionSnapshotInterval + 1, count} {
+				comment := ""
+				if kind == "comment" {
+					comment = recordID
+				}
+				ctx := f.service.archiveContext(t.Context(), scope, false)
+				before := fetches
+				got, err := f.service.readVersion(ctx, scope, string(issue.WorkItemID), comment, revision)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, expected[revision]) || fetches != before+1 {
+					t.Fatalf("archived %s revision %d changed or fetched more than one section", kind, revision)
+				}
+			}
+
 		})
 	}
 }

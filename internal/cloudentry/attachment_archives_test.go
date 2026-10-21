@@ -275,3 +275,51 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 		}
 	}
 }
+
+func TestTenantArchiveSectionReader(t *testing.T) {
+	f := newEntryFixture(t)
+	store := newSpacesFixture(t, false)
+	storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service.attachments = storage
+	organization, err := f.service.readyOrganization(t.Context(), "org_alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	section := attachment.ArchiveSection{SchemaVersion: 1, OrganizationID: organization.ID, ProjectID: "prj_example", WorkItemID: "wi_example", SectionID: "run_example", Tables: []attachment.ArchiveTable{}}
+	raw, err := json.Marshal(section)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, data, err := attachment.PrepareArchive(organization.ID, 1, bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := attachment.StoreArchive(t.Context(), storage.(attachment.ArchiveStorage), organization.ID, ref, data); err != nil {
+		t.Fatal(err)
+	}
+	reader := f.service.tenantArchiveReader(organization)
+	for _, presign := range []bool{false, true} {
+		result, err := reader(t.Context(), ref, presign)
+		if err != nil || !bytes.Equal(result.Data, data) || (result.Access != nil) != presign {
+			t.Fatalf("tenant section read presign=%v: %v", presign, err)
+		}
+		if result.Access != nil && (result.Access.ArchiveReference != ref || result.Access.ExpiresAt.After(time.Now().Add(attachment.ArchiveReadLifetime))) {
+			t.Fatal("archive URL exceeds its reference or lifetime")
+		}
+	}
+	foreign := ref
+	foreign.Key, err = attachment.ArchiveKey("org_beta", ref.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader(t.Context(), foreign, false); err == nil {
+		t.Fatal("tenant read a foreign archive")
+	}
+	organization.Generation++
+	if _, err := f.service.tenantArchiveReader(organization)(t.Context(), ref, false); err == nil {
+		t.Fatal("stale tenant generation read archive bytes")
+	}
+}

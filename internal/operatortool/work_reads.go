@@ -67,6 +67,7 @@ const WorkHistoryPageBytes = MaxResultBytes / 4
 // WorkReadRequest contains application selectors only. Organization and principal
 // always come from the connection. Each operation permits only its own fields.
 type WorkReadRequest struct {
+	ArchiveURL      bool     `json:"archive_url,omitempty"`
 	View            string   `json:"view,omitempty"`
 	ProjectID       string   `json:"project_id"`
 	Since           string   `json:"since,omitempty"`
@@ -109,13 +110,14 @@ type WorkReader interface {
 // WorkReadResult preserves source freshness separately from when the application
 // read was made. Data is a concrete application model at every call site.
 type WorkReadResult[T any] struct {
-	ProjectID   string              `json:"project_id"`
-	Reference   string              `json:"reference,omitempty"`
-	URL         string              `json:"url,omitempty"`
-	GeneratedAt time.Time           `json:"generated_at"`
-	Freshness   explain.SourceState `json:"freshness"`
-	ExpiresAt   *time.Time          `json:"expires_at,omitempty"`
-	Data        T                   `json:"data"`
+	ProjectID   string                     `json:"project_id"`
+	Reference   string                     `json:"reference,omitempty"`
+	URL         string                     `json:"url,omitempty"`
+	GeneratedAt time.Time                  `json:"generated_at"`
+	Freshness   explain.SourceState        `json:"freshness"`
+	ExpiresAt   *time.Time                 `json:"expires_at,omitempty"`
+	Data        T                          `json:"data"`
+	Archive     *tracker.ArchiveDescriptor `json:"archive,omitempty"`
 }
 
 func EncodeResult(value any) (Result, error) { return encodeResult(value) }
@@ -145,13 +147,17 @@ func WorkReadCatalog() []Definition {
 	} {
 		properties := map[string]any{"project_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}}
 		required := []string{"project_id"}
+		switch spec.name {
+		case WorkHistory, WorkRuns, WorkVersion, WorkAttemptReceipt, BoardSession, BoardSessionHistory, WorkItem:
+			spec.fields += " archive_url"
+		}
 		for field := range strings.FieldsSeq(spec.fields) {
 			switch field {
 			case "type":
 				properties[field] = map[string]any{"type": "string", "enum": []string{"bug", "change_request"}}
 			case "verification":
 				properties[field] = map[string]any{"type": "string", "enum": []string{"pending", "verified"}}
-			case "open":
+			case "open", "archive_url":
 				properties[field] = map[string]any{"type": "boolean"}
 			case "limit":
 				properties[field] = map[string]any{"type": "integer", "minimum": 1, "maximum": MaxItemLimit}

@@ -100,6 +100,13 @@ func isNativeConflict(err error) bool {
 }
 
 func (s *Service) nativeAPIError(c echo.Context, err error) error {
+	var archive *nativeArchiveError
+	if errors.As(err, &archive) {
+		return c.JSON(http.StatusServiceUnavailable, struct {
+			Code    string                     `json:"code"`
+			Archive *tracker.ArchiveDescriptor `json:"archive"`
+		}{"archive_" + archive.Archive.Availability, archive.Archive})
+	}
 	if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
 		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: auth.HostedReasonProviderUnavailable, Message: operatortool.ErrProviderUnavailable.Error()})
 	}
@@ -349,6 +356,10 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				}
 			}
 			c.Set("native_scope", scope)
+			if c.Request().Method == http.MethodGet {
+				ctx := s.archiveContext(c.Request().Context(), scope, c.QueryParam("archive_url") == "true")
+				c.SetRequest(c.Request().WithContext(ctx))
+			}
 			c.Response().Header().Set("Cache-Control", "no-store")
 			if credential.Hosted != nil {
 				if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0); err != nil {

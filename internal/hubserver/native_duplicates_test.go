@@ -32,6 +32,7 @@ func TestNativeDuplicateFiling(t *testing.T) {
 		{"recent closed", true, "Runner checkout deadlocks", "Separate observed details", 29, true, false, "Todo"},
 		{"old closed", true, "Runner checkout deadlocks", "Separate observed details", 31, false, false, "Todo"},
 		{"recent archived", true, "Runner checkout deadlocks", "Separate observed details", 29, true, true, "Todo"},
+		{"recent archived body", true, "A different symptom", "Checkout hangs during repository association", 29, true, true, "Todo"},
 		{"unlinked Triage", true, "Runner checkout deadlocks", "Separate observed details", 0, false, false, "Triage"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

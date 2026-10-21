@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/update"
 )
@@ -43,6 +44,7 @@ var (
 )
 
 type Config struct {
+	ArchiveReader                  entryauthority.ArchiveReader
 	RunnerReleaseClient            update.ReleaseClient
 	runnerReleaseSignatureVerifier update.ChecksumSignatureVerifier
 	SecretKeys                     *hubsecrets.Keyring

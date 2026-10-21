@@ -30,6 +30,11 @@ func readBoundedChange(ctx context.Context, query nativeQueryer, scope nativeSco
 	if err != nil {
 		return result, err
 	}
+	query, err = archiveQuery(ctx, query, args.ItemID, "change", args.ChangeID, 0)
+	if err != nil {
+		return result, err
+	}
+	result.Archive = nativeArchiveDescriptor(ctx)
 	selection := changeReadCursor{Change: change.ID, Head: change.CurrentVersion, Version: args.VersionID, Section: args.Section}
 	if args.Cursor != "" {
 		raw, err := base64.RawURLEncoding.DecodeString(args.Cursor)

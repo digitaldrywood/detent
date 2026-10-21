@@ -7,11 +7,77 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
+
+func TestArchiveAuthorityChannel(t *testing.T) {
+	for _, scenario := range []string{"read", "signed read", "foreign organization", "expired deadline", "oversized section"} {
+		t.Run(scenario, func(t *testing.T) {
+			binding := Binding{Issuer: "entry", Organization: "org_example", Generation: 2}
+			ref, data, err := attachment.PrepareArchive(binding.Organization, 1, strings.NewReader(`{"schema_version":1}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var reads atomic.Int32
+			parent, err := Start(t.Context(), binding, time.Second, nil, func(_ context.Context, got attachment.ArchiveReference, presign bool) (ArchiveResponse, error) {
+				reads.Add(1)
+				if got != ref {
+					t.Error("archive reference changed in transit")
+				}
+				response := ArchiveResponse{Data: data}
+				if presign {
+					response.Access = &attachment.ArchiveRead{ArchiveReference: ref, URL: "https://objects.example.test/section", ExpiresAt: time.Now().Add(attachment.ArchiveReadLifetime)}
+				}
+				return response, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := parent.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			client := &Client{client: rpc.NewClient(channel{reader: parent.Files[0], writer: parent.Files[1], budget: time.Second}), budget: time.Second}
+			t.Cleanup(func() {
+				if err := client.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			request := ref
+			ctx := t.Context()
+			if scenario == "foreign organization" {
+				request, _, err = attachment.PrepareArchive("org_other", 1, strings.NewReader(`{"schema_version":1}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "oversized section" {
+				request.UncompressedSize = attachment.MaxSectionBytes + 1
+			}
+			if scenario == "expired deadline" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, time.Now().Add(-time.Second))
+				defer cancel()
+			}
+			response, err := client.ReadArchive(ctx, request, scenario == "signed read")
+			if scenario == "foreign organization" || scenario == "expired deadline" || scenario == "oversized section" {
+				if err == nil || reads.Load() != 0 {
+					t.Fatalf("rejected read reached storage: reads=%d error=%v", reads.Load(), err)
+				}
+				return
+			}
+			if err != nil || string(response.Data) != string(data) || reads.Load() != 1 || (response.Access != nil) != (scenario == "signed read") {
+				t.Fatalf("archive RPC failed: reads=%d error=%v", reads.Load(), err)
+			}
+		})
+	}
+}
 
 func TestCurrentAuthorityChannel(t *testing.T) {
 	t.Parallel()

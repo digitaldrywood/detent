@@ -83,6 +83,9 @@ func (s *Service) requireConversationScope(extra ...apiScope) echo.MiddlewareFun
 				return s.nativeAPIError(c, err)
 			}
 			c.Set("native_scope", scope)
+			if c.Request().Method == http.MethodGet {
+				c.SetRequest(c.Request().WithContext(s.archiveContext(ctx, scope, c.QueryParam("archive_url") == "true")))
+			}
 			c.Response().Header().Set("Cache-Control", "no-store")
 			if credential.Hosted != nil {
 				if err := s.hostedAudit(ctx, credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0); err != nil {
@@ -641,7 +644,7 @@ func (s *Service) getConversation(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSONBlob(http.StatusOK, value)
+	return nativeArchiveJSON(c, http.StatusOK, value)
 }
 
 // listConversationMessages implements GET /conversations/:conversation/messages.
@@ -661,7 +664,7 @@ func (s *Service) listConversationMessages(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSONBlob(http.StatusOK, value)
+	return nativeArchiveJSON(c, http.StatusOK, value)
 }
 
 // postConversationCommand implements POST /conversations/:conversation/commands.
@@ -1327,10 +1330,16 @@ func (s *Service) readConversationSnapshot(ctx context.Context, scope nativeScop
 }
 
 func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeScope, id, item string, diagnoseMissing bool) (json.RawMessage, error) {
+	ctx = s.archiveContext(ctx, scope, false)
 	service := s.conversations
 	var snapshot conversationSnapshot
 	var diagnostic json.RawMessage
-	err := service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	err = func(tx *sql.Tx, now time.Time) error {
 		var record conversationRecord
 		var err error
 		if item != "" {
@@ -1385,7 +1394,10 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 			snapshot.Questions = append(snapshot.Questions, question.Question)
 		}
 		return nil
-	})
+	}(tx, s.config.now())
+	if err == nil {
+		err = tx.Commit()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1396,7 +1408,11 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(snapshot)
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	return withNativeArchive(raw, nativeArchiveDescriptor(ctx))
 }
 
 func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScope, id string, request conversationPatchRequest) (json.RawMessage, error) {
@@ -1458,8 +1474,14 @@ func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScop
 }
 
 func (s *Service) readConversationMessages(ctx context.Context, scope nativeScope, id string, before int64, limit int) (json.RawMessage, error) {
+	ctx = s.archiveContext(ctx, scope, false)
 	var raw json.RawMessage
-	err := s.conversations.transact(ctx, func(tx *sql.Tx, _ time.Time) error {
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	err = func(tx *sql.Tx, _ time.Time) error {
 		record, err := s.conversations.loadConversation(ctx, tx, scope, id)
 		if err != nil {
 			return err
@@ -1472,8 +1494,14 @@ func (s *Service) readConversationMessages(ctx context.Context, scope nativeScop
 		_, page.NextCursor = conversationOlderCursor(page.Messages)
 		raw, err = json.Marshal(page)
 		return err
-	})
-	return raw, err
+	}(tx, s.config.now())
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return withNativeArchive(raw, nativeArchiveDescriptor(ctx))
 }
 
 func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, filter conversationListQuery) (json.RawMessage, error) {

@@ -51,6 +51,12 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	s := r.service
 	scope := r.scope
 	scope.project = tracker.ProjectID(request.ProjectID)
+	ctx = s.archiveContext(ctx, scope, request.ArchiveURL)
+	defer func() {
+		if resultErr == nil && len(result.Content) > 0 {
+			result.Content, resultErr = withNativeArchive(result.Content, nativeArchiveDescriptor(ctx))
+		}
+	}()
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: request.ProjectID})
 	if err != nil {
 		return operatortool.Result{}, err
@@ -259,6 +265,9 @@ func safeWorkReadError(err error) error {
 	}
 	if errors.Is(err, sql.ErrNoRows) || isNativeNotFound(err) {
 		return explain.ErrNotFound
+	}
+	if archive := nativeArchiveReadError(err); archive != nil {
+		return archive
 	}
 	var native *nativeError
 	if errors.As(err, &native) && native.status == 422 {
