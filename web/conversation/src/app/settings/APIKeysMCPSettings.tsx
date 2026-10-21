@@ -8,21 +8,14 @@ import {
   AlertDialogTitle,
 } from "../../components/ui/alert-dialog.tsx";
 import React from "react";
-import { ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
+import { formatRelativeTimeLabel } from "../../timestampFormat.ts";
+import { MoreHorizontal } from "lucide-react";
 import {
   Tabs,
   TabsList,
   TabsTab,
   TabsPanel,
 } from "../../components/ui/tabs.tsx";
-import {
-  Table,
-  TableHeader,
-  TableBody,
-  TableRow,
-  TableHead,
-  TableCell,
-} from "../../components/ui/table.tsx";
 import {
   Menu,
   MenuTrigger,
@@ -40,7 +33,11 @@ import { Toggle, ToggleGroup } from "../../components/ui/toggle-group.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { Badge } from "../../components/ui/badge.tsx";
 import { Radio, RadioGroup } from "../../components/ui/radio-group.tsx";
-import { OrganizationKeyControls } from "./OrganizationAPIKeysSettings.tsx";
+import {
+  OrganizationKeyControls,
+  useOrganizationKeyControls,
+} from "./OrganizationAPIKeysSettings.tsx";
+import { APIKeyTable } from "./APIKeyTable.tsx";
 import { Checkbox } from "../../components/ui/checkbox.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
@@ -66,96 +63,6 @@ import {
   SettingsSection,
   useRelativeTimeTick,
 } from "./settingsLayout.tsx";
-import { formatRelativeTimeLabel } from "../../timestampFormat.ts";
-
-export function lastKeyUse(value: string | null | undefined): React.ReactNode {
-  return value ? (
-    <span title={new Date(value).toLocaleString()}>
-      Last used {formatRelativeTimeLabel(value)}
-    </span>
-  ) : (
-    "Never used"
-  );
-}
-
-function keyAccessSummary(
-  apiKey: AccessKey,
-  context?: KeyContext | null,
-): string {
-  if (apiKey.kind === "personal" && apiKey.access_context === "global") {
-    return `All my orgs · ${apiKey.effective_reach?.length ?? 0}`;
-  }
-  const organizations = apiKey.organizations ?? [];
-  const org = organizations[0];
-  if (organizations.length === 1 && org) {
-    if (org.project_access === "all") {
-      return apiKey.kind === "service" ? "All org projects" : "This org";
-    }
-    if (org.project_ids.length === 1) {
-      const projectId = org.project_ids[0];
-      const reach =
-        apiKey.effective_reach?.find(
-          (item) => item.organization_id === org.organization_id,
-        ) ??
-        context?.organizations.find(
-          (item) => item.organization_id === org.organization_id,
-        );
-      return `One project: ${reach?.projects.find((project) => project.id === projectId)?.name ?? projectId}`;
-    }
-    return `${org.project_ids.length} selected projects`;
-  }
-  return `${organizations.length} selected orgs`;
-}
-
-export function KeyScope({
-  apiKey,
-  context,
-}: {
-  readonly apiKey: AccessKey;
-  readonly context?: KeyContext | null;
-}) {
-  const scope =
-    apiKey.access_context === "global" && apiKey.kind === "personal"
-      ? "All my orgs"
-      : keyAccessSummary(apiKey, context);
-  return (
-    <div className="space-y-2 text-xs text-muted-foreground">
-      <p>Effective reach today · {scope}</p>
-      {apiKey.effective_reach?.length === 0 && (
-        <p>No organization access today.</p>
-      )}
-      {apiKey.effective_reach && apiKey.effective_reach.length > 0 && (
-        <div className="divide-y divide-border rounded-lg border border-border">
-          {apiKey.effective_reach.map((org) => (
-            <div
-              key={org.organization_id}
-              className="grid grid-cols-[minmax(0,1fr)_minmax(4rem,auto)_minmax(0,2fr)] gap-4 px-3 py-2"
-            >
-              <span className="break-words text-foreground">{org.name}</span>
-              <span>{org.role}</span>
-              <span className="break-words">
-                {org.status === "pending"
-                  ? "Awaiting approval"
-                  : org.status === "blocked"
-                    ? "Blocked"
-                    : org.status === "inactive"
-                      ? "Inactive"
-                      : org.projects.length
-                        ? org.projects
-                            .map(
-                              (project) =>
-                                `${project.name}${project.can_write ? " (write)" : " (read)"}`,
-                            )
-                            .join(", ")
-                        : "No project access"}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export function keySetupPrompt(
   endpoint: string,
@@ -206,7 +113,9 @@ function useKeyLastCall(apiKey: AccessKey, preserveFirst = false) {
         if (!current) return;
         const used = result.keys.find((key) => key.id === id)?.last_used_at;
         if (used) {
-          setLastCall((previous) => (preserveFirst ? previous ?? used : used));
+          setLastCall((previous) =>
+            preserveFirst ? (previous ?? used) : used,
+          );
         }
       } catch {
         if (!current) return;
@@ -324,8 +233,7 @@ function ConnectKeySteps({
                       className="size-1.5 shrink-0 rounded-full bg-success-foreground"
                     />
                     <span>
-                      Last call {formatRelativeTimeLabel(lastCall)} ·
-                      acting as{" "}
+                      Last call {formatRelativeTimeLabel(lastCall)} · acting as{" "}
                       {apiKey.kind === "personal"
                         ? ownerName
                         : `${account?.organization.name} (service)`}
@@ -588,9 +496,7 @@ export function APIKeysMCPSettings() {
   >([]);
   const [showHistory, setShowHistory] = React.useState(false);
   const [keyTab, setKeyTab] = React.useState("personal");
-  const [expandedKeys, setExpandedKeys] = React.useState<ReadonlySet<string>>(
-    new Set(),
-  );
+  const memberControls = useOrganizationKeyControls(canManage);
   const [transport, setTransport] = React.useState("mcp");
   const [connectId, setConnectId] = React.useState<string | null>(null);
   const currentApi = React.useRef(api);
@@ -614,7 +520,6 @@ export function APIKeysMCPSettings() {
     setAction(null);
     setConnectId(null);
     setKeyTab("personal");
-    setExpandedKeys(new Set());
     Promise.all([list(), api.keyContext()])
       .then(([listed, choices]) => {
         if (!current) return;
@@ -784,171 +689,59 @@ export function APIKeysMCPSettings() {
             ? "Personal keys act as you: edits are recorded as you, and the key stops working if you leave an organization."
             : `Service keys act as ${account?.organization.name ?? "the organization"} for CI, bots and team servers. Owners and admins manage them; they keep working when their creator leaves.`}
         </p>
-        <div className="overflow-hidden rounded-xl border border-border">
-          <Table
-            aria-label={kind === "personal" ? "Personal keys" : "Service keys"}
-          >
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Permission</TableHead>
-                <TableHead>Access</TableHead>
-                <TableHead>Last used</TableHead>
-                <TableHead>Expires</TableHead>
-                <TableHead>
-                  <span className="sr-only">Actions</span>
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {!loaded && !error && (
-                <TableRow>
-                  <TableCell colSpan={6}>
-                    <span role="status">Loading API keys…</span>
-                  </TableCell>
-                </TableRow>
-              )}
-              {loaded && visible.length === 0 && (
-                <TableRow>
-                  <TableCell
-                    colSpan={6}
-                    className="whitespace-normal text-muted-foreground"
+        <APIKeyTable
+          label={kind === "personal" ? "Personal keys" : "Service keys"}
+          keys={visible}
+          context={context}
+          loaded={loaded}
+          error={Boolean(error)}
+          emptyMessage={`No active ${kind} keys. Create a key for your agent or integration.`}
+          renderActions={(key, isInactive) =>
+            !isInactive && (
+              <div className="flex items-center justify-end gap-1">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={!context || busy}
+                  aria-label={`Connect ${key.name}`}
+                  onClick={() => setConnectId(key.id)}
+                >
+                  Connect
+                </Button>
+                <Menu>
+                  <MenuTrigger
+                    render={<Button size="icon-xs" variant="ghost-muted" />}
+                    disabled={busy}
+                    aria-label={`More actions for ${key.name}`}
                   >
-                    No active {kind} keys. Create a key for your agent or
-                    integration.
-                  </TableCell>
-                </TableRow>
-              )}
-              {visible.map((key) => {
-                const isInactive = inactive(key);
-                const expanded = expandedKeys.has(key.id);
-                const reachId = `key-reach-${kind}-${key.id}`;
-                return (
-                  <React.Fragment key={key.id}>
-                    <TableRow
-                      className={
-                        isInactive ? "text-muted-foreground" : undefined
-                      }
-                    >
-                      <TableCell>
-                        <div className="flex items-center gap-1">
-                          <Button
-                            size="icon-xs"
-                            variant="ghost-muted"
-                            aria-label={`${expanded ? "Collapse" : "Expand"} ${key.name}`}
-                            aria-expanded={expanded}
-                            aria-controls={reachId}
-                            onClick={() =>
-                              setExpandedKeys((current) => {
-                                const next = new Set(current);
-                                if (expanded) next.delete(key.id);
-                                else next.add(key.id);
-                                return next;
-                              })
-                            }
-                          >
-                            {expanded ? (
-                              <ChevronDown aria-hidden="true" />
-                            ) : (
-                              <ChevronRight aria-hidden="true" />
-                            )}
-                          </Button>
-                          <span className="font-medium">{key.name}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell>{key.permission}</TableCell>
-                      <TableCell>{keyAccessSummary(key, context)}</TableCell>
-                      <TableCell>
-                        <span
-                          className="inline-flex items-center gap-1.5 text-muted-foreground"
-                          title={
-                            key.last_used_at
-                              ? new Date(key.last_used_at).toLocaleString()
-                              : undefined
-                          }
-                        >
-                          <span
-                            aria-hidden="true"
-                            className={`size-1.5 shrink-0 rounded-full ${!key.last_used_at ? "bg-muted-foreground/40" : now - new Date(key.last_used_at).getTime() < 86_400_000 ? "bg-success-foreground" : "bg-muted-foreground"}`}
-                          />
-                          {key.last_used_at
-                            ? formatRelativeTimeLabel(key.last_used_at)
-                            : "Never"}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        {key.revoked_at
-                          ? `Revoked ${new Date(key.revoked_at).toLocaleDateString()}`
-                          : key.expires_at
-                            ? `${isInactive ? "Expired " : ""}${new Date(key.expires_at).toLocaleDateString()}`
-                            : "Never"}
-                      </TableCell>
-                      <TableCell>
-                        {!isInactive && (
-                          <div className="flex items-center justify-end gap-1">
-                            <Button
-                              size="xs"
-                              variant="outline"
-                              disabled={!context || busy}
-                              aria-label={`Connect ${key.name}`}
-                              onClick={() => setConnectId(key.id)}
-                            >
-                              Connect
-                            </Button>
-                            <Menu>
-                              <MenuTrigger
-                                render={
-                                  <Button
-                                    size="icon-xs"
-                                    variant="ghost-muted"
-                                  />
-                                }
-                                disabled={busy}
-                                aria-label={`More actions for ${key.name}`}
-                              >
-                                <MoreHorizontal aria-hidden="true" />
-                              </MenuTrigger>
-                              <MenuPopup align="end">
-                                {kind === "personal" && (
-                                  <MenuItem
-                                    onClick={() => {
-                                      setDialogError(null);
-                                      setAction({ key, rotate: true });
-                                    }}
-                                  >
-                                    Rotate token
-                                  </MenuItem>
-                                )}
-                                <MenuItem
-                                  variant="destructive"
-                                  onClick={() => {
-                                    setDialogError(null);
-                                    setAction({ key, rotate: false });
-                                  }}
-                                >
-                                  Revoke
-                                </MenuItem>
-                              </MenuPopup>
-                            </Menu>
-                          </div>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                    {expanded && (
-                      <TableRow>
-                        <TableCell colSpan={6} className="whitespace-normal">
-                          <div id={reachId} className="px-6 pb-2">
-                            <KeyScope apiKey={key} context={context} />
-                          </div>
-                        </TableCell>
-                      </TableRow>
+                    <MoreHorizontal aria-hidden="true" />
+                  </MenuTrigger>
+                  <MenuPopup align="end">
+                    {kind === "personal" && (
+                      <MenuItem
+                        onClick={() => {
+                          setDialogError(null);
+                          setAction({ key, rotate: true });
+                        }}
+                      >
+                        Rotate token
+                      </MenuItem>
                     )}
-                  </React.Fragment>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </div>
+                    <MenuItem
+                      variant="destructive"
+                      onClick={() => {
+                        setDialogError(null);
+                        setAction({ key, rotate: false });
+                      }}
+                    >
+                      Revoke
+                    </MenuItem>
+                  </MenuPopup>
+                </Menu>
+              </div>
+            )
+          }
+        />
       </TabsPanel>
     );
   }
@@ -966,8 +759,8 @@ export function APIKeysMCPSettings() {
         >
           <p className="px-3 text-sm text-muted-foreground sm:px-4">
             Connect Claude, Codex, scripts and CI to{" "}
-            {account?.organization.name ?? "your organization"}. A key never grants
-            more than its owner has.
+            {account?.organization.name ?? "your organization"}. A key never
+            grants more than its owner has.
           </p>
         </SettingsSection>
         <SettingsSection
@@ -992,7 +785,10 @@ export function APIKeysMCPSettings() {
                   <SetupPromptControl
                     key={transport}
                     label={promptLabel}
-                    value={keySetupPrompt(context.mcp_endpoint, transport === "rest")}
+                    value={keySetupPrompt(
+                      context.mcp_endpoint,
+                      transport === "rest",
+                    )}
                     inlinePreview
                   />
                 </div>
@@ -1019,6 +815,18 @@ export function APIKeysMCPSettings() {
                   Service {serviceKeys.filter((key) => !inactive(key)).length}
                 </TabsTab>
               )}
+              {canManage && (
+                <TabsTab value="member" className="gap-1.5">
+                  Member keys {memberControls.keys.length}
+                  {memberControls.pending.length > 0 && (
+                    <span
+                      role="img"
+                      aria-label="Keys awaiting approval"
+                      className="size-1.5 rounded-full bg-warning-foreground"
+                    />
+                  )}
+                </TabsTab>
+              )}
             </TabsList>
             <Label className="flex items-center gap-2 text-xs text-muted-foreground">
               <Checkbox
@@ -1030,8 +838,16 @@ export function APIKeysMCPSettings() {
           </div>
           {renderKeys("personal", keys)}
           {canManage && renderKeys("service", serviceKeys)}
+          {canManage && (
+            <TabsPanel value="member" className="space-y-2 pt-3">
+              <OrganizationKeyControls
+                controls={memberControls}
+                context={context}
+                showHistory={showHistory}
+              />
+            </TabsPanel>
+          )}
         </Tabs>
-        {canManage && <OrganizationKeyControls />}
       </SettingsPageContainer>
       <Dialog
         open={Boolean(connectKey)}
