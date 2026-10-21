@@ -69,7 +69,7 @@ describe("authorized archive reads", () => {
     expect(terminated).toHaveBeenCalledTimes(2);
   });
 
-  it("overlays live metadata, excludes archived relationships, and clears cached sections on a refused grant", async () => {
+  it.each([401, 403, 404])("overlays live metadata, excludes archived relationships, and clears cached sections on a refused grant (%s)", async (status) => {
     const f = await fixture({ body: "Archived history" });
     const objects = vi.fn(async (_url: string, _init: RequestInit) => f.response());
     installWorker(objects);
@@ -82,7 +82,7 @@ describe("authorized archive reads", () => {
     await resolveArchivedResponse(envelope, "https://cloud.example.test/issue", grants, owner);
     expect(objects).toHaveBeenCalledTimes(1);
     const other = await fixture({}, "attempts");
-    await expect(resolveArchivedResponse({ archive: other.descriptor }, "https://cloud.example.test/issue", async () => new Response(null, { status: 403 }), owner)).rejects.toThrow("unavailable");
+    await expect(resolveArchivedResponse({ archive: other.descriptor }, "https://cloud.example.test/issue", async () => new Response(null, { status }), owner)).rejects.toThrow("unavailable");
     await resolveArchivedResponse(envelope, "https://cloud.example.test/issue", grants, owner);
     expect(objects).toHaveBeenCalledTimes(2);
   });
