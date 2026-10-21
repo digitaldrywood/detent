@@ -81,7 +81,7 @@ test("save, test and disable keep the credential write-only", async ({ page }) =
 
 test("a viewer cannot see organization Slack settings", async ({ page }) => {
   await openSettings(page, initial, true);
-  await expect(page.getByText("No projects yet")).toBeVisible();
+  await expect(page.getByText("Organization Sprites", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Slack incoming webhook")).toHaveCount(0);
 });
 
