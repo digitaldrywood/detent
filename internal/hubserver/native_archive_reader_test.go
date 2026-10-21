@@ -300,18 +300,72 @@ func TestArchiveQueryKeepsReusedRowIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := f.create(t, "New revision")
-	section := &attachment.ArchiveSection{SectionID: "revision", Tables: []attachment.ArchiveTable{table}}
-	query, err := newNativeArchiveQuery(t.Context(), f.service.database.reader, section, "", 0, 0)
+	section := &attachment.ArchiveSection{
+		OrganizationID: string(f.project.OrganizationID), ProjectID: string(f.project.ID),
+		WorkItemID: id, SectionID: "revision", Tables: []attachment.ArchiveTable{table},
+	}
+	query, err := newNativeArchiveQuery(t.Context(), f.service.database.reader, section, id, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, subject := range []string{id, string(second.WorkItemID)} {
+	for _, test := range []struct {
+		subject string
+		want    int
+	}{{id, 1}, {string(second.WorkItemID), 0}} {
 		var count int
-		if err := query.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_versions WHERE record_id=?", subject).Scan(&count); err != nil {
+		if err := query.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_versions WHERE record_id=?", test.subject).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
-		if count != 1 {
-			t.Fatalf("revision %s was lost after rowid reuse: %d", subject, count)
+		if count != test.want {
+			t.Fatalf("revision %s count after rowid reuse: %d, want %d", test.subject, count, test.want)
+		}
+	}
+}
+
+func TestArchiveQueryScopesLiveFallback(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "archive-query-scope")
+	item := f.create(t, "Selected issue")
+	f.create(t, "Unrelated issue")
+	for _, kind := range []string{"run", "change", "revision", "conversation", "history"} {
+		for _, name := range nativeArchiveTables(kind) {
+			t.Run(name, func(t *testing.T) {
+				table := archiveTestTable(t, f.service, name, "0")
+				section := &attachment.ArchiveSection{
+					OrganizationID: string(f.project.OrganizationID), ProjectID: string(f.project.ID),
+					WorkItemID: string(item.WorkItemID), SectionID: kind, Tables: []attachment.ArchiveTable{table},
+				}
+				query, err := newNativeArchiveQuery(t.Context(), f.service.database.reader, section, "absent-subject", 1, 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				statement := "SELECT count(*) FROM " + name
+				var count int
+				if err := query.QueryRowContext(t.Context(), statement).Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				if count != 0 {
+					t.Errorf("unrelated live records entered archive overlay: %d", count)
+				}
+				sql, args := query.statement(statement, nil)
+				rows, err := f.service.database.reader.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+sql, args...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer rows.Close()
+				for rows.Next() {
+					var id, parent, unused int
+					var detail string
+					if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+						t.Fatal(err)
+					}
+					if strings.HasPrefix(detail, "SCAN main.") || strings.HasPrefix(detail, "SCAN live") {
+						t.Errorf("archive read scans an unbounded live table: %s", detail)
+					}
+				}
+				if err := rows.Err(); err != nil {
+					t.Fatal(err)
+				}
+			})
 		}
 	}
 }
