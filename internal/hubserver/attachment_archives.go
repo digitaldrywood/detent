@@ -2,8 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -24,6 +22,15 @@ func (s *Service) registerAttachmentArchiveRoutes(e *echo.Echo) {
 }
 
 func (s *Service) checkAttachmentArchive(c echo.Context) error {
+	var input struct {
+		Reference *attachment.ArchiveReference `json:"reference,omitempty"`
+	}
+	if err := decodeAPIJSON(c, &input); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	if input.Reference != nil {
+		return s.writeAttachmentArchive(c, *input.Reference, false)
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
@@ -34,45 +41,20 @@ func (s *Service) checkAttachmentArchive(c echo.Context) error {
 	if err := requireReporterTriage(scope, issue); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	var input struct {
-		Reference *attachment.ArchiveReference `json:"reference,omitempty"`
-	}
-	if err := decodeAPIJSON(c, &input); err != nil {
-		return invalidAPIRequest(c, err)
-	}
-	if input.Reference != nil {
-		ref := *input.Reference
-		if ref.Validate(string(scope.organization)) != nil {
-			return s.nativeAPIError(c, nativeInvalid("Invalid archive reference"))
-		}
-		stored, err := scanAttachmentArchive(s.database.reader.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class FROM attachments WHERE organization_id=? AND object_key=? AND kind='archive'`, scope.organization, ref.Key))
-		if err == nil && stored != ref {
-			return s.nativeAPIError(c, nativeConflict(0))
-		}
-		if errors.Is(err, sql.ErrNoRows) && s.database.plans() != nil {
-			now := s.config.now()
-			used, err := s.database.hostedConsumption(ctx, s.database.reader, now, "collaboration_bytes")
-			if err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			entitlement, err := s.database.hostedEntitlement(ctx, s.database.reader, now)
-			if err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			if limit, limited := entitlement.Allowances["collaboration_bytes"]; limited && ref.CompressedSize > limit-used["collaboration_bytes"] {
-				return s.nativeAPIError(c, &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: used["collaboration_bytes"]})
-			}
-		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return s.nativeAPIError(c, err)
-		}
-	}
 	return c.JSON(http.StatusOK, map[string]string{"principal_id": scope.credential.ID})
 }
 
 func (s *Service) recordAttachmentArchive(c echo.Context) error {
 	var ref attachment.ArchiveReference
+	if err := decodeAPIJSON(c, &ref); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	return s.writeAttachmentArchive(c, ref, true)
+}
+
+func (s *Service) writeAttachmentArchive(c echo.Context, ref attachment.ArchiveReference, publish bool) error {
 	scope := nativeRequestScope(c)
-	if err := decodeAPIJSON(c, &ref); err != nil || ref.Validate(string(scope.organization)) != nil {
+	if ref.Validate(string(scope.organization)) != nil {
 		return s.nativeAPIError(c, nativeInvalid("Invalid archive reference"))
 	}
 	ctx := c.Request().Context()
@@ -98,10 +80,12 @@ func (s *Service) recordAttachmentArchive(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	id := "att_" + artifact.Digest([]byte(string(scope.organization) + "\n" + ref.Key))[:32]
-	_, err = tx.ExecContext(ctx, `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at,kind,retention_class,object_key,uncompressed_size,codec,schema_version)
+	if !publish {
+		_, err = tx.ExecContext(ctx, `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at,kind,retention_class,object_key,uncompressed_size,codec,schema_version)
 VALUES(?,?,?,?,'archive.gz','application/gzip',?,?,?,'archive',?,?,?,?,?) ON CONFLICT DO NOTHING`, id, scope.organization, scope.project, scope.credential.ID, ref.CompressedSize, ref.SHA256, formatHubTime(now), ref.Retention, ref.Key, ref.UncompressedSize, ref.Codec, ref.SchemaVersion)
-	if err != nil {
-		return s.nativeAPIError(c, err)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
 	}
 	stored, err := scanAttachmentArchive(tx.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, id, scope.organization))
 	if err != nil {
@@ -110,8 +94,10 @@ VALUES(?,?,?,?,'archive.gz','application/gzip',?,?,?,'archive',?,?,?,?,?) ON CON
 	if stored != ref {
 		return s.nativeAPIError(c, nativeConflict(0))
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO attachment_archive_references(organization_id,project_id,work_item_id,attachment_id) VALUES(?,?,?,?) ON CONFLICT DO NOTHING`, scope.organization, scope.project, c.Param("item"), id); err != nil {
-		return s.nativeAPIError(c, err)
+	if publish {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO attachment_archive_references(organization_id,project_id,work_item_id,attachment_id) VALUES(?,?,?,?) ON CONFLICT DO NOTHING`, scope.organization, scope.project, c.Param("item"), id); err != nil {
+			return s.nativeAPIError(c, err)
+		}
 	}
 	if err := s.database.checkHostedGrowth(ctx, tx, before, now, false, "collaboration_bytes"); err != nil {
 		return s.nativeAPIError(c, err)
@@ -120,6 +106,9 @@ VALUES(?,?,?,?,'archive.gz','application/gzip',?,?,?,'archive',?,?,?,?,?) ON CON
 		return s.nativeAPIError(c, err)
 	}
 	c.Response().Header().Set("Cache-Control", "private, no-store")
+	if !publish {
+		return c.JSON(http.StatusOK, map[string]string{"principal_id": scope.credential.ID})
+	}
 	return c.JSON(http.StatusCreated, ref)
 }
 

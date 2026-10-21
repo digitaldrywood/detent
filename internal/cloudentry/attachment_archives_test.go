@@ -88,6 +88,18 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 			}
 			return n
 		}
+		storedBytes := func() int64 {
+			t.Helper()
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			var total int64
+			for key, object := range store.objects {
+				if strings.HasPrefix(key, "orgs/"+org+"/blobs/") {
+					total += int64(len(object.content))
+				}
+			}
+			return total
+		}
 		before := usage()
 		if previous.Key != "" {
 			response := attachmentRequest(t, alice, http.MethodGet, base+"/work-items/"+string(items[0].WorkItemID)+"/archives/"+previous.SHA256+"/access", nil, nil)
@@ -101,8 +113,8 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 			store.failPutResponse = true
 			store.mu.Unlock()
 			response := attachmentRequest(t, alice, http.MethodPost, target, strings.NewReader(content), headers)
-			if response.Code != http.StatusBadGateway || count("SELECT count(*) FROM attachments WHERE kind='archive'") != 0 || usage() != before {
-				t.Fatalf("failed upload committed metadata: %d %s", response.Code, response.Body.String())
+			if response.Code != http.StatusBadGateway || count("SELECT count(*) FROM attachment_archive_references") != 0 || storedBytes() == 0 || usage()-before != storedBytes() {
+				t.Fatalf("unpublished archive escaped quota accounting: status=%d charged=%d stored=%d %s", response.Code, usage()-before, storedBytes(), response.Body.String())
 			}
 			store.mu.Lock()
 			store.failPutResponse = false
@@ -114,8 +126,8 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 				return archiveFailureTransport{next: next, path: metadataPath}, err
 			}
 			response = attachmentRequest(t, alice, http.MethodPost, target, strings.NewReader(content), headers)
-			if response.Code != http.StatusBadGateway || count("SELECT count(*) FROM attachments WHERE kind='archive'") != 0 {
-				t.Fatalf("precommit interruption committed a reference: %d %s", response.Code, response.Body.String())
+			if response.Code != http.StatusBadGateway || count("SELECT count(*) FROM attachment_archive_references") != 0 || usage()-before != storedBytes() {
+				t.Fatalf("precommit interruption lost accounting or published a reference: %d %s", response.Code, response.Body.String())
 			}
 			f.service.config.transport = original
 			storage, err = attachment.NewStorage(t.Context(), store.config(), store.transport)
