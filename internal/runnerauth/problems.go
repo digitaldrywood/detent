@@ -1,6 +1,7 @@
 package runnerauth
 
 import (
+	"context"
 	"errors"
 	"regexp"
 	"slices"
@@ -21,6 +22,18 @@ type Problem struct {
 	Message            string    `json:"message"`
 	FixHint            string    `json:"fix_hint"`
 	FirstSeen          time.Time `json:"first_seen"`
+}
+
+func WorkflowLoadProblems(projectID string, err error) []Problem {
+	if err == nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return nil
+	}
+	p := NewProblem("settings_invalid")
+	p.ProjectID = projectID
+	p.Subject = projectID + "/workflow"
+	p.Check = "load workflow"
+	p.ErrorOutput = err.Error()
+	return []Problem{SanitizeProblem(p)}
 }
 
 func NewProblem(code string) Problem {
