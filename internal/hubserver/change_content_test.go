@@ -61,8 +61,11 @@ func (f *changeObjectFixture) call(ctx context.Context, request entryauthority.C
 func TestChangeContentObjects(t *testing.T) {
 	t.Parallel()
 	objects := &changeObjectFixture{}
-	cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), content: objects.call}
+	now := time.Now().UTC()
+	cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), content: objects.call, now: func() time.Time { return now }}
 	f := newChangeFixture(t, openTestService(t, cfg))
+	legacy := f
+	legacy.service = legacyChangeService(t, f.service)
 	ctx := f.service.contentContext(t.Context())
 	input := changeTestInput()
 	bundle := changeTestSource(t, &input, bytes.Repeat([]byte("retained source\n"), 20000))
@@ -73,10 +76,37 @@ func TestChangeContentObjects(t *testing.T) {
 		request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("objects-%d", i)}, ChangeVersionInput: input, SourceBundle: bundle, ExpectedVersionID: expected}
 		response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, request)
 		requireNativeStatus(t, response, http.StatusOK)
-		decodeHubResponse(t, response, &versions[i])
+		var published tracker.ChangeVersion
+		decodeHubResponse(t, response, &published)
+		versions[i] = tracker.ChangeVersion{ChangeVersionInput: input, ID: published.ID, ChangeID: f.change.ID, Number: int64(f.change.Revision) + int64(i), Policy: hubTestPolicy(), ReviewPolicy: f.rules, Actor: tracker.Actor{Kind: "human", PrincipalID: f.rules.RequiredChecks[0].PrincipalID}, CreatedAt: now}
+		for position, spec := range f.rules.RequiredChecks {
+			versions[i].Checks = append(versions[i].Checks, tracker.ChangeCheckExpectation{ChangeCheckSpec: spec, CheckRunID: published.Checks[position].CheckRunID})
+		}
+		if !reflect.DeepEqual(published, versions[i]) {
+			t.Fatal("publication differs from the input's legacy version record")
+		}
+		raw, err := json.Marshal(versions[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := legacy.service.database.db.ExecContext(ctx, `INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,?,?)`, versions[i].ID, f.change.ID, versions[i].Number, string(raw)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := legacy.service.database.db.ExecContext(ctx, `INSERT INTO change_sources(version_id,bundle) VALUES(?,?)`, versions[i].ID, bundle); err != nil {
+			t.Fatal(err)
+		}
 		expected = versions[i].ID
 	}
-	output := strings.Repeat("full command output\n", 11000)
+	legacy.change.CurrentVersion, legacy.change.UpdatedAt = expected, now
+	legacy.change.Revision += 3
+	rawChange, err := json.Marshal(legacy.change)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.service.database.db.ExecContext(ctx, `UPDATE change_requests SET record_json=? WHERE id=?`, string(rawChange), f.change.ID); err != nil {
+		t.Fatal(err)
+	}
+	output := strings.Repeat("full command output\n", 11000)[:200<<10]
 	reviews := make([]tracker.ChangeReview, 2)
 	for i := range reviews {
 		reviews[i] = tracker.ChangeReview{ID: newNativeID("review"), VersionID: versions[2].ID, Decision: "commented", Body: "Findings remain inline", CreatedAt: f.service.config.now(), Validator: &gate.ValidatorResult{VersionID: versions[2].ID, Repository: input.Repository, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, Verdict: "wait", NotVerified: []string{"Unresolved evidence question"}, Commands: []gate.CommandResult{{Command: "make check-land", Output: output, HeadSHA: input.HeadSHA, TreeSHA: input.BaseSHA, ExitCode: 1, DurationNS: 123}}}}
@@ -89,17 +119,17 @@ func TestChangeContentObjects(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		raw, err := json.Marshal(reviews[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := legacy.service.database.db.ExecContext(ctx, `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review',?)`, f.change.ID, reviews[i].VersionID, string(raw)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	detail := f.detail(t)
-	expectedVersions, _ := json.Marshal(versions)
-	actualVersions, _ := json.Marshal(detail.Versions)
-	expectedReviews, _ := json.Marshal(reviews)
-	actualReviews, _ := json.Marshal(detail.Reviews)
-	if !bytes.Equal(actualVersions, expectedVersions) {
-		t.Fatalf("object storage changed version fields: got %s want %s", actualVersions, expectedVersions)
-	}
-	if !bytes.Equal(actualReviews, expectedReviews) {
-		t.Fatal("object storage changed review fields")
+	if !reflect.DeepEqual(detail.Versions, versions) || !reflect.DeepEqual(detail.Reviews, reviews) || !reflect.DeepEqual(detail, legacy.detail(t)) {
+		t.Fatal("Change API differs from independently seeded legacy records")
 	}
 	var count, policies, maximum int
 	for _, check := range []struct {
@@ -122,6 +152,7 @@ func TestChangeContentObjects(t *testing.T) {
 	for _, check := range []struct{ table, query string }{
 		{"change_versions", `SELECT max(length(CAST(record_json AS BLOB))+length(id)+length(change_id)+length(policy_revision_id)+16) FROM change_versions`},
 		{"change_evidence", `SELECT max(length(CAST(record_json AS BLOB))+length(change_id)+length(version_id)+length(kind)+16) FROM change_evidence`},
+		{"change_sources", `SELECT max(length(version_id)+length(bundle)+length(object_key)+length(object_sha256)+16) FROM change_sources`},
 	} {
 		if err := f.service.database.reader.QueryRowContext(ctx, check.query).Scan(&maximum); err != nil {
 			t.Fatal(err)
@@ -130,19 +161,35 @@ func TestChangeContentObjects(t *testing.T) {
 			t.Fatalf("%s row uses %d bytes", check.table, maximum)
 		}
 	}
+	objects.mu.Lock()
+	objectCount := len(objects.objects)
+	objects.mu.Unlock()
+	if objectCount != 3 {
+		t.Fatalf("stored %d objects, want one bundle, one validation output and one shared review output", objectCount)
+	}
 
 	requireUsageCountersMatchRecount(t, f.service.database)
 	operatorCtx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
-	exact, err := (hubOperatorExecutor{f.service}).Execute(operatorCtx, changeToolCall(operatortool.GetChangeVersion, operatortool.ChangeArguments{ProjectID: string(f.project.ID), ItemID: string(f.issue.WorkItemID), ChangeID: f.change.ID, VersionID: versions[0].ID}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var exactVersion operatortool.ChangeResult
-	if err := json.Unmarshal(exact.Content, &exactVersion); err != nil {
-		t.Fatal(err)
-	}
-	if exactVersion.Version == nil || !reflect.DeepEqual(*exactVersion.Version, versions[0]) {
-		t.Fatal("MCP exact version changed policy or validation output")
+	legacyOperatorCtx := changeOperatorContext(t, legacy.service, f.token, string(f.project.OrganizationID))
+	for _, args := range []operatortool.ChangeArguments{
+		{ProjectID: string(f.project.ID), ItemID: string(f.issue.WorkItemID), ChangeID: f.change.ID, VersionID: versions[0].ID},
+		{ProjectID: string(f.project.ID), ItemID: string(f.issue.WorkItemID), ChangeID: f.change.ID, Section: "reviews"},
+	} {
+		tool := operatortool.GetChange
+		if args.VersionID != "" {
+			tool = operatortool.GetChangeVersion
+		}
+		actual, err := (hubOperatorExecutor{f.service}).Execute(operatorCtx, changeToolCall(tool, args))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := (hubOperatorExecutor{legacy.service}).Execute(legacyOperatorCtx, changeToolCall(tool, args))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(actual.Content, want.Content) {
+			t.Fatalf("%s differs between object references and inline legacy records", tool)
+		}
 	}
 
 	response := performHubAPIRequest(t, f.service, http.MethodGet, f.path+"/versions/"+versions[0].ID+"/source", f.token, nil)
@@ -199,4 +246,13 @@ func TestChangeContentObjects(t *testing.T) {
 			t.Fatalf("org content unavailable: %v", err)
 		}
 	}
+}
+
+func legacyChangeService(t *testing.T, service *Service) *Service {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	if err := service.Backup(t.Context(), path); err != nil {
+		t.Fatal(err)
+	}
+	return openTestService(t, Config{DatabasePath: path, now: service.config.now})
 }
