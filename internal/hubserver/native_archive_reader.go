@@ -292,14 +292,14 @@ type nativeArchiveQuery struct {
 	values []any
 }
 
-func nativeArchiveColumns(ctx context.Context, query nativeQueryer, table string) ([]string, []int, error) {
+func nativeArchiveColumns(ctx context.Context, query nativeQueryer, table string) ([]string, map[int]string, error) {
 	rows, err := query.QueryContext(ctx, "PRAGMA table_xinfo("+table+")")
 	if err != nil {
 		return nil, nil, err
 	}
 	defer rows.Close()
 	columns := []string{"rowid"}
-	var primaryColumns []int
+	primaryColumns := map[int]string{}
 	for rows.Next() {
 		var index, notNull, primary, hidden int
 		var name, kind string
@@ -309,7 +309,7 @@ func nativeArchiveColumns(ctx context.Context, query nativeQueryer, table string
 		}
 		columns = append(columns, name)
 		if primary > 0 {
-			primaryColumns = append(primaryColumns, len(columns)-1)
+			primaryColumns[len(columns)-1] = kind
 		}
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
@@ -331,7 +331,11 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 		}
 		var projection []string
 		for index := range columns {
-			projection = append(projection, "json_extract(value, '$["+strconv.Itoa(index)+"]')")
+			expression := "json_extract(value, '$[" + strconv.Itoa(index) + "]')"
+			if kind, ok := primaryColumns[index]; ok {
+				expression = "CAST(" + expression + " AS " + kind + ")"
+			}
+			projection = append(projection, expression)
 		}
 		quoted := make([]string, len(columns))
 		liveProjection := make([]string, len(columns))
@@ -347,12 +351,15 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 		if len(primaryColumns) == 0 {
 			return nil, attachment.ErrInvalid
 		}
-		var identity []string
-		for _, index := range primaryColumns {
-			identity = append(identity, "live."+quoted[index]+" IS archived."+quoted[index])
+		var liveIdentity, archivedIdentity []string
+		for index := range columns {
+			if _, ok := primaryColumns[index]; ok {
+				liveIdentity = append(liveIdentity, "live."+quoted[index])
+				archivedIdentity = append(archivedIdentity, quoted[index])
+			}
 		}
 		result.values = append(result.values, string(raw))
-		var conditions []string
+		conditions := []string{"json_array(" + strings.Join(liveIdentity, ",") + ") NOT IN (SELECT json_array(" + strings.Join(archivedIdentity, ",") + ") FROM archive_" + name + ")"}
 		for _, field := range []struct{ column, value string }{
 			{"organization_id", section.OrganizationID},
 			{"project_id", section.ProjectID},
@@ -396,7 +403,7 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 			result.values = append(result.values, first, last)
 		}
 		ctes = append(ctes, fmt.Sprintf(`archive_%s(%s) AS MATERIALIZED (SELECT %s FROM json_each(?)),
-%s AS NOT MATERIALIZED (SELECT * FROM archive_%s UNION ALL SELECT %s FROM main.%s AS live LEFT JOIN archive_%s AS archived ON %s WHERE archived.rowid IS NULL AND %s)`, name, strings.Join(quoted, ","), strings.Join(projection, ","), name, name, strings.Join(liveProjection, ","), name, name, strings.Join(identity, " AND "), strings.Join(conditions, " AND ")))
+%s AS NOT MATERIALIZED (SELECT * FROM archive_%s UNION ALL SELECT %s FROM main.%s AS live WHERE %s)`, name, strings.Join(quoted, ","), strings.Join(projection, ","), name, name, strings.Join(liveProjection, ","), name, strings.Join(conditions, " AND ")))
 	}
 	result.ctes = strings.Join(ctes, ",")
 	return result, nil
