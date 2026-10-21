@@ -211,6 +211,7 @@ func TestBackendReadinessProblem(t *testing.T) {
 		{"codex missing default shell", workflowconfig.AgentBackendCodex, isolation.NativeTrusted, "linux", "codex --version", "sh: 1: codex: not found", "npm install -g @openai/codex", false},
 		{"claude missing default shell", workflowconfig.AgentBackendClaudeCode, isolation.NativeTrusted, "linux", "claude --version", "sh: 1: claude: not found", "npm install -g @anthropic-ai/claude-code", false},
 		{"sandbox", workflowconfig.AgentBackendCodex, isolation.Sandbox, "linux", "codex sandbox", "operation not permitted", "", false},
+		{"app-server tooling missing", workflowconfig.AgentBackendCodex, isolation.NativeTrusted, "linux", "codex app-server", "Codex could not find bubblewrap on PATH", "sudo apt-get install bubblewrap socat", false},
 		{"sandbox tooling missing", workflowconfig.AgentBackendCodex, isolation.Sandbox, "linux", "codex sandbox", "bwrap: command not found", "sudo apt-get install bubblewrap socat", false},
 		{"sandbox tooling missing default shell", workflowconfig.AgentBackendCodex, isolation.Sandbox, "linux", "codex sandbox", "sh: 1: bwrap: not found", "sudo apt-get install bubblewrap socat", false},
 		{"sandbox socket tooling missing", workflowconfig.AgentBackendClaudeCode, isolation.Sandbox, "linux", "claude --print", "socat: no such file or directory", "sudo apt-get install bubblewrap socat", false},
@@ -223,6 +224,11 @@ func TestBackendReadinessProblem(t *testing.T) {
 			}
 			if test.output == "signal: killed" && p.Code != "backend_probe_failed" {
 				t.Fatalf("killed probe reported missing backend: %+v", p)
+			}
+			if test.goos == "linux" && (strings.Contains(test.output, "bwrap") || strings.Contains(test.output, "bubblewrap") || strings.Contains(test.output, "socat")) {
+				if p.Code != "backend_missing" || !strings.Contains(p.Message, "missing from PATH") {
+					t.Fatalf("missing prerequisite was not identified: %+v", p)
+				}
 			}
 			if test.signedOut && p.Message != "not signed in" {
 				t.Fatalf("message=%q", p.Message)

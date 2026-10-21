@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -60,8 +61,13 @@ func runnerStartupProblems(registry *project.Registry) []runnerauth.Problem {
 			code = "backend_probe_failed"
 		}
 		problem := runnerauth.NewProblem(code)
+		if prerequisite, ok := backendPrerequisiteProblem(runtime.GOOS, health.LastError); ok && project.IsProviderStartupFailure(health.LastError) {
+			problem = prerequisite
+		}
 		problem.ProjectID = health.Project.ID
-		problem.Message = health.LastError
+		if problem.ErrorOutput == "" {
+			problem.Message = health.LastError
+		}
 		if len(problem.Message) > 1000 {
 			problem.Message = strings.ToValidUTF8(problem.Message[:1000], "")
 		}

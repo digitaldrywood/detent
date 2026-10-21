@@ -322,7 +322,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 }
 
 func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
-	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	if s.leaseHold != nil {
 		release, err := s.leaseHold(probeCtx)
@@ -335,11 +335,22 @@ func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []run
 	report, problems := s.isolationReport(probeCtx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := probeCtx.Err(); err != nil {
+	probeErr := probeCtx.Err()
+	incomplete := slices.ContainsFunc(problems, func(p runnerauth.Problem) bool { return p.Code == "backend_probe_failed" })
+	if probeErr != nil || incomplete {
 		problem := runnerauth.NewProblem("backend_probe_failed")
 		problem.Subject = "backend_isolation"
 		problem.Check = "runner isolation probe"
-		problem.ErrorOutput = err.Error()
+		if probeErr != nil {
+			problem.ErrorOutput = probeErr.Error()
+		} else {
+			for _, p := range problems {
+				if p.Code == "backend_probe_failed" {
+					problem.ErrorOutput = p.ErrorOutput
+					break
+				}
+			}
+		}
 		problem.ReportedAt = s.now().UTC()
 		if s.lastIsolation != nil {
 			problem.CachedCapabilities = true

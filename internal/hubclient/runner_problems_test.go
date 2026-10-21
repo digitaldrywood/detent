@@ -128,11 +128,13 @@ func TestIsolationProbeCancellation(t *testing.T) {
 		name             string
 		cached, complete bool
 		workflowFailure  bool
+		innerTimeout     bool
 		workflowLoad     bool
 		cancel, killGit  bool
 	}{
 		{name: "unobserved cancellation"},
 		{name: "cached cancellation", cached: true},
+		{name: "cached inner timeout", cached: true, innerTimeout: true},
 		{name: "cached cancellation preserves workflow failure", cached: true, workflowFailure: true},
 		{name: "cached expired workflow load", cached: true, workflowLoad: true},
 		{name: "cached canceled workflow load", cached: true, workflowLoad: true, cancel: true},
@@ -166,6 +168,10 @@ func TestIsolationProbeCancellation(t *testing.T) {
 				calls := 0
 				holds, releases := 0, 0
 				parent, cancel := context.WithCancel(t.Context())
+				if test.killGit {
+					cancel()
+					parent, cancel = context.WithTimeout(t.Context(), time.Second)
+				}
 				defer cancel()
 				scheduler := &Scheduler{now: func() time.Time { return now }, leaseHold: func(context.Context) (func(), error) {
 					holds++
@@ -204,7 +210,9 @@ func TestIsolationProbeCancellation(t *testing.T) {
 						}
 						problems = append(problems, runnerauth.WorkflowLoadProblems(configured.ID, err)...)
 					}
-					<-ctx.Done()
+					if !test.innerTimeout {
+						<-ctx.Done()
+					}
 					return isolation.Report{"example-project/codex": {}}, problems
 				}}
 				if cached {
@@ -261,4 +269,40 @@ func TestIsolationProbeCancellation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestIsolationProbeRecoversAfterTimeouts(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		calls := 0
+		scheduler := &Scheduler{now: time.Now, isolationReport: func(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
+			calls++
+			if calls <= 3 {
+				<-ctx.Done()
+				return isolation.Report{"example-project/codex": {}}, nil
+			}
+			timer := time.NewTimer(20 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return isolation.Report{"example-project/codex": {}}, nil
+			case <-timer.C:
+				return isolation.Report{"example-project/codex": {isolation.NativeTrusted}}, nil
+			}
+		}}
+		for attempt := 1; attempt <= 4; attempt++ {
+			report, problems := scheduler.probeIsolation(t.Context())
+			if attempt < 4 {
+				if report.Supports(isolation.NativeTrusted) || len(problems) == 0 {
+					t.Fatalf("incomplete probe advertised readiness: %+v %+v", report, problems)
+				}
+				continue
+			}
+			if !report.Supports(isolation.NativeTrusted) || len(problems) != 0 {
+				t.Fatalf("slow probe did not restore readiness: %+v %+v", report, problems)
+			}
+			if problems := isolationProblems(report, isolation.NativeTrusted, nil); len(problems) != 0 {
+				t.Fatalf("recovered runner still refuses its tier: %+v", problems)
+			}
+		}
+	})
 }

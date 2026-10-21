@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
@@ -237,5 +240,98 @@ func TestRunnerStartupProblemsSeparateProviderStartupFromSettings(t *testing.T) 
 	}
 	if err := runnerauth.ValidateReportedProblems(runnerStartupProblems(registry)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunnerStartupProblemsIdentifyMissingPrerequisite(t *testing.T) {
+	t.Parallel()
+	registry := project.NewRegistry()
+	message := project.ProviderStartupFailed + ": scheduling source unavailable: wait for initialize response: context deadline exceeded: Codex could not find bubblewrap on PATH"
+	if err := registry.SetPending(globalconfig.Project{ID: "example-project"}, project.RuntimeError{Message: message}); err != nil {
+		t.Fatal(err)
+	}
+	problems := runnerStartupProblems(registry)
+	if len(problems) != 1 {
+		t.Fatalf("problems = %+v", problems)
+	}
+	problem := problems[0]
+	if runtime.GOOS == "linux" {
+		if problem.Code != "backend_missing" || !strings.Contains(problem.Message, "bubblewrap") || problem.FixCommand != "sudo apt-get install bubblewrap socat" || !strings.Contains(problem.ErrorOutput, "bubblewrap") {
+			t.Fatalf("missing prerequisite was obscured: %+v", problem)
+		}
+	} else if problem.Code != "backend_probe_failed" {
+		t.Fatalf("Linux prerequisite diagnosis applied to another platform: %+v", problem)
+	}
+}
+
+func TestRunnerProviderTimeoutsRecoverWithBackoff(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	path := writeWorkflowFile(t)
+	cfg := globalconfig.Config{Projects: []globalconfig.Project{{ID: "native", Workflow: path, Workdir: filepath.Dir(path), Weight: 1}}}
+	var calls atomic.Int32
+	source := runnerProviderReports(ctx, func() globalconfig.Config { return cfg }, "example-runner", time.Now, func(context.Context, workflowconfig.AgentBackend) ([]runner.AgentModel, error) {
+		if calls.Add(1) <= 3 {
+			return nil, context.DeadlineExceeded
+		}
+		return []runner.AgentModel{{ID: "example-model"}}, nil
+	}, nil)
+	tracker := fakehub.New(fakehub.Config{})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	scheduling := &catalogStartupScheduling{startupNativeScheduling: &startupNativeScheduling{connector: tracker}, source: source}
+	factory := withRunnerFactoryWithProjectTokens(ctx, project.Dependencies{Runner: &workflowStartupRunner{started: make(chan struct{}, 1)}, Connector: tracker, Scheduling: scheduling, Logger: logger}, nil, nil, serviceapi.Connection{}, nil, nil, func(context.Context, globalconfig.Project, workflowconfig.Config) (string, error) { return "", nil }, nil)
+	delays := make(chan time.Duration)
+	retry := make(chan struct{})
+	manager, err := projectfixture.NewManager(project.ManagerConfig{Projects: cfg.Projects}, project.ManagerDependencies{ProjectFactory: factory, Logger: logger, RetryJitter: func(time.Duration) time.Duration { return 0 }, RetrySleep: func(ctx context.Context, delay time.Duration) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case delays <- delay:
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-retry:
+			return nil
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		manager.Wait()
+		for _, selected := range manager.Registry().List() {
+			if err := selected.Close(); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	if err := startRunnerProjects(ctx, manager, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second} {
+		select {
+		case got := <-delays:
+			if got != want {
+				t.Fatalf("retry delay = %s, want %s", got, want)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		if problems := runnerStartupProblems(manager.Registry()); len(problems) != 1 || problems[0].Code != "backend_probe_failed" {
+			t.Fatalf("timeout lost its recoverable startup problem: %+v", problems)
+		}
+		retry <- struct{}{}
+	}
+	manager.Wait()
+	selected, ok := manager.Registry().Get("native")
+	if !ok || !selected.Running() || len(runnerStartupProblems(manager.Registry())) != 0 {
+		t.Fatal("runner did not resume scheduling after repeated provider timeouts")
+	}
+	reports, err := source()
+	if err != nil || len(reports) != 1 || !reports[0].Supports(providercapacity.Requirement{Backend: "codex", Model: "example-model"}) {
+		t.Fatalf("recovered runner did not advertise its provider: %+v %v", reports, err)
 	}
 }
