@@ -1,9 +1,9 @@
 package hubserver
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -336,15 +337,12 @@ func (f *relayFixture) attachedConnections() uint64 {
 // that joined and was closed again is still seen.
 func (f *relayFixture) awaitAttached(t *testing.T, before uint64) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	for f.attachedConnections() <= before {
-		select {
-		case <-ctx.Done():
-			t.Fatal("the dialled connection never joined the relay")
-		case <-time.After(2 * time.Millisecond):
+	testenv.WaitUntil(t, t.Context(), func() error {
+		if f.attachedConnections() <= before {
+			return errors.New("the dialled connection never joined the relay")
 		}
-	}
+		return nil
+	})
 }
 
 // advanceServing moves the clock forward with the runner still heartbeating,
@@ -362,8 +360,7 @@ func (f *relayFixture) advanceServing(t *testing.T, d time.Duration) {
 
 func (f *relayFixture) dial(t *testing.T, url string, header http.Header) *relayClient {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := testenv.WaitContext(t, t.Context())
 	socket, response, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
 	closeRelayDial(response)
 	if err != nil {
@@ -387,8 +384,7 @@ func (c *relayClient) send(frame workspacesession.Frame) {
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(c.t.Context(), 5*time.Second)
-	defer cancel()
+	ctx := testenv.WaitContext(c.t, c.t.Context())
 	if err := c.socket.Write(ctx, websocket.MessageText, encoded); err != nil {
 		c.t.Fatalf("write frame: %v", err)
 	}
@@ -399,8 +395,7 @@ func (c *relayClient) send(frame workspacesession.Frame) {
 // tells nobody which frame went missing.
 func (c *relayClient) receive() workspacesession.Frame {
 	c.t.Helper()
-	ctx, cancel := context.WithTimeout(c.t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := testenv.WaitContext(c.t, c.t.Context())
 	kind, data, err := c.socket.Read(ctx)
 	if err != nil {
 		c.t.Fatalf("read frame: %v", err)
@@ -418,8 +413,7 @@ func (c *relayClient) receive() workspacesession.Frame {
 // expectClosed asserts the socket ends rather than delivering another frame.
 func (c *relayClient) expectClosed() {
 	c.t.Helper()
-	ctx, cancel := context.WithTimeout(c.t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := testenv.WaitContext(c.t, c.t.Context())
 	for {
 		kind, data, err := c.socket.Read(ctx)
 		if err != nil {
@@ -519,14 +513,12 @@ func TestWorkspaceRelayAcknowledgementReleasesTheReplayBuffer(t *testing.T) {
 // would be asserting on a race rather than on behaviour.
 func waitFor(t *testing.T, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testenv.WaitUntil(t, t.Context(), func() error {
 		if condition() {
-			return
+			return nil
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("the condition did not hold before the deadline")
+		return errors.New("the condition did not hold before the deadline")
+	})
 }
 
 func TestWorkspaceRelayRefusesASecondUseOfATicket(t *testing.T) {
@@ -537,8 +529,7 @@ func TestWorkspaceRelayRefusesASecondUseOfATicket(t *testing.T) {
 	header := http.Header{"Authorization": {"Bearer " + f.token}}
 	first := f.dial(t, url, header)
 	_ = first
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := testenv.WaitContext(t, t.Context())
 	refused, response, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
 	closeRelayDial(response)
 	if err == nil {
@@ -553,8 +544,7 @@ func TestWorkspaceRelayRefusesAnExpiredTicket(t *testing.T) {
 	ticket := f.ticket(t)
 	f.advance(workspacesession.TicketLifetime + time.Second)
 	url := f.socketURL(f.base + "/workspaces/" + f.workspace + "/relay?ticket=" + ticket)
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := testenv.WaitContext(t, t.Context())
 	refused, response, err := websocket.Dial(ctx, url, &websocket.DialOptions{
 		HTTPHeader: http.Header{"Authorization": {"Bearer " + f.token}},
 	})
@@ -568,8 +558,7 @@ func TestWorkspaceRelayRefusesAnExpiredTicket(t *testing.T) {
 func TestWorkspaceRelayRefusesAnUpgradeWithoutATicket(t *testing.T) {
 	t.Parallel()
 	f := newRelayFixture(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := testenv.WaitContext(t, t.Context())
 	refused, response, err := websocket.Dial(ctx, f.socketURL(f.base+"/workspaces/"+f.workspace+"/relay"), &websocket.DialOptions{
 		HTTPHeader: http.Header{"Authorization": {"Bearer " + f.token}},
 	})
@@ -898,8 +887,7 @@ func TestWorkspaceRelayRefusesARunnerSocketThatIsNotTheWorkspacesOwner(t *testin
 	t.Parallel()
 	f := newRelayFixture(t)
 	url := f.socketURL(f.base + "/workspaces/" + f.workspace + "/worker/relay")
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := testenv.WaitContext(t, t.Context())
 	refused, response, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: http.Header{
 		"Authorization":          {"Bearer " + f.runner.redemption.Credential},
 		"X-Detent-Lease":         {string(f.lease.ID)},

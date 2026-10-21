@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -522,9 +523,7 @@ func TestActivityPopulationCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer writer.Rollback()
-	ctx, cancel := context.WithTimeout(authority, 2*time.Second)
-	defer cancel()
-	result, err := f.service.executeActivityRead(ctx, operatortool.Call{Arguments: []byte(`{"limit":1}`)})
+	result, err := f.service.executeActivityRead(testenv.WaitContext(t, authority), operatortool.Call{Arguments: []byte(`{"limit":1}`)})
 	if err != nil {
 		t.Fatalf("activity read used the held writer: %v", err)
 	}

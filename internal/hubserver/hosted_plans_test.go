@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -958,7 +959,7 @@ func TestHostedPlansConfigRejectsAliasCycles(t *testing.T) {
 				if (err != nil) != test.wantErr {
 					t.Fatalf("Unmarshal() error = %v, want error %t", err, test.wantErr)
 				}
-			case <-time.After(10 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("decoding did not finish")
 			}
 		})

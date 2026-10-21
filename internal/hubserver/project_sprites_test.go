@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestWakeSpriteRunners(t *testing.T) {
@@ -216,11 +217,9 @@ ON CONFLICT(organization_id, project_id, kind) DO UPDATE SET ciphertext=excluded
 
 func waitSpriteWake(t *testing.T, done <-chan struct{}) {
 	t.Helper()
-	timer := time.NewTimer(10 * time.Second)
-	defer timer.Stop()
 	select {
 	case <-done:
-	case <-timer.C:
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("Sprite wake work did not reach the fixture checkpoint")
 	}
 }
@@ -403,7 +402,7 @@ func TestWakeSpriteRunnersFreshAuthority(t *testing.T) {
 				if got.err != nil || got.woken != test.want || len(requests) != test.want {
 					t.Fatalf("woken=%d requests=%d error=%v; want %d", got.woken, len(requests), got.err, test.want)
 				}
-			case <-time.After(10 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("fresh authority wake did not complete")
 			}
 			for i, request := range requests {

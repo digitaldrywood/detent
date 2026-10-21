@@ -20,6 +20,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -933,9 +934,7 @@ func TestHealthSnapshotReadsWithoutTheWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer writer.Close()
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-	defer cancel()
-	if _, err := f.service.readHealthSnapshot(ctx, f.project.OrganizationID, time.Now().UTC()); err != nil {
+	if _, err := f.service.readHealthSnapshot(testenv.WaitContext(t, t.Context()), f.project.OrganizationID, time.Now().UTC()); err != nil {
 		t.Fatalf("health snapshot waited on the held writer: %v", err)
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"modernc.org/sqlite"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -154,23 +155,15 @@ func dispatchWaitCursor(t *testing.T, response *httptest.ResponseRecorder) strin
 
 func awaitDispatchSubscribers(t *testing.T, s *Service, organization tracker.OrganizationID, count int) {
 	t.Helper()
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	for {
+	testenv.WaitUntil(t, t.Context(), func() error {
 		s.notifications.mu.Lock()
 		got := len(s.notifications.subscribers[dispatchNotificationKey(organization)])
 		s.notifications.mu.Unlock()
 		if got == count && s.database.db.Stats().InUse == 0 {
-			return
+			return nil
 		}
-		select {
-		case <-deadline.C:
-			t.Fatalf("subscribers=%d, want %d", got, count)
-		case <-ticker.C:
-		}
-	}
+		return fmt.Errorf("subscribers=%d, want %d", got, count)
+	})
 }
 
 func TestNativeDispatchWaitLifecycle(t *testing.T) {
@@ -224,9 +217,7 @@ func TestNativeDispatchWaitLifecycle(t *testing.T) {
 			case "cancel":
 				cancel()
 			case "shutdown":
-				shutdownCtx, stop := context.WithTimeout(t.Context(), time.Second)
-				defer stop()
-				if err := f.service.Shutdown(shutdownCtx); err != nil {
+				if err := f.service.Shutdown(testenv.WaitContext(t, t.Context())); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -243,7 +234,7 @@ func TestNativeDispatchWaitLifecycle(t *testing.T) {
 						t.Fatal("notification did not advance cursor")
 					}
 				}
-			case <-time.After(5 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("held wait did not finish")
 			}
 			awaitDispatchSubscribers(t, f.service, f.project.OrganizationID, 0)
@@ -328,6 +319,7 @@ func TestNativeDispatchWaitScale(t *testing.T) {
 				}
 				granted := 0
 				var worst time.Duration
+				settleCtx := testenv.WaitContext(t, t.Context())
 				for range runners {
 					select {
 					case latency := <-results:
@@ -335,7 +327,7 @@ func TestNativeDispatchWaitScale(t *testing.T) {
 							granted++
 							worst = max(worst, latency)
 						}
-					case <-time.After(10 * time.Second):
+					case <-settleCtx.Done():
 						t.Fatal("scale request did not settle")
 					}
 				}

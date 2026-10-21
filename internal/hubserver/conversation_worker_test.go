@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -168,6 +169,21 @@ func (f *conversationWorkerFixture) controls(t *testing.T, after int64, wait int
 	response := httptest.NewRecorder()
 	f.service.Handler().ServeHTTP(response, request)
 	return response
+}
+
+// awaitControlSubscribers waits until want broker subscriptions watch the
+// conversation, so a test acts only once a long poll is actually waiting.
+func (f *conversationWorkerFixture) awaitControlSubscribers(t *testing.T, want int) {
+	t.Helper()
+	testenv.WaitUntil(t, t.Context(), func() error {
+		f.chat.broker.mu.Lock()
+		got := len(f.chat.broker.subscribers[f.record.ID])
+		f.chat.broker.mu.Unlock()
+		if got >= want {
+			return nil
+		}
+		return fmt.Errorf("control poll did not subscribe: subscribers=%d, want %d", got, want)
+	})
 }
 
 // queue seeds an accepted user control the way the operator API would:
@@ -597,7 +613,6 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 	})
 
 	t.Run("waits for a queued control", func(t *testing.T) {
-		started := time.Now()
 		done := make(chan workerControlsResponse, 1)
 		go func() {
 			response := f.controls(t, first.Seq, 10)
@@ -605,7 +620,8 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 			_ = json.Unmarshal(response.Body.Bytes(), &page)
 			done <- page
 		}()
-		time.Sleep(150 * time.Millisecond)
+		f.awaitControlSubscribers(t, 1)
+		started := time.Now()
 		second := f.queue(t, conversation.MessageInterrupt, "stop-1", "", nil)
 		select {
 		case page := <-done:
@@ -615,7 +631,7 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 			if time.Since(started) > 5*time.Second {
 				t.Fatal("poll did not return promptly after the control committed")
 			}
-		case <-time.After(8 * time.Second):
+		case <-testenv.WaitContext(t, t.Context()).Done():
 			t.Fatal("long poll did not return after a control was queued")
 		}
 	})
@@ -654,8 +670,7 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 		pollResult := make(chan *httptest.ResponseRecorder, 1)
 		go func() { pollResult <- f.controls(t, cursor, 30) }()
 
-		waitContext, cancelWait := context.WithTimeout(t.Context(), 5*time.Second)
-		defer cancelWait()
+		waitContext := testenv.WaitContext(t, t.Context())
 		ticker := time.NewTicker(time.Millisecond)
 		defer ticker.Stop()
 		for {
@@ -673,8 +688,7 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 				t.Fatal("poll did not subscribe")
 			}
 		}
-		shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
+		shutdownContext := testenv.WaitContext(t, context.Background())
 		if err := f.service.Shutdown(shutdownContext); err != nil {
 			t.Fatalf("Shutdown() with waiting poll: %v", err)
 		}
@@ -1370,20 +1384,20 @@ func TestConversationControlRouterWakeAndStop(t *testing.T) {
 	f.chat.controls.Wake(f.record.ID)
 	select {
 	case <-subscription.wake:
-	case <-time.After(time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("Wake must notify broker subscribers")
 	}
 	requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 	done := make(chan int, 1)
 	go func() { done <- f.controls(t, 0, 10).Code }()
-	time.Sleep(100 * time.Millisecond)
+	f.awaitControlSubscribers(t, 2)
 	f.chat.controls.Stop()
 	select {
 	case code := <-done:
 		if code != http.StatusOK {
 			t.Fatalf("poll after stop = %d", code)
 		}
-	case <-time.After(5 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("Stop must end in-flight polls")
 	}
 }

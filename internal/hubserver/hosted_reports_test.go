@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -14,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -298,9 +298,7 @@ func TestReportsFirstTryHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer held.Rollback()
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-			defer cancel()
-			got, available, err := f.service.reportsFirstTry(ctx, scope, report)
+			got, available, err := f.service.reportsFirstTry(testenv.WaitContext(t, t.Context()), scope, report)
 			if err != nil {
 				t.Fatal(err)
 			}

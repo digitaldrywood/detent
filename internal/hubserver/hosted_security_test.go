@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -872,7 +873,7 @@ func TestHostedSecuritySSERevocation(t *testing.T) {
 			decodeHubResponse(t, created, &workspace)
 			user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
 			if revocation == "shutdown" {
-				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 				defer cancel()
 				request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/projects/"+string(f.project)+"/events?workspace="+workspace.ID, nil)
 				request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})

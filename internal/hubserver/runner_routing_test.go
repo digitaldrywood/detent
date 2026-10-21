@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -386,7 +387,7 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 			observedAt := heartbeatAt.Add(test.elapsed)
 			var clock atomic.Int64
 			clock.Store(before.UnixNano())
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 			defer cancel()
 			db := f.service.database.db
 			tx, err := db.BeginTx(ctx, nil)

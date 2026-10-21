@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -570,7 +571,7 @@ func TestSpritePoolCancelledBootstrap(t *testing.T) {
 		if err == nil {
 			t.Fatal("cancelled bootstrap succeeded")
 		}
-	case <-time.After(10 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("cancelled bootstrap did not join")
 	}
 	view, err := f.service.readSpritePool(t.Context(), scope)

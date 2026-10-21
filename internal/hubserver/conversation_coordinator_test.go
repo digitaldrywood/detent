@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/skills"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -103,7 +105,7 @@ func (b *fakeCoordinatorBackend) waitStarted(t *testing.T) {
 	t.Helper()
 	select {
 	case <-b.started:
-	case <-time.After(5 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("turn did not start")
 	}
 }
@@ -273,14 +275,12 @@ func (f *coordinatorFixture) events(t *testing.T, id string) []conversation.Even
 
 func waitUntil(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testenv.WaitUntil(t, t.Context(), func() error {
 		if condition() {
-			return
+			return nil
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
+		return fmt.Errorf("timed out waiting for %s", what)
+	})
 }
 
 // lastReply returns the newest assistant text message.
@@ -355,7 +355,7 @@ func TestConversationCoordinatorReportsUsage(t *testing.T) {
 			usage.Tokens.OutputTokens != 10 || usage.Tokens.ReasoningOutputTokens != 3 || usage.Outcome != conversation.DeliveryCompleted {
 			t.Fatalf("usage = %+v", usage)
 		}
-	case <-time.After(5 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("usage was not reported")
 	}
 }
@@ -649,9 +649,7 @@ func TestConversationCoordinatorStop(t *testing.T) {
 			f.backend.waitStarted(t)
 			done := make(chan error, 1)
 			go func() {
-				ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
-				defer cancel()
-				done <- f.service.Shutdown(ctx)
+				done <- f.service.Shutdown(testenv.WaitContext(t, t.Context()))
 			}()
 			waitUntil(t, "coordinator draining", func() bool {
 				c := f.coordinator().(*conversationTurnCoordinator)
@@ -671,7 +669,7 @@ func TestConversationCoordinatorStop(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-			case <-time.After(12 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("Shutdown() did not return")
 			}
 			wantAssistant, wantUser, wantExecution := conversation.DeliveryFailed, conversation.DeliveryFailed, conversation.ExecutionFailed
@@ -709,7 +707,7 @@ func TestConversationCoordinatorStop(t *testing.T) {
 			}
 			select {
 			case <-backendDone:
-			case <-time.After(time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("test backend did not exit")
 			}
 			if !test.finish {
@@ -1397,7 +1395,7 @@ func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 					if usage.Provider != "codex" || usage.Model != test.wantModel || usage.TurnID != reply.ID || usage.Tokens.InputTokens != 20 {
 						t.Fatalf("chosen backend usage = %#v", usage)
 					}
-				case <-time.After(5 * time.Second):
+				case <-testenv.WaitContext(t, t.Context()).Done():
 					t.Fatal("chosen backend usage was not reported")
 				}
 			}

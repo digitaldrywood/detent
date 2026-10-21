@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -292,7 +293,7 @@ func (w hostedStreamWriter) Write(data []byte) (int, error) {
 
 func openHostedTestStream(t *testing.T, f hostedSecurityFixture, user hostedSecurityUser, query string) *bufio.Reader {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 	request := httptest.NewRequest(http.MethodGet, "/projects/"+string(f.project)+"/events"+query, nil).WithContext(ctx)
 	request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
 	input, output := io.Pipe()

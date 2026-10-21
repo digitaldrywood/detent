@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
@@ -186,7 +187,7 @@ func TestCoordinatorTurnOutlivesSharedBrowserAccessToken(t *testing.T) {
 				if result.Success != test.access {
 					t.Fatalf("find_tools success = %v, want %v: %s", result.Success, test.access, result.Content)
 				}
-			case <-time.After(10 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("coordinator turn did not run")
 			}
 		})

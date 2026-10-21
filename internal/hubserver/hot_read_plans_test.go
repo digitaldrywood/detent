@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"database/sql"
 	"database/sql/driver"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -163,8 +163,7 @@ func TestHotReadQueryPlans(t *testing.T) {
 				statements = append(statements, tracedStatement{query, values})
 				mu.Unlock()
 			}}
-			ctx, cancel := context.WithTimeout(withRequestTiming(t.Context(), timing), 30*time.Second)
-			defer cancel()
+			ctx := testenv.WaitContext(t, withRequestTiming(t.Context(), timing))
 			request := httptest.NewRequest(http.MethodGet, f.server.URL+read.path, nil).WithContext(ctx)
 			request.AddCookie(f.cookies["owner"])
 			response := httptest.NewRecorder()
@@ -464,8 +463,7 @@ func TestAnalyticsRollupReportPlans(t *testing.T) {
 						statements = append(statements, tracedStatement{query, values})
 						mu.Unlock()
 					}}
-					ctx, cancel := context.WithTimeout(withRequestTiming(t.Context(), timing), 2*time.Minute)
-					defer cancel()
+					ctx := testenv.WaitContext(t, withRequestTiming(t.Context(), timing))
 					request := httptest.NewRequest(http.MethodGet, f.server.URL+browserHostedOrganizationBase+"/reports?project="+f.project+"&range="+window, nil).WithContext(ctx)
 					request.AddCookie(f.cookies["owner"])
 					response := httptest.NewRecorder()

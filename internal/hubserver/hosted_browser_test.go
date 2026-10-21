@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -1026,8 +1027,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 			cfg := f.service.config
 			handler := f.server.Config.Handler
 			address := f.server.Listener.Addr().String()
-			ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
-			defer cancel()
+			ctx := testenv.WaitContext(t, r.Context())
 			if err := f.shutdownForRestart(ctx); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -1149,8 +1149,7 @@ func TestHostedBrowserPreviewRestartDrainsStreams(t *testing.T) {
 	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handler.ServeHTTP(browserShutdownFrameWriter{ResponseWriter: w, done: r.Context().Done(), draining: draining}, r)
 	})
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	ctx := testenv.WaitContext(t, t.Context())
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, f.server.URL+browserHostedOrganizationBase+"/projects/"+f.project+"/conversations/"+f.conversation+"/events", nil)
 	if err != nil {
 		t.Fatal(err)

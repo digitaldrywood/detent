@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -109,9 +110,7 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 			if test.restart {
 				config := f.service.config
 				started := time.Now()
-				shutdownContext, cancel := context.WithTimeout(context.Background(), time.Second)
-				defer cancel()
-				if err := f.service.Shutdown(shutdownContext); err != nil {
+				if err := f.service.Shutdown(testenv.WaitContext(t, context.Background())); err != nil {
 					t.Fatal(err)
 				}
 				if err := f.service.Close(); err != nil {

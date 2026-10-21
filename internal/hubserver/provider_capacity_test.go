@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -801,7 +802,7 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 	select {
 	case response := <-done:
 		requireNativeStatus(t, response, http.StatusOK)
-	case <-time.After(5 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("claim preview waited on the held writer")
 	}
 }

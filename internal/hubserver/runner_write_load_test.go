@@ -229,7 +229,8 @@ func TestRunnerWritesStayBoundedAsTenantsGrow(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newWriteLoadFixture(t, 50000, test.runners, test.sessions)
-			ctx, stop := context.WithTimeout(t.Context(), 8*time.Second)
+			const turnBatches = 40
+			ctx, stop := context.WithCancel(t.Context())
 			defer stop()
 			var mu sync.Mutex
 			latencies := map[string][]time.Duration{}
@@ -242,9 +243,9 @@ func TestRunnerWritesStayBoundedAsTenantsGrow(t *testing.T) {
 					failures = append(failures, failure)
 				}
 			}
-			var workers sync.WaitGroup
+			var heartbeats, workers sync.WaitGroup
 			for _, runner := range f.runners {
-				workers.Go(func() {
+				heartbeats.Go(func() {
 					for ctx.Err() == nil {
 						started := time.Now()
 						code := f.heartbeat(t, runner)
@@ -260,7 +261,7 @@ func TestRunnerWritesStayBoundedAsTenantsGrow(t *testing.T) {
 			for index, session := range f.sessions {
 				workers.Go(func() {
 					chunk := strings.Repeat("output ", 64)
-					for ctx.Err() == nil {
+					for range turnBatches {
 						started := time.Now()
 						response := f.turnEvents(t, session,
 							map[string]any{"type": "delta", "provider_item_id": fmt.Sprintf("item-%d", index), "text": chunk},
@@ -275,6 +276,8 @@ func TestRunnerWritesStayBoundedAsTenantsGrow(t *testing.T) {
 				})
 			}
 			workers.Wait()
+			stop()
+			heartbeats.Wait()
 			for _, route := range []string{"heartbeat", "turn-events"} {
 				values := latencies[route]
 				if len(values) == 0 {

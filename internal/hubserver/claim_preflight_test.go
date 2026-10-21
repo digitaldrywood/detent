@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -71,7 +72,7 @@ func TestClaimSelectionStaysOffTheWriter(t *testing.T) {
 				if !errors.Is(claimErr, ErrNoClaimableWork) {
 					t.Fatalf("refused claim error = %v, want no claimable work", claimErr)
 				}
-			case <-time.After(5 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("refused claim waited for the held writer")
 			}
 			if err := writer.Rollback(); err != nil {

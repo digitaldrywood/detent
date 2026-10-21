@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -183,8 +184,7 @@ func TestRequestMetricsFlushDoesNotUseTenantWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
+	ctx := testenv.WaitContext(t, t.Context())
 	if err := m.flush(ctx, now); err != nil {
 		t.Fatalf("metrics flush waited for tenant writer: %v", err)
 	}

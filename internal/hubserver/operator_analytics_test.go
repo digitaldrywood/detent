@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -320,8 +321,7 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				if err != nil {
 					t.Fatal(err)
 				}
-				ctx, cancel := context.WithTimeout(authorityContext, 5*time.Second)
-				defer cancel()
+				ctx := testenv.WaitContext(t, authorityContext)
 				var held *sql.Tx
 				holdWriter := func() error {
 					writer, err := f.service.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})

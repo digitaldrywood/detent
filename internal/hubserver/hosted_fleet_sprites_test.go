@@ -1,11 +1,11 @@
 package hubserver
 
 import (
-	"context"
 	"net/http"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -96,9 +96,7 @@ func TestHostedFleetSprites(t *testing.T) {
 			}
 			visible := map[tracker.ProjectID]bool{scope.project: !tt.hidden}
 			view := hostedFleetRunnerView(runner, "dev", visible, f.service.config.now())
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-			defer cancel()
-			if err := f.service.hostedFleetSprite(t.Context(), ctx, scope.credential, &view, runner, visible); err != nil {
+			if err := f.service.hostedFleetSprite(t.Context(), testenv.WaitContext(t, t.Context()), scope.credential, &view, runner, visible); err != nil {
 				t.Fatal(err)
 			}
 			if view.Health != tt.wantHealth || (view.Sprite != nil) != tt.wantSprite || calls != tt.wantCalls {

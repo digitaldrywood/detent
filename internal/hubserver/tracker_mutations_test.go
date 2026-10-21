@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -509,14 +510,13 @@ func runQueuedHubMutation(t *testing.T, service *Service, afterQueued func(), mu
 		finished <- mutate()
 	}()
 
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
+	waitContext := testenv.WaitContext(t, t.Context())
 	for service.database.db.Stats().WaitCount == waitsBefore {
 		select {
 		case mutationErr := <-finished:
 			t.Fatalf("queued mutation completed before the blocking transaction was released: %v", mutationErr)
 			return mutationErr
-		case <-timer.C:
+		case <-waitContext.Done():
 			t.Fatal("queued mutation did not wait for the blocking transaction")
 			return nil
 		default:
