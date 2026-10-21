@@ -313,3 +313,39 @@ UNION ALL SELECT hour,total,'' FROM analytics_sample_hours WHERE organization_id
 	}
 	return rows.Err()
 }
+
+type diagnosticsResidenceHour struct {
+	transitions int
+	todo        *int
+	partial     bool
+}
+
+func readDiagnosticsResidenceHours(ctx context.Context, q nativeQueryer, scope nativeScope, from, to time.Time) (map[int64]diagnosticsResidenceHour, error) {
+	rows, err := q.QueryContext(ctx, `SELECT hour,metric,sum(total),sum(unavailable) FROM analytics_sample_hours WHERE organization_id=? AND project_id=? AND metric IN ('residence_coverage','diagnostics_todo') AND hour<? AND hour+3600>? GROUP BY hour,metric`, scope.organization, scope.project, to.Unix(), from.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	hours := map[int64]diagnosticsResidenceHour{}
+	filter, filtered := reportsScopeFrom(ctx)
+	for rows.Next() {
+		var hour int64
+		var metric string
+		var total float64
+		var unavailable int
+		if err := rows.Scan(&hour, &metric, &total, &unavailable); err != nil {
+			return nil, err
+		}
+		h := hours[hour]
+		h.partial = h.partial || unavailable > 0
+		if filtered && filter.issues != "" {
+			h.partial = true
+		} else if metric == "residence_coverage" {
+			h.transitions = int(total)
+		} else {
+			h.todo = new(int(total))
+		}
+		hours[hour] = h
+	}
+	return hours, rows.Err()
+}

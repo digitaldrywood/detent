@@ -821,7 +821,7 @@ func TestAnalyticsAttemptProjectionFields(t *testing.T) {
 
 func TestAnalyticsHourlyRetentionScopes(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
-	now := start.Add(2 * time.Hour)
+	now := start.Add(3 * time.Hour)
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
 	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organizations(id,name,created_at) VALUES('org_second','Second',?)", formatHubTime(start)); err != nil {
 		t.Fatal(err)
@@ -830,10 +830,29 @@ func TestAnalyticsHourlyRetentionScopes(t *testing.T) {
 	type observation struct {
 		scope       nativeScope
 		before      nativeAnalyticsProject
-		diagnostics diagnosticsReport
+		diagnostics []diagnosticsReport
 		item        string
 	}
 	var observations []observation
+	windows := []operatortool.AnalyticsWindow{
+		{From: start, To: start.Add(time.Hour), Bucket: time.Hour},
+		{From: start.Add(time.Hour), To: start.Add(2 * time.Hour), Bucket: time.Hour},
+		{From: start.Add(2 * time.Hour), To: now, Bucket: time.Hour},
+		{From: start, To: now, Bucket: time.Hour},
+	}
+	readDiagnostics := func(scope nativeScope, w operatortool.AnalyticsWindow) diagnosticsReport {
+		t.Helper()
+		q := analyticsRollupReader{f.service.database.reader}
+		project, err := readNativeAnalytics(t.Context(), q, scope, operatortool.AnalyticsRequest{Limit: 100}, w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		report, err := f.service.readHostedDiagnosticsFrom(t.Context(), nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []nativeAnalyticsProject{project}}, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return report
+	}
 	for index, fixture := range []nativeFixture{f, other} {
 		scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
 		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
@@ -858,6 +877,13 @@ func TestAnalyticsHourlyRetentionScopes(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		waiting, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: "waiting history", State: "Todo"}, start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := appendNativeHistory(t.Context(), tx, scope, string(waiting.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, start.Add(150*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
 		for i := range 2 {
 			id := fmt.Sprintf("lease-%d-%d", index, i)
 			machine := fmt.Sprintf("machine-%d-%d", index, i)
@@ -877,11 +903,23 @@ func TestAnalyticsHourlyRetentionScopes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		d := diagnosticsReport{From: start, To: now, Capacity: []diagnosticsCapacity{{Hour: start}, {Hour: start.Add(time.Hour)}}}
-		if err := diagnosticsLeaseCapacity(t.Context(), analyticsRollupReader{f.service.database.reader}, scope, &d); err != nil {
-			t.Fatal(err)
+		var diagnostics []diagnosticsReport
+		for index, w := range windows {
+			d := readDiagnostics(scope, w)
+			wantTransitions := 1
+			if index == 3 {
+				wantTransitions = 3
+			}
+			wantTodo := 1
+			if index == 2 {
+				wantTodo = 0
+			}
+			if len(d.Capacity) == 0 || d.Capacity[0].Todo == nil || *d.Capacity[0].Todo != wantTodo || d.Coverage[0].Observed == nil || *d.Coverage[0].Observed != wantTransitions {
+				t.Fatalf("invalid Diagnostics baseline: window=%+v report=%+v", w, d)
+			}
+			diagnostics = append(diagnostics, d)
 		}
-		observations = append(observations, observation{scope, before, d, string(issue.WorkItemID)})
+		observations = append(observations, observation{scope, before, diagnostics, string(issue.WorkItemID)})
 	}
 	if err := f.service.database.compactAnalyticsSamples(t.Context(), now.Add(29*24*time.Hour)); err != nil {
 		t.Fatal(err)
@@ -893,8 +931,23 @@ func TestAnalyticsHourlyRetentionScopes(t *testing.T) {
 		}
 		assertAnalyticsJSONEqual(t, o.before, recent)
 	}
-	for pass := range 2 {
-		if err := f.service.database.compactAnalyticsSamples(t.Context(), now.Add(31*24*time.Hour)); err != nil {
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if more, err := compactAnalyticsResidence(t.Context(), tx, start.Add(time.Hour).Unix()); err != nil || !more {
+		t.Fatalf("partial residence compaction: more=%v err=%v", more, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range observations {
+		for index, w := range windows {
+			t.Run(fmt.Sprintf("one-item/%s/hour-%d", o.scope.organization, index), func(t *testing.T) { assertAnalyticsJSONEqual(t, o.diagnostics[index], readDiagnostics(o.scope, w)) })
+		}
+	}
+	for pass, compactedAt := range []time.Time{start.Add(30*24*time.Hour + time.Hour), now.Add(31 * 24 * time.Hour), now.Add(31 * 24 * time.Hour)} {
+		if err := f.service.database.compactAnalyticsSamples(t.Context(), compactedAt); err != nil {
 			t.Fatal(err)
 		}
 		for _, o := range observations {
@@ -910,12 +963,10 @@ func TestAnalyticsHourlyRetentionScopes(t *testing.T) {
 					t.Fatalf("pass %d residence sum changed: %v", pass, pair)
 				}
 			}
-			d := diagnosticsReport{From: start, To: now, Capacity: []diagnosticsCapacity{{Hour: start}, {Hour: start.Add(time.Hour)}}}
-			if err := diagnosticsLeaseCapacity(t.Context(), analyticsRollupReader{f.service.database.reader}, o.scope, &d); err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(d.Capacity, o.diagnostics.Capacity) {
-				t.Fatalf("diagnostics capacity changed: before=%+v after=%+v", o.diagnostics.Capacity, d.Capacity)
+			for index, w := range windows {
+				t.Run(fmt.Sprintf("pass-%d/%s/hour-%d", pass, o.scope.organization, index), func(t *testing.T) {
+					assertAnalyticsJSONEqual(t, o.diagnostics[index], readDiagnostics(o.scope, w))
+				})
 			}
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 			if err != nil {
@@ -941,8 +992,14 @@ func TestAnalyticsHourlyRetentionScopes(t *testing.T) {
 		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour'`, o.scope.organization, o.scope.project).Scan(&predecessors); err != nil {
 			t.Fatal(err)
 		}
-		if predecessors != 1 {
+		if predecessors != 2 {
 			t.Fatalf("boundary predecessors=%d", predecessors)
+		}
+	}
+	for _, o := range observations {
+		partial := readDiagnostics(o.scope, operatortool.AnalyticsWindow{From: start.Add(15 * time.Minute), To: start.Add(75 * time.Minute), Bucket: time.Hour})
+		if !partial.Partial || len(partial.Capacity) != 1 || partial.Capacity[0].Todo != nil {
+			t.Fatalf("interior archived endpoint claimed exact Todo depth: %+v", partial)
 		}
 	}
 	for _, o := range observations {
