@@ -28,10 +28,10 @@ test.afterEach(async () => {
 });
 
 /** Collects everything the page logs as an error, for a per-test assertion. */
-function watchConsole(page) {
+function watchConsole(page, expected = () => false) {
   const errors = [];
   page.on("console", (message) => {
-    if (message.type() === "error") errors.push(message.text());
+    if (message.type() === "error" && !expected(message)) errors.push(message.text());
   });
   page.on("pageerror", (error) => errors.push(String(error)));
   return errors;
@@ -220,12 +220,16 @@ test("removing the last owner is refused by the hub and said in the page", async
 });
 
 test("the settings navigation is the sidebar, not a second column", async ({ page }) => {
-  const errors = watchConsole(page);
+  // The fixture's sign-in provider issues no WorkOS widget tokens, so the
+  // account widgets on General get `503` from `widget-token` and render their
+  // unavailable state. That refusal is expected here and nothing else is.
+  const errors = watchConsole(page, (message) => /503 \(Service Unavailable\)/.test(message.text()) && /\/widget-token$/.test(message.location().url ?? ""));
   // `/settings` redirects to the default section (§17.3).
   await openAs(page, "owner", "/settings");
 
   await expectOneHeadingOne(page, "Settings");
   await expect(page.getByLabel("Settings breadcrumb")).toContainText("General");
+  await expect(page.getByText("Profile settings are temporarily unavailable. Please try again.", { exact: true })).toBeVisible();
 
   const sidebar = page.locator("[data-app-sidebar]");
   await expect(sidebar.getByRole("button", { name: "General" })).toBeVisible();
@@ -244,7 +248,8 @@ test("the settings navigation is the sidebar, not a second column", async ({ pag
 
   await sidebar.getByRole("button", { name: "Projects" }).click();
   await expect(page).toHaveURL(/\/settings\/projects$/);
-  await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Projects\b/ })).toBeVisible();
+  await expect(page.getByRole("table", { name: "Projects in dispatch order", exact: true })).toBeVisible();
 
   await expect(sidebar.getByRole("button", { name: "Appearance" })).toHaveAttribute(
     "aria-disabled",
@@ -442,9 +447,14 @@ for (const state of [
       await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeEnabled();
       await expectNoSeriousAxeViolations(page, `Integrations GitHub App ${state.name}`);
       if (state.width === 390) {
-        const models = await page.context().newPage();
+        // A project's Models tab shows only a summary until its owner edits an
+        // override, so the read-only wide tables live on the organization
+        // Models page, read by a viewer.
+        const viewerContext = await page.context().browser().newContext();
+        const models = await viewerContext.newPage();
         await models.setViewportSize({ width: state.width, height: 1100 });
-        await models.goto(new URL(`/settings/projects/${hub.fixture.project_id}/models`, hub.fixture.url).toString(), { waitUntil: "domcontentloaded" });
+        await models.goto(hub.fixture.accounts.viewer, { waitUntil: "domcontentloaded" });
+        await models.goto(new URL("/settings/organization/models", hub.fixture.url).toString(), { waitUntil: "domcontentloaded" });
         for (const name of ["Complexity levels", "Stages"]) {
           const table = models.getByRole("table", { name, exact: true });
           await table.focus();
@@ -453,7 +463,7 @@ for (const state of [
           await models.keyboard.press("ArrowRight");
           await expect.poll(() => table.evaluate((element) => element.parentElement.scrollLeft)).toBeGreaterThan(left);
         }
-        await models.close();
+        await viewerContext.close();
       }
     } else {
       await expect(page.getByRole("heading", { name: "GitHub App", exact: true })).toHaveCount(0);
@@ -852,8 +862,8 @@ for (const theme of ["dark", "light"]) {
       await expect(page.getByRole("button", { name: "Create key", exact: true })).toBeFocused();
       await page.goto(new URL(`${mount}/settings/mcp`, hub.fixture.url).toString());
       await page.evaluate((mode) => { document.documentElement.dataset.theme = mode; document.documentElement.classList.toggle("dark", mode === "dark"); }, theme);
-      await expect(page.getByRole("heading", { name: "Member keys", exact: true })).toBeVisible();
-      await expect(page.getByRole("combobox", { name: "Personal keys", exact: true })).toHaveValue("approval");
+      await page.getByRole("tab", { name: /^Member keys 1\b/ }).click();
+      await expect(page.getByRole("combobox", { name: "Personal keys in this organization", exact: true })).toHaveValue("approval");
       await expect(page.getByRole("button", { name: "Approve My cross-org agent", exact: true })).toBeVisible();
       await expect(page.getByRole("button", { name: "Block My cross-org agent for this org", exact: true })).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

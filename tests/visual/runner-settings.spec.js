@@ -84,24 +84,30 @@ test("runner outside hours stays contextual on its row", async ({ page }) => {
 
 test("organization project rank persists and viewers cannot edit it", async ({ page }) => {
   await page.goto(hub.fixture.accounts.owner);
-  await page.goto(new URL("/settings/general", hub.fixture.url).toString());
-  const list = page.getByRole("list", { name: "Project rank", exact: true });
-  await expect(list).toBeVisible();
+  await page.goto(new URL("/settings/projects", hub.fixture.url).toString());
+  const table = page.getByRole("table", { name: "Projects in dispatch order", exact: true });
+  await expect(table).toBeVisible();
+  const rows = table.getByRole("row").filter({ has: page.getByRole("cell") });
+  const names = () => rows.evaluateAll((elements) => elements.map((row) => row.querySelector(".truncate.font-medium")?.textContent ?? ""));
   // Rows show the project id until the project names load.
-  await expect(list.getByText(/prj_[0-9a-f]{32}/)).toHaveCount(0);
-  const before = await list.getByRole("listitem").allTextContents();
-  await list.getByRole("listitem").nth(1).getByRole("button", { name: / up$/ }).click();
-  const reordered = await list.getByRole("listitem").allTextContents();
-  expect(reordered[0]).not.toBe(before[0]);
+  await expect(table.getByText(/prj_[0-9a-f]{32}/)).toHaveCount(0);
+  const before = await names();
+  expect(before.length).toBeGreaterThan(1);
   const saved = page.waitForResponse((response) => response.request().method() === "PUT"
     && new URL(response.url()).pathname.endsWith("/project-rank"));
-  await page.getByRole("button", { name: "Save project rank", exact: true }).click();
+  const handle = page.getByRole("button", { name: `Reorder ${before[1]}`, exact: true });
+  await handle.focus();
+  await page.keyboard.press("Space");
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Space");
   expect((await saved).ok()).toBe(true);
-  await expect(page.getByRole("button", { name: "Save project rank", exact: true })).toBeEnabled();
+  const reordered = [before[1], before[0], ...before.slice(2)];
+  await expect.poll(names).toEqual(reordered);
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.reload();
-  await expect(list.getByRole("listitem").first()).toHaveText(reordered[0]);
+  await expect.poll(names).toEqual(reordered);
   await page.goto(hub.fixture.accounts.viewer);
-  await page.goto(new URL("/settings/general", hub.fixture.url).toString());
-  await expect(page.getByRole("button", { name: "Save project rank", exact: true })).toHaveCount(0);
+  await page.goto(new URL("/settings/projects", hub.fixture.url).toString());
+  await expect(table).toBeVisible();
+  await expect(table.getByRole("button", { name: /^Reorder / })).toHaveCount(0);
 });

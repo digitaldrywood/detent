@@ -41,10 +41,10 @@ const UNLINKED_CONVERSATION = /\/api\/v2\/organizations\/[^/]+\/projects\/[^/]+\
 const NOT_FOUND = /status of 404\b/;
 
 /** Collects everything the page logs as an error, for a per-test assertion. */
-function watchConsole(page) {
+function watchConsole(page, expected = () => false) {
   const errors = [];
   page.on("console", (message) => {
-    if (message.type() !== "error") return;
+    if (message.type() !== "error" || expected(message)) return;
     const url = message.location().url ?? "";
     const expected404 =
       NOT_FOUND.test(message.text()) &&
@@ -1757,7 +1757,9 @@ test.describe("the ported shell's interactions", () => {
   });
 
   test("masks the settings scroller with the scroll fade", async ({ page }) => {
-    const errors = watchConsole(page);
+    // General's account widgets get `503` from `widget-token` because the
+    // fixture's sign-in provider issues no WorkOS widget tokens.
+    const errors = watchConsole(page, (message) => /503 \(Service Unavailable\)/.test(message.text()) && /\/widget-token$/.test(message.location().url ?? ""));
     await page.goto(hub.fixture.accounts.owner, { waitUntil: "domcontentloaded" });
     await page.goto(`${hub.fixture.url}/settings`, { waitUntil: "domcontentloaded" });
 
