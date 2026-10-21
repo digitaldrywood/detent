@@ -20,6 +20,9 @@ func TestPrivateIdentityLifecycle(t *testing.T) {
 	if !file.Identity.Valid() || !ValidCredential(file.Credential) || file.HubURL != "https://hub.example.test" {
 		t.Fatal("invalid generated identity")
 	}
+	if info, err := os.Stat(path); err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("identity permissions = %v, %v", info, err)
+	}
 	if _, err := Initialize(path, "https://hub.example.test"); err == nil {
 		t.Fatal("initialization overwrote an existing identity")
 	}
