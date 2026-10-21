@@ -91,13 +91,15 @@ type Provenance struct {
 }
 
 type NativeIssue struct {
-	ChangeSequence         int64                `json:"change_sequence,omitempty"`
-	LatestTransitionReason string               `json:"-"`
-	ReleaseDelivery        *ReleaseDelivery     `json:"release_delivery,omitempty"`
-	IssueContract          *issuecontract.State `json:"issue_contract,omitempty" yaml:"issue_contract,omitempty"`
-	OmittedFields          []string             `json:"omitted_fields,omitempty"`
-	LinkedSource           *LinkedIssueSource   `json:"linked_source,omitempty"`
-	IgnoreDependencies     bool                 `json:"ignore_dependencies,omitempty"`
+	ChangeSequence         int64                    `json:"change_sequence,omitempty"`
+	DecisionRequest        *workpad.DecisionRequest `json:"decision_request,omitempty"`
+	HumanAction            string                   `json:"human_action,omitempty"`
+	LatestTransitionReason string                   `json:"-"`
+	ReleaseDelivery        *ReleaseDelivery         `json:"release_delivery,omitempty"`
+	IssueContract          *issuecontract.State     `json:"issue_contract,omitempty" yaml:"issue_contract,omitempty"`
+	OmittedFields          []string                 `json:"omitted_fields,omitempty"`
+	LinkedSource           *LinkedIssueSource       `json:"linked_source,omitempty"`
+	IgnoreDependencies     bool                     `json:"ignore_dependencies,omitempty"`
 	NativeReference
 	WebURL             string              `json:"web_url"`
 	PublicationReused  bool                `json:"publication_reused,omitempty"`
@@ -411,12 +413,19 @@ type VerifyFix struct {
 
 type Transition struct {
 	Mutation
-	PolicyID         string   `json:"policy_id,omitempty"`
-	BlockerAttemptID string   `json:"blocker_attempt_id,omitempty"`
-	ExpectedRevision Revision `json:"expected_revision,string"`
-	State            string   `json:"state"`
-	Reason           string   `json:"reason"`
-	ReasonDetail     string   `json:"reason_detail,omitempty"`
+	DecisionAnswer   *DecisionAnswer `json:"decision_answer,omitempty"`
+	PolicyID         string          `json:"policy_id,omitempty"`
+	BlockerAttemptID string          `json:"blocker_attempt_id,omitempty"`
+	ExpectedRevision Revision        `json:"expected_revision,string"`
+	State            string          `json:"state"`
+	Reason           string          `json:"reason"`
+	ReasonDetail     string          `json:"reason_detail,omitempty"`
+}
+
+type DecisionAnswer struct {
+	AttemptID string `json:"attempt_id"`
+	Option    *int   `json:"option,omitempty"`
+	Custom    string `json:"custom,omitempty"`
 }
 
 type DependencyMutation struct {

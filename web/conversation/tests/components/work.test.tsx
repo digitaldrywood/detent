@@ -990,6 +990,64 @@ async function settledWork() {
   await waitFor(() => expect(screen.getByTestId("stat-completed").closest("[aria-busy]")?.getAttribute("aria-busy")).toBe("false"));
 }
 
+describe("issue decisions", () => {
+  it.each([
+    { name: "option", state: "Todo", answer: { option: 1 } },
+    { name: "custom", state: "Rework", answer: { custom: "Use a project name" } },
+    { name: "legacy hold", state: null, answer: null },
+  ])("leads with the $name request and submits through the workflow owner", async ({ name, state, answer }) => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    const request = {
+      attempt_id: "attempt_decision",
+      summary: "The installer is ready for a decision.",
+      question: "Which installer naming rule should be used?",
+      options: [
+        { label: "Derive a name", consequence: "Use the Hub host.", recommended: true, return_state: "Rework" },
+        { label: "Require a name", consequence: "Ask operators for a name.", recommended: false, return_state: "Todo" },
+      ],
+      custom_allowed: true,
+      custom_return_state: "Rework",
+    };
+    const submissions: Record<string, unknown>[] = [];
+    let current: NativeIssue | undefined;
+    let targetWorkItemId = "";
+    const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&completed_window=all", (fetch) => async (input, init) => {
+      const path = new URL(String(input), "http://fixture.test").pathname;
+      if (path.endsWith("/workflow") && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        submissions.push(body);
+        current = { ...current!, state: String(body.state), revision: "43", human_action: undefined, decision_request: undefined };
+        return Response.json(current);
+      }
+      const response = await fetch(input, init);
+      if (targetWorkItemId !== "" && path.endsWith(`/work-items/${targetWorkItemId}`)) {
+        current ??= { ...await response.json(), state: "Blocked", revision: "42", human_action: "Choose an installer naming rule.", ...(name === "legacy hold" ? {} : { decision_request: request }) } as NativeIssue;
+        return Response.json(current);
+      }
+      return response;
+    });
+    await settledWork();
+    const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?limit=200&completed_window=all");
+    const page = await response.json() as { items: NativeIssue[] };
+    targetWorkItemId = page.items[0]!.work_item_id;
+    await act(() => fixture.router.navigate({ to: "/work/i/$workItemId", params: { workItemId: page.items[0]!.work_item_id } }));
+    const card = await screen.findByRole("region", { name: name === "legacy hold" ? "Choose an installer naming rule." : request.question });
+    const body = screen.getByTestId("issue-body");
+    expect(card.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    if (answer === null) {
+      expect(within(card).queryByRole("button", { name: "Answer" })).toBeNull();
+      expect(submissions).toEqual([]);
+      return;
+    }
+    fireEvent.click(within(card).getByRole("radio", { name: name === "option" ? /^Require a name/ : /^Something else/ }));
+    if (name === "custom") fireEvent.change(within(card).getByRole("textbox", { name: "Your answer" }), { target: { value: "Use a project name" } });
+    fireEvent.click(within(card).getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(submissions).toHaveLength(1));
+    expect(submissions[0]).toMatchObject({ expected_revision: "42", state, reason: "user_requested", decision_answer: { attempt_id: "attempt_decision", ...answer } });
+    await waitFor(() => expect(screen.queryByRole("region", { name: request.question })).toBeNull());
+  });
+});
+
 describe("issue timeline pagination", () => {
   it("reuses the page attempts in workspace surfaces without another request or false ordinals", async () => {
     const http = {

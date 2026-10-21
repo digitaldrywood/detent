@@ -62,7 +62,7 @@ func TestNativePlanContinuation(t *testing.T) {
 				t.Fatal(err)
 			}
 			owner.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c")))
-			if err := owner.PrepareFinish(t.Context(), "succeeded", "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve the work\n```", nil); err != nil {
+			if err := owner.PrepareFinish(t.Context(), "succeeded", "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve the work\n"+testDecisionRequestYAML+"```", nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := h.scheduler.ReleaseClaim(t.Context(), held.ID, "completed"); err != nil {
@@ -84,6 +84,9 @@ func TestNativePlanContinuation(t *testing.T) {
 				output := ""
 				if test.report != "" {
 					output = "```detent-status\nschema: 1\n" + test.report + "\n```"
+					if test.disposition != nil && test.disposition.HumanAction {
+						output = strings.TrimSuffix(output, "```") + testDecisionRequestYAML + "```"
+					}
 				}
 				if err := execution.PrepareFinish(guarded, test.outcome, output, nil); err != nil {
 					t.Fatal(err)

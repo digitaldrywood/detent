@@ -2607,7 +2607,11 @@ func TestNativeDispositionFromMessageHostPublication(t *testing.T) {
 		{name: "complete stays complete", message: report("status: complete\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got := NativeDispositionFromMessage(tt.message)
+			message := tt.message
+			if strings.Contains(message, "human_action: Approve") {
+				message = strings.TrimSuffix(message, "```") + testDecisionRequestYAML + "```"
+			}
+			got := NativeDispositionFromMessage(message)
 			if got == nil || got.Status != tt.wantStatus || got.ReasonCode != tt.wantReason || tt.wantStatus == "complete" && (got.Blockers || len(got.BlockerEvidence) != 0) {
 				t.Fatalf("disposition = %+v, want status %q reason %q", got, tt.wantStatus, tt.wantReason)
 			}
