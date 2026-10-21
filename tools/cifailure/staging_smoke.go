@@ -47,7 +47,7 @@ var smokeSkipped = strings.Fields(`
  approve_change_review_policy bind_artifact_service
 `)
 
-var smokeWrites = strings.Fields(`file_issue edit_item add_comment edit_comment move_item set_dependency order_item set_queue_priority archive_item restore_item set_priority update_project_integration`)
+var smokeWrites = strings.Fields(`file_issue edit_item add_comment edit_comment move_item set_dependency order_item set_queue_priority archive_item restore_item set_priority update_project_integration rename_project`)
 var errSmokeFixture = errors.New("smoke resource fixture unavailable")
 
 var smokeReadSkips = map[string]string{
@@ -863,6 +863,37 @@ func (s *mcpSmoke) integration(ctx context.Context) error {
 	for _, key := range []string{"intake", "projection", "repository_enabled"} {
 		if current[key] != data[key] {
 			return fmt.Errorf("update_project_integration: unchanged %s was modified", key)
+		}
+	}
+	name, ok := current["name"].(string)
+	if !ok || name == "" {
+		return errors.New("get_project_integration: missing project name")
+	}
+	if err := json.Unmarshal(s.mcp.tools["rename_project"].InputSchema, &schema); err != nil {
+		return err
+	}
+	value, err = smokeRevisionArgument(schema.Properties["expected_revision"], next)
+	if err != nil {
+		return err
+	}
+	if _, err := s.call(ctx, "rename_project", map[string]any{"organization_id": s.fixtures["organization_id"], "project_id": s.project, "name": name, "expected_revision": value}); err != nil {
+		return err
+	}
+	renamed, err := s.call(ctx, "get_project_integration", map[string]any{"project_id": s.project})
+	if err != nil {
+		return err
+	}
+	saved, ok := renamed["data"].(map[string]any)
+	if !ok {
+		return errors.New("rename_project: missing updated data")
+	}
+	revision, err = smokeRevision(saved)
+	if err != nil || revision <= next {
+		return errors.Join(errors.New("rename_project: revision did not advance"), err)
+	}
+	for _, key := range []string{"name", "intake", "projection", "repository_enabled"} {
+		if saved[key] != current[key] {
+			return fmt.Errorf("rename_project: unchanged %s was modified", key)
 		}
 	}
 	return nil

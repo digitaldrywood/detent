@@ -63,6 +63,17 @@ type SpriteAllocationInput struct {
 	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
 	DesiredCount     int              `json:"desired_count"`
 }
+type RenameProjectInput struct {
+	Name             string           `json:"name"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+}
+type RenameProjectArguments struct {
+	OrganizationID   string           `json:"organization_id"`
+	ProjectID        string           `json:"project_id"`
+	Name             string           `json:"name"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	RequestID        string           `json:"request_id"`
+}
 type IntegrationInput struct {
 	DuplicateChallenge *bool                  `json:"duplicate_challenge,omitempty"`
 	WorkflowMarkdown   *string                `json:"workflow_markdown,omitempty"`
@@ -161,6 +172,7 @@ func ProjectCatalog() []Definition {
 		projectWrite[HostedProjectCreateInput]("create_hosted_project", true, false),
 		projectWrite[OnboardingInput]("save_onboarding", false, false),
 		projectWrite[IntegrationInput]("update_project_integration", true, true),
+		renameProjectDefinition(),
 		projectWrite[RepositoryInput]("bind_native_repository", true, true),
 		projectWrite[ImportStartInput]("start_git_hub_import", true, true),
 		projectWrite[ImportAdvanceInput]("advance_git_hub_import", false, true),
@@ -382,4 +394,14 @@ func schemaObject(value any) map[string]any {
 		panic("generated schema is not an object")
 	}
 	return object
+}
+
+func renameProjectDefinition() Definition {
+	schema := projectSchema(reflect.TypeFor[RenameProjectArguments]())
+	schema["required"] = []string{"organization_id", "project_id", "name", "expected_revision", "request_id"}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		panic(err)
+	}
+	return Definition{Name: "rename_project", Description: "Rename a native project display name with project-admin authority and an expected revision. The slug is preserved. request_id is the idempotency key.", InputSchema: raw, Annotations: Annotations{Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}}
 }

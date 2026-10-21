@@ -15,6 +15,7 @@ import (
 )
 
 type ProjectIntegration struct {
+	Name                      string                `json:"name"`
 	DuplicateChallenge        bool                  `json:"duplicate_challenge"`
 	ArchiveCompletedAfterDays *int                  `json:"archive_completed_after_days"`
 	ArchiveCancelledAfterDays *int                  `json:"archive_cancelled_after_days"`
@@ -64,10 +65,10 @@ func (s *Service) githubRequestCounts(c echo.Context) error {
 func readProjectIntegration(ctx context.Context, query nativeQueryer, scope nativeScope) (ProjectIntegration, error) {
 	var result ProjectIntegration
 	var states string
-	err := query.QueryRowContext(ctx, `SELECT p.profile, p.integration_revision, p.github_intake, p.github_projection,
+	err := query.QueryRowContext(ctx, `SELECT p.name, p.profile, p.integration_revision, p.github_intake, p.github_projection,
 p.github_repository_enabled, COALESCE(r.github_owner || '/' || r.github_name, ''), COALESCE(r.id, 0), p.checkout_repository, p.states_json, p.workflow_source, p.workflow_source_revision, p.workflow_markdown, p.archive_completed_after_days, p.archive_cancelled_after_days, p.duplicate_challenge
-FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organization_id = ? AND p.id = ?`, scope.organization, scope.project).Scan(
-		&result.Profile, &result.Revision, &result.Intake, &result.Projection, &result.RepositoryEnabled, &result.Repository, &result.RepositoryID, &result.CheckoutRepository, &states, &result.WorkflowSource, &result.WorkflowSourceRevision, &result.WorkflowMarkdown, &result.ArchiveCompletedAfterDays, &result.ArchiveCancelledAfterDays, &result.DuplicateChallenge)
+FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organization_id = ? AND p.id = ? AND p.deleted_at IS NULL`, scope.organization, scope.project).Scan(
+		&result.Name, &result.Profile, &result.Revision, &result.Intake, &result.Projection, &result.RepositoryEnabled, &result.Repository, &result.RepositoryID, &result.CheckoutRepository, &states, &result.WorkflowSource, &result.WorkflowSourceRevision, &result.WorkflowMarkdown, &result.ArchiveCompletedAfterDays, &result.ArchiveCancelledAfterDays, &result.DuplicateChallenge)
 	if err != nil {
 		return result, err
 	}

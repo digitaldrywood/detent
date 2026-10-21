@@ -89,6 +89,7 @@ func TestCatalogDecoderContract(t *testing.T) {
 		"create_native_project":          reflect.TypeFor[ProjectRequest[ProjectCreateInput]](),
 		"create_hosted_project":          reflect.TypeFor[ProjectRequest[HostedProjectCreateInput]](),
 		"save_onboarding":                reflect.TypeFor[ProjectRequest[OnboardingInput]](),
+		"rename_project":                 reflect.TypeFor[RenameProjectArguments](),
 		"update_project_integration":     reflect.TypeFor[ProjectRequest[IntegrationInput]](),
 		"bind_native_repository":         reflect.TypeFor[ProjectRequest[RepositoryInput]](),
 		"start_git_hub_import":           reflect.TypeFor[ProjectRequest[ImportStartInput]](),
