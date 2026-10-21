@@ -2,10 +2,17 @@ import React from "react";
 import type {
   AccessKey,
   PersonalKeyPolicy,
+  KeyContext,
 } from "../../contracts/accessKeys.ts";
 import { Label } from "../../components/ui/label.tsx";
 import { Button } from "../../components/ui/button.tsx";
-import { Badge } from "../../components/ui/badge.tsx";
+import { MoreHorizontal } from "lucide-react";
+import {
+  Menu,
+  MenuTrigger,
+  MenuPopup,
+  MenuItem,
+} from "../../components/ui/menu.tsx";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -17,17 +24,12 @@ import {
 } from "../../components/ui/alert-dialog.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { ControlError, NativeSelect } from "../account/controls.tsx";
-import { KeyScope, lastKeyUse } from "./APIKeysMCPSettings.tsx";
-import {
-  SettingsRow,
-  SettingsSection,
-  useRelativeTimeTick,
-} from "./settingsLayout.tsx";
+import { APIKeyTable, keyIsInactive } from "./APIKeyTable.tsx";
+import { useRelativeTimeTick } from "./settingsLayout.tsx";
 
-export function OrganizationKeyControls() {
+export function useOrganizationKeyControls(enabled: boolean) {
   const api = useAccountApi();
   const account = useAccountBootstrap();
-  useRelativeTimeTick(60_000);
   const [keys, setKeys] = React.useState<readonly AccessKey[]>([]);
   const [nextCursor, setNextCursor] = React.useState("");
   const [policy, setPolicy] = React.useState<PersonalKeyPolicy>("allowed");
@@ -57,16 +59,17 @@ export function OrganizationKeyControls() {
     setNextCursor("");
     setRevoke(null);
     setError(null);
-    load().catch(() => {
-      if (current)
-        setError(
-          "Could not load organization key controls. Reload to try again.",
-        );
-    });
+    if (enabled)
+      load().catch(() => {
+        if (current)
+          setError(
+            "Could not load organization key controls. Reload to try again.",
+          );
+      });
     return () => {
       current = false;
     };
-  }, [load]);
+  }, [load, enabled]);
   async function mutate(action: () => Promise<unknown>) {
     setBusy(true);
     setError(null);
@@ -105,139 +108,190 @@ export function OrganizationKeyControls() {
     }
   }
   const pending = keys.filter((key) =>
-    key.effective_reach?.some((org) => org.status === "pending"),
+    key.effective_reach?.some(
+      (org) =>
+        org.organization_id === account?.organization.id &&
+        org.status === "pending",
+    ),
   );
+  return {
+    keys,
+    pending,
+    nextCursor,
+    policy,
+    draft,
+    loaded,
+    busy,
+    error,
+    revoke,
+    setDraft,
+    setError,
+    setRevoke,
+    mutate,
+    loadMore,
+  };
+}
+
+export function OrganizationKeyControls({
+  controls,
+  context,
+  showHistory,
+}: {
+  readonly controls: ReturnType<typeof useOrganizationKeyControls>;
+  readonly context: KeyContext | null;
+  readonly showHistory: boolean;
+}) {
+  const api = useAccountApi();
+  const account = useAccountBootstrap();
+  const now = useRelativeTimeTick(60_000);
+  const {
+    keys,
+    pending,
+    nextCursor,
+    policy,
+    draft,
+    loaded,
+    busy,
+    error,
+    revoke,
+    setDraft,
+    setError,
+    setRevoke,
+    mutate,
+    loadMore,
+  } = controls;
+  function confirmBlock(key: AccessKey) {
+    setError(null);
+    setRevoke(key);
+  }
   return (
     <>
-      <SettingsSection title="Member keys">
-        {error && (
-          <div className="p-3">
-            <ControlError message={error} />
+      <p className="text-xs text-muted-foreground">
+        Personal keys from members that reach this organization. Blocking one
+        cuts its access here only.
+      </p>
+      {error && <ControlError message={error} />}
+      {loaded && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-3">
+          <div className="space-y-0.5">
+            <Label htmlFor="org-personal-key-policy">
+              Personal keys in this organization
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Service keys are not affected.
+            </p>
           </div>
-        )}
-        {!loaded && !error && (
-          <SettingsRow
-            title="Loading organization key controls…"
-            role="status"
-          />
-        )}
-        {loaded && (
-          <SettingsRow
-            title={
-              <Label htmlFor="org-personal-key-policy">Personal keys</Label>
-            }
-            description="Applies to personal keys reaching this organization. Service keys are managed separately."
-            control={
-              <div className="flex flex-wrap items-center gap-2">
-                <NativeSelect
-                  id="org-personal-key-policy"
-                  value={draft}
-                  disabled={busy}
-                  onValueChange={(value) =>
-                    setDraft(value as PersonalKeyPolicy)
-                  }
-                  options={[
-                    { value: "allowed", label: "Allowed" },
-                    { value: "approval", label: "Require approval" },
-                    { value: "blocked", label: "Blocked" },
-                  ]}
-                />
-                <Button
-                  size="sm"
-                  disabled={busy || draft === policy}
-                  onClick={() => void mutate(() => api.saveKeyPolicy(draft))}
-                >
-                  Save policy
-                </Button>
-              </div>
-            }
-          />
-        )}
-        {loaded && (
-          <>
-            <SettingsRow title="Approval queue" />
-            {pending.length === 0 && (
-              <SettingsRow title="No keys awaiting approval" />
-            )}
-            {pending.map((key) => (
-              <SettingsRow
-                key={key.id}
-                title={key.name}
-                description={key.owner_email}
-                status={<KeyScope apiKey={key} />}
-                control={
-                  <Button
-                    size="xs"
+          <div className="flex items-center gap-2">
+            <NativeSelect
+              id="org-personal-key-policy"
+              value={draft}
+              disabled={busy}
+              onValueChange={(value) => setDraft(value as PersonalKeyPolicy)}
+              options={[
+                { value: "allowed", label: "Allowed" },
+                { value: "approval", label: "Require approval" },
+                { value: "blocked", label: "Blocked" },
+              ]}
+            />
+            <Button
+              size="sm"
+              disabled={busy || draft === policy}
+              onClick={() => void mutate(() => api.saveKeyPolicy(draft))}
+            >
+              Save
+            </Button>
+          </div>
+        </div>
+      )}
+      {pending.map((key) => (
+        <div
+          key={key.id}
+          role="group"
+          aria-label={`${key.name} awaiting approval`}
+          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-warning/30 bg-warning-surface px-3 py-2"
+        >
+          <div className="flex min-w-0 flex-wrap items-center gap-x-1 text-xs">
+            <span
+              aria-hidden="true"
+              className="mr-1 size-1.5 shrink-0 rounded-full bg-warning-foreground"
+            />
+            <span className="break-words font-medium">{key.name}</span>
+            <span className="break-all text-muted-foreground">
+              · {key.owner_email} · {key.permission} · awaiting approval
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={busy}
+              aria-label={`Block ${key.name} for this org`}
+              onClick={() => confirmBlock(key)}
+            >
+              Block
+            </Button>
+            <Button
+              size="xs"
+              disabled={busy}
+              aria-label={`Approve ${key.name}`}
+              onClick={() => void mutate(() => api.approveMemberKey(key.id))}
+            >
+              Approve
+            </Button>
+          </div>
+        </div>
+      ))}
+      <APIKeyTable
+        label="Member keys"
+        keys={keys.filter((key) => showHistory || !keyIsInactive(key, now))}
+        context={context}
+        organizationId={account?.organization.id}
+        loaded={loaded}
+        error={Boolean(error)}
+        emptyMessage="No member keys reach this org"
+        renderActions={(key, inactive) => {
+          const reach = key.effective_reach?.find(
+            (org) => org.organization_id === account?.organization.id,
+          );
+          return (
+            !inactive &&
+            reach?.status !== "blocked" &&
+            !reach?.blocked && (
+              <div className="flex justify-end">
+                <Menu>
+                  <MenuTrigger
+                    render={<Button size="icon-xs" variant="ghost-muted" />}
                     disabled={busy}
-                    aria-label={`Approve ${key.name}`}
-                    onClick={() =>
-                      void mutate(() => api.approveMemberKey(key.id))
-                    }
+                    aria-label={`More actions for ${key.name}`}
                   >
-                    Approve for this org
-                  </Button>
-                }
-              />
-            ))}
-            <SettingsRow title="Personal keys reaching this organization" />
-            {keys.length === 0 && (
-              <SettingsRow
-                title="No member keys reach this org"
-                description="Personal keys with current membership and matching scope appear here, including unused keys."
-              />
-            )}
-            {keys.map((key) => (
-              <SettingsRow
-                key={key.id}
-                title={
-                  <span className="flex flex-wrap items-center gap-2 break-words">
-                    {key.name}
-                    <Badge variant="outline">{key.permission}</Badge>
-                  </span>
-                }
-                description={
-                  <span>
-                    {key.owner_email} ·{" "}
-                    {lastKeyUse(key.effective_reach?.[0]?.last_used_at)}
-                  </span>
-                }
-                status={<KeyScope apiKey={key} />}
-                control={
-                  !key.effective_reach?.[0]?.blocked && (
-                    <Button
-                      size="xs"
-                      variant="destructive-outline"
-                      disabled={busy}
-                      aria-label={`Block ${key.name} for this org`}
-                      onClick={() => {
-                        setError(null);
-                        setRevoke(key);
-                      }}
+                    <MoreHorizontal aria-hidden="true" />
+                  </MenuTrigger>
+                  <MenuPopup align="end">
+                    <MenuItem
+                      variant="destructive"
+                      onClick={() => confirmBlock(key)}
                     >
                       Block for this org
-                    </Button>
-                  )
-                }
-              />
-            ))}
-            {nextCursor && (
-              <SettingsRow
-                title="More member keys"
-                control={
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => void loadMore()}
-                  >
-                    Load more member keys
-                  </Button>
-                }
-              />
-            )}
-          </>
-        )}
-      </SettingsSection>
+                    </MenuItem>
+                  </MenuPopup>
+                </Menu>
+              </div>
+            )
+          );
+        }}
+      />
+      {nextCursor && (
+        <div className="flex justify-end">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => void loadMore()}
+          >
+            Load more member keys
+          </Button>
+        </div>
+      )}
       <AlertDialog
         open={revoke !== null}
         onOpenChange={(value) => {
