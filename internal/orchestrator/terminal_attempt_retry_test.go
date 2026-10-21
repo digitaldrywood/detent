@@ -934,6 +934,7 @@ func TestDeliverableRecoveryCompletionDeferralSurvivesRestart(t *testing.T) {
 		{name: "unknown availability class", invalidClass: true},
 		{name: "nonempty availability without class", invalidScope: true},
 		{name: "workspace join", joinedErr: runpkg.ErrWorkspacePreparation},
+		{name: "wrapped workspace join", joinedErr: fmt.Errorf("prepare checkout: %w", runpkg.ErrWorkspacePreparation)},
 		{name: "checkpoint join", joinedErr: errors.New("checkpoint persistence failed")},
 		{name: "lease join", joinedErr: errors.New("native execution lease lost")},
 		{name: "session join", joinedErr: errors.New("session persistence failed")},
@@ -976,6 +977,9 @@ func TestDeliverableRecoveryCompletionDeferralSurvivesRestart(t *testing.T) {
 			}
 			if !test.wantPure && replayed.Err.Error() != input.Err.Error() {
 				t.Fatalf("replayed full error = %q, want %q", replayed.Err.Error(), input.Err.Error())
+			}
+			if got, want := errors.Is(replayed.Err, runpkg.ErrWorkspacePreparation), errors.Is(input.Err, runpkg.ErrWorkspacePreparation); got != want {
+				t.Fatalf("replayed workspace preparation = %v, want %v", got, want)
 			}
 			if test.joinedErr != nil && !test.legacy && decoded.DeliverableRecovery != nil {
 				t.Fatal("mixed error acquired a typed recovery receipt")

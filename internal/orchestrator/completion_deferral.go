@@ -83,6 +83,14 @@ type deferredCompletionAvailability struct {
 	Message string                             `json:"message"`
 }
 
+type deferredCompletionError struct {
+	message string
+	cause   error
+}
+
+func (e *deferredCompletionError) Error() string { return e.message }
+func (e *deferredCompletionError) Unwrap() error { return e.cause }
+
 func (r deferredCompletion) statusMessage() string {
 	if r.Availability.Class == string(gate.ReasonAutomatedReviewMissing) {
 		return errNativeReviewPending.Error()
@@ -236,7 +244,10 @@ func (r deferredCompletion) completion() runpkg.Completion {
 	}
 	if event.Err != nil {
 		if r.WorkspacePreparation {
-			event.Err = errors.Join(runpkg.ErrWorkspacePreparation, event.Err)
+			event.Err = &deferredCompletionError{
+				message: event.Err.Error(),
+				cause:   errors.Join(runpkg.ErrWorkspacePreparation, event.Err),
+			}
 		}
 		if r.WorkerProcessReap {
 			event.Err = errors.Join(runpkg.ErrWorkerProcessReap, event.Err)
