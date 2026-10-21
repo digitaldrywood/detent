@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
 
@@ -69,9 +70,11 @@ func closeFiles(files ...*os.File) error {
 }
 
 type authorityServer struct {
-	binding Binding
-	budget  time.Duration
-	resolve func(Request) (cloudassert.Claims, error)
+	binding        Binding
+	budget         time.Duration
+	resolve        func(Request) (cloudassert.Claims, error)
+	contents       attachment.ArchiveContentStore
+	contentContext func(time.Time) (context.Context, context.CancelFunc)
 }
 
 func (s *authorityServer) Handshake(binding Binding, result *Handshake) error {
@@ -101,7 +104,7 @@ type Parent struct {
 	done   chan struct{}
 }
 
-func Start(ctx context.Context, binding Binding, budget time.Duration, resolve Resolver) (*Parent, error) {
+func Start(ctx context.Context, binding Binding, budget time.Duration, resolve Resolver, contents ...attachment.ArchiveContentStore) (*Parent, error) {
 	parentRead, childWrite, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -120,7 +123,15 @@ func Start(ctx context.Context, binding Binding, budget time.Duration, resolve R
 		defer end()
 		return resolve(lookup, request.Origin)
 	}
-	if err := server.RegisterName("Authority", &authorityServer{binding: binding, budget: budget, resolve: current}); err != nil {
+	authority := &authorityServer{binding: binding, budget: budget, resolve: current, contentContext: func(deadline time.Time) (context.Context, context.CancelFunc) {
+		lookup, cancel := context.WithTimeout(ctx, budget)
+		lookup, end := context.WithDeadline(lookup, deadline)
+		return lookup, func() { end(); cancel() }
+	}}
+	if len(contents) > 0 {
+		authority.contents = contents[0]
+	}
+	if err := server.RegisterName("Authority", authority); err != nil {
 		close(p.done)
 		return nil, errors.Join(err, p.Close())
 	}
@@ -194,4 +205,56 @@ func (c *Client) Close() error {
 		return err
 	}
 	return nil
+}
+
+type ContentRequest struct {
+	Organization string
+	Content      []byte
+	Reference    attachment.ArchiveReference
+	Deadline     time.Time
+}
+
+func (s *authorityServer) PublishContent(request ContentRequest, ref *attachment.ArchiveReference) error {
+	if s.contents == nil || request.Organization != s.binding.Organization || request.Deadline.IsZero() || len(request.Content) > attachment.MaxArchiveBytes {
+		return cloudassert.ErrInvalid
+	}
+	ctx, cancel := s.contentContext(request.Deadline)
+	defer cancel()
+	if ctx.Err() != nil {
+		return cloudassert.ErrInvalid
+	}
+	result, err := s.contents.PublishContent(ctx, s.binding.Organization, request.Content)
+	if err != nil {
+		return errors.New("archive publication unavailable")
+	}
+	*ref = result
+	return nil
+}
+func (s *authorityServer) ReadContent(request ContentRequest, content *[]byte) error {
+	if s.contents == nil || request.Organization != s.binding.Organization || request.Deadline.IsZero() || request.Reference.Validate(s.binding.Organization) != nil {
+		return cloudassert.ErrInvalid
+	}
+	ctx, cancel := s.contentContext(request.Deadline)
+	defer cancel()
+	if ctx.Err() != nil {
+		return cloudassert.ErrInvalid
+	}
+	result, err := s.contents.ReadContent(ctx, s.binding.Organization, request.Reference)
+	if err != nil {
+		return errors.New("archive content unavailable")
+	}
+	*content = result
+	return nil
+}
+func (c *Client) PublishContent(ctx context.Context, organization string, content []byte) (attachment.ArchiveReference, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.budget)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	return callAuthority[attachment.ArchiveReference](ctx, c, "PublishContent", ContentRequest{Organization: organization, Content: content, Deadline: deadline})
+}
+func (c *Client) ReadContent(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.budget)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	return callAuthority[[]byte](ctx, c, "ReadContent", ContentRequest{Organization: organization, Reference: ref, Deadline: deadline})
 }

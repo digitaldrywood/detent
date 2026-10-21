@@ -140,6 +140,19 @@ func TestArchiveStorageLifecycle(t *testing.T) {
 				if strings.Contains(logs.String(), signed) || strings.Contains(logs.String(), "X-Amz-") {
 					t.Fatal("presigned URL leaked into logs")
 				}
+				owner := ArchiveContents{Storage: store.(ArchiveStorage)}
+				readContent, err := owner.ReadContent(t.Context(), org, ref)
+				if err != nil || string(readContent) != content {
+					t.Fatalf("archive content read: %v", err)
+				}
+				published, err := owner.PublishContent(t.Context(), org, []byte(content))
+				if err != nil || published != ref {
+					t.Fatalf("content publication changed reference: %v", err)
+				}
+				wrongOrg := "org_other"
+				if _, err := owner.ReadContent(t.Context(), wrongOrg, ref); err == nil {
+					t.Fatal("cross-organization archive read accepted")
+				}
 				encoded, err := json.Marshal(ref)
 				if err != nil || strings.Contains(string(encoded), cfg.SecretAccessKey) || strings.Contains(string(encoded), "X-Amz-") {
 					t.Fatal("credentials leaked into reference")

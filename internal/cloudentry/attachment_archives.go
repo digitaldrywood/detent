@@ -111,3 +111,11 @@ func (s *Service) registerArchiveRoutes(e *echo.Echo, attachmentBase string) {
 	e.POST(base, s.uploadArchive)
 	e.GET(base+"/:digest/access", s.readArchive)
 }
+
+func archiveStorage(storage attachment.Storage) attachment.ArchiveStorage {
+	result, ok := storage.(attachment.ArchiveStorage)
+	if !ok {
+		return nil
+	}
+	return result
+}

@@ -131,10 +131,14 @@ type coordinatorFixture struct {
 	organization  tracker.OrganizationID
 }
 
-func newCoordinatorFixture(t *testing.T, name string) *coordinatorFixture {
+func newCoordinatorFixture(t *testing.T, name string, contents ...*conversationContentFixture) *coordinatorFixture {
 	t.Helper()
 	backend := newFakeCoordinatorBackend()
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), GitHubDisabled: true, Conversation: &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}})
+	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), GitHubDisabled: true, Conversation: &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}}
+	if len(contents) > 0 {
+		config.Conversation.ArchiveContents = contents[0]
+	}
+	service := openTestService(t, config)
 	var organization tracker.OrganizationID
 	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM organizations WHERE local = 1").Scan(&organization); err != nil {
 		t.Fatal(err)
@@ -1043,7 +1047,7 @@ func TestConversationCoordinatorToolMessagesFromUpdates(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newCoordinatorFixture(t, "toolmessages")
+			f := newCoordinatorFixture(t, "toolmessages", &conversationContentFixture{})
 			f.backend.setRun(func(ctx context.Context, _ int, handle runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 				updates := []runner.AgentUpdate{
 					{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-early"},
@@ -1110,6 +1114,29 @@ func TestConversationCoordinatorToolMessagesFromUpdates(t *testing.T) {
 			if test.toolUpdates {
 				if len(tools) != 1 || tools[0].Role != conversation.RoleSystem || tools[0].Delivery != conversation.DeliveryCompleted || !strings.Contains(tools[0].Text, "shell") {
 					t.Fatalf("tool messages = %#v, want one completed system tool message", tools)
+				}
+				if tools[0].ContentID == "" {
+					t.Fatal("tool content was retained inline")
+				}
+				acceptedText := ""
+				updatedText := ""
+				for _, event := range f.events(t, record.ID) {
+					if event.Type == conversation.EventMessageAccepted || event.Type == conversation.EventMessageUpdated {
+						var message conversationMessageResource
+						if err := json.Unmarshal(event.Data, &message); err != nil {
+							t.Fatal(err)
+						}
+						if message.ID == tools[0].ID {
+							if event.Type == conversation.EventMessageAccepted {
+								acceptedText = message.Text
+							} else {
+								updatedText = message.Text
+							}
+						}
+					}
+				}
+				if !strings.HasPrefix(acceptedText, "Running ") || !strings.HasPrefix(updatedText, "Finished ") {
+					t.Fatalf("immutable tool revisions changed: %q -> %q", acceptedText, updatedText)
 				}
 				if len([]rune(tools[0].Text)) > 500 {
 					t.Fatalf("tool summary length = %d, want at most 500 runes", len([]rune(tools[0].Text)))

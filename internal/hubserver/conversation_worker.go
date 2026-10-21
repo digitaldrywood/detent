@@ -363,7 +363,7 @@ func requireConversationRecordOwner(record conversationRecord, identity conversa
 
 // readLinkedConversation resolves the canonical conversation of a work item
 // in the request scope.
-func (c *conversationService) readLinkedConversation(ctx context.Context, tx *sql.Tx, scope nativeScope, item string) (conversationRecord, error) {
+func (c *conversationService) readLinkedConversation(ctx context.Context, tx nativeQueryer, scope nativeScope, item string) (conversationRecord, error) {
 	record, err := readLinkedConversationRecord(ctx, tx, scope, item)
 	if err != nil {
 		return record, err
@@ -374,7 +374,7 @@ func (c *conversationService) readLinkedConversation(ctx context.Context, tx *sq
 	return record, nil
 }
 
-func readLinkedConversationRecord(ctx context.Context, tx *sql.Tx, scope nativeScope, item string) (conversationRecord, error) {
+func readLinkedConversationRecord(ctx context.Context, tx nativeQueryer, scope nativeScope, item string) (conversationRecord, error) {
 	record, err := scanConversation(tx.QueryRowContext(ctx, "SELECT "+conversationReadColumns+" FROM conversations WHERE organization_id = ? AND project_id = ? AND work_item_id = ?", scope.organization, scope.project, item))
 	if errors.Is(err, sql.ErrNoRows) {
 		return record, nativeNotFound()
@@ -437,7 +437,7 @@ func (c *conversationService) ensureWorkerConversation(ctx context.Context, tx *
 // constant condition so the full statement is a compile-time string.
 const conversationMessageQuery = "SELECT " + conversationMessageColumns + " FROM conversation_messages WHERE "
 
-func (c *conversationService) queryMessages(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]conversationMessageRecord, error) {
+func (c *conversationService) queryMessages(ctx context.Context, tx nativeQueryer, query string, args ...any) ([]conversationMessageRecord, error) {
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
@@ -460,6 +460,9 @@ func (c *conversationService) queryMessages(ctx context.Context, tx *sql.Tx, que
 	for i := range messages {
 		pointers = append(pointers, &messages[i])
 	}
+	if err := c.store.resolveMessageContents(ctx, tx, pointers); err != nil {
+		return nil, err
+	}
 	if err := resolveMessageReferences(ctx, tx, pointers); err != nil {
 		return nil, err
 	}
@@ -471,7 +474,7 @@ func (c *conversationService) queryMessages(ctx context.Context, tx *sql.Tx, que
 
 // readReceipt returns the stored receipt for a command key; found is false
 // when the key was never reserved.
-func (c *conversationService) readReceipt(ctx context.Context, tx *sql.Tx, conversationID, key string) (receipt conversation.Receipt, found bool, err error) {
+func (c *conversationService) readReceipt(ctx context.Context, tx nativeQueryer, conversationID, key string) (receipt conversation.Receipt, found bool, err error) {
 	var encoded string
 	err = tx.QueryRowContext(ctx, "SELECT receipt_json FROM conversation_commands WHERE conversation_id = ? AND key = ?", conversationID, key).Scan(&encoded)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -521,7 +524,7 @@ func (c *conversationService) handOffControls(ctx context.Context, tx *sql.Tx, r
 	// A queued control has not been handed to this owner whatever its seq
 	// is, so a retry that re-queues an older message still reaches a worker
 	// whose cursor is already past it (decisions section 10.3).
-	messages, err := c.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND (seq > ? OR delivery = 'queued') AND ((delivery IN ('queued', 'sending') AND kind IN ('text', 'answer', 'interrupt', 'continue')) OR (delivery = 'saved' AND kind = 'continue')) ORDER BY seq", record.ID, after)
+	messages, err := c.pendingControlMessages(ctx, tx, record.ID, after)
 	if err != nil {
 		return nil, false, err
 	}
@@ -571,7 +574,7 @@ func (c *conversationService) handOffControls(ctx context.Context, tx *sql.Tx, r
 // resolveAnswer finds the question an answer control targets: named on the
 // receipt or in the message data. The answers come from the question row
 // when the operator API recorded them there, otherwise from the message.
-func (c *conversationService) resolveAnswer(ctx context.Context, tx *sql.Tx, conversationID string, message conversationMessageRecord) (conversationQuestionRecord, map[string][]string, error) {
+func (c *conversationService) resolveAnswer(ctx context.Context, tx nativeQueryer, conversationID string, message conversationMessageRecord) (conversationQuestionRecord, map[string][]string, error) {
 	data := decodeConversationAnswer(message.Data)
 	questionID := data.QuestionID
 	if questionID == "" && message.CommandKey != "" {
@@ -711,6 +714,40 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 	ctx := e.Request().Context()
 	scope := nativeRequestScope(e)
 	item := e.Param("item")
+	if c.store.contents != nil {
+		authTx, err := c.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return s.nativeAPIError(e, err)
+		}
+		now, err := s.database.currentTime()
+		if err == nil {
+			_, err = c.requireWorkerOwner(ctx, authTx, scope, item, request.conversationWorkerIdentity, request.RunID, false, now)
+		}
+		rollbackErr := authTx.Rollback()
+		if err == nil {
+			err = rollbackErr
+		}
+		if err != nil {
+			return s.nativeAPIError(e, err)
+		}
+		linked, err := c.readLinkedConversation(ctx, c.store.reader, scope, item)
+		var failure *nativeError
+		if err != nil && (!errors.As(err, &failure) || failure.status != http.StatusNotFound) {
+			return s.nativeAPIError(e, err)
+		}
+		if err == nil {
+			prepared, err := c.prepareTurnContents(ctx, string(scope.organization), linked.ID, nil, true)
+			if err != nil {
+				return s.nativeAPIError(e, err)
+			}
+			ctx = prepared
+			prepared, err = c.prepareBindNotice(ctx, scope, linked, request)
+			if err != nil {
+				return s.nativeAPIError(e, err)
+			}
+			ctx = prepared
+		}
+	}
 	var record conversationRecord
 	var response conversationBindResponse
 	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
@@ -840,6 +877,20 @@ func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 	ctx := e.Request().Context()
 	scope := nativeRequestScope(e)
 	item := e.Param("item")
+	if c.store.contents != nil {
+		linked, err := c.readLinkedConversation(ctx, c.store.reader, scope, item)
+		if err != nil {
+			return s.nativeAPIError(e, err)
+		}
+		if err := c.authorizeWorkerContent(ctx, scope, linked.ID, item, request.conversationWorkerIdentity, true); err != nil {
+			return s.nativeAPIError(e, err)
+		}
+		prepared, err := c.prepareTurnContents(ctx, string(scope.organization), linked.ID, nil, true)
+		if err != nil {
+			return s.nativeAPIError(e, err)
+		}
+		ctx = prepared
+	}
 	var record conversationRecord
 	changed := false
 	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
@@ -1026,6 +1077,16 @@ func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
 	ctx := e.Request().Context()
 	scope := nativeRequestScope(e)
 	id := e.Param("conversation")
+	if c.store.contents != nil {
+		if err := c.authorizeWorkerContent(ctx, scope, id, "", request.conversationWorkerIdentity, false); err != nil {
+			return s.nativeAPIError(e, err)
+		}
+		prepared, err := c.prepareTurnContents(ctx, string(scope.organization), id, request.Events, false)
+		if err != nil {
+			return s.nativeAPIError(e, err)
+		}
+		ctx = prepared
+	}
 	var record conversationRecord
 	var response conversationTurnEventsResponse
 	replayed := false
@@ -1479,9 +1540,14 @@ func (c *conversationService) inFlightExecutions(ctx context.Context, query stri
 }
 
 func (c *conversationService) settleLostExecution(ctx context.Context, ref conversationExecutionRef) error {
+	prepared, err := c.prepareTurnContents(ctx, string(ref.organization), ref.id, nil, true)
+	if err != nil {
+		return err
+	}
+	ctx = prepared
 	var record conversationRecord
 	changed := false
-	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		var err error
 		record, err = c.store.readConversation(ctx, tx, ref.organization, ref.project, ref.id)
 		if err != nil {
@@ -1526,4 +1592,35 @@ func (c *conversationService) settleLostExecution(ctx context.Context, ref conve
 		c.committed(record)
 	}
 	return nil
+}
+
+func (c *conversationService) authorizeWorkerContent(ctx context.Context, scope nativeScope, id, item string, identity conversationWorkerIdentity, terminal bool) error {
+	tx, err := c.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	record, err := c.store.readConversation(ctx, tx, scope.organization, scope.project, id)
+	if err != nil {
+		return err
+	}
+	if err := c.authorizeRead(ctx, tx, scope, record); err != nil {
+		return err
+	}
+	if err := requireConversationRecordOwner(record, identity, terminal); err != nil {
+		return err
+	}
+	if item == "" {
+		item = record.WorkItemID
+	}
+	now, err := c.server.database.currentTime()
+	if err != nil {
+		return err
+	}
+	_, err = c.requireWorkerOwner(ctx, tx, scope, item, identity, "", terminal, now)
+	return err
+}
+
+func (c *conversationService) pendingControlMessages(ctx context.Context, q nativeQueryer, id string, after int64) ([]conversationMessageRecord, error) {
+	return c.queryMessages(ctx, q, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND (seq > ? OR delivery = 'queued') AND ((delivery IN ('queued', 'sending') AND kind IN ('text', 'answer', 'interrupt', 'continue')) OR (delivery = 'saved' AND kind = 'continue')) ORDER BY seq", id, after)
 }

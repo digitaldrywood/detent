@@ -212,18 +212,20 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 func TestEventCompactionConversations(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		settled bool
-		age     int
-		status  conversation.ExecutionStatus
-		compact bool
+		name      string
+		settled   bool
+		age       int
+		status    conversation.ExecutionStatus
+		compact   bool
+		streaming bool
 	}{
-		{"settled past retention", true, 31, conversation.ExecutionCompleted, true},
-		{"active", false, 31, conversation.ExecutionCompleted, false},
-		{"recently settled", true, 29, conversation.ExecutionCompleted, false},
-		{"retention boundary", true, 30, conversation.ExecutionCompleted, false},
-		{"running", true, 31, conversation.ExecutionRunning, false},
-		{"unknown execution", true, 31, conversation.ExecutionUnknown, false},
+		{"settled past retention", true, 31, conversation.ExecutionCompleted, true, false},
+		{"active", false, 31, conversation.ExecutionCompleted, false, false},
+		{"recently settled", true, 29, conversation.ExecutionCompleted, false, false},
+		{"retention boundary", true, 30, conversation.ExecutionCompleted, false, false},
+		{"running", true, 31, conversation.ExecutionRunning, false, false},
+		{"unknown execution", true, 31, conversation.ExecutionUnknown, false, false},
+		{"still streaming", false, 0, conversation.ExecutionRunning, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -239,6 +241,9 @@ func TestEventCompactionConversations(t *testing.T) {
 			record = f.create(t, record)
 			tx := f.tx(t)
 			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "Final answer retained", Delivery: conversation.DeliveryCompleted, CreatedAt: at, UpdatedAt: at, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "test"}}
+			if test.streaming {
+				message.Delivery = conversation.DeliveryResponding
+			}
 			if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
 				t.Fatal(err)
 			}
@@ -274,8 +279,11 @@ func TestEventCompactionConversations(t *testing.T) {
 					t.Fatal(err)
 				}
 				want := 620
-				if test.compact {
-					want = 13
+				if !test.streaming {
+					want = 20
+					if test.compact {
+						want = 13
+					}
 					if pass == 0 {
 						want = 120
 					}
@@ -309,11 +317,14 @@ func TestEventCompactionConversations(t *testing.T) {
 			if test.compact && (summary.RemovedEvents != 607 || summary.RetainedEvents != 13) {
 				t.Fatalf("summary=%+v", summary)
 			}
-			if !test.compact && summary.RemovedEvents != 0 {
+			if !test.compact && !test.streaming && (summary.RemovedEvents != 600 || summary.RetainedEvents != 20) {
+				t.Fatalf("settled delta compaction=%+v", summary)
+			}
+			if test.streaming && summary.RemovedEvents != 0 {
 				t.Fatalf("protected conversation compacted: %+v", summary)
 			}
 			_, err = f.store.replayEvents(t.Context(), f.service.database.reader, record.ID, 0)
-			if test.compact != errors.Is(err, errConversationCursorExpired) {
+			if !test.streaming != errors.Is(err, errConversationCursorExpired) {
 				t.Fatalf("stale replay: %v", err)
 			}
 			events, err := f.store.replayEvents(t.Context(), f.service.database.reader, record.ID, 612)

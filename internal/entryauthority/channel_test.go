@@ -1,6 +1,7 @@
 package entryauthority
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/rpc"
@@ -10,13 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
 
 func TestCurrentAuthorityChannel(t *testing.T) {
 	t.Parallel()
 	binding := Binding{Issuer: "entry", Organization: "org_example", Generation: 2}
-	for _, scenario := range []string{"concurrent lookups", "wrong allocation", "expired deadline", "shutdown pending lookup", "stalled reader"} {
+	for _, scenario := range []string{"concurrent lookups", "wrong allocation", "expired deadline", "shutdown pending lookup", "stalled reader", "archive content"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			if scenario == "stalled reader" {
@@ -87,7 +89,7 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 					return cloudassert.Claims{}, err
 				}
 				return cloudassert.Claims{Subject: origin.Subject, Audience: binding.Organization}, nil
-			})
+			}, &authorityContents{content: map[string][]byte{}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -115,6 +117,32 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 			}
 			if err != nil || handshake.Binding != binding {
 				t.Fatalf("handshake: %+v %v", handshake, err)
+			}
+
+			if scenario == "archive content" {
+				content := []byte(strings.Repeat("immutable conversation detail ", 100))
+				ref, err := client.PublishContent(t.Context(), binding.Organization, content)
+				if err != nil {
+					t.Fatal(err)
+				}
+				read, err := client.ReadContent(t.Context(), binding.Organization, ref)
+				if err != nil || !bytes.Equal(read, content) {
+					t.Fatalf("archive round trip: %v", err)
+				}
+				if _, err := client.PublishContent(t.Context(), "org_other", content); err == nil {
+					t.Fatal("foreign upload accepted")
+				}
+				if _, err := client.ReadContent(t.Context(), "org_other", ref); err == nil {
+					t.Fatal("foreign read accepted")
+				}
+				foreign, _, err := attachment.PrepareArchive("org_other", 1, bytes.NewReader(content))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := client.ReadContent(t.Context(), binding.Organization, foreign); err == nil {
+					t.Fatal("foreign reference accepted")
+				}
+				return
 			}
 			origin := Origin{Issuer: binding.Issuer, Generation: binding.Generation, Subject: "original"}
 			if scenario == "expired deadline" {
@@ -160,4 +188,24 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 			}
 		})
 	}
+}
+
+type authorityContents struct{ content map[string][]byte }
+
+func (s *authorityContents) PublishContent(ctx context.Context, org string, content []byte) (attachment.ArchiveReference, error) {
+	if err := ctx.Err(); err != nil {
+		return attachment.ArchiveReference{}, err
+	}
+	ref, _, err := attachment.PrepareArchive(org, 1, bytes.NewReader(content))
+	if err != nil {
+		return ref, err
+	}
+	s.content[ref.Key] = bytes.Clone(content)
+	return ref, nil
+}
+func (s *authorityContents) ReadContent(ctx context.Context, _ string, ref attachment.ArchiveReference) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return bytes.Clone(s.content[ref.Key]), nil
 }
