@@ -20,9 +20,9 @@ func (s *Service) tenantContent(ctx context.Context, organization Organization, 
 	if err != nil || current.Generation != organization.Generation {
 		return nil, attachment.ErrInvalid
 	}
-	storage, ok := s.attachments.(attachment.ArchiveStorage)
-	if !ok {
-		return nil, artifact.ErrStorage
+	storage, err := s.archiveStorageForReference(ctx, organization.ID, request.Reference)
+	if err != nil {
+		return nil, err
 	}
 	if request.Write {
 		return nil, attachment.StoreArchive(ctx, storage, organization.ID, request.Reference, request.Data)

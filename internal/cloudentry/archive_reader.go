@@ -21,9 +21,9 @@ func (s *Service) tenantArchiveReader(organization Organization) entryauthority.
 		if err != nil || current.Generation != organization.Generation {
 			return result, attachment.ErrInvalid
 		}
-		storage, ok := s.attachments.(attachment.ArchiveStorage)
-		if !ok {
-			return result, attachment.ErrInvalid
+		storage, err := s.archiveStorageForReference(ctx, organization.ID, ref)
+		if err != nil {
+			return result, err
 		}
 		if err := s.auth.audit(ctx, "tenant", organization.ID, "archive_read"); err != nil {
 			return result, err
