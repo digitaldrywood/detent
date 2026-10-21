@@ -836,9 +836,6 @@ func (timedOutPlatformTransport) RoundTrip(*http.Request) (*http.Response, error
 func TestPlatformUsersSearch(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
-	for _, tenant := range f.fixtures {
-		tenant.open(t.Context(), t)
-	}
 	f.provider.users["user_staff"] = "staff@example.test"
 	staff := newBrowser(t, f.service.Handler())
 	staff.login("/auth/oidc/start", "user_staff:")
