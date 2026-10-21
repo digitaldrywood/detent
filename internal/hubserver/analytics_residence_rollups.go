@@ -761,31 +761,57 @@ func readDiagnosticsResidenceRollups(ctx context.Context, q nativeQueryer, scope
 	if err != nil {
 		return 0, false, err
 	}
+	hours, err := readDiagnosticsResidenceHours(ctx, q, scope, out.From, out.To)
+	if err != nil {
+		return 0, false, err
+	}
 	transitions := 0
+	partial := frames.clipped
 	for _, id := range frames.ids {
-		transitions += frames.at(out.To, id).Transitions - frames.at(out.From, id).Transitions
+		from := maxTime(out.From, frames.retained[id])
+		if from.Before(out.To) {
+			transitions += frames.at(out.To, id).Transitions - frames.at(from, id).Transitions
+		}
+	}
+	for hour, h := range hours {
+		transitions += h.transitions
+		partial = partial || h.partial || hour < out.From.Unix() || hour+3600 > out.To.Unix()
 	}
 	for i := range out.Capacity {
 		at := minTime(out.Capacity[i].Hour.Add(time.Hour), out.To)
 		count := 0
-		partial := frames.clipped
+		depthPartial := frames.clipped
 		for _, id := range frames.ids {
+			retained := frames.retained[id]
+			if !retained.IsZero() && !at.After(retained) {
+				depthPartial = depthPartial || !at.Equal(at.Truncate(time.Hour))
+				continue
+			}
 			sample, ok := frames.sample(at, id)
 			if !ok {
 				continue
 			}
-			partial = partial || sample.Partial
+			depthPartial = depthPartial || sample.Partial
 			if sample.State == "Todo" {
 				count++
 			}
 		}
-		if partial {
+		if at.Equal(at.Truncate(time.Hour)) {
+			if h, found := hours[at.Unix()-3600]; found {
+				depthPartial = depthPartial || h.partial || h.todo == nil
+				if h.todo != nil {
+					count += *h.todo
+				}
+			}
+		}
+		if depthPartial {
 			out.Capacity[i].Todo = nil
 		} else if out.Capacity[i].Todo != nil {
 			*out.Capacity[i].Todo += count
 		}
+		partial = partial || depthPartial
 	}
-	return transitions, frames.clipped, nil
+	return transitions, partial, nil
 }
 
 func readReportsCompletionRollups(ctx context.Context, q nativeQueryer, scope nativeScope, states map[string]tracker.NativeState, ids []string, to time.Time) (reportsCompletion, error) {

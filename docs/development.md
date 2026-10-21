@@ -416,7 +416,11 @@ transactions and the existing backfill time budget per pass.
 
 Older residence duration distributions describe issue-hours rather than whole
 issues. Counts therefore count contributing issue-hours; duration sums and
-transition/cause counts remain additive. Quantiles merge histogram populations
+transition/cause counts remain additive. Diagnostics reads the archived hourly
+transition totals and Todo depth at each hour's end, combining them with exact
+samples after each item's retention boundary. An endpoint inside an archived
+hour has unavailable Todo depth and partial coverage; its transition coverage
+includes the overlapping archived hours. Quantiles merge histogram populations
 with 16 logarithmic bins per octave using `log2(seconds + 1)`, interpolating
 within each bin's observed extrema; they never average percentiles. Windows
 cutting an archived hour prorate its duration sum and report partial coverage.
