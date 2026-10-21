@@ -293,13 +293,6 @@ func TestArchiveQueryKeepsReusedRowIDs(t *testing.T) {
 	item := f.create(t, "Historical revision")
 	id := string(item.WorkItemID)
 	table := archiveTestTable(t, f.service, "collaboration_versions", "record_id=?", id)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER collaboration_versions_no_delete"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM collaboration_versions WHERE record_id=?", id); err != nil {
-		t.Fatal(err)
-	}
-	second := f.create(t, "New revision")
 	section := &attachment.ArchiveSection{
 		OrganizationID: string(f.project.OrganizationID), ProjectID: string(f.project.ID),
 		WorkItemID: id, SectionID: "revision", Tables: []attachment.ArchiveTable{table},
@@ -308,6 +301,20 @@ func TestArchiveQueryKeepsReusedRowIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var count int
+	if err := query.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_versions WHERE record_id=?", id).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("overlapping live and archived revision count: %d, want 1", count)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER collaboration_versions_no_delete"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM collaboration_versions WHERE record_id=?", id); err != nil {
+		t.Fatal(err)
+	}
+	second := f.create(t, "New revision")
 	for _, test := range []struct {
 		subject string
 		want    int
