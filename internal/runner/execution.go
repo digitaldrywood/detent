@@ -673,7 +673,7 @@ func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, bac
 	return restored, restoredIssue, nil
 }
 
-func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, turnStarted bool) (bool, error) {
+func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, turnStarted bool) (_ bool, resultErr error) {
 	if req.finalizeNativeWork && !req.retainCheckpoint {
 		if execution, ok := req.Execution.(PublicationSourceExecution); ok {
 			publicationOptions := func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.LandOptions, error) {
@@ -724,19 +724,19 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	if req.Execution == nil {
 		return !req.retainCheckpoint, nil
 	}
+	if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok {
+		diagnostics.HostOperation("workspace.finalize_native_work", r.now(), nil, true)
+		defer func() {
+			diagnostics.HostOperation("workspace.finalize_native_work", r.now(), resultErr, false)
+		}()
+	}
 	finalizationErr := executionCancellation(req)
 	if req.finalizeNativeWork && !req.reviewOnly && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
 		if finalizer, ok := backend.(workspace.NativeWorkFinalizer); ok {
 			if err := req.Execution.Validate(ctx); err != nil {
 				finalizationErr = err
 			} else {
-				if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok {
-					diagnostics.HostOperation("workspace.finalize_native_work", r.now(), nil, true)
-				}
 				base, err := finalizer.FinalizeNativeWork(ctx, info, issue, req.Execution.Validate)
-				if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok {
-					diagnostics.HostOperation("workspace.finalize_native_work", r.now(), err, err != nil)
-				}
 				if err != nil {
 					finalizationErr = nativeGitError("finalize native work", err)
 				} else if base != "" {

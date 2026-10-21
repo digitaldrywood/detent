@@ -438,3 +438,86 @@ func TestRunnerCachedProbeProblemsHeartbeat(t *testing.T) {
 		})
 	}
 }
+
+func TestRunnerExpiredRuntimeProblems(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		phase    string
+		age      time.Duration
+		released bool
+		expired  bool
+		finished bool
+		want     bool
+	}{
+		{name: "fresh completion", phase: "completed", age: 89 * time.Second},
+		{name: "expired completion", phase: "completed", age: 90 * time.Second, want: true},
+		{name: "hours of renewal", phase: "completed", age: 3 * time.Hour, want: true},
+		{name: "expired implementation", phase: "implementation", age: 90 * time.Second, want: true},
+		{name: "released attempt", phase: "completed", age: 3 * time.Hour, released: true},
+		{name: "expired lease", phase: "completed", age: 3 * time.Hour, expired: true},
+		{name: "terminal attempt", phase: "completed", age: 3 * time.Hour, finished: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
+			r.enroll(t)
+			other := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
+			other.enroll(t)
+			publishCapacity(t, f, r, capacityReport(now))
+			issue := f.create(t, "Example work")
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "example-session"))
+			requireNativeStatus(t, response, http.StatusOK)
+			var lease tracker.NativeLease
+			decodeHubResponse(t, response, &lease)
+			event := nativeStartedEvent(lease)
+			event.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: test.phase, HeartbeatAt: now.Add(-test.age)}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), http.StatusOK)
+			expires := now.Add(90 * time.Second)
+			if test.expired {
+				expires = now
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET renewed_at=?, expires_at=? WHERE lease_id=?", formatHubTime(now), formatHubTime(expires), lease.ID); err != nil {
+				t.Fatal(err)
+			}
+			if test.released {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET released_at=? WHERE lease_id=?", formatHubTime(now), lease.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.finished {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET status='failed' WHERE id=?", event.Data.AttemptID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			read := func(runner runnerFixture) runnerauth.Runner {
+				t.Helper()
+				response := performHubAPIRequest(t, f.service, http.MethodGet, runner.identityPath()+"/routing", testHubAdminToken, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var view runnerauth.Runner
+				decodeHubResponse(t, response, &view)
+				return view
+			}
+			view := read(r)
+			if (len(view.Problems) == 1) != test.want || (view.Health == "needs_attention") != test.want {
+				t.Fatalf("health=%s problems=%+v, want expired runtime=%v", view.Health, view.Problems, test.want)
+			}
+			if test.want {
+				problem := view.Problems[0]
+				if problem.Code != "runtime_expired" || problem.ProjectID != string(f.project.ID) || problem.Subject != event.Data.AttemptID || problem.FirstSeen.IsZero() || !problem.ReportedAt.Equal(now) {
+					t.Fatalf("missing attempt attribution: %+v", problem)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json, '$.runtime.heartbeat_at', ?) WHERE id=?", formatHubTime(now), event.Data.AttemptID); err != nil {
+					t.Fatal(err)
+				}
+				if fresh := read(r); len(fresh.Problems) != 0 || fresh.Health != "online" {
+					t.Fatalf("runtime warning did not clear: %+v", fresh)
+				}
+			}
+			if foreign := read(other); len(foreign.Problems) != 0 {
+				t.Fatalf("runtime warning leaked to another runner: %+v", foreign.Problems)
+			}
+		})
+	}
+}

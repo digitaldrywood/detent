@@ -616,15 +616,19 @@ func (e *nativeExecution) preparedFinalization() *tracker.NativeFinalization {
 	return &finalization
 }
 
-func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error) {
+func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 	e.mu.Lock()
-	refresh := false
-	defer func() {
-		e.mu.Unlock()
-		if refresh {
-			e.refreshReasons(ctx, true)
-		}
-	}()
+	previous := e.data.Outcome
+	err := e.finish(ctx, outcome)
+	refresh := previous == "" && e.data.Outcome != ""
+	e.mu.Unlock()
+	if refresh {
+		e.refreshReasons(ctx, true)
+	}
+	return err
+}
+
+func (e *nativeExecution) finish(ctx context.Context, outcome string) (err error) {
 	done := e.diagnosticOperation("native.finish")
 	defer func() { done(err) }()
 	preparationErr := e.prepareFinish(ctx, outcome)
@@ -664,7 +668,6 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error
 		e.data.Finalization = finalization
 	}
 	finishErr := e.append(ctx, "run.finished", outcome, nil)
-	refresh = finishErr == nil
 	return errors.Join(preparationErr, finishErr)
 }
 

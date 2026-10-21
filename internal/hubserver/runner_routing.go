@@ -201,6 +201,9 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope `+nativeLandingCapacityJoin
 	if err := rows.Close(); err != nil {
 		return r, err
 	}
+	if err := appendRunnerRuntimeProblems(ctx, db, &r, now); err != nil {
+		return r, err
+	}
 	for _, report := range reports {
 		view, err := providerView(ctx, db, organization, id, report, now, group)
 		if err != nil {

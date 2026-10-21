@@ -752,13 +752,27 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 		if pending || !execution.mu.TryLock() {
 			return true, nil
 		}
-		pending = execution.pending != nil || execution.preparedOutcome != "" || execution.data.Outcome != ""
+		pending = execution.pending != nil || execution.data.Outcome != ""
 		if execution.data.Runtime != nil {
 			runtime := *execution.data.Runtime
 			observation = &runtime
 		}
+		if !pending && observation != nil && observation.Phase == "completed" &&
+			(observation.HeartbeatAt.IsZero() || !s.now().Before(observation.HeartbeatAt.Add(s.leaseTTL))) {
+			execution.preparedOutcome = "failed"
+			execution.preparedDisposition = nil
+			execution.preparedFailure = execution.finalizationFailure(errors.New("completed worker runtime expired before finalization"))
+			err := execution.finish(ctx, "failed")
+			finished := execution.data.Outcome != ""
+			execution.mu.Unlock()
+			if finished {
+				execution.refreshReasons(ctx, true)
+			}
+			return false, err
+		}
+		prepared := execution.preparedOutcome != ""
 		execution.mu.Unlock()
-		if pending {
+		if pending || prepared {
 			return true, nil
 		}
 		localWorker = execution.hasWorkers()

@@ -260,8 +260,13 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 					backend.validationExit = 2
 					backend.validationOutput = strings.Repeat("earlier test output\n", 5000) + "TestFailure: failing test output with token=private-secret"
 				}
-				if test.operatorStop {
-					backend.onValidation = func() { stopOperator(NewCancellationCause(ErrOperatorStopped, "operator.stop_run")) }
+				backend.onValidation = func() {
+					if !execution.operationPending || execution.operation != "workspace.finalize_native_work" {
+						t.Fatal("source validation lost active host finalization ownership")
+					}
+					if test.operatorStop {
+						stopOperator(NewCancellationCause(ErrOperatorStopped, "operator.stop_run"))
+					}
 				}
 				agent := &completedTurnBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: test.message}, {Type: AgentUpdateTurnCompleted, Status: "completed"}}}, afterTurn: func() {
 					if test.expired {
@@ -310,6 +315,9 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 					t.Fatal(err)
 				}
 				completion := supervisor.Run(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModeImplement})
+				if execution.operationPending {
+					t.Fatal("finished host finalization still reports an active operation")
+				}
 				if execution.providerCompletedAt.IsZero() {
 					t.Fatal("provider completion was not recorded before finalization")
 				}

@@ -97,3 +97,48 @@ func mergeRunnerProblems(previous, current []runnerauth.Problem, protocol int, r
 	current = append(current, runnerHubProblems(protocol, rejected)...)
 	return runnerauth.MergeProblems(previous, current, now)
 }
+
+func appendRunnerRuntimeProblems(ctx context.Context, db nativeQueryer, r *runnerauth.Runner, now time.Time) error {
+	projects := make(map[tracker.LeaseID]tracker.ProjectID, len(r.Leases))
+	args := []any{r.OrganizationID}
+	for _, lease := range r.Leases {
+		if slices.Contains(r.ProjectIDs, lease.ProjectID) {
+			projects[lease.ID] = lease.ProjectID
+			args = append(args, lease.ID)
+		}
+	}
+	if len(projects) == 0 {
+		return nil
+	}
+	rows, err := db.QueryContext(ctx, `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
+FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
+WHERE a.organization_id = ? AND l.lease_id IN (`+placeholders(len(projects))+`) AND a.status = 'running' AND l.released_at IS NULL`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		attempt, err := scanNativeAttempt(rows, now)
+		if err != nil {
+			return err
+		}
+		project, visible := projects[attempt.LeaseID]
+		if !visible || !attempt.Current || attempt.RuntimeFreshness != "expired" || attempt.Runtime == nil ||
+			!attempt.LeaseRenewedAt.After(attempt.Runtime.HeartbeatAt) {
+			continue
+		}
+		r.Problems = append(r.Problems, runnerauth.Problem{
+			Code: "runtime_expired", ProjectID: string(project), Subject: attempt.AttemptID,
+			Message:   "A running attempt has expired runtime activity while its lease is still being renewed.",
+			FixHint:   "Inspect the attempt's runtime and finalization diagnostics on its runner.",
+			FirstSeen: attempt.Runtime.HeartbeatAt.Add(attempt.LeaseExpiresAt.Sub(attempt.LeaseRenewedAt)), ReportedAt: attempt.LeaseRenewedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(r.Problems) > 0 && r.Health != "revoked" && r.Health != "expired" {
+		r.Health = "needs_attention"
+	}
+	return nil
+}

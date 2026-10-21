@@ -466,6 +466,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 		localWorker  bool
 		staleProcess bool
 		recovered    bool
+		wantFailure  bool
 		wantRetained bool
 		wantRenewed  bool
 	}{
@@ -473,10 +474,13 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 		{name: "fresh reported worker", phase: "implementation", wantRenewed: true},
 		{name: "quiet long running merge worker", phase: "merging", age: 6 * time.Hour, localWorker: true, wantRenewed: true},
 		{name: "local process identity no longer matches", phase: "implementation", localWorker: true, staleProcess: true, wantRetained: true},
-		{name: "controller finalizing completed worker", phase: "completed", age: 2 * time.Minute, controller: true, wantRenewed: true},
+		{name: "controller receives completion handoff", phase: "completed", age: 89 * time.Second, controller: true, wantRenewed: true},
+		{name: "controller never finalizes completed worker", phase: "completed", age: 90 * time.Second, controller: true, wantRetained: true, wantFailure: true},
 		{name: "controller stopped without prepared outcome", phase: "completed", controller: true, stopped: true},
-		{name: "prepared outcome awaiting publication", phase: "completed", age: 2 * time.Minute, controller: true, stopped: true, prepared: true, wantRenewed: true},
-		{name: "completed worker retains controller cleanup", phase: "completed", age: 2 * time.Minute, localWorker: true, staleProcess: true, wantRenewed: true},
+		{name: "prepared outcome awaiting publication", phase: "completed", age: 2 * time.Minute, controller: true, stopped: true, prepared: true, pending: true, wantRenewed: true},
+		{name: "completed worker retains fresh cleanup", phase: "completed", localWorker: true, staleProcess: true, wantRenewed: true},
+		{name: "completed worker cleanup stalls", phase: "completed", age: 3 * time.Hour, localWorker: true, staleProcess: true, wantRetained: true, wantFailure: true},
+		{name: "prepared outcome never published", phase: "completed", age: 2 * time.Minute, controller: true, stopped: true, prepared: true, wantRetained: true, wantFailure: true},
 		{name: "worker exited after completion", phase: "completed"},
 		{name: "worker heartbeat stale", phase: "implementation", age: 90 * time.Second},
 		{name: "terminal work item", phase: "implementation", terminal: true},
@@ -503,7 +507,14 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
 			now := time.Now().UTC()
 			h.scheduler.now = func() time.Time { return now }
-			observation := tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: test.phase, HeartbeatAt: now.Add(-test.age), WorkerLaunch: &tracker.NativeWorkerLaunch{PID: identity.PID, GroupID: identity.GroupID, ProcessStart: identity.StartedAt, PolicyID: h.descriptor.ID}}
+			if test.wantFailure {
+				h.scheduler.now = func() time.Time { return now.Add(-test.age) }
+				if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.scheduler.now = func() time.Time { return now }
+			observation := tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: test.phase, HeartbeatAt: now.Add(-test.age), WorkerLaunch: &tracker.NativeWorkerLaunch{PID: identity.PID, GroupID: identity.GroupID, ProcessStart: identity.StartedAt, PolicyID: h.descriptor.ID, ExecutionVersion: "test", ControlVersion: "test", ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), Protocol: 1, SelectedAt: now}}
 			if test.staleProcess {
 				observation.WorkerLaunch.ProcessStart = identity.StartedAt.Add(time.Second)
 			}
@@ -596,6 +607,18 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 				}
 				if renewals != 0 || releases != 0 {
 					t.Fatalf("inactive lease received %d renewals and %d forced releases", renewals, releases)
+				}
+				if test.wantFailure {
+					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil {
+						t.Fatal(err)
+					}
+					page, err := h.admin.AttemptsPage(t.Context(), tracker.NativeWorkItemID(issue.ID), "", 10)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(page.Items) != 1 || page.Items[0].Status != "failed" || page.Items[0].TerminalFailure == nil || page.Items[0].TerminalFailure.Stage != "finalization" || page.Items[0].TerminalFailure.Error != "completed worker runtime expired before finalization" || page.Items[0].ClaimReleasedAt == nil {
+						t.Fatalf("stalled completion did not settle with its cause: %+v", page.Items)
+					}
 				}
 			}
 		})
