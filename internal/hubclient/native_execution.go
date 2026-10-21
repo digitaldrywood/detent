@@ -499,11 +499,19 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 	if e.ownsIssueCompletion() || planning {
 		e.preparedDisposition = runner.NativeDispositionFromMessage(finalMessage)
 	}
+	if e.role == runner.RoleMerge {
+		if disposition := runner.NativeDispositionFromMessage(finalMessage); disposition != nil && disposition.Status == "blocked" && disposition.HumanAction {
+			e.preparedDisposition = disposition
+		}
+	}
 	if outcome == "succeeded" && planning && e.preparedDisposition == nil {
 		e.preparedDisposition = &tracker.NativeDisposition{Status: "in_progress"}
 	}
 	if outcome == "succeeded" && e.data.Runtime != nil && e.data.Runtime.Landing != nil && e.data.Runtime.Landing.Waiting {
 		e.preparedDisposition = &tracker.NativeDisposition{Status: "in_progress"}
+	}
+	if e.change != nil {
+		e.applySecurityAuditHumanAction(e.change.SecurityAudit)
 	}
 	if err := e.prepareFinish(ctx, outcome); err != nil {
 		err = e.executionError(err)

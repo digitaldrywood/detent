@@ -16,6 +16,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -137,7 +139,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 			}
 			output := `{"verdict":"pass","summary":"No findings","findings":[]}`
 			if test.blocking {
-				output = `{"verdict":"fail","summary":"Authorization bypass","findings":[{"id":"auth","severity":"p1","body":"Missing authorization"}]}`
+				output = `{"verdict":"fail","summary":"Authorization bypass","findings":[{"id":"auth","certainty":"confirmed","severity":"p1","body":"Missing authorization"}]}`
 			}
 			if test.severity != "" {
 				output = strings.ReplaceAll(output, `"p1"`, `"`+test.severity+`"`)
@@ -281,6 +283,151 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 			}
 			if execution.audit.Run.ProjectID != string(execution.recovery.Issue.ProjectID) {
 				t.Fatalf("audit project = %q, want claimed project %q", execution.audit.Run.ProjectID, execution.recovery.Issue.ProjectID)
+			}
+		})
+	}
+}
+
+type verificationAuditSessionStore struct{ *fakeSessionStore }
+
+func (s *verificationAuditSessionStore) StartSession(ctx context.Context, attrs store.SessionStart) (int64, error) {
+	id, err := s.fakeSessionStore.StartSession(ctx, attrs)
+	return id + int64(s.startCalls-1), err
+}
+
+type verificationAuditBackend struct {
+	fakeCodexClient
+	t                *testing.T
+	outputs          []string
+	requests         []AgentTurnRequest
+	deadline         time.Time
+	failVerification bool
+}
+
+func (b *verificationAuditBackend) RunTurn(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+	b.t.Helper()
+	deadline, ok := ctx.Deadline()
+	if !ok || !b.deadline.IsZero() && !deadline.Equal(b.deadline) {
+		b.t.Fatal("verification reset the stage deadline")
+	}
+	b.deadline = deadline
+	if !agentResumeEmpty(req.Resume) || !req.ReadOnly || !strings.Contains(req.ToolInstructions, "Use no tools") {
+		b.t.Fatal("verification weakened the fresh no-tools audit boundary")
+	}
+	b.requests = append(b.requests, req)
+	if len(b.requests) == 2 {
+		if !strings.Contains(req.Prompt, `"verification_of"`) || !strings.Contains(req.Prompt, `"textual_diff":"+change"`) || !strings.Contains(req.Prompt, `"id":"auth"`) {
+			b.t.Fatal("verification lost supplied evidence or lead identity")
+		}
+		if b.failVerification {
+			return AgentTurnResult{}, errors.New("verification provider unavailable")
+		}
+	}
+	b.updates = []AgentUpdate{
+		{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 4242, GroupID: 4242, StartedAt: time.Now().UTC()}},
+		{Type: AgentUpdateTokenUsage, Tokens: AgentTokenUsage{TotalTokens: 10, ThreadTotal: &AgentTokenCounts{TotalTokens: 10}}},
+		{Type: AgentUpdateMessageDelta, Delta: b.outputs[len(b.requests)-1]},
+	}
+	return b.fakeCodexClient.RunTurn(ctx, req, update)
+}
+
+func TestNativeSecurityAuditVerification(t *testing.T) {
+	t.Parallel()
+	confirmed := `{"verdict":"fail","summary":"Confirmed authorization bypass","findings":[{"id":"auth","certainty":"confirmed","severity":"p1","body":"Attacker reaches unchecked handler","status":"unresolved"}]}`
+	undetermined := `{"verdict":"undetermined","summary":"Potential cross-tenant access","findings":[{"id":"auth","certainty":"undetermined","body":"A p2 lead requires caller context","unresolved_fact":"Whether the caller enforces tenant authorization","path":"auth.go","status":"unresolved"}]}`
+	disproved := `{"verdict":"pass","summary":"Lead disproved","findings":[{"id":"auth","certainty":"disproved","body":"The supplied caller validates tenant authorization","status":"rejected"}]}`
+	for _, tt := range []struct {
+		name, initial, final, verdict string
+		failed                        bool
+		unavailable, alreadyComplex   bool
+		catalogFailure                bool
+	}{
+		{name: "confirmed first session", initial: confirmed, verdict: "rework"},
+		{name: "higher model confirms p2", initial: undetermined, final: strings.ReplaceAll(confirmed, "p1", "p2"), verdict: "rework"},
+		{name: "higher model rejects", initial: undetermined, final: disproved, verdict: "pass"},
+		{name: "higher model cannot decide", initial: undetermined, final: undetermined, verdict: "wait"},
+		{name: "verifier failure stays instance owned", initial: undetermined, final: undetermined, failed: true},
+		{name: "verifier omission stays instance owned", initial: undetermined, final: `{"verdict":"pass","summary":"Safe","findings":[]}`, failed: true},
+		{name: "complex model unavailable", initial: undetermined, failed: true, unavailable: true},
+		{name: "complex catalog unavailable", initial: undetermined, failed: true, catalogFailure: true},
+		{name: "already complex still gets fresh verification", initial: undetermined, final: undetermined, verdict: "wait", alreadyComplex: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			backend := &verificationAuditBackend{t: t, outputs: []string{tt.initial}, failVerification: tt.failed && tt.name == "verifier failure stays instance owned"}
+			if tt.final != "" {
+				backend.outputs = append(backend.outputs, tt.final)
+			}
+			backend.models = []AgentModel{{ID: "complex-model", Model: "complex-model", SupportedReasoningEfforts: []string{"low", "medium", "high"}}}
+			if tt.unavailable {
+				backend.models = nil
+			}
+			if tt.catalogFailure {
+				backend.catalogErr = errors.New("catalog unavailable")
+			}
+			cfg := config.Default()
+			cfg.Agents.ModelSelection.Enabled = new(false)
+			cfg.Agents.ModelSelection.ComplexModel = new("complex-model")
+			cfg.Agents.Backends = []config.AgentBackend{{ID: "audit", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-audit"}}
+			cfg.Agents.Routes = []config.AgentRoute{{Name: "audit", Role: RoleSecurityAudit, Backend: "audit", Model: "audit-model", Default: true}}
+			initialModel := "audit-model"
+			if tt.alreadyComplex {
+				initialModel = "complex-model"
+				cfg.Agents.Routes[0].Model = initialModel
+			}
+			sessions := &verificationAuditSessionStore{fakeSessionStore: &fakeSessionStore{sessionID: 73}}
+			runner, err := NewRunner(Dependencies{ProjectID: "prj_example", Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{}, AgentBackends: map[string]AgentBackend{"audit": backend}, SecurityAuditRoot: t.TempDir(), Store: sessions})
+			if err != nil {
+				t.Fatal(err)
+			}
+			execution := &nativeSecurityAuditTestExecution{diff: "+change", workspace: func() string { return backend.requests[len(backend.requests)-1].Workspace }}
+			execution.recovery.Issue = tracker.NativeIssue{NativeReference: tracker.NativeReference{ProjectID: "prj_example", WorkItemID: "wi_example"}}
+			var usage []int64
+			approved, err := runner.auditNativeChange(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "wi_example"}, OnUsageUpdate: func(update UsageUpdate) error { usage = append(usage, update.Tokens.TotalTokens); return nil }})
+			if tt.failed {
+				if !errors.Is(err, ErrValidatorInfrastructure) || execution.audit != nil || approved {
+					t.Fatalf("verification failure became a result: %+v, %v", execution.audit, err)
+				}
+				if (tt.unavailable || tt.catalogFailure) && (len(backend.requests) != 1 || sessions.startCalls != 1) {
+					t.Fatal("unavailable complex model started a fallback session")
+				}
+				return
+			}
+			if err != nil || execution.audit == nil || execution.audit.Verdict != tt.verdict || approved != (tt.verdict == "pass") {
+				t.Fatalf("audit = %+v, approved=%v, error=%v", execution.audit, approved, err)
+			}
+			calls := len(backend.outputs)
+			if len(backend.requests) != calls || sessions.startCalls != calls || sessions.finishCalls != calls {
+				t.Fatalf("audit session counts: requests=%d starts=%d finishes=%d", len(backend.requests), sessions.startCalls, sessions.finishCalls)
+			}
+			if usage[len(usage)-1] != int64(10*calls) {
+				t.Fatalf("stage usage = %v", usage)
+			}
+			if execution.audit.SessionID != int64(72+calls) {
+				t.Fatal("verification reused the original Detent session")
+			}
+			if calls == 2 {
+				if backend.requests[0].Model != initialModel || backend.requests[1].Model != "complex-model" || backend.requests[0].Workspace == backend.requests[1].Workspace {
+					t.Fatal("verification did not select the configured higher model in a new session")
+				}
+				if execution.audit.Run.Verification == nil || execution.audit.Run.Verification.Initial.Findings[0].Certainty != securityaudit.CertaintyUndetermined {
+					t.Fatal("initial verdict was not retained on the Change")
+				}
+			}
+			if tt.verdict == "pass" && (execution.audit.Run.Findings[0].Status != "rejected" || execution.audit.Run.Findings[0].Body == "") {
+				t.Fatal("rejected lead or reasoning was discarded")
+			}
+			action := execution.audit.Run.HumanAction()
+			if tt.verdict == "wait" {
+				for _, part := range []string{"auth", "first verdict undetermined", "higher-model verdict undetermined", "Whether the caller enforces tenant authorization"} {
+					if !strings.Contains(action, part) {
+						t.Fatalf("human action missing %q: %s", part, action)
+					}
+				}
+			} else if action != "" {
+				t.Fatalf("unexpected human action: %s", action)
+			}
+			if sessions.finished.TotalTokens != 10 {
+				t.Fatalf("session accounting double-counted verification: %+v", sessions.finished)
 			}
 		})
 	}

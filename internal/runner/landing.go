@@ -184,6 +184,12 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 			if IsCapacityError(err) || errors.Is(err, github.ErrRateLimited) || errors.Is(err, forgeavailability.ErrUnavailable) {
 				return RunResult{WorkspaceBranch: info.Branch, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err
 			}
+			if result.SecurityAudit != nil && result.SecurityAudit.Verdict == "wait" {
+				refused := r.refusedLanding(req, target, "", result.SecurityAudit.Run.HumanAction())
+				refused.NativeLanding.SecurityAudit = result.SecurityAudit
+				refused.FinalMessage = result.SecurityAudit.Run.CompletionMessage(refused.FinalMessage)
+				return refused, nil
+			}
 			if result.SecurityAudit != nil && result.SecurityAudit.Verdict == "rework" {
 				refused := r.refusedLanding(req, target, "", result.SecurityAudit.Run.Summary)
 				refused.NativeLanding.GateFailed = true

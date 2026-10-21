@@ -139,6 +139,9 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		verdict := gate.ValidatorVerdictPass
 		if evaluation.Reason == securityaudit.ReasonUnresolvedFindings {
 			verdict = gate.ValidatorVerdictRework
+			if run.HumanAction() != "" {
+				verdict = gate.ValidatorVerdictWait
+			}
 		} else if !evaluation.Allowed {
 			return "", auditInvalid("security audit evidence is incomplete: "+evaluation.Diagnostic(), securityAuditEvaluationField(evaluation))
 		}

@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -58,6 +59,7 @@ func (w *completedExecutionWorkspace) DiffStat(ctx context.Context, info workspa
 }
 
 type finalizingTestExecution struct {
+	audit                      *tracker.SecurityAuditReview
 	providerCompletedAt        time.Time
 	operation                  string
 	operationPending           bool
@@ -131,6 +133,9 @@ func (e *finalizingTestExecution) PrepareFinish(ctx context.Context, outcome, me
 }
 
 func (e *finalizingTestExecution) NativeChange() *NativeChange {
+	if e.audit != nil && e.published {
+		return &NativeChange{SecurityAudit: e.audit}
+	}
 	if !e.observeLanding || !e.published {
 		return nil
 	}
@@ -179,6 +184,7 @@ func (b *completedTurnBackend) RunTurn(ctx context.Context, request AgentTurnReq
 func TestCompletedNativeTurnFinalization(t *testing.T) {
 	for _, test := range []struct {
 		name               string
+		auditWait          bool
 		expired            bool
 		cancelled          bool
 		revoked            bool
@@ -205,6 +211,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 		wantOutputCut      bool
 		legacyReceiptJSON  bool
 	}{
+		{name: "undecidable audit survives the returned completion", auditWait: true},
 		{name: "active parent", message: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
 		{name: "blocked issue-state Rework avoids failing host gate", blocked: true, gateFailure: true, message: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: prj_6d4919bebd73446798e6cd807feda10e#750\n    owner: orchestrator\n    reason: prerequisite remains Backlog\n    predicate:\n      type: issue_state\n      ref: prj_6d4919bebd73446798e6cd807feda10e#750\n      states: [Done]\nhuman_action: null\n```"},
 		{name: "blocked instance Rework avoids failing host gate", blocked: true, gateFailure: true, message: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:tool\n    reason: effective host gate lacks a passing current-head receipt\nhuman_action: null\n```"},
@@ -255,6 +262,9 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 						execution.validateErr = ErrExecutionAuthorityUnavailable
 					}
 				}}
+				if test.auditWait {
+					execution.audit = &tracker.SecurityAuditReview{Verdict: "wait", Run: securityaudit.Run{Findings: []securityaudit.Finding{{ID: "auth", Certainty: securityaudit.CertaintyUndetermined, Body: "Potential p2 access", UnresolvedFact: "Whether caller authenticates"}}}}
+				}
 				cfg := config.Config{}
 				if test.validatorDelay > 0 {
 					cfg.Gate.Validator.Enabled = true
@@ -298,6 +308,12 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				failed := test.revoked || test.validationTimeout || test.gateFailure && !test.blocked || test.operatorStop
 				if (completion.Err != nil) != (failed || publicationFailed) || execution.published != (!failed && !publicationFailed && !test.blocked) || backend.retained != failed || agent.calls != 1 {
 					t.Fatalf("error=%v published=%t retained=%t turns=%d", completion.Err, execution.published, backend.retained, agent.calls)
+				}
+				if test.auditWait {
+					signal, ok := NativeCompletionSignalFromMessage(completion.Result.FinalMessage)
+					if !ok || signal == nil || signal.Status != "blocked" || !strings.Contains(signal.HumanAction, "Whether caller authenticates") {
+						t.Fatalf("returned completion lost human hold: %+v", completion.Result)
+					}
 				}
 				if test.gateFailure && !test.blocked && !strings.Contains(completion.Err.Error(), "source finalization gate failed") {
 					t.Fatalf("gate failure lost its stage: %v", completion.Err)

@@ -16,6 +16,7 @@ import (
 
 func (execution SecurityAuditExecution) auditRun(snapshot securityaudit.Snapshot) securityaudit.Run {
 	return securityaudit.Run{
+		Verification:       execution.Verification,
 		ID:                 execution.SessionID,
 		InvocationID:       execution.InvocationID,
 		ProjectID:          snapshot.ProjectID,
@@ -90,6 +91,9 @@ func (r *Runner) auditNativeChange(ctx context.Context, req RunRequest) (approve
 			review.Verdict = "pass"
 			if !evaluation.Allowed {
 				review.Verdict = "rework"
+				if run.HumanAction() != "" {
+					review.Verdict = "wait"
+				}
 			}
 			if err := execution.RecordSecurityAudit(ctx, review); err != nil {
 				return err
@@ -145,6 +149,9 @@ func (r *Runner) auditNativeLanding(ctx context.Context, req RunRequest, target 
 			result := &tracker.SecurityAuditReview{VersionID: target.VersionID, Landing: true, Identity: audit.RuntimeIdentity, SessionID: audit.SessionID, DiffDigest: diff.Digest, Run: run, Verdict: "pass"}
 			if !evaluation.Allowed {
 				result.Verdict = "rework"
+				if run.HumanAction() != "" {
+					result.Verdict = "wait"
+				}
 			}
 			if err := execution.RecordSecurityAudit(ctx, *result); err != nil {
 				return err

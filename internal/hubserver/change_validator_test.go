@@ -77,6 +77,15 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"implementation review is not acceptance", implementationReview, http.StatusOK, "needs_evidence", nil},
 		{"implementation review is not human approval", implementationReview, http.StatusOK, "needs_evidence", nil},
 		{"implementation review does not leave stale human approval", implementationReview, http.StatusOK, "needs_evidence", nil},
+		{"security audit undetermined lead waits for human", func(r *tracker.ReviewChange) {
+			r.SecurityAudit.Run.Verdict = securityaudit.VerdictUndetermined
+			r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "auth", Certainty: securityaudit.CertaintyUndetermined, Body: "Potential p2 cross-tenant access", UnresolvedFact: "Whether the caller validates tenant authorization"}}
+			r.SecurityAudit.Verdict = "wait"
+			r.Decision = "commented"
+		}, http.StatusOK, "needs_evidence", nil},
+		{"security audit rejected lead is retained and passes", func(r *tracker.ReviewChange) {
+			r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "auth", Certainty: securityaudit.CertaintyDisproved, Status: "rejected", Body: "Caller enforces tenant authorization"}}
+		}, http.StatusOK, "reviewed", nil},
 		{"security audit large finding identities", largeFindingIdentities, http.StatusOK, "reviewed", nil},
 		{"security audit landing large identities", func(r *tracker.ReviewChange) {
 			landingAudit(r)

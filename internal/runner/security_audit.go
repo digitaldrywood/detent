@@ -23,7 +23,71 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (execution SecurityAuditExecution, err error) {
+func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (SecurityAuditExecution, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	workflow, _, _, _ := r.runtimeSnapshot()
+	if timeout := durationFromMillis(gateSecurityAuditConfig(workflow.Config).TurnTimeoutMS); timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	originalComplete := req.complete
+	originalUsage := req.OnUsageUpdate
+	var firstUsage TokenTotals
+	req.OnUsageUpdate = func(update UsageUpdate) error {
+		firstUsage = update.Tokens
+		if originalUsage != nil {
+			return originalUsage(update)
+		}
+		return nil
+	}
+	var verified *SecurityAuditExecution
+	req.complete = func(ctx context.Context, first SecurityAuditExecution) error {
+		if !first.Result.NeedsVerification() {
+			if originalComplete != nil {
+				return originalComplete(ctx, first)
+			}
+			return nil
+		}
+		verification := req
+		verification.Snapshot.Verification = &first.Result
+		verification.OnUsageUpdate = func(update UsageUpdate) error {
+			update.Tokens = addAgentTokenTotals(firstUsage, update.Tokens)
+			if originalUsage != nil {
+				return originalUsage(update)
+			}
+			return nil
+		}
+		verification.complete = func(ctx context.Context, final SecurityAuditExecution) error {
+			final.Verification = &securityaudit.Verification{Initial: first.Result, Final: final.Result}
+			raw, err := json.Marshal(struct {
+				Initial string `json:"initial_output"`
+				Final   string `json:"verification_output"`
+			}{first.Output, final.Output})
+			if err != nil {
+				return err
+			}
+			final.Output = string(raw)
+			final.StartedAt = first.StartedAt
+			verified = &final
+			if originalComplete != nil {
+				return originalComplete(ctx, final)
+			}
+			return nil
+		}
+		_, err := r.auditSession(ctx, verification, true)
+		return err
+	}
+	first, err := r.auditSession(ctx, req, false)
+	if verified != nil {
+		return *verified, err
+	}
+	return first, err
+}
+
+func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, verification bool) (execution SecurityAuditExecution, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -37,11 +101,6 @@ func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (execution
 	plan, err := securityaudit.BuildPlan(req.Snapshot, securityAuditMaxDiffBytes(auditConfig))
 	if err != nil {
 		return execution, err
-	}
-	if timeout := durationFromMillis(auditConfig.TurnTimeoutMS); timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
 	}
 	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleSecurityAudit)
 	if err != nil {
@@ -80,6 +139,12 @@ func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (execution
 	execution.StartedAt = startedAt
 	selectedModel := selection.Model
 	baseModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleSecurityAudit))
+	if verification {
+		baseModel = workflow.Config.EffectiveModelSelection().Model("complex")
+		if baseModel == "" {
+			return execution, errors.New("security audit complex model is not configured")
+		}
+	}
 	selectionIssue := req.Issue
 	selectionIssue.Description = ""
 	baseEnvironment := r.withGoBudget(ctx, auditWorkspace, workerEnvironment(map[string]string{
@@ -97,6 +162,22 @@ func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (execution
 		return execution, err
 	}
 	resolvedSelection := resolveAgentSelection(ctx, selectionIssue, processRequest, baseModel, RoleSecurityAudit, workflow.Config, backendConfig, backend)
+	if verification && resolvedSelection.Err == nil {
+		provider, ok := backend.(AgentModelCatalogProvider)
+		if !ok {
+			resolvedSelection.Err = errors.New("security audit verification requires a backend model catalog")
+		} else {
+			models, catalogErr := provider.ListModels(ctx, processRequest)
+			if catalogErr != nil {
+				resolvedSelection.Err = fmt.Errorf("security audit verification model catalog: %w", catalogErr)
+			} else if model, available := availableSelectionModel(models, baseModel); !available {
+				resolvedSelection.Err = errors.New("security audit complex model is unavailable or retired")
+			} else {
+				resolvedSelection.Model = canonicalAgentModel(model, baseModel)
+				resolvedSelection.Selection.ModelSource = selectionSource(workflow.Config.EffectiveModelSelection(), "complex_model", "complex")
+			}
+		}
+	}
 	if err := r.agentPreflightError(resolvedSelection.Err, cleanupPreflight()); err != nil {
 		return execution, err
 	}
@@ -234,7 +315,7 @@ func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (execution
 		}
 		chunkResult, parseErr := securityaudit.ParseOutput(execution.Output)
 		if parseErr == nil {
-			parseErr = securityaudit.ValidateContinuation(req.Snapshot.Previous, chunkResult)
+			parseErr = securityaudit.ValidateSnapshotContinuation(req.Snapshot, chunkResult)
 		}
 		if parseErr != nil {
 			err = parseErr

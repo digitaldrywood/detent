@@ -100,7 +100,7 @@ func TestLargeAuditAggregation(t *testing.T) {
 		t.Fatalf("large diff was not bounded: %d chunks", plan.Len())
 	}
 	pass := `{"verdict":"pass","summary":"reviewed","findings":[]}`
-	fail := `{"verdict":"fail","summary":"injection","findings":[{"id":"injection","severity":"p1","body":"Unescaped output","path":"handler.go","line":9}]}`
+	fail := `{"verdict":"fail","summary":"injection","findings":[{"id":"injection","certainty":"confirmed","severity":"p1","body":"Unescaped output","path":"handler.go","line":9}]}`
 	outputs := make([]ChunkOutput, plan.Len())
 	end := 0
 	for index := range outputs {
@@ -136,7 +136,7 @@ func TestLargeAuditAggregation(t *testing.T) {
 		{name: "unreviewed", edit: func(o []ChunkOutput) []ChunkOutput { o[len(o)-1].Output = ""; return o }, wantError: true},
 		{name: "attempted resolution", edit: func(o []ChunkOutput) []ChunkOutput {
 			o[0].Output = fail
-			o[len(o)-1].Output = `{"verdict":"pass","summary":"dismissed","findings":[{"id":"injection","severity":"p1","body":"Unescaped output","path":"handler.go","line":9,"status":"resolved"}]}`
+			o[len(o)-1].Output = `{"verdict":"pass","summary":"dismissed","findings":[{"id":"injection","certainty":"confirmed","severity":"p1","body":"Unescaped output","path":"handler.go","line":9,"status":"resolved"}]}`
 			return o
 		}, wantError: true},
 	} {
@@ -230,13 +230,13 @@ func TestChunkSourceAndContinuation(t *testing.T) {
 		if !strings.Contains(prompt, `"head_sha":"old"`) || !strings.Contains(prompt, "authorization check added") {
 			t.Fatal("trusted continuation lost its original identity or source")
 		}
-		outputs[index] = ChunkOutput{Identity: identity, Output: `{"verdict":"pass","summary":"fixed","findings":[{"id":"auth","severity":"p1","body":"check added","status":"resolved"}]}`}
+		outputs[index] = ChunkOutput{Identity: identity, Output: `{"verdict":"pass","summary":"fixed","findings":[{"id":"auth","certainty":"confirmed","severity":"p1","body":"check added","status":"resolved"}]}`}
 	}
 	result, _, err := plan.Aggregate(outputs)
 	if err != nil || result.Verdict != VerdictPass || len(result.Findings) != 1 || result.Findings[0].ID != "auth" {
 		t.Fatalf("trusted finding resolution failed: %+v %v", result, err)
 	}
-	outputs[0].Output = `{"verdict":"fail","summary":"unknown resolution","findings":[{"id":"auth","severity":"p1","body":"Missing check","status":"unresolved"}]}`
+	outputs[0].Output = `{"verdict":"fail","summary":"unknown resolution","findings":[{"id":"auth","certainty":"confirmed","severity":"p1","body":"Missing check","status":"unresolved"}]}`
 	result, _, err = plan.Aggregate(outputs)
 	if err != nil || result.Verdict != VerdictFail || result.Findings[0].Status != "unresolved" || result.Findings[0].Body != "Missing check" {
 		t.Fatalf("later chunk suppressed prior unresolved finding: %+v %v", result, err)

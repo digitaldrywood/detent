@@ -3,14 +3,16 @@ package securityaudit
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
 )
 
 const (
-	ReviewerVersion             = "2"
+	ReviewerVersion             = "3"
 	MaxDispositionEvidenceBytes = 16 * 1024
 
 	AuthenticationSubscription = "chatgpt_subscription"
@@ -20,8 +22,13 @@ const (
 	ExitStatusSuccess = "success"
 	ExitStatusFailed  = "failed"
 
-	VerdictPass = "pass"
-	VerdictFail = "fail"
+	VerdictPass         = "pass"
+	VerdictFail         = "fail"
+	VerdictUndetermined = "undetermined"
+
+	CertaintyConfirmed    = "confirmed"
+	CertaintyDisproved    = "disproved"
+	CertaintyUndetermined = "undetermined"
 
 	DispositionFalsePositive = "false_positive"
 
@@ -46,12 +53,14 @@ type Key struct {
 }
 
 type Finding struct {
-	Status   string `json:"status,omitempty"`
-	ID       string `json:"id"`
-	Severity string `json:"severity"`
-	Body     string `json:"body"`
-	Path     string `json:"path,omitempty"`
-	Line     int    `json:"line,omitempty"`
+	Certainty      string `json:"certainty"`
+	UnresolvedFact string `json:"unresolved_fact,omitempty"`
+	Status         string `json:"status,omitempty"`
+	ID             string `json:"id"`
+	Severity       string `json:"severity,omitempty"`
+	Body           string `json:"body"`
+	Path           string `json:"path,omitempty"`
+	Line           int    `json:"line,omitempty"`
 }
 
 type Result struct {
@@ -60,7 +69,13 @@ type Result struct {
 	Findings []Finding `json:"findings"`
 }
 
+type Verification struct {
+	Initial Result `json:"initial"`
+	Final   Result `json:"final"`
+}
+
 type Run struct {
+	Verification       *Verification
 	ID                 int64
 	InvocationID       string
 	ProjectID          string
@@ -230,7 +245,7 @@ func successfulRunFailure(run Run) string {
 		if len(unresolvedFindings(run.Findings, nil, "", []string{"p1", "p2", "p3"})) == 0 {
 			return ""
 		}
-	case VerdictFail:
+	case VerdictFail, VerdictUndetermined:
 		if len(unresolvedFindings(run.Findings, nil, "", []string{"p1", "p2", "p3"})) > 0 {
 			return ""
 		}
@@ -280,10 +295,10 @@ func unresolvedFindings(findings []Finding, dispositions []Disposition, serviceI
 
 	unresolved := make([]Finding, 0, len(findings))
 	for _, finding := range findings {
-		if finding.Status == "resolved" {
+		if finding.Status == "resolved" || finding.Status == "rejected" || finding.Certainty == CertaintyDisproved {
 			continue
 		}
-		if !slices.Contains(blockedSeverities, strings.ToLower(strings.TrimSpace(finding.Severity))) {
+		if !slices.Contains(blockedSeverities, strings.ToLower(strings.TrimSpace(finding.Severity))) && (finding.Certainty != CertaintyUndetermined || slices.Contains(blockedSeverities, "none")) {
 			continue
 		}
 		disposition, exists := latest[strings.TrimSpace(finding.ID)]
@@ -308,4 +323,47 @@ func normalizeSeverities(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func (result Result) NeedsVerification() bool {
+	for _, finding := range result.Findings {
+		if finding.Certainty == CertaintyUndetermined && finding.Status != "resolved" && finding.Status != "rejected" {
+			return true
+		}
+	}
+	return false
+}
+
+func (run Run) HumanAction() string {
+	if !(Result{Findings: run.Findings}).NeedsVerification() {
+		return ""
+	}
+	var leads []string
+	for _, finding := range run.Findings {
+		if finding.Certainty != CertaintyUndetermined {
+			continue
+		}
+		first := CertaintyUndetermined
+		if run.Verification != nil {
+			for _, initial := range run.Verification.Initial.Findings {
+				if initial.ID == finding.ID {
+					first = initial.Certainty
+				}
+			}
+		}
+		leads = append(leads, fmt.Sprintf("%s: first verdict %s; higher-model verdict %s; unresolved fact: %s", finding.ID, first, finding.Certainty, finding.UnresolvedFact))
+	}
+	return "Decide the security audit leads from the supplied evidence: " + strings.Join(leads, "; ")
+}
+
+func (run Run) CompletionMessage(message string) string {
+	action := run.HumanAction()
+	if action == "" {
+		return message
+	}
+	encoded, err := json.Marshal(action)
+	if err != nil {
+		return message
+	}
+	return action + "\n\n" + message + "\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: " + string(encoded) + "\n```"
 }

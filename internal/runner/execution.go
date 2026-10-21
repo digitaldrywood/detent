@@ -532,6 +532,9 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		if change := changes.NativeChange(); change != nil {
 			copy := *change
 			result.NativeChange = &copy
+			if copy.SecurityAudit != nil && copy.SecurityAudit.Verdict == "wait" {
+				result.FinalMessage = copy.SecurityAudit.Run.CompletionMessage(result.FinalMessage)
+			}
 		}
 		var reviewErr *NativeImplementationReviewError
 		if result.NativeChange != nil && errors.As(runErr, &reviewErr) {

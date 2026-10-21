@@ -1,6 +1,7 @@
 package securityaudit
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -207,7 +208,7 @@ func TestBuildPromptRejectsUnsafeSnapshots(t *testing.T) {
 
 func TestParseOutput(t *testing.T) {
 	t.Parallel()
-	valid := `{"verdict":"fail","summary":"Found an authorization flaw.","findings":[{"id":"auth-1","severity":"P1","body":"Missing role check.","path":"auth.go","line":12}]}`
+	valid := `{"verdict":"fail","summary":"Found an authorization flaw.","findings":[{"id":"auth-1","certainty":"confirmed","severity":"P1","body":"Missing role check.","path":"auth.go","line":12}]}`
 	result, err := ParseOutput(valid)
 	if err != nil {
 		t.Fatalf("ParseOutput() error = %v", err)
@@ -220,7 +221,7 @@ func TestParseOutput(t *testing.T) {
 		"",
 		"looks safe",
 		"```json\n{}\n```",
-		`{"verdict":"pass","summary":"ok","findings":[{"id":"x","severity":"p1","body":"bad"}]}`,
+		`{"verdict":"pass","summary":"ok","findings":[{"id":"x","certainty":"confirmed","severity":"p1","body":"bad"}]}`,
 		`{"verdict":"fail","summary":"bad","findings":[]}`,
 		`{"verdict":"pass","summary":"ok","findings":[],"extra":true}`,
 		`{"verdict":"pass","summary":"ok","findings":[]} {"verdict":"pass","summary":"also ok","findings":[]}`,
@@ -230,5 +231,38 @@ func TestParseOutput(t *testing.T) {
 		if _, err := ParseOutput(output); err == nil {
 			t.Fatalf("ParseOutput(%q) error = nil", output)
 		}
+	}
+}
+
+func TestFindingCertaintyContract(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, verdict, finding string
+		invalid                bool
+	}{
+		{name: "confirmed", verdict: "fail", finding: `"certainty":"confirmed","severity":"p1"`},
+		{name: "undetermined has no severity", verdict: "undetermined", finding: `"certainty":"undetermined","unresolved_fact":"Whether the endpoint authenticates the caller"`},
+		{name: "disproved is retained rejected", verdict: "pass", finding: `"certainty":"disproved","status":"rejected"`},
+		{name: "missing certainty", verdict: "fail", finding: `"severity":"p2"`, invalid: true},
+		{name: "unknown certainty", verdict: "fail", finding: `"certainty":"likely","severity":"p2"`, invalid: true},
+		{name: "undetermined cannot claim severity", verdict: "undetermined", finding: `"certainty":"undetermined","severity":"p2","unresolved_fact":"Caller identity"`, invalid: true},
+		{name: "undetermined requires exact fact", verdict: "undetermined", finding: `"certainty":"undetermined"`, invalid: true},
+		{name: "undetermined cannot pass", verdict: "pass", finding: `"certainty":"undetermined","unresolved_fact":"Caller identity"`, invalid: true},
+		{name: "disproved requires rejected status", verdict: "pass", finding: `"certainty":"disproved"`, invalid: true},
+		{name: "confirmed cannot claim rejected status", verdict: "pass", finding: `"certainty":"confirmed","severity":"p1","status":"rejected"`, invalid: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			output := `{"verdict":"` + tt.verdict + `","summary":"Security audit","findings":[{"id":"auth","body":"Evidence and reasoning",` + tt.finding + `}]}`
+			result, err := ParseOutput(output)
+			if (err != nil) != tt.invalid {
+				t.Fatalf("result=%+v, error=%v", result, err)
+			}
+			if !tt.invalid {
+				raw, err := json.Marshal(result)
+				if err != nil || !strings.Contains(string(raw), `"certainty":`) {
+					t.Fatalf("certainty lost during serialization: %s, %v", raw, err)
+				}
+			}
+		})
 	}
 }

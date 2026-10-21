@@ -1168,7 +1168,17 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 
 `gate.security_audit.enabled` defaults to `true` for every tracker. The audit
 reviews each immutable base/head before merge. P1/P2 findings send the change to
-Rework; non-blocking findings remain recorded on the Change or pull request.
+Rework when confirmed; non-blocking findings remain recorded on the Change or
+pull request. A potentially P1/P2 lead that cannot be established from the
+supplied evidence has certainty `undetermined`, no severity, and an explicit
+unresolved fact. The same stage verifies it once using the effective model
+selection's complex model in a fresh session, with all supplied evidence and
+the original deadline and capacity reservation. Confirmed findings go to Rework;
+disproved leads remain recorded as rejected with their reasoning. If verification
+still cannot decide, native completion uses the existing Blocked `human_action`
+park, naming the lead, both verdicts and the unresolved fact. Both audit verdicts
+are retained on the Change. Prior unresolved findings remain blocking when their
+context is absent; their unresolved severity cannot change.
 Backend and runner failures are instance failures and do not become findings.
 
 For `tracker.kind: hub_native`, audits run for both plain git delivery

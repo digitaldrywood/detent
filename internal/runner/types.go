@@ -797,6 +797,7 @@ type SecurityAuditRequest struct {
 }
 
 type SecurityAuditExecution struct {
+	Verification       *securityaudit.Verification
 	RuntimeIdentity    agentidentity.Identity
 	SessionID          int64
 	InvocationID       string

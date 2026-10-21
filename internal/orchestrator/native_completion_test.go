@@ -178,63 +178,64 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	connectorAction := "Rewrite each of these acceptance criteria as a pre-merge check or remove it; no repository change can satisfy them before merge:\n- " + chatGPTCriterion + "\n- " + claudeCriterion
 	deliveryErr := &runpkg.DeliverableRecoveryError{Err: &runpkg.DeliverableCommandError{OperationClass: "pull_request", Message: "pull request publication failed"}}
 	for _, test := range []struct {
-		optout        bool
-		name          string
-		republish     bool
-		finalState    string
-		finalMessage  string
-		runErr        error
-		wantHuman     bool
-		delegated     bool
-		wantQuestion  string
-		wantAction    string
-		wantWaitKind  string
-		noUsage       bool
-		change        *runpkg.NativeChange
-		states        []connector.WorkflowState
-		statesErr     error
-		reviewed      *bool
-		reviewState   *connector.ChangeReview
-		startHead     string
-		updateErr     error
-		plain         bool
-		quotaWait     bool
-		draining      bool
-		sourceState   string
-		reworkState   string
-		wantSameState bool
-		wantDirect    bool
-		diffStats     DiffStats
-		wantOrdinary  bool
-		wantInstance  bool
-		wantSettled   bool
-		wantParked    bool
-		wantFindings  bool
-		auditFindings bool
-		humanReview   *bool
-		wantState     string
-		wantComment   string
-		wantReason    string
-		laneReason    string
-		details       []string
-		wantSummary   string
-		wantDeferred  bool
-		wantContinue  bool
-		wantAbandoned bool
-		wantTerminal  store.WorkAttemptTerminalState
-		roundTrip     bool
-		lifecycle     string
-		validationErr error
-		wantRecovery  bool
-		blockerState  string
-		handoffState  string
-		interrupted   bool
-		turnStarted   bool
-		mode          string
-		preProvider   bool
-		wantAuthority bool
-		recovery      *tracker.NativeRecovery
-		cleared       bool
+		optout           bool
+		name             string
+		republish        bool
+		finalState       string
+		finalMessage     string
+		runErr           error
+		wantHuman        bool
+		wantHumanDetails []string
+		delegated        bool
+		wantQuestion     string
+		wantAction       string
+		wantWaitKind     string
+		noUsage          bool
+		change           *runpkg.NativeChange
+		states           []connector.WorkflowState
+		statesErr        error
+		reviewed         *bool
+		reviewState      *connector.ChangeReview
+		startHead        string
+		updateErr        error
+		plain            bool
+		quotaWait        bool
+		draining         bool
+		sourceState      string
+		reworkState      string
+		wantSameState    bool
+		wantDirect       bool
+		diffStats        DiffStats
+		wantOrdinary     bool
+		wantInstance     bool
+		wantSettled      bool
+		wantParked       bool
+		wantFindings     bool
+		auditFindings    bool
+		humanReview      *bool
+		wantState        string
+		wantComment      string
+		wantReason       string
+		laneReason       string
+		details          []string
+		wantSummary      string
+		wantDeferred     bool
+		wantContinue     bool
+		wantAbandoned    bool
+		wantTerminal     store.WorkAttemptTerminalState
+		roundTrip        bool
+		lifecycle        string
+		validationErr    error
+		wantRecovery     bool
+		blockerState     string
+		handoffState     string
+		interrupted      bool
+		turnStarted      bool
+		mode             string
+		preProvider      bool
+		wantAuthority    bool
+		recovery         *tracker.NativeRecovery
+		cleared          bool
 	}{
 		{name: "PLAN ordinary provider failure retains ordinary completion", mode: runpkg.RunModePlan, sourceState: "Todo", states: planRecovery, runErr: errors.New("provider failed"), turnStarted: true, wantOrdinary: true, wantContinue: true},
 		{name: "PLAN post-provider recovery error retains ordinary completion", mode: runpkg.RunModePlan, sourceState: "Todo", states: planRecovery, runErr: runpkg.ErrNativeRecoveryRequired, turnStarted: true, wantOrdinary: true, wantContinue: true},
@@ -358,6 +359,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "unsatisfiable criterion preserves minimum score", change: criterionReview("wait", .2), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes"},
 		{name: "unsatisfiable criterion preserves explicit source rework", change: criterionReview("rework", 1), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes"},
 		{name: "unsatisfiable criterion preserves published review findings", change: criterionReview("wait", 1), reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true}, states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "opened Change Request"},
+		{name: "undecidable security audit uses existing human park", wantHuman: true, wantAction: "Decide the security audit leads from the supplied evidence: auth: first verdict undetermined; higher-model verdict undetermined; unresolved fact: Whether caller authenticates", wantHumanDetails: []string{"auth", "first verdict undetermined", "higher-model verdict undetermined", "Whether caller authenticates"}, change: waiting, states: unfinishedWorkflow, humanReview: &no, finalMessage: (securityaudit.Run{Findings: []securityaudit.Finding{{ID: "auth", Certainty: securityaudit.CertaintyUndetermined, Body: "Potential p2 access", UnresolvedFact: "Whether caller authenticates"}}}).CompletionMessage("Source complete"), wantState: "Blocked", wantComment: "Whether caller authenticates"},
 		{name: "unsatisfiable criterion preserves reported human action", change: criterionReview("wait", 1), states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "human_action: null", "human_action: Approve the consumer rollout"), wantState: "Blocked", wantComment: "issue acceptance is not recorded"},
 		{name: "unsatisfiable criterion preserves prerequisite owner", change: criterionReview("wait", 1), states: unfinishedWorkflow, humanReview: &no, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "prerequisite must finish"},
 		{name: "fixable criterion keeps Rework", change: criterionChange(gate.CriterionEvidence{Criterion: "Missing screenshot", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionReworkFixable}), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes"},
@@ -1097,6 +1099,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 				if test.wantAction != "" && (wait.Question != test.wantAction || blocked.Recovery.OperatorRemedy != test.wantAction || wait.Source != "terminal_detent_status" || len(records[permissionWaitReason]) != 0) {
 					t.Fatalf("human action = %#v, remedy = %q", wait, blocked.Recovery.OperatorRemedy)
+				}
+				for _, detail := range test.wantHumanDetails {
+					if !strings.Contains(wait.Question, detail) || !strings.Contains(blocked.Recovery.OperatorRemedy, detail) {
+						t.Fatalf("human remedy lost %q: %+v", detail, blocked.Recovery)
+					}
 				}
 				if test.wantWaitKind != "" && wait.Kind != test.wantWaitKind {
 					t.Fatalf("wait kind = %q, want %q", wait.Kind, test.wantWaitKind)

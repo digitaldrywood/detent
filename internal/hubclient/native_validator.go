@@ -95,9 +95,10 @@ func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (
 				return runner.NativeValidation{}, nil
 			}
 			for _, review := range detail.Reviews {
-				if review.VersionID == version.ID && review.SecurityAudit != nil && review.Decision == "changes_requested" {
+				if review.VersionID == version.ID && review.SecurityAudit != nil && (review.Decision == "changes_requested" || review.SecurityAudit.Verdict == "wait") {
 					e.change.SecurityAudit = review.SecurityAudit
 					e.change.Reviewed = false
+					e.applySecurityAuditHumanAction(review.SecurityAudit)
 					return runner.NativeValidation{}, nil
 				}
 			}
@@ -311,8 +312,11 @@ func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracke
 		changeID, versionID = e.change.ChangeID, e.change.VersionID
 	}
 	decision := "approved"
-	if result.Verdict == "rework" {
+	switch result.Verdict {
+	case "rework":
 		decision = "changes_requested"
+	case "wait":
+		decision = "commented"
 	}
 
 	var body strings.Builder
@@ -326,6 +330,10 @@ func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracke
 		return err
 	}
 	if result.Landing {
+		if e.change != nil {
+			e.change.SecurityAudit = &result
+		}
+		e.applySecurityAuditHumanAction(&result)
 		return nil
 	}
 	detail, err := client.runtimeChange(ctx, item, e.change.ChangeID)
@@ -333,6 +341,7 @@ func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracke
 		return err
 	}
 	e.change.SecurityAudit = &result
+	e.applySecurityAuditHumanAction(&result)
 	e.change.Reviewed = detail.Change.CurrentVersion == e.change.VersionID && detail.Summary.Status == "reviewed"
 	return nil
 }
@@ -364,4 +373,12 @@ func (e *nativeExecution) SourceReview(ctx context.Context) (runner.NativeChange
 		return runner.NativeChange{}, nil
 	}
 	return *e.change, nil
+}
+
+func (e *nativeExecution) applySecurityAuditHumanAction(audit *tracker.SecurityAuditReview) {
+	if audit == nil || audit.Verdict != "wait" {
+		return
+	}
+	e.preparedMessage = audit.Run.CompletionMessage(e.preparedMessage)
+	e.preparedDisposition = runner.NativeDispositionFromMessage(e.preparedMessage)
 }

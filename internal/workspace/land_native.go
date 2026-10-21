@@ -381,7 +381,7 @@ func auditIntegratedLanding(ctx context.Context, path, base, head string, opts L
 		return nil, errors.New("landing security audit evidence differs from the integrated change")
 	}
 	if audit.Verdict != "pass" {
-		return audit, &ValidationError{Stage: ValidationStageLanding, Err: errors.New("security audit requires Rework")}
+		return audit, &ValidationError{Stage: ValidationStageLanding, Err: fmt.Errorf("security audit requires %s", audit.Verdict)}
 	}
 	return audit, nil
 }
