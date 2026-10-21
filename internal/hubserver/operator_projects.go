@@ -258,6 +258,11 @@ func (e hubProjectExecutor) ExecuteAction(ctx context.Context, action chatpkg.Ac
 	ctx = mutation.WithContext(ctx, action.Mutation)
 	result, err := e.command(ctx, operatortool.Call{Name: string(action.Kind), Arguments: action.Arguments}, projectCommandExecute)
 	if err != nil {
+		if action.Kind == "rename_project" {
+			if conflict := operatorNativeConflict(err); conflict != nil {
+				return chatpkg.ActionExecution{}, conflict
+			}
+		}
 		return chatpkg.ActionExecution{}, projectToolError(err)
 	}
 	if err := e.authorizeCreatedProjectResult(ctx, string(action.Kind), result, chatpkg.ActionSucceeded); err != nil {

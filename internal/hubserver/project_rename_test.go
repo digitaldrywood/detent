@@ -109,12 +109,19 @@ func TestRenameProjectMCP(t *testing.T) {
 				t.Fatalf("MCP response: %s", response.Body.String())
 			}
 			if test.conflict {
-				var failure operatortool.RequestError
+				var failure operatortool.ConflictError
 				if err := json.Unmarshal(envelope.Result.Data, &failure); err != nil {
+					t.Fatalf("MCP conflict response: %s: %v", response.Body.String(), err)
+				}
+				if failure.Code != "revision_conflict" || failure.CurrentRevision != 2 {
+					t.Fatalf("conflict = %+v", failure)
+				}
+				current, err := readProjectIntegration(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+				if err != nil {
 					t.Fatal(err)
 				}
-				if failure.Code != "revision_conflict" {
-					t.Fatalf("conflict = %+v", failure)
+				if current.Name != "Tool name" || current.Revision != 2 {
+					t.Fatalf("conflicting rename changed project: %+v", current)
 				}
 				return
 			}
