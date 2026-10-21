@@ -197,7 +197,7 @@ func addAnalyticsResidenceHours(ctx context.Context, q nativeQueryer, scope nati
 }
 
 func addAnalyticsCapacityHours(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
-	rows, err := q.QueryContext(ctx, `SELECT hour,metric,dimension,count,total,unavailable,last_ns FROM analytics_sample_hours WHERE organization_id=? AND project_id=? AND metric IN ('capacity_claim','capacity_wait') AND hour<?`, scope.organization, scope.project, out.Window.To.Unix())
+	rows, err := q.QueryContext(ctx, `SELECT hour,metric,dimension,count,total,unavailable,last_ns FROM analytics_sample_hours WHERE organization_id=? AND project_id=? AND metric IN ('capacity_claim','capacity_wait') AND hour<? AND hour+3600>?`, scope.organization, scope.project, out.Window.To.Unix(), out.Window.From.Unix())
 	if err != nil {
 		return err
 	}
@@ -212,6 +212,16 @@ func addAnalyticsCapacityHours(ctx context.Context, q nativeQueryer, scope nativ
 		if err := rows.Scan(&hour, &metric, &dimension, &count, &total, &unavailable, &last); err != nil {
 			return err
 		}
+		at := time.Unix(hour, 0).UTC()
+		if metric == "capacity_wait" {
+			claim, err := strconv.ParseInt(dimension, 10, 64)
+			if err != nil {
+				return err
+			}
+			if claim < out.Window.From.Truncate(time.Hour).Unix() || claim >= out.Window.To.Unix() {
+				continue
+			}
+		}
 		if filter, ok := reportsScopeFrom(ctx); ok && filter.issues != "" {
 			if !found {
 				out.Unavailable = append(out.Unavailable, "older_hourly_capacity_filter_unavailable")
@@ -219,12 +229,8 @@ func addAnalyticsCapacityHours(ctx context.Context, q nativeQueryer, scope nativ
 			found, out.Partial = true, true
 			continue
 		}
-		at := time.Unix(hour, 0).UTC()
+		found = true
 		if metric == "capacity_claim" {
-			if !at.Add(time.Hour).After(out.Window.From) {
-				continue
-			}
-			found = true
 			queue.ClaimsObserved += count
 			queue.IntervalsUnavailable += unavailable
 			queue.IntervalsObserved += count - unavailable
@@ -233,13 +239,6 @@ func addAnalyticsCapacityHours(ctx context.Context, q nativeQueryer, scope nativ
 				out.Partial = true
 			}
 		} else {
-			claim, err := strconv.ParseInt(dimension, 10, 64)
-			if err != nil {
-				return err
-			}
-			if claim < out.Window.From.Truncate(time.Hour).Unix() || claim >= out.Window.To.Unix() {
-				continue
-			}
 			overlap := func(from, to time.Time) float64 {
 				return max(0, minTime(to, at.Add(time.Hour)).Sub(maxTime(from, at)).Seconds()) / 3600
 			}
