@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type nativeAnalyticsAttemptPopulation struct {
@@ -32,7 +33,7 @@ func loadNativeAnalyticsAttempts(ctx context.Context, q nativeQueryer, scope nat
 	if err != nil {
 		return nativeAnalyticsAttemptPopulation{}, err
 	}
-	rows, err := queryAnalyticsPopulation(ctx, q, "attempts", `SELECT a.id, a.work_item_id, a.status, a.started_at, a.updated_at, coalesce(json_extract(a.data_json,'$.runtime.phases'),'[]'), coalesce(json_extract(a.data_json,'$.runtime.phases_dropped'),0), coalesce(json_extract(a.data_json,'$.runtime.activity'),'null'), coalesce(json_extract(a.data_json,'$.runtime.identity'),'{}'), coalesce(json_extract(a.data_json,'$.runtime.landing'),'null'), coalesce(json_extract(a.data_json,'$.runtime.pipeline'),'[]'), coalesce(json_extract(a.data_json,'$.runtime.pipeline_dropped'),0), coalesce(json_extract(a.data_json,'$.runtime.validation'),'null'), (SELECT count(*) FROM attempt_usage u WHERE u.attempt_id=a.id AND u.organization_id=a.organization_id AND u.project_id=a.project_id AND julianday(u.period)>=julianday(?) AND julianday(u.period)<julianday(?))
+	rows, err := queryAnalyticsPopulation(ctx, q, "attempts", `SELECT a.id, a.work_item_id, a.status, a.started_at, a.updated_at, coalesce(json_extract(a.data_json,'$.runtime.phases'),'[]'), coalesce(json_extract(a.data_json,'$.runtime.phases_dropped'),0), coalesce(json_extract(a.data_json,'$.runtime.activity'),'null'), coalesce(json_extract(a.data_json,'$.runtime.identity'),'{}'), coalesce(json_extract(a.data_json,'$.runtime.landing'),'null'), coalesce(json_extract(a.data_json,'$.runtime.pipeline'),'[]'), coalesce(json_extract(a.data_json,'$.runtime.pipeline_dropped'),0), coalesce(json_extract(a.data_json,'$.runtime.validation'),'null'), (SELECT count(*) FROM attempt_usage u WHERE u.attempt_id=a.id AND u.organization_id=a.organization_id AND u.project_id=a.project_id AND julianday(u.period)>=julianday(?) AND julianday(u.period)<julianday(?)), a.data_json
 FROM `+analyticsAttemptsInStartedOrder(q)+` a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND (?='' OR coalesce(lr.runner_id,json_extract(a.data_json,'$.runner_id'),'')=?)`+scoped+` ORDER BY a.started_at,a.id LIMIT ? OFFSET ?`, append([]any{formatHubTime(w.From), formatHubTime(w.To), scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From), runner, runner}, scopedArgs...)...)
 	if err != nil {
 		return nativeAnalyticsAttemptPopulation{}, err
@@ -48,8 +49,32 @@ FROM `+analyticsAttemptsInStartedOrder(q)+` a LEFT JOIN lease_runners lr ON lr.l
 		var a nativeAnalyticsAttempt
 		var from, to, raw, activityRaw, identityRaw, landingRaw, pipelineRaw, validationRaw string
 		var dropped int
-		if err := rows.Scan(&a.AttemptID, &a.WorkItemID, &a.Status, &from, &to, &raw, &dropped, &activityRaw, &identityRaw, &landingRaw, &pipelineRaw, &a.PipelineDropped, &validationRaw, &a.UsageRowsObserved); err != nil {
+		var runRaw string
+		if err := rows.Scan(&a.AttemptID, &a.WorkItemID, &a.Status, &from, &to, &raw, &dropped, &activityRaw, &identityRaw, &landingRaw, &pipelineRaw, &a.PipelineDropped, &validationRaw, &a.UsageRowsObserved, &runRaw); err != nil {
 			return nativeAnalyticsAttemptPopulation{}, err
+		}
+		var stored storedRun
+		if err := json.Unmarshal([]byte(runRaw), &stored); err != nil {
+			return nativeAnalyticsAttemptPopulation{}, err
+		}
+		if stored.Detail != nil {
+			var run tracker.NativeRunData
+			if err := decodeRunDetail(ctx, runRaw, &run); err != nil {
+				return nativeAnalyticsAttemptPopulation{}, err
+			}
+			if runtime := run.Runtime; runtime != nil {
+				for _, field := range []struct {
+					value  any
+					target *string
+				}{{runtime.Phases, &raw}, {runtime.Activity, &activityRaw}, {runtime.Identity, &identityRaw}, {runtime.Landing, &landingRaw}, {runtime.Pipeline, &pipelineRaw}, {runtime.Validation, &validationRaw}} {
+					encoded, err := marshalNative(field.value)
+					if err != nil {
+						return nativeAnalyticsAttemptPopulation{}, err
+					}
+					*field.target = encoded
+				}
+				dropped, a.PipelineDropped = runtime.PhasesDropped, runtime.PipelineDropped
+			}
 		}
 		if err := json.Unmarshal([]byte(identityRaw), &a.Identity); err != nil {
 			return nativeAnalyticsAttemptPopulation{}, err

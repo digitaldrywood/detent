@@ -148,7 +148,7 @@ func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tr
 			return s.nativeAPIError(c, err)
 		}
 	}
-	return c.JSON(http.StatusOK, tracker.NativeLease{IsolationPolicy: policy, ProviderReservation: providerReservation, ServerTime: s.config.now().UTC(), PolicyID: policyID, ID: lease.ID, WorkItemID: id, MachineID: lease.Machine.ID, SessionID: lease.SessionID, FencingToken: lease.FencingToken, AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
+	return c.JSON(http.StatusOK, tracker.NativeLease{RunDetailBatching: s.runDetailStore() != nil, IsolationPolicy: policy, ProviderReservation: providerReservation, ServerTime: s.config.now().UTC(), PolicyID: policyID, ID: lease.ID, WorkItemID: id, MachineID: lease.Machine.ID, SessionID: lease.SessionID, FencingToken: lease.FencingToken, AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
 }
 
 func (s *Service) requireNativeLease(c echo.Context) error {

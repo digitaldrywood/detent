@@ -39,7 +39,7 @@ func TestRunnerUsageCosts(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			cfg := Config{now: func() time.Time { return now }}
+			cfg := Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}}
 			if test.hubPrices {
 				cfg.Usage = &UsageConfig{Currency: "USD", Prices: map[string]UsagePrice{"test-model": {Input: 1000, Currency: "USD"}}}
 			}
@@ -77,6 +77,18 @@ func TestRunnerUsageCosts(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, finish), http.StatusOK)
 			finish.IdempotencyKey = "finish-replay"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, finish), http.StatusOK)
+			var input, output int64
+			var cost float64
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT input_tokens,output_tokens,cost_estimate FROM native_attempts WHERE id=?", start.Data.AttemptID).Scan(&input, &output, &cost); err != nil {
+				t.Fatal(err)
+			}
+			wantCost := test.estimate
+			if test.hubPrices {
+				wantCost = 0.1
+			}
+			if input != int64(100*sourceCount) || output != int64(10*sourceCount) || math.Abs(cost-wantCost*float64(sourceCount)) > 1e-9 {
+				t.Fatalf("usage summary: input=%d output=%d cost=%g", input, output, cost)
+			}
 			var report monthlyCostReport
 			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/usage/monthly?month=2026-03", worker, nil)
 			requireNativeStatus(t, response, http.StatusOK)

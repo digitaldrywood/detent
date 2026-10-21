@@ -191,7 +191,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 			return nil, errors.Join(err, database.Close())
 		}
 	}
-	e.Use(service.measureRequests, service.changeContentMiddleware)
+	e.Use(service.measureRequests, service.changeContentMiddleware, service.runDetailMiddleware)
 	service.registerRoutes(e)
 	if service.conversations != nil {
 		if err := service.conversations.start(ctx); err != nil {
