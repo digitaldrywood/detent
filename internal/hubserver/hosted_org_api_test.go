@@ -606,35 +606,95 @@ func browserHostedDecode(t *testing.T, response *httptest.ResponseRecorder, targ
 
 func TestHostedProjectRank(t *testing.T) {
 	for _, scenario := range []struct {
-		name, account string
-		change        func(*projectRankChange)
-		status        int
+		name, account, role string
+		hidden, readOnly    bool
+		change              func(*projectRankChange)
+		status              int
 	}{
-		{"owner reorders", "owner", func(*projectRankChange) {}, http.StatusOK},
-		{"viewer cannot reorder", "viewer", func(*projectRankChange) {}, http.StatusForbidden},
-		{"stale revision", "owner", func(c *projectRankChange) { c.ExpectedRevision-- }, http.StatusConflict},
-		{"duplicate project", "owner", func(c *projectRankChange) { c.ProjectIDs[1] = c.ProjectIDs[0] }, http.StatusUnprocessableEntity},
-		{"foreign project", "owner", func(c *projectRankChange) { c.ProjectIDs[0] = "prj_foreign" }, http.StatusUnprocessableEntity},
-		{"incomplete list", "owner", func(c *projectRankChange) { c.ProjectIDs = c.ProjectIDs[:1] }, http.StatusUnprocessableEntity},
+		{name: "owner reorders", account: "owner", status: http.StatusOK},
+		{name: "admin reorders", account: "viewer", role: "admin", status: http.StatusOK},
+		{name: "visible slots retain hidden projects", account: "owner", hidden: true, status: http.StatusOK},
+		{name: "member reads filtered order", account: "viewer", role: "member", hidden: true, readOnly: true},
+		{name: "viewer reads filtered order", account: "viewer", hidden: true, readOnly: true},
+		{name: "viewer cannot reorder", account: "viewer", status: http.StatusForbidden},
+		{name: "member cannot reorder", account: "viewer", role: "member", status: http.StatusForbidden},
+		{name: "stale revision", account: "owner", hidden: true, change: func(c *projectRankChange) { c.ExpectedRevision-- }, status: http.StatusConflict},
+		{name: "duplicate project", account: "owner", change: func(c *projectRankChange) { c.ProjectIDs[1] = c.ProjectIDs[0] }, status: http.StatusUnprocessableEntity},
+		{name: "unknown project", account: "owner", change: func(c *projectRankChange) { c.ProjectIDs[0] = "prj_unknown" }, status: http.StatusUnprocessableEntity},
+		{name: "unreadable project", account: "owner", hidden: true, change: func(c *projectRankChange) { c.ProjectIDs[0] = "prj_rank_hidden_a" }, status: http.StatusUnprocessableEntity},
+		{name: "omitted visible project", account: "owner", hidden: true, change: func(c *projectRankChange) { c.ProjectIDs = c.ProjectIDs[:1] }, status: http.StatusUnprocessableEntity},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			f := newBrowserHostedFixture(t, true)
+			if scenario.hidden {
+				for i, id := range []string{"prj_rank_hidden_a", "prj_rank_hidden_b"} {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO projects (id, organization_id, name, profile, created_at, scheduling_rank) SELECT ?, organization_id, ?, profile, created_at, ? FROM projects WHERE id = ?", id, "Hidden project "+id, i*2+1, f.project); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for _, table := range []string{"hosted_project_grants", "token_grants"} {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM "+table+" WHERE project_id IN ('prj_rank_hidden_a','prj_rank_hidden_b')"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for i, id := range []string{f.project, f.privateProject} {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=? WHERE id=?", i*2, id); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if scenario.role == "admin" {
+				f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_viewer/grants", map[string]any{"project_id": f.privateProject, "write": true}, http.StatusOK)
+			}
+			if scenario.role != "" {
+				f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_"+scenario.account+"/role", map[string]any{"role": scenario.role}, http.StatusOK)
+			}
 			path := browserHostedOrganizationBase + "/project-rank"
-			var before organizationProjectRank
-			browserHostedDecode(t, f.api(t, "owner", http.MethodGet, path, nil, http.StatusOK), &before)
-			ids := slices.Clone(before.ProjectIDs)
+			before, err := readOrganizationProjectRank(t.Context(), f.service.database.reader, tracker.OrganizationID(f.service.config.Hosted.OrganizationID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var visible organizationProjectRank
+			browserHostedDecode(t, f.api(t, scenario.account, http.MethodGet, path, nil, http.StatusOK), &visible)
+			wantVisible := []tracker.ProjectID{tracker.ProjectID(f.project)}
+			if scenario.account == "owner" || scenario.role == "admin" {
+				wantVisible = slices.DeleteFunc(slices.Clone(before.ProjectIDs), func(id tracker.ProjectID) bool {
+					return id != tracker.ProjectID(f.project) && id != tracker.ProjectID(f.privateProject)
+				})
+			}
+			if !slices.Equal(visible.ProjectIDs, wantVisible) || visible.Revision != before.Revision {
+				t.Fatalf("read leaked or misordered projects: %#v, want %v", visible, wantVisible)
+			}
+			if scenario.readOnly {
+				return
+			}
+			ids := slices.Clone(visible.ProjectIDs)
 			slices.Reverse(ids)
-			change := projectRankChange{ExpectedRevision: before.Revision, ProjectIDs: ids}
-			scenario.change(&change)
-			f.api(t, scenario.account, http.MethodPut, path, change, scenario.status)
-			var after organizationProjectRank
-			browserHostedDecode(t, f.api(t, "owner", http.MethodGet, path, nil, http.StatusOK), &after)
+			change := projectRankChange{ExpectedRevision: before.Revision, ProjectIDs: slices.Clone(ids)}
+			if scenario.change != nil {
+				scenario.change(&change)
+			}
+			response := f.api(t, scenario.account, http.MethodPut, path, change, scenario.status)
+			if scenario.status == http.StatusOK {
+				var saved organizationProjectRank
+				browserHostedDecode(t, response, &saved)
+				if !slices.Equal(saved.ProjectIDs, ids) || saved.Revision != before.Revision+1 {
+					t.Fatalf("save leaked or misordered projects: %#v", saved)
+				}
+			}
+			after, err := readOrganizationProjectRank(t.Context(), f.service.database.reader, tracker.OrganizationID(f.service.config.Hosted.OrganizationID))
+			if err != nil {
+				t.Fatal(err)
+			}
 			expected, revision := before.ProjectIDs, before.Revision
 			if scenario.status == http.StatusOK {
 				expected, revision = ids, revision+1
+				if scenario.hidden {
+					expected = []tracker.ProjectID{tracker.ProjectID(f.privateProject), "prj_rank_hidden_a", tracker.ProjectID(f.project), "prj_rank_hidden_b"}
+				}
 			}
 			if !slices.Equal(after.ProjectIDs, expected) || after.Revision != revision {
-				t.Fatalf("rank changed incorrectly: %#v", after)
+				t.Fatalf("rank changed incorrectly: %#v, want %v revision %d", after, expected, revision)
 			}
 		})
 	}

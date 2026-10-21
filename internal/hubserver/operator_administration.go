@@ -220,7 +220,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 		return nil
 	}
 
-	if name == operatortool.MembershipList {
+	if name == operatortool.MembershipList || name == operatortool.OrganizationProjectRank {
 		return nil
 	}
 	if name == operatortool.InvitationAccept && in.InvitationID != "" {
@@ -303,7 +303,7 @@ func (a hubAdministration) Read(ctx context.Context, name string, in operatoradm
 	}
 	switch name {
 	case operatortool.OrganizationProjectRank:
-		return readOrganizationProjectRank(ctx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID))
+		return s.readReadableOrganizationProjectRank(ctx, s.database.reader, credential)
 	case operatortool.OrganizationSession:
 		setup := hostedAccountSetup{}
 		if credential.Hosted != nil && credential.SessionHash != "" {
@@ -386,7 +386,7 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 	preview := operatoradmin.Preview{Summary: name, Current: in}
 	switch name {
 	case operatortool.OrganizationProjectRankUpdate:
-		current, err := readOrganizationProjectRank(ctx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID))
+		current, err := s.readReadableOrganizationProjectRank(ctx, s.database.reader, credential)
 		if err != nil {
 			return preview, err
 		}

@@ -539,6 +539,7 @@ export type ProjectOnboardingSummary = typeof ProjectOnboardingSummary.Type;
 
 export const ProjectSummary = Schema.Struct({
   id: Schema.String,
+  slug: Schema.optional(Schema.String),
   name: Schema.String,
   profile: Schema.String,
   states: Schema.Array(WorkflowState),

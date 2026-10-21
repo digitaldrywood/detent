@@ -8,7 +8,6 @@ import {
   CreditCardIcon,
   InfoIcon,
   KeyboardIcon,
-  PanelsTopLeftIcon,
   ReceiptTextIcon,
   Settings2Icon,
 } from "lucide-react";
@@ -26,18 +25,15 @@ import {
   WorkspaceBreadcrumbSeparator,
 } from "../../components/WorkspaceBreadcrumb.tsx";
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
-import type { BillingReport, BillingUsageReport, ComparisonPlan, PlanReport, ProjectsResponse } from "../../contracts/account.ts";
+import type { BillingReport, BillingUsageReport, ComparisonPlan, PlanReport } from "../../contracts/account.ts";
 import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { PLATFORM } from "../entry/api.ts";
 import { newKey } from "../account/idempotency.ts";
 import { OrganizationMembersRoute } from "../account/Organization.tsx";
 import { OrganizationOverviewRoute, OrganizationModelsRoute } from "../account/OrganizationOverview.tsx";
-import { projectSettingsPath } from "./projectSettings.ts";
 import { useMutation, useResource } from "../account/useResource.ts";
 import { RunnersSettings } from "../fleet/RunnersSection.tsx";
-import { setupStepsLeftLabel } from "../work/components/FirstRun.tsx";
-import { useNewProject } from "../projects/NewProject.tsx";
 import { usePageTitle } from "../pageTitle.ts";
 import { keybindingCatalogue } from "../adapters/keybindings.ts";
 import {
@@ -54,7 +50,8 @@ import { SettingsHelp } from "./SettingsHelp.tsx";
 import { cn } from "../../lib/utils.ts";
 import { formatCount, formatUsd } from "../usage/usageFormat.ts";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout.tsx";
-import { ProjectRankSettings } from "./ProjectRankSettings.tsx";
+import { ProjectsSettings } from "./ProjectsSettings.tsx";
+export { ProjectsSettings } from "./ProjectsSettings.tsx";
 import { SpritesCard } from "../account/SpritesCard.tsx";
 import { SlackSettings } from "./SlackSettings.tsx";
 import { WhatsNewSettings } from "./WhatsNewSettings.tsx";
@@ -167,7 +164,6 @@ export function GeneralSettings(): React.ReactElement {
             </div>
           }
         />
-        {bootstrap?.actor.role === "owner" || bootstrap?.actor.role === "admin" ? <ProjectRankSettings /> : null}
         <SettingsRow
           id="settings-general-issue-notifications"
           title="Issue email notifications"
@@ -187,87 +183,6 @@ export function GeneralSettings(): React.ReactElement {
             description={bootstrap.plan.name}
             status={`Usage window ends ${bootstrap.plan.window_ends_at}`}
           />
-        )}
-      </SettingsSection>
-    </SettingsPageContainer>
-  );
-}
-
-export function ProjectsSettings({
-  onNavigate,
-}: {
-  readonly onNavigate?: (to: string) => void;
-}): React.ReactElement {
-  const api = useAccountApi();
-  const bootstrap = useAccountBootstrap();
-  const canManage = bootstrap?.actor.can_manage ?? false;
-  const projects = useResource<ProjectsResponse>(() => api.projects(), [api]);
-  const { openNewProject } = useNewProject();
-
-  return (
-    <SettingsPageContainer>
-      <SettingsSection
-        id="settings-projects"
-        title="Projects"
-        icon={<PanelsTopLeftIcon className="size-3.5" />}
-        headerAction={
-          canManage ? (
-            <Button size="xs" variant="outline" onClick={openNewProject}>
-              New project
-            </Button>
-          ) : null
-        }
-      >
-        {projects.loading && projects.value === undefined ? (
-          <SettingsRow title="Loading the projects" />
-        ) : projects.error !== null ? (
-          <SettingsRow
-            title="Projects are not available"
-            description={
-              projects.error.isAccessError
-                ? "You do not have access to this organization's projects."
-                : projects.error.message
-            }
-            control={
-              <Button size="sm" variant="outline" onClick={() => void projects.refresh()}>
-                Try again
-              </Button>
-            }
-          />
-        ) : (projects.value ?? []).length === 0 ? (
-          <SettingsRow
-            title="No projects yet"
-            description="A project is where issues, runners and a repository binding live."
-          />
-        ) : (
-          (projects.value ?? []).map((project) => (
-            <SettingsRow
-              key={project.id}
-              title={project.name}
-              description={`${project.profile} · ${project.states.length} workflow states`}
-              status={
-                project.onboarding.ready
-                  ? "Set up"
-                  : setupStepsLeftLabel(project.onboarding.steps.filter((step) => step.state !== "ready").length)
-              }
-              control={
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => onNavigate?.(projectSettingsPath(project))}
-                  >
-                    Settings
-                  </Button>
-                  {project.onboarding.ready ? null : (
-                    <Button size="sm" onClick={() => onNavigate?.(`/projects/${project.id}/setup`)}>
-                      Finish setup
-                    </Button>
-                  )}
-                </div>
-              }
-            />
-          ))
         )}
       </SettingsSection>
     </SettingsPageContainer>

@@ -62,14 +62,14 @@ func readRank(ctx context.Context, db Queryer, organization tracker.Organization
 }
 
 func UpdateRank(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, change RankChange) (Rank, error) {
-	return updateRank(ctx, tx, organization, change, false)
+	return updateRank(ctx, tx, organization, change, false, nil)
 }
 
-func UpdateActiveRank(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, change RankChange) (Rank, error) {
-	return updateRank(ctx, tx, organization, change, true)
+func UpdateActiveRank(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, change RankChange, readable []tracker.ProjectID) (Rank, error) {
+	return updateRank(ctx, tx, organization, change, true, readable)
 }
 
-func updateRank(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, change RankChange, activeOnly bool) (Rank, error) {
+func updateRank(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, change RankChange, activeOnly bool, readable []tracker.ProjectID) (Rank, error) {
 	current, err := readRank(ctx, tx, organization, activeOnly)
 	if err != nil {
 		return current, err
@@ -77,20 +77,35 @@ func updateRank(ctx context.Context, tx *sql.Tx, organization tracker.Organizati
 	if current.Revision != change.ExpectedRevision {
 		return current, ErrConflict
 	}
-	if len(change.ProjectIDs) != len(current.ProjectIDs) {
+	if !activeOnly {
+		readable = current.ProjectIDs
+	}
+	if len(change.ProjectIDs) != len(readable) {
 		return current, ErrInvalid
 	}
-	allowed := map[tracker.ProjectID]bool{}
-	for _, id := range current.ProjectIDs {
+	allowed := make(map[tracker.ProjectID]bool, len(readable))
+	for _, id := range readable {
 		allowed[id] = true
 	}
+	seen := make(map[tracker.ProjectID]bool, len(readable))
 	for _, id := range change.ProjectIDs {
-		if !allowed[id] {
+		if !allowed[id] || seen[id] {
 			return current, ErrInvalid
 		}
-		delete(allowed, id)
+		seen[id] = true
 	}
-	for rank, id := range change.ProjectIDs {
+	merged := append([]tracker.ProjectID(nil), current.ProjectIDs...)
+	next := 0
+	for i, id := range merged {
+		if allowed[id] {
+			merged[i] = change.ProjectIDs[next]
+			next++
+		}
+	}
+	if next != len(readable) {
+		return current, ErrInvalid
+	}
+	for rank, id := range merged {
 		if _, err := tx.ExecContext(ctx, "UPDATE projects SET scheduling_rank = ? WHERE organization_id = ? AND id = ?", rank, organization, id); err != nil {
 			return current, err
 		}
