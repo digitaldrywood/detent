@@ -36,6 +36,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -1296,7 +1297,7 @@ exit /b %errorlevel%
 				command += " && printf '%s\\n' 'later assertion failed' >&2 && exit 19"
 				actualCommand += " && printf '%s\\n' 'later assertion failed' >&2 && exit 19"
 			}
-			commandCtx, cancelCommand := context.WithTimeout(t.Context(), 30*time.Second)
+			commandCtx, cancelCommand := context.WithCancel(testenv.WaitContext(t, t.Context()))
 			defer cancelCommand()
 			var cmd *exec.Cmd
 			if runtime.GOOS == "windows" {

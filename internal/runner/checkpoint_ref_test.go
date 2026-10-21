@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -70,7 +70,7 @@ func TestCheckpointRefsPushAfterCompletedTurn(t *testing.T) {
 		if !checkpoint.GitRef() || checkpoint.CommitSHA != strings.Repeat("c", 40) || checkpoint.WorktreeState != "dirty" {
 			t.Fatalf("recorded checkpoint = %#v", checkpoint)
 		}
-	case <-time.After(10 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("completed turn did not push a checkpoint")
 	}
 }

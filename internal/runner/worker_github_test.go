@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestNewWorkerGitHubPolicy(t *testing.T) {
@@ -801,12 +802,12 @@ func TestWorkerGitHubGovernorBoundsStalledProbe(t *testing.T) {
 	var cancel context.CancelFunc
 	select {
 	case cancel = <-cancelProbe:
-	case <-time.After(2 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("probe context was not created")
 	}
 	select {
 	case <-requestStarted:
-	case <-time.After(2 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("probe request did not start")
 	}
 	cancel()
@@ -818,7 +819,7 @@ func TestWorkerGitHubGovernorBoundsStalledProbe(t *testing.T) {
 		if err := got.stop(); err != nil {
 			t.Fatalf("stop governor: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("governor did not return after the probe context was canceled")
 	}
 }

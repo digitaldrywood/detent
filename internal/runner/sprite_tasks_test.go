@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestHoldSpriteTask(t *testing.T) {
@@ -66,13 +68,13 @@ func TestHoldSpriteTask(t *testing.T) {
 			if err == nil {
 				select {
 				case <-refreshed:
-				case <-time.After(5 * time.Second):
+				case <-testenv.WaitContext(t, t.Context()).Done():
 					t.Fatal("task was never refreshed")
 				}
 				if tt.wantFailed {
 					select {
 					case <-failed:
-					case <-time.After(5 * time.Second):
+					case <-testenv.WaitContext(t, t.Context()).Done():
 						t.Fatal("refresh failure was not reported")
 					}
 				}

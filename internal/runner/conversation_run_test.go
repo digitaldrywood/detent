@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -52,7 +51,7 @@ func (b *conversationAgentBackend) RunTurn(_ context.Context, req AgentTurnReque
 			b.consumed = append(b.consumed, command)
 			b.mu.Unlock()
 			command.Reply <- nil
-		case <-time.After(time.Second):
+		default:
 		}
 		if req.ConversationControl.InputRequested != nil {
 			b.inputErr = req.ConversationControl.InputRequested(AgentInputRequest{ID: "req-1", ThreadID: "thread-1", TurnID: "turn-1", Questions: json.RawMessage(`[{"id":"color","header":"Color","question":"Which color?","options":[{"label":"Blue","description":"calm"}],"isOther":true}]`)})

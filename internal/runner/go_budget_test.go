@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -44,7 +45,7 @@ func TestManagedCacheWorkerAdmission(t *testing.T) {
 	})
 	for _, cancelSecondTurn := range []bool{false, true} {
 		t.Run(fmt.Sprintf("cancel_second_turn=%t", cancelSecondTurn), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 			defer cancel()
 			root := t.TempDir()
 			cache, err := toolcache.NewManaged(ctx, root, filepath.Join(root, "runtime.db"))
