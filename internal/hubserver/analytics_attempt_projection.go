@@ -64,17 +64,18 @@ func refreshAnalyticsAttempts(ctx context.Context, tx *sql.Tx, statements analyt
 }
 
 type analyticsCommand struct {
-	TimingStage     string    `json:"timing_stage,omitempty"`
-	ReceiptID       string    `json:"receipt_id,omitempty"`
-	Execution       string    `json:"execution,omitempty"`
-	ReusedReceiptID string    `json:"reused_receipt_id,omitempty"`
-	StartedAt       time.Time `json:"started_at,omitzero"`
-	FinishedAt      time.Time `json:"finished_at,omitzero"`
-	DurationNS      int64     `json:"duration_ns,omitempty"`
-	Command         string    `json:"command"`
-	HeadSHA         string    `json:"head_sha"`
-	TreeSHA         string    `json:"tree_sha"`
-	ExitCode        int       `json:"exit_code"`
+	TimingStage     string                 `json:"timing_stage,omitempty"`
+	ReceiptID       string                 `json:"receipt_id,omitempty"`
+	Execution       string                 `json:"execution,omitempty"`
+	ReusedReceiptID string                 `json:"reused_receipt_id,omitempty"`
+	StartedAt       time.Time              `json:"started_at,omitzero"`
+	FinishedAt      time.Time              `json:"finished_at,omitzero"`
+	Pipeline        *gate.PipelineEvidence `json:"pipeline,omitzero"`
+	DurationNS      int64                  `json:"duration_ns,omitempty"`
+	Command         string                 `json:"command"`
+	HeadSHA         string                 `json:"head_sha"`
+	TreeSHA         string                 `json:"tree_sha"`
+	ExitCode        int                    `json:"exit_code"`
 }
 
 type analyticsAttemptLanding struct {
