@@ -2481,8 +2481,10 @@ Use the normal project write credential or browser session and CSRF token, with
 idempotent; the work item must be readable and writable by the caller.
 
 The attachment owner compresses the bytes with deterministic gzip level 6,
-uploads and reads back the exact bytes before publishing any SQLite reference,
-and never falls back to inline storage. The response contains `kind: archive`,
+reserves the compressed byte budget atomically in the existing attachment
+catalog before uploading, then reads back the exact bytes before publishing any
+work-item reference. It never falls back to inline storage. The response contains
+`kind: archive`,
 `retention: organization`, `key`, `sha256` (of the compressed bytes),
 `compressed_size`, `uncompressed_size`, `codec: gzip`, and `schema_version`.
 Keys have the form `orgs/{organization}/blobs/sha256/{first-two-digest-characters}/{digest}`.
@@ -2502,10 +2504,17 @@ the signed entry-to-Hub boundary.
 Archives use the existing hosted attachment bucket and organization-deletion
 prefix. They survive source deletion and attachment expiry, remain charged once
 per blob in the organization's `collaboration_bytes` storage-tier usage, and are
-kept until organization deletion. Both upload preflight and atomic reference
-publication enforce the current storage allowance. An interrupted upload can be
-replayed with the same bytes: the owner verifies and reuses an existing blob.
-No additional catalog, retry loop or garbage collector is introduced.
+kept until organization deletion. Upload preflight commits the catalog's byte
+reservation under the current storage allowance before any object write; competing
+uploads cannot oversubscribe that allowance. Reservations grant no read access.
+Publication requires the existing reservation and records only the verified
+work-item reference. Failed or uncertain uploads and publication failures keep
+the reservation charged until a retry reuses it or the organization is deleted.
+The failed request never deletes a blob that another request may have published.
+An interrupted upload can be replayed with the same bytes: the owner verifies and
+reuses an existing blob and reservation without a second charge. The existing
+quota admission owns both phases; no additional catalog, retry loop or garbage
+collector is introduced.
 
 The entry configures bucket CORS for its exact application origin, GET/HEAD only,
 exposing Content-Length, Content-Type and ETag. Its bucket credential therefore
