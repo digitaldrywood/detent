@@ -1,0 +1,822 @@
+package cli
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"syscall"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/workspace"
+)
+
+func TestReapWorkerProcessesPreservesStaleIdentityArtifacts(t *testing.T) {
+	t.Parallel()
+	for _, outcome := range []procgroup.TerminationOutcome{procgroup.TerminationOutcomeStaleIdentity, procgroup.TerminationOutcomeAlreadyExited} {
+		t.Run(string(outcome), func(t *testing.T) {
+			processStore := &shutdownWorkerProcessStore{processes: []store.WorkerProcess{{SessionID: 2354}}}
+			cleaned := false
+			err := reapWorkerProcessesWithCleanup(t.Context(), processStore, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), "startup", time.Second, time.Now,
+				func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+					return outcome, nil
+				},
+				func(store.WorkerProcess) error { cleaned = true; return nil },
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cleaned != (outcome == procgroup.TerminationOutcomeAlreadyExited) {
+				t.Fatalf("artifact cleanup = %t after %s", cleaned, outcome)
+			}
+			if len(processStore.reaped) != 1 {
+				t.Fatalf("recorded reaps = %d, want 1", len(processStore.reaped))
+			}
+		})
+	}
+}
+
+func TestReapWorkerProcessesRetriesNonEmptyArtifacts(t *testing.T) {
+	t.Parallel()
+
+	textErr := errors.New("directory not empty")
+	tests := []struct {
+		name         string
+		failures     int
+		cleanupErr   error
+		cancelBefore bool
+		cancelAfter  time.Duration
+		wantErr      error
+		wantAttempts int
+		wantWait     time.Duration
+	}{
+		{name: "clean first attempt", wantAttempts: 1},
+		{name: "transient non-empty", failures: 1, cleanupErr: syscall.ENOTEMPTY, wantAttempts: 2, wantWait: 250 * time.Millisecond},
+		{name: "last attempt succeeds", failures: 4, cleanupErr: syscall.ENOTEMPTY, wantAttempts: 5, wantWait: 3750 * time.Millisecond},
+		{name: "persistent non-empty", failures: 10, cleanupErr: syscall.ENOTEMPTY, wantErr: syscall.ENOTEMPTY, wantAttempts: 5, wantWait: 3750 * time.Millisecond},
+		{name: "permission denied", failures: 1, cleanupErr: os.ErrPermission, wantErr: os.ErrPermission, wantAttempts: 1},
+		{name: "unrelated failure", failures: 1, cleanupErr: syscall.EIO, wantErr: syscall.EIO, wantAttempts: 1},
+		{name: "untyped non-empty message", failures: 1, cleanupErr: textErr, wantErr: textErr, wantAttempts: 1},
+		{name: "canceled before cleanup", cancelBefore: true, wantErr: context.Canceled},
+		{name: "cancel during backoff", failures: 10, cleanupErr: syscall.ENOTEMPTY, cancelAfter: 100 * time.Millisecond, wantErr: context.DeadlineExceeded, wantAttempts: 1, wantWait: 100 * time.Millisecond},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				root := t.TempDir()
+				scratch := filepath.Join(root, ".detent", "tmp")
+				if err := os.MkdirAll(scratch, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				retained := filepath.Join(root, "work.txt")
+				if err := os.WriteFile(retained, []byte("retained user work"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				startedAt := time.Now()
+				process := store.WorkerProcess{
+					SessionID: 2193, Identifier: "digitaldrywood/detent#2193",
+					WorkerProcessIdentity: store.WorkerProcessIdentity{PID: 4242, GroupID: 4242, StartedAt: startedAt},
+					CleanupRoot:           root, CleanupPath: scratch,
+				}
+				processStore := &shutdownWorkerProcessStore{processes: []store.WorkerProcess{process}}
+				var logs bytes.Buffer
+				logger := slog.New(slog.NewTextHandler(&logs, nil))
+				ctx := t.Context()
+				if tt.cancelBefore {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithCancel(ctx)
+					cancel()
+				}
+				if tt.cancelAfter > 0 {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, tt.cancelAfter)
+					defer cancel()
+				}
+				attempts, reaps := 0, 0
+				err := reapWorkerProcessesWithCleanup(ctx, processStore, logger, "startup", time.Millisecond, time.Now,
+					func(_ context.Context, identity procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
+						reaps++
+						if identity.PID != process.PID || identity.GroupID != process.GroupID || !identity.StartedAt.Equal(startedAt) {
+							t.Fatalf("process identity changed: %#v", identity)
+						}
+						return procgroup.TerminationOutcomeAlreadyExited, nil
+					},
+					func(process store.WorkerProcess) error {
+						attempts++
+						if len(processStore.reaped) != 0 {
+							t.Fatal("process marked reaped before artifacts were removed")
+						}
+						if attempts <= tt.failures {
+							if err := os.WriteFile(filepath.Join(scratch, "late-cache"), []byte("scratch"), 0o600); err != nil {
+								t.Fatal(err)
+							}
+							var cleanupErr error = &os.PathError{Op: "unlinkat", Path: scratch, Err: tt.cleanupErr}
+							if errors.Is(tt.cleanupErr, syscall.ENOTEMPTY) && runtime.GOOS != "windows" {
+								cleanupErr = os.Remove(scratch)
+								if !errors.Is(cleanupErr, syscall.ENOTEMPTY) {
+									t.Fatalf("remove repopulated scratch = %v, want ENOTEMPTY", cleanupErr)
+								}
+							}
+							return fmt.Errorf("clean worker process artifacts: remove owned path: %w", cleanupErr)
+						}
+						return cleanupWorkerProcessArtifacts(process)
+					})
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("recovery error = %v, want %v", err, tt.wantErr)
+				}
+				if attempts != tt.wantAttempts || reaps != 1 {
+					t.Fatalf("cleanup attempts = %d, reaps = %d; want %d, 1", attempts, reaps, tt.wantAttempts)
+				}
+				if elapsed := time.Since(startedAt); elapsed != tt.wantWait {
+					t.Fatalf("retry wait = %s, want %s", elapsed, tt.wantWait)
+				}
+				if got := len(processStore.reaped); got != 0 && tt.wantErr != nil || got != 1 && tt.wantErr == nil {
+					t.Fatalf("reaped records = %#v, error = %v", processStore.reaped, err)
+				}
+				if tt.wantErr == nil {
+					reaped := processStore.reaped[0]
+					if reaped.reap.Outcome != "already_exited" || reaped.reap.Reason != "startup" || !reaped.reap.ReapedAt.Equal(time.Now()) {
+						t.Fatalf("incorrect reap bookkeeping: %#v", reaped)
+					}
+				}
+				_, statErr := os.Stat(scratch)
+				if tt.wantErr == nil && !errors.Is(statErr, os.ErrNotExist) || tt.wantErr != nil && statErr != nil {
+					t.Fatalf("scratch stat error = %v, recovery error = %v", statErr, err)
+				}
+				if data, err := os.ReadFile(retained); err != nil || string(data) != "retained user work" {
+					t.Fatalf("retained work = %q, error = %v", data, err)
+				}
+				if count := strings.Count(logs.String(), "worker process lifecycle decision"); count != 1 {
+					t.Fatalf("lifecycle decision count = %d, logs:\n%s", count, logs.String())
+				}
+				if tt.wantAttempts > 1 {
+					for _, want := range []string{"worker artifact cleanup retry", "reason=startup", "decision=already_exited", "issue_identifier=digitaldrywood/detent#2193", "cleanup_path=", "cleanup_attempt=1", "cleanup_max_attempts=5", "retry_delay=250ms"} {
+						if !strings.Contains(logs.String(), want) {
+							t.Fatalf("missing retry diagnostic %q:\n%s", want, logs.String())
+						}
+					}
+				}
+				if tt.cancelAfter > 0 && !errors.Is(err, syscall.ENOTEMPTY) {
+					t.Fatalf("cancellation lost cleanup error: %v", err)
+				}
+				if errors.Is(tt.wantErr, syscall.ENOTEMPTY) && !strings.Contains(err.Error(), "5 attempts") {
+					t.Fatalf("missing exhaustion diagnostics: %v", err)
+				}
+			})
+		})
+	}
+}
+
+func TestReapWorkerProcessesRevalidatesArtifactsAfterRetry(t *testing.T) {
+	t.Parallel()
+
+	for _, parent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parent_symlink_%t", parent), func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				root, outside := t.TempDir(), t.TempDir()
+				scratch := filepath.Join(root, ".detent", "tmp")
+				if err := os.MkdirAll(scratch, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				outsideScratch := filepath.Join(outside, "tmp")
+				if err := os.Mkdir(outsideScratch, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				retained := filepath.Join(outsideScratch, "work.txt")
+				if err := os.WriteFile(retained, []byte("retained"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				process := store.WorkerProcess{SessionID: 2193, CleanupRoot: root, CleanupPath: scratch}
+				processStore := &shutdownWorkerProcessStore{processes: []store.WorkerProcess{process}}
+				attempts := 0
+				err := reapWorkerProcessesWithCleanup(t.Context(), processStore, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), "startup", time.Millisecond, time.Now,
+					func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+						return procgroup.TerminationOutcomeAlreadyExited, nil
+					}, func(process store.WorkerProcess) error {
+						attempts++
+						if attempts == 1 {
+							target, replacement := scratch, outsideScratch
+							if parent {
+								target, replacement = filepath.Dir(scratch), outside
+							}
+							if err := os.Rename(target, filepath.Join(root, "previous")); err != nil {
+								t.Fatal(err)
+							}
+							if err := os.Symlink(replacement, target); err != nil {
+								if runtime.GOOS == "windows" {
+									t.Skipf("symlinks unavailable: %v", err)
+								}
+								t.Fatal(err)
+							}
+							return &os.PathError{Op: "unlinkat", Path: scratch, Err: syscall.ENOTEMPTY}
+						}
+						return cleanupWorkerProcessArtifacts(process)
+					})
+				var pathErr *workspace.PathError
+				if !errors.As(err, &pathErr) || attempts != 2 || len(processStore.reaped) != 0 {
+					t.Fatalf("recovery error = %v, attempts = %d, reaped = %#v", err, attempts, processStore.reaped)
+				}
+				if data, err := os.ReadFile(retained); err != nil || string(data) != "retained" {
+					t.Fatalf("outside work = %q, error = %v", data, err)
+				}
+			})
+		})
+	}
+}
+
+func TestReapWorkerProcessesPreservesInterruptedSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
+	t.Parallel()
+
+	for _, failures := range []int{1, 5} {
+		t.Run(fmt.Sprintf("cleanup_failures_%d", failures), func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			backend, err := store.Open(ctx, store.Config{Path: filepath.Join(t.TempDir(), "recovery.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { backend.Close() })
+			startedAt := time.Date(2026, 9, 7, 16, 33, 55, 0, time.UTC)
+			attemptID, err := backend.StartWorkAttempt(ctx, store.WorkAttemptStart{
+				ProjectID: "detent", IssueID: "issue-2193", Identifier: "digitaldrywood/detent#2193",
+				WorkerType: "agent", Lane: "In Progress", AttemptNumber: 1, StartedAt: startedAt,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID, err := backend.StartSession(ctx, store.SessionStart{
+				WorkAttemptID: attemptID, ProjectID: "detent", IssueID: "issue-2193", Identifier: "digitaldrywood/detent#2193", StartedAt: startedAt,
+				ProviderThreadID: "thread-2193", ProviderSessionID: "turn-2193", AgentBackendKind: "codex", AgentRole: "code",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			scratch := filepath.Join(root, ".detent", "tmp")
+			if err := os.MkdirAll(scratch, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.UpdateSessionWorkerProcess(ctx, sessionID, store.WorkerProcessRegistration{
+				WorkerProcessIdentity: store.WorkerProcessIdentity{PID: 4242, GroupID: 4242, StartedAt: startedAt},
+				CleanupRoot:           root, CleanupPath: scratch,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+			reap := func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+				return procgroup.TerminationOutcomeAlreadyExited, nil
+			}
+			synctest.Test(t, func(t *testing.T) {
+				attempts := 0
+				err := reapWorkerProcessesWithCleanup(t.Context(), backend, logger, "startup", time.Millisecond, time.Now, reap, func(process store.WorkerProcess) error {
+					attempts++
+					if attempts <= failures {
+						return &os.PathError{Op: "unlinkat", Path: scratch, Err: syscall.ENOTEMPTY}
+					}
+					return cleanupWorkerProcessArtifacts(process)
+				})
+				if got := err != nil; got != (failures == 5) {
+					t.Fatalf("recovery error = %v, failures = %d", err, failures)
+				}
+			})
+			active, err := backend.ListActiveWorkerProcesses(ctx)
+			wantActive := 0
+			if failures == 5 {
+				wantActive = 1
+			}
+			if err != nil || len(active) != wantActive {
+				t.Fatalf("active worker processes = %#v, error = %v", active, err)
+			}
+			if failures == 5 {
+				if err := reapWorkerProcessesWithCleanup(ctx, backend, logger, "startup", time.Millisecond, time.Now, reap, cleanupWorkerProcessArtifacts); err != nil {
+					t.Fatalf("later recovery failed: %v", err)
+				}
+			}
+			session, err := backend.Queries().GetCodexSession(ctx, sessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !session.WorkerReapedAt.Valid || session.WorkerReapOutcome.String != "already_exited" || session.WorkerReapReason.String != "startup" {
+				t.Fatalf("incorrect persisted reap: %#v", session)
+			}
+			if session.CompletedAt.Valid || session.FinalState.String != store.SessionStateRunning {
+				t.Fatalf("interrupted session incorrectly completed: %#v", session)
+			}
+			orphans, err := backend.ListOrphanedAgentSessions(ctx, "detent")
+			if err != nil || len(orphans) != 1 {
+				t.Fatalf("recoverable sessions = %#v, error = %v", orphans, err)
+			}
+			resume := orphans[0].ResumeState
+			if resume.DetentSessionID != sessionID || resume.ProviderThreadID != "thread-2193" || resume.ProviderSessionID != "turn-2193" {
+				t.Fatalf("incorrect resume state: %#v", resume)
+			}
+		})
+	}
+}
+
+func TestReapWorkerProcessesAtStartup(t *testing.T) {
+	t.Parallel()
+
+	for _, stale := range []bool{false, true} {
+		t.Run(fmt.Sprintf("scratch reservation survives owner loss/stale=%t", stale), func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("shell process fixture")
+			}
+			root := t.TempDir()
+			scratch, err := workspace.PrepareWorkerScratch(t.Context(), root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			database := filepath.Join(t.TempDir(), "processes.db")
+			backend, err := store.Open(t.Context(), store.Config{Path: database})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID, err := backend.StartSession(t.Context(), store.SessionStart{IssueID: "host-gate", StartedAt: time.Now().UTC(), AgentRole: store.WorkerProcessRoleHostValidation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{CleanupRoot: root, CleanupPath: scratch}); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.CommandContext(t.Context(), "sh", "-c", "printf 'ready\n'; read value")
+			cmd.Dir = scratch
+			procgroup.SetTempDir(cmd, scratch)
+			procgroup.Configure(t.Context(), cmd)
+			stdin, err := cmd.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = stdin.Close() })
+			stdout, err := cmd.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			wait := make(chan error, 1)
+			go func() { wait <- cmd.Wait() }()
+			t.Cleanup(func() { _ = cmd.Process.Kill() })
+			if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "ready\n" {
+				t.Fatalf("child startup: %q %v", line, err)
+			}
+			if err := backend.Close(); err != nil {
+				t.Fatal(err)
+			}
+			backend, err = store.Open(t.Context(), store.Config{Path: database})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = backend.Close() })
+			if stale {
+				if err := backend.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{
+					WorkerProcessIdentity: store.WorkerProcessIdentity{PID: os.Getpid(), GroupID: os.Getpid(), StartedAt: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)},
+					CleanupRoot:           root, CleanupPath: scratch,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := reapWorkerProcesses(t.Context(), backend, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), "startup", time.Second, time.Now, nil); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-wait:
+			case <-time.After(5 * time.Second):
+				t.Fatal("scratch child survived startup recovery")
+			}
+			active, err := backend.ListActiveWorkerProcesses(t.Context())
+			if err != nil || len(active) != 0 {
+				t.Fatalf("reservation not released after child termination: %+v %v", active, err)
+			}
+			_, statErr := os.Stat(scratch)
+			if stale {
+				if statErr != nil {
+					t.Fatalf("stale identity artifacts removed: %v", statErr)
+				}
+				if err := workspace.CleanupWorkerScratch(root, scratch); err != nil {
+					t.Fatal(err)
+				}
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("scratch cleanup: %v", statErr)
+			}
+		})
+	}
+
+	startedAt := time.Date(2026, 7, 12, 16, 0, 0, 0, time.UTC)
+	reapedAt := startedAt.Add(time.Minute)
+	processStore := &shutdownWorkerProcessStore{processes: []store.WorkerProcess{
+		{
+			SessionID:  1214,
+			Identifier: "digitaldrywood/detent#1214",
+			WorkerProcessIdentity: store.WorkerProcessIdentity{
+				PID:       4242,
+				GroupID:   4242,
+				StartedAt: startedAt,
+			},
+		},
+		{
+			SessionID:  1215,
+			Identifier: "digitaldrywood/detent#1215",
+			WorkerProcessIdentity: store.WorkerProcessIdentity{
+				PID:       4343,
+				GroupID:   4343,
+				StartedAt: startedAt,
+			},
+		},
+	}}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+
+	err := reapWorkerProcesses(
+		context.Background(),
+		processStore,
+		logger,
+		"startup",
+		time.Millisecond,
+		func() time.Time { return reapedAt },
+		func(_ context.Context, identity procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
+			if identity.PID == 4242 {
+				return procgroup.TerminationOutcomeTerminated, nil
+			}
+			return procgroup.TerminationOutcomeAlreadyExited, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("reapWorkerProcesses() error = %v", err)
+	}
+	if len(processStore.reaped) != 2 {
+		t.Fatalf("reaped processes = %#v", processStore.reaped)
+	}
+	if processStore.reaped[0].reap.Outcome != store.WorkerProcessOutcomeTerminated || processStore.reaped[1].reap.Outcome != store.WorkerProcessOutcomeAlreadyExited {
+		t.Fatalf("reap outcomes = %#v", processStore.reaped)
+	}
+	for _, reaped := range processStore.reaped {
+		if !reaped.reap.ReapedAt.Equal(reapedAt) {
+			t.Fatalf("reaped at = %s, want %s", reaped.reap.ReapedAt, reapedAt)
+		}
+		if reaped.reap.Reason != "startup" {
+			t.Fatalf("reap reason = %q, want startup", reaped.reap.Reason)
+		}
+	}
+	for _, want := range []string{
+		"reason=startup",
+		"decision=terminated",
+		"decision=already_exited",
+		"issue_identifier=digitaldrywood/detent#1214",
+		"issue_identifier=digitaldrywood/detent#1215",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("logs missing %q:\n%s", want, logs.String())
+		}
+	}
+}
+
+func TestReapWorkerProcessesPreservesArtifactsOnFailure(t *testing.T) {
+	t.Parallel()
+
+	livenessErr := errors.New("process group remained alive")
+	scanErr := fmt.Errorf("reap worker artifact processes: scan workspace processes: %w", context.DeadlineExceeded)
+	removalErr := fmt.Errorf("clean worker process artifacts: %w", os.ErrPermission)
+	tests := []struct {
+		name        string
+		reapErr     error
+		cleanupErr  error
+		wantErr     error
+		wantCleanup bool
+	}{
+		{name: "worker liveness", reapErr: livenessErr, wantErr: livenessErr},
+		{name: "artifact process scan deadline", cleanupErr: scanErr, wantErr: context.DeadlineExceeded, wantCleanup: true},
+		{name: "artifact removal", cleanupErr: removalErr, wantErr: os.ErrPermission, wantCleanup: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			scratch := filepath.Join(root, "worker")
+			if err := os.Mkdir(scratch, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			artifact := filepath.Join(scratch, "checkpoint")
+			if err := os.WriteFile(artifact, []byte("resume"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			processStore := &shutdownWorkerProcessStore{processes: []store.WorkerProcess{{
+				SessionID: 2418, CleanupRoot: root, CleanupPath: scratch,
+			}}}
+			var logs bytes.Buffer
+			cleanupCalled := false
+			err := reapWorkerProcessesWithCleanup(t.Context(), processStore,
+				slog.New(slog.NewTextHandler(&logs, nil)), "startup", time.Millisecond, time.Now,
+				func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+					return procgroup.TerminationOutcomeAlreadyExited, tt.reapErr
+				},
+				func(store.WorkerProcess) error {
+					cleanupCalled = true
+					return tt.cleanupErr
+				})
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("recovery error = %v, want %v", err, tt.wantErr)
+			}
+			if cleanupCalled != tt.wantCleanup || len(processStore.reaped) != 0 {
+				t.Fatalf("cleanup called = %t, reaped = %#v", cleanupCalled, processStore.reaped)
+			}
+			if data, err := os.ReadFile(artifact); err != nil || string(data) != "resume" {
+				t.Fatalf("retained checkpoint = %q, error = %v", data, err)
+			}
+			if !strings.Contains(logs.String(), err.Error()) {
+				t.Fatalf("lifecycle log lost failure stage: %s", logs.String())
+			}
+			err = reapWorkerProcessesWithCleanup(t.Context(), processStore,
+				slog.New(slog.NewTextHandler(&logs, nil)), "startup", time.Millisecond, time.Now,
+				func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+					return procgroup.TerminationOutcomeAlreadyExited, nil
+				}, cleanupWorkerProcessArtifacts)
+			if err != nil || len(processStore.reaped) != 1 {
+				t.Fatalf("later recovery error = %v, reaped = %#v", err, processStore.reaped)
+			}
+			if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("recovered artifact path stat = %v, want not exist", err)
+			}
+		})
+	}
+}
+
+func TestReapWorkerProcessesClassifiesCleanupOnlyFailures(t *testing.T) {
+	t.Parallel()
+	process := store.WorkerProcess{SessionID: 7, WorkerProcessIdentity: store.WorkerProcessIdentity{PID: 4242, GroupID: 4242, StartedAt: time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)}}
+	for _, tt := range []struct {
+		name        string
+		reapErr     error
+		cleanupErr  error
+		wantCleanup bool
+	}{
+		{"cleanup timeout after termination", nil, context.DeadlineExceeded, true},
+		{"scratch process scan failure", nil, &workerProcessTerminationError{err: context.DeadlineExceeded}, false},
+		{"termination failure", errors.New("remained alive after SIGKILL"), nil, false},
+		{"termination failure beside cleanup failure", errors.New("operation not permitted"), context.DeadlineExceeded, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			processStore := &shutdownWorkerProcessStore{processes: []store.WorkerProcess{process}}
+			reap := func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+				if tt.reapErr != nil {
+					return "", tt.reapErr
+				}
+				return procgroup.TerminationOutcomeAlreadyExited, nil
+			}
+			err := reapWorkerProcessesWithCleanup(t.Context(), processStore, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), "startup", time.Millisecond, time.Now, reap, func(store.WorkerProcess) error { return tt.cleanupErr })
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			var cleanupOnly *workerArtifactCleanupError
+			if got := errors.As(err, &cleanupOnly); got != tt.wantCleanup {
+				t.Fatalf("cleanup-only = %t (%v), want %t", got, err, tt.wantCleanup)
+			}
+			if tt.reapErr == nil && tt.cleanupErr != nil && !errors.Is(err, tt.cleanupErr) {
+				t.Fatalf("error %v does not wrap %v", err, tt.cleanupErr)
+			}
+		})
+	}
+}
+
+func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
+	t.Parallel()
+	for _, tc := range []struct {
+		projectID, host string
+		scratchFailure  bool
+	}{
+		{projectID: "configured"},
+		{projectID: "scratch-failure", scratchFailure: true},
+		{projectID: "removed"},
+		{projectID: "configured", host: "pool-a"},
+		{projectID: "removed", host: "pool-a"},
+	} {
+		projectID := tc.projectID
+		t.Run(projectID+"/"+tc.host, func(t *testing.T) {
+			backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "attempts.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { backend.Close() })
+			now := time.Now().UTC()
+			id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: projectID, IssueID: "stranded", WorkerType: "agent", WorkerHost: tc.host, StartedAt: now.Add(-46 * time.Hour), LeaseExpiresAt: now.Add(-22 * time.Hour)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.scratchFailure {
+				sessionID, err := backend.StartSession(t.Context(), store.SessionStart{ProjectID: projectID, IssueID: "stranded", WorkAttemptID: id, StartedAt: now.Add(-time.Hour), AgentRole: store.WorkerProcessRoleHostValidation})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := backend.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{CleanupRoot: t.TempDir(), CleanupPath: "pending-host-scratch"}); err != nil {
+					t.Fatal(err)
+				}
+				err = reapWorkerProcessesWithCleanup(t.Context(), backend, nil, "startup", time.Second, func() time.Time { return now }, nil, func(store.WorkerProcess) error { return &workerProcessTerminationError{err: context.DeadlineExceeded} })
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("scratch failure=%v", err)
+				}
+				active, err := backend.ListActiveWorkAttempts(t.Context(), store.WorkAttemptQuery{})
+				if err != nil || len(active) != 1 || active[0].ID != id {
+					t.Fatalf("unconfirmed attempt lost protection: %+v err=%v", active, err)
+				}
+				processes, err := backend.ListActiveWorkerProcesses(t.Context())
+				if err != nil || len(processes) != 1 || processes[0].SessionID != sessionID {
+					t.Fatalf("scratch reservation lost: %+v err=%v", processes, err)
+				}
+				return
+			}
+			err = reapWorkerProcessesWithCleanup(t.Context(), backend, nil, "startup", time.Second, func() time.Time { return now }, nil, func(store.WorkerProcess) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempt, err := backend.WorkAttempt(t.Context(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if attempt.Status != store.WorkAttemptStatusTerminal {
+				t.Fatalf("status = %s, want terminal before project startup", attempt.Status)
+			}
+			active, err := backend.ListActiveWorkAttempts(t.Context(), store.WorkAttemptQuery{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(active) != 0 {
+				t.Fatalf("active attempts = %d, want 0", len(active))
+			}
+			issue := connector.NewIssue()
+			issue.ID, issue.State = "stranded", "In Progress"
+			issue.Identifier, issue.Title = "project#2749", "Resume stranded work"
+			runner := newRestartRecoveryRunner()
+			orch, stop := runRestartRecoveryOrchestrator(t, fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}}), runner, nil, scheduler.ProjectCandidate{ID: projectID}, backend)
+			defer stop()
+			select {
+			case <-runner.started:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("reclaimed card did not dispatch: %+v", restartRecoveryState(t, orch).SchedulerDecisions)
+			}
+
+		})
+	}
+}
+
+func TestStartupRetainsOwnedWorkAttempts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
+	t.Parallel()
+	for _, tc := range []struct {
+		name, host string
+		expired    bool
+	}{
+		{name: "local live lease", host: "local"},
+		{name: "local expired lease with live process", host: "local", expired: true},
+		{name: "pool live lease", host: "pool-a"},
+		{name: "pool expired lease", host: "pool-a", expired: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "attempts.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { backend.Close() })
+			now := time.Now().UTC()
+			lease := now.Add(time.Hour)
+			if tc.expired {
+				lease = now.Add(-time.Hour)
+			}
+			id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{
+				ProjectID: "removed", IssueID: "retained", WorkerType: "agent", WorkerHost: tc.host,
+				StartedAt: now.Add(-2 * time.Hour), LeaseExpiresAt: lease,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID, err := backend.StartSession(t.Context(), store.SessionStart{
+				ProjectID: "removed", IssueID: "retained", WorkAttemptID: id, StartedAt: now.Add(-2 * time.Hour),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The test process is alive; inject a failed termination so it is never signalled.
+			if err := backend.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{
+				WorkerProcessIdentity: store.WorkerProcessIdentity{PID: os.Getpid(), GroupID: os.Getpid(), StartedAt: now},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			terminationErr := errors.New("worker remains alive")
+			err = reapWorkerProcessesWithCleanup(t.Context(), backend, nil, "startup", time.Second, func() time.Time { return now },
+				func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error) {
+					called = true
+					return "", terminationErr
+				}, func(store.WorkerProcess) error { t.Fatal("cleaned live worker"); return nil })
+			if !called || !errors.Is(err, terminationErr) {
+				t.Fatalf("reap called=%v, err=%v", called, err)
+			}
+			attempt, err := backend.WorkAttempt(t.Context(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if attempt.Status != store.WorkAttemptStatusActive {
+				t.Fatalf("live attempt was terminalized: %+v", attempt)
+			}
+		})
+	}
+}
+
+// Pool names are scheduling labels; every registered worker belongs to this instance.
+func TestReapPoolWorkerProcesses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
+	t.Parallel()
+	for _, tc := range []struct {
+		reason, host string
+	}{
+		{reason: "startup", host: "local"},
+		{reason: "startup", host: "pool-a"},
+		{reason: "shutdown", host: "pool-a"},
+	} {
+		t.Run(tc.reason+"/"+tc.host, func(t *testing.T) {
+			backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "attempts.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { backend.Close() })
+			now := time.Now().UTC()
+			id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{
+				ProjectID: "removed", IssueID: "pool-worker", WorkerType: "agent", WorkerHost: tc.host,
+				StartedAt: now.Add(-time.Hour), LeaseExpiresAt: now.Add(time.Hour),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID, err := backend.StartSession(t.Context(), store.SessionStart{
+				ProjectID: "removed", IssueID: "pool-worker", WorkAttemptID: id, StartedAt: now.Add(-time.Hour),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{
+				WorkerProcessIdentity: store.WorkerProcessIdentity{PID: 4242, GroupID: 4242, StartedAt: now},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			err = reapWorkerProcessesWithCleanup(t.Context(), backend, nil, tc.reason, time.Second, func() time.Time { return now },
+				func(_ context.Context, identity procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
+					called = true
+					if identity.PID != 4242 {
+						t.Fatalf("reaped PID = %d", identity.PID)
+					}
+					return procgroup.TerminationOutcomeAlreadyExited, nil
+				}, func(store.WorkerProcess) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			processes, err := backend.ListActiveWorkerProcesses(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !called || len(processes) != 0 {
+				t.Fatalf("reap called=%v, remaining processes=%d", called, len(processes))
+			}
+			if tc.reason == "startup" {
+				attempt, err := backend.WorkAttempt(t.Context(), id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if attempt.Status != store.WorkAttemptStatusTerminal || attempt.TerminalState != store.WorkAttemptTerminalAbandoned {
+					t.Fatalf("reaped attempt = %+v, want abandoned", attempt)
+				}
+			}
+		})
+	}
+}
