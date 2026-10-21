@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -27,6 +29,8 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 	for _, test := range []struct {
 		name                string
 		outcome             string
+		effort              string
+		observedIdentity    bool
 		legacy              bool
 		hiddenDependency    bool
 		hold                bool
@@ -42,6 +46,8 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 		{name: "released source after restart", released: true},
 		{name: "released source preserves newer claim", released: true, replacement: true},
 		{name: "released interrupted source after restart", released: true, outcome: "interrupted"},
+		{name: "released interrupted source with configured effort", released: true, outcome: "interrupted", effort: "high"},
+		{name: "released interrupted source with observed identity", released: true, outcome: "interrupted", observedIdentity: true, replacement: true},
 		{name: "released held source after restart", released: true, hold: true},
 		{name: "released source without worker proof", released: true, missingLaunch: true},
 		{name: "released source without cleanup owner", released: true, missingProcessProof: true},
@@ -113,7 +119,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 			h.scheduler = newScheduler()
 			h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
-			executionIdentity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
+			executionIdentity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test", ReasoningEffort: test.effort}
 			if err := execution.Start(t.Context(), executionIdentity); err != nil {
 				t.Fatal(err)
 			}
@@ -154,7 +160,11 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 					launch = &tracker.NativeWorkerLaunch{PID: worker.PID, GroupID: worker.GroupID, ProcessStart: worker.StartedAt, PolicyID: h.descriptor.ID, ExecutionVersion: "test", ControlVersion: "test", ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), Protocol: 6, SelectedAt: time.Now()}
 				}
 			}
-			if err := execution.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{WorkerLaunch: launch, LocalAttemptID: 41, Generation: 1, HeartbeatAt: time.Now(), Phase: "implementation"}); err != nil {
+			observation := tracker.NativeRuntimeObservation{WorkerLaunch: launch, LocalAttemptID: 41, Generation: 1, HeartbeatAt: time.Now(), Phase: "implementation"}
+			if test.observedIdentity {
+				observation.Identity = agentidentity.RuntimeUpdate("resolved-model", "openai", "medium", "", time.Now())
+			}
+			if err := execution.ObserveRuntime(t.Context(), observation); err != nil {
 				t.Fatal(err)
 			}
 			checkpoint := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", WorkspaceDigest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", ExternalEffect: "none", EffectState: "none"}
@@ -252,13 +262,19 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 
 			if test.released {
 				var replacement tracker.NativeLease
+				var successor *nativeExecution
 				if test.replacement {
-					var err error
-					replacement, err = execution.claim.source.client.Claim(t.Context(), tracker.NativeClaim{PolicyID: h.descriptor.ID, WorkItemID: current.WorkItemID, MachineID: identity.MachineID, SessionID: "replacement", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
-					if err != nil || replacement.FencingToken <= execution.claim.lease.FencingToken {
-						t.Fatalf("replacement claim = %+v, %v", replacement, err)
+					h.claim(t, issue.ID)
+					successor = h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+					if err := successor.Start(t.Context(), executionIdentity); err != nil {
+						t.Fatal(err)
+					}
+					replacement = successor.claim.lease
+					if replacement.FencingToken <= original.FencingToken {
+						t.Fatalf("replacement claim = %+v", replacement)
 					}
 				}
+				unrelated := h.createInProgress(t, "Independent execution")
 				before, err := h.admin.Recovery(t.Context(), current.WorkItemID)
 				if err != nil || len(before.Attempts) != 2 {
 					t.Fatalf("before restart = %+v, %v", before.Attempts, err)
@@ -286,7 +302,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				}
 				providersStopped.Store(true)
 				h.scheduler = newScheduler()
-				if err := h.scheduler.Heartbeat(t.Context()); err != nil {
+				if err := h.scheduler.CheckProjectPolicyWithSource(t.Context(), "local", nativeChangeRepository, h.descriptor, nil); err != nil {
 					t.Fatal(err)
 				}
 				after, err := h.admin.Recovery(t.Context(), current.WorkItemID)
@@ -296,6 +312,11 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				}
 				if err != nil || len(after.Attempts) != 2 || after.Attempts[0].Outcome != want || !reflect.DeepEqual(after.Attempts[0].Checkpoint, before.Attempts[0].Checkpoint) || !reflect.DeepEqual(after.Attempts[1].NativeRunData, before.Attempts[1].NativeRunData) || after.Issue.Revision != current.Revision || after.Issue.State != current.State {
 					t.Fatalf("released restart reconciliation = %+v, %v", after, err)
+				}
+				if want == "cancelled" {
+					if err := cancelNativeReleasedAttempt(t.Context(), execution.claim.source.client, current.WorkItemID, before.Attempts[0]); err != nil {
+						t.Fatalf("duplicate termination acknowledgment: %v", err)
+					}
 				}
 
 				detail, err := h.admin.Change(t.Context(), current.WorkItemID, retained.Change.ID)
@@ -308,10 +329,43 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 					if err != nil || runtime.CurrentLease == nil || runtime.CurrentLease.ID != replacement.ID || runtime.CurrentLease.FencingToken != replacement.FencingToken {
 						t.Fatalf("acknowledgement changed newer authority: %+v, %v", runtime.CurrentLease, err)
 					}
+					if err := successor.Finish(t.Context(), "failed"); err != nil {
+						t.Fatalf("successor lost completion authority: %v", err)
+					}
 					if err := execution.claim.source.client.Release(t.Context(), replacement, "released"); err != nil {
 						t.Fatal(err)
 					}
 				}
+				var independent *nativeExecution
+				candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{
+					Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"Todo", "In Progress"},
+					CandidateReady: func(_ context.Context, candidate connector.Issue) bool { return candidate.ID == unrelated.ID },
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, candidate := range candidates {
+					if candidate.ID != unrelated.ID {
+						continue
+					}
+					if _, err := h.scheduler.AdoptClaim(t.Context(), candidate, time.Now()); err != nil {
+						t.Fatal(err)
+					}
+					independent = h.scheduler.RunExecution(unrelated.ID).(*nativeExecution)
+				}
+				if independent == nil {
+					t.Fatal("released reconciliation prevented unrelated dispatch")
+				}
+				if err := independent.Start(t.Context(), executionIdentity); err != nil {
+					t.Fatal(err)
+				}
+				if err := independent.Finish(t.Context(), "failed"); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.scheduler.ReleaseClaim(t.Context(), unrelated.ID, "orchestrator_release"); err != nil {
+					t.Fatal(err)
+				}
+
 				var source tracker.NativeSourceRecovery
 				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/work-items/"+issue.ID+"/source-recovery", nil, &source); err != nil || source.Quiesced != (want == "cancelled") || source.HeadSHA != checkpoint.HeadSHA || source.VersionID != checkpoint.Change.VersionID {
 					t.Fatalf("retained source recovery = %+v, %v", source, err)
