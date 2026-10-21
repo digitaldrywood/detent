@@ -67,7 +67,10 @@ func TestOfflineCLIUpdateReportsVerifiedController(t *testing.T) {
 		t.Fatal(err)
 	}
 	var archive bytes.Buffer
-	gz := gzip.NewWriter(&archive)
+	gz, err := gzip.NewWriterLevel(&archive, gzip.NoCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tw := tar.NewWriter(gz)
 	if err := tw.WriteHeader(&tar.Header{Name: "detent", Mode: 0o755, Size: int64(len(payload))}); err != nil {
 		t.Fatal(err)
