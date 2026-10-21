@@ -486,7 +486,7 @@ export default defineConfig({
     },
   },
   test: {
-    environmentMatchGlobs: [["tests/components/reports.test.tsx", "jsdom"], ["tests/components/activityPage.test.tsx", "jsdom"], ["tests/components/diagnosticsLive.test.tsx", "jsdom"], ["tests/components/issueAsk.test.tsx", "jsdom"], ["tests/components/sourceRecovery.test.tsx", "jsdom"], ["tests/components/reporter.test.tsx", "jsdom"]],
+    environmentMatchGlobs: [["tests/components/integrations.test.tsx", "jsdom"], ["tests/components/reports.test.tsx", "jsdom"], ["tests/components/activityPage.test.tsx", "jsdom"], ["tests/components/diagnosticsLive.test.tsx", "jsdom"], ["tests/components/issueAsk.test.tsx", "jsdom"], ["tests/components/sourceRecovery.test.tsx", "jsdom"], ["tests/components/reporter.test.tsx", "jsdom"]],
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx", "src/**/*.test.ts"],
     setupFiles: ["./tests/setup.tsx"],
     css: false,

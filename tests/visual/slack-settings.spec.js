@@ -28,6 +28,7 @@ async function openSettings(page, state = initial, viewer = false) {
       }
       return route.fulfill({ json: current });
     }
+    if (url.pathname.endsWith("/secrets/fly_sprites_token")) return route.fulfill({ json: { kind: "fly_sprites_token", present: false } });
     return route.fulfill({ contentType: "text/html", body: html });
   });
   await page.goto(origin + "/settings/integrations" + (viewer ? "?viewer=1" : ""));
@@ -40,12 +41,12 @@ for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 1000 });
       await openSettings(page);
       if (theme === "dark") await page.evaluate(() => document.documentElement.classList.add("dark"));
-      await expect(page.getByLabel("Slack incoming webhook")).toBeVisible();
-      await expect(page.getByText(/Last delivery failed:/)).toBeVisible();
-      await expect(page.getByText(/Last successful delivery:/)).toBeVisible();
+      await expect(page.getByText("Last delivery failed · HTTP 503")).toBeVisible();
+      await expect(page.getByLabel("Slack webhook URL")).toHaveCount(0);
+      await page.getByRole("button", { name: "Replace webhook" }).click();
       await expect(page.getByLabel("Channel name (optional, for display)")).toHaveValue("#operations");
-      await expect(page.getByLabel("Slack incoming webhook")).toHaveValue(masked);
-      await expect(page.getByLabel("Slack incoming webhook")).toHaveAttribute("type", "password");
+      await expect(page.getByLabel("Slack webhook URL")).toHaveValue("");
+      await expect(page.getByLabel("Slack webhook URL")).toHaveAttribute("type", "password");
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
       const violations = (await new AxeBuilder({ page }).include("#slack-notifications").analyze()).violations;
       expect(violations).toEqual([]);
@@ -56,20 +57,21 @@ for (const width of [1440, 390]) {
 
 test("save, test and disable keep the credential write-only", async ({ page }) => {
   const writes = await openSettings(page, { ...initial, webhook: "", channel_name: "", last_success_at: null, last_failure_at: null, last_delivery_failed: false });
-  await expect(page.getByText("Slack notifications are off.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Send test message" })).toBeDisabled();
-  await page.getByLabel("Slack incoming webhook").fill("https://hooks.slack.com/services/T/B/SLACK_SECRET_SENTINEL");
+  await expect(page.getByRole("button", { name: "Set webhook" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Send test message" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Set webhook" }).click();
+  await page.getByLabel("Slack webhook URL").fill("https://hooks.slack.com/services/T/B/SLACK_SECRET_SENTINEL");
   await page.getByLabel("Channel name (optional, for display)").fill("#team");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("Slack notifications saved.");
-  await expect(page.getByLabel("Slack incoming webhook")).toHaveValue(masked);
+  await expect(page.getByLabel("Slack webhook URL")).toHaveCount(0);
   expect(await page.locator("body").innerHTML()).not.toContain("SLACK_SECRET_SENTINEL");
   await page.getByRole("button", { name: "Send test message" }).click();
   await expect(page.getByRole("status")).toHaveText("Test message sent.");
-  await page.getByLabel("Slack incoming webhook").fill("");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("button", { name: "Disable", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("Slack notifications disabled.");
-  await page.getByLabel("Slack incoming webhook").fill("https://hooks.slack.com/services/T/B/SLACK_SECRET_SENTINEL");
+  await page.getByRole("button", { name: "Set webhook" }).click();
+  await page.getByLabel("Slack webhook URL").fill("https://hooks.slack.com/services/T/B/SLACK_SECRET_SENTINEL");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("Slack notifications saved.");
   await page.getByRole("button", { name: "Disable", exact: true }).click();
@@ -81,8 +83,9 @@ test("save, test and disable keep the credential write-only", async ({ page }) =
 
 test("a viewer cannot see organization Slack settings", async ({ page }) => {
   await openSettings(page, initial, true);
-  await expect(page.getByText("Organization Sprites", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("Slack incoming webhook")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Organization Sprites" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Organization notifications" })).toHaveCount(0);
+  await expect(page.getByLabel("Slack webhook URL")).toHaveCount(0);
 });
 
 test("save failure clears the URL and never echoes provider errors", async ({ page }) => {
@@ -90,9 +93,10 @@ test("save failure clears the URL and never echoes provider errors", async ({ pa
   await page.route("**/integrations/slack", (route) => route.request().method() === "PUT"
     ? route.fulfill({ status: 503, json: { message: "SLACK_SECRET_SENTINEL", code: "unavailable" } })
     : route.fulfill({ json: initial }));
-  await page.getByLabel("Slack incoming webhook").fill("https://hooks.slack.com/services/T/B/SLACK_SECRET_SENTINEL");
+  await page.getByRole("button", { name: "Replace webhook" }).click();
+  await page.getByLabel("Slack webhook URL").fill("https://hooks.slack.com/services/T/B/SLACK_SECRET_SENTINEL");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Could not save Slack settings.");
-  await expect(page.getByLabel("Slack incoming webhook")).toHaveValue(masked);
+  await expect(page.getByLabel("Slack webhook URL")).toHaveValue("");
   expect(await page.locator("body").innerHTML()).not.toContain("SLACK_SECRET_SENTINEL");
 });
