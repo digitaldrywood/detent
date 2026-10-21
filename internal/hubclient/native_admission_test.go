@@ -579,6 +579,9 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			if test.second {
 				report = strings.Replace(report, "human_action:", fmt.Sprintf("  - ref: '#%d'\n    reason: second prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action:", second.Number), 1)
 			}
+			if human != "null" {
+				report = strings.TrimSuffix(report, "```") + testDecisionRequestYAML + "```"
+			}
 			if err := execution.(runner.CompletionExecution).PrepareFinish(t.Context(), "succeeded", report, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -952,3 +955,18 @@ func TestNativeAdmissionCompetingRunners(t *testing.T) {
 		t.Fatalf("competing batches admitted %d distinct issues, want 8", len(seen))
 	}
 }
+
+const testDecisionRequestYAML = `decision_request:
+  summary: The work is ready for a decision.
+  question: Which path should the implementation take?
+  options:
+    - label: Proceed with the change
+      consequence: Resume implementation with the requested change.
+      recommended: true
+      return_state: Rework
+    - label: Revise the approach
+      consequence: Resume planning with a revised approach.
+      return_state: Todo
+  custom_allowed: true
+  custom_return_state: Rework
+`

@@ -238,6 +238,15 @@ func TestNativeReleaseDeliveryReconciliation(t *testing.T) {
 			if err != nil || current.Terminal != test.delivered {
 				t.Fatalf("delivery terminal=%t error=%v", current.Terminal, err)
 			}
+			if test.closed && !test.delivered {
+				decision := current.DecisionRequest
+				if decision == nil || decision.AttemptID == "" || decision.Question != "How will you restore this release delivery?" || current.HumanAction == "" {
+					t.Fatalf("closed delivery decision = %+v", decision)
+				}
+				if err := decision.Validate(); err != nil {
+					t.Fatalf("closed delivery decision is invalid: %v", err)
+				}
+			}
 			if candidates := h.candidatesIn(t, "Rework", "In Progress", "Todo"); len(candidates) != 0 {
 				t.Fatalf("delivery redispatched: %+v", candidates)
 			}

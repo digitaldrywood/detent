@@ -60,7 +60,21 @@ func (e *nativeExecution) ReconcileReleaseDelivery(ctx context.Context, localAtt
 		result.FinalMessage = fmt.Sprintf("Verified source commit %s on %s as %s at release head %s.", delivery.SourceMergeSHA, delivery.BaseRef, status.DeliveredSHA, status.ReleaseHeadSHA)
 	} else {
 		action := "The delivery PR is closed without merge and its source is absent from the release branch. Reopen the delivery PR or confirm that this release delivery should be cancelled."
-		result.FinalMessage = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: " + strconv.Quote(action) + "\n```"
+		result.FinalMessage = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: " + strconv.Quote(action) + `
+decision_request:
+  summary: The delivery PR is closed and the source is absent from the release branch.
+  question: How will you restore this release delivery?
+  options:
+    - label: I reopened the delivery PR
+      consequence: Work resumes in Rework using the reopened delivery PR.
+      recommended: true
+      return_state: Rework
+    - label: I delivered the source through another PR
+      consequence: Rework verifies the source on the release branch before completing delivery.
+      return_state: Rework
+  custom_allowed: true
+  custom_return_state: Rework
+` + "```"
 	}
 	return runner.ReleaseDeliveryResult{Settled: true, Result: result}, nil
 }

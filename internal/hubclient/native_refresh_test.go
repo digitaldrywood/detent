@@ -221,7 +221,8 @@ func TestNativeRefreshOversizedRecordedAttempt(t *testing.T) {
 	finished := owner.data
 	finished.Sequence++
 	finished.Outcome = "succeeded"
-	finished.CompletionBody = strings.Repeat("<", 64<<10)
+	completion := "\n```detent-status\nschema: 1\nstatus: blocked\nhuman_action: Operator approval required\n" + testDecisionRequestYAML + "```"
+	finished.CompletionBody = strings.Repeat("<", (64<<10)-len(completion)) + completion
 	finished.Disposition = &tracker.NativeDisposition{Status: workpad.StatusBlocked, HumanAction: true, FinalSummary: "Operator approval required"}
 	item := tracker.NativeWorkItemID(issue.ID)
 	if err := h.native.AppendEvent(t.Context(), item, tracker.NativeRunEvent{Mutation: nativeMutationKey(), Type: "run.finished", SchemaVersion: 1, Data: finished}); err != nil {

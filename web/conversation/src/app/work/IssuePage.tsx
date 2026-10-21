@@ -59,6 +59,8 @@ import {
 } from "./components/IssueProperties.tsx";
 import { IssueResources, type ResourceRow } from "./components/IssueResources.tsx";
 import { IssueDiagnostics, IssueDetailTabs } from "./components/IssueDiagnostics.tsx";
+import { DecisionCard } from "./components/DecisionCard.tsx";
+import type { DecisionAnswer } from "../../contracts/decision.ts";
 import { SourceRecoveryControls } from "./components/SourceRecoveryControls.tsx";
 import { VerificationControls, type VerificationResult } from "./components/VerificationControls.tsx";
 import { mergeActivity, runnerLabel, type ActivityRow } from "./lib/activity.ts";
@@ -66,6 +68,7 @@ import { toChangeView, toWorkItemView, transitionsFrom } from "./lib/fromWire.ts
 import { elapsedLabel, issueNumber } from "./lib/format.ts";
 import type { WorkItemView } from "./lib/model.ts";
 import { useRunnerNames } from "./lib/runnerNames.ts";
+import { relativeTimeLabel } from "../lib/sidebarLogic.ts";
 import { useNow, useWorkHttp } from "./lib/useWork.ts";
 import { newWorkKey, WorkApiError, type WorkHttp } from "./lib/workHttp.ts";
 import { invalidateQueries, scopeOf, setQueryData, useQuery } from "../lib/queryCache.ts";
@@ -663,6 +666,11 @@ function IssueSurface({
       item={item}
       data={data}
       moves={moves}
+      onDecisionAnswer={async (answer, state) => {
+        const updated = await http.transition({ projectId, itemId: workItemId, key: newWorkKey("decision-answer"), expectedRevision: data.issue.revision, state, decisionAnswer: answer });
+        apply((current) => current === null ? current : { ...current, issue: updated });
+        reload();
+      }}
       now={now}
       onOpenChange={(changeId) =>
         void navigate({
@@ -836,6 +844,7 @@ interface IssueBodyProps {
   readonly canVerify: boolean;
   readonly onVerify: (result: VerificationResult, comment?: string) => void;
   readonly onMove: (state: string) => void;
+  readonly onDecisionAnswer: (answer: DecisionAnswer, state: "Todo" | "Rework") => Promise<void>;
   readonly onPriority: (name: string | null) => void;
   readonly onLabels: (labels: readonly string[]) => void;
   readonly onAssignees: (assignees: readonly string[]) => void;
@@ -915,6 +924,14 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   const runnerNames = useRunnerNames();
   const running = data.attempts.at(-1)?.status === "running" ? data.attempts.at(-1) : undefined;
   const runner = runnerLabel(running, runnerNames);
+  const parked = data.attempts.at(-1);
+  const parkedRunner = runnerLabel(parked, runnerNames);
+  const parkedAge = parked === undefined ? "" : relativeTimeLabel(parked.updated_at, { now });
+  const parkedBy = parked === undefined ? undefined : [
+    parkedRunner === null ? "Parked" : `Parked by ${parkedRunner}`,
+    parkedAge === "now" ? "just now" : parkedAge === "" ? "" : `${parkedAge} ago`,
+    item.state,
+  ].filter(Boolean).join(" · ");
   const lane = data.project.states.find((state) => state.name === data.issue.state);
   const laneCategory =
     lane === undefined ? "" : lane.terminal ? "completed" : lane.dispatchable ? "unstarted" : "started";
@@ -1180,6 +1197,10 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
               </Button>
             ) : null}
           </header>
+
+          {data.project.profile === "native" && data.issue.state.toLowerCase() === "blocked" ? (
+            <DecisionCard key={data.issue.decision_request?.attempt_id ?? data.issue.work_item_id} request={data.issue.decision_request} humanAction={data.issue.human_action} parkedBy={parkedBy} canAnswer={props.canWrite && !props.saving} onAnswer={props.onDecisionAnswer} />
+          ) : null}
 
           {data.project.profile === "native" ? <SourceRecoveryControls key={data.issue.work_item_id} http={props.http} projectId={data.issue.project_id} itemId={data.issue.work_item_id} revision={data.issue.revision} canManage={props.canWrite && props.canManageRunners} onTransferred={props.onTransferred} /> : null}
 

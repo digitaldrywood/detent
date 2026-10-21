@@ -98,6 +98,10 @@ func TestNativeSecurityAuditReusesUnchangedVerdict(t *testing.T) {
 				if disposition == nil || disposition.Status != "blocked" || !disposition.HumanAction || disposition.ReasonCode != "" || disposition.Blockers || len(disposition.BlockerEvidence) != 0 || execution.change.Reviewed {
 					t.Fatalf("existing human_action park was not used: %+v", disposition)
 				}
+				signal, reported := runner.NativeCompletionSignalFromMessage(execution.preparedMessage)
+				if !reported || signal == nil || signal.Invalid != nil || signal.DecisionRequest.Validate() != nil {
+					t.Fatalf("audit hold requires a valid decision request: %+v", signal)
+				}
 				for _, text := range []string{"auth", "first verdict undetermined", "higher-model verdict undetermined", "Whether the caller validates tenant authorization"} {
 					if !strings.Contains(execution.preparedMessage, text) || !strings.Contains(disposition.FinalSummary, text) {
 						t.Fatalf("completion missing %q", text)

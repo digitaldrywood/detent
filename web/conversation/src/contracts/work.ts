@@ -21,6 +21,7 @@
 //    initialise most of them, but `NativeState.transitions` can genuinely
 //    arrive as `null`, so that one is nullable as well as optional.
 import * as Schema from "effect/Schema";
+import { DecisionRequest } from "./decision.ts";
 import { AttemptDiagnostics } from "./diagnostics.ts";
 
 // --- Identities -------------------------------------------------------------
@@ -163,6 +164,8 @@ export const NativeIssue = Schema.Struct({
   change_sequence: Schema.optional(Schema.Number),
   issue_contract: Schema.optional(Schema.Struct({ human_action: Schema.optional(Schema.String) })),
   archive_summary: Schema.optional(Schema.Struct({ revision: Schema.String, attempts: Schema.Array(Schema.Unknown) })),
+  decision_request: Schema.optional(DecisionRequest),
+  human_action: Schema.optional(Schema.String),
   reporter_status: Schema.optional(Schema.Literals(["submitted", "planned", "in_progress", "done", "cancelled"])),
   type: Schema.optional(Schema.Literals(["bug", "change_request"])),
   /** Where and on what the filer saw the problem. Absent when none was supplied; list and board reads omit it. */

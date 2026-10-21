@@ -186,6 +186,9 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 	if data.Disposition != nil && (len(data.Disposition.FinalSummary) > workpad.MaxFinalSummaryBytes || !utf8.ValidString(data.Disposition.FinalSummary)) {
 		return nativeRejection(nativePublicInvalid("Final summary must be bounded UTF-8 text"), "execution_validation", "data.disposition")
 	}
+	if _, _, err := completionDecision(data); err != nil {
+		return nativeRejection(nativeInvalid(err.Error()), "execution_validation", "data.completion_body")
+	}
 	if data.Sequence == 0 {
 		if data.Identity != nil || data.Handoff != nil || data.MachineID != "" || data.RunnerID != "" || data.SessionID != "" {
 			return nativeRejection(nativePublicInvalid("Execution metadata requires an ordered event"), "execution_validation", "data")
@@ -481,6 +484,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, 0, ?, 2, ?)`, data.AttemptI
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE native_attempts SET implementing_session_id=CASE WHEN ?>0 THEN ? WHEN implementing_session_id>0 THEN implementing_session_id WHEN implementing_session_id IS NULL THEN NULL ELSE ? END WHERE id=?`, nativeImplementingSession(data), nativeImplementingSession(data), nativeImplementingSession(data), data.AttemptID); err != nil {
 		return false, false, err
+	}
+	if event.Type == "run.finished" && !termination {
+		if err := persistCompletionDecision(ctx, tx, data); err != nil {
+			return false, false, err
+		}
 	}
 	if !termination && data.Runtime != nil && data.Runtime.Landing != nil {
 		if err := recordAttemptLanding(ctx, tx, scope, item, data.AttemptID, *data.Runtime.Landing); err != nil {

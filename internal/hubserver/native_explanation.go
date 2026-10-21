@@ -308,6 +308,9 @@ WHERE i.organization_id=? AND i.project_id=? AND i.native_id=?`, args...).Scan(&
 	if found {
 		issue.ReleaseDelivery = &delivery
 	}
+	if err == nil && strings.EqualFold(issue.State, "Blocked") {
+		issue.DecisionRequest, _, err = readIssueDecision(ctx, q, scope, item)
+	}
 	return issue, id, err
 }
 

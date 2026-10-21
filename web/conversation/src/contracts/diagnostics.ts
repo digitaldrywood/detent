@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { DecisionRequest } from "./decision.ts";
 
 const IdentityValue = Schema.Struct({ value: Schema.optional(Schema.String) });
 
@@ -56,6 +57,7 @@ const Decision = Schema.Struct({
 });
 
 export const IssueExplanation = Schema.Struct({
+  decision_request: Schema.optional(DecisionRequest),
   observed_at: Schema.String,
   current_lane: Schema.Struct({ name: Schema.optional(Schema.String), freshness: Schema.String }),
   latest_transition: Schema.optional(Schema.Struct({ at: Schema.String, reason: Schema.optional(Schema.String) })),

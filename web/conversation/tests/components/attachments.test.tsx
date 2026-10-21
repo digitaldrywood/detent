@@ -42,6 +42,7 @@ async function mountApp() {
     fetch: sameRealmFetch,
   });
   const router = makeRouter(createMemoryHistory({ initialEntries: ["/chat"] }));
+  await router.load();
   render(
     <RegistryProvider>
       <ClientContext.Provider value={client}>
