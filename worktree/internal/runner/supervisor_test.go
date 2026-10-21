@@ -1,0 +1,789 @@
+package runner
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+)
+
+func TestSupervisorConvertsPanicToRetryableCompletion(t *testing.T) {
+	t.Parallel()
+
+	completedAt := time.Date(2026, 5, 31, 14, 0, 0, 0, time.UTC)
+	supervisor, err := NewSupervisor(panicBackend{}, SupervisorConfig{
+		FailureRetryBaseDelay: 10 * time.Second,
+		MaxRetryBackoff:       time.Minute,
+		Now:                   func() time.Time { return completedAt },
+	})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	completion := supervisor.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{ID: "issue-22", Identifier: "digitaldrywood/detent#22"},
+	})
+
+	if completion.IssueID != "issue-22" {
+		t.Fatalf("IssueID = %q, want issue-22", completion.IssueID)
+	}
+	if completion.Err == nil || !strings.Contains(completion.Err.Error(), "runner panic: boom") {
+		t.Fatalf("Err = %v, want runner panic", completion.Err)
+	}
+	if !completion.Retryable {
+		t.Fatal("Retryable = false, want true")
+	}
+	if completion.RetryAttempt != 1 {
+		t.Fatalf("RetryAttempt = %d, want 1", completion.RetryAttempt)
+	}
+	if completion.RetryDelay != 10*time.Second {
+		t.Fatalf("RetryDelay = %s, want 10s", completion.RetryDelay)
+	}
+	if !completion.CompletedAt.Equal(completedAt) {
+		t.Fatalf("CompletedAt = %v, want %v", completion.CompletedAt, completedAt)
+	}
+}
+
+func TestSupervisorAppliesCappedBackoffForRunnerErrors(t *testing.T) {
+	t.Parallel()
+
+	supervisor, err := NewSupervisor(errorBackend{}, SupervisorConfig{
+		FailureRetryBaseDelay: 10 * time.Second,
+		MaxRetryBackoff:       25 * time.Second,
+		OverloadRetryDelay:    45 * time.Second,
+		Now:                   func() time.Time { return time.Date(2026, 5, 31, 14, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	completion := supervisor.Run(context.Background(), RunRequest{
+		Issue:   connector.Issue{ID: "issue-22", Identifier: "digitaldrywood/detent#22"},
+		Attempt: 2,
+	})
+
+	if completion.Err == nil || !strings.Contains(completion.Err.Error(), "runner failed") {
+		t.Fatalf("Err = %v, want runner failed", completion.Err)
+	}
+	if completion.RetryAttempt != 3 {
+		t.Fatalf("RetryAttempt = %d, want 3", completion.RetryAttempt)
+	}
+	if completion.RetryDelay != 25*time.Second {
+		t.Fatalf("RetryDelay = %s, want capped 25s", completion.RetryDelay)
+	}
+}
+
+func TestSupervisorDoesNotAdvanceRetryForCapacityError(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Date(2026, 7, 10, 2, 39, 0, 0, time.UTC)
+	supervisor, err := NewSupervisor(capacityBackend{resetAt: resetAt}, SupervisorConfig{})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	completion := supervisor.Run(t.Context(), RunRequest{
+		Issue:   connector.Issue{ID: "issue-capacity"},
+		Attempt: 2,
+	})
+	if completion.Err == nil || !IsCapacityError(completion.Err) {
+		t.Fatalf("Err = %v, want capacity error", completion.Err)
+	}
+	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
+		t.Fatalf("retry state = retryable %v attempt %d delay %s, want unchanged", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+}
+
+func TestSupervisorRetriesWorkspaceBranchHoldWithoutAdvancingAttempt(t *testing.T) {
+	t.Parallel()
+
+	supervisor, err := NewSupervisor(workspaceBranchHeldBackend{}, SupervisorConfig{OverloadRetryDelay: 45 * time.Second})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	completion := supervisor.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-held"}, Attempt: 7})
+	if !errors.Is(completion.Err, ErrWorkspaceBranchHeld) {
+		t.Fatalf("Err = %v, want ErrWorkspaceBranchHeld", completion.Err)
+	}
+	if !completion.Retryable || completion.RetryAttempt != 7 || completion.RetryDelay != 45*time.Second {
+		t.Fatalf("retry state = retryable %v attempt %d delay %s, want same attempt after 45s", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+}
+
+func TestSupervisorDoesNotApplyGenericBackoffToGitHubRESTHeadroom(t *testing.T) {
+	t.Parallel()
+
+	supervisor, err := NewSupervisor(gitHubRESTHeadroomBackend{}, SupervisorConfig{
+		FailureRetryBaseDelay: 10 * time.Second,
+		MaxRetryBackoff:       5 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	completion := supervisor.Run(t.Context(), RunRequest{
+		Issue:   connector.Issue{ID: "issue-1929"},
+		Attempt: 4,
+	})
+	if !errors.Is(completion.Err, ErrWorkerGitHubRESTReserved) || !IsCapacityError(completion.Err) {
+		t.Fatalf("Err = %v, want GitHub REST capacity error", completion.Err)
+	}
+	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
+		t.Fatalf("retry state = retryable %v attempt %d delay %s, want reset-aware orchestration", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+}
+
+type gitHubRESTHeadroomBackend struct{}
+
+func (gitHubRESTHeadroomBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, fmt.Errorf("%w: remaining=1009 reserve=1250 reset_at=2026-08-16T00:00:00Z", ErrWorkerGitHubRESTReserved)
+}
+
+func TestSupervisorDoesNotRetryOperatorStoppedRun(t *testing.T) {
+	t.Parallel()
+	supervisor, err := NewSupervisor(operatorStoppedBackend{}, SupervisorConfig{})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+	completion := supervisor.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-1311"}, Attempt: 4})
+	if !errors.Is(completion.Err, ErrOperatorStopped) {
+		t.Fatalf("Err = %v, want ErrOperatorStopped", completion.Err)
+	}
+	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
+		t.Fatalf("retry state = retryable %v attempt %d delay %s, want no retry", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+	if got := finalStateForTurnError(ErrOperatorStopped); got != FinalStateOperatorStopped {
+		t.Fatalf("finalStateForTurnError() = %q, want %q", got, FinalStateOperatorStopped)
+	}
+}
+
+func TestSupervisorDoesNotRetryMergeRevokedRun(t *testing.T) {
+	t.Parallel()
+
+	supervisor, err := NewSupervisor(mergeRevokedBackend{}, SupervisorConfig{})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+	completion := supervisor.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-1434"}, Attempt: 4})
+	if !errors.Is(completion.Err, ErrMergeRevoked) {
+		t.Fatalf("Err = %v, want ErrMergeRevoked", completion.Err)
+	}
+	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
+		t.Fatalf("retry state = retryable %v attempt %d delay %s, want no retry", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+	if got := finalStateForTurnError(ErrMergeRevoked); got != FinalStateMergeRevoked {
+		t.Fatalf("finalStateForTurnError() = %q, want %q", got, FinalStateMergeRevoked)
+	}
+}
+
+func TestSupervisorDoesNotRetryLaneRevokedRun(t *testing.T) {
+	t.Parallel()
+
+	supervisor, err := NewSupervisor(laneRevokedBackend{}, SupervisorConfig{})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+	completion := supervisor.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-1849"}, Attempt: 4})
+	if !errors.Is(completion.Err, ErrLaneRevoked) {
+		t.Fatalf("Err = %v, want ErrLaneRevoked", completion.Err)
+	}
+	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
+		t.Fatalf("retry state = retryable %v attempt %d delay %s, want no retry", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+	if got := finalStateForTurnError(ErrLaneRevoked); got != FinalStateLaneRevoked {
+		t.Fatalf("finalStateForTurnError() = %q, want %q", got, FinalStateLaneRevoked)
+	}
+}
+
+func TestSupervisorDoesNotRetryMissingDeliverableCredentials(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		message       string
+		wantRetryable bool
+	}{
+		{name: "missing GitHub CLI login", message: "To get started with GitHub CLI, run: gh auth login; alternatively populate GH_TOKEN"},
+		{name: "invalid configured credential", message: "HTTP 401: Bad credentials"},
+		{name: "Git HTTPS authentication rejected", message: "fatal: Authentication failed for 'https://github.com/example/repo.git/'"},
+		{name: "Git SSH public key rejected", message: "git@github.com: Permission denied (publickey)."},
+		{name: "missing deliverable executable", message: "exec: gh: executable file not found"},
+		{name: "permission rejection can be repaired by worker", message: "HTTP 403: forbidden", wantRetryable: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			supervisor, err := NewSupervisor(deliverableCredentialBackend{message: tt.message}, SupervisorConfig{})
+			if err != nil {
+				t.Fatalf("NewSupervisor() error = %v", err)
+			}
+			completion := supervisor.Run(t.Context(), RunRequest{
+				Issue:   connector.Issue{ID: "issue-1943"},
+				Attempt: 1,
+			})
+			if completion.Retryable != tt.wantRetryable {
+				t.Fatalf("Retryable = %v, want %v", completion.Retryable, tt.wantRetryable)
+			}
+			if !tt.wantRetryable && (completion.RetryAttempt != 0 || completion.RetryDelay != 0) {
+				t.Fatalf("retry state = attempt %d delay %s, want non-retryable credential failure", completion.RetryAttempt, completion.RetryDelay)
+			}
+		})
+	}
+}
+
+func TestMergeWorkerDurationExceededFinalState(t *testing.T) {
+	t.Parallel()
+
+	if got := finalStateForTurnError(ErrMergeWorkerDurationExceeded); got != FinalStateMergeDurationExceeded {
+		t.Fatalf("finalStateForTurnError() = %q, want %q", got, FinalStateMergeDurationExceeded)
+	}
+}
+
+func TestCIUnavailableIsCooperativeStop(t *testing.T) {
+	t.Parallel()
+
+	if !cooperativeStopError(ErrCIUnavailable) {
+		t.Fatal("cooperativeStopError(ErrCIUnavailable) = false, want true")
+	}
+	if got := finalStateForTurnError(ErrCIUnavailable); got != FinalStateCIUnavailable {
+		t.Fatalf("finalStateForTurnError() = %q, want %q", got, FinalStateCIUnavailable)
+	}
+}
+
+func TestSupervisorPropagatesCancellationCause(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		cause         error
+		wantCI        bool
+		wantLane      bool
+		wantFinal     string
+		wantRetryable bool
+	}{
+		{name: "CI unavailable remains cooperative", cause: ErrCIUnavailable, wantCI: true},
+		{name: "operator stop remains cooperative", cause: ErrOperatorStopped},
+		{name: "merge revocation remains cooperative", cause: ErrMergeRevoked},
+		{name: "lane revocation remains cooperative", cause: ErrLaneRevoked, wantLane: true, wantFinal: FinalStateLaneRevoked},
+		{name: "ordinary cancellation remains retryable", cause: context.Canceled, wantRetryable: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancelCause(context.Background())
+			cancel(tt.cause)
+			supervisor, err := NewSupervisor(contextErrorBackend{}, SupervisorConfig{})
+			if err != nil {
+				t.Fatalf("NewSupervisor() error = %v", err)
+			}
+
+			completion := supervisor.Run(ctx, RunRequest{
+				Issue:   connector.Issue{ID: "issue-canceled"},
+				Attempt: 3,
+			})
+			if got := errors.Is(completion.Err, ErrCIUnavailable); got != tt.wantCI {
+				t.Fatalf("errors.Is(Err, ErrCIUnavailable) = %v, want %v; Err = %v", got, tt.wantCI, completion.Err)
+			}
+			if got := errors.Is(completion.Err, ErrLaneRevoked); got != tt.wantLane {
+				t.Fatalf("errors.Is(Err, ErrLaneRevoked) = %v, want %v; Err = %v", got, tt.wantLane, completion.Err)
+			}
+			if completion.Result.FinalState != tt.wantFinal {
+				t.Fatalf("FinalState = %q, want %q", completion.Result.FinalState, tt.wantFinal)
+			}
+			if completion.Retryable != tt.wantRetryable {
+				t.Fatalf("Retryable = %v, want %v", completion.Retryable, tt.wantRetryable)
+			}
+			if !tt.wantRetryable && (completion.RetryAttempt != 0 || completion.RetryDelay != 0) {
+				t.Fatalf("retry state = attempt %d delay %s, want no retry", completion.RetryAttempt, completion.RetryDelay)
+			}
+		})
+	}
+}
+
+func TestSupervisorUsesFlatSameAttemptRetryForTransientOverload(t *testing.T) {
+	t.Parallel()
+
+	var logs strings.Builder
+	supervisor, err := NewSupervisor(transientOverloadBackend{}, SupervisorConfig{
+		FailureRetryBaseDelay: time.Second,
+		MaxRetryBackoff:       time.Hour,
+		OverloadRetryDelay:    45 * time.Second,
+		Logger:                slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	completion := supervisor.Run(t.Context(), RunRequest{
+		Issue:   connector.Issue{ID: "issue-overload"},
+		Attempt: 7,
+	})
+	if !IsTransientOverload(completion.Err) {
+		t.Fatalf("Err = %v, want transient overload", completion.Err)
+	}
+	if !completion.Retryable || completion.RetryAttempt != 7 || completion.RetryDelay != 45*time.Second {
+		t.Fatalf("retry state = retryable %v attempt %d delay %s, want same attempt after 45s", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+	if !strings.Contains(logs.String(), "level=INFO") || !strings.Contains(logs.String(), "reason=transient_overload") {
+		t.Fatalf("logs = %q, want INFO transient_overload reason", logs.String())
+	}
+}
+
+func TestSupervisorAddsSharedHostCensusToStartupFailure(t *testing.T) {
+	t.Parallel()
+
+	pacer := NewStartupDispatchPacer(StartupDispatchPacerConfig{})
+	otherProject := pacer.BeginStartup("worker-a")
+	defer otherProject.Finish()
+	supervisor, err := NewSupervisor(startupFailureBackend{}, SupervisorConfig{DispatchPacer: pacer})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	completion := supervisor.Run(t.Context(), RunRequest{WorkerHost: "worker-a"})
+	capacityErr, ok := backendcapacity.As(completion.Err)
+	if !ok || capacityErr.Details.Startup == nil {
+		t.Fatalf("completion error = %v, want startup capacity evidence", completion.Err)
+	}
+	evidence := capacityErr.Details.Startup
+	if evidence.WorkerHost != "worker-a" || evidence.ConcurrentStartups != 2 || evidence.ActiveWorkers != 2 {
+		t.Fatalf("startup evidence = %#v, want shared worker-a census", evidence)
+	}
+}
+
+func TestSupervisorLogsBackendErrorBodyForRunnerErrors(t *testing.T) {
+	t.Parallel()
+
+	var logs strings.Builder
+	supervisor, err := NewSupervisor(backendErrorRunner{}, SupervisorConfig{
+		FailureRetryBaseDelay: time.Second,
+		MaxRetryBackoff:       time.Second,
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+	})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	completion := supervisor.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{ID: "issue-927", Identifier: "digitaldrywood/detent#927"},
+	})
+	if completion.Err == nil {
+		t.Fatal("Completion.Err = nil, want backend error")
+	}
+	logText := logs.String()
+	for _, want := range []string{
+		"level=WARN",
+		"worker_attempt_finished",
+		"backend_error_body",
+		`"{\"type\":\"error\",\"status\":400}"`,
+	} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("logs missing %q:\n%s", want, logText)
+		}
+	}
+}
+
+func TestSupervisorRetryDelayNeverOverflows(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		baseDelay time.Duration
+		maxDelay  time.Duration
+		attempt   int
+		want      time.Duration
+	}{
+		{
+			name:      "first attempt uses base delay",
+			baseDelay: 10 * time.Second,
+			maxDelay:  5 * time.Minute,
+			attempt:   1,
+			want:      10 * time.Second,
+		},
+		{
+			name:      "negative attempt uses first attempt",
+			baseDelay: 10 * time.Second,
+			maxDelay:  5 * time.Minute,
+			attempt:   -10,
+			want:      10 * time.Second,
+		},
+		{
+			name:      "caps before default backoff can overflow",
+			baseDelay: 10 * time.Second,
+			maxDelay:  5 * time.Minute,
+			attempt:   31,
+			want:      5 * time.Minute,
+		},
+		{
+			name:      "large attempt stays capped",
+			baseDelay: time.Nanosecond,
+			maxDelay:  time.Duration(1<<63 - 1),
+			attempt:   int(^uint(0) >> 1),
+			want:      time.Duration(1<<63 - 1),
+		},
+		{
+			name:      "near max duration multiplication caps",
+			baseDelay: time.Duration(1<<62 + 1),
+			maxDelay:  time.Duration(1<<63 - 1),
+			attempt:   2,
+			want:      time.Duration(1<<63 - 1),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			supervisor, err := NewSupervisor(errorBackend{}, SupervisorConfig{
+				FailureRetryBaseDelay: tt.baseDelay,
+				MaxRetryBackoff:       tt.maxDelay,
+			})
+			if err != nil {
+				t.Fatalf("NewSupervisor() error = %v", err)
+			}
+
+			got := supervisor.RetryDelay(tt.attempt)
+			if got != tt.want {
+				t.Fatalf("RetryDelay(%d) = %s, want %s", tt.attempt, got, tt.want)
+			}
+			if got < 0 {
+				t.Fatalf("RetryDelay(%d) = %s, want non-negative duration", tt.attempt, got)
+			}
+		})
+	}
+}
+
+func TestSupervisorUpdateConfigChangesRetryDelay(t *testing.T) {
+	t.Parallel()
+
+	supervisor, err := NewSupervisor(errorBackend{}, SupervisorConfig{
+		FailureRetryBaseDelay: 10 * time.Second,
+		MaxRetryBackoff:       25 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	supervisor.UpdateConfig(SupervisorConfig{
+		FailureRetryBaseDelay: time.Second,
+		MaxRetryBackoff:       2 * time.Second,
+		OverloadRetryDelay:    30 * time.Second,
+	})
+
+	if got := supervisor.RetryDelay(4); got != 2*time.Second {
+		t.Fatalf("RetryDelay(4) = %s, want 2s", got)
+	}
+	if got := supervisor.OverloadRetryDelay(); got != 30*time.Second {
+		t.Fatalf("OverloadRetryDelay() = %s, want 30s", got)
+	}
+}
+
+func TestSupervisorDispatchSendsCompletion(t *testing.T) {
+	t.Parallel()
+
+	supervisor, err := NewSupervisor(staticBackend{
+		result: RunResult{FinalState: FinalStateCompleted},
+	}, SupervisorConfig{
+		FailureRetryBaseDelay: time.Second,
+		MaxRetryBackoff:       time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	completions := make(chan Completion, 1)
+	supervisor.Dispatch(context.Background(), RunRequest{
+		Issue: connector.Issue{ID: "issue-22", Identifier: "digitaldrywood/detent#22"},
+	}, completions)
+
+	select {
+	case completion := <-completions:
+		if completion.Err != nil {
+			t.Fatalf("Completion.Err = %v, want nil", completion.Err)
+		}
+		if completion.Retryable {
+			t.Fatal("Retryable = true, want false")
+		}
+		if completion.Result.FinalState != FinalStateCompleted {
+			t.Fatalf("FinalState = %q, want %q", completion.Result.FinalState, FinalStateCompleted)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for completion")
+	}
+}
+
+func TestSupervisorDispatchDeliversCompletionAfterContextCancellation(t *testing.T) {
+	backend := &cancelCompletionBackend{
+		returning: make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	supervisor, err := NewSupervisor(backend, SupervisorConfig{
+		FailureRetryBaseDelay: time.Second,
+		MaxRetryBackoff:       time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	completions := make(chan Completion)
+	supervisor.Dispatch(ctx, RunRequest{
+		Issue: connector.Issue{ID: "issue-22", Identifier: "digitaldrywood/detent#22"},
+	}, completions)
+
+	cancel()
+	select {
+	case <-backend.returning:
+	case <-time.After(time.Second):
+		t.Fatal("backend did not observe cancellation")
+	}
+	close(backend.release)
+
+	select {
+	case completion := <-completions:
+		if !errors.Is(completion.Err, context.Canceled) {
+			t.Fatalf("Completion.Err = %v, want context.Canceled", completion.Err)
+		}
+		if !completion.Retryable {
+			t.Fatal("Retryable = false, want true")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for canceled completion")
+	}
+}
+
+func TestSupervisorDispatchStopsBlockedSendAfterCancellation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	t.Parallel()
+
+	returned := make(chan struct{})
+	logs := newSignalLog("runner completion delivery timed out after context cancellation")
+	supervisor, err := NewSupervisor(staticBackend{
+		result:   RunResult{FinalState: FinalStateCompleted},
+		returned: returned,
+	}, SupervisorConfig{
+		FailureRetryBaseDelay: time.Second,
+		MaxRetryBackoff:       time.Minute,
+		Logger:                slog.New(slog.NewTextHandler(logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	supervisor.Dispatch(ctx, RunRequest{
+		Issue: connector.Issue{ID: "issue-22", Identifier: "digitaldrywood/detent#22"},
+	}, make(chan Completion))
+
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("backend did not return")
+	}
+	cancel()
+
+	select {
+	case <-logs.signal:
+	case <-time.After(time.Second):
+		t.Fatalf("logs %q missing blocked completion timeout", logs.String())
+	}
+}
+
+type signalLog struct {
+	mu       sync.Mutex
+	body     strings.Builder
+	fragment string
+	signal   chan struct{}
+	once     sync.Once
+}
+
+func newSignalLog(fragment string) *signalLog {
+	return &signalLog{
+		fragment: fragment,
+		signal:   make(chan struct{}),
+	}
+}
+
+func (l *signalLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	_, _ = l.body.Write(p)
+	if strings.Contains(l.body.String(), l.fragment) {
+		l.once.Do(func() {
+			close(l.signal)
+		})
+	}
+	return len(p), nil
+}
+
+func (l *signalLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.body.String()
+}
+
+type panicBackend struct{}
+
+func (panicBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	panic("boom")
+}
+
+type errorBackend struct{}
+
+func (errorBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, errors.New("runner failed")
+}
+
+type workspaceBranchHeldBackend struct{}
+
+func (workspaceBranchHeldBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, &WorkspaceBranchHeldError{Branch: "detent/held", WorktreePath: "/review/pr"}
+}
+
+type operatorStoppedBackend struct{}
+
+func (operatorStoppedBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{FinalState: FinalStateOperatorStopped}, ErrOperatorStopped
+}
+
+type mergeRevokedBackend struct{}
+
+func (mergeRevokedBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{FinalState: FinalStateMergeRevoked}, ErrMergeRevoked
+}
+
+type laneRevokedBackend struct{}
+
+func (laneRevokedBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{FinalState: FinalStateLaneRevoked}, ErrLaneRevoked
+}
+
+type deliverableCredentialBackend struct {
+	message string
+}
+
+func (b deliverableCredentialBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{FinalState: FinalStateFailed}, &DeliverableCommandError{
+		OperationClass: "push",
+		Operation:      "git push",
+		Status:         "failed",
+		Message:        b.message,
+	}
+}
+
+type contextErrorBackend struct{}
+
+func (contextErrorBackend) Run(ctx context.Context, _ RunRequest) (RunResult, error) {
+	return RunResult{}, ctx.Err()
+}
+
+type capacityBackend struct {
+	resetAt time.Time
+}
+
+type transientOverloadBackend struct{}
+
+type startupFailureBackend struct{}
+
+func (startupFailureBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, backendcapacity.NewError(
+		backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"},
+		backendcapacity.Details{
+			Type:   backendcapacity.ErrorTypeTransientOverload,
+			Kind:   backendcapacity.StartupTimeoutKind,
+			Reason: "backend startup handshake timed out",
+			Startup: &backendcapacity.StartupEvidence{
+				Stage:      "initialize",
+				ElapsedMS:  5000,
+				DeadlineMS: 5000,
+			},
+		},
+		context.DeadlineExceeded,
+	)
+}
+
+func (transientOverloadBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, backendcapacity.NewError(
+		backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"},
+		backendcapacity.Details{
+			Type:   backendcapacity.ErrorTypeTransientOverload,
+			Kind:   "serverOverloaded",
+			Reason: string(backendcapacity.ErrorTypeTransientOverload),
+		},
+		errors.New("selected model is at capacity"),
+	)
+}
+
+func (b capacityBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, backendcapacity.NewError(
+		backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"},
+		backendcapacity.Details{Kind: "usageLimitExceeded", ResetAt: &b.resetAt},
+		errors.New("usage limit reached"),
+	)
+}
+
+type backendErrorRunner struct{}
+
+func (backendErrorRunner) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, backendError{body: `{"type":"error","status":400}`}
+}
+
+type backendError struct {
+	body string
+}
+
+func (e backendError) Error() string {
+	return "codex turn failed: status failed: " + e.body
+}
+
+func (e backendError) BackendErrorBody() string {
+	return e.body
+}
+
+func (e backendError) BackendErrorMessage() string {
+	return "model rejected"
+}
+
+type staticBackend struct {
+	result   RunResult
+	returned chan struct{}
+}
+
+func (b staticBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	if b.returned != nil {
+		close(b.returned)
+	}
+	return b.result, nil
+}
+
+type cancelCompletionBackend struct {
+	returning chan struct{}
+	release   chan struct{}
+}
+
+func (b *cancelCompletionBackend) Run(ctx context.Context, _ RunRequest) (RunResult, error) {
+	<-ctx.Done()
+	close(b.returning)
+	<-b.release
+	return RunResult{}, ctx.Err()
+}
