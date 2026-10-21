@@ -271,11 +271,12 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 				}
 			})
 			if test.verdict != "" {
-				if test.stage == "source" {
+				switch test.stage {
+				case "source":
 					provider.sourceVerdict = test.verdict
-				} else if test.stage == "security" {
+				case "security":
 					provider.securityVerdict = test.verdict
-				} else {
+				default:
 					provider.validator = test.verdict
 				}
 			}
