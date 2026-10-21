@@ -182,7 +182,7 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 			return nil, operatortool.ErrInvalidArguments
 		}
 		if (args.RepositoryEnabled != nil || args.Intake != nil || args.Projection != nil) && !*current.GitHubTransportAvailable {
-			return nil, nativeInvalid("Hub GitHub integration is unavailable. Associate the runner checkout in project setup and approve the runner's repository policy with GitHub PR landing enabled.")
+			return nil, nativePublicInvalid("Hub GitHub integration is unavailable. Associate the runner checkout in project setup and approve the runner's repository policy with GitHub PR landing enabled.")
 		}
 		input := operatortool.IntegrationInput{WorkflowMarkdown: args.WorkflowMarkdown, ExpectedRevision: current.Revision, Intake: current.Intake, Projection: current.Projection, RepositoryEnabled: current.RepositoryEnabled}
 		if args.WorkflowMarkdown != nil {
@@ -240,7 +240,7 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 			return nil, err
 		}
 		if current.Profile != "native" {
-			return nil, nativeInvalid("Chat changes require a native issue")
+			return nil, nativePublicInvalid("Chat changes require a native issue")
 		}
 		action.IssueID, action.Identifier, action.CurrentState, action.Revision = args.WorkItemID, args.WorkItemID, current.State, int64(current.Revision)
 		request := coordinatorWorkArguments{WorkArguments: operatortool.WorkArguments{ProjectID: action.ProjectID, Identifier: args.WorkItemID, ExpectedRevision: int64(current.Revision), Title: args.Title, Body: args.Body, Labels: args.Labels, Priority: args.Priority}}
@@ -472,7 +472,7 @@ func (s *Service) authorizeCoordinatorAction(ctx context.Context, action chat.Ac
 		return nil, operatortool.ErrAccessDenied
 	}
 	if !coordinatorHandles(record) {
-		return nil, nativeInvalid("This chat is linked; request the change in a project chat")
+		return nil, nativePublicInvalid("This chat is linked; request the change in a project chat")
 	}
 	return ctx, nil
 }
@@ -541,7 +541,7 @@ func (s *Service) publishCoordinatorDecision(ctx context.Context, action chat.Ac
 func (s *Service) postConversationAction(c echo.Context) error {
 	var action chat.Action
 	if err := decodeAPIJSON(c, &action); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
@@ -555,7 +555,7 @@ func (s *Service) postConversationAction(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if (!coordinatorSettingsTool(string(action.Kind)) && !coordinatorWorkflowMutation(string(action.Kind)) && !coordinatorCatalogWrite(string(action.Kind)) && !slices.Contains([]string{operatortool.StopRun, operatortool.FileIssue, operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "convert_runner_scope", "promote_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind))) || action.ProjectID != string(scope.project) || action.RequestID == "" || len(action.RequestID) > 128 {
-		return invalidAPIRequest(c, operatortool.ErrInvalidArguments)
+		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
 	action.ConversationID, action.OrganizationID = record.ID, string(scope.organization)
@@ -563,7 +563,7 @@ func (s *Service) postConversationAction(c echo.Context) error {
 	action.Mutation = mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: action.ProjectID, ResourceID: action.IssueID, Action: string(action.Kind), Source: "chat", CorrelationID: newNativeID("luna")}
 	action.Mutation, err = action.Mutation.Bind(action.RequestID, action.Arguments)
 	if err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.executeCoordinatorAction(ctx, action)
 	if err != nil {

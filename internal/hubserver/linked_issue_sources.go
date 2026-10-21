@@ -141,7 +141,7 @@ AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope
 func (s *Service) intakeLinkedIssue(c echo.Context) error {
 	var request tracker.GitHubIntake
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return intakeLinkedIssueTx(ctx, tx, scope, c.Param("item"), request.Snapshot, now)
@@ -154,12 +154,12 @@ func intakeLinkedIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, id 
 		return nil, err
 	}
 	if issue.Profile != "native" || issue.LinkedSource == nil {
-		return nil, nativeInvalid("Issue has no linked source awaiting intake")
+		return nil, nativePublicInvalid("Issue has no linked source awaiting intake")
 	}
 	completed := issue.LinkedSource.Status == "complete"
 	canonical, _, _, err := tracker.ParseGitHubIssueURL(snapshot.URL)
 	if err != nil || canonical != issue.LinkedSource.URL {
-		return nil, nativeInvalid("Intake source does not match the linked issue")
+		return nil, nativePublicInvalid("Intake source does not match the linked issue")
 	}
 	if err := validateNativeContent(snapshot.Title, snapshot.Body, nil, nil, nil); err != nil {
 		return nil, err
@@ -173,7 +173,7 @@ func intakeLinkedIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, id 
 			return nil, err
 		}
 		if len(comment.Body) > 64<<10 || seen[comment.Provenance.ExternalID] {
-			return nil, nativeInvalid("Intake discussion contains an oversized or duplicate comment")
+			return nil, nativePublicInvalid("Intake discussion contains an oversized or duplicate comment")
 		}
 		seen[comment.Provenance.ExternalID] = true
 	}

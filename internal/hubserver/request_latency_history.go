@@ -140,7 +140,7 @@ type requestMetricsResponse struct {
 func (s *Service) hostedRequestMetrics(c echo.Context) error {
 	ctx := c.Request().Context()
 	if !s.requestMetricsVisible(ctx) {
-		return c.NoContent(http.StatusForbidden)
+		return s.hostedJSONError(c, http.StatusForbidden, "Staff access is required to read request metrics")
 	}
 	var window time.Duration
 	if raw := c.QueryParam("window"); raw != "" {

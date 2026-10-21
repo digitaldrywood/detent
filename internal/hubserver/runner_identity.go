@@ -106,7 +106,7 @@ func (s *Service) getRunnerIdentity(c echo.Context) error {
 func (s *Service) renewRunnerIdentity(c echo.Context) error {
 	var request struct{}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.changeRunnerCredential(c, "")
 }
@@ -114,10 +114,10 @@ func (s *Service) renewRunnerIdentity(c echo.Context) error {
 func (s *Service) rotateRunnerIdentity(c echo.Context) error {
 	var request runnerauth.Rotation
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if !runnerauth.ValidCredential(request.Credential) {
-		return s.nativeAPIError(c, nativeInvalid("A host-generated replacement credential is required"))
+		return s.nativeAPIError(c, nativePublicInvalid("A host-generated replacement credential is required"))
 	}
 	return s.changeRunnerCredential(c, request.Credential)
 }
@@ -128,7 +128,7 @@ func (s *Service) changeRunnerCredential(c echo.Context, replacement string) err
 		return s.nativeAPIError(c, err)
 	}
 	if apikey.HashToken(replacement) == credential.Hash {
-		return s.nativeAPIError(c, nativeInvalid("Rotation requires a different credential"))
+		return s.nativeAPIError(c, nativePublicInvalid("Rotation requires a different credential"))
 	}
 	return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		// runnerTransaction rechecks the current hash, revocation and time
@@ -158,7 +158,6 @@ func (s *Service) revokeRunnerIdentity(c echo.Context) error {
 		return s.nativeAPIError(c, runnerUnauthorized())
 	}
 	_, err := s.revokeRunnerIdentityCommand(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, c.Param("runner"))
-
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -249,17 +248,17 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if !workspacesession.ValidIsolation(request.WorkspaceIsolation) {
-		return s.nativeAPIError(c, nativeInvalid("Workspace isolation must be sandbox, container or user"))
+		return s.nativeAPIError(c, nativePublicInvalid("Workspace isolation must be sandbox, container or user"))
 	}
 	scope := nativeRequestScope(c)
 	if scope.credential.Runner.RunnerID != "" && string(scope.credential.Runner.MachineID) != c.Param("machine") {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if len(request.DisplayName) > 200 || request.Capacity < 0 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || !validRunnerPlatform(request.OS, request.Architecture) {
-		return s.nativeAPIError(c, nativeInvalid("Display name, version and nonnegative capacity are required"))
+		return s.nativeAPIError(c, nativePublicInvalid("Display name, version and nonnegative capacity are required"))
 	}
 	target := runnerUpdateTarget(s.config.Version)
 	published := false
@@ -303,7 +302,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 		if scope.credential.Runner.RunnerID != "" {
 			if request.SpriteName != "" {
 				if !validSpritesSlug(request.SpriteName) {
-					return nil, nativeInvalid("Sprite name is invalid")
+					return nil, nativePublicInvalid("Sprite name is invalid")
 				}
 				result, err := tx.ExecContext(ctx, "UPDATE machines SET capabilities_json=json_set(capabilities_json, '$.sprite_name', ?) WHERE id=? AND organization_id=? AND hostname=?", request.SpriteName, scope.credential.Runner.MachineID, scope.organization, request.SpriteName)
 				if err != nil {
@@ -314,7 +313,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 					return nil, err
 				}
 				if count != 1 {
-					return nil, nativeInvalid("Sprite name must match the runner hostname")
+					return nil, nativePublicInvalid("Sprite name must match the runner hostname")
 				}
 			}
 			if err := storeRunnerAdmissionObservation(ctx, tx, scope, request.Admission, now); err != nil {
@@ -399,28 +398,28 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			return snapshot, err
 		}
 		if request.Admission != nil {
-			return nil, nativeInvalid("Admission observations require an enrolled runner")
+			return nil, nativePublicInvalid("Admission observations require an enrolled runner")
 		}
 		if request.Update != nil {
-			return nil, nativeInvalid("Update evidence requires an enrolled runner")
+			return nil, nativePublicInvalid("Update evidence requires an enrolled runner")
 		}
 		if request.ProjectConfiguration != nil {
-			return nil, nativeInvalid("Project configuration requires an enrolled runner")
+			return nil, nativePublicInvalid("Project configuration requires an enrolled runner")
 		}
 		if request.LocalChecks != nil {
-			return nil, nativeInvalid("Local checks require an enrolled runner")
+			return nil, nativePublicInvalid("Local checks require an enrolled runner")
 		}
 		if len(request.ProviderReports) != 0 {
-			return nil, nativeInvalid("Provider reports require an enrolled runner")
+			return nil, nativePublicInvalid("Provider reports require an enrolled runner")
 		}
 		if request.WorkspaceCapabilities != nil {
-			return nil, nativeInvalid("Workspace capabilities require an enrolled runner")
+			return nil, nativePublicInvalid("Workspace capabilities require an enrolled runner")
 		}
 		if request.Skills != nil {
-			return nil, nativeInvalid("Skill reports require an enrolled runner")
+			return nil, nativePublicInvalid("Skill reports require an enrolled runner")
 		}
 		if request.CheckoutRepository != nil && *request.CheckoutRepository != "" {
-			return nil, nativeInvalid("Checkout reports require an enrolled runner")
+			return nil, nativePublicInvalid("Checkout reports require an enrolled runner")
 		}
 		result, err := tx.ExecContext(ctx, `UPDATE machines SET display_name = ?, capacity = ?, version = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND organization_id = ? AND token_id = ?`, request.DisplayName, request.Capacity, request.Version, formatHubTime(now), formatHubTime(now), c.Param("machine"), scope.organization, scope.credential.ID)
 		return struct{}{}, requireRunnerUpdate(result, err)

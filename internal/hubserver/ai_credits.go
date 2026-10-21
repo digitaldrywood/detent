@@ -90,7 +90,7 @@ func (s *Service) hostedCreditCheckout(c echo.Context) error {
 	}
 	if api {
 		if err := decodeAPIJSON(c, &request); err != nil {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 		if err := request.validate(true); err != nil {
 			return s.nativeAPIError(c, err)
@@ -114,7 +114,7 @@ func (s *Service) hostedCreditAutoFund(c echo.Context) error {
 	var request creditFundingInput
 	if api {
 		if err := decodeAPIJSON(c, &request); err != nil {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 	} else {
 		request.Enabled = c.FormValue("enabled") == "on"

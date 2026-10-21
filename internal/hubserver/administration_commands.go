@@ -147,7 +147,7 @@ func (s *Service) changeHostedGrantFor(ctx context.Context, credential apiCreden
 		return hostedMemberView{}, nativeNotFound()
 	}
 	if !hostedSafeID(member.UserID) || !hostedSafeID(project) {
-		return hostedMemberView{}, nativeInvalid("Select a member and project")
+		return hostedMemberView{}, nativePublicInvalid("Select a member and project")
 	}
 	if err := s.hostedGrant(ctx, credential, member.UserID, project, write, runner, revoke); err != nil {
 		return hostedMemberView{}, err
@@ -211,7 +211,7 @@ func (s *Service) pendingHostedInvitationFor(ctx context.Context, query nativeQu
 		return view, err
 	}
 	if view.Role == "owner" && credential.HostedRole != "owner" {
-		return view, &nativeError{Code: "forbidden", Message: "You cannot change owner invitations", status: 403}
+		return view, &nativeError{Code: "forbidden", Message: "You cannot change owner invitations", status: 403, publicMessage: true}
 	}
 	invitation, err := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, id)
 	if err != nil {
@@ -286,16 +286,16 @@ func (s *Service) sendReservedHostedInvitationFor(ctx context.Context, credentia
 
 func (s *Service) validateHostedGrants(ctx context.Context, query nativeQueryer, credential apiCredential, grants []hostedMemberGrant) error {
 	if credential.Hosted == nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" {
-		return &nativeError{Code: "forbidden", Message: "You cannot manage project grants", status: 403}
+		return &nativeError{Code: "forbidden", Message: "You cannot manage project grants", status: 403, publicMessage: true}
 	}
 	var role string
 	if err := query.QueryRowContext(ctx, "SELECT role FROM hosted_members WHERE user_id=? AND active=1", credential.Hosted.Subject).Scan(&role); err != nil || role != "owner" && role != "admin" {
-		return &nativeError{Code: "forbidden", Message: "You cannot manage project grants", status: 403}
+		return &nativeError{Code: "forbidden", Message: "You cannot manage project grants", status: 403, publicMessage: true}
 	}
 	seen := map[string]bool{}
 	for _, grant := range grants {
 		if !hostedSafeID(grant.ProjectID) || seen[grant.ProjectID] {
-			return nativeInvalid("Select each project only once")
+			return nativePublicInvalid("Select each project only once")
 		}
 		seen[grant.ProjectID] = true
 		if credential.HostedKeyScope != "" {
@@ -313,7 +313,7 @@ WHERE p.organization_id=? AND p.id=? AND g.user_id=? AND (?=0 OR g.can_write=1) 
 			return err
 		}
 		if count != 1 {
-			return &nativeError{Code: "forbidden", Message: "You can only grant project access that you hold", status: 403}
+			return &nativeError{Code: "forbidden", Message: "You can only grant project access that you hold", status: 403, publicMessage: true}
 		}
 	}
 	return nil
@@ -360,7 +360,7 @@ func (s *Service) editHostedInvitationFor(ctx context.Context, credential apiCre
 		}
 	}()
 	if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
-		return &nativeError{Code: "forbidden", Message: "You cannot edit invitations", status: 403}
+		return &nativeError{Code: "forbidden", Message: "You cannot edit invitations", status: 403, publicMessage: true}
 	}
 	view, err := s.pendingHostedInvitationFor(ctx, tx, credential, id)
 	if err != nil {
