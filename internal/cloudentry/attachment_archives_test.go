@@ -113,6 +113,80 @@ func TestArchiveBindingValidationIsolation(t *testing.T) {
 	}
 }
 
+func TestArchiveDeletionIsolation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, method, query string
+		ready               bool
+	}{
+		{name: "versioning", method: http.MethodGet, query: "versioning"},
+		{name: "listing", method: http.MethodGet, query: "list-type"},
+		{name: "object deletion", method: http.MethodDelete},
+		{name: "ready organization is fenced", ready: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			store := newSpacesFixture(t, false)
+			f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
+			f.service.config.ArchiveCredentials = func(context.Context, string, string) (attachment.Credentials, error) {
+				return attachment.Credentials{AccessKeyID: store.config().AccessKeyID, SecretAccessKey: store.config().SecretAccessKey}, nil
+			}
+			if _, err := f.service.saveArchiveBinding(t.Context(), attachment.StorageBinding{Organization: "org_alpha", Backend: "s3", Endpoint: "https://1.1.1.1", Region: "region", Bucket: "private", CredentialReference: "reference"}, 0); err != nil {
+				t.Fatal(err)
+			}
+			key := "orgs/org_alpha/blobs/sha256/aa/object"
+			store.objects[key] = spacesObject{content: []byte("archive"), created: time.Now()}
+			if !test.ready {
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleting' WHERE id IN ('org_alpha','org_beta')"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			checks := 0
+			f.service.config.attachmentTransport = archiveValidationTransport{next: store.transport, check: func(r *http.Request) error {
+				if test.ready {
+					t.Error("ready organization contacted object storage")
+					return errors.New("organization still ready")
+				}
+				if r.Method != test.method || test.query != "" && !r.URL.Query().Has(test.query) {
+					return nil
+				}
+				checks++
+				if !f.service.attachmentMu.TryLock() {
+					t.Error("customer deletion holds the shared attachment lock")
+					return errors.New("attachment lock unavailable during deletion")
+				}
+				f.service.attachmentMu.Unlock()
+				if _, err := f.service.readyOrganization(r.Context(), "org_alpha"); err == nil {
+					return errors.New("deleting organization accepts writes")
+				}
+				return f.service.finishDeletion(r.Context(), "org_beta")
+			}}
+			err := f.service.finishDeletion(t.Context(), "org_alpha")
+			if test.ready {
+				if err == nil {
+					t.Fatal("ready organization deletion succeeded")
+				}
+				if _, exists := store.objects[key]; !exists {
+					t.Fatal("ready organization archive was removed")
+				}
+				return
+			}
+			if err != nil || checks != 1 {
+				t.Fatalf("deletion error=%v checks=%d", err, checks)
+			}
+			for _, id := range []string{"org_alpha", "org_beta"} {
+				organization, err := f.service.registry.Organization(t.Context(), id)
+				if err != nil || organization.State != "deleted" {
+					t.Fatalf("organization=%+v error=%v", organization, err)
+				}
+			}
+			if _, exists := store.objects[key]; exists {
+				t.Fatal("archive was not erased")
+			}
+		})
+	}
+}
+
 func TestArchiveLegacyBindingSnapshot(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
