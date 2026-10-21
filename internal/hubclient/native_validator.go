@@ -45,7 +45,16 @@ func (e *nativeExecution) PrepareReview(ctx context.Context, expected tracker.Na
 		if version.ID != expected.VersionID {
 			continue
 		}
-		if version.HeadSHA != expected.HeadSHA || version.PolicyID != e.data.PolicyID || version.Policy.ID != e.data.PolicyID || version.AttemptID != e.data.AttemptID || version.RunID != e.data.RunID || e.lastDiff == nil || version.BaseSHA != e.lastDiff.BaseSHA || version.HeadSHA != e.lastDiff.HeadSHA {
+		owner := e.data
+		if e.recoveredSource != nil && *e.recoveredSource == expected {
+			for _, attempt := range e.claim.recovery.Attempts {
+				if attempt.AttemptID == version.AttemptID {
+					owner = attempt.NativeRunData
+					break
+				}
+			}
+		}
+		if version.HeadSHA != expected.HeadSHA || version.PolicyID != e.data.PolicyID || version.Policy.ID != e.data.PolicyID || owner.PolicyID != e.data.PolicyID || version.AttemptID != owner.AttemptID || version.RunID != owner.RunID || e.lastDiff == nil || version.BaseSHA != e.lastDiff.BaseSHA || version.HeadSHA != e.lastDiff.HeadSHA {
 			return fmt.Errorf("%w: published review source differs from its owner", runner.ErrNativeRecoveryRequired)
 		}
 		return nil
