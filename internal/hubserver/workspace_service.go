@@ -29,6 +29,7 @@ func workspaceExists(id string) error {
 	return &nativeError{
 		Code: "workspace_exists", Message: "A workspace is already open on this attempt",
 		status: http.StatusConflict, Details: map[string]any{"workspace_id": id},
+		publicMessage: true,
 	}
 }
 
@@ -39,6 +40,7 @@ func workspaceLimit(scope string, limit int) error {
 	return &nativeError{
 		Code: "workspace_limit", Message: "The open workspace limit has been reached",
 		status: http.StatusUnprocessableEntity, Details: map[string]any{"scope": scope, "limit": limit},
+		publicMessage: true,
 	}
 }
 
@@ -46,7 +48,8 @@ func workspaceLimit(scope string, limit int) error {
 func workspaceUnavailable() error {
 	return &nativeError{
 		Code: "unsupported_control", Message: "Workspace sessions are not enabled on this hub",
-		status: http.StatusUnprocessableEntity,
+		status:        http.StatusUnprocessableEntity,
+		publicMessage: true,
 	}
 }
 

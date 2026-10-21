@@ -144,8 +144,9 @@ func (c *pullRequestCache) allowRefresh(organization tracker.OrganizationID, now
 func pullRequestRefreshLimited() error {
 	return &nativeError{
 		Code: "refresh_limited", Message: "Pull request refresh is limited to one per organization every ten seconds",
-		status:  http.StatusTooManyRequests,
-		Details: map[string]any{"retry_after_seconds": int(pullRequestRefreshInterval / time.Second)},
+		status:        http.StatusTooManyRequests,
+		Details:       map[string]any{"retry_after_seconds": int(pullRequestRefreshInterval / time.Second)},
+		publicMessage: true,
 	}
 }
 
@@ -348,7 +349,7 @@ func (s *Service) listWorkItemPullRequests(c echo.Context) error {
 	}
 	refresh := strings.TrimSpace(c.QueryParam("refresh"))
 	if refresh != "" && refresh != "1" {
-		return s.nativeAPIError(c, nativeInvalid("refresh accepts only 1"))
+		return s.nativeAPIError(c, nativePublicInvalid("refresh accepts only 1"))
 	}
 	views, err := s.readWorkItemPullRequests(c.Request().Context(), nativeRequestScope(c), c.Param("item"), refresh)
 	if err != nil {

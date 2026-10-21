@@ -1,8 +1,10 @@
 package hubserver
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -515,6 +517,7 @@ func TestAttemptDiffValidation(t *testing.T) {
 		status  int
 		code    string
 		attempt string
+		reason  string
 	}{
 		{
 			name: "generation source disagrees with the producer",
@@ -538,6 +541,7 @@ func TestAttemptDiffValidation(t *testing.T) {
 			name:   "oversized sha",
 			mutate: func(r *tracker.AttemptDiffRequest) { r.HeadSHA = strings.Repeat("c", tracker.MaxDiffSHABytes+1) },
 			status: http.StatusUnprocessableEntity, code: "invalid_request",
+			reason: "Commit identities are bounded to 64 bytes",
 		},
 		{
 			name:   "missing producer lease",
@@ -560,8 +564,19 @@ func TestAttemptDiffValidation(t *testing.T) {
 			if test.attempt != "" {
 				attempt = test.attempt
 			}
+			var logs bytes.Buffer
+			f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/attempts/"+attempt+"/diff", f.worker, request)
-			requireNativeCode(t, response, test.status, test.code)
+			failure := requireNativeCode(t, response, test.status, test.code)
+			if test.reason != "" {
+				var entry map[string]any
+				if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
+					t.Fatalf("expected exactly one JSON log entry: %v: %s", err, &logs)
+				}
+				if failure.Message != test.reason || entry["reason"] != test.reason || entry["level"] != "WARN" || entry["code"] != test.code {
+					t.Fatalf("refusal = %#v, log = %#v", failure, entry)
+				}
+			}
 		})
 	}
 	var count int

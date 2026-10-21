@@ -142,7 +142,7 @@ func (s *Service) getChangeReviewPolicy(c echo.Context) error {
 func (s *Service) approveChangeReviewPolicy(c echo.Context) error {
 	var request tracker.ApproveChangeReviewPolicy
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.approveChangeReviewPolicyCommand(ctx, tx, scope, request)
@@ -353,7 +353,7 @@ WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY
 func (s *Service) createChange(c echo.Context) error {
 	var request tracker.CreateChange
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.createChangeCommand(ctx, tx, scope, c.Param("item"), request, now)
@@ -374,7 +374,7 @@ func (s *Service) getChange(c echo.Context) error {
 		if c.QueryParam("limit") != "" {
 			args.Limit, err = strconv.Atoi(c.QueryParam("limit"))
 			if err != nil {
-				return s.nativeAPIError(c, nativeInvalid("limit must be an integer"))
+				return s.nativeAPIError(c, nativePublicInvalid("limit must be an integer"))
 			}
 		}
 		raw, err := json.Marshal(args)
@@ -383,20 +383,20 @@ func (s *Service) getChange(c echo.Context) error {
 		}
 		args, err = operatortool.DecodeChangeArguments(operatortool.GetChange, raw)
 		if err != nil {
-			return s.nativeAPIError(c, nativeInvalid("invalid Change read selector"))
+			return s.nativeAPIError(c, nativePublicInvalid("invalid Change read selector"))
 		}
 		result := (hubChangeApplication{service: s}).result(scope, args)
 		result, err = readBoundedChange(ctx, tx, scope, args, result)
 		if err != nil {
 			var refusal *operatortool.RequestError
 			if errors.As(err, &refusal) {
-				return c.JSON(http.StatusUnprocessableEntity, refusal)
+				return s.nativeAPIError(c, refusal)
 			}
 			if errors.Is(err, mutation.ErrConflict) {
 				return s.nativeAPIError(c, nativeConflict(0))
 			}
 			if errors.Is(err, operatortool.ErrInvalidArguments) {
-				return s.nativeAPIError(c, nativeInvalid("invalid Change read cursor"))
+				return s.nativeAPIError(c, nativePublicInvalid("invalid Change read cursor"))
 			}
 			return s.nativeAPIError(c, err)
 		}
@@ -405,7 +405,7 @@ func (s *Service) getChange(c echo.Context) error {
 		}
 		bounded, err := operatortool.BoundedChangeResult(result)
 		if err != nil {
-			return c.JSON(http.StatusUnprocessableEntity, err)
+			return s.nativeAPIError(c, err)
 		}
 		return c.Blob(http.StatusOK, "application/json", bounded.Content)
 	}
@@ -624,7 +624,7 @@ WHERE p.organization_id = ? AND p.id = ? AND pr.url = ? AND pr.issue_id IS NOT N
 
 func (s *Service) createChangeCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, request tracker.CreateChange, now time.Time) (any, error) {
 	if strings.TrimSpace(request.Title) == "" || len(request.Title) > 512 || len(request.Body) > 64<<10 || len(request.LinkedIssues) > 32 {
-		return nil, nativeInvalid("Change requires a title up to 512 bytes, discussion up to 64 KiB, and at most 32 linked issues")
+		return nil, nativePublicInvalid("Change requires a title up to 512 bytes, discussion up to 64 KiB, and at most 32 linked issues")
 	}
 	change := tracker.ChangeRequest{ID: newNativeID("change"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), Title: request.Title, Body: request.Body, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	change.LinkedIssues = append([]tracker.NativeWorkItemID{change.WorkItemID}, request.LinkedIssues...)
@@ -666,7 +666,7 @@ func (s *Service) approveChangeReviewPolicyCommand(ctx context.Context, tx *sql.
 		err := tx.QueryRowContext(ctx, `SELECT scope FROM api_tokens t WHERE id = ? AND revoked_at IS NULL
 AND EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = t.id AND g.organization_id = ? AND g.project_id = ?)`, check.PrincipalID, scope.organization, scope.project).Scan(&role)
 		if errors.Is(err, sql.ErrNoRows) || err == nil && check.Source == "independent" && role == string(apiScopeWorker) {
-			return nil, nativeInvalid("Expected CI principals must have a project grant; independent validation requires an operator credential")
+			return nil, nativePublicInvalid("Expected CI principals must have a project grant; independent validation requires an operator credential")
 		}
 		if err != nil {
 			return nil, err

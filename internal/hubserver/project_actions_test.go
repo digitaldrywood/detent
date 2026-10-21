@@ -1,6 +1,9 @@
 package hubserver
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -182,8 +185,18 @@ func TestProjectActionCreateRefusesPastTheProjectCap(t *testing.T) {
 	for range workspacesession.MaxActionsPerProject {
 		f.authored(t, map[string]any{"name": "Action", "command": "make target"})
 	}
-	requireNativeCode(t, f.postAction(t, f.token, map[string]any{"name": "One more", "command": "make more"}),
+	var logs bytes.Buffer
+	f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	failure := requireNativeCode(t, f.postAction(t, f.token, map[string]any{"name": "One more", "command": "make more"}),
 		http.StatusUnprocessableEntity, "invalid_request")
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
+		t.Fatalf("expected exactly one JSON log entry: %v: %s", err, &logs)
+	}
+	const reason = "A project may hold at most 50 actions"
+	if failure.Message != reason || entry["reason"] != reason || entry["level"] != "WARN" || entry["code"] != "invalid_request" {
+		t.Fatalf("refusal = %#v, log = %#v", failure, entry)
+	}
 	if listing := f.actions(t); len(listing.Items) != workspacesession.MaxActionsPerProject {
 		t.Fatalf("listing held %d actions, want %d", len(listing.Items), workspacesession.MaxActionsPerProject)
 	}

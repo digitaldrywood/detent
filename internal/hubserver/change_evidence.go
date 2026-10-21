@@ -27,7 +27,7 @@ func insertChangeEvidence(ctx context.Context, tx *sql.Tx, changeID, versionID, 
 func (s *Service) reviewChange(c echo.Context) error {
 	var request tracker.ReviewChange
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.reviewChangeCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), c.Param("version"), request, now)
@@ -37,7 +37,7 @@ func (s *Service) reviewChange(c echo.Context) error {
 func (s *Service) submitChangeCheck(c echo.Context) error {
 	var request tracker.SubmitChangeCheck
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if s.config.Hosted != nil && nativeRequestScope(c).credential.Runner.RunnerID == "" && request.Source != "independent" {
 		return s.nativeAPIError(c, nativeNotFound())
@@ -55,7 +55,7 @@ func (s *Service) submitChangeCheck(c echo.Context) error {
 			return nil, nativeInvalid(err.Error())
 		}
 		if request.CompletedAt.After(now) {
-			return nil, nativeInvalid("CI completion time cannot be in the future")
+			return nil, nativePublicInvalid("CI completion time cannot be in the future")
 		}
 		var previous string
 		err = tx.QueryRowContext(ctx, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'check' AND source_key = ?", change.ID, request.CheckRunID).Scan(&previous)
@@ -96,7 +96,7 @@ func (s *Service) submitChangeCheck(c echo.Context) error {
 func (s *Service) discussChange(c echo.Context) error {
 	var request tracker.DiscussChange
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.discussChangeCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), request, now)
@@ -124,7 +124,7 @@ func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 		}
 	}
 	if !slices.Contains([]string{"approved", "changes_requested", "commented"}, request.Decision) || len(request.Body) > 64<<10 {
-		err := nativeInvalid("Review decision is invalid or body exceeds 64 KiB")
+		err := nativePublicInvalid("Review decision is invalid or body exceeds 64 KiB")
 		if scope.credential.Scope == apiScopeWorker && request.Validator != nil && request.ImplementationReview == nil && request.SecurityAudit == nil {
 			field := "decision"
 			if len(request.Body) > 64<<10 {
@@ -171,7 +171,7 @@ func (s *Service) discussChangeCommand(ctx context.Context, tx *sql.Tx, scope na
 		return nil, err
 	}
 	if strings.TrimSpace(request.Body) == "" || len(request.Body) > 64<<10 {
-		return nil, nativeInvalid("Discussion requires 1 byte to 64 KiB")
+		return nil, nativePublicInvalid("Discussion requires 1 byte to 64 KiB")
 	}
 	if request.VersionID != "" {
 		if _, err := readChangeVersion(ctx, tx, change.ID, request.VersionID); err != nil {

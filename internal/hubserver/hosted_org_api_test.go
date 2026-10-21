@@ -50,7 +50,7 @@ func TestHostedRunnerEnrollmentValidation(t *testing.T) {
 			if failure.Code != "invalid_request" || failure.Message != test.reason {
 				t.Fatalf("failure = %#v, want invalid_request and %q", failure, test.reason)
 			}
-			for _, want := range []string{"error=", "invalid_request", test.reason, "method=POST", "route=" + enrollmentBase} {
+			for _, want := range []string{"error=", "code=invalid_request", test.reason, "method=POST", "route=" + enrollmentBase} {
 				if !strings.Contains(logs.String(), want) {
 					t.Fatalf("enrollment failure log lacks %q: %s", want, logs.String())
 				}
@@ -59,11 +59,11 @@ func TestHostedRunnerEnrollmentValidation(t *testing.T) {
 	}
 	privateField := "private-token@example.test"
 	for _, test := range []struct {
-		name, body, message, reason string
+		name, body, reason string
 	}{
-		{name: "unknown field", body: `{"` + privateField + `":true}`, message: privateField, reason: "Request body contains an unknown field"},
-		{name: "invalid field type", body: `{"ttl_seconds":"` + privateField + `"}`, message: "invalid type for field ttl_seconds", reason: "Request body contains an invalid field type"},
-		{name: "malformed JSON", body: `{"scope":"` + privateField + `"`, message: "Request body is invalid", reason: "Malformed JSON request body"},
+		{name: "unknown field", body: `{"` + privateField + `":true}`, reason: "Request body contains an unknown field"},
+		{name: "invalid field type", body: `{"ttl_seconds":"` + privateField + `"}`, reason: "Request body contains an invalid field type"},
+		{name: "malformed JSON", body: `{"scope":"` + privateField + `"`, reason: "Malformed JSON request body"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cookie := f.cookies["owner"]
@@ -77,14 +77,14 @@ func TestHostedRunnerEnrollmentValidation(t *testing.T) {
 			browserHostedStatus(t, response, http.StatusUnprocessableEntity)
 			var failure apiErrorResponse
 			browserHostedDecode(t, response, &failure)
-			if failure.Code != "invalid_request" || !strings.Contains(failure.Message, test.message) {
+			if failure.Code != "invalid_request" || failure.Message != test.reason {
 				t.Fatalf("invalid request response lost its actionable reason: %#v", failure)
 			}
 			output := logs.String()
 			if !strings.Contains(output, test.reason) {
 				t.Fatalf("enrollment log lacks safe rejection reason %q", test.reason)
 			}
-			if strings.Contains(output, privateField) {
+			if strings.Contains(output, privateField) || strings.Contains(response.Body.String(), privateField) {
 				t.Fatal("enrollment logs expose the request-controlled field or value")
 			}
 		})

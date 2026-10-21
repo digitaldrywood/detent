@@ -28,10 +28,10 @@ func (s *Service) issueNotificationPreference(c echo.Context) error {
 			Enabled *bool `json:"enabled"`
 		}
 		if err := decodeAPIJSON(c, &request); err != nil {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 		if request.Enabled == nil {
-			return s.nativeAPIError(c, nativeInvalid("An enabled preference is required"))
+			return s.nativeAPIError(c, nativePublicInvalid("An enabled preference is required"))
 		}
 		value.Enabled = *request.Enabled
 		tx, err := s.database.db.BeginTx(ctx, nil)
@@ -67,7 +67,7 @@ func (s *Service) unsubscribeIssueEmail(c echo.Context) error {
 			Token string `json:"token"`
 		}
 		if err := decodeAPIJSON(c, &request); err != nil {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 		token = request.Token
 	}

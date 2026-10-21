@@ -67,12 +67,12 @@ func parseReportsFilter(params url.Values) (reportsFilter, error) {
 	}
 	for _, values := range [][]string{f.Labels, f.Priorities, f.Types, f.FiledBy, f.Runners, f.Models, f.Stages} {
 		if len(values) > reportsMaxFilterValues || len(strings.Join(values, "\x00")) > 4096 {
-			return f, nativeInvalid("Report filters accept at most 32 values each")
+			return f, nativePublicInvalid("Report filters accept at most 32 values each")
 		}
 	}
 	for _, value := range f.Priorities {
 		if priority, err := strconv.Atoi(value); err != nil || priority < 0 || priority > 3 || strconv.Itoa(priority) != value {
-			return f, nativeInvalid("Priority must be 0, 1, 2 or 3")
+			return f, nativePublicInvalid("Priority must be 0, 1, 2 or 3")
 		}
 	}
 	for _, value := range f.Types {
@@ -95,7 +95,7 @@ func reportsWindow(params url.Values, now time.Time) (operatortool.AnalyticsWind
 	if fromValue == "" && toValue == "" {
 		hours := reportsRangeHours[params.Get("range")]
 		if hours == 0 {
-			return operatortool.AnalyticsWindow{}, nativeInvalid("Unsupported report range")
+			return operatortool.AnalyticsWindow{}, nativePublicInvalid("Unsupported report range")
 		}
 		from = reportsWindowStart(to, hours)
 	} else {
@@ -112,7 +112,7 @@ func reportsWindow(params url.Values, now time.Time) (operatortool.AnalyticsWind
 			to = now.UTC()
 		}
 		if !from.Before(to) || to.Sub(from) > reportsMaxCustomSpan {
-			return operatortool.AnalyticsWindow{}, nativeInvalid("A custom range runs forward from a past day and spans at most 90 days")
+			return operatortool.AnalyticsWindow{}, nativePublicInvalid("A custom range runs forward from a past day and spans at most 90 days")
 		}
 	}
 	span := to.Sub(from)
@@ -130,7 +130,7 @@ func reportsWindow(params url.Values, now time.Time) (operatortool.AnalyticsWind
 func reportsDay(value string, end bool) (time.Time, error) {
 	day, err := time.Parse(time.DateOnly, value)
 	if err != nil {
-		return time.Time{}, nativeInvalid("A custom range needs from and to as YYYY-MM-DD days in UTC")
+		return time.Time{}, nativePublicInvalid("A custom range needs from and to as YYYY-MM-DD days in UTC")
 	}
 	if end {
 		day = day.AddDate(0, 0, 1)

@@ -27,7 +27,7 @@ func (s *Service) getHealthFindings(c echo.Context) error {
 	if raw := c.QueryParam("limit"); raw != "" {
 		value, err := strconv.Atoi(raw)
 		if err != nil || value < 1 || value > 100 {
-			return s.nativeAPIError(c, nativeInvalid("limit must be between 1 and 100"))
+			return s.nativeAPIError(c, nativePublicInvalid("limit must be between 1 and 100"))
 		}
 		limit = value
 	}
@@ -46,15 +46,15 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		state = "open"
 	}
 	if state != "open" && state != "resolved" && state != "all" {
-		return page, nativeInvalid("state must be open, resolved or all")
+		return page, nativePublicInvalid("state must be open, resolved or all")
 	}
 	if limit < 1 || limit > 100 {
-		return page, nativeInvalid("limit must be between 1 and 100")
+		return page, nativePublicInvalid("limit must be between 1 and 100")
 	}
 	if since != "" {
 		at, err := time.Parse(time.RFC3339Nano, since)
 		if err != nil {
-			return page, nativeInvalid("since must be an RFC3339 timestamp")
+			return page, nativePublicInvalid("since must be an RFC3339 timestamp")
 		}
 		since = formatHubTime(at)
 	}
@@ -62,11 +62,11 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	if cursor != "" {
 		raw, err := base64.RawURLEncoding.DecodeString(cursor)
 		if err != nil {
-			return page, nativeInvalid("invalid findings cursor")
+			return page, nativePublicInvalid("invalid findings cursor")
 		}
 		after, err = strconv.ParseInt(string(raw), 10, 64)
 		if err != nil || after < 1 {
-			return page, nativeInvalid("invalid findings cursor")
+			return page, nativePublicInvalid("invalid findings cursor")
 		}
 	}
 	if _, err := readNativeProject(ctx, s.database.reader, scope); err != nil {

@@ -103,13 +103,13 @@ func (s *Service) requireConversationOrganization() echo.MiddlewareFunc {
 		return func(c echo.Context) error {
 			credential, status, err := s.authenticateAPIRequest(c)
 			if err != nil {
-				return c.JSON(status, apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
+				return s.refusedAPIError(c, status, "unauthorized", "Valid scoped API token is required", apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
 			}
 			if s.config.Hosted != nil && credential.Hosted == nil {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			if credential.Scope != apiScopeOperator && credential.Scope != apiScopeAdmin {
-				return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
+				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "API token scope does not permit this operation", apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
 			}
 			ctx := c.Request().Context()
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
@@ -385,7 +385,7 @@ func resolveConversationNext(project tracker.NativeProject, request conversation
 	switch dispatch {
 	case "", conversationDispatchNow, conversationDispatchLater:
 	default:
-		return conversationLinkNextApplied{}, nativeInvalid("next.dispatch must be now or later")
+		return conversationLinkNextApplied{}, nativePublicInvalid("next.dispatch must be now or later")
 	}
 	state := strings.TrimSpace(next.State)
 	if state == "" {
@@ -395,7 +395,7 @@ func resolveConversationNext(project tracker.NativeProject, request conversation
 	case state != "":
 		named, ok := conversationProjectState(project, state)
 		if !ok {
-			return conversationLinkNextApplied{}, nativeInvalid("next.state must be one of the project's workflow states")
+			return conversationLinkNextApplied{}, nativePublicInvalid("next.state must be one of the project's workflow states")
 		}
 		state = named
 	case dispatch == conversationDispatchLater:
@@ -415,7 +415,7 @@ func resolveConversationNext(project tracker.NativeProject, request conversation
 		priority = request.Issue.Priority
 	}
 	if rank := priority.rank(); rank != nil && (*rank < 0 || *rank > 3) {
-		return conversationLinkNextApplied{}, nativeInvalid("next.priority must be the numeric rank 0 to 3")
+		return conversationLinkNextApplied{}, nativePublicInvalid("next.priority must be the numeric rank 0 to 3")
 	}
 	if dispatch == "" {
 		// The applied dispatch is read from the lane the issue lands in, so
@@ -505,7 +505,7 @@ func conversationQueryInt(c echo.Context, name string) (int64, error) {
 	}
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value < 0 {
-		return 0, nativeInvalid("Query parameter " + name + " must be a non-negative integer")
+		return 0, nativePublicInvalid("Query parameter " + name + " must be a non-negative integer")
 	}
 	return value, nil
 }
@@ -522,7 +522,7 @@ func conversationQueryTristate(c echo.Context, name string) (value, present bool
 	case "0", "false", "no":
 		return false, true, nil
 	default:
-		return false, false, nativeInvalid("Query parameter " + name + " must be true or false")
+		return false, false, nativePublicInvalid("Query parameter " + name + " must be true or false")
 	}
 }
 
@@ -533,7 +533,7 @@ func conversationQueryTristate(c echo.Context, name string) (value, present bool
 func (s *Service) createConversation(c echo.Context) error {
 	var request conversationCreateRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandCreateConversation(c.Request().Context(), nativeRequestScope(c), request)
 	if err != nil {
@@ -668,7 +668,7 @@ func (s *Service) listConversationMessages(c echo.Context) error {
 func (s *Service) postConversationCommand(c echo.Context) error {
 	var command conversation.Command
 	if err := decodeAPIJSON(c, &command); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandPostConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), command)
 	if err != nil {
@@ -895,11 +895,11 @@ func (c *conversationService) retryMessage(ctx context.Context, tx *sql.Tx, scop
 		return conversationMessageRecord{}, err
 	}
 	if len(messages) == 0 {
-		return conversationMessageRecord{}, nativeInvalid("The message to retry is not part of this conversation")
+		return conversationMessageRecord{}, nativePublicInvalid("The message to retry is not part of this conversation")
 	}
 	message := messages[0]
 	if message.Role != conversation.RoleUser {
-		return conversationMessageRecord{}, nativeInvalid("Only a message you sent can be retried")
+		return conversationMessageRecord{}, nativePublicInvalid("Only a message you sent can be retried")
 	}
 	switch message.Delivery {
 	case conversation.DeliveryUnknown, conversation.DeliveryFailed, conversation.DeliveryRejected:
@@ -934,14 +934,14 @@ func (c *conversationService) requireContinueAttempt(ctx context.Context, tx *sq
 		return nil
 	}
 	if record.Execution.Owner.AttemptID != "" {
-		return nativeInvalid("expected.attempt_id is required to continue a conversation that has an attempt")
+		return nativePublicInvalid("expected.attempt_id is required to continue a conversation that has an attempt")
 	}
 	var attempts int
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM conversation_starts WHERE conversation_id = ?", record.ID).Scan(&attempts); err != nil {
 		return fmt.Errorf("count conversation attempts: %w", err)
 	}
 	if attempts > 0 {
-		return nativeInvalid("expected.attempt_id is required to continue a conversation that had an attempt")
+		return nativePublicInvalid("expected.attempt_id is required to continue a conversation that had an attempt")
 	}
 	return nil
 }
@@ -982,7 +982,7 @@ func renderAnswer(question conversation.Question, answers map[string][]string) s
 func (s *Service) linkConversation(c echo.Context) error {
 	var request conversationLinkRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandLinkConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), request)
 	if err != nil {
@@ -1030,7 +1030,7 @@ func (s *Service) changeConversation(ctx context.Context, scope nativeScope, id 
 func (s *Service) patchConversation(c echo.Context) error {
 	var request conversationPatchRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandPatchConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), request)
 	if err != nil {
@@ -1042,7 +1042,7 @@ func (s *Service) patchConversation(c echo.Context) error {
 func (s *Service) commandCreateConversation(ctx context.Context, scope nativeScope, request conversationCreateRequest) (json.RawMessage, error) {
 	request.Title = strings.TrimSpace(request.Title)
 	if utf8.RuneCountInString(request.Title) > conversationTitleMaxRunes {
-		return nil, nativeInvalid(fmt.Sprintf("Title must be at most %d characters", conversationTitleMaxRunes))
+		return nil, nativePublicInvalid(fmt.Sprintf("Title must be at most %d characters", conversationTitleMaxRunes))
 	}
 	var command conversation.Command
 	if request.FirstMessage != nil {
@@ -1169,7 +1169,7 @@ func (s *Service) commandPostConversation(ctx context.Context, scope nativeScope
 		}
 		if stored != nil {
 			if conflict {
-				return &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict}
+				return &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict, publicMessage: true}
 			}
 			receipt, replay = stored, true
 			return nil
@@ -1232,7 +1232,7 @@ func (s *Service) commandLinkConversation(ctx context.Context, scope nativeScope
 			return nil, conversationShareRequired()
 		}
 		if record.SubjectWorkItemID != "" {
-			return nil, nativeInvalid("Issue questions cannot be linked or shared")
+			return nil, nativePublicInvalid("Issue questions cannot be linked or shared")
 		}
 		if record.WorkItemID != "" {
 			return nil, conversationAlreadyLinked(record.ID)
@@ -1401,13 +1401,13 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 
 func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScope, id string, request conversationPatchRequest) (json.RawMessage, error) {
 	if request.Title == nil && request.Preferences == nil {
-		return nil, nativeInvalid("A patch must change the title, the preferences, or both")
+		return nil, nativePublicInvalid("A patch must change the title, the preferences, or both")
 	}
 	title := ""
 	if request.Title != nil {
 		title = strings.TrimSpace(*request.Title)
 		if title == "" || utf8.RuneCountInString(title) > conversationTitleMaxRunes {
-			return nil, nativeInvalid(fmt.Sprintf("Title must contain 1 to %d characters", conversationTitleMaxRunes))
+			return nil, nativePublicInvalid(fmt.Sprintf("Title must contain 1 to %d characters", conversationTitleMaxRunes))
 		}
 	}
 	return s.changeConversation(ctx, scope, id, func(ctx context.Context, tx *sql.Tx, scope nativeScope, record *conversationRecord, now time.Time) error {
@@ -1436,7 +1436,7 @@ func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScop
 				}
 				if !granted || preferences.ModelValue() == "" || preferences.ModelValue() == s.conversationDefaultModel() {
 					if effort := preferences.EffortValue(); effort != "" && effort != "low" && effort != "medium" {
-						return nativeInvalid("preferences: reasoning_effort must be auto, low, or medium for general chat")
+						return nativePublicInvalid("preferences: reasoning_effort must be auto, low, or medium for general chat")
 					}
 				}
 			} else {

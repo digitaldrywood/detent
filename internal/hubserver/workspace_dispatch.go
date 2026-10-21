@@ -111,7 +111,7 @@ func (w *workspaceService) ensureWorkspaceItem(ctx context.Context, tx *sql.Tx, 
 	}
 	state, found := firstDispatchableState(project)
 	if !found {
-		return "", nativeInvalid("The project has no dispatchable workflow state for a workspace session")
+		return "", nativePublicInvalid("The project has no dispatchable workflow state for a workspace session")
 	}
 	issue, err := createNativeIssueTx(allowWorkspaceLabel(ctx), tx, scope, tracker.CreateIssue{
 		Title:  workspaceItemTitle(record.ID),
@@ -327,7 +327,7 @@ func terminalIsolationAllowed(requires []string, configured, reported string) bo
 // workspaceIsolationRefused is the refusal a bind or heartbeat gets when the
 // runner's terminal isolation is not one the organization allows.
 func workspaceIsolationRefused() error {
-	return &nativeError{Code: "forbidden", Message: "The runner's terminal isolation is not allowed by this organization", status: http.StatusForbidden}
+	return &nativeError{Code: "forbidden", Message: "The runner's terminal isolation is not allowed by this organization", status: http.StatusForbidden, publicMessage: true}
 }
 
 // workspaceClaimGate is what the claim loop needs to know about the workspace

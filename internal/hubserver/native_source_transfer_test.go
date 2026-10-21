@@ -278,7 +278,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 						t.Fatal("active or interrupted writer became transferable")
 					}
 					response = httptest.NewRecorder()
-					hosted := &Service{config: Config{Hosted: &HostedConfig{}}}
+					hosted := &Service{config: Config{Hosted: &HostedConfig{}, Logger: discardLogger()}}
 					if err := hosted.nativeAPIError(echo.New().NewContext(httptest.NewRequest(http.MethodPost, itemPath+"/source-recovery", nil), response), refusal); err != nil {
 						t.Fatal(err)
 					}

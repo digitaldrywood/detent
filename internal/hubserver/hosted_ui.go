@@ -219,11 +219,14 @@ func (s *Service) hostedPageData(c echo.Context, credential apiCredential, data 
 func (s *Service) hostedEvents(c echo.Context) error {
 	initial, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
+		if status == http.StatusForbidden {
+			return s.hostedJSONError(c, status, "Hosted credential is not authorized for project events")
+		}
 		return c.NoContent(status)
 	}
 	initialScope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(c.Param("project")), credential: initial}
 	if err := s.requireHostedProject(c.Request().Context(), s.database.auth(), initialScope, false); err != nil {
-		return c.NoContent(http.StatusForbidden)
+		return s.hostedJSONError(c, http.StatusForbidden, "Project access is required for events")
 	}
 	workspaceID := c.QueryParam("workspace")
 	workItemID := c.QueryParam("work_item")
@@ -247,7 +250,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	var boardSequence int64
 	if board {
 		if workspaceID != "" || workItemID != "" {
-			return s.nativeAPIError(c, nativeInvalid("board stream cannot include a workspace or item"))
+			return s.nativeAPIError(c, nativePublicInvalid("board stream cannot include a workspace or item"))
 		}
 		value := c.Request().Header.Get("Last-Event-ID")
 		if value == "" {
@@ -256,7 +259,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 		if value != "" {
 			boardSequence, err = strconv.ParseInt(value, 10, 64)
 			if err != nil || boardSequence < 0 {
-				return s.nativeAPIError(c, nativeInvalid("Stream sequence is invalid"))
+				return s.nativeAPIError(c, nativePublicInvalid("Stream sequence is invalid"))
 			}
 		}
 		params := c.QueryParams()
@@ -359,12 +362,12 @@ func (s *Service) hostedMetadata(c echo.Context) error {
 	if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
 		credential, _, err := s.authenticateAPIRequest(c)
 		if err != nil || credential.ID != bootstrapTokenID || credential.Scope != apiScopeAdmin {
-			return c.NoContent(http.StatusForbidden)
+			return s.hostedJSONError(c, http.StatusForbidden, "Bootstrap administrator access is required for service metadata")
 		}
 	} else {
 		session, _, err := s.hostedSession(c.Request().Context(), c)
 		if err != nil || session.Identity.SupportActor != "" || !hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
-			return c.NoContent(http.StatusForbidden)
+			return s.hostedJSONError(c, http.StatusForbidden, "Staff access is required for service metadata")
 		}
 	}
 	report, err := s.database.hostedMetadata(c.Request().Context())

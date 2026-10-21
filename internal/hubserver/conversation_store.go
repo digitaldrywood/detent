@@ -58,7 +58,7 @@ func (e *errConversationStarted) Error() string {
 }
 
 func conversationInvalidCursor() error {
-	return &nativeError{Code: "invalid_request", Message: "Cursor is not valid", status: http.StatusUnprocessableEntity}
+	return &nativeError{Code: "invalid_request", Message: "Cursor is not valid", status: http.StatusUnprocessableEntity, publicMessage: true}
 }
 
 const (
@@ -240,34 +240,34 @@ func validateConversationRecord(record *conversationRecord) error {
 		return nativeInvalid(err.Error())
 	}
 	if record.OrganizationID == "" || record.ProjectID == "" {
-		return nativeInvalid("A conversation requires an organization and project")
+		return nativePublicInvalid("A conversation requires an organization and project")
 	}
 	if strings.TrimSpace(record.OwnerPrincipalID) == "" {
-		return nativeInvalid("A conversation requires an owner principal")
+		return nativePublicInvalid("A conversation requires an owner principal")
 	}
 	if record.Origin == "" {
 		record.Origin = conversationOriginUser
 	}
 	if record.Origin != conversationOriginUser && record.Origin != conversationOriginWorker {
-		return nativeInvalid("Conversation origin is not valid")
+		return nativePublicInvalid("Conversation origin is not valid")
 	}
 	if !record.Visibility.Valid() {
-		return nativeInvalid("Conversation visibility is not valid")
+		return nativePublicInvalid("Conversation visibility is not valid")
 	}
 	if record.SubjectWorkItemID != "" && (record.WorkItemID != "" || record.Visibility != conversation.VisibilityPrivate) {
-		return nativeInvalid("Issue questions must remain private and unlinked")
+		return nativePublicInvalid("Issue questions must remain private and unlinked")
 	}
 	if !record.Status.Valid() {
-		return nativeInvalid("Conversation status is not valid")
+		return nativePublicInvalid("Conversation status is not valid")
 	}
 	if record.Execution.Status == "" {
 		record.Execution.Status = conversation.ExecutionIdle
 	}
 	if !record.Execution.Status.Valid() {
-		return nativeInvalid("Conversation execution status is not valid")
+		return nativePublicInvalid("Conversation execution status is not valid")
 	}
 	if record.WorkItemID != "" && record.LinkedAt == nil {
-		return nativeInvalid("A linked conversation requires linked_at")
+		return nativePublicInvalid("A linked conversation requires linked_at")
 	}
 	record.Preferences = record.Preferences.Normalized()
 	return nil
@@ -612,13 +612,13 @@ func validateConversationMessage(message *conversationMessageRecord) error {
 		return nativeInvalid(err.Error())
 	}
 	if !message.Role.Valid() || !message.Kind.Valid() || !message.Delivery.Valid() || !message.Actor.Kind.Valid() {
-		return nativeInvalid("Message role, kind, delivery and actor kind must be valid")
+		return nativePublicInvalid("Message role, kind, delivery and actor kind must be valid")
 	}
 	if len(message.Data) == 0 {
 		message.Data = json.RawMessage("{}")
 	}
 	if !json.Valid(message.Data) {
-		return nativeInvalid("Message data must be valid JSON")
+		return nativePublicInvalid("Message data must be valid JSON")
 	}
 	if message.UpdatedAt.IsZero() {
 		message.UpdatedAt = message.CreatedAt
@@ -764,7 +764,7 @@ func (s *conversationStore) upsertQuestion(ctx context.Context, tx *sql.Tx, reco
 		return nativeInvalid(err.Error())
 	}
 	if !record.Status.Valid() {
-		return nativeInvalid("Question status is not valid")
+		return nativePublicInvalid("Question status is not valid")
 	}
 	prompts := record.Prompts
 	if prompts == nil {
@@ -874,10 +874,10 @@ func decodeConversationReceipt(encoded string) (*conversation.Receipt, error) {
 // a different payload returns the stored receipt with conflict set.
 func (s *conversationStore) reserveCommand(ctx context.Context, tx *sql.Tx, conversationID, key string, kind conversation.CommandKind, requestHash string, now time.Time) (*conversation.Receipt, bool, error) {
 	if strings.TrimSpace(key) == "" || len(key) > conversation.MaxCommandKeyBytes {
-		return nil, false, nativeInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, false, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	if !kind.Valid() {
-		return nil, false, nativeInvalid("Command kind is not valid")
+		return nil, false, nativePublicInvalid("Command kind is not valid")
 	}
 	var storedHash, encoded string
 	err := tx.QueryRowContext(ctx, "SELECT request_hash, receipt_json FROM conversation_commands WHERE conversation_id = ? AND key = ?", conversationID, key).Scan(&storedHash, &encoded)
@@ -908,7 +908,7 @@ func (s *conversationStore) updateReceipt(ctx context.Context, tx *sql.Tx, conve
 		receipt.Key = key
 	}
 	if !receipt.Status.Valid() {
-		return nativeInvalid("Receipt status is not valid")
+		return nativePublicInvalid("Receipt status is not valid")
 	}
 	encoded, err := marshalNative(receipt)
 	if err != nil {
@@ -932,7 +932,7 @@ func (s *conversationStore) updateReceipt(ctx context.Context, tx *sql.Tx, conve
 // event in the same transaction, returning the allocated sequence.
 func (s *conversationStore) appendEvent(ctx context.Context, tx *sql.Tx, conversationID string, eventType conversation.EventType, body any, now time.Time) (int64, error) {
 	if !eventType.Valid() {
-		return 0, nativeInvalid("Event type is not valid")
+		return 0, nativePublicInvalid("Event type is not valid")
 	}
 	if body == nil {
 		body = map[string]any{}
@@ -990,7 +990,7 @@ func (s *conversationStore) listEvents(ctx context.Context, query nativeQueryer,
 // attempt starts at most one conversation.
 func (s *conversationStore) recordStart(ctx context.Context, tx *sql.Tx, attemptID, conversationID string, now time.Time) error {
 	if strings.TrimSpace(attemptID) == "" {
-		return nativeInvalid("An attempt is required")
+		return nativePublicInvalid("An attempt is required")
 	}
 	var existing string
 	err := tx.QueryRowContext(ctx, "SELECT conversation_id FROM conversation_starts WHERE attempt_id = ?", attemptID).Scan(&existing)
@@ -1009,7 +1009,7 @@ func (s *conversationStore) recordStart(ctx context.Context, tx *sql.Tx, attempt
 
 func (s *conversationStore) recordAudience(ctx context.Context, tx *sql.Tx, conversationID, actorPrincipalID string, from, to conversation.Visibility, now time.Time) error {
 	if !from.Valid() || !to.Valid() {
-		return nativeInvalid("Audience visibility is not valid")
+		return nativePublicInvalid("Audience visibility is not valid")
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO conversation_audience_events (id, conversation_id, actor_principal_id, from_visibility, to_visibility, created_at) VALUES (?, ?, ?, ?, ?, ?)",
 		newNativeID("aud"), conversationID, actorPrincipalID, from, to, conversationTime(now)); err != nil {
@@ -1123,7 +1123,7 @@ func (s *conversationStore) replaceMessageReferences(ctx context.Context, tx *sq
 	}
 	for _, reference := range message.References {
 		if !reference.Kind.Valid() || strings.TrimSpace(reference.ID) == "" {
-			return nativeInvalid("A message reference requires a known kind and a target")
+			return nativePublicInvalid("A message reference requires a known kind and a target")
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO message_references (message_id, conversation_id, target_kind, target_id, label, created_at)
 VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (message_id, target_kind, target_id) DO NOTHING`,

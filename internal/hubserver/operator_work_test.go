@@ -939,7 +939,7 @@ func TestSafeNativeWorkError(t *testing.T) {
 			}
 			response := httptest.NewRecorder()
 			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/work-items", nil), response)
-			service := &Service{config: Config{Hosted: &HostedConfig{}}}
+			service := &Service{config: Config{Hosted: &HostedConfig{}, Logger: discardLogger()}}
 			if err := service.nativeAPIError(context, cause); err != nil {
 				t.Fatal(err)
 			}

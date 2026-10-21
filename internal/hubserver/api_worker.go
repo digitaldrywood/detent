@@ -129,14 +129,14 @@ type machineResponse struct {
 func (s *Service) claimWorkItem(c echo.Context) error {
 	var request claimAPIRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if request.WorkItemID < 0 {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_claim", Message: "work_item_id must be positive when supplied"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_claim", "work_item_id must be positive when supplied", apiErrorResponse{Code: "invalid_claim", Message: "work_item_id must be positive when supplied"})
 	}
 	ttl, err := apiTTL(request.TTLSeconds)
 	if err != nil {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_claim", Message: err.Error()})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_claim", err.Error(), apiErrorResponse{Code: "invalid_claim", Message: err.Error()})
 	}
 	claim := tracker.ClaimRequest{WorkItemID: request.WorkItemID, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}
 	lease, err := s.database.claimNext(c.Request().Context(), claim, claimCandidateQuery{
@@ -165,15 +165,15 @@ func (s *Service) claimWorkItem(c echo.Context) error {
 func (s *Service) renewLease(c echo.Context) error {
 	leaseID, err := apiLeaseID(c)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	var request renewLeaseAPIRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	ttl, err := apiTTL(request.TTLSeconds)
 	if err != nil {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_lease", Message: err.Error()})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_lease", err.Error(), apiErrorResponse{Code: "invalid_lease", Message: err.Error()})
 	}
 	lease, err := s.database.renew(c.Request().Context(), tracker.RenewRequest{LeaseID: leaseID, FencingToken: request.FencingToken, TTL: ttl}, true, 0)
 	if err != nil {
@@ -189,15 +189,15 @@ func (s *Service) renewLease(c echo.Context) error {
 func (s *Service) releaseLease(c echo.Context) error {
 	leaseID, err := apiLeaseID(c)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	var request releaseLeaseAPIRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	err = s.tracker.Release(c.Request().Context(), tracker.ReleaseRequest{LeaseID: leaseID, FencingToken: request.FencingToken, Reason: request.Reason})
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -205,14 +205,14 @@ func (s *Service) releaseLease(c echo.Context) error {
 func (s *Service) appendWorkItemEvent(c echo.Context) error {
 	id, err := apiWorkItemID(c)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	var request workEventAPIRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if request.Kind != "progress" || request.Payload != nil && !slices.Contains([]string{"plan", "implement", "test", "review", "complete"}, request.Payload.Step) {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_event", Message: "Legacy progress requires an allowlisted step; use v2 for native events"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_event", "Legacy progress requires an allowlisted step; use v2 for native events", apiErrorResponse{Code: "invalid_event", Message: "Legacy progress requires an allowlisted step; use v2 for native events"})
 	}
 	var payload map[string]any
 	if request.Payload != nil {
@@ -232,7 +232,7 @@ func (s *Service) appendWorkItemEvent(c echo.Context) error {
 	return c.JSON(http.StatusCreated, event)
 }
 
-func trackerAPIError(c echo.Context, err error) error {
+func (s *Service) trackerAPIError(c echo.Context, err error) error {
 	status := http.StatusInternalServerError
 	code := "hub_operation_failed"
 	message := "Hub operation failed"
@@ -252,7 +252,7 @@ func trackerAPIError(c echo.Context, err error) error {
 	case errors.Is(err, tracker.ErrInvalidClaimRequest), errors.Is(err, tracker.ErrInvalidLeaseRequest), errors.Is(err, tracker.ErrInvalidWorkEvent), errors.Is(err, tracker.ErrInvalidCandidateQuery):
 		status, code, message = http.StatusUnprocessableEntity, "invalid_request", "Request is invalid"
 	}
-	return c.JSON(status, apiErrorResponse{Code: code, Message: message})
+	return s.refusedAPIError(c, status, code, message, apiErrorResponse{Code: code, Message: message})
 }
 
 // claimNext decides most claim attempts without the writer. A preflight runs
@@ -460,7 +460,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		}
 		if capacity <= 0 {
 			if query.NativeScope != nil {
-				refusal := &nativeError{Code: "host_capacity", Message: "Shared host capacity is full or paused", status: http.StatusConflict}
+				refusal := &nativeError{Code: "host_capacity", Message: "Shared host capacity is full or paused", status: http.StatusConflict, publicMessage: true}
 				recorded := d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_host_capacity", refusal, now)
 				if !errors.Is(recorded, refusal) {
 					return tracker.Lease{}, recorded
@@ -996,18 +996,18 @@ func setContainsAll(haystack map[string]struct{}, needles map[string]struct{}) b
 func (s *Service) registerMachine(c echo.Context) error {
 	var request machineRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	request.ID = tracker.MachineID(strings.TrimSpace(string(request.ID)))
 	request.Hostname = strings.TrimSpace(request.Hostname)
 	request.DisplayName = strings.TrimSpace(request.DisplayName)
 	request.Version = strings.TrimSpace(request.Version)
 	if request.ID == "" || request.Hostname == "" || request.Version == "" || request.Capacity < 0 {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_machine", Message: "Machine ID, hostname, version, and non-negative capacity are required"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_machine", "Machine ID, hostname, version, and non-negative capacity are required", apiErrorResponse{Code: "invalid_machine", Message: "Machine ID, hostname, version, and non-negative capacity are required"})
 	}
 	capabilities, err := json.Marshal(request.Capabilities)
 	if err != nil {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_machine", Message: "Machine capabilities are invalid"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_machine", "Machine capabilities are invalid", apiErrorResponse{Code: "invalid_machine", Message: "Machine capabilities are invalid"})
 	}
 	if string(capabilities) == "null" {
 		capabilities = []byte("{}")
@@ -1051,10 +1051,10 @@ func (s *Service) heartbeatMachine(c echo.Context) error {
 	}
 	var request machineHeartbeatRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if request.Capacity != nil && *request.Capacity < 0 {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_machine", Message: "Machine capacity must be non-negative"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_machine", "Machine capacity must be non-negative", apiErrorResponse{Code: "invalid_machine", Message: "Machine capacity must be non-negative"})
 	}
 	current, err := s.database.machine(c.Request().Context(), id)
 	if errors.Is(err, tracker.ErrMachineNotFound) {
@@ -1075,12 +1075,12 @@ func (s *Service) heartbeatMachine(c echo.Context) error {
 	if request.Version != nil {
 		current.Version = strings.TrimSpace(*request.Version)
 		if current.Version == "" {
-			return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_machine", Message: "Machine version must not be empty"})
+			return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_machine", "Machine version must not be empty", apiErrorResponse{Code: "invalid_machine", Message: "Machine version must not be empty"})
 		}
 	}
 	capabilities, err := json.Marshal(current.Capabilities)
 	if err != nil {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_machine", Message: "Machine capabilities are invalid"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_machine", "Machine capabilities are invalid", apiErrorResponse{Code: "invalid_machine", Message: "Machine capabilities are invalid"})
 	}
 	now, err := s.database.currentTime()
 	if err != nil {

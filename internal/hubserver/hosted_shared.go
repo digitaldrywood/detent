@@ -86,10 +86,10 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 		limit := SharedEntryRequestBodyLimit(request.Method, request.URL.Path)
 		body, err := io.ReadAll(io.LimitReader(request.Body, limit+1))
 		if err != nil {
-			return c.JSON(http.StatusBadRequest, apiErrorResponse{Code: "invalid_request", Message: "Request body could not be read"})
+			return s.refusedAPIError(c, http.StatusBadRequest, "invalid_request", "Request body could not be read", apiErrorResponse{Code: "invalid_request", Message: "Request body could not be read"})
 		}
 		if int64(len(body)) > limit {
-			return c.JSON(http.StatusRequestEntityTooLarge, apiErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
+			return s.refusedAPIError(c, http.StatusRequestEntityTooLarge, "payload_too_large", "Request body is too large", apiErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
 		}
 		request.Body = io.NopCloser(bytes.NewReader(body))
 		claims, err := entry.verifier.Verify(request.Header.Get(cloudassert.Header), request.Method, request.URL.RequestURI(), body)
@@ -285,7 +285,7 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 		result.CustomerID = binding.CustomerID
 		var query hostedSharedBillingQuery
 		if err := decodeAPIJSON(c, &query); err != nil {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 		if query.Reconcile && binding.CustomerID != "" && s.billing != nil {
 			s.billing.mu.Lock()
@@ -332,11 +332,11 @@ func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
 	cfg := s.hostedBillingConfig()
 	var request hostedSharedBillingEventRequest
 	if err := decodeAPIJSON(c, &request); err != nil || cfg == nil || !strings.HasPrefix(request.EventID, "evt_") || !hostedSafeID(request.EventID) || request.EventType == "" || len(request.EventType) > 128 {
-		return invalidAPIRequest(c, errors.New("invalid billing event"))
+		return s.invalidAPIRequest(c, errors.New("invalid billing event"))
 	}
 	binding, err := s.database.hostedBillingBinding(c.Request().Context(), cfg)
 	if err != nil || binding.CustomerID != request.CustomerID {
-		return c.JSON(http.StatusConflict, apiErrorResponse{Code: "customer_mismatch", Message: "The event customer is not bound to this organization"})
+		return s.refusedAPIError(c, http.StatusConflict, "customer_mismatch", "The event customer is not bound to this organization", apiErrorResponse{Code: "customer_mismatch", Message: "The event customer is not bound to this organization"})
 	}
 	if _, err := s.database.db.ExecContext(c.Request().Context(), "INSERT INTO hosted_billing_events(event_id,event_type,received_at) VALUES(?,?,?) ON CONFLICT(event_id) DO NOTHING", request.EventID, request.EventType, formatHubTime(s.config.now())); err != nil {
 		return s.internalAPIError(c, "billing_unavailable", "Billing event could not be recorded", err)
@@ -366,7 +366,7 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 		name = strings.TrimSpace(request.OrganizationName)
 	}
 	if claims.Subject == "" || claims.Email == "" || name == "" || len(name) > 120 {
-		return invalidAPIRequest(c, errors.New("invalid owner bootstrap"))
+		return s.invalidAPIRequest(c, errors.New("invalid owner bootstrap"))
 	}
 	ctx := c.Request().Context()
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
@@ -382,15 +382,15 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 		if members == 1 && owner == claims.Subject {
 			return c.NoContent(http.StatusNoContent)
 		}
-		return c.JSON(http.StatusConflict, apiErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
+		return s.refusedAPIError(c, http.StatusConflict, "already_bootstrapped", "This organization already has members", apiErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
 	}
 	provider, err := s.hostedProviderOrganization(ctx)
 	if err != nil || provider == "" {
-		return c.JSON(http.StatusConflict, apiErrorResponse{Code: "unallocated", Message: "The tenant has no provider organization"})
+		return s.refusedAPIError(c, http.StatusConflict, "unallocated", "The tenant has no provider organization", apiErrorResponse{Code: "unallocated", Message: "The tenant has no provider organization"})
 	}
 	membership, err := s.hostedMembership(ctx, &auth.HostedIdentity{Subject: claims.Subject, OrganizationID: provider})
 	if err != nil || membership.Role.Slug != "owner" {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "owner_unverified", Message: "The provider does not report this identity as an owner"})
+		return s.refusedAPIError(c, http.StatusForbidden, "owner_unverified", "The provider does not report this identity as an owner", apiErrorResponse{Code: "owner_unverified", Message: "The provider does not report this identity as an owner"})
 	}
 	if err := s.storeHostedMember(ctx, auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true}, membership, name); err != nil {
 		return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", err)
@@ -408,13 +408,13 @@ func (s *Service) revokeHostedSharedSessions(c echo.Context) error {
 	}
 	var request hostedSharedRevocation
 	if err := decodeAPIJSON(c, &request); err != nil || len(request.Bindings) == 0 || len(request.Bindings) > 100 {
-		return invalidAPIRequest(c, errors.New("invalid revocation"))
+		return s.invalidAPIRequest(c, errors.New("invalid revocation"))
 	}
 	ctx := c.Request().Context()
 	now := formatHubTime(s.config.now())
 	for _, binding := range request.Bindings {
 		if len(binding) != 64 {
-			return invalidAPIRequest(c, errors.New("invalid binding"))
+			return s.invalidAPIRequest(c, errors.New("invalid binding"))
 		}
 		if err := s.revokeHostedSharedBinding(ctx, binding, now); err != nil {
 			return s.internalAPIError(c, "revocation_unavailable", "Sessions could not be revoked", err)
@@ -455,7 +455,7 @@ func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {
 	}
 	var request hostedSharedInvitation
 	if err := decodeAPIJSON(c, &request); err != nil || claims.Subject == "" || claims.Email == "" {
-		return invalidAPIRequest(c, errors.New("invalid invitation"))
+		return s.invalidAPIRequest(c, errors.New("invalid invitation"))
 	}
 	identity := auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: claims.Subject, SessionID: claims.ProviderSession}}
 	s.hostedMutationMu.Lock()
@@ -469,7 +469,7 @@ func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {
 	}
 	s.hostedMutationMu.Unlock()
 	if err != nil {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "invitation_unavailable", Message: "This invitation is expired, already used, or intended for another account or organization"})
+		return s.refusedAPIError(c, http.StatusForbidden, "invitation_unavailable", "This invitation is expired, already used, or intended for another account or organization", apiErrorResponse{Code: "invitation_unavailable", Message: "This invitation is expired, already used, or intended for another account or organization"})
 	}
 	return c.NoContent(http.StatusNoContent)
 }

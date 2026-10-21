@@ -114,11 +114,11 @@ func validCheckpointRef(ref string) bool {
 
 func validateNativeExecution(data tracker.NativeRunData, eventType string) error {
 	if data.Runtime != nil && data.Runtime.WorkerLaunch != nil && data.Runtime.WorkerLaunch.PolicyID != data.PolicyID {
-		return nativeRejection(nativeInvalid("Execution worker policy differs from its lease"), "execution_validation", "data.runtime.worker_launch.policy_id")
+		return nativeRejection(nativePublicInvalid("Execution worker policy differs from its lease"), "execution_validation", "data.runtime.worker_launch.policy_id")
 	}
 	if f := data.TerminalFailure; f != nil {
 		if eventType != "run.finished" || data.Sequence <= 0 || f.ObservedAt.IsZero() || data.Outcome == "succeeded" {
-			return nativeRejection(nativeInvalid("Execution failures require an ordered failed or interrupted terminal event"), "execution_validation", "data.terminal_failure")
+			return nativeRejection(nativePublicInvalid("Execution failures require an ordered failed or interrupted terminal event"), "execution_validation", "data.terminal_failure")
 		}
 		*f = f.Public()
 	}
@@ -128,35 +128,35 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 			f.BaseSHA != "" && !validCommitID(f.BaseSHA) || f.HeadSHA != "" && !validCommitID(f.HeadSHA) ||
 			f.SourceAttemptID != "" && !validNativeID(f.SourceAttemptID, "attempt") || f.VersionCode != "" && (!validExecutionName(f.VersionCode) || strings.ContainsAny(f.VersionCode, "/:\\")) ||
 			len(f.VersionError) > tracker.NativeFinalizationTextLimit || len(f.Error) > tracker.NativeFinalizationTextLimit || !utf8.ValidString(f.VersionError) || !utf8.ValidString(f.Error) {
-			return nativeRejection(nativeInvalid("Finalizer observations require bounded identity and text on an ordered terminal event"), "execution_validation", "data.finalization")
+			return nativeRejection(nativePublicInvalid("Finalizer observations require bounded identity and text on an ordered terminal event"), "execution_validation", "data.finalization")
 		}
 		if f.VersionID != "" && f.ChangeID == "" || f.SourceAttemptID != "" && f.SourceVersion == nil {
-			return nativeRejection(nativeInvalid("Finalizer source identity requires its owning Change and version"), "execution_validation", "data.finalization")
+			return nativeRejection(nativePublicInvalid("Finalizer source identity requires its owning Change and version"), "execution_validation", "data.finalization")
 		}
 		if v := f.SourceVersion; v != nil && (v.ChangeID != f.ChangeID || !validNativeID(v.ChangeID, "change") || !validNativeID(v.VersionID, "version") || !validCommitID(v.HeadSHA)) {
-			return nativeRejection(nativeInvalid("Invalid finalizer source version identity"), "execution_validation", "data.finalization")
+			return nativeRejection(nativePublicInvalid("Invalid finalizer source version identity"), "execution_validation", "data.finalization")
 		}
 		if p := f.Publication; p != nil && (!f.Settled || !f.Changed || f.VersionError != "" || f.Error != "" || p.ChangeID != f.ChangeID || p.VersionID != f.VersionID || p.HeadSHA != f.HeadSHA || !validNativeID(p.PolicyID, "policy") ||
 			p.SourceAttemptID != "" && !validNativeID(p.SourceAttemptID, "attempt") || len(p.BaseRef) > 255 || len(p.Branch) > 255 || strings.ContainsAny(p.BaseRef+p.Branch, " \t\r\n~^:?*[\\") || strings.Contains(p.BaseRef+p.Branch, "..")) {
-			return nativeRejection(nativeInvalid("PR publication requires a settled exact version, policy and verified delivery identity"), "execution_validation", "data.finalization")
+			return nativeRejection(nativePublicInvalid("PR publication requires a settled exact version, policy and verified delivery identity"), "execution_validation", "data.finalization")
 		}
 		*f = f.Public()
 	}
 	if len(data.Evidence) != 0 {
-		return nativeRejection(nativeInvalid("Attempt evidence is owned by attachment uploads"), "execution_validation", "data.evidence")
+		return nativeRejection(nativePublicInvalid("Attempt evidence is owned by attachment uploads"), "execution_validation", "data.evidence")
 	}
 	if data.CompletionBody != "" && (eventType != "run.finished" || data.Sequence <= 0 || len(data.CompletionBody) > 64<<10 || !utf8.ValidString(data.CompletionBody)) {
-		return nativeRejection(nativeInvalid("Completion responses require a bounded ordered terminal event"), "execution_validation", "data.completion_body")
+		return nativeRejection(nativePublicInvalid("Completion responses require a bounded ordered terminal event"), "execution_validation", "data.completion_body")
 	}
 	if data.Disposition != nil && (eventType != "run.finished" || data.Sequence <= 0 || !slices.Contains([]string{workpad.StatusInProgress, workpad.StatusBlocked, workpad.StatusComplete}, data.Disposition.Status)) {
-		return nativeRejection(nativeInvalid("Final disposition requires an ordered terminal event and a supported workpad status"), "execution_validation", "data.disposition")
+		return nativeRejection(nativePublicInvalid("Final disposition requires an ordered terminal event and a supported workpad status"), "execution_validation", "data.disposition")
 	}
 	if data.Disposition != nil && (len(data.Disposition.FinalSummary) > workpad.MaxFinalSummaryBytes || !utf8.ValidString(data.Disposition.FinalSummary)) {
-		return nativeRejection(nativeInvalid("Final summary must be bounded UTF-8 text"), "execution_validation", "data.disposition")
+		return nativeRejection(nativePublicInvalid("Final summary must be bounded UTF-8 text"), "execution_validation", "data.disposition")
 	}
 	if data.Sequence == 0 {
 		if data.Identity != nil || data.Handoff != nil || data.MachineID != "" || data.RunnerID != "" || data.SessionID != "" {
-			return nativeRejection(nativeInvalid("Execution metadata requires an ordered event"), "execution_validation", "data")
+			return nativeRejection(nativePublicInvalid("Execution metadata requires an ordered event"), "execution_validation", "data")
 		}
 		return nil
 	}
@@ -169,11 +169,11 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 		return nil
 	}
 	if data.Sequence < 0 || data.Identity == nil || !validExecutionName(data.Identity.Role) || !validExecutionName(data.Identity.Backend) || !validExecutionName(data.Identity.Model) {
-		return nativeRejection(nativeInvalid("Ordered events require a positive sequence and bounded execution identity"), "execution_validation", "data")
+		return nativeRejection(nativePublicInvalid("Ordered events require a positive sequence and bounded execution identity"), "execution_validation", "data")
 	}
 	if data.Handoff == nil {
 		if eventType == "run.checkpointed" {
-			return nativeRejection(nativeInvalid("Ordered checkpoints require a structured handoff"), "execution_validation", "data.handoff")
+			return nativeRejection(nativePublicInvalid("Ordered checkpoints require a structured handoff"), "execution_validation", "data.handoff")
 		}
 		return nil
 	}
@@ -184,23 +184,23 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 		!slices.Contains([]string{"clean", "dirty", "unpushed", "unknown"}, c.WorktreeState) ||
 		!slices.Contains([]string{"none", "git_push", "pr_create", "provider_turn"}, c.ExternalEffect) ||
 		!slices.Contains([]string{"none", "pending", "confirmed", "ambiguous"}, c.EffectState) {
-		return nativeRejection(nativeInvalid("Checkpoint has an unsupported recovery or effect state"), "execution_validation", "data.handoff")
+		return nativeRejection(nativePublicInvalid("Checkpoint has an unsupported recovery or effect state"), "execution_validation", "data.handoff")
 	}
 	if c.HeadSHA != "" && !validCommitID(c.HeadSHA) || c.ExpectedHeadSHA != "" && !validCommitID(c.ExpectedHeadSHA) || c.WorkspaceDigest != "" && !validCommitID(c.WorkspaceDigest) {
-		return nativeRejection(nativeInvalid("Checkpoint heads must be commit IDs"), "execution_validation", "data.handoff")
+		return nativeRejection(nativePublicInvalid("Checkpoint heads must be commit IDs"), "execution_validation", "data.handoff")
 	}
 	if c.ExternalEffect == "none" && (c.EffectState != "none" || c.EffectID != "") || c.ExternalEffect != "none" && (c.EffectState == "none" || !validNativeID(c.EffectID, "effect")) {
-		return nativeRejection(nativeInvalid("External effects require a typed reconciliation identity and state"), "execution_validation", "data.handoff")
+		return nativeRejection(nativePublicInvalid("External effects require a typed reconciliation identity and state"), "execution_validation", "data.handoff")
 	}
 	if (c.Storage == "git_ref") != (c.Ref != "" || c.CommitSHA != "" || c.TreeSHA != "" || c.BaseSHA != "") || c.Storage == "git_ref" &&
 		(!validCheckpointRef(c.Ref) || !validCommitID(c.CommitSHA) || !validCommitID(c.TreeSHA) || c.BaseSHA != "" && !validCommitID(c.BaseSHA)) {
-		return nativeRejection(nativeInvalid("Git checkpoints require a Detent checkpoint ref and commit, tree and base IDs"), "execution_validation", "data.handoff")
+		return nativeRejection(nativePublicInvalid("Git checkpoints require a Detent checkpoint ref and commit, tree and base IDs"), "execution_validation", "data.handoff")
 	}
 	if c.Storage == "customer_store" && (len(data.ArtifactIDs) == 0 || c.Availability == "available") {
-		return nativeRejection(nativeInvalid("Customer checkpoint references require artifacts and independent availability verification"), "execution_validation", "data.handoff")
+		return nativeRejection(nativePublicInvalid("Customer checkpoint references require artifacts and independent availability verification"), "execution_validation", "data.handoff")
 	}
 	if c.Change != nil && (!validNativeID(c.Change.ChangeID, "change") || !validNativeID(c.Change.VersionID, "version") || !validCommitID(c.Change.HeadSHA)) {
-		return nativeRejection(nativeInvalid("Change references require typed immutable version and head identities"), "execution_validation", "data.handoff")
+		return nativeRejection(nativePublicInvalid("Change references require typed immutable version and head identities"), "execution_validation", "data.handoff")
 	}
 	return nil
 }
@@ -454,7 +454,7 @@ func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item stri
 	}
 	view := params.Get("view")
 	if view != "" && view != "blockers" && view != "recorded_blockers" {
-		return tracker.Page[tracker.NativeAttempt]{}, nativeInvalid("view supports blockers or recorded_blockers")
+		return tracker.Page[tracker.NativeAttempt]{}, nativePublicInvalid("view supports blockers or recorded_blockers")
 	}
 	budget := 1 << 20
 	dataColumn := "a.data_json"
@@ -474,7 +474,7 @@ func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item stri
 	if cursor.After != "" {
 		after, err = strconv.ParseInt(cursor.After, 10, 64)
 		if err != nil {
-			return tracker.Page[tracker.NativeAttempt]{}, nativeInvalid("Attempt cursor is invalid")
+			return tracker.Page[tracker.NativeAttempt]{}, nativePublicInvalid("Attempt cursor is invalid")
 		}
 	}
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT `+dataColumn+`, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation

@@ -18,35 +18,35 @@ const lunaCostBucket = "luna_api"
 
 func validateRunnerCostUsage(entry tracker.NativeUsage) error {
 	if !finiteUsageCost(entry.CostEstimate) {
-		return nativeInvalid("Usage cost must be finite and bounded")
+		return nativePublicInvalid("Usage cost must be finite and bounded")
 	}
 	if entry.BillingMode != "" && entry.BillingMode != "unknown" && entry.BillingMode != "metered" && entry.BillingMode != "subscription" {
-		return nativeInvalid("Usage billing mode must be metered, subscription or unknown")
+		return nativePublicInvalid("Usage billing mode must be metered, subscription or unknown")
 	}
 	if entry.UsageKind != "" && entry.UsageKind != "cumulative" && entry.UsageKind != "incremental" {
-		return nativeInvalid("Usage kind must be cumulative or incremental")
+		return nativePublicInvalid("Usage kind must be cumulative or incremental")
 	}
 	if entry.UsageKind == "incremental" && (entry.SourceID == "" || entry.Revision <= 0 || entry.From.IsZero() || entry.To.IsZero()) {
-		return nativeInvalid("Incremental usage requires a source, revision and execution interval")
+		return nativePublicInvalid("Incremental usage requires a source, revision and execution interval")
 	}
 	if entry.UsageKind != "incremental" && entry.SourceID != "" {
-		return nativeInvalid("Cumulative usage uses the attempt's canonical source")
+		return nativePublicInvalid("Cumulative usage uses the attempt's canonical source")
 	}
 	if len(entry.SourceID) > 64 || strings.ContainsAny(entry.SourceID, "\x00\r\n") || entry.Revision < 0 {
-		return nativeInvalid("Usage requires a bounded source and nonnegative revision")
+		return nativePublicInvalid("Usage requires a bounded source and nonnegative revision")
 	}
 	if entry.CostCoverage != "" && entry.CostCoverage != "complete" && entry.CostCoverage != "partial" {
-		return nativeInvalid("Reported cost coverage must be complete or partial")
+		return nativePublicInvalid("Reported cost coverage must be complete or partial")
 	}
 	if entry.ReportedCostMicros != nil {
 		if *entry.ReportedCostMicros < 0 || *entry.ReportedCostMicros > 1e15 || (entry.CostSource != "backend_result" && entry.CostSource != "runner_report") {
-			return nativeInvalid("Reported cost requires a nonnegative bounded amount and explicit runner provenance")
+			return nativePublicInvalid("Reported cost requires a nonnegative bounded amount and explicit runner provenance")
 		}
 		if len(entry.Currency) != 3 || strings.Trim(entry.Currency, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
-			return nativeInvalid("Reported cost requires a three-letter uppercase currency")
+			return nativePublicInvalid("Reported cost requires a three-letter uppercase currency")
 		}
 	} else if entry.CostSource != "" || entry.CostCoverage != "" {
-		return nativeInvalid("Cost provenance requires a reported amount")
+		return nativePublicInvalid("Cost provenance requires a reported amount")
 	}
 	return nil
 }
@@ -68,7 +68,7 @@ func recordRunnerUsageCosts(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		return fmt.Errorf("read usage attribution: %w", err)
 	}
 	if organization != string(scope.organization) || project != string(scope.project) {
-		return nativeInvalid("Usage preserves the attempt's original organization and project")
+		return nativePublicInvalid("Usage preserves the attempt's original organization and project")
 	}
 	from, err := parseTimeValue(started)
 	if err != nil {
