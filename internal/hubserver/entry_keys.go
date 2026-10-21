@@ -63,7 +63,8 @@ func (s *Service) auditEntryKey(c echo.Context, claims cloudassert.Claims) error
 	if err != nil {
 		return err
 	}
-	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json) VALUES(?,?,?,?,'','key_call',?,'',0,?,?,?,?)`, claims.Audience, claims.Key.ID, claims.Subject, claims.Subject, claims.Method+" "+claims.Path, formatHubTime(claims.IssuedAt), formatHubTime(claims.ExpiresAt), formatHubTime(s.config.now()), string(metadata))
+	now := s.config.now()
+	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json,recorded_at_ns) VALUES(?,?,?,?,'','key_call',?,'',0,?,?,?,?,?)`, claims.Audience, claims.Key.ID, claims.Subject, claims.Subject, claims.Method+" "+claims.Path, formatHubTime(claims.IssuedAt), formatHubTime(claims.ExpiresAt), formatHubTime(now), string(metadata), now.UnixNano())
 	return err
 }
 
@@ -224,7 +225,8 @@ func (s *Service) entryKeyAudit(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json) VALUES(?,?,?,?,'',?,?,'',0,?,?,?,?)`, claims.Audience, event.KeyID, event.Owner, event.Owner, event.Event, claims.Path, formatHubTime(claims.IssuedAt), formatHubTime(claims.ExpiresAt), formatHubTime(s.config.now()), string(metadata))
+	now := s.config.now()
+	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json,recorded_at_ns) VALUES(?,?,?,?,'',?,?,'',0,?,?,?,?,?)`, claims.Audience, event.KeyID, event.Owner, event.Owner, event.Event, claims.Path, formatHubTime(claims.IssuedAt), formatHubTime(claims.ExpiresAt), formatHubTime(now), string(metadata), now.UnixNano())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
