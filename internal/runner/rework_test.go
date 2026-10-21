@@ -283,6 +283,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		summaryFailure           bool
 		laterFinalizationSuccess bool
 		landingRepair            *tracker.NativeLandingReceipt
+		historyRefusal           bool
 		unresolved               bool
 		staged                   bool
 		normal                   bool
@@ -334,6 +335,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		{name: "failed landing CI after passing reviews still codes", reviewResume: "pass", staged: true, writableResume: true, landingRepair: &tracker.NativeLandingReceipt{CI: &tracker.NativeLandingCIReceipt{State: "failure"}}},
 		{name: "failed landing gate after passing reviews still codes", reviewResume: "pass", staged: true, writableResume: true, landingRepair: &tracker.NativeLandingReceipt{GateFailed: true}},
 		{name: "protected landing review conversations after passing reviews still code", reviewResume: "pass", staged: true, writableResume: true, landingRepair: &tracker.NativeLandingReceipt{RefusalKind: workspace.LandRefusalProtected, Refusal: workspace.ReviewConversationsRefusalText}},
+		{name: "protected landing review conversations retained in history still code", reviewResume: "pass", staged: true, writableResume: true, historyRefusal: true, landingRepair: &tracker.NativeLandingReceipt{RefusalKind: workspace.LandRefusalProtected}},
 		{name: "source version race refuses before coding", reviewResume: "pass", staged: true, sourceMismatch: true},
 		{name: "stale base refusal in code lane refreshes owned source", normal: true, staged: true, refusal: workspace.LandRefusalBaseMoved, baseRefresh: true, resume: true},
 		{name: "conflict refusal in code lane", normal: true, refusal: workspace.LandRefusalConflict},
@@ -593,6 +595,10 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 						landing.CI = &ci
 					}
 					owner.recovery.Attempts = append(owner.recovery.Attempts, tracker.NativeAttempt{Status: "succeeded", NativeRunData: tracker.NativeRunData{AttemptID: "attempt_landing", RunID: "run_landing", PolicyID: descriptor.ID, Runtime: &tracker.NativeRuntimeObservation{Landing: &landing}}, Checkpoint: &checkpoint})
+					if test.historyRefusal {
+						owner.recovery.ChangeDetail.Reviews = append(owner.recovery.ChangeDetail.Reviews, review(true, gate.ValidatorVerdictWait, version.ID))
+						owner.recovery.History = []tracker.CollaborationEvent{{Type: "workflow.transitioned", Data: tracker.CollaborationData{FromState: "Merging", ToState: "Rework", ReasonDetail: workspace.ReviewConversationsRefusalText}}}
+					}
 				}
 				if test.laterPartial {
 					later := owner.recovery.Attempts[0]
