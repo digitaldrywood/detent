@@ -342,7 +342,7 @@ func (s *Service) createHostedAPIKeyFor(ctx context.Context, credential apiCrede
 	var message string
 	request.ProjectAccess, message = resolveHostedProjectAccess(request.ProjectAccess, request.Projects)
 	if message != "" {
-		return tokenResponse{}, nativeInvalid(message)
+		return tokenResponse{}, nativePublicInvalid(message)
 	}
 	var expiry *time.Time
 	if !request.NeverExpires {

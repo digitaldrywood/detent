@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 )
 
 func TestDecodeAPIJSONCompatibility(t *testing.T) {
@@ -80,11 +83,51 @@ func TestDecodeAPIJSONCompatibility(t *testing.T) {
 
 func TestAPIRefusals(t *testing.T) {
 	t.Parallel()
+	f := newHostedSecurityFixture(t)
+	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
+	credential, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: owner.identity.Hosted, Email: owner.identity.Email}, apikey.HashToken(owner.token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyRefusal := func(token bool) func(*Service, echo.Context) error {
+		return func(s *Service, c echo.Context) error {
+			var request hostedKeyRequest
+			if err := decodeAPIJSON(c, &request); err != nil {
+				return err
+			}
+			var err error
+			if token {
+				_, err = f.service.createAPITokenFor(c.Request().Context(), tokenRequest{Name: request.Name, Scope: apiScopeOperator, Issuer: &credential, KeyScope: request.Scope, ProjectAccess: request.ProjectAccess, ProjectIDs: request.Projects})
+			} else {
+				_, err = f.service.createHostedAPIKeyFor(c.Request().Context(), credential, request)
+			}
+			return s.nativeAPIError(c, err)
+		}
+	}
+	budgetRefusal := func(s *Service, c echo.Context) error {
+		var request monthlyBudgetRequest
+		if err := decodeAPIJSON(c, &request); err != nil {
+			return err
+		}
+		_, err := updateMonthlyBudgetOperation(request)(c.Request().Context(), nil, nativeScope{}, time.Time{})
+		return s.nativeAPIError(c, err)
+	}
 	for _, test := range []struct {
 		name, path, body, code, reason string
 		status                         int
 		handle                         func(*Service, echo.Context) error
 	}{
+		{"budget mode", nativeBase + "/monthly-budget", `{"policy":{"mode":"private-token"}}`, "invalid_request", "monthly budget mode must be drain_issue or hard_stop", http.StatusUnprocessableEntity, budgetRefusal},
+		{"negative Luna budget", nativeBase + "/monthly-budget", `{"policy":{"luna_api_micros":-1}}`, "invalid_request", "monthly luna_api budget must be nonnegative", http.StatusUnprocessableEntity, budgetRefusal},
+		{"negative runner budget", nativeBase + "/monthly-budget", `{"policy":{"runner_api_micros":-1}}`, "invalid_request", "monthly runner_api budget must be nonnegative", http.StatusUnprocessableEntity, budgetRefusal},
+		{"negative sprite budget", nativeBase + "/monthly-budget", `{"policy":{"sprite_infrastructure_micros":-1}}`, "invalid_request", "monthly sprite_infrastructure budget must be nonnegative", http.StatusUnprocessableEntity, budgetRefusal},
+		{"negative total budget", nativeBase + "/monthly-budget", `{"policy":{"total_micros":-1}}`, "invalid_request", "monthly total budget must be nonnegative", http.StatusUnprocessableEntity, budgetRefusal},
+		{"hosted key access", "/api/v2/organizations/:organization/api-keys", `{"name":"private-token","scope":"read","never_expires":true,"project_access":"private-token"}`, "invalid_request", "Choose all or selected project access", http.StatusUnprocessableEntity, keyRefusal(false)},
+		{"hosted key selected projects", "/api/v2/organizations/:organization/api-keys", `{"name":"private-token","scope":"read","never_expires":true,"project_access":"selected"}`, "invalid_request", "Selected project access requires at least one project", http.StatusUnprocessableEntity, keyRefusal(false)},
+		{"hosted key all projects", "/api/v2/organizations/:organization/api-keys", `{"name":"private-token","scope":"read","never_expires":true,"project_access":"all","project_ids":["private-project"]}`, "invalid_request", "All project access cannot include selected project IDs", http.StatusUnprocessableEntity, keyRefusal(false)},
+		{"token access", "/api/v1/tokens", `{"name":"private-token","scope":"read","project_access":"private-token"}`, "invalid_request", "Choose all or selected project access", http.StatusUnprocessableEntity, keyRefusal(true)},
+		{"token selected projects", "/api/v1/tokens", `{"name":"private-token","scope":"read","project_access":"selected"}`, "invalid_request", "Selected project access requires at least one project", http.StatusUnprocessableEntity, keyRefusal(true)},
+		{"token all projects", "/api/v1/tokens", `{"name":"private-token","scope":"read","project_access":"all","project_ids":["private-project"]}`, "invalid_request", "All project access cannot include selected project IDs", http.StatusUnprocessableEntity, keyRefusal(true)},
 		{"outbox limit", "/api/v1/outbox/health?limit=0", "", "invalid_query", "limit must be between 1 and 200", http.StatusUnprocessableEntity, (*Service).outboxHealth},
 		{"backup destination", "/api/v1/backup", `{}`, "invalid_request", "A new absolute backup output path is required", http.StatusUnprocessableEntity, (*Service).backupDatabase},
 		{"attachment metadata", nativeBase + "/attempts/:attempt/attachment-metadata", `{}`, "invalid_request", "Invalid attachment metadata", http.StatusUnprocessableEntity, (*Service).recordCloudAttachment},

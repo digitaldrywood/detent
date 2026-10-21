@@ -52,7 +52,7 @@ func (s *Service) updateMonthlyBudget(c echo.Context) error {
 func updateMonthlyBudgetOperation(request monthlyBudgetRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
 	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		if err := request.Policy.Validate(); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, nativePublicInvalid(err.Error())
 		}
 		current, err := readMonthlyBudgetSettings(ctx, tx, scope)
 		if err != nil {
