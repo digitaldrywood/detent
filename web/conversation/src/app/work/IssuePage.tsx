@@ -77,11 +77,11 @@ export function changeResourceRows(
   changes: IssueData["changes"],
   onOpen: (changeId: string) => void,
 ): ResourceRow[] {
-  return changes.map(({ record, detail, pending }) => ({
+  return changes.map(({ record, detail, pending, deferred }) => ({
     key: record.change_id,
     icon: "diff" as const,
     label: record.title,
-    detail: detail?.summary.status.replaceAll("_", " ") ?? (pending === true ? "" : "unavailable"),
+    detail: detail?.summary.status.replaceAll("_", " ") ?? (pending === true || deferred === true ? "" : "unavailable"),
     onOpen: () => onOpen(record.change_id),
   }));
 }
@@ -253,7 +253,7 @@ function FullIssuePage(): React.ReactElement {
     setResolved(undefined);
     if (projectId !== null && indexed === undefined) {
       void http
-        .getWorkItemConversation(projectId, workItemId)
+        .getWorkItemConversation(projectId, workItemId, issueState.data?.issue.archive_summary !== undefined)
         .then((snapshot) => {
           if (!cancelled) setResolved(snapshot.conversation);
         })
@@ -281,7 +281,27 @@ function FullIssuePage(): React.ReactElement {
   if (linked === undefined) {
     return <IssueSurface key={workItemId} workItemId={workItemId} issueState={issueState} conversation={null} />;
   }
+  if (issueState.data?.issue.archive_summary !== undefined) return <ArchivedLinkedIssue workItemId={workItemId} issueState={issueState} conversation={linked} />;
   return <LinkedIssue key={linked.id} workItemId={workItemId} issueState={issueState} conversation={linked} />;
+}
+
+function ArchivedLinkedIssue({ workItemId, issueState, conversation }: {
+  readonly workItemId: string;
+  readonly issueState: ReturnType<typeof useIssue>;
+  readonly conversation: Conversation;
+}): React.ReactElement {
+  const client = useClient();
+  const send = useAtomSet(client.sendMessage, { mode: "promise" });
+  const setPreferences = useAtomSet(client.setPreferences, { mode: "promise" });
+  const bridge: ConversationBridge = {
+    id: conversation.id, projectId: conversation.project_id, detail: undefined,
+    execution: conversation.execution, streaming: false, preferences: turnPreferences(conversation),
+    setPreferences: (preferences) => { void setPreferences({ projectId: conversation.project_id, conversationId: conversation.id, preferences }); },
+    sendToRunner: async (text) => { await send({ projectId: conversation.project_id, conversationId: conversation.id, key: newCommandKey(), text, expected: expectedOwner(conversation.execution) }); },
+    interrupt: null,
+    view: <ConversationView conversationId={conversation.id} projectId={conversation.project_id} header={false} />,
+  };
+  return <IssueSurface workItemId={workItemId} issueState={issueState} conversation={bridge} />;
 }
 
 /** The issue page with a conversation behind it. Subscribes to its atoms. */

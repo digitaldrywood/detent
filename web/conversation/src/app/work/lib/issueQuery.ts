@@ -1,3 +1,6 @@
+import * as Schema from "effect/Schema";
+import { NativeAttempt as NativeAttemptSchema } from "../../../contracts/work.ts";
+import { ArchiveUnavailable } from "../../../runtime/archiveDecode.ts";
 // The issue page's read, shared by the page and by link prefetch.
 import type {
   ChangeDetail,
@@ -25,6 +28,7 @@ export interface IssueData {
     readonly detail: ChangeDetail | null;
     /** The detail is still loading after the first paint. */
     readonly pending?: boolean;
+    readonly deferred?: boolean;
   }[];
 }
 
@@ -80,10 +84,10 @@ interface IssueHead {
   readonly project: NativeProject;
 }
 
-function related(http: WorkHttp, projectId: string, workItemId: string, signal: AbortSignal, project?: NativeProject) {
+function related(http: WorkHttp, projectId: string, workItemId: string, signal: AbortSignal, project?: NativeProject, issue?: NativeIssue) {
   return Promise.all([
     project?.project_id === projectId ? project : http.getProject(projectId, signal),
-    allIssueRecords((cursor) => http.listAttempts(projectId, workItemId, 100, undefined, cursor)).catch(() => null),
+    issue?.archive_summary !== undefined ? Promise.resolve(Schema.decodeUnknownSync(Schema.Array(NativeAttemptSchema))(issue.archive_summary.attempts)) : allIssueRecords((cursor) => http.listAttempts(projectId, workItemId, 100, undefined, cursor)).catch((error: unknown) => { if (error instanceof ArchiveUnavailable) throw error; return null; }),
     allIssueRecords((cursor) => http.listHistory({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) })).catch(() => null),
     allIssueRecords((cursor) => http.listComments({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) }))
       .catch(() => [] as readonly NativeComment[]),
@@ -108,12 +112,10 @@ export function readIssue(http: WorkHttp, workItemId: string, requestedChange: s
       let rest: Awaited<ReturnType<typeof related>>;
       if (known === undefined) {
         issue = await http.getWorkItemById(workItemId, signal);
-        rest = await related(http, issue.project_id, workItemId, signal);
+        rest = await related(http, issue.project_id, workItemId, signal, undefined, issue);
       } else {
-        const together = related(http, known, workItemId, signal, knownProject);
-        together.catch(() => undefined);
         issue = await http.getWorkItemById(workItemId, signal);
-        rest = issue.project_id === known ? await together : await related(http, issue.project_id, workItemId, signal);
+        rest = await related(http, issue.project_id, workItemId, signal, issue.project_id === known ? knownProject : undefined, issue);
       }
       const projectId = issue.project_id;
       hintIssueProject(workItemId, projectId);
@@ -122,12 +124,12 @@ export function readIssue(http: WorkHttp, workItemId: string, requestedChange: s
         issue, project, attempts: attempts ?? [], history: history ?? [], attemptsAvailable: attempts !== null,
         historyAvailable: history !== null, comments, change: null, changes: changes.map((record) => ({ record, detail: null, pending: true })),
       };
-      if (changes.length === 0) return first;
+      if (changes.length === 0 || issue.archive_summary !== undefined && requestedChange === null) return { ...first, changes: first.changes.map((entry) => ({ ...entry, pending: false, deferred: true })) };
       if (cached === undefined || cached === null) partial(first);
       const details = await Promise.all(
         changes.map(async (record) => ({
           record,
-          detail: await http.getChange(projectId, workItemId, record.change_id).catch(() => null),
+          detail: await http.getChange(projectId, workItemId, record.change_id).catch((error: unknown) => { if (error instanceof ArchiveUnavailable) throw error; return null; }),
         })),
       );
       const selected = selectChangeId(changes, requestedChange);

@@ -52,7 +52,41 @@ const LANE_COLORS: Readonly<Record<string, string>> = {
   blocked: "bg-destructive", "human review": "bg-warning", merging: "bg-primary", done: "bg-success",
 };
 
-export function IssueDiagnostics({ issue, attempts, history, now, attemptsAvailable = true, historyAvailable = true }: {
+export function IssueDiagnostics(props: Parameters<typeof IssueDiagnosticsBody>[0]) {
+  return props.issue.archive_summary === undefined ? <IssueDiagnosticsBody {...props} /> : <ArchivedDiagnostics {...props} />;
+}
+
+function ArchivedDiagnostics(props: Parameters<typeof IssueDiagnosticsBody>[0]) {
+  const http = useWorkHttp();
+  const [attempts, setAttempts] = React.useState<readonly NativeAttempt[] | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const { issue } = props;
+  React.useEffect(() => {
+    const controller = new AbortController();
+    setAttempts(null);
+    setError(null);
+    void (async () => {
+      const result: NativeAttempt[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await http.listAttempts(issue.project_id, issue.work_item_id, 100, controller.signal, cursor);
+        result.push(...page.items);
+        const next = page.next_cursor ?? undefined;
+        if (next !== undefined && next === cursor) throw new Error("Archived runs cursor did not advance");
+        cursor = next;
+      } while (cursor !== undefined);
+      if (!controller.signal.aborted) setAttempts(result);
+    })().catch((cause: unknown) => {
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Archived detail is unavailable.");
+    });
+    return () => controller.abort();
+  }, [http, issue.project_id, issue.work_item_id, issue.archive_summary?.revision]);
+  if (error !== null) return <p role="alert" className="text-sm text-destructive">{error}</p>;
+  if (attempts === null) return <p role="status" className="text-sm text-muted-foreground">Reading archived runs…</p>;
+  return <IssueDiagnosticsBody {...props} attempts={attempts} attemptsAvailable />;
+}
+
+function IssueDiagnosticsBody({ issue, attempts, history, now, attemptsAvailable = true, historyAvailable = true }: {
   readonly issue: NativeIssue;
   readonly attempts: readonly NativeAttempt[];
   readonly history: readonly CollaborationEvent[];
