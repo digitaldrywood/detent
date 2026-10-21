@@ -128,7 +128,7 @@ func (w *workspaceService) loadWorkspaceForWorker(ctx context.Context, tx *sql.T
 		return workspaceRecord{}, leaseRecord{}, nativeNotFound()
 	}
 	if strings.TrimSpace(string(identity.LeaseID)) == "" || identity.FencingToken <= 0 {
-		return workspaceRecord{}, leaseRecord{}, nativeInvalid("A lease and fencing token are required")
+		return workspaceRecord{}, leaseRecord{}, nativePublicInvalid("A lease and fencing token are required")
 	}
 	record, err := readWorkspaceRow(ctx, tx, scope, id)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -180,14 +180,14 @@ WHERE wi.workspace_id = ? AND i.id = ?`, record.ID, lease.issueID).Scan(&native)
 func (s *Service) bindWorkspaceWorker(c echo.Context) error {
 	var request workspaceBindRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	service, err := s.requireWorkspaces()
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if !workspacesession.ValidIsolation(request.Isolation) {
-		return s.nativeAPIError(c, nativeInvalid("isolation must be sandbox, container or user"))
+		return s.nativeAPIError(c, nativePublicInvalid("isolation must be sandbox, container or user"))
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
@@ -258,7 +258,7 @@ func (w *workspaceService) bind(ctx context.Context, tx *sql.Tx, scope nativeSco
 		}
 	}
 	if !request.Capabilities.Satisfies(record.Requires) {
-		return record, nativeInvalid("The runner does not serve every required surface")
+		return record, nativePublicInvalid("The runner does not serve every required surface")
 	}
 	if !terminalIsolationAllowed(record.Requires, w.config.Terminal.Isolation, request.Isolation) {
 		return record, workspaceIsolationRefused()
@@ -311,23 +311,23 @@ func (w *workspaceService) checkoutFor(ctx context.Context, tx *sql.Tx, record w
 func (s *Service) heartbeatWorkspaceWorker(c echo.Context) error {
 	var request workspaceHeartbeatRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	service, err := s.requireWorkspaces()
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if request.State != "" && !workspacesession.ValidState(request.State) {
-		return s.nativeAPIError(c, nativeInvalid("state names no workspace state"))
+		return s.nativeAPIError(c, nativePublicInvalid("state names no workspace state"))
 	}
 	if !workspacesession.ValidIsolation(request.Isolation) {
-		return s.nativeAPIError(c, nativeInvalid("isolation must be sandbox, container or user"))
+		return s.nativeAPIError(c, nativePublicInvalid("isolation must be sandbox, container or user"))
 	}
 	if !workspacesession.ValidWorktree(request.Worktree) {
-		return s.nativeAPIError(c, nativeInvalid("worktree must be retained or fresh"))
+		return s.nativeAPIError(c, nativePublicInvalid("worktree must be retained or fresh"))
 	}
 	if request.Reason != "" && !workspacesession.ValidReason(request.Reason) {
-		return s.nativeAPIError(c, nativeInvalid("reason names no workspace reason"))
+		return s.nativeAPIError(c, nativePublicInvalid("reason names no workspace reason"))
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
@@ -447,14 +447,14 @@ func (w *workspaceService) heartbeat(ctx context.Context, tx *sql.Tx, record wor
 func (s *Service) unbindWorkspaceWorker(c echo.Context) error {
 	var request workspaceUnbindRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	service, err := s.requireWorkspaces()
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if request.Reason != "" && !workspacesession.ValidReason(request.Reason) {
-		return s.nativeAPIError(c, nativeInvalid("reason names no workspace reason"))
+		return s.nativeAPIError(c, nativePublicInvalid("reason names no workspace reason"))
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
@@ -594,17 +594,17 @@ type workspaceActionRunReport struct {
 func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 	var request workspaceActionRunReport
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	service, err := s.requireWorkspaces()
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if !workspacesession.ValidRunStatus(request.Status) {
-		return s.nativeAPIError(c, nativeInvalid("status names no run status"))
+		return s.nativeAPIError(c, nativePublicInvalid("status names no run status"))
 	}
 	if request.Reason != "" && !validActionRunReason(request.Reason) {
-		return s.nativeAPIError(c, nativeInvalid("reason names no run reason"))
+		return s.nativeAPIError(c, nativePublicInvalid("reason names no run reason"))
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
@@ -644,7 +644,7 @@ func (w *workspaceService) recordActionRunReport(ctx context.Context, tx *sql.Tx
 	runID := strings.TrimSpace(request.RunID)
 	if runID == "" {
 		if !action.RunOnWorktreeCreation {
-			return actionRunRecord{}, nativeInvalid("Only a run-on-worktree-creation action may be reported without a run id")
+			return actionRunRecord{}, nativePublicInvalid("Only a run-on-worktree-creation action may be reported without a run id")
 		}
 		run := actionRunRecord{
 			ID: newNativeID("actionrun"), ActionID: action.ID, OrganizationID: record.OrganizationID,
@@ -721,11 +721,11 @@ func workerRelayIdentity(c echo.Context) (workspaceWorkerIdentity, error) {
 	lease := strings.TrimSpace(c.Request().Header.Get("X-Detent-Lease"))
 	token := strings.TrimSpace(c.Request().Header.Get("X-Detent-Fencing-Token"))
 	if lease == "" || token == "" {
-		return workspaceWorkerIdentity{}, nativeInvalid("A lease and fencing token header are required")
+		return workspaceWorkerIdentity{}, nativePublicInvalid("A lease and fencing token header are required")
 	}
 	var fencing int64
 	if _, err := fmt.Sscanf(token, "%d", &fencing); err != nil || fencing <= 0 {
-		return workspaceWorkerIdentity{}, nativeInvalid("The fencing token header is invalid")
+		return workspaceWorkerIdentity{}, nativePublicInvalid("The fencing token header is invalid")
 	}
 	return workspaceWorkerIdentity{LeaseID: tracker.LeaseID(lease), FencingToken: tracker.FencingToken(fencing)}, nil
 }

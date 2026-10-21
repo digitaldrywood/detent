@@ -119,11 +119,11 @@ func (s *Service) attemptDiffBodyStored(c echo.Context) error {
 	}
 	var file diffbody.File
 	if err := decodeAPIJSON(c, &file); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	claims, _ := hostedSharedClaims(c)
 	if file.Organization != claims.Audience || file.Body.Validate(file.Organization, file.Project, tracker.MaxDiffPatchBytes) != nil || !validNativeID(file.DiffID, "diff") || file.Position < 0 {
-		return s.nativeAPIError(c, nativeInvalid("Invalid migrated diff body"))
+		return s.nativeAPIError(c, nativePublicInvalid("Invalid migrated diff body"))
 	}
 	var patch, key string
 	if err := s.database.reader.QueryRowContext(readCtx, `SELECT f.patch,f.patch_object FROM attempt_diff_files f JOIN attempt_diffs d ON d.id=f.diff_id
@@ -131,7 +131,7 @@ func (s *Service) attemptDiffBodyStored(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if patch != "" && file.Body != diffbody.New(file.Organization, file.Project, file.DiffID, file.Position, patch) {
-		return s.nativeAPIError(c, nativeInvalid("Migrated object must match the stored diff body"))
+		return s.nativeAPIError(c, nativePublicInvalid("Migrated object must match the stored diff body"))
 	}
 	if patch == "" && key != file.Body.Key {
 		return s.nativeAPIError(c, nativeNotFound())
@@ -164,7 +164,7 @@ func (s *Service) attemptDiffBodyDeleted(c echo.Context) error {
 		Key string `json:"key"`
 	}
 	if err := decodeAPIJSON(c, &input); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	_, err := s.database.db.ExecContext(c.Request().Context(), `UPDATE attempt_diff_files SET patch_object='' WHERE patch_object=? AND patch_expired=1`, input.Key)
 	if err != nil {
@@ -183,7 +183,7 @@ func (s *Service) attemptDiffBodyExists(c echo.Context) error {
 		Key string `json:"key"`
 	}
 	if err := decodeAPIJSON(c, &input); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	var exists bool
 	if err := s.database.reader.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM attempt_diff_files WHERE patch_object=?)`, input.Key).Scan(&exists); err != nil {
@@ -209,7 +209,7 @@ func (s *Service) vacuumAttemptDiffBodies(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if inline != 0 {
-		return s.nativeAPIError(c, nativeInvalid("Diff body migration is still pending"))
+		return s.nativeAPIError(c, nativePublicInvalid("Diff body migration is still pending"))
 	}
 	if _, err := s.database.db.ExecContext(ctx, `VACUUM`); err != nil {
 		return s.nativeAPIError(c, err)

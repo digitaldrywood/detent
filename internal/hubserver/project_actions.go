@@ -84,11 +84,8 @@ type projectActionRunReceipt struct {
 	RunID string `json:"run_id"`
 }
 
-// actionKeybindingTaken reports a chord another action in the project already
-// claims. It names the conflict, because the author's next move is to change
-// one of the two rather than to retry.
-func actionKeybindingTaken(keybinding, name string) error {
-	return nativePublicInvalid("The keybinding " + keybinding + " is already used by " + name)
+func actionKeybindingTaken() error {
+	return nativePublicInvalid("The keybinding is already used by another action")
 }
 
 // actionRunReadOnly refuses a run on a workspace held read-only while its
@@ -98,7 +95,8 @@ func actionKeybindingTaken(keybinding, name string) error {
 func actionRunReadOnly() error {
 	return &nativeError{
 		Code: "read_only", Message: "A run is refused while the attempt is still using this worktree",
-		status: http.StatusConflict,
+		status:        http.StatusConflict,
+		publicMessage: true,
 	}
 }
 
@@ -109,7 +107,8 @@ func actionRunReadOnly() error {
 func actionRunCapabilityMissing() error {
 	return &nativeError{
 		Code: "capability_missing", Message: "The workspace does not serve project actions",
-		status: http.StatusConflict,
+		status:        http.StatusConflict,
+		publicMessage: true,
 	}
 }
 
@@ -129,7 +128,7 @@ func (s *Service) listProjectActions(c echo.Context) error {
 func (s *Service) createProjectAction(c echo.Context) error {
 	var request projectActionRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandCreateAction(c.Request().Context(), nativeRequestScope(c), request)
 	if err != nil {
@@ -142,7 +141,7 @@ func (s *Service) createProjectAction(c echo.Context) error {
 func (s *Service) patchProjectAction(c echo.Context) error {
 	var request projectActionPatch
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandPatchAction(c.Request().Context(), nativeRequestScope(c), c.Param("action"), request)
 	if err != nil {
@@ -167,7 +166,7 @@ func (s *Service) deleteProjectAction(c echo.Context) error {
 func (s *Service) createProjectActionRun(c echo.Context) error {
 	var request projectActionRunRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandRunAction(c.Request().Context(), nativeRequestScope(c), c.Param("action"), request)
 	if err != nil {
@@ -237,7 +236,7 @@ func (s *Service) listProjectActionRuns(c echo.Context) error {
 	}
 	limit, err := parsePageLimit(c.QueryParam("limit"))
 	if err != nil {
-		return s.nativeAPIError(c, nativeInvalid("Page limit is invalid"))
+		return s.nativeAPIError(c, nativePublicInvalid("Page limit is invalid"))
 	}
 	value, err := s.readActionRuns(c.Request().Context(), nativeRequestScope(c), c.Param("action"), limit)
 	if err != nil {
@@ -448,37 +447,32 @@ func (s *Service) applyCreateProjectAction(ctx context.Context, tx *sql.Tx, scop
 	}
 	var err error
 	if record.Name, err = workspacesession.NormalizeActionName(request.Name); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, nativePublicInvalid(err.Error())
 	}
 	if record.Command, err = workspacesession.NormalizeActionCommand(request.Command); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, nativePublicInvalid(err.Error())
 	}
 	if record.Keybinding, err = workspacesession.NormalizeActionKeybinding(request.Keybinding); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, nativePublicInvalid(err.Error())
 	}
 	if record.Icon, err = workspacesession.NormalizeActionIcon(request.Icon); err != nil {
 		return nil, nativeInvalid(err.Error())
 	}
 	if record.PreviewURL, err = workspacesession.NormalizeActionPreviewURL(request.PreviewURL); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, nativePublicInvalid(err.Error())
 	}
 	count, err := countProjectActions(ctx, tx, scope)
 	if err != nil {
 		return nil, err
 	}
 	if count >= workspacesession.MaxActionsPerProject {
-		return nil, nativeInvalid("A project may hold at most " +
+		return nil, nativePublicInvalid("A project may hold at most " +
 			strconv.Itoa(workspacesession.MaxActionsPerProject) + " actions")
 	}
-	// The chord is checked here as well as by the migration's partial
-	// unique index. The check is what produces an answer the author
-	// can act on -- it names the action holding the chord -- and the
-	// index is the backstop that keeps two concurrent creates from
-	// both passing it.
-	if owner, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
+	if _, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
 		return nil, err
 	} else if found {
-		return nil, actionKeybindingTaken(record.Keybinding, owner.Name)
+		return nil, actionKeybindingTaken()
 	}
 	if err := insertProjectAction(ctx, tx, record); err != nil {
 		return nil, err
@@ -495,24 +489,24 @@ func (s *Service) applyPatchProjectAction(ctx context.Context, tx *sql.Tx, scope
 		return nil, err
 	}
 	if request.ExpectedRevision <= 0 {
-		return nil, nativeInvalid("Expected revision must be positive")
+		return nil, nativePublicInvalid("Expected revision must be positive")
 	}
 	if record.Revision != int64(request.ExpectedRevision) {
 		return nil, nativeConflict(tracker.Revision(record.Revision))
 	}
 	if request.Name != nil {
 		if record.Name, err = workspacesession.NormalizeActionName(*request.Name); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, nativePublicInvalid(err.Error())
 		}
 	}
 	if request.Command != nil {
 		if record.Command, err = workspacesession.NormalizeActionCommand(*request.Command); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, nativePublicInvalid(err.Error())
 		}
 	}
 	if request.Keybinding != nil {
 		if record.Keybinding, err = workspacesession.NormalizeActionKeybinding(*request.Keybinding); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, nativePublicInvalid(err.Error())
 		}
 	}
 	if request.Icon != nil {
@@ -522,7 +516,7 @@ func (s *Service) applyPatchProjectAction(ctx context.Context, tx *sql.Tx, scope
 	}
 	if request.PreviewURL != nil {
 		if record.PreviewURL, err = workspacesession.NormalizeActionPreviewURL(*request.PreviewURL); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, nativePublicInvalid(err.Error())
 		}
 	}
 	if request.OpenPreview != nil {
@@ -531,10 +525,10 @@ func (s *Service) applyPatchProjectAction(ctx context.Context, tx *sql.Tx, scope
 	if request.RunOnWorktreeCreation != nil {
 		record.RunOnWorktreeCreation = *request.RunOnWorktreeCreation
 	}
-	if owner, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
+	if _, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
 		return nil, err
 	} else if found {
-		return nil, actionKeybindingTaken(record.Keybinding, owner.Name)
+		return nil, actionKeybindingTaken()
 	}
 	expected := record.Revision
 	record.Revision++

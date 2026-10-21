@@ -281,11 +281,11 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 	if view := c.QueryParam("view"); view != "" {
 		params, err := nativeReadQuery(c)
 		if err != nil || view != "recovery" || validateNativeQuery(params, "view", "projection") != nil {
-			return s.nativeAPIError(c, nativeInvalid("view supports recovery"))
+			return s.nativeAPIError(c, nativePublicInvalid("view supports recovery"))
 		}
 		if params.Has("projection") || c.Request().Header.Get("X-Detent-Recovery-Projection") != "" {
 			if params.Get("projection") != "bounded" && c.Request().Header.Get("X-Detent-Recovery-Projection") != "bounded" || params.Has("limit") || params.Has("cursor") {
-				return s.nativeAPIError(c, nativeInvalid("Recovery projection supports bounded"))
+				return s.nativeAPIError(c, nativePublicInvalid("Recovery projection supports bounded"))
 			}
 			result, err := s.readNativeRecovery(ctx, scope, c.Param("item"), true)
 			if err != nil {
@@ -347,7 +347,7 @@ func nativeIssueChangeIncluded(value string) (bool, error) {
 		case "change":
 			included = true
 		default:
-			return false, nativeInvalid("include supports change")
+			return false, nativePublicInvalid("include supports change")
 		}
 	}
 	return included, nil
@@ -388,7 +388,7 @@ func validateNativeProvenance(scope nativeScope, provenance *tracker.Provenance)
 
 func validateImportProvenance(provenance *tracker.Provenance) error {
 	if provenance.Provider != "github" {
-		return nativeInvalid("GitHub import source is invalid")
+		return nativePublicInvalid("GitHub import source is invalid")
 	}
 	return validateSourceProvenance(provenance)
 }
@@ -406,7 +406,7 @@ func validateSourceProvenance(provenance *tracker.Provenance) error {
 func (s *Service) createNativeIssue(c echo.Context) error {
 	var request tracker.CreateIssue
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.createNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), request)
 	if err != nil {
@@ -417,7 +417,7 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if challenge.ChallengeToken != "" {
-		return c.JSON(http.StatusConflict, struct {
+		return s.refusedAPIError(c, http.StatusConflict, "possible_duplicates", "Possible duplicate issues found; use file_issue to confirm whether this is new", struct {
 			apiErrorResponse
 			duplicateChallenge
 		}{apiErrorResponse: apiErrorResponse{Code: "possible_duplicates", Message: "Possible duplicate issues found; use file_issue to confirm whether this is new"}, duplicateChallenge: challenge})
@@ -757,10 +757,10 @@ func appendNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, wor
 
 func requireNativeEdit(issue tracker.NativeIssue, expected tracker.Revision) error {
 	if issue.Profile != "native" {
-		return nativeInvalid("Compatibility project content is externally owned")
+		return nativePublicInvalid("Compatibility project content is externally owned")
 	}
 	if expected <= 0 {
-		return nativeInvalid("Expected revision must be positive")
+		return nativePublicInvalid("Expected revision must be positive")
 	}
 	if expected != issue.Revision {
 		return nativeConflict(issue.Revision)
@@ -876,7 +876,7 @@ func nativeHumanFiled(issue tracker.NativeIssue) bool {
 func (s *Service) updateNativeIssue(c echo.Context) error {
 	var request tracker.UpdateIssue
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.updateNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
 	if err != nil {
@@ -888,7 +888,7 @@ func (s *Service) updateNativeIssue(c echo.Context) error {
 func (s *Service) transitionNativeIssue(c echo.Context) error {
 	var request tracker.Transition
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.transitionNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
 	if err != nil {
@@ -955,11 +955,11 @@ func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scop
 			evaluation := contract.Evaluate(nativeContractIssue(issue))
 			if contractRecovery {
 				if issue.IssueContract.ReturnState != request.State || issue.IssueContract.HumanAction != "" || !evaluation.Satisfied() {
-					return nil, nativeInvalid("Human confirmation is required to clear the issue contract hold")
+					return nil, nativePublicInvalid("Human confirmation is required to clear the issue contract hold")
 				}
 			} else {
 				if issue.IssueContract.Exempt || evaluation.Satisfied() || signal.Status != workpad.StatusBlocked || signal.HumanAction == "" {
-					return nil, nativeInvalid("Issue contract hold does not match the issue")
+					return nil, nativePublicInvalid("Issue contract hold does not match the issue")
 				}
 				cfg, err := nativeIssueContractConfig(ctx, tx, scope)
 				if err != nil {
@@ -971,7 +971,7 @@ func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scop
 					admissionTarget = "Todo"
 				}
 				if returnState != admissionTarget || issue.State != admissionTarget && !slices.Contains(cfg.BacklogAdmission.Sources.States, issue.State) {
-					return nil, nativeInvalid("Issue contract hold must return to the configured admission lane")
+					return nil, nativePublicInvalid("Issue contract hold must return to the configured admission lane")
 				}
 				lease, found, err := readUnreleasedLease(ctx, tx, internalID)
 				if err != nil {
@@ -981,7 +981,7 @@ func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scop
 					return nil, tracker.ErrLeaseConflict
 				}
 				if request.State != cfg.Agent.StopRun.TargetState {
-					return nil, nativeInvalid("Issue contract failure destination does not match the workflow")
+					return nil, nativePublicInvalid("Issue contract failure destination does not match the workflow")
 				}
 			}
 		}
@@ -991,10 +991,10 @@ func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scop
 			}
 		}
 		if !slices.Contains([]string{"user_requested", "worker_progress", "dependency_ready", string(gate.ReasonValidatorRework)}, request.Reason) {
-			return nil, nativeInvalid("Transition reason is invalid")
+			return nil, nativePublicInvalid("Transition reason is invalid")
 		}
 		if len(request.ReasonDetail) > workpad.MaxFinalSummaryBytes || !utf8.ValidString(request.ReasonDetail) {
-			return nil, nativeInvalid("Transition reason detail must be bounded UTF-8 text")
+			return nil, nativePublicInvalid("Transition reason detail must be bounded UTF-8 text")
 		}
 		project, err := readNativeProject(ctx, tx, scope)
 		if err != nil {
@@ -1006,7 +1006,7 @@ func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scop
 		from := issue.State
 		if signal, ok := workpad.SignalFromComment(request.ReasonDetail, "", ""); ok && signal != nil && signal.Invalid == nil && signal.Fields["issue_contract_return_state"] != "" {
 			if signal.Status != workpad.StatusBlocked || signal.HumanAction == "" {
-				return nil, nativeInvalid("Issue contract hold requires a human action")
+				return nil, nativePublicInvalid("Issue contract hold requires a human action")
 			}
 			issue.IssueContract.HumanAction = signal.HumanAction
 			issue.IssueContract.ReturnState = signal.Fields["issue_contract_return_state"]
@@ -1054,14 +1054,14 @@ func validateNativeWorkflowTransition(states []tracker.NativeState, current, tar
 	allowed := false
 	for _, state := range states {
 		if state.Name == target && state.OperatorOnly && scope == apiScopeWorker {
-			return nativeInvalid("Workflow target requires an operator")
+			return nativePublicInvalid("Workflow target requires an operator")
 		}
 		if state.Name == current && slices.Contains(state.Transitions, target) {
 			allowed = true
 		}
 	}
 	if !allowed {
-		return &nativeError{Code: "transition_not_allowed", Message: "Workflow transition is not allowed", status: http.StatusUnprocessableEntity}
+		return &nativeError{Code: "transition_not_allowed", Message: "Workflow transition is not allowed", status: http.StatusUnprocessableEntity, publicMessage: true}
 	}
 	return nil
 }
@@ -1069,7 +1069,7 @@ func validateNativeWorkflowTransition(states []tracker.NativeState, current, tar
 func (s *Service) changeNativeDependency(c echo.Context) error {
 	var request tracker.DependencyMutation
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.changeNativeDependencyCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
 	if err != nil {

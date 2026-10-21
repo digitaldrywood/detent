@@ -110,7 +110,7 @@ func (s *Service) hostedSessionOnly(next echo.HandlerFunc) echo.HandlerFunc {
 			if c.Path() == hostedOrganizationBase+"/projects" && c.Request().Method == http.MethodGet {
 				return s.entryKeyProjects(c)
 			}
-			return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "session_required", Message: "This endpoint requires a hosted browser session"})
+			return s.refusedAPIError(c, http.StatusForbidden, "session_required", "This endpoint requires a hosted browser session", apikey.Refusal{Code: "session_required", Message: "This endpoint requires a hosted browser session"})
 		}
 		if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
 			return s.hostedJSONError(c, http.StatusForbidden, "This endpoint authenticates a hosted session")
@@ -129,12 +129,12 @@ func (r hostedIdempotent) validate(required bool) error {
 	key := strings.TrimSpace(r.IdempotencyKey)
 	if key == "" {
 		if required {
-			return nativeInvalid("An idempotency key of at most 128 bytes is required")
+			return nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 		}
 		return nil
 	}
 	if len(r.IdempotencyKey) > 128 {
-		return nativeInvalid("An idempotency key of at most 128 bytes is required")
+		return nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	return nil
 }
@@ -341,7 +341,7 @@ func (s *Service) editHostedInvitationJSON(c echo.Context) error {
 		Grants []hostedMemberGrant `json:"grants"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
@@ -365,7 +365,7 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 		Grants []hostedMemberGrant `json:"grants"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(true); err != nil {
 		return s.nativeAPIError(c, err)
@@ -384,7 +384,7 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 		case errors.Is(err, mutation.ErrConflict):
 			return s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: mutation.ErrConflict.Error(), status: http.StatusConflict})
 		case errors.Is(err, mutation.ErrUncertain):
-			return c.JSON(http.StatusConflict, apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
+			return s.refusedAPIError(c, http.StatusConflict, "idempotency_in_progress", mutation.ErrUncertain.Error(), apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
 		case errors.Is(err, operatortool.ErrInvalidArguments):
 			return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 		case errors.As(err, &limit):
@@ -466,7 +466,7 @@ func (s *Service) claimHostedCommand(c echo.Context, command hostedCommand, stat
 		return false, s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: mutation.ErrConflict.Error(), status: http.StatusConflict})
 	}
 	if errors.Is(err, mutation.ErrUncertain) {
-		return false, c.JSON(http.StatusConflict, apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
+		return false, s.refusedAPIError(c, http.StatusConflict, "idempotency_in_progress", mutation.ErrUncertain.Error(), apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
 	}
 	if err != nil {
 		return false, s.nativeAPIError(c, err)
@@ -530,7 +530,7 @@ func (s *Service) changeHostedRoleJSON(c echo.Context) error {
 		Role string `json:"role"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
@@ -558,7 +558,7 @@ func (s *Service) changeHostedGrantJSON(c echo.Context) error {
 		Revoke    bool   `json:"revoke"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
@@ -641,7 +641,7 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 		States      []tracker.NativeState `json:"states,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(true); err != nil {
 		return s.nativeAPIError(c, err)
@@ -682,14 +682,14 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 
 // hostedJSONError answers a hosted API failure with the native error shape.
 func (s *Service) hostedJSONError(c echo.Context, status int, message string) error {
-	return c.JSON(status, apiErrorResponse{Code: hostedErrorCode(status), Message: message})
+	return s.refusedAPIError(c, status, hostedErrorCode(status), message, apiErrorResponse{Code: hostedErrorCode(status), Message: message})
 }
 
 func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {
 	var request hostedIdempotent
 	if c.Request().ContentLength != 0 {
 		if err := decodeAPIJSON(c, &request); err != nil {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 	}
 	if err := request.validate(false); err != nil {
@@ -710,7 +710,7 @@ func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {
 func (s *Service) resendHostedInvitationJSON(c echo.Context) error {
 	var request hostedIdempotent
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
@@ -738,7 +738,7 @@ func (s *Service) hostedAPIError(c echo.Context, err error) error {
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
 	if errors.Is(err, auth.ErrHostedIdentity) {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
+		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return s.nativeAPIError(c, nativeNotFound())

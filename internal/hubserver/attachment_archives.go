@@ -28,7 +28,7 @@ func (s *Service) checkAttachmentArchive(c echo.Context) error {
 		Reference *attachment.ArchiveReference `json:"reference,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &input); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if input.Reference != nil {
 		return s.writeAttachmentArchive(c, *input.Reference, false)
@@ -49,7 +49,7 @@ func (s *Service) checkAttachmentArchive(c echo.Context) error {
 func (s *Service) recordAttachmentArchive(c echo.Context) error {
 	var ref attachment.ArchiveReference
 	if err := decodeAPIJSON(c, &ref); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.writeAttachmentArchive(c, ref, true)
 }
@@ -57,7 +57,7 @@ func (s *Service) recordAttachmentArchive(c echo.Context) error {
 func (s *Service) writeAttachmentArchive(c echo.Context, ref attachment.ArchiveReference, publish bool) error {
 	scope := nativeRequestScope(c)
 	if ref.Validate(string(scope.organization)) != nil {
-		return s.nativeAPIError(c, nativeInvalid("Invalid archive reference"))
+		return s.nativeAPIError(c, nativePublicInvalid("Invalid archive reference"))
 	}
 	ctx := c.Request().Context()
 	tx, err := s.database.db.BeginTx(ctx, nil)

@@ -33,13 +33,13 @@ func (s *Service) getRunnerProjectDiagnostics(c echo.Context) error {
 	if value := c.QueryParam("limit"); value != "" {
 		n, err := strconv.Atoi(value)
 		if err != nil {
-			return s.nativeAPIError(c, nativeInvalid("Invalid diagnostic limit"))
+			return s.nativeAPIError(c, nativePublicInvalid("Invalid diagnostic limit"))
 		}
 		args.Limit = n
 	}
 	for key := range c.QueryParams() {
 		if !slices.Contains([]string{"runner_id", "issue_id", "attempt_id", "cursor", "limit"}, key) {
-			return s.nativeAPIError(c, nativeInvalid("Invalid diagnostic selector"))
+			return s.nativeAPIError(c, nativePublicInvalid("Invalid diagnostic selector"))
 		}
 	}
 	raw, err := json.Marshal(args)
@@ -47,7 +47,7 @@ func (s *Service) getRunnerProjectDiagnostics(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if _, err := operatortool.DecodeLocalProjectArguments(operatortool.RunnerProjectDiagnostics, raw, true); err != nil {
-		return s.nativeAPIError(c, nativeInvalid("Invalid diagnostic selector"))
+		return s.nativeAPIError(c, nativePublicInvalid("Invalid diagnostic selector"))
 	}
 	page, err := s.readRunnerProjectDiagnostics(c.Request().Context(), scope, args)
 	if err != nil {

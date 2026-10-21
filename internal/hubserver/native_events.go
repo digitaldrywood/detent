@@ -222,7 +222,7 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 func (s *Service) invalidNativeEventRequest(c echo.Context, err error) error {
 	var maxBytes *http.MaxBytesError
 	if errors.As(err, &maxBytes) {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	field := ""
 	var typeError *json.UnmarshalTypeError
@@ -233,6 +233,7 @@ func (s *Service) invalidNativeEventRequest(c echo.Context, err error) error {
 }
 
 func (s *Service) nativeRunEventError(c echo.Context, request tracker.NativeRunEvent, err error) error {
+	var attributes []any
 	var failure *nativeError
 	if errors.As(err, &failure) && failure.status == http.StatusUnprocessableEntity {
 		rejection, ok := failure.Details["rejection"].(runnerauth.PublicationRejection)
@@ -249,13 +250,8 @@ func (s *Service) nativeRunEventError(c echo.Context, request tracker.NativeRunE
 		if !validNativeID(item, "wi") {
 			item = ""
 		}
-		reason := rejection.DiagnosticError()
-		if failure.publicMessage {
-			reason = failure.Message
-		}
-		s.config.Logger.Warn("native run event rejected", "code", failure.Code,
-			"category", rejection.Category, "field", rejection.Field, "reason", reason, "route", c.Path(),
-			"organization", scope.organization, "project", scope.project, "work_item", item, "attempt", attempt)
+		attributes = []any{"category", rejection.Category, "field", rejection.Field,
+			"organization", scope.organization, "project", scope.project, "work_item", item, "attempt", attempt}
 	}
-	return s.nativeAPIError(c, err)
+	return s.nativeAPIError(c, err, attributes...)
 }

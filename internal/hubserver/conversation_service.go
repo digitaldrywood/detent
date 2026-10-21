@@ -386,11 +386,11 @@ func (b *notificationBroker) closeAll() {
 // Error codes specific to conversations, in addition to the shared native
 // vocabulary (not_found, invalid_request, idempotency_conflict).
 func conversationForbidden(message string) error {
-	return &nativeError{Code: "forbidden", Message: message, status: http.StatusForbidden}
+	return &nativeError{Code: "forbidden", Message: message, status: http.StatusForbidden, publicMessage: true}
 }
 
 func conversationStale(message string) error {
-	return nativeStaleExecution(message)
+	return &nativeError{Code: "stale_execution", Message: message, status: http.StatusConflict, publicMessage: true}
 }
 
 // conversationStaleOwner reports an owner-generation mismatch with both
@@ -398,7 +398,7 @@ func conversationStale(message string) error {
 // without a second request. Either identifier may be null.
 func conversationStaleOwner(message, expected, current string) error {
 	return &nativeError{
-		Code: "stale_execution", Message: message, status: http.StatusConflict,
+		Code: "stale_execution", Message: message, status: http.StatusConflict, publicMessage: true,
 		Details: map[string]any{"expected_attempt_id": conversationOptional(expected), "current_attempt_id": conversationOptional(current)},
 	}
 }
@@ -430,22 +430,23 @@ func staleExecutionAttempts(err error) (expected, current string, ok bool) {
 	return read("expected_attempt_id"), read("current_attempt_id"), true
 }
 
-// logStaleExecution reports a rejected control whose owner generation is no
-// longer current. It is called once per rejected request, at the boundary
-// that answers it, so path names the API command kind or the worker
-// endpoint that refused the control. Anything else is ignored.
-func (c *conversationService) logStaleExecution(path, conversationID string, err error) {
+func conversationStaleExecutionError(path, conversationID string, err error) error {
 	expected, current, ok := staleExecutionAttempts(err)
 	if !ok {
-		return
+		return err
 	}
-	c.logger.Warn("conversation.stale_execution",
-		"conversation_id", conversationID, "expected_attempt_id", expected,
-		"current_attempt_id", current, "path", path)
+	var failure *nativeError
+	if !errors.As(err, &failure) {
+		return err
+	}
+	refusal := *failure
+	refusal.logAttributes = []any{"component", "conversation", "conversation_id", conversationID,
+		"expected_attempt_id", expected, "current_attempt_id", current, "path", path}
+	return &refusal
 }
 
 func conversationAlreadyLinked(existing string) error {
-	err := &nativeError{Code: "conversation_already_linked", Message: "The conversation or issue is already linked", status: http.StatusConflict}
+	err := &nativeError{Code: "conversation_already_linked", Message: "The conversation or issue is already linked", status: http.StatusConflict, publicMessage: true}
 	if existing != "" {
 		err.Details = map[string]any{"existing_conversation_id": existing}
 	}
@@ -453,19 +454,19 @@ func conversationAlreadyLinked(existing string) error {
 }
 
 func conversationQuestionAnswered() error {
-	return &nativeError{Code: "question_already_answered", Message: "The question has already been answered", status: http.StatusConflict}
+	return &nativeError{Code: "question_already_answered", Message: "The question has already been answered", status: http.StatusConflict, publicMessage: true}
 }
 
 func conversationUnsupported(message string) error {
-	return &nativeError{Code: "unsupported_control", Message: message, status: http.StatusUnprocessableEntity}
+	return &nativeError{Code: "unsupported_control", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
 }
 
 func conversationShareRequired() error {
-	return &nativeError{Code: "share_history_required", Message: "Linking shares the conversation history; confirm with share_history", status: http.StatusUnprocessableEntity}
+	return &nativeError{Code: "share_history_required", Message: "Linking shares the conversation history; confirm with share_history", status: http.StatusUnprocessableEntity, publicMessage: true}
 }
 
 func conversationProjectFixed() error {
-	return &nativeError{Code: "conversation_project_fixed", Message: "Conversations never move between projects", status: http.StatusUnprocessableEntity}
+	return &nativeError{Code: "conversation_project_fixed", Message: "Conversations never move between projects", status: http.StatusUnprocessableEntity, publicMessage: true}
 }
 
 func conversationQueueFull() error {
@@ -480,7 +481,7 @@ func translateConversationError(err error) error {
 	}
 	var revision *errConversationRevision
 	if errors.As(err, &revision) {
-		return &nativeError{Code: "revision_conflict", Message: "The conversation changed; reload and retry", status: http.StatusConflict}
+		return &nativeError{Code: "revision_conflict", Message: "The conversation changed; reload and retry", status: http.StatusConflict, publicMessage: true}
 	}
 	if errors.Is(err, conversation.ErrStaleExecution) {
 		return conversationStale(err.Error())

@@ -1,10 +1,12 @@
 package hubserver
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/diffbody"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -515,11 +519,12 @@ func TestAttemptDiffValidation(t *testing.T) {
 	t.Parallel()
 	f := newAttemptDiffFixture(t)
 	tests := []struct {
-		name    string
-		mutate  func(*tracker.AttemptDiffRequest)
-		status  int
-		code    string
-		attempt string
+		name     string
+		mutate   func(*tracker.AttemptDiffRequest)
+		status   int
+		code     string
+		attempt  string
+		manifest bool
 	}{
 		{
 			name: "generation source disagrees with the producer",
@@ -554,6 +559,11 @@ func TestAttemptDiffValidation(t *testing.T) {
 			attempt: "not-an-attempt",
 			status:  http.StatusNotFound, code: "not_found",
 		},
+		{
+			name:     "shared manifest inline patch",
+			manifest: true,
+			status:   http.StatusUnprocessableEntity, code: "invalid_request",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -564,6 +574,48 @@ func TestAttemptDiffValidation(t *testing.T) {
 			attempt := f.attempt
 			if test.attempt != "" {
 				attempt = test.attempt
+			}
+			if test.manifest {
+				var logs bytes.Buffer
+				objects := &changeObjectFixture{}
+				service := &Service{database: f.service.database, config: Config{
+					Hosted: &HostedConfig{SharedEntry: &HostedSharedEntry{}},
+					Logger: slog.New(hostedLogHandler{output: slog.NewJSONHandler(&logs, nil)}),
+					now:    f.service.config.now, content: objects.call,
+				}}
+				credential, _, err := f.service.authenticateAPIToken(t.Context(), f.worker, "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				request.Files[0].Path, request.Files[0].Patch = "private-path.go", "private-token"
+				raw, err := json.Marshal(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := httptest.NewRecorder()
+				c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/diff", bytes.NewReader(raw)).WithContext(service.contentContext(t.Context())), response)
+				c.SetPath(nativeBase + "/attempts/:attempt/diff")
+				c.SetParamNames("attempt")
+				c.SetParamValues(attempt)
+				c.Set("native_scope", nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential})
+				if err := service.postAttemptDiff(c); err != nil {
+					t.Fatal(err)
+				}
+				failure := requireNativeCode(t, response, test.status, test.code)
+				var entry map[string]any
+				if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
+					t.Fatalf("expected exactly one JSON log entry: %v: %s", err, &logs)
+				}
+				const reason = "Shared diff bodies must arrive through object storage"
+				if failure.Message != reason || entry["level"] != "WARN" || entry["refusal_code"] != test.code || entry["reason"] != reason || entry["error"] != reason || entry["route"] != nativeBase+"/attempts/:attempt/diff" {
+					t.Fatalf("refusal = %#v, log = %#v", failure, entry)
+				}
+				for _, private := range []string{"private-path.go", "private-token"} {
+					if strings.Contains(logs.String(), private) || strings.Contains(response.Body.String(), private) {
+						t.Fatalf("private diff content escaped: %s", private)
+					}
+				}
+				return
 			}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/attempts/"+attempt+"/diff", f.worker, request)
 			requireNativeCode(t, response, test.status, test.code)

@@ -36,14 +36,14 @@ func updateRunnerCheckoutReport(ctx context.Context, tx *sql.Tx, scope nativeSco
 		return nil // older runners do not modify the last report
 	}
 	if scope.credential.Runner.RunnerID == "" {
-		return nativeInvalid("Checkout reports require an enrolled runner")
+		return nativePublicInvalid("Checkout reports require an enrolled runner")
 	}
 	if *report == "" {
 		_, err := tx.ExecContext(ctx, "DELETE FROM runner_checkout_repositories WHERE runner_id = ? AND project_id = ?", scope.credential.Runner.RunnerID, scope.project)
 		return err
 	}
 	if !validCheckoutRepository(*report) || *report != strings.TrimSpace(*report) {
-		return nativeInvalid("Checkout repository must be owner/name")
+		return nativePublicInvalid("Checkout repository must be owner/name")
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO runner_checkout_repositories (runner_id, project_id, repository, reported_at) VALUES (?, ?, ?, ?)
 ON CONFLICT(runner_id, project_id) DO UPDATE SET repository=excluded.repository, reported_at=excluded.reported_at`, scope.credential.Runner.RunnerID, scope.project, *report, formatHubTime(now))
@@ -52,7 +52,7 @@ ON CONFLICT(runner_id, project_id) DO UPDATE SET repository=excluded.repository,
 
 func (s *Service) bindRunnerCheckoutCommand(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, revision tracker.Revision, repository string) (json.RawMessage, error) {
 	if !validCheckoutRepository(repository) {
-		return nil, nativeInvalid("Repository must be owner/name")
+		return nil, nativePublicInvalid("Repository must be owner/name")
 	}
 	input := struct {
 		tracker.Mutation
@@ -69,16 +69,16 @@ func (s *Service) bindRunnerCheckoutCommand(ctx context.Context, scope nativeSco
 			return nil, nativeConflict(current.Revision)
 		}
 		if current.Profile != "native" {
-			return nil, nativeInvalid("Only a native project can associate a runner checkout")
+			return nil, nativePublicInvalid("Only a native project can associate a runner checkout")
 		}
 		if current.CheckoutRepository != "" {
 			if strings.EqualFold(current.CheckoutRepository, repository) {
 				return current, nil
 			}
-			return nil, nativeInvalid("This project already has a checkout repository")
+			return nil, nativePublicInvalid("This project already has a checkout repository")
 		}
 		if current.Repository != "" && !strings.EqualFold(current.Repository, repository) {
-			return nil, nativeInvalid("This project already has a repository")
+			return nil, nativePublicInvalid("This project already has a repository")
 		}
 		if err := requireIntegrationIdle(ctx, tx, scope, now); err != nil {
 			return nil, err

@@ -73,13 +73,13 @@ func validateQualityEscape(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 		return err
 	}
 	if landing == nil || request.VersionID != landing.VersionID || escape.ObservedAt.Before(landing.LandedAt) || escape.ObservedAt.After(now) {
-		return nativeInvalid("Escape must identify a landed version and an occurrence between landing and now")
+		return nativePublicInvalid("Escape must identify a landed version and an occurrence between landing and now")
 	}
 	if err := escape.Validate(); err != nil {
 		return nativeInvalid(err.Error())
 	}
 	if escape.HumanOverride && (scope.credential.SessionHash == "" || scope.actor().Kind != "human") {
-		return nativeInvalid("Human classification overrides require a human browser session")
+		return nativePublicInvalid("Human classification overrides require a human browser session")
 	}
 	if escape.Cause != "infrastructure" && !escape.HumanOverride {
 		if err := validateQualityBasis(landing.Quality, *escape); err != nil {
@@ -87,7 +87,7 @@ func validateQualityEscape(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 		}
 	}
 	if escape.Kind == "revert" && ((!changerequest.ValidHash(escape.OccurrenceID, 40) && !changerequest.ValidHash(escape.OccurrenceID, 64)) || !strings.Contains(escape.EvidenceQuote, landing.MergeSHA)) {
-		return nativeInvalid("Revert occurrence must identify the revert commit and quote its reference to the landed commit")
+		return nativePublicInvalid("Revert occurrence must identify the revert commit and quote its reference to the landed commit")
 	}
 	if escape.Kind == "scheduled_failure" {
 		if err := validateScheduledEscape(ctx, tx, scope, *escape); err != nil {
@@ -100,7 +100,7 @@ func validateQualityEscape(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 			return err
 		}
 		if count != 1 {
-			return nativeInvalid("Reopen occurrence must reference its recorded Done transition")
+			return nativePublicInvalid("Reopen occurrence must reference its recorded Done transition")
 		}
 	}
 	var previous string
@@ -115,10 +115,10 @@ func validateQualityEscape(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 		}
 		prior := discussion.Escape
 		if prior.Kind != escape.Kind || !prior.ObservedAt.Equal(escape.ObservedAt) || prior.EvidenceReference != escape.EvidenceReference {
-			return nativeInvalid("Escape occurrence identity cannot change")
+			return nativePublicInvalid("Escape occurrence identity cannot change")
 		}
 		if prior.HumanOverride && !escape.HumanOverride {
-			return nativeInvalid("An agent assessment cannot replace a human override")
+			return nativePublicInvalid("An agent assessment cannot replace a human override")
 		}
 	}
 	return nil
@@ -126,7 +126,7 @@ func validateQualityEscape(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 
 func validateQualityBasis(snapshot *tracker.LandingQualitySnapshot, escape tracker.QualityEscape) error {
 	if snapshot == nil {
-		return nativeInvalid("Landing contract snapshot unavailable; a human must classify historical evidence")
+		return nativePublicInvalid("Landing contract snapshot unavailable; a human must classify historical evidence")
 	}
 	switch escape.Cause {
 	case "validator_miss":
@@ -135,10 +135,10 @@ func validateQualityBasis(snapshot *tracker.LandingQualitySnapshot, escape track
 				return nil
 			}
 		}
-		return nativeInvalid("Validator miss must name a covered criterion and quote its landing evidence")
+		return nativePublicInvalid("Validator miss must name a covered criterion and quote its landing evidence")
 	case "missing_criterion":
 		if len(snapshot.Missing) > 0 || len(snapshot.Criteria) == 0 || escape.Criterion != "" {
-			return nativeInvalid("Missing criterion requires a complete contract and no covered criterion")
+			return nativePublicInvalid("Missing criterion requires a complete contract and no covered criterion")
 		}
 	case "underspecified_issue":
 		for _, section := range snapshot.Missing {
@@ -148,7 +148,7 @@ func validateQualityBasis(snapshot *tracker.LandingQualitySnapshot, escape track
 		}
 	}
 	if !strings.Contains(snapshot.IssueBody, escape.BasisQuote) {
-		return nativeInvalid("Classification must quote the frozen issue contract")
+		return nativePublicInvalid("Classification must quote the frozen issue contract")
 	}
 	return nil
 }
@@ -178,5 +178,5 @@ UNION ALL SELECT body FROM native_comments WHERE organization_id=? AND project_i
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	return nativeInvalid("Scheduled escape must quote an existing red scheduled-suite occurrence; candidate commits alone do not establish attribution")
+	return nativePublicInvalid("Scheduled escape must quote an existing red scheduled-suite occurrence; candidate commits alone do not establish attribution")
 }

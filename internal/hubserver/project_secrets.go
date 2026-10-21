@@ -75,7 +75,7 @@ func (s *Service) registerProjectSecretRoutes(e *echo.Echo) {
 		return read(func(c echo.Context) error {
 			scope := nativeRequestScope(c)
 			if !canManageProjectSecrets(scope.credential) {
-				return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Changing provider secrets requires owner or admin access"})
+				return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Changing provider secrets requires owner or admin access", apiErrorResponse{Code: "forbidden", Message: "Changing provider secrets requires owner or admin access"})
 			}
 			scope.requireHostedAdmin = true
 			c.Set("native_scope", scope)
@@ -341,7 +341,7 @@ func (s *Service) organizationSpritesScope(next echo.HandlerFunc) echo.HandlerFu
 			return s.hostedAPIError(c, err)
 		}
 		if c.Request().Method != http.MethodGet && !canManageProjectSecrets(scope.credential) {
-			return s.nativeAPIError(c, &nativeError{Code: "forbidden", Message: "Changing Sprites settings requires owner or admin access", status: http.StatusForbidden})
+			return s.nativeAPIError(c, &nativeError{Code: "forbidden", Message: "Changing Sprites settings requires owner or admin access", status: http.StatusForbidden, publicMessage: true})
 		}
 		c.Set("native_scope", scope)
 		return next(c)
