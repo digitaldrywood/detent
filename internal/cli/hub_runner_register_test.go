@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin(t *testing.T) {
@@ -423,6 +424,7 @@ func executeRegister(t *testing.T, command *cobra.Command, args ...string) (stri
 func TestHubRunnerRegisterServiceRuntime(t *testing.T) {
 	t.Parallel()
 	serviceErr := errors.New("service manager unavailable")
+	probeErr := errors.New("commit policy unavailable")
 	for _, test := range []struct {
 		name        string
 		configPort  int
@@ -431,8 +433,10 @@ func TestHubRunnerRegisterServiceRuntime(t *testing.T) {
 		wantArgs    []string
 		factoryErr  error
 		startErr    error
+		probeErr    error
 		wantFailure bool
 	}{
+		{name: "commit policy failure", probeErr: probeErr},
 		{name: "no port flag", wantPort: "0"},
 		{name: "configured port", configPort: 4100, wantPort: "4100"},
 		{name: "explicit ephemeral port", flags: []string{"--port", "0"}, wantPort: "0", wantArgs: []string{"--port", "0"}},
@@ -466,13 +470,34 @@ func TestHubRunnerRegisterServiceRuntime(t *testing.T) {
 					runnerCommand.RemoveCommand(child)
 				}
 			}
-			register := newHubRunnerRegisterCommandWithServiceName("test", opts.lookupEnv, runnerServiceStarterFor(opts), func(string) error { return nil }, func(_ context.Context, cfg globalconfig.Config, _ string) error {
+			probes := 0
+			probe := func(ctx context.Context, source string, fallback workspace.CommitIdentity) (workspace.CommitReport, error) {
+				probes++
+				identity := hub.identity.Load().(runnerauth.Identity)
+				if ctx.Err() != nil || source != "" || fallback.Name != "Detent runner" || fallback.Email != string(identity.MachineID)+"@runners.detent.invalid" {
+					t.Fatal("commit probe lost its context or enrollment identity")
+				}
+				return workspace.CommitReport{Identity: fallback, Signing: "ssh"}, test.probeErr
+			}
+			register := newHubRunnerRegisterCommandWithCommitReport("test", opts.lookupEnv, runnerServiceStarterFor(opts), func(string) error { return nil }, func(_ context.Context, cfg globalconfig.Config, _ string) error {
 				cfg.Port = &test.configPort
 				return globalconfig.Write(configPath, cfg)
-			}, func(context.Context) error { return nil }, testRunnerServiceName)
+			}, func(context.Context) error { return nil }, testRunnerServiceName, probe)
 			runnerCommand.AddCommand(register)
 			args := []string{"hub", "runner", "register", "--url", hub.server.URL + "/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--workspace-root", filepath.Join(root, "work"), "--service"}
 			output, err := executeRegister(t, command, append(args, test.flags...)...)
+			if probes != 1 || hub.redeemed.Load() != 1 {
+				t.Fatalf("commit probes=%d token redemptions=%d", probes, hub.redeemed.Load())
+			}
+			if test.probeErr != nil {
+				if !errors.Is(err, test.probeErr) || len(runner.startOptions) != 0 {
+					t.Fatalf("commit policy failure did not stop service startup: %v", err)
+				}
+				if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("commit policy failure wrote a runner config: %v", err)
+				}
+				return
+			}
 			if test.wantFailure {
 				if err == nil {
 					t.Fatal("service failure returned success")
@@ -499,9 +524,10 @@ func TestHubRunnerRegisterServiceRuntime(t *testing.T) {
 				if err := json.Unmarshal([]byte(output), &registration); err != nil || !registration.ServiceRun || registration.Service != runnerServiceName {
 					t.Fatalf("service registration = %+v, %v\n%s", registration, err, output)
 				}
-			}
-			if hub.redeemed.Load() != 1 {
-				t.Fatalf("token redemptions = %d", hub.redeemed.Load())
+				identity := hub.identity.Load().(runnerauth.Identity)
+				if registration.Commit.Identity.Name != "Detent runner" || registration.Commit.Identity.Email != string(identity.MachineID)+"@runners.detent.invalid" || registration.Commit.Signing != "ssh" {
+					t.Fatalf("registration lost commit policy: %+v", registration.Commit)
+				}
 			}
 		})
 	}
