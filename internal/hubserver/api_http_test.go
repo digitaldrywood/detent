@@ -91,6 +91,10 @@ func TestAPIRefusals(t *testing.T) {
 		{"archive query", nativeBase + "/work-items?archive_url=private-token", "", "invalid_request", "archive_url supports true or false", http.StatusUnprocessableEntity, (*Service).listNativeIssues},
 		{"repeated archive query", nativeBase + "/work-items?archive_url=true&archive_url=false", "", "invalid_request", "archive_url supports true or false", http.StatusUnprocessableEntity, (*Service).listNativeIssues},
 		{"archive reference", attachmentMetadataBase + "/archives/:item", `{}`, "invalid_request", "Invalid archive reference", http.StatusUnprocessableEntity, (*Service).recordAttachmentArchive},
+		{"diff generation sequence", nativeBase + "/attempts/:attempt/diff", `{"generation":{"source":"attempt","seq":0}}`, "invalid_request", "invalid tracker work event: generation seq must be positive", http.StatusUnprocessableEntity, (*Service).postAttemptDiff},
+		{"diff attempt generation ID", nativeBase + "/attempts/:attempt/diff", `{"generation":{"source":"attempt","id":"private-token","seq":1}}`, "invalid_request", "invalid tracker work event: an attempt generation carries no id", http.StatusUnprocessableEntity, (*Service).postAttemptDiff},
+		{"diff workspace generation ID", nativeBase + "/attempts/:attempt/diff", `{"generation":{"source":"workspace","seq":1}}`, "invalid_request", "invalid tracker work event: a workspace generation requires its workspace id", http.StatusUnprocessableEntity, (*Service).postAttemptDiff},
+		{"diff generation source", nativeBase + "/attempts/:attempt/diff", `{"generation":{"source":"private-token","seq":1}}`, "invalid_request", "invalid tracker work event: generation source must be attempt or workspace", http.StatusUnprocessableEntity, (*Service).postAttemptDiff},
 		{"attempt evidence", nativeBase + "/attempts/:attempt/evidence", "", "invalid_request", "Invalid attempt evidence", http.StatusUnprocessableEntity, func(s *Service, c echo.Context) error {
 			c.SetParamNames("attempt")
 			c.SetParamValues("attempt_example")
@@ -135,8 +139,8 @@ func TestAPIRefusals(t *testing.T) {
 			recorded := httptest.NewRecorder()
 			c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body)), recorded)
 			c.SetPath(strings.SplitN(test.path, "?", 2)[0])
-			c.SetParamNames("id", "organization", "project")
-			c.SetParamValues("1", "private-organization", "private-project")
+			c.SetParamNames("id", "organization", "project", "attempt")
+			c.SetParamValues("1", "private-organization", "private-project", "attempt_00000000000000000000000000000001")
 			if err := test.handle(service, c); err != nil {
 				t.Fatal(err)
 			}
