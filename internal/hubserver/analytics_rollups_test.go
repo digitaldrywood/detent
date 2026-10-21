@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -608,6 +609,14 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
+	nestedTiming := gate.Interval("conflict_resolution", now.Add(-3*time.Hour), now.Add(-2*time.Hour), "agent-resolved")
+	landingGate, err := json.Marshal(gate.CommandResult{Command: "make check-landing", StartedAt: now.Add(-2 * time.Hour), FinishedAt: now.Add(-time.Hour), Pipeline: &gate.PipelineEvidence{Timings: []gate.PipelineTiming{nestedTiming}, Dropped: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime.landing.gate',json(?)) WHERE id='attempt_browser_usage_0_0'`, string(landingGate)); err != nil {
+		t.Fatal(err)
+	}
 	issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: "completed history", State: "Todo"}, now.Add(-72*time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -679,6 +688,9 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 					t.Fatal(err)
 				}
 				*input.out = nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []nativeAnalyticsProject{project}}
+			}
+			if test.name == "hourly" && !slices.ContainsFunc(raw.Projects[0].PipelineReceipts.Items, func(timing gate.PipelineTiming) bool { return timing.ReceiptID == nestedTiming.ReceiptID }) {
+				t.Fatal("nested landing gate timing missing from raw report")
 			}
 			assertAnalyticsJSONEqual(t, raw, rolled)
 			if test.request.PopulationCursor == "" {
@@ -801,7 +813,7 @@ func analyticsJSONClose(want, got any) bool {
 
 func TestAnalyticsAttemptProjectionFields(t *testing.T) {
 	for _, extra := range []string{``, `,"new_runtime_field":{"body":"private-runtime"},"completion":{"text":"private-completion"},"worker_launch":{"metadata":"private-worker"}`} {
-		raw := `{"handoff":"private-handoff","artifact_body":"private-artifact","runtime":{"phases":[],"phases_dropped":2,"validation":{"command":"make check-land","exit_code":0,"output":"private-output"}` + extra + `}}`
+		raw := `{"handoff":"private-handoff","artifact_body":"private-artifact","runtime":{"phases":[],"phases_dropped":2,"validation":{"command":"make check-land","exit_code":0,"output":"private-output"},"landing":{"gate":{"output":"private-gate-output","pipeline":{"timings":[{"receipt_id":"timing_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","stage":"rebase","started_at":"2026-10-01T00:00:00Z","finished_at":"2026-10-01T00:01:00Z"}],"dropped":2}}}` + extra + `}}`
 		projected, err := projectAnalyticsAttempt(raw, "attempt", "item", "lease", "completed", "2026-10-01T00:00:00Z", "2026-10-01T01:00:00Z", sql.NullString{})
 		if err != nil {
 			t.Fatal(err)
@@ -815,6 +827,14 @@ func TestAnalyticsAttemptProjectionFields(t *testing.T) {
 		}
 		if value.ID != "attempt" || value.Runtime.PhasesDropped != 2 || value.Runtime.Validation == nil || value.Runtime.Validation.Command != "make check-land" {
 			t.Fatalf("report fields lost: %s", projected)
+		}
+		var stored tracker.NativeRunData
+		if err := json.Unmarshal([]byte(projected), &stored); err != nil {
+			t.Fatal(err)
+		}
+		pipeline := stored.Runtime.Landing.Gate.Pipeline
+		if pipeline == nil || pipeline.Dropped != 2 || len(pipeline.Timings) != 1 || pipeline.Timings[0].Stage != "rebase" {
+			t.Fatalf("nested pipeline evidence lost: %+v", pipeline)
 		}
 	}
 }
@@ -1026,15 +1046,47 @@ func TestAnalyticsHourlyRetentionScopes(t *testing.T) {
 		}
 		drainTestAnalytics(t, f.service)
 		w := operatortool.AnalyticsWindow{From: at, To: at.Add(time.Hour), Bucket: time.Hour}
-		raw, err := readNativeAnalytics(t.Context(), f.service.database.reader, o.scope, operatortool.AnalyticsRequest{Limit: 100}, w)
-		if err != nil {
-			t.Fatal(err)
+		for _, test := range []struct {
+			name   string
+			filter reportsFilter
+		}{{name: "unfiltered"}, {name: "label", filter: reportsFilter{Labels: []string{"selected"}}}, {name: "runner", filter: reportsFilter{Runners: []string{"selected-runner"}}}} {
+			t.Run("recent/"+string(o.scope.organization)+"/"+test.name, func(t *testing.T) {
+				ctx, err := withReportsScope(t.Context(), o.scope, test.filter, w.From, w.To)
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw, err := readNativeAnalytics(ctx, f.service.database.reader, o.scope, operatortool.AnalyticsRequest{Limit: 100}, w)
+				if err != nil {
+					t.Fatal(err)
+				}
+				q := analyticsRollupReader{f.service.database.reader}
+				projected, err := readNativeAnalytics(ctx, q, o.scope, operatortool.AnalyticsRequest{Limit: 100}, w)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertAnalyticsJSONEqual(t, raw, projected)
+				want := nativeAnalyticsReport{OrganizationID: string(o.scope.organization), Window: w, Projects: []nativeAnalyticsProject{raw}}
+				got := nativeAnalyticsReport{OrganizationID: string(o.scope.organization), Window: w, Projects: []nativeAnalyticsProject{projected}}
+				wantReports, err := f.service.readHostedReportsFrom(ctx, want, f.service.database.reader)
+				if err != nil {
+					t.Fatal(err)
+				}
+				gotReports, err := f.service.readHostedReportsFrom(ctx, got, q)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertAnalyticsJSONEqual(t, wantReports, gotReports)
+				wantDiagnostics, err := f.service.readHostedDiagnosticsFrom(ctx, want, f.service.database.reader)
+				if err != nil {
+					t.Fatal(err)
+				}
+				gotDiagnostics, err := f.service.readHostedDiagnosticsFrom(ctx, got, q)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertAnalyticsJSONEqual(t, wantDiagnostics, gotDiagnostics)
+			})
 		}
-		projected, err := readNativeAnalytics(t.Context(), analyticsRollupReader{f.service.database.reader}, o.scope, operatortool.AnalyticsRequest{Limit: 100}, w)
-		if err != nil {
-			t.Fatal(err)
-		}
-		assertAnalyticsJSONEqual(t, raw, projected)
 	}
 	for _, o := range observations {
 		t.Run("compacted event budget/"+string(o.scope.organization), func(t *testing.T) {
