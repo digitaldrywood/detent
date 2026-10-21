@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -92,7 +94,7 @@ func testNativeDrainBeforeDispatch(t *testing.T, h *nativeChangeHub, issueID str
 	})
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("status discovery did not block after native claim acquisition")
 	}
 	h.scheduler.mu.Lock()
@@ -105,7 +107,7 @@ func testNativeDrainBeforeDispatch(t *testing.T, h *nativeChangeHub, issueID str
 	if releaseRead {
 		release <- struct{}{}
 	}
-	drainCtx, stopDrain := context.WithTimeout(t.Context(), time.Second)
+	drainCtx, stopDrain := context.WithCancel(testenv.WaitContext(t, t.Context()))
 	defer stopDrain()
 	if err := orch.Drain(drainCtx); err != nil {
 		t.Fatal(err)
@@ -266,7 +268,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	var info workspace.Info
 	select {
 	case info = <-backend.started:
-	case <-time.After(10 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		state, err := orch.State(t.Context())
 		t.Logf("running=%+v blocked=%+v failures=%+v error=%v", state.Running, state.Blocked, state.FailureBreaker.Failures, err)
 		t.Fatal("host check did not start")
@@ -290,7 +292,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 			close(backend.resume)
 			select {
 			case <-publicationStarted:
-			case <-time.After(10 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("publication did not start")
 			}
 		}
@@ -304,10 +306,10 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		}
 		select {
 		case <-discoveryStarted:
-		case <-time.After(time.Second):
+		case <-testenv.WaitContext(t, t.Context()).Done():
 			t.Fatal("native discovery did not block alongside finalization")
 		}
-		drainCtx, stopDrain := context.WithTimeout(t.Context(), time.Second)
+		drainCtx, stopDrain := context.WithCancel(testenv.WaitContext(t, t.Context()))
 		defer stopDrain()
 		if err := orch.Drain(drainCtx); err != nil {
 			t.Fatal(err)
@@ -336,24 +338,16 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		} else {
 			close(publicationRelease)
 		}
-		deadline, stop := context.WithTimeout(t.Context(), 10*time.Second)
-		defer stop()
-		ticker := time.NewTicker(time.Millisecond)
-		defer ticker.Stop()
-		for {
-			settled, err := orch.State(deadline)
+		testenv.WaitUntil(t, t.Context(), func() error {
+			settled, err := orch.State(t.Context())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(settled.Running) == 0 {
-				break
+			if len(settled.Running) != 0 {
+				return errors.New("drained finalization did not finish")
 			}
-			select {
-			case <-ticker.C:
-			case <-deadline.Done():
-				t.Fatal("drained finalization did not finish")
-			}
-		}
+			return nil
+		})
 		detail, err = h.admin.Change(t.Context(), current.WorkItemID, change.ID)
 		if err != nil || len(detail.Versions) != 2 || detail.Change.CurrentVersion == published.ID {
 			t.Fatalf("drained source was not published exactly once: %+v, %v", detail, err)
@@ -392,26 +386,18 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 		}
 	}
 	close(backend.resume)
-	deadline, stop := context.WithTimeout(t.Context(), 10*time.Second)
-	defer stop()
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	for {
-		state, err = orch.State(deadline)
+	testenv.WaitUntil(t, t.Context(), func() error {
+		state, err = orch.State(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
 		_, active := state.Running[issue.ID]
 		_, pending := state.Blocked[issue.ID]
-		if !active && !pending {
-			break
+		if active || pending {
+			return fmt.Errorf("stop did not settle after host check success: running=%+v blocked=%+v", state.Running, state.Blocked)
 		}
-		select {
-		case <-ticker.C:
-		case <-deadline.Done():
-			t.Fatalf("stop did not settle after host check success: running=%+v blocked=%+v", state.Running, state.Blocked)
-		}
-	}
+		return nil
+	})
 	if lane, changes := h.state(t, issue.ID), h.changes(t, issue.ID); lane != "Blocked" || len(changes) != 1 {
 		t.Fatalf("stopped host check published source or lost its destination: lane=%s changes=%+v", lane, changes)
 	}
@@ -578,7 +564,7 @@ func TestNativeStopEffectBoundary(t *testing.T) {
 				go func() { finished <- h.scheduler.ReleaseClaim(t.Context(), issue.ID, "cancelled") }()
 				select {
 				case <-cleanupStarted:
-				case <-time.After(5 * time.Second):
+				case <-testenv.WaitContext(t, t.Context()).Done():
 					t.Fatal("worker cleanup did not start")
 				}
 				replacement, err := h.native.Claim(t.Context(), tracker.NativeClaim{PolicyID: h.descriptor.ID, WorkItemID: tracker.NativeWorkItemID(issue.ID), MachineID: execution.claim.lease.MachineID, SessionID: "replacement", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})

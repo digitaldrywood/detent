@@ -2975,7 +2975,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			}
 			if test.reconnect {
 				provider.duringLiveTurn = func(request runner.AgentTurnRequest, update runner.AgentUpdateHandler) {
-					ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+					ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 					defer cancel()
 					command := exec.CommandContext(ctx, "sh", "-c", "read release")
 					input, err := command.StdinPipe()
@@ -3001,21 +3001,15 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 							Execution conversation.Execution `json:"execution"`
 						} `json:"conversation"`
 					}
-					ticker := time.NewTicker(5 * time.Millisecond)
-					defer ticker.Stop()
-					for {
+					testenv.WaitUntil(t, ctx, func() error {
 						if err := h.admin.client.request(ctx, http.MethodGet, h.admin.base()+"/work-items/"+issue.ID+"/conversation", nil, &before); err != nil {
 							t.Fatal(err)
 						}
-						if before.Conversation.Execution.Owner.TurnID == "turn-1" {
-							break
+						if before.Conversation.Execution.Owner.TurnID != "turn-1" {
+							return errors.New("provider turn was not reported")
 						}
-						select {
-						case <-ticker.C:
-						case <-ctx.Done():
-							t.Fatal("provider turn was not reported")
-						}
-					}
+						return nil
+					})
 					h.failChanges.controlsFailed = make(chan int, 2)
 					h.failChanges.controlFailures.Store(2)
 					for range 2 {
@@ -3508,20 +3502,16 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						if !strings.Contains(request.Prompt, continueText) || request.ConversationControl == nil {
 							t.Fatal("primary turn omitted bound Continue prompt or controls")
 						}
-						deadline := time.Now().Add(5 * time.Second)
-						for {
+						testenv.WaitUntil(t, t.Context(), func() error {
 							var started runnerSnapshot
 							if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/work-items/"+issue.ID+"/conversation", nil, &started); err != nil {
 								t.Fatal(err)
 							}
 							if started.delivery("continue-evidence") == conversation.DeliveryDelivered && started.attempt() == resumedExecution.(*nativeExecution).data.AttemptID && started.Conversation.Execution.Status == conversation.ExecutionRunning {
-								break
+								return nil
 							}
-							if time.Now().After(deadline) {
-								t.Fatalf("primary turn did not acknowledge Continue under its fresh attempt: %+v", started)
-							}
-							time.Sleep(10 * time.Millisecond)
-						}
+							return fmt.Errorf("primary turn did not acknowledge Continue under its fresh attempt: %+v", started)
+						})
 					}
 				}
 				var resumedSession atomic.Int64

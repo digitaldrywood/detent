@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 // TestConversationControlsOutlivesDefaultRequestTimeout proves the long poll
@@ -117,14 +119,12 @@ func TestConversationControlPollWarnsOncePerMinute(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deadline := time.After(5 * time.Second)
-	for hub.denyCount() < 4 {
-		select {
-		case <-deadline:
-			t.Fatalf("the poll retried %d times, want at least 4", hub.denyCount())
-		case <-time.After(5 * time.Millisecond):
+	testenv.WaitUntil(t, t.Context(), func() error {
+		if count := hub.denyCount(); count < 4 {
+			return fmt.Errorf("the poll retried %d times, want at least 4", count)
 		}
-	}
+		return nil
+	})
 
 	got := warnings.count("conversation control poll failed")
 	if got != 1 {

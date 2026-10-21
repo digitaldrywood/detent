@@ -625,8 +625,7 @@ SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, 
 			t.Cleanup(func() { cancel(); <-done })
 			waitHolding := func(want int) {
 				t.Helper()
-				deadline := time.After(10 * time.Second)
-				for {
+				testenv.WaitUntil(t, t.Context(), func() error {
 					current, err := orch.State(t.Context())
 					if err != nil {
 						t.Fatal(err)
@@ -642,16 +641,15 @@ SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, 
 						if h.state(t, issue.ID) != "Blocked" {
 							t.Fatal("unfinished prerequisite released the dependency hold")
 						}
-						return
+						return nil
 					}
 					select {
 					case <-started:
 						t.Fatal("native recovery dispatched before prerequisite readiness")
-					case <-deadline:
-						t.Fatalf("native recovery never observed the unmet predicate: %+v", entry)
-					case <-time.After(10 * time.Millisecond):
+					default:
 					}
-				}
+					return fmt.Errorf("native recovery never observed the unmet predicate: %+v", entry)
+				})
 			}
 			if test.laterLease == "" {
 				waitHolding(wantBlockers)
@@ -682,7 +680,7 @@ SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, 
 						t.Fatal("prerequisite recovery lost fresh fencing or retained dirty checkpoint")
 					}
 				}
-			case <-time.After(10 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatalf("native recorded recovery did not autonomously dispatch: state=%s", h.state(t, issue.ID))
 			}
 			page, err := h.admin.History(t.Context(), blocked.WorkItemID, "")

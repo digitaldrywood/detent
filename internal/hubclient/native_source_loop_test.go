@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -26,6 +27,7 @@ type sourceRepairAgent struct {
 	requests       []runner.AgentTurnRequest
 	workspaceHooks *sourceLoopWorkspace
 	checkpointed   <-chan struct{}
+	wait           context.Context
 }
 
 type sourceLoopWorkspace struct {
@@ -105,11 +107,11 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateTurnCompleted, ThreadID: "thread-native", TurnID: "repair-checkpoint", Status: "completed"}); err != nil {
 			return runner.AgentTurnResult{}, err
 		}
-		checkpointCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
 		select {
 		case <-a.checkpointed:
-		case <-checkpointCtx.Done():
+		case <-ctx.Done():
+			return runner.AgentTurnResult{}, errors.New("repair turn did not publish its checkpoint before returning")
+		case <-a.wait.Done():
 			return runner.AgentTurnResult{}, errors.New("repair turn did not publish its checkpoint before returning")
 		}
 		a.validator, a.sourceVerdict = "pass", "pass"
@@ -177,7 +179,7 @@ func TestNativeSourceReviewLoop(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer sessions.Close()
-			provider := &sourceRepairAgent{workspaceHooks: loopWorkspace, checkpointed: loopWorkspace.checkpointed, auditRework: test.auditRework, committingAgent: committingAgent{staged: true, complete: true, validator: test.verdict}}
+			provider := &sourceRepairAgent{workspaceHooks: loopWorkspace, checkpointed: loopWorkspace.checkpointed, wait: testenv.WaitContext(t, t.Context()), auditRework: test.auditRework, committingAgent: committingAgent{staged: true, complete: true, validator: test.verdict}}
 			if test.sourceReview {
 				provider.sourceVerdict = "rework"
 			}

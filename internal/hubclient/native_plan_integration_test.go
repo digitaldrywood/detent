@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -27,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -414,7 +416,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	if abandon {
 		select {
 		case <-transport.blocked:
-		case <-time.After(10 * time.Second):
+		case <-testenv.WaitContext(t, t.Context()).Done():
 			t.Fatal("planner did not reach the completion lane write")
 		}
 		attempts, err := runtimeStore.ListActiveWorkAttempts(t.Context(), store.WorkAttemptQuery{ProjectID: "local"})
@@ -515,7 +517,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 					t.Fatalf("native run finished in %s, want handoff to %s before lease retirement", got.state, want)
 				}
 			}
-		case <-time.After(10 * time.Second):
+		case <-testenv.WaitContext(t, t.Context()).Done():
 			state, _ := orch.State(t.Context())
 			t.Fatalf("native handoff did not finish: running=%v retry=%v", len(state.Running), state.Retry)
 		}
@@ -541,24 +543,16 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		if !planningRecovery {
 			attemptID = 1
 		}
-		deadline, stop := context.WithTimeout(t.Context(), 10*time.Second)
-		defer stop()
-		ticker := time.NewTicker(time.Millisecond)
-		defer ticker.Stop()
-		for {
-			attempt, err := runtimeStore.WorkAttempt(deadline, attemptID)
+		testenv.WaitUntil(t, t.Context(), func() error {
+			attempt, err := runtimeStore.WorkAttempt(t.Context(), attemptID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if attempt.Status == store.WorkAttemptStatusTerminal {
-				break
+			if attempt.Status != store.WorkAttemptStatusTerminal {
+				return fmt.Errorf("recovery refusal did not settle local accounting: status=%s", attempt.Status)
 			}
-			select {
-			case <-ticker.C:
-			case <-deadline.Done():
-				t.Fatalf("recovery refusal did not settle local accounting: status=%s", attempt.Status)
-			}
-		}
+			return nil
+		})
 	}
 	if planningRecovery {
 		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))

@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -307,7 +308,7 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 				return stop
 			}
 			stopOrchestrator := start(orch)
-			deadline, stop := context.WithTimeout(t.Context(), 45*time.Second)
+			deadline, stop := context.WithCancel(testenv.WaitContext(t, t.Context()))
 			defer stop()
 			ticker := time.NewTicker(20 * time.Millisecond)
 			defer ticker.Stop()

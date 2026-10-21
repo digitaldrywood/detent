@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/skills"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -784,7 +785,7 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 	go func() { scheduler.mu.Lock(); close(acquired); scheduler.mu.Unlock() }()
 	select {
 	case <-acquired:
-	case <-time.After(time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("probe blocked scheduler mutex")
 	}
 	cancel()
@@ -793,7 +794,7 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("probe exceeded aggregate deadline")
 	}
 	if held.Load() {
@@ -848,7 +849,7 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 	}))
 	defer server.Close()
 	defer releaseOnce.Do(func() { close(release) })
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 	defer cancel()
 	client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test-token" }})
 	if err != nil {

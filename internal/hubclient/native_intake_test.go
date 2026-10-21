@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -100,7 +101,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	var workerRequest runner.RunRequest
 	select {
 	case workerRequest = <-worker.started:
-	case <-time.After(10 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("native source was not dispatched")
 	}
 	if workerRequest.Issue.ID != source.ID {
@@ -638,7 +639,7 @@ func TestNativeEditsDuringSourceFetch(t *testing.T) {
 	t.Parallel()
 	h, issue := newPendingLinkedChangeHub(t)
 	started, proceed := make(chan struct{}), make(chan struct{})
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 	defer cancel()
 	h.scheduler.githubIntake = func(ctx context.Context, _ string) (tracker.GitHubIssueSnapshot, error) {
 		close(started)
