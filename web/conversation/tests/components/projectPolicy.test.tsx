@@ -84,7 +84,7 @@ describe("repository policy after setup", () => {
       return response;
     });
     const router = await renderSettings("repository");
-    const importLink = await screen.findByRole("link", { name: "GitHub issue import in project setup" }, httpWait);
+    const importLink = await screen.findByRole("link", { name: "Import issues" }, httpWait);
     expect(importLink.getAttribute("href")).toBe("/projects/proj_alpha/setup");
     if (ready) {
       expect(screen.queryByText(/setup steps? left/)).toBeNull();
@@ -126,7 +126,7 @@ describe("repository policy after setup", () => {
       } else {
         fireEvent.click(screen.getByRole("switch", { name: "Pull requests" }));
       }
-      fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
     }
     await waitFor(() => {
       const save = requests.mock.calls.find(([url, init]) => init?.method === "PUT" && String(url).endsWith("/onboarding/integration"));

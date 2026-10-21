@@ -371,10 +371,16 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 						}}}
 					}
 				case "get_project_integration":
-					result["data"] = map[string]any{"revision": strconv.FormatInt(integrationRevision, 10), "intake": "manual", "projection": "native", "repository_enabled": false}
+					result["data"] = map[string]any{"name": "Smoke project", "revision": strconv.FormatInt(integrationRevision, 10), "intake": "manual", "projection": "native", "repository_enabled": false}
 					if test.automaticIntake {
 						result["data"].(map[string]any)["intake"] = "automatic"
 					}
+				case "rename_project":
+					if args["name"] != "Smoke project" || args["project_id"] != "prj_smoke" || args["expected_revision"] != strconv.FormatInt(integrationRevision, 10) {
+						t.Fatalf("rename arguments: %v", args)
+					}
+					integrationRevision++
+					result = map[string]any{"id": "action_integration", "status": "succeeded", "result": `{}`}
 				case "update_project_integration":
 					input := args["input"].(map[string]any)
 					var schema smokeSchema
@@ -534,7 +540,7 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 			} else if err != nil {
 				t.Fatal(err, output.String())
 			}
-			if commentRevision != 2 || integrationRevision != 2 || calls[operatortool.SetDependency] != 2 || calls[operatortool.WorkItem] != 1 || !gaps && (!archived || calls[operatortool.RestoreItem] != 1 || calls[operatortool.ArchiveItem] != 2) {
+			if commentRevision != 2 || integrationRevision != 3 || calls[operatortool.SetDependency] != 2 || calls[operatortool.WorkItem] != 1 || !gaps && (!archived || calls[operatortool.RestoreItem] != 1 || calls[operatortool.ArchiveItem] != 2) {
 				t.Fatalf("incomplete cycle: calls=%v comment=%d integration=%d archived=%t", calls, commentRevision, integrationRevision, archived)
 			}
 			if gaps && !strings.Contains(output.String(), "expected hosted gap (#615)") {
