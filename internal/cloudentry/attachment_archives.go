@@ -42,8 +42,8 @@ func (s *Service) uploadArchive(c echo.Context) error {
 	if err != nil {
 		return attachmentUploadError(c, err)
 	}
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(organization.ID, false)
+	defer unlock()
 	current, err := s.readyOrganization(c.Request().Context(), organization.ID)
 	if err != nil || current.Generation != organization.Generation {
 		return attachmentNotFound(c)
@@ -95,8 +95,8 @@ func (s *Service) readArchive(c echo.Context) error {
 	if json.Unmarshal(raw, &ref) != nil || ref.Validate(organization.ID) != nil || ref.SHA256 != c.Param("digest") {
 		return attachmentError(c, http.StatusBadGateway, "tenant_unavailable", "Archive reference is invalid")
 	}
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(organization.ID, false)
+	defer unlock()
 	current, err := s.readyOrganization(c.Request().Context(), organization.ID)
 	if err != nil || current.Generation != organization.Generation {
 		return attachmentNotFound(c)
