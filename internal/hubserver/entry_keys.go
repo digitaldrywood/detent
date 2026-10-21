@@ -54,17 +54,68 @@ func (s *Service) entryKeyCredential(ctx context.Context, claims cloudassert.Cla
 	return credential, http.StatusOK, nil
 }
 
-func (s *Service) auditEntryKey(c echo.Context, claims cloudassert.Claims) error {
+type entryKeyAuditContext struct{}
+
+type entryKeyAudit struct {
+	claims                       cloudassert.Claims
+	operation, project, resource string
+	rowID                        int64
+}
+
+func entryKeyAuditFrom(ctx context.Context) *entryKeyAudit {
+	audit, ok := ctx.Value(entryKeyAuditContext{}).(*entryKeyAudit)
+	if !ok {
+		return nil
+	}
+	return audit
+}
+
+func (a *entryKeyAudit) readOnly() bool {
+	if a.operation == http.MethodPost+" /internal/v1/keys/catalog" {
+		return true
+	}
+	if definition, found := operatortool.Lookup(a.operation); found {
+		return definition.Annotations.ReadOnly
+	}
+	method, _, _ := strings.Cut(a.operation, " ")
+	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
+}
+
+func (s *Service) auditEntryKey(ctx context.Context, exec hostedExecer, audit *entryKeyAudit, status int) error {
+	if audit.readOnly() && status < http.StatusBadRequest {
+		return nil
+	}
+	claims := audit.claims
 	metadata, err := json.Marshal(struct {
-		KeyID string `json:"key_id"`
-		Owner string `json:"owner"`
-		Kind  string `json:"kind"`
-	}{claims.Key.ID, claims.Subject, claims.Key.Kind})
+		KeyID     string `json:"key_id"`
+		Owner     string `json:"owner"`
+		Kind      string `json:"kind"`
+		Operation string `json:"operation"`
+		Resource  string `json:"resource"`
+	}{claims.Key.ID, claims.Subject, claims.Key.Kind, audit.operation, audit.resource})
 	if err != nil {
 		return err
 	}
+	if audit.rowID != 0 {
+		result, err := exec.ExecContext(ctx, `UPDATE hosted_audit SET route=?,project_id=?,status=?,mutation_json=? WHERE id=? AND organization_id=? AND session_id=?`, audit.operation, audit.project, status, string(metadata), audit.rowID, claims.Audience, claims.Key.ID)
+		if err != nil {
+			return err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count != 1 {
+			return errors.New("key audit record is unavailable")
+		}
+		return nil
+	}
 	now := s.config.now()
-	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json,recorded_at_ns) VALUES(?,?,?,?,'','key_call',?,'',0,?,?,?,?,?)`, claims.Audience, claims.Key.ID, claims.Subject, claims.Subject, claims.Method+" "+claims.Path, formatHubTime(claims.IssuedAt), formatHubTime(claims.ExpiresAt), formatHubTime(now), string(metadata), now.UnixNano())
+	result, err := exec.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json,recorded_at_ns) VALUES(?,?,?,?,'','key_call',?,?,?,?,?,?,?,?)`, claims.Audience, claims.Key.ID, claims.Subject, claims.Subject, audit.operation, audit.project, status, formatHubTime(claims.IssuedAt), formatHubTime(claims.ExpiresAt), formatHubTime(now), string(metadata), now.UnixNano())
+	if err != nil {
+		return err
+	}
+	audit.rowID, err = result.LastInsertId()
 	return err
 }
 
@@ -100,6 +151,9 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	if err := decodeAPIJSON(c, &call); err != nil {
 		return invalidAPIRequest(c, err)
 	}
+	if audit := entryKeyAuditFrom(c.Request().Context()); audit != nil {
+		audit.operation = call.Name
+	}
 	if call.ConnectionID == "" || len(call.ConnectionID) > 256 {
 		return invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
@@ -126,10 +180,19 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "role_denied", Message: "The current organization role does not allow this call"})
 	}
 	var selector struct {
-		ProjectID string `json:"project_id"`
+		ProjectID  string `json:"project_id"`
+		Identifier string `json:"identifier"`
+		Reference  string `json:"reference"`
 	}
 	if json.Unmarshal(call.Arguments, &selector) != nil {
 		return invalidAPIRequest(c, operatortool.ErrInvalidArguments)
+	}
+	resource := selector.Identifier
+	if resource == "" {
+		resource = selector.Reference
+	}
+	if audit := entryKeyAuditFrom(ctx); audit != nil {
+		audit.project, audit.resource = selector.ProjectID, resource
 	}
 	if selector.ProjectID != "" && !credential.EntryKey.Allows(selector.ProjectID) {
 		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"})
@@ -144,6 +207,11 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	}
 	if !available {
 		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "tool_unavailable", Message: "The target organization's role or plan does not provide this tool"})
+	}
+	if audit := entryKeyAuditFrom(ctx); audit != nil {
+		if err := s.auditEntryKey(ctx, s.database.db, audit, 0); err != nil {
+			return s.internalAPIError(c, "audit_unavailable", "Key audit is unavailable", err)
+		}
 	}
 	result, err := (hostedOperatorExecutor{s}).Execute(ctx, operatortool.Call{Name: call.Name, Arguments: call.Arguments})
 	if err != nil {

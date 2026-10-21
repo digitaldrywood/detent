@@ -340,6 +340,16 @@ func TestMergeHostedReports(t *testing.T) {
 		priorCost   *float64
 		unavailable []string
 	}{
+		{"hourly histogram and exact samples", []hostedReportsReport{
+			func() hostedReportsReport {
+				r := report(2, nil, reportsRatio{1, 2}, failed(1), cost(2), nil)
+				d := operatortool.AnalyticsDuration{Count: 2, Seconds: 30, Histogram: []operatortool.AnalyticsDurationBucket{{Count: 1, Minimum: 10, Maximum: 10}, {Count: 1, Minimum: 20, Maximum: 20}}}
+				r.Completion.System = d
+				r.Runners[0].Duration = d
+				return r
+			}(),
+			report(2, []float64{30, 100}, reportsRatio{1, 2}, failed(1), cost(2), nil),
+		}, 4, 25, new(50.0), failed(2), cost(4), []string{"activity_complete_window", "recorded_usage"}},
 		{"combined samples and counts", []hostedReportsReport{
 			report(2, []float64{10, 20}, reportsRatio{1, 2}, failed(1), cost(2), []float64{1, 3}),
 			report(3, []float64{30, 40, 50}, reportsRatio{3, 3}, failed(2), nil, []float64{5}),

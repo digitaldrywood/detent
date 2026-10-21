@@ -402,12 +402,48 @@ project's rollups and sequence positions atomically and is the test oracle.
 A migration that changes a metric definition deletes the affected projects'
 rollups and positions and lists those projects for backfill again.
 
-Compaction does not delete rollups. Scheduler claim samples retain their exact
-predecessor before raw observation rows can be compacted. A rebuild after
-compaction cannot recreate deleted predecessor evidence: a sequence gap makes
-that capacity-wait interval unavailable. It must not infer adjacency from the
-next surviving earlier event. Current runtime observations and usage remain
-rebuildable from their durable source records.
+Attempt projections decode an explicit set of report fields. Completion text,
+handoffs, worker metadata, command output and artifact bodies stay in their
+source records; adding a runtime field does not add it to analytics.
+
+The existing retention pass keeps exact capacity, skip, residence and lease
+samples for 30 days, rounded outward to an hour. Older samples become typed
+hourly counts, sums, extrema and coverage in `analytics_sample_hours`. Skip
+samples use the existing hourly skip totals. Residence retains the last
+per-issue snapshot before its compacted boundary so open spans and later
+transitions continue correctly. A project slot cutoff prevents lease refreshes
+from recreating archived capacity. Compaction is bounded to 5,000 short
+transactions and the existing backfill time budget per pass.
+
+Older residence duration distributions describe issue-hours rather than whole
+issues. Counts therefore count contributing issue-hours; duration sums and
+transition/cause counts remain additive. Diagnostics reads the archived hourly
+transition totals and Todo depth at each hour's end, combining them with exact
+samples after each item's retention boundary. An endpoint inside an archived
+hour has unavailable Todo depth and partial coverage; its transition coverage
+includes the overlapping archived hours. Quantiles merge histogram populations
+with 16 logarithmic bins per octave using `log2(seconds + 1)`, interpolating
+within each bin's observed extrema; they never average percentiles. Windows
+cutting an archived hour prorate its duration sum and report partial coverage.
+Coverage strings name the older hourly granularity. Project-wide archived
+aggregates cannot satisfy issue-level filters; filtered reports mark that
+historical portion unavailable while retaining their exact recent results.
+Cost, cached tokens and
+usage totals retain their existing exact hourly facts.
+
+Scheduler claim samples capture their exact predecessor before raw observation
+rows can be compacted. A rebuild cannot recreate deleted predecessor evidence:
+a sequence gap makes that capacity-wait interval unavailable. It must not infer
+adjacency from the next surviving earlier event. Current runtime observations
+and usage remain rebuildable from their durable source records.
+
+Hosted audit retains security, administration, mutation, support-access and
+refusal/error records for 30 days. Routine successful reads and catalog calls
+produce no audit row, including reads transported through POST key calls;
+those calls are classified by their resolved operation. The retention pass
+also removes legacy successful GET envelopes in batches of at most 5,000,
+excluding errors, refusals, security events and support access. Account
+administration receipts keep their existing retry semantics.
 
 ## Conversation assets
 

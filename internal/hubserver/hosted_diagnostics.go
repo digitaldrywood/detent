@@ -388,7 +388,9 @@ func diagnosticsPolicyValues(ctx context.Context, q policyQuerier, scope nativeS
 
 func diagnosticsLeaseCapacity(ctx context.Context, q nativeQueryer, scope nativeScope, out *diagnosticsReport) error {
 	if _, rolledUp := q.(analyticsRollupReader); rolledUp && out.From.Equal(out.From.Truncate(time.Hour)) {
-		rows, err := q.QueryContext(ctx, `SELECT hour,sum(value) FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='slots' AND hour>=? AND hour<? GROUP BY hour`, scope.organization, scope.project, out.From.Unix(), out.To.Truncate(time.Hour).Unix())
+		rows, err := q.QueryContext(ctx, `SELECT hour,sum(value) FROM (
+SELECT hour,value FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='slots' AND hour>=? AND hour<?
+UNION ALL SELECT hour,total FROM analytics_sample_hours WHERE organization_id=? AND project_id=? AND metric='slots' AND hour>=? AND hour<?) GROUP BY hour`, scope.organization, scope.project, out.From.Unix(), out.To.Truncate(time.Hour).Unix(), scope.organization, scope.project, out.From.Unix(), out.To.Truncate(time.Hour).Unix())
 		if err != nil {
 			return err
 		}
@@ -419,7 +421,7 @@ func diagnosticsLeaseCapacity(ctx context.Context, q nativeQueryer, scope native
 func diagnosticsLeaseCapacityFrom(ctx context.Context, q nativeQueryer, scope nativeScope, out *diagnosticsReport) error {
 	statement := `SELECT l.acquired_at,coalesce(l.released_at,l.expires_at),l.expires_at FROM leases l JOIN issues i ON i.id=l.issue_id WHERE i.organization_id=? AND i.project_id=? AND julianday(l.acquired_at)<julianday(?) AND julianday(coalesce(l.released_at,l.expires_at))>julianday(?)`
 	if _, rolledUp := q.(analyticsRollupReader); rolledUp {
-		statement = `SELECT l.acquired_at,coalesce(l.released_at,l.expires_at),l.expires_at FROM leases l WHERE l.organization_id=? AND l.project_id=? AND julianday(l.acquired_at)<julianday(?) AND julianday(coalesce(l.released_at,l.expires_at))>julianday(?)`
+		return readAnalyticsSlotHours(ctx, q, scope, out)
 	}
 	rows, err := q.QueryContext(ctx, statement, scope.organization, scope.project, formatHubTime(out.To), formatHubTime(out.From))
 	if err != nil {
