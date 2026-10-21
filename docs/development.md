@@ -30,8 +30,9 @@ selected safe analyzer set.
 
 Follow the repository's [validation policy](../AGENTS.md#validation) and
 [failure reporting policy](../AGENTS.md#deployment-and-release-failure-reporting).
-Run `make check-land` before reporting source work complete, fix failures in the
-same run, and report its printed wall time. It uses the scheduled lint version
+Workers run focused tests during edits; the runner's finalization runs
+`make check-landing` once on the finished source. Operators can run
+`make check-land` and report its printed wall time. It uses the scheduled lint version
 and configuration, vet and baseline-aware NilAway, `go build ./...`,
 `go test -short ./...`, invariants, migration and generated-source checks.
 Conversation typecheck, vitest and build run when `web/conversation` differs
@@ -46,7 +47,7 @@ use the scheduled tools. If a
 complete run exceeds ten minutes, report stage timings before moving expensive
 integration or race diagnostics to the scheduled suite.
 
-Workers run `make check-land` under this repository's validation instructions.
+Workers do not run `make check-land`; finalization runs the approved gate.
 The Cloud project uses `gate.run: make check-landing` and
 `gate.landing_mode: per_landing`; changes require operator re-approval in the Hub.
 The GitHub landing path validates the combined tree with a build, short Go tests

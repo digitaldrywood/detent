@@ -179,8 +179,8 @@ The other event exception is `.github/workflows/cla.yml`: its single job runs
 only `contributor-assistant/github-action` without checking out or executing
 PR code, and owns signature records on the unprotected `cla-signatures` branch.
 
-Source completion runs `make check-land` and fixes failures before submission.
-The finalized immutable native version carries its successful command receipt
+Source completion relies on the finalization gate (`make check-landing`); workers
+run focused tests during edits. The finalized immutable native version carries its successful command receipt
 for the exact reviewed head and tree. Native direct landing verifies that receipt,
 squashes clean Changes in queue order onto one staging head, and pushes the
 batch without repeating validation or calling a GitHub API. A conflicting
@@ -200,8 +200,7 @@ validation and native checks; security audits cover the immutable version
 base and head. Native direct landing also audits its integrated commit.
 This repository configures `make check-landing` for the combined GitHub landing
 tree: build, short tests for touched packages and dependents, and lint of changed
-Go files. Module changes widen validation. Source completion still runs the
-full `make check-land` gate.
+Go files. Module changes widen validation.
 A failed per-landing command returns to configured Rework with the failing output. The project publishes no local status and sets
 `gate.required_status_checks: []` and `gate.automated_review: "off"`; ordinary
 merge waits for no additional CI producer or scheduled validation, while

@@ -173,9 +173,10 @@ configured `security_audit` stage and incurs the same provider usage and costs
 as other stages. A project turns it off with `gate.security_audit.enabled: false`.
 
 
-Run `make check-land` before reporting source work complete and fix every
-failure in the same run. Do not hand back a red gate. Workers run `make check-land`
-under this repository's validation instructions. The Cloud project's approved
+Workers run focused tests for the packages they change while working and do not
+run `make check-land` themselves. The runner's finalization runs the approved
+`make check-landing` gate once on the finished source and returns a failure to
+Rework with its output. The Cloud project's approved
 policy must use `gate.run: make check-landing` and `gate.landing_mode: per_landing`;
 the operator reviews and re-approves this policy in the Hub.
 Signed commit finalization and Change publication still occur. Clean squashes
@@ -186,7 +187,7 @@ touched files; a failed command returns the item to Rework with its output.
 GitHub pull-request landing retains its configured target and checks. This
 repository uses `make check-landing` on the combined tree: build, short tests
 for changed packages and their dependents, and lint of changed Go files. Module
-changes widen the checks. `make check-land` remains the source-completion gate.
+changes widen the checks. `make check-land` remains available to operators.
 The target generates docs and checks SQL output once, then runs lint, vet,
 build and the whole-repository short unit suite without the race detector
 concurrently within one `TEST_PROCS` budget. It retains source and workflow
@@ -229,8 +230,8 @@ constant. A new store package adds the same test.
 
 Focused `go test -timeout=60s ./<touched-package>/...`, `go vet`, targeted
 regressions, and [safety-critical fuzzing](CLAUDE.md#safety-critical-orchestrator-validation)
-are available for diagnostics during edits. `make check-land` is the
-completion gate. Give each diagnostic `go test` command an explicit timeout appropriate to
+are the validation during edits. The finalization `make check-landing` gate is
+the completion gate. Give each diagnostic `go test` command an explicit timeout appropriate to
 the selected fixtures instead of using Go's ten-minute default. Use a longer
 timeout when the named diagnostic needs it. Inspect a timeout or instance failure
 before repeating the command; do not retry an unchanged unsupported fixture.
