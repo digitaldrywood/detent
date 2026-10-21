@@ -256,6 +256,28 @@ func TestNativeIssueOrganizationLookup(t *testing.T) {
 	}
 }
 
+func TestNativeRunnerVersionErrorResponse(t *testing.T) {
+	t.Parallel()
+	for _, hosted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("hosted=%t", hosted), func(t *testing.T) {
+			t.Parallel()
+			service := &Service{}
+			if hosted {
+				service.config.Hosted = &HostedConfig{}
+			}
+			recorded := httptest.NewRecorder()
+			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/claim", nil), recorded)
+			if err := service.nativeAPIError(context, fmt.Errorf("private-context: %w", runnerVersionError("0.117.56", "0.117.55"))); err != nil {
+				t.Fatal(err)
+			}
+			failure := requireNativeCode(t, recorded, http.StatusUpgradeRequired, "unavailable")
+			if failure.Message != "Too old to take work, needs 0.117.56" {
+				t.Fatalf("claim refusal = %#v", failure)
+			}
+		})
+	}
+}
+
 func TestNativeWorkflowRefusalCode(t *testing.T) {
 	for _, hosted := range []bool{false, true} {
 		name := "local"
