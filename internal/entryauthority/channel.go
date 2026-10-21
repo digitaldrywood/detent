@@ -7,11 +7,13 @@ import (
 	"os"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
 
 const BootstrapEnvironment = "DETENT_INTERNAL_ENTRY_AUTHORITY"
 const BootstrapVersion = "v1:3:4"
+const contentTimeout = 15 * time.Second
 
 type Binding struct {
 	Issuer       string
@@ -73,6 +75,7 @@ type authorityServer struct {
 	budget  time.Duration
 	resolve func(Request) (cloudassert.Claims, error)
 	archive func(ArchiveRequest) (ArchiveResponse, error)
+	content func(ContentRequest) ([]byte, error)
 }
 
 func (s *authorityServer) Handshake(binding Binding, result *Handshake) error {
@@ -102,7 +105,7 @@ type Parent struct {
 	done   chan struct{}
 }
 
-func Start(ctx context.Context, binding Binding, budget time.Duration, resolve Resolver, archives ...ArchiveReader) (*Parent, error) {
+func Start(ctx context.Context, binding Binding, budget time.Duration, resolve Resolver, archive ArchiveReader, content ContentHandler) (*Parent, error) {
 	parentRead, childWrite, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -122,13 +125,25 @@ func Start(ctx context.Context, binding Binding, budget time.Duration, resolve R
 		return resolve(lookup, request.Origin)
 	}
 	service := &authorityServer{binding: binding, budget: budget, resolve: current}
-	if len(archives) == 1 && archives[0] != nil {
+	if archive != nil {
 		service.archive = func(request ArchiveRequest) (ArchiveResponse, error) {
 			lookup, stop := context.WithTimeout(ctx, budget)
 			defer stop()
 			lookup, end := context.WithDeadline(lookup, request.Deadline)
 			defer end()
-			return archives[0](lookup, request.Reference, request.Presign)
+			return archive(lookup, request.Reference, request.Presign)
+		}
+	}
+	if content != nil {
+		service.content = func(request ContentRequest) ([]byte, error) {
+			lookup, cancel := context.WithDeadline(ctx, request.Deadline)
+			defer cancel()
+			lookup, stop := context.WithTimeout(lookup, contentTimeout)
+			defer stop()
+			if err := lookup.Err(); err != nil {
+				return nil, err
+			}
+			return content(lookup, request)
 		}
 	}
 	if err := server.RegisterName("Authority", service); err != nil {
@@ -205,4 +220,34 @@ func (c *Client) Close() error {
 		return err
 	}
 	return nil
+}
+
+type ContentRequest struct {
+	Organization string
+	Reference    attachment.ArchiveReference
+	Data         []byte
+	Write        bool
+	Deadline     time.Time
+}
+
+type ContentHandler func(context.Context, ContentRequest) ([]byte, error)
+
+func (s *authorityServer) Content(request ContentRequest, result *[]byte) error {
+	if s.content == nil || request.Organization != s.binding.Organization || request.Deadline.IsZero() || len(request.Data) > attachment.MaxArchiveBytes || request.Reference.Validate(s.binding.Organization) != nil {
+		return cloudassert.ErrInvalid
+	}
+	data, err := s.content(request)
+	if err != nil {
+		return errors.New("immutable content unavailable")
+	}
+	*result = data
+	return nil
+}
+
+func (c *Client) Content(ctx context.Context, request ContentRequest) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, contentTimeout)
+	defer cancel()
+	request.Deadline, _ = ctx.Deadline()
+	client := &Client{client: c.client, budget: contentTimeout}
+	return callAuthority[[]byte](ctx, client, "Content", request)
 }

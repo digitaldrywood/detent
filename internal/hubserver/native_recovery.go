@@ -19,6 +19,7 @@ import (
 )
 
 func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, item string, projected ...bool) (tracker.NativeRecovery, error) {
+	ctx = s.contentContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	bounded := len(projected) > 0 && projected[0]
@@ -178,6 +179,7 @@ type recoveryEvidenceCursor struct {
 }
 
 func (s *Service) readNativeRecoveryPage(ctx context.Context, scope nativeScope, item, path string, params url.Values) (tracker.NativeRecovery, error) {
+	ctx = s.contentContext(ctx)
 	_, cursor, key, err := s.readNativePageLimit(ctx, scope, path, params, 1, 1)
 	if err != nil {
 		return tracker.NativeRecovery{}, err
@@ -282,6 +284,15 @@ func (s *Service) readRecoveryEvidenceRecord(ctx context.Context, query nativeQu
 		}
 		if _, archived := query.(*nativeArchiveQuery); archived {
 			err = query.QueryRowContext(ctx, "SELECT record_json FROM change_evidence WHERE change_id=? AND sequence=?", cursor.Change, sequence).Scan(&content)
+		}
+		if err == nil && kind == "review" {
+			var review tracker.ChangeReview
+			if err = json.Unmarshal(content, &review); err == nil {
+				err = hydrateChangeRecord(ctx, query, &review)
+			}
+			if err == nil {
+				content, err = json.Marshal(review)
+			}
 		}
 		return sequence, strconv.FormatInt(sequence, 10), version, content, err
 	case "discussion":

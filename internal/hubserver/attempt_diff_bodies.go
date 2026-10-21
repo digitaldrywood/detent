@@ -3,7 +3,9 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -73,6 +75,9 @@ func (s *Service) attemptDiffBodyBatch(c echo.Context) error {
 		return c.JSON(http.StatusOK, batch)
 	}
 	err = s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE attempt_diffs SET manifest_expired=1 WHERE id IN (SELECT d.id FROM attempt_diffs d WHERE d.object_key<>'' AND d.manifest_expired=0 AND `+supersededDiffBody+` LIMIT 32)`, formatHubTime(now.Add(-diffBodyRetention))); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx, `UPDATE attempt_diff_files SET patch_expired=1 WHERE patch_object<>'' AND patch_expired=0
 AND (diff_id,position) IN (SELECT f.diff_id,f.position FROM attempt_diff_files f JOIN attempt_diffs d ON d.id=f.diff_id
 WHERE f.patch_object<>'' AND f.patch_expired=0 AND `+supersededDiffBody+` LIMIT 32)`, formatHubTime(now.Add(-diffBodyRetention)))
@@ -184,6 +189,13 @@ func (s *Service) attemptDiffBodyExists(c echo.Context) error {
 	if err := s.database.reader.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM attempt_diff_files WHERE patch_object=?)`, input.Key).Scan(&exists); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	if !exists {
+		var err error
+		exists, err = s.manifestDiffBodyExists(ctx, input.Key)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
 	return c.JSON(http.StatusOK, map[string]bool{"exists": exists})
 }
 
@@ -211,4 +223,39 @@ func (s *Service) vacuumAttemptDiffBodies(c echo.Context) error {
 	}
 	s.config.Logger.InfoContext(ctx, "attempt diff body migration complete", "attempt_diff_files_bytes", bytes, "inline_body_bytes", 0)
 	return c.JSON(http.StatusOK, map[string]int64{"attempt_diff_files_bytes": bytes, "inline_body_bytes": 0})
+}
+
+func (s *Service) manifestDiffBodyExists(ctx context.Context, key string) (bool, error) {
+	parts := strings.Split(key, "/")
+	if len(parts) != 7 || parts[0] != "orgs" || parts[2] != "attempt-diffs" {
+		return false, nil
+	}
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT id FROM attempt_diffs WHERE object_key<>'' AND manifest_expired=0 AND organization_id=? AND project_id=?`, parts[1], parts[3])
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return false, err
+		}
+		ids = append(ids, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		files, err := readAttemptDiffFiles(ctx, s.database.reader, id)
+		if err != nil {
+			return false, err
+		}
+		for _, file := range files {
+			if file.PatchBody != nil && file.PatchBody.Key == key {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }

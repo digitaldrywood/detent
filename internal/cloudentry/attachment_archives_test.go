@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -321,5 +322,54 @@ func TestTenantArchiveSectionReader(t *testing.T) {
 	organization.Generation++
 	if _, err := f.service.tenantArchiveReader(organization)(t.Context(), ref, false); err == nil {
 		t.Fatal("stale tenant generation read archive bytes")
+	}
+}
+
+func TestTenantContentStorage(t *testing.T) {
+	t.Parallel()
+	f := newEntryFixture(t)
+	spaces := newSpacesFixture(t, false)
+	storage, err := attachment.NewStorage(t.Context(), spaces.config(), spaces.transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service.attachments = storage
+	content := strings.Repeat("immutable source and review output\n", 10000)
+	for _, org := range []string{"org_alpha", "org_beta"} {
+		organization, err := f.service.readyOrganization(t.Context(), org)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, data, err := attachment.PrepareArchive(org, 1, strings.NewReader(content))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := entryauthority.ContentRequest{Organization: org, Reference: ref, Write: true, Data: data}
+		for range 2 {
+			if _, err := f.service.tenantContent(t.Context(), organization, request); err != nil {
+				t.Fatal(err)
+			}
+		}
+		request.Write = false
+		request.Data = nil
+		restored, err := f.service.tenantContent(t.Context(), organization, request)
+		if err != nil || !bytes.Equal(restored, data) {
+			t.Fatalf("immutable tenant content changed: %v", err)
+		}
+		foreign := organization
+		foreign.ID = "org_other"
+		if _, err := f.service.tenantContent(t.Context(), foreign, request); err == nil {
+			t.Fatal("cross-org content access accepted")
+		}
+		stale := organization
+		stale.Generation++
+		if _, err := f.service.tenantContent(t.Context(), stale, request); err == nil {
+			t.Fatal("stale allocation read accepted")
+		}
+	}
+	spaces.mu.Lock()
+	defer spaces.mu.Unlock()
+	if len(spaces.objects) != 2 {
+		t.Fatalf("stored %d objects, want one per org", len(spaces.objects))
 	}
 }

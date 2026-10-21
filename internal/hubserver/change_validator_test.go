@@ -166,6 +166,10 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			r.ImplementationReview = r.Validator
 		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"separate session pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"object-backed separate session pass", func(r *tracker.ReviewChange) {
+			r.Validator.Commands = []gate.CommandResult{{Command: "make check-land", HeadSHA: r.Validator.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 123, Output: strings.Repeat("validator output\n", 13000)}}
+		}, http.StatusOK, "reviewed", nil},
+		{"object-backed another head", func(r *tracker.ReviewChange) { r.Validator.HeadSHA = r.Validator.BaseSHA }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"separate session pass with multiple receipts", multipleReceipts, http.StatusOK, "reviewed", nil},
 		{"recovered source inspection retains failed read history", func(r *tracker.ReviewChange) {
 			multipleReceipts(r)
@@ -210,6 +214,10 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "validator")
+			if strings.HasPrefix(test.name, "object-backed") {
+				objects := &changeObjectFixture{}
+				f.service.config.content = objects.call
+			}
 			descriptor := hubTestPolicy()
 			if test.name == "missing session" {
 				descriptor.Gates.GitHubPullRequest = true
@@ -421,6 +429,24 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
 			requireNativeStatus(t, response, test.want)
+			if test.name == "object-backed separate session pass" {
+				var stored tracker.ChangeReview
+				decodeHubResponse(t, response, &stored)
+				if stored.Validator == nil || len(stored.Validator.Commands) != 1 || stored.Validator.Commands[0].Output != request.Validator.Commands[0].Output {
+					t.Fatal("review publication lost command output")
+				}
+				var inline, refs int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT max(length(record_json)) FROM change_evidence WHERE kind='review'`).Scan(&inline); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_command_outputs`).Scan(&refs); err != nil {
+					t.Fatal(err)
+				}
+				if inline > 2048 || refs != 1 {
+					t.Fatalf("review output remained inline: bytes=%d refs=%d", inline, refs)
+				}
+			}
+
 			rejectionField := map[string]string{
 				"oversized acceptance body":                              "body",
 				"missing session":                                        "validator.session_id",
@@ -651,7 +677,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				stageReviews++
 				wantSession = 43
 			}
-			current, err := readCurrentChangeDetail(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, detail.Change, f.service.config.now())
+			current, err := readCurrentChangeDetail(f.service.contentContext(t.Context()), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, detail.Change, f.service.config.now())
 			if err != nil || current.Summary.Status != detail.Summary.Status {
 				t.Fatalf("current summary differs: %+v, %v", current.Summary, err)
 			}
@@ -891,7 +917,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				decodeHubResponse(t, response, &version)
 				response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 				decodeHubResponse(t, response, &detail)
-				current, err = readCurrentChangeDetail(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, detail.Change, f.service.config.now())
+				current, err = readCurrentChangeDetail(f.service.contentContext(t.Context()), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, detail.Change, f.service.config.now())
 				if err != nil || current.Summary.Status != "needs_evidence" || current.Summary.Status != detail.Summary.Status {
 					t.Fatalf("old validator approved new version: %+v, %v", current.Summary, err)
 				}

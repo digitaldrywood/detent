@@ -25,6 +25,7 @@ type TenantSpec struct {
 	Check        func(context.Context) error
 	ResolveKey   entryauthority.Resolver
 	ReadArchive  entryauthority.ArchiveReader
+	Content      entryauthority.ContentHandler
 }
 
 type Launcher interface {
@@ -156,7 +157,7 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 		var authority *entryauthority.Parent
 		var err error
 		if spec.ResolveKey != nil {
-			authority, err = entryauthority.Start(attempt, entryauthority.Binding{Issuer: spec.Issuer, Organization: spec.Organization.ID, Generation: spec.Organization.Generation}, platformCallTimeout, spec.ResolveKey, spec.ReadArchive)
+			authority, err = entryauthority.Start(attempt, entryauthority.Binding{Issuer: spec.Issuer, Organization: spec.Organization.ID, Generation: spec.Organization.Generation}, platformCallTimeout, spec.ResolveKey, spec.ReadArchive, spec.Content)
 			if err == nil {
 				cmd.ExtraFiles = authority.Files
 				cmd.Env = append(cmd.Env, entryauthority.BootstrapEnvironment+"="+entryauthority.BootstrapVersion)

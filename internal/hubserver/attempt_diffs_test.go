@@ -1,16 +1,20 @@
 package hubserver
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/diffbody"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -615,5 +619,95 @@ func TestAttemptDiffBodyAllowanceCoversEscaping(t *testing.T) {
 	}
 	if want := int64(6*tracker.MaxDiffBytes + (1 << 20)); maxAttemptDiffRequestBytes != want {
 		t.Fatalf("allowance = %d, want %d", maxAttemptDiffRequestBytes, want)
+	}
+}
+
+func TestAttemptDiffManifest(t *testing.T) {
+	t.Parallel()
+	f := newAttemptDiffFixture(t)
+	objects := &changeObjectFixture{}
+	f.service.config.content = objects.call
+	files := make([]tracker.AttemptDiffFile, 300)
+	for i := range files {
+		files[i] = tracker.AttemptDiffFile{Path: fmt.Sprintf("file-%03d.go", i), Status: tracker.DiffStatusModified, Additions: i, Deletions: i / 2, Patch: "@@ preserved\n+change\n"}
+	}
+	files[1].OldPath = "previous.go"
+	files[1].Status = tracker.DiffStatusRenamed
+	files[2].Binary = true
+	files[2].Patch = ""
+	files[3].Truncated = true
+	files[3].Patch = ""
+	files[4].Denied = true
+	files[4].Patch = ""
+	expected, _ := tracker.NormalizeDiffFiles(files)
+	response := f.post(t, f.request(1, files...))
+	requireNativeStatus(t, response, http.StatusAccepted)
+	var receipt tracker.AttemptDiffReceipt
+	decodeHubResponse(t, response, &receipt)
+	var count int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attempt_diff_files WHERE diff_id=?", receipt.DiffID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("per-file SQL rows=%d err=%v", count, err)
+	}
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attempt_diffs WHERE object_key<>'' AND content_bytes>0").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("diff manifests=%d err=%v", count, err)
+	}
+	response = f.get(t, "")
+	requireNativeStatus(t, response, http.StatusOK)
+	var diff tracker.AttemptDiff
+	decodeHubResponse(t, response, &diff)
+	if !reflect.DeepEqual(diff.Files, expected) || diff.FileCount != 300 || !diff.Truncated {
+		t.Fatal("manifest changed legacy files or flags")
+	}
+	itemResponse := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/diff", f.token, nil)
+	requireNativeStatus(t, itemResponse, http.StatusOK)
+	var item tracker.WorkItemDiff
+	decodeHubResponse(t, itemResponse, &item)
+	if item.Diff == nil || !reflect.DeepEqual(*item.Diff, diff) {
+		t.Fatal("work-item diff differs from attempt diff")
+	}
+	operatorCtx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+	page, err := (hubOperatorExecutor{f.service}).Execute(operatorCtx, changeToolCall(operatortool.GetAttemptDiff, operatortool.ChangeArguments{ProjectID: string(f.project.ID), ItemID: string(f.issue.WorkItemID), AttemptID: f.attempt, Limit: 10}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paged operatortool.ChangeResult
+	if err := json.Unmarshal(page.Content, &paged); err != nil {
+		t.Fatal(err)
+	}
+	if paged.Diff == nil || !reflect.DeepEqual(paged.Diff.Files, expected[:10]) {
+		t.Fatal("MCP manifest page changed diff files")
+	}
+	ctx := f.service.contentContext(t.Context())
+	body := diffbody.New(string(f.project.OrganizationID), string(f.project.ID), newNativeID("diff"), 0, "@@ object body")
+	referenced := []tracker.AttemptDiffFile{{Path: "object.go", Status: tracker.DiffStatusModified, PatchBody: &body}}
+	data, err := json.Marshal(referenced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareChangeContent(ctx, string(f.project.OrganizationID), data); err != nil {
+		t.Fatal(err)
+	}
+	err = f.service.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
+		var err error
+		receipt, err = storeAttemptDiff(ctx, tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, f.attempt, string(f.issue.WorkItemID), f.request(2, referenced...), now)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exists, err := f.service.manifestDiffBodyExists(ctx, body.Key)
+	if err != nil || !exists {
+		t.Fatalf("manifest body lookup lost live object: %v", err)
+	}
+	if _, err := f.service.database.db.ExecContext(ctx, "UPDATE attempt_diffs SET manifest_expired=1 WHERE id=?", receipt.DiffID); err != nil {
+		t.Fatal(err)
+	}
+	files, err = readAttemptDiffFiles(ctx, f.service.database.reader, receipt.DiffID)
+	if err != nil || len(files) != 1 || !files[0].PatchExpired || files[0].PatchBody != nil {
+		t.Fatalf("manifest expiry lost: %#v %v", files, err)
+	}
+	exists, err = f.service.manifestDiffBodyExists(ctx, body.Key)
+	if err != nil || exists {
+		t.Fatalf("expired manifest retained body: %v", err)
 	}
 }
