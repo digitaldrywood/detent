@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestLocalProgressBase(t *testing.T) {
@@ -21,6 +23,7 @@ func TestLocalProgressBase(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "no upstream"},
+		{name: "release frozen base without local branch", issue: Issue{ProgressBaseRef: "release/v1.2", ReleaseDelivery: &tracker.ReleaseDelivery{}}},
 		{name: "named local base", issue: Issue{ProgressBaseRef: "main"}},
 		{name: "named remote base", issue: Issue{ProgressBaseRef: "main"}, remote: true},
 		{name: "cached default remote", remote: true},
@@ -33,6 +36,9 @@ func TestLocalProgressBase(t *testing.T) {
 			t.Parallel()
 			source := initSourceRepo(t)
 			base := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+			if tt.issue.ReleaseDelivery != nil {
+				tt.issue.ReleaseDelivery.BaseSHA = base
+			}
 			if tt.remote {
 				runGit(t, source, "update-ref", "refs/remotes/origin/main", base)
 				runGit(t, source, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")

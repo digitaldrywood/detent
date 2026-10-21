@@ -115,6 +115,9 @@ func fetchReviewHead(ctx context.Context, path, fallbackBranch string, issue Iss
 	remote := "origin"
 	if issue.PullRequestNumber > 0 && strings.TrimSpace(issue.PullRequestRepository) != "" {
 		repository := strings.TrimSpace(issue.PullRequestRepository)
+		if name, _, ok := githubLandingRepository(repository); ok {
+			repository = strings.TrimSuffix(name, ".git")
+		}
 		parts := strings.Split(repository, "/")
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(repository, " \\:@") {
 			return "", fmt.Errorf("invalid pull request repository %q", repository)
