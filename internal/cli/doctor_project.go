@@ -588,6 +588,9 @@ func checkDoctorProjectWithProgress(
 		Status: doctorOK,
 		Detail: expandedSourceRoot + " is a git worktree",
 	})
+	if check, ok := checkDoctorLandingCredential(ctx, id, expandedSourceRoot, workflow.Config, deps); ok {
+		checks = append(checks, check)
+	}
 	if deps.gitWorktrees != nil {
 		setDoctorCurrentCheck("Project " + id + " external branch worktrees")
 		checks = append(checks, checkDoctorExternalBranchWorktrees(ctx, id, expandedSourceRoot, workflow.Config.Workspace.Root, deps))

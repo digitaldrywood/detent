@@ -16,16 +16,17 @@ func TestRunDoctorStartupPreflight(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		loadErr     error
-		wantStatus  doctorStatus
-		wantDetail  string
-		wantFailure bool
-		selected    string
-		unrelated   bool
-		noHub       bool
-		tracker     string
-		wantRefusal bool
+		name          string
+		loadErr       error
+		wantStatus    doctorStatus
+		wantDetail    string
+		wantFailure   bool
+		selected      string
+		unrelated     bool
+		noHub         bool
+		tracker       string
+		wantRefusal   bool
+		credentialErr error
 	}{
 		{
 			name:       "valid project is startup compatible",
@@ -56,6 +57,7 @@ func TestRunDoctorStartupPreflight(t *testing.T) {
 		},
 		{name: "standalone project is refused", noHub: true, tracker: "memory", wantRefusal: true},
 		{name: "Hub native project without Hub remains compatible", noHub: true, tracker: "hub_native", wantStatus: doctorOK, wantDetail: "loaded and validated"},
+		{name: "missing landing credential is reported before claims", tracker: "hub_native", credentialErr: errors.New("fatal: Authentication failed"), wantStatus: doctorOK, wantDetail: "loaded and validated", wantFailure: true},
 		{name: "unreadable project without Hub remains degraded", noHub: true, loadErr: os.ErrNotExist, wantStatus: doctorWarn, wantDetail: "isolate this project as degraded"},
 	}
 
@@ -72,6 +74,7 @@ func TestRunDoctorStartupPreflight(t *testing.T) {
 				global.Projects = append(global.Projects, globalconfig.Project{ID: "beta", Workflow: "beta/WORKFLOW.md", Workdir: "/beta", Weight: 1})
 			}
 			deps := successfulDoctorDeps()
+			deps.gitLandingCredential = func(context.Context, string) error { return tt.credentialErr }
 			deps.loadWorkflow = func(path string) (workflowconfig.Workflow, error) {
 				if path == "beta/WORKFLOW.md" {
 					t.Fatal("selected startup readiness loaded unrelated project")
@@ -103,6 +106,9 @@ func TestRunDoctorStartupPreflight(t *testing.T) {
 			}
 			assertDoctorCheck(t, report, "Candidate startup", doctorOK, "candidate resolved")
 			assertDoctorCheck(t, report, "Project alpha startup", tt.wantStatus, tt.wantDetail)
+			if tt.credentialErr != nil {
+				assertDoctorCheck(t, report, "Project alpha landing push credential", doctorFail, "Authentication failed")
+			}
 			if got := report.HasFailures(); got != tt.wantFailure {
 				t.Fatalf("HasFailures() = %t, want %t", got, tt.wantFailure)
 			}

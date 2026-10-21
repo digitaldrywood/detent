@@ -708,10 +708,15 @@ func TestClassifyLandingPush(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			err := classifyLandingPush(&CommandError{Command: "git", Args: []string{"push"}, ExitCode: 1, Output: test.out}, "main")
+			command := &CommandError{Command: "git", Args: []string{"push"}, ExitCode: 1, Output: test.out}
+			err := classifyLandingPush(command, "main")
 			var refusal *LandRefusal
 			if errors.As(err, &refusal) != (test.want != "") || refusal != nil && refusal.Kind != test.want {
 				t.Fatalf("classifyLandingPush(%q) = %v, want kind %q", test.out, err, test.want)
+			}
+			var recorded *CommandError
+			if !errors.As(err, &recorded) || recorded != command {
+				t.Fatal("landing push classification discarded command diagnostics")
 			}
 		})
 	}

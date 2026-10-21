@@ -646,12 +646,12 @@ func classifyLandingPush(err error, target string) error {
 		strings.Contains(output, "not allowed to push"),
 		strings.Contains(output, "permission denied"),
 		strings.Contains(output, "refusing to allow"):
-		return refuse(LandRefusalProtected, "the base branch "+target+" refused the push: "+strings.TrimSpace(commandErrorOutput(err))+". Allow the runner to push to "+target+", or enable GitHub pull request mode for this project.")
+		return fmt.Errorf("%w: %w", refuse(LandRefusalProtected, "the base branch "+target+" refused the push: "+strings.TrimSpace(commandErrorOutput(err))+". Allow the runner to push to "+target+", or enable GitHub pull request mode for this project."), err)
 	case strings.Contains(output, "fetch first"),
 		strings.Contains(output, "non-fast-forward"),
 		strings.Contains(output, "stale info"),
 		strings.Contains(output, "rejected"):
-		return refuse(LandRefusalBaseMoved, "the base branch "+target+" moved while the change was being landed: "+strings.TrimSpace(commandErrorOutput(err)))
+		return fmt.Errorf("%w: %w", refuse(LandRefusalBaseMoved, "the base branch "+target+" moved while the change was being landed: "+strings.TrimSpace(commandErrorOutput(err))), err)
 	}
 	return fmt.Errorf("git push %s: %w", target, err)
 }

@@ -858,6 +858,7 @@ type RunResult struct {
 	// nil for every other run.
 	NativeLanding    *NativeLanding
 	budgetProjection *dispatchBudgetProjection
+	terminalFailure  *tracker.NativeTerminalFailure
 }
 
 // NativeLandingTarget is the reviewed version a landing run puts on the

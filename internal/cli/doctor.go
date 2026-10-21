@@ -273,6 +273,7 @@ type doctorDeps struct {
 	gitWorkTree          func(context.Context, string) error
 	gitWorktrees         func(context.Context, string) ([]doctorGitWorktree, error)
 	gitRemoteURL         func(context.Context, string) (string, error)
+	gitLandingCredential func(context.Context, string) error
 	gitTracked           func(context.Context, string) (bool, error)
 	workflowSourcePolicy doctorWorkflowSourcePolicyFunc
 	scheduleOwnership    doctorScheduleOwnershipProbe
@@ -1311,6 +1312,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.gitRemoteURL == nil {
 		d.gitRemoteURL = defaults.gitRemoteURL
 	}
+	if d.gitLandingCredential == nil {
+		d.gitLandingCredential = defaults.gitLandingCredential
+	}
 	if d.gitTracked == nil {
 		d.gitTracked = defaults.gitTracked
 	}
@@ -1373,6 +1377,7 @@ func defaultDoctorDeps() doctorDeps {
 		gitWorkTree:          defaultGitWorkTree,
 		gitWorktrees:         defaultDoctorGitWorktrees,
 		gitRemoteURL:         defaultGitRemoteURL,
+		gitLandingCredential: defaultDoctorLandingCredential,
 		gitTracked:           defaultGitTracked,
 		workflowSourcePolicy: defaultDoctorWorkflowSourcePolicy,
 		scheduleOwnership:    defaultDoctorScheduleOwnership,

@@ -481,7 +481,11 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 				prepareCtx, prepareCancel = context.WithTimeoutCause(context.WithoutCancel(guarded), r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 			}
 		}
-		err := prepared.PrepareFinish(prepareCtx, outcome, result.FinalMessage, nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused))
+		failure := nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused)
+		if failure == nil {
+			failure = result.terminalFailure
+		}
+		err := prepared.PrepareFinish(prepareCtx, outcome, result.FinalMessage, failure)
 		prepareCancel()
 		if err != nil {
 			runErr = errors.Join(runErr, err)
