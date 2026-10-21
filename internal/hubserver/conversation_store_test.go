@@ -722,6 +722,58 @@ func TestConversationStoreEvents(t *testing.T) {
 		if _, err := f.store.readConversation(t.Context(), f.service.database.reader, f.organization, f.project.ID, records[2].ID); err == nil {
 			t.Fatal("foreign conversation was readable")
 		}
+		f.store.contents = nil
+		for index, record := range records {
+			tool := "tool-" + strconv.Itoa(index)
+			data, err := json.Marshal(map[string]string{"tool": tool, "item_id": record.ID, "status": "running"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleSystem, Kind: conversation.MessageTool, Text: "Running " + tool, Data: data, Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}, CreatedAt: now, UpdatedAt: now}
+			tx := f.tx(t)
+			if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventMessageAccepted, projectMessage(message), now); err != nil {
+				t.Fatal(err)
+			}
+			for _, status := range []string{"completed", "saved"} {
+				message.Text = status + " " + tool
+				message.Data, err = json.Marshal(map[string]string{"tool": tool, "item_id": record.ID, "status": status})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := chat.updateMessage(t.Context(), tx, message, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.commit(t, tx)
+			replay, err := f.store.replayEvents(t.Context(), f.service.database.reader, record.ID, 1)
+			if err != nil || len(replay) != 3 {
+				t.Fatalf("inline tool replay: events=%d error=%v", len(replay), err)
+			}
+			for revision, status := range []string{"running", "completed", "saved"} {
+				var got struct {
+					Text string
+					Data map[string]string
+				}
+				if err := json.Unmarshal(replay[revision].Data, &got); err != nil {
+					t.Fatal(err)
+				}
+				wantText := status + " " + tool
+				if revision == 0 {
+					wantText = "Running " + tool
+				}
+				if got.Text != wantText || got.Data["tool"] != tool || got.Data["item_id"] != record.ID || got.Data["status"] != status {
+					t.Fatalf("inline revision crossed a boundary: %+v", got)
+				}
+			}
+			var oversized int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_events WHERE conversation_id=? AND (length(CAST(body_json AS BLOB))>2048 OR json_type(body_json,'$.text') IS NOT NULL OR json_type(body_json,'$.data') IS NOT NULL)`, record.ID).Scan(&oversized); err != nil || oversized != 0 {
+				t.Fatalf("noncompact events=%d error=%v", oversized, err)
+			}
+		}
+		f.store.contents = objects
 		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversation_messages SET content_attachment_id=? WHERE conversation_id=?", ids[2], records[0].ID); err != nil {
 			t.Fatal(err)
 		}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/conversation"
@@ -1030,122 +1033,153 @@ func TestConversationCoordinatorProposeIssue(t *testing.T) {
 
 func TestConversationCoordinatorToolMessagesFromUpdates(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		name        string
-		before      string
-		after       []string
-		toolUpdates bool
-		toolCalls   int
-		want        string
-	}{
-		{name: "tool updates before text", after: []string{"done"}, toolUpdates: true, want: "done"},
-		{name: "text around tool updates", before: "Checking.", after: []string{"All ", "done."}, toolUpdates: true, want: "Checking.\n\nAll done."},
-		{name: "text around Luna tool call", before: "All 6 children will be created in Blocked, matching #32.", after: []string{"Children 1 and 2 can run in parallel. ", "The parent waits for all children."}, toolCalls: 1, want: "All 6 children will be created in Blocked, matching #32.\n\nChildren 1 and 2 can run in parallel. The parent waits for all children."},
-		{name: "consecutive tool calls", before: "Checking.", after: []string{"Done."}, toolCalls: 2, want: "Checking.\n\nDone."},
-		{name: "tool call without preceding text", after: []string{"Done."}, toolCalls: 1, want: "Done."},
-		{name: "tool call without following text", before: "Checking.", toolCalls: 1, want: "Checking."},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			f := newCoordinatorFixture(t, "toolmessages", &conversationContentFixture{})
-			f.backend.setRun(func(ctx context.Context, _ int, handle runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
-				updates := []runner.AgentUpdate{
-					{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-early"},
-					{Type: runner.AgentUpdateMessageDelta, Delta: test.before},
-				}
-				if test.toolUpdates {
-					updates = append(updates,
-						runner.AgentUpdate{Type: runner.AgentUpdateToolStarted, ItemID: "item-1", Tool: "shell", Command: "git status " + strings.Repeat("x", 1000)},
-						runner.AgentUpdate{Type: runner.AgentUpdateToolCompleted, ItemID: "item-1", Tool: "shell", Status: "completed"},
-					)
-				}
-				for _, update := range updates {
-					if err := onUpdate(update); err != nil {
-						return runner.AgentTurnResult{}, err
+	for _, external := range []bool{false, true} {
+		t.Run("external="+strconv.FormatBool(external), func(t *testing.T) {
+			for _, test := range []struct {
+				name           string
+				before         string
+				after          []string
+				toolUpdates    bool
+				toolCalls      int
+				want           string
+				longCompletion bool
+			}{
+				{name: "longer tool completion", after: []string{"done"}, toolUpdates: true, longCompletion: true, want: "done"},
+				{name: "tool updates before text", after: []string{"done"}, toolUpdates: true, want: "done"},
+				{name: "text around tool updates", before: "Checking.", after: []string{"All ", "done."}, toolUpdates: true, want: "Checking.\n\nAll done."},
+				{name: "text around Luna tool call", before: "All 6 children will be created in Blocked, matching #32.", after: []string{"Children 1 and 2 can run in parallel. ", "The parent waits for all children."}, toolCalls: 1, want: "All 6 children will be created in Blocked, matching #32.\n\nChildren 1 and 2 can run in parallel. The parent waits for all children."},
+				{name: "consecutive tool calls", before: "Checking.", after: []string{"Done."}, toolCalls: 2, want: "Checking.\n\nDone."},
+				{name: "tool call without preceding text", after: []string{"Done."}, toolCalls: 1, want: "Done."},
+				{name: "tool call without following text", before: "Checking.", toolCalls: 1, want: "Checking."},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					t.Parallel()
+					var contents []*conversationContentFixture
+					if external {
+						contents = append(contents, &conversationContentFixture{})
 					}
-				}
-				for range test.toolCalls {
-					result, err := handle(ctx, runner.AgentToolCall{Name: "load_split_issue_skill", Arguments: json.RawMessage(`{}`)})
-					if err != nil {
-						return runner.AgentTurnResult{}, err
-					}
-					if !result.Success {
-						return runner.AgentTurnResult{}, errors.New(result.Content)
-					}
-				}
-				for _, delta := range test.after {
-					if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: delta}); err != nil {
-						return runner.AgentTurnResult{}, err
-					}
-				}
-				return runner.AgentTurnResult{ThreadID: "thread-early"}, nil
-			})
-			record := f.seed(t, "tools", nil)
-			f.say(t, &record, "check")
-			assistant := f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
-			if assistant.Text != test.want {
-				t.Fatalf("assistant text = %q, want %q", assistant.Text, test.want)
-			}
-			var streamed strings.Builder
-			for _, event := range f.events(t, record.ID) {
-				if event.Type != conversation.EventMessageDelta {
-					continue
-				}
-				var body struct {
-					MessageID string `json:"message_id"`
-					Text      string `json:"text"`
-				}
-				if err := json.Unmarshal(event.Data, &body); err != nil {
-					t.Fatal(err)
-				}
-				if body.MessageID == assistant.ID {
-					streamed.WriteString(body.Text)
-				}
-			}
-			if streamed.String() != test.want {
-				t.Fatalf("streamed text = %q, want %q", streamed.String(), test.want)
-			}
-			var tools []conversationMessageRecord
-			for _, message := range f.messages(t, record.ID) {
-				if message.Kind == conversation.MessageTool {
-					tools = append(tools, message)
-				}
-			}
-			if test.toolUpdates {
-				if len(tools) != 1 || tools[0].Role != conversation.RoleSystem || tools[0].Delivery != conversation.DeliveryCompleted || !strings.Contains(tools[0].Text, "shell") {
-					t.Fatalf("tool messages = %#v, want one completed system tool message", tools)
-				}
-				if tools[0].ContentID == "" {
-					t.Fatal("tool content was retained inline")
-				}
-				acceptedText := ""
-				updatedText := ""
-				for _, event := range f.events(t, record.ID) {
-					if event.Type == conversation.EventMessageAccepted || event.Type == conversation.EventMessageUpdated {
-						var message conversationMessageResource
-						if err := json.Unmarshal(event.Data, &message); err != nil {
-							t.Fatal(err)
+					f := newCoordinatorFixture(t, "toolmessages", contents...)
+					f.backend.setRun(func(ctx context.Context, _ int, handle runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+						updates := []runner.AgentUpdate{
+							{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-early"},
+							{Type: runner.AgentUpdateMessageDelta, Delta: test.before},
 						}
-						if message.ID == tools[0].ID {
-							if event.Type == conversation.EventMessageAccepted {
-								acceptedText = message.Text
-							} else {
-								updatedText = message.Text
+						if test.toolUpdates {
+							command, status := "git status "+strings.Repeat("x", 1000), "completed"
+							if test.longCompletion {
+								command, status = "pwd", "completed with detailed output"
+							}
+							updates = append(updates,
+								runner.AgentUpdate{Type: runner.AgentUpdateToolStarted, ItemID: "item-1", Tool: "shell", Command: command},
+								runner.AgentUpdate{Type: runner.AgentUpdateToolCompleted, ItemID: "item-1", Tool: "shell", Status: status},
+							)
+						}
+						for _, update := range updates {
+							if err := onUpdate(update); err != nil {
+								return runner.AgentTurnResult{}, err
 							}
 						}
+						for range test.toolCalls {
+							result, err := handle(ctx, runner.AgentToolCall{Name: "load_split_issue_skill", Arguments: json.RawMessage(`{}`)})
+							if err != nil {
+								return runner.AgentTurnResult{}, err
+							}
+							if !result.Success {
+								return runner.AgentTurnResult{}, errors.New(result.Content)
+							}
+						}
+						for _, delta := range test.after {
+							if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: delta}); err != nil {
+								return runner.AgentTurnResult{}, err
+							}
+						}
+						return runner.AgentTurnResult{ThreadID: "thread-early"}, nil
+					})
+					record := f.seed(t, "tools", nil)
+					f.say(t, &record, "check")
+					assistant := f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
+					if assistant.Text != test.want {
+						t.Fatalf("assistant text = %q, want %q", assistant.Text, test.want)
 					}
-				}
-				if !strings.HasPrefix(acceptedText, "Running ") || !strings.HasPrefix(updatedText, "Finished ") {
-					t.Fatalf("immutable tool revisions changed: %q -> %q", acceptedText, updatedText)
-				}
-				if len([]rune(tools[0].Text)) > 500 {
-					t.Fatalf("tool summary length = %d, want at most 500 runes", len([]rune(tools[0].Text)))
-				}
-			} else if len(tools) != 0 {
-				t.Fatalf("tool messages = %#v, want none without tool updates", tools)
-			}
-			if got := f.conversation(t, record.ID).ProviderThreadID; got != "thread-early" {
-				t.Fatalf("thread id = %q, want persisted from the turn update", got)
+					var streamed strings.Builder
+					for _, event := range f.events(t, record.ID) {
+						if event.Type != conversation.EventMessageDelta {
+							continue
+						}
+						var body struct {
+							MessageID string `json:"message_id"`
+							Text      string `json:"text"`
+						}
+						if err := json.Unmarshal(event.Data, &body); err != nil {
+							t.Fatal(err)
+						}
+						if body.MessageID == assistant.ID {
+							streamed.WriteString(body.Text)
+						}
+					}
+					if streamed.String() != test.want {
+						t.Fatalf("streamed text = %q, want %q", streamed.String(), test.want)
+					}
+					var tools []conversationMessageRecord
+					for _, message := range f.messages(t, record.ID) {
+						if message.Kind == conversation.MessageTool {
+							tools = append(tools, message)
+						}
+					}
+					if test.toolUpdates {
+						if len(tools) != 1 || tools[0].Role != conversation.RoleSystem || tools[0].Delivery != conversation.DeliveryCompleted || !strings.Contains(tools[0].Text, "shell") {
+							t.Fatalf("tool messages = %#v, want one completed system tool message", tools)
+						}
+						if external && tools[0].ContentID == "" {
+							t.Fatal("tool content was retained inline")
+						}
+						acceptedText := ""
+						updatedText := ""
+						var acceptedData, updatedData map[string]string
+						for _, event := range f.events(t, record.ID) {
+							if event.Type == conversation.EventMessageAccepted || event.Type == conversation.EventMessageUpdated {
+								var message struct {
+									ID   string
+									Text string
+									Data map[string]string
+								}
+								if err := json.Unmarshal(event.Data, &message); err != nil {
+									t.Fatal(err)
+								}
+								if message.ID == tools[0].ID {
+									if event.Type == conversation.EventMessageAccepted {
+										acceptedText = message.Text
+										acceptedData = message.Data
+									} else {
+										updatedText = message.Text
+										updatedData = message.Data
+									}
+								}
+							}
+						}
+						wantAccepted, wantUpdated, wantStatus := "Running shell: git status "+strings.Repeat("x", 474)+"…", "Finished shell: completed", "completed"
+						if test.longCompletion {
+							wantAccepted, wantUpdated, wantStatus = "Running shell: pwd", "Finished shell: completed with detailed output", "completed with detailed output"
+						}
+						if acceptedText != wantAccepted || updatedText != wantUpdated || acceptedData["status"] != "" || updatedData["status"] != wantStatus || acceptedData["tool"] != "shell" || updatedData["tool"] != "shell" || acceptedData["item_id"] != "item-1" || updatedData["item_id"] != "item-1" {
+							t.Fatalf("immutable tool revisions changed: %q %+v -> %q %+v", acceptedText, acceptedData, updatedText, updatedData)
+						}
+						output := httptest.NewRecorder()
+						stream := &conversationStream{response: echo.NewResponse(output, echo.New())}
+						head := f.conversation(t, record.ID).EventSeq
+						if cursor, err := stream.replay(t.Context(), f.conversations.store, f.service.database.reader, record.ID, 0, head); err != nil || cursor != head || !strings.Contains(output.Body.String(), wantAccepted) || !strings.Contains(output.Body.String(), wantUpdated) {
+							t.Fatalf("SSE tool replay: cursor=%d head=%d error=%v", cursor, head, err)
+						}
+						if len([]rune(tools[0].Text)) > 500 {
+							t.Fatalf("tool summary length = %d, want at most 500 runes", len([]rune(tools[0].Text)))
+						}
+					} else if len(tools) != 0 {
+						t.Fatalf("tool messages = %#v, want none without tool updates", tools)
+					}
+					if got := f.conversation(t, record.ID).ProviderThreadID; got != "thread-early" {
+						t.Fatalf("thread id = %q, want persisted from the turn update", got)
+					}
+				})
 			}
 		})
 	}

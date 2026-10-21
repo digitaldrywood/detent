@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,6 +75,19 @@ func (s *conversationStore) resolveEventContent(ctx context.Context, query nativ
 			}
 			if fact.ContentID != "" {
 				message.ContentID = fact.ContentID
+			} else if message.Kind == conversation.MessageTool && message.Actor.Kind == conversation.ActorCoordinator {
+				var text, tool, item, status string
+				err := query.QueryRowContext(ctx, `SELECT text,tool,item_id,status FROM conversation_tool_revisions WHERE conversation_id=? AND message_id=? AND revision=?`, id, fact.MessageID, fact.Revision).Scan(&text, &tool, &item, &status)
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return fmt.Errorf("resolve inline tool revision: %w", err)
+				}
+				if err == nil {
+					message.Text, message.ContentID = text, ""
+					message.Data, err = json.Marshal(map[string]string{"tool": tool, "item_id": item, "status": status})
+					if err != nil {
+						return err
+					}
+				}
 			}
 			if err := s.resolveMessageContents(ctx, query, []*conversationMessageRecord{&message}); err != nil {
 				return err
