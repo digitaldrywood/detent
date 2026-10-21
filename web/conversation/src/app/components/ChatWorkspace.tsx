@@ -35,6 +35,7 @@ import { useKeybindingActions } from "../adapters/keybindingActions.ts";
 import { publishPaletteContext } from "../adapters/paletteContext.ts";
 import { toEnvironmentProject } from "../adapters/shell.ts";
 import { useIssueSurfaces } from "../adapters/surfaces.ts";
+import { useRightPanel } from "../adapters/rightPanel.ts";
 import { toastManager } from "../../components/ui/toast.tsx";
 import { type ConversationPanel, useRightPanelWorkspace } from "./RightPanel.tsx";
 
@@ -86,6 +87,7 @@ export interface ChatWorkspaceProps {
   /** The issue page passes its own reads rather than repeating them. */
   readonly attempts?: readonly NativeAttempt[];
   readonly history?: readonly CollaborationEvent[];
+  readonly archived?: boolean;
 
   readonly srHeading?: boolean;
   /**
@@ -135,10 +137,13 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
   }, []);
 
   const projectId = props.project?.id ?? null;
-  const surfaces = useIssueSurfaces(projectId, props.workItemId);
   const scopeKey = props.conversationId ?? props.workItemId ?? "new";
+  const panel = useRightPanel(props.workItemId ?? scopeKey);
+  const detailOpen = panel.isOpen && panel.surfaces.some((surface) => surface.id === panel.activeSurfaceId && (surface.kind === "diff" || surface.kind === "pull-request"));
+  const surfaces = useIssueSurfaces(projectId, props.archived === true && !detailOpen ? null : props.workItemId);
 
   const workspace = useRightPanelWorkspace({
+    panel,
     scopeKey,
     projectId,
     projectName: props.projectName,

@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import { ClientContext } from "../../src/app/client.ts";
 import { useRightPanelWorkspace } from "../../src/app/components/RightPanel.tsx";
+import { useRightPanel } from "../../src/app/adapters/rightPanel.ts";
 import type { ConversationClient } from "../../src/runtime/bootstrap.ts";
 import type { NativeAttempt, Workspace } from "../../src/contracts/work.ts";
 
@@ -16,6 +17,7 @@ afterEach(() => {
 
 function Panel({ scopeKey = "item_1", attemptId = "attempt_1", workItemId = "item_1" }: { scopeKey?: string; attemptId?: string; workItemId?: string }): React.ReactElement {
   const panel = useRightPanelWorkspace({
+    panel: useRightPanel(workItemId ?? scopeKey),
     scopeKey,
     projectId: "proj_1",
     workItemId,
