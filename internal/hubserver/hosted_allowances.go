@@ -12,7 +12,7 @@ import (
 
 const customerContentEvent = `type NOT LIKE 'run.%' AND type <> 'scheduler.decision'`
 
-const collaborationBytesRecount = `SELECT
+const collaborationBytesLegacyRecount = `SELECT
 	(SELECT coalesce(sum(length(CAST(title AS BLOB))+length(CAST(body AS BLOB))+length(CAST(labels_json AS BLOB))+length(CAST(assignees_json AS BLOB))),0) FROM issues) +
 	(SELECT coalesce(sum(length(CAST(body AS BLOB))),0) FROM native_comments) +
 	(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM collaboration_versions) +
@@ -22,8 +22,18 @@ const collaborationBytesRecount = `SELECT
 	(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM github_import_records) +
 	(SELECT coalesce(sum(size),0) FROM attachments WHERE object_deleted_at IS NULL)`
 
+const collaborationBytesRecount = collaborationBytesLegacyRecount + ` + (SELECT coalesce(sum(object_bytes),0) FROM change_content_objects)`
+
 func recountCollaborationBytes(ctx context.Context, tx *sql.Tx) error {
-	_, err := tx.ExecContext(ctx, "UPDATE hosted_usage_counters SET value=("+collaborationBytesRecount+") WHERE name='collaboration_bytes'")
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='change_content_objects')`).Scan(&exists); err != nil {
+		return err
+	}
+	query := collaborationBytesLegacyRecount
+	if exists {
+		query = collaborationBytesRecount
+	}
+	_, err := tx.ExecContext(ctx, "UPDATE hosted_usage_counters SET value=("+query+") WHERE name='collaboration_bytes'")
 	return err
 }
 

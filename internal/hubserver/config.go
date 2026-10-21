@@ -45,6 +45,7 @@ var (
 
 type Config struct {
 	ArchiveReader                  entryauthority.ArchiveReader
+	content                        entryauthority.ContentHandler
 	RunnerReleaseClient            update.ReleaseClient
 	runnerReleaseSignatureVerifier update.ChecksumSignatureVerifier
 	SecretKeys                     *hubsecrets.Keyring

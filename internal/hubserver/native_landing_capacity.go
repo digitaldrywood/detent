@@ -13,13 +13,13 @@ import (
 const nativeLandingCapacityUnknown = -1
 
 const nativeLandingCapacityProject = `CASE WHEN project.profile='native' AND lower(ws.detent_state)='merging'
- AND v.id IS NOT NULL AND COALESCE(json_extract(v.record_json,'$.policy.gates.github_pull_request'),0)=0 THEN i.project_id ELSE '' END`
+ AND v.id IS NOT NULL AND COALESCE((SELECT json_extract(frozen.metadata_json,'$.gates.github_pull_request') FROM policy_revisions frozen WHERE frozen.scope=i.organization_id||'/'||i.project_id AND frozen.policy_id=v.policy_revision_id),json_extract(v.record_json,'$.policy.gates.github_pull_request'),0)=0 THEN i.project_id ELSE '' END`
 
 const nativeGitHubLandingCapacityProject = `CASE WHEN project.profile='native' AND lower(ws.detent_state)='merging'
- AND v.id IS NOT NULL AND COALESCE(json_extract(v.record_json,'$.policy.gates.github_pull_request'),0)=1 THEN i.project_id ELSE '' END`
+ AND v.id IS NOT NULL AND COALESCE((SELECT json_extract(frozen.metadata_json,'$.gates.github_pull_request') FROM policy_revisions frozen WHERE frozen.scope=i.organization_id||'/'||i.project_id AND frozen.policy_id=v.policy_revision_id),json_extract(v.record_json,'$.policy.gates.github_pull_request'),0)=1 THEN i.project_id ELSE '' END`
 
 const nativePendingLandingClause = `c.work_item_id=i.native_id AND v.id IS NOT NULL
- AND COALESCE(json_extract(v.record_json,'$.policy.gates.github_pull_request'),0)=1
+ AND COALESCE((SELECT json_extract(frozen.metadata_json,'$.gates.github_pull_request') FROM policy_revisions frozen WHERE frozen.scope=i.organization_id||'/'||i.project_id AND frozen.policy_id=v.policy_revision_id),json_extract(v.record_json,'$.policy.gates.github_pull_request'),0)=1
  AND COALESCE(json_extract(c.record_json,'$.landed.version_id'),'')<>v.id
  AND EXISTS (SELECT 1 FROM native_attempts pending
  WHERE pending.organization_id=i.organization_id AND pending.project_id=i.project_id AND pending.work_item_id=i.native_id

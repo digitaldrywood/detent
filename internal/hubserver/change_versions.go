@@ -80,6 +80,23 @@ func (s *Service) publishChangeVersion(c echo.Context) error {
 	if err := s.prepareChangeSource(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("change"), c.Request().Method+" "+c.Request().URL.EscapedPath(), request); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	if content, ok := c.Request().Context().Value(changeContentKey{}).(*changeContent); ok && content.call != nil {
+		ctx := c.Request().Context()
+		scope := nativeRequestScope(c)
+		if _, err := s.authorizeChangeSource(ctx, scope, c.Param("item"), c.Param("change"), c.Request().Method+" "+c.Request().URL.EscapedPath(), request); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if len(request.SourceBundle) > 0 {
+			if _, err := prepareChangeContent(ctx, string(scope.organization), request.SourceBundle); err != nil {
+				return s.nativeAPIError(c, err)
+			}
+		}
+		if request.Validation != nil && request.Validation.Output != "" {
+			if _, err := prepareChangeContent(ctx, string(scope.organization), []byte(request.Validation.Output)); err != nil {
+				return s.nativeAPIError(c, err)
+			}
+		}
+	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.publishChangeVersionCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), request, now)
 	})
@@ -158,12 +175,26 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	for _, spec := range rules.RequiredChecks {
 		version.Checks = append(version.Checks, tracker.ChangeCheckExpectation{ChangeCheckSpec: spec, CheckRunID: newNativeID("check")})
 	}
-	raw, err := marshalNative(version)
+	storedVersion := version
+	if version.Validation != nil {
+		command := *version.Validation
+		storedVersion.Validation = &command
+	}
+	if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && storedVersion.Validation != nil {
+		storedVersion.Validation.Output = ""
+	}
+	raw, err := compactChangeVersion(storedVersion)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO change_versions (id, change_id, number, record_json) VALUES (?, ?, ?, ?)", version.ID, change.ID, version.Number, raw); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO change_versions (id, change_id, number, record_json, policy_revision_id) VALUES (?, ?, ?, ?, ?)", version.ID, change.ID, version.Number, raw, version.PolicyID); err != nil {
 		return nil, err
+	}
+	if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && version.Validation != nil {
+		command := *version.Validation
+		if err := persistCommandOutput(ctx, tx, string(scope.organization), version.ID, "", "validation", 0, &command); err != nil {
+			return nil, err
+		}
 	}
 	if associated {
 		if _, err := tx.ExecContext(ctx, "UPDATE release_deliveries SET version_id = ? WHERE work_item_id = ?", version.ID, item); err != nil {
@@ -171,12 +202,22 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 		}
 	}
 	if version.Source != nil {
-		stored, err := encodeChangeSource(request.SourceBundle)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO change_sources (version_id, bundle) VALUES (?, ?)", version.ID, stored); err != nil {
-			return nil, err
+		if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
+			ref, err := preparedChangeContent(ctx, string(scope.organization), request.SourceBundle)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO change_sources(version_id,bundle,object_key,object_sha256,object_bytes,content_bytes) VALUES(?,x'',?,?,?,?)`, version.ID, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize); err != nil {
+				return nil, err
+			}
+		} else {
+			stored, err := encodeChangeSource(request.SourceBundle)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := tx.ExecContext(ctx, "INSERT INTO change_sources (version_id, bundle) VALUES (?, ?)", version.ID, stored); err != nil {
+				return nil, err
+			}
 		}
 	}
 	change.CurrentVersion, change.UpdatedAt = version.ID, now

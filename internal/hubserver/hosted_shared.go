@@ -30,6 +30,7 @@ type HostedSharedEntry struct {
 	Generation      int64
 	ResolveKey      entryauthority.Resolver
 	ArchiveContents attachment.ArchiveContentStore
+	Content         entryauthority.ContentHandler
 	ReadArchive     entryauthority.ArchiveReader
 
 	verifier *cloudassert.Verifier

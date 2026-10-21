@@ -92,7 +92,7 @@ func TestArchiveAuthorityChannel(t *testing.T) {
 func TestCurrentAuthorityChannel(t *testing.T) {
 	t.Parallel()
 	binding := Binding{Issuer: "entry", Organization: "org_example", Generation: 2}
-	for _, scenario := range []string{"concurrent lookups", "wrong allocation", "expired deadline", "shutdown pending lookup", "stalled reader", "archive content"} {
+	for _, scenario := range []string{"concurrent lookups", "wrong allocation", "expired deadline", "shutdown pending lookup", "stalled reader", "archive content", "content read and write", "foreign content"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			if scenario == "stalled reader" {
@@ -163,7 +163,15 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 					return cloudassert.Claims{}, err
 				}
 				return cloudassert.Claims{Subject: origin.Subject, Audience: binding.Organization}, nil
-			}, Archives{Contents: &authorityContents{content: map[string][]byte{}}})
+			}, Archives{Contents: &authorityContents{content: map[string][]byte{}}, Content: func(ctx context.Context, request ContentRequest) ([]byte, error) {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				if request.Write {
+					return request.Data, nil
+				}
+				return []byte("stored object"), nil
+			}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -219,6 +227,34 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 				return
 			}
 			origin := Origin{Issuer: binding.Issuer, Generation: binding.Generation, Subject: "original"}
+			if scenario == "content read and write" || scenario == "foreign content" {
+				ref, data, err := attachment.PrepareArchive(binding.Organization, 1, strings.NewReader("durable content"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := ContentRequest{Organization: binding.Organization, Reference: ref, Write: true, Data: data}
+				if scenario == "foreign content" {
+					request.Organization = "org_other"
+				}
+				result, err := client.Content(t.Context(), request)
+				if scenario == "foreign content" {
+					if err == nil {
+						t.Fatal("foreign content accepted")
+					}
+					return
+				}
+				if err != nil || string(result) != string(data) {
+					t.Fatalf("content write: %v", err)
+				}
+				request.Write = false
+				request.Data = nil
+				result, err = client.Content(t.Context(), request)
+				if err != nil || string(result) != "stored object" {
+					t.Fatalf("content read: %v", err)
+				}
+				return
+			}
+
 			if scenario == "expired deadline" {
 				claims, err := callAuthority[cloudassert.Claims](t.Context(), client, "Resolve", Request{Origin: origin, Deadline: time.Now().Add(-time.Second)})
 				if err == nil || claims.Subject != "" {

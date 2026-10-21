@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -28,6 +29,9 @@ func (s *Service) reviewChange(c echo.Context) error {
 	var request tracker.ReviewChange
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
+	}
+	if err := s.prepareReviewContent(c, request); err != nil {
+		return s.nativeAPIError(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.reviewChangeCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), c.Param("version"), request, now)
@@ -149,9 +153,10 @@ func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 		return nil, err
 	}
 	review := tracker.ChangeReview{SecurityAudit: request.SecurityAudit, SessionMachineID: sessionMachineID, ImplementationReview: request.ImplementationReview, Validator: request.Validator, ID: newNativeID("review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: now}
-	if err := insertChangeEvidence(ctx, tx, change.ID, review.VersionID, "review", "", review); err != nil {
+	if err := storeChangeReview(ctx, tx, string(scope.organization), change.ID, review); err != nil {
 		return nil, err
 	}
+
 	switch request.Decision {
 	case "approved":
 		if err := promoteReviewedChange(ctx, tx, scope, change, now); err != nil {
@@ -202,4 +207,32 @@ func (s *Service) discussChangeCommand(ctx context.Context, tx *sql.Tx, scope na
 	}
 	comment := tracker.ChangeDiscussion{Escape: request.Escape, ID: newNativeID("cmt"), VersionID: request.VersionID, Body: request.Body, Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now}
 	return comment, insertChangeEvidence(ctx, tx, change.ID, comment.VersionID, "discussion", sourceKey, comment)
+}
+
+func storeChangeReview(ctx context.Context, tx *sql.Tx, organization, changeID string, review tracker.ChangeReview) error {
+	storedReview := review
+	if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
+		raw, err := json.Marshal(review)
+		if err != nil {
+			return err
+		}
+		storedReview = tracker.ChangeReview{}
+		if err := json.Unmarshal(raw, &storedReview); err != nil {
+			return err
+		}
+		for role, result := range map[string]*gate.ValidatorResult{"validator": storedReview.Validator, "implementation_review": storedReview.ImplementationReview} {
+			if result == nil {
+				continue
+			}
+			for i := range result.Commands {
+				if err := persistCommandOutput(ctx, tx, organization, review.VersionID, review.ID, role, i, &result.Commands[i]); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if err := insertChangeEvidence(ctx, tx, changeID, review.VersionID, "review", "", storedReview); err != nil {
+		return err
+	}
+	return nil
 }

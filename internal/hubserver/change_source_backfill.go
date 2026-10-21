@@ -26,7 +26,7 @@ func (d *database) backfillChangeSource(ctx context.Context) (bool, error) {
 	var versionID, changeID string
 	var bundle []byte
 	err := d.reader.QueryRowContext(ctx, `SELECT s.version_id,v.change_id,s.bundle FROM change_sources s
-JOIN change_versions v ON v.id=s.version_id WHERE substr(s.bundle,1,4)<>x'00444353' ORDER BY s.version_id LIMIT 1`).Scan(&versionID, &changeID, &bundle)
+JOIN change_versions v ON v.id=s.version_id WHERE s.object_key='' AND substr(s.bundle,1,4)<>x'00444353' ORDER BY s.version_id LIMIT 1`).Scan(&versionID, &changeID, &bundle)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

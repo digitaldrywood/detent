@@ -13,6 +13,7 @@ import (
 
 const BootstrapEnvironment = "DETENT_INTERNAL_ENTRY_AUTHORITY"
 const BootstrapVersion = "v1:3:4"
+const contentTimeout = 15 * time.Second
 
 type Binding struct {
 	Issuer       string
@@ -72,6 +73,7 @@ func closeFiles(files ...*os.File) error {
 type Archives struct {
 	Reader   ArchiveReader
 	Contents attachment.ArchiveContentStore
+	Content  ContentHandler
 }
 
 type authorityServer struct {
@@ -81,6 +83,7 @@ type authorityServer struct {
 	contents       attachment.ArchiveContentStore
 	contentContext func(time.Time) (context.Context, context.CancelFunc)
 	archive        func(ArchiveRequest) (ArchiveResponse, error)
+	content        func(ContentRequest) ([]byte, error)
 }
 
 func (s *authorityServer) Handshake(binding Binding, result *Handshake) error {
@@ -136,6 +139,18 @@ func Start(ctx context.Context, binding Binding, budget time.Duration, resolve R
 	}}
 	if len(archives) == 1 {
 		authority.contents = archives[0].Contents
+		if archives[0].Content != nil {
+			authority.content = func(request ContentRequest) ([]byte, error) {
+				lookup, cancel := context.WithDeadline(ctx, request.Deadline)
+				defer cancel()
+				lookup, stop := context.WithTimeout(lookup, contentTimeout)
+				defer stop()
+				if err := lookup.Err(); err != nil {
+					return nil, err
+				}
+				return archives[0].Content(lookup, request)
+			}
+		}
 		if archives[0].Reader != nil {
 			authority.archive = func(request ArchiveRequest) (ArchiveResponse, error) {
 				lookup, stop := context.WithTimeout(ctx, budget)
@@ -225,6 +240,8 @@ func (c *Client) Close() error {
 type ContentRequest struct {
 	Organization string
 	Content      []byte
+	Data         []byte
+	Write        bool
 	Reference    attachment.ArchiveReference
 	Deadline     time.Time
 }
@@ -272,4 +289,26 @@ func (c *Client) ReadContent(ctx context.Context, organization string, ref attac
 	defer cancel()
 	deadline, _ := ctx.Deadline()
 	return callAuthority[[]byte](ctx, c, "ReadContent", ContentRequest{Organization: organization, Reference: ref, Deadline: deadline})
+}
+
+type ContentHandler func(context.Context, ContentRequest) ([]byte, error)
+
+func (s *authorityServer) Content(request ContentRequest, result *[]byte) error {
+	if s.content == nil || request.Organization != s.binding.Organization || request.Deadline.IsZero() || len(request.Data) > attachment.MaxArchiveBytes || request.Reference.Validate(s.binding.Organization) != nil {
+		return cloudassert.ErrInvalid
+	}
+	data, err := s.content(request)
+	if err != nil {
+		return errors.New("immutable content unavailable")
+	}
+	*result = data
+	return nil
+}
+
+func (c *Client) Content(ctx context.Context, request ContentRequest) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, contentTimeout)
+	defer cancel()
+	request.Deadline, _ = ctx.Deadline()
+	client := &Client{client: c.client, budget: contentTimeout}
+	return callAuthority[[]byte](ctx, client, "Content", request)
 }

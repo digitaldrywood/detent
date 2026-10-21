@@ -14,7 +14,7 @@ import (
 
 const ArchiveRetention = "organization"
 const ArchiveReadLifetime = 5 * time.Minute
-const MaxArchiveBytes = 16 << 20
+const MaxArchiveBytes = 32 << 20
 
 type ArchiveReference struct {
 	Key              string `json:"key"`
@@ -53,7 +53,7 @@ func ArchiveKey(organization, digest string) (string, error) {
 
 func (r ArchiveReference) Validate(organization string) error {
 	key, err := ArchiveKey(organization, r.SHA256)
-	if err != nil || key != r.Key || r.CompressedSize <= 0 || r.CompressedSize > MaxBytes || r.UncompressedSize <= 0 || r.UncompressedSize > MaxArchiveBytes || r.Codec != "gzip" || r.SchemaVersion < 1 || r.Kind != "archive" || r.Retention != ArchiveRetention {
+	if err != nil || key != r.Key || r.CompressedSize <= 0 || r.CompressedSize > MaxArchiveBytes || r.UncompressedSize <= 0 || r.UncompressedSize > MaxArchiveBytes || r.Codec != "gzip" || r.SchemaVersion < 1 || r.Kind != "archive" || r.Retention != ArchiveRetention {
 		return ErrInvalid
 	}
 	return nil
