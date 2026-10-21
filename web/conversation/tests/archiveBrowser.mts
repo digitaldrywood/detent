@@ -63,6 +63,7 @@ try {
       const requestedSections: string[] = [];
       const requestedAccess: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
+      page.on("response", (response) => { if ([401, 403, 404].includes(response.status())) process.stderr.write(`${storage}: ${response.status()} ${response.url()}\n`); });
       await page.route("**/api/v2/**", async (route) => {
         const url = new URL(route.request().url());
         if (url.pathname.endsWith("/source-recovery")) {

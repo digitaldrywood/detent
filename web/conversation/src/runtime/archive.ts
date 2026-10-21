@@ -1,4 +1,4 @@
-import { clearQueryCache, fetchArchiveQuery, invalidateArchiveRevision, scopeOf } from "../app/lib/queryCache.ts";
+import { clearArchiveCache, fetchArchiveQuery, invalidateArchiveRevision, scopeOf } from "../app/lib/queryCache.ts";
 import { ArchiveUnavailable, validateArchive, type ArchiveDescriptor } from "./archiveDecode.ts";
 
 type ArchiveFetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -35,7 +35,7 @@ export async function resolveArchivedResponse(value: unknown, target: string, fe
       if (signal?.aborted) throw new ArchiveUnavailable("cancelled");
       const response = await fetch(access.href, { credentials: "same-origin", cache: "no-store", signal: readSignal });
       if (!response.ok) {
-        if ([401, 403, 404].includes(response.status)) clearQueryCache();
+        if ([401, 403, 404].includes(response.status)) clearArchiveCache();
         throw new ArchiveUnavailable(`authorization HTTP ${response.status}`);
       }
       const grant = await response.json() as { url: string; sha256: string; expires_at: string };

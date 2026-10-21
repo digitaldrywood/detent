@@ -109,6 +109,13 @@ export function invalidateArchiveRevision(scope: QueryKey, revision: string): vo
   }
 }
 
+export function clearArchiveCache(): void {
+  for (const [id, entry] of entries) {
+    if (classOf(entry.key) === "archive") removeArchive(id);
+  }
+  emit();
+}
+
 function hash(key: QueryKey): string {
   return JSON.stringify(key);
 }

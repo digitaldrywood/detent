@@ -6,6 +6,7 @@ import {
   authorizeQueryCache,
   clearQueryCache,
   fetchQuery,
+  fetchArchiveQuery,
   getQueryData,
   invalidateQueries,
   prefetchQuery,
@@ -109,15 +110,21 @@ describe("client data cache", () => {
 });
 
 describe("a refused read", () => {
-  it("reads once on a repeated 403 and keeps other screens' entries", async () => {
+  it.each([401, 403, 404])("reads once on a repeated %s, removes archives and keeps other screens' entries", async (status) => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     authorizeBoardCache("account-one");
+    const archive = ["archive", "session", "org_example", "prj_example", "wi_cached", "1", "digest"];
+    await fetchArchiveQuery(archive, 1, async () => "decoded archive");
+    expect(getQueryData(archive)).toBe("decoded archive");
+    const pending = deferred<string>();
+    const lateArchive = [...archive, "pending"];
+    const late = fetchArchiveQuery(lateArchive, 1, () => pending.promise).then(() => null, (error: unknown) => error);
     const requests: string[] = [];
     const http = makeWorkHttp({
       origin: "", apiBase: "/api", csrfToken: "token",
       fetch: async (input) => {
         requests.push(String(input));
-        return Response.json({ code: "forbidden", message: "Forbidden" }, { status: 403 });
+        return Response.json({ code: "forbidden", message: "Forbidden" }, { status });
       },
       onAuthorizationRejected: () => rejectBoardCache("account-one"),
     });
@@ -132,6 +139,10 @@ describe("a refused read", () => {
     expect(other).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("issue").textContent).toBe("Forbidden");
     expect(screen.getByTestId("probe").textContent).toBe("report");
+    expect(getQueryData(archive)).toBeUndefined();
+    await act(async () => pending.resolve("late archive"));
+    expect(await late).toMatchObject({ message: "Archived detail is unavailable" });
+    expect(getQueryData(lateArchive)).toBeUndefined();
     clearBoardCache();
   });
 });
