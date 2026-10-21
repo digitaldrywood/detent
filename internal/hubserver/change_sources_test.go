@@ -147,6 +147,12 @@ func changeTestPack(t *testing.T, kind byte, size uint64, content []byte, count 
 
 func changeTestSource(t *testing.T, input *tracker.ChangeVersionInput, content ...[]byte) []byte {
 	t.Helper()
+	bundle, _ := changeTestSourceCheckout(t, input, content...)
+	return bundle
+}
+
+func changeTestSourceCheckout(t *testing.T, input *tracker.ChangeVersionInput, content ...[]byte) ([]byte, string) {
+	t.Helper()
 	directory := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
@@ -196,5 +202,5 @@ func changeTestSource(t *testing.T, input *tracker.ChangeVersionInput, content .
 		DiffSHA256:   tracker.ChangeSourceDigest([]byte(diff)),
 		Bytes:        int64(len(bundle)),
 	}
-	return bundle
+	return bundle, directory
 }
