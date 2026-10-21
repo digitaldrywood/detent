@@ -11,8 +11,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -147,6 +149,221 @@ func TestArchiveStorageLifecycle(t *testing.T) {
 			}
 			if !test.fail && !test.corrupt && (refs[0].Key == refs[1].Key || refs[0].SHA256 != refs[1].SHA256 || len(objects) != 2) {
 				t.Fatal("content deduplicated across organizations")
+			}
+		})
+	}
+}
+
+func TestArchiveBindingEndpoints(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		endpoint string
+		allowed  bool
+	}{
+		{"https://1.1.1.1", true},
+		{"http://1.1.1.1", false},
+		{"https://localhost", false},
+		{"https://LOCALHOST.", false},
+		{"https://metadata.localhost", false},
+		{"https://127.0.0.1", false},
+		{"https://169.254.169.254", false},
+		{"https://10.0.0.1", false},
+		{"https://172.16.0.1", false},
+		{"https://192.168.1.1", false},
+		{"https://100.100.100.200", false},
+		{"https://[::1]", false},
+		{"https://[::ffff:127.0.0.1]", false},
+		{"https://[fd00::1]", false},
+		{"https://[fe80::1]", false},
+		{"https://[64:ff9b::a00:1]", false},
+		{"https://user:secret@1.1.1.1", false},
+		{"https://1.1.1.1/?credential=secret", false},
+	} {
+		t.Run(test.endpoint, func(t *testing.T) {
+			if err := ValidateArchiveEndpoint(t.Context(), test.endpoint); (err == nil) != test.allowed {
+				t.Fatalf("endpoint allowed=%t error=%v", test.allowed, err)
+			}
+		})
+	}
+	for _, address := range []string{"0.0.0.0", "224.0.0.1", "198.18.0.1", "192.0.0.1", "2002:7f00:1::1"} {
+		if publicArchiveAddress(netip.MustParseAddr(address)) {
+			t.Fatalf("unsafe address allowed: %s", address)
+		}
+	}
+	b := StorageBinding{Organization: "org_alpha", Backend: "s3", Endpoint: "https://objects.example.test", Region: "region", Bucket: "private", CredentialReference: "fixture-reference"}
+	requests := 0
+	transport := storageTransport(func(r *http.Request) (*http.Response, error) {
+		requests++
+		if r.URL.Host != "objects.example.test" {
+			t.Fatal("redirect destination contacted")
+		}
+		response := storageResponse(http.StatusFound, "")
+		response.Header.Set("Location", "https://169.254.169.254/credentials")
+		return response, nil
+	})
+	store, err := NewBindingStorage(t.Context(), b, Credentials{AccessKeyID: "fixture-access", SecretAccessKey: "fixture-secret"}, transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConfigureArchiveReads(t.Context(), []string{"https://app.example.test"}); err == nil || requests != 1 {
+		t.Fatalf("redirect accepted: requests=%d error=%v", requests, err)
+	}
+	guard, err := archiveTransport("https://objects.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connection, err := guard.DialContext(t.Context(), "tcp", "127.0.0.1:443"); err == nil {
+		connection.Close()
+		t.Fatal("dial destination escaped endpoint")
+	}
+	var logs bytes.Buffer
+	secret := Credentials{AccessKeyID: "fixture-access", SecretAccessKey: "fixture-secret"}
+	raw, err := json.Marshal(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slog.New(slog.NewTextHandler(&logs, nil)).Info("binding", "credentials", secret, "binding", b)
+	for _, value := range []string{"fixture-access", "fixture-secret", "fixture-reference"} {
+		if strings.Contains(string(raw)+logs.String(), value) {
+			t.Fatal("credentials leaked")
+		}
+	}
+	lookups := map[string]bool{}
+	var previous Credentials
+	for _, organization := range []string{"org_alpha", "org_beta"} {
+		secret, err := CredentialsFromEnvironment(organization, "shared_reference", func(key string) string {
+			if lookups[key] {
+				t.Fatal("credential reference crossed tenant boundary")
+			}
+			lookups[key] = true
+			return key
+		})
+		if err != nil || secret.AccessKeyID == "" || secret.SecretAccessKey == "" || secret == previous {
+			t.Fatal("credential reference did not resolve per organization")
+		}
+		previous = secret
+	}
+	if _, err := CredentialsFromEnvironment("org_alpha", "missing", func(string) string { return "" }); err == nil {
+		t.Fatal("missing credentials accepted")
+	}
+}
+
+func TestArchiveOrganizationErasure(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name                                          string
+		versioned, partial, foreign, revoked, bounded bool
+	}{
+		{name: "current objects"},
+		{name: "versions and delete markers", versioned: true},
+		{name: "partial retry", versioned: true, partial: true},
+		{name: "foreign listing", versioned: true, foreign: true},
+		{name: "revoked credentials", revoked: true},
+		{name: "bounded deletion batches", versioned: true, bounded: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			type version struct{ Key, Version string }
+			objects := map[version]bool{{"orgs/org_alpha/blobs/sha256/a/blob", "v1"}: true, {"orgs/org_alpha/blobs/sha256/a/blob", "v2"}: true, {"orgs/org_alpha/attachments/item", "marker"}: true, {"orgs/org_beta/blobs/sha256/a/blob", "v3"}: true}
+			if test.bounded {
+				for index := range 1005 {
+					objects[version{"orgs/org_alpha/blobs/sha256/a/" + strconv.Itoa(index), "version"}] = true
+				}
+			}
+			fail := test.partial
+			deletes := 0
+			transport := storageTransport(func(r *http.Request) (*http.Response, error) {
+				if test.revoked {
+					return storageResponse(http.StatusForbidden, `<Error><Code>AccessDenied</Code><Message>fixture-secret</Message></Error>`), nil
+				}
+				if r.Method == http.MethodGet && r.URL.Query().Has("versioning") {
+					body := `<VersioningConfiguration/>`
+					if test.versioned {
+						body = `<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>`
+					}
+					return storageResponse(http.StatusOK, body), nil
+				}
+				if r.Method == http.MethodGet {
+					if r.URL.Query().Get("prefix") != "orgs/org_alpha/" {
+						t.Fatal("wrong deletion prefix")
+					}
+					var body strings.Builder
+					start := `<ListBucketResult><IsTruncated>false</IsTruncated>`
+					if test.versioned {
+						start = `<ListVersionsResult><IsTruncated>false</IsTruncated>`
+					}
+					body.WriteString(start)
+					for object := range objects {
+						if !strings.HasPrefix(object.Key, "orgs/org_alpha/") && !test.foreign {
+							continue
+						}
+						if test.versioned {
+							tag := "Version"
+							if object.Version == "marker" {
+								tag = "DeleteMarker"
+							}
+							body.WriteString("<" + tag + "><Key>" + object.Key + "</Key><VersionId>" + object.Version + "</VersionId></" + tag + ">")
+						} else {
+							body.WriteString("<Contents><Key>" + object.Key + "</Key></Contents>")
+						}
+					}
+					if test.versioned {
+						body.WriteString("</ListVersionsResult>")
+					} else {
+						body.WriteString("</ListBucketResult>")
+					}
+					return storageResponse(http.StatusOK, body.String()), nil
+				}
+				if r.Method == http.MethodDelete {
+					key := strings.TrimPrefix(r.URL.Path, "/private/")
+					if !strings.HasPrefix(key, "orgs/org_alpha/") {
+						t.Fatal("another tenant deleted")
+					}
+					deletes++
+					if fail && r.URL.Query().Get("versionId") == "v1" {
+						return storageResponse(http.StatusForbidden, `<Error><Code>AccessDenied</Code></Error>`), nil
+					}
+					for object := range objects {
+						if object.Key == key && (!test.versioned || object.Version == r.URL.Query().Get("versionId")) {
+							delete(objects, object)
+						}
+					}
+					return storageResponse(http.StatusNoContent, ""), nil
+				}
+				t.Fatalf("unexpected request %s", r.Method)
+				return storageResponse(http.StatusInternalServerError, "unexpected request"), nil
+			})
+			b := StorageBinding{Organization: "org_alpha", Backend: "s3", Endpoint: "https://objects.example.test", Region: "region", Bucket: "private", CredentialReference: "fixture"}
+			storage, err := NewBindingStorage(t.Context(), b, Credentials{AccessKeyID: "fixture-access", SecretAccessKey: "fixture-secret"}, transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			eraser := storage.(OrganizationEraser)
+			receipt, err := eraser.EraseOrganization(t.Context(), "org_alpha")
+			if test.partial || test.foreign || test.revoked || test.bounded {
+				if err == nil || receipt.Complete || len(receipt.Remaining) == 0 {
+					t.Fatalf("failure lost: receipt=%+v error=%v", receipt, err)
+				}
+				if test.partial {
+					if len(receipt.Remaining) != 1 || receipt.Remaining[0].VersionID != "v1" || receipt.Remaining[0].Code != "delete_refused" {
+						t.Fatalf("imprecise receipt: %+v", receipt)
+					}
+					fail = false
+					receipt, err = eraser.EraseOrganization(t.Context(), "org_alpha")
+				} else if test.bounded {
+					if !receipt.Truncated || deletes != 1000 {
+						t.Fatalf("unbounded erasure: deletes=%d receipt=%+v", deletes, receipt)
+					}
+					receipt, err = eraser.EraseOrganization(t.Context(), "org_alpha")
+				} else {
+					return
+				}
+			}
+			if err != nil || !receipt.Complete || len(objects) != 1 || !objects[version{"orgs/org_beta/blobs/sha256/a/blob", "v3"}] {
+				t.Fatalf("erasure incomplete: remaining=%v receipt=%+v error=%v", objects, receipt, err)
+			}
+			before := deletes
+			if receipt, err = eraser.EraseOrganization(t.Context(), "org_alpha"); err != nil || !receipt.Complete || deletes != before {
+				t.Fatal("erasure was not idempotent")
 			}
 		})
 	}

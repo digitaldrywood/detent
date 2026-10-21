@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -20,10 +21,18 @@ const collaborationBytesRecount = `SELECT
 	(SELECT coalesce(sum(length(CAST(reference_json AS BLOB))),0) FROM artifact_references) +
 	(SELECT coalesce(sum(length(bundle)),0) FROM change_sources) +
 	(SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) FROM github_import_records) +
-	(SELECT coalesce(sum(size),0) FROM attachments WHERE object_deleted_at IS NULL)`
+	(SELECT coalesce(sum(size),0) FROM attachments WHERE object_deleted_at IS NULL AND customer_owned=0)`
 
 func recountCollaborationBytes(ctx context.Context, tx *sql.Tx) error {
-	_, err := tx.ExecContext(ctx, "UPDATE hosted_usage_counters SET value=("+collaborationBytesRecount+") WHERE name='collaboration_bytes'")
+	var customerOwned int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('attachments') WHERE name='customer_owned'").Scan(&customerOwned); err != nil {
+		return err
+	}
+	query := collaborationBytesRecount
+	if customerOwned == 0 {
+		query = strings.ReplaceAll(query, " AND customer_owned=0", "")
+	}
+	_, err := tx.ExecContext(ctx, "UPDATE hosted_usage_counters SET value=("+query+") WHERE name='collaboration_bytes'")
 	return err
 }
 

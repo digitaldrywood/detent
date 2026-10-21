@@ -79,15 +79,19 @@ func (s *Service) writeAttachmentArchive(c echo.Context, ref attachment.ArchiveR
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	id := "att_" + artifact.Digest([]byte(string(scope.organization) + "\n" + ref.Key))[:32]
+	identity := ref.Key
+	if ref.BindingID != "" {
+		identity = ref.BindingID + "\n" + identity
+	}
+	id := "att_" + artifact.Digest([]byte(string(scope.organization) + "\n" + identity))[:32]
 	if !publish {
-		_, err = tx.ExecContext(ctx, `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at,kind,retention_class,object_key,uncompressed_size,codec,schema_version)
-VALUES(?,?,?,?,'archive.gz','application/gzip',?,?,?,'archive',?,?,?,?,?) ON CONFLICT DO NOTHING`, id, scope.organization, scope.project, scope.credential.ID, ref.CompressedSize, ref.SHA256, formatHubTime(now), ref.Retention, ref.Key, ref.UncompressedSize, ref.Codec, ref.SchemaVersion)
+		_, err = tx.ExecContext(ctx, `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at,kind,retention_class,object_key,uncompressed_size,codec,schema_version,storage_binding_id,customer_owned)
+VALUES(?,?,?,?,'archive.gz','application/gzip',?,?,?,'archive',?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, id, scope.organization, scope.project, scope.credential.ID, ref.CompressedSize, ref.SHA256, formatHubTime(now), ref.Retention, ref.Key, ref.UncompressedSize, ref.Codec, ref.SchemaVersion, ref.BindingID, ref.CustomerOwned)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}
-	stored, err := scanAttachmentArchive(tx.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, id, scope.organization))
+	stored, err := scanAttachmentArchive(tx.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class,storage_binding_id,customer_owned FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, id, scope.organization))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -114,7 +118,7 @@ VALUES(?,?,?,?,'archive.gz','application/gzip',?,?,?,'archive',?,?,?,?,?) ON CON
 
 func scanAttachmentArchive(row interface{ Scan(...any) error }) (attachment.ArchiveReference, error) {
 	var ref attachment.ArchiveReference
-	err := row.Scan(&ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize, &ref.Codec, &ref.SchemaVersion, &ref.Kind, &ref.Retention)
+	err := row.Scan(&ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize, &ref.Codec, &ref.SchemaVersion, &ref.Kind, &ref.Retention, &ref.BindingID, &ref.CustomerOwned)
 	return ref, err
 }
 
@@ -128,9 +132,9 @@ func (s *Service) readAttachmentArchive(c echo.Context) error {
 	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, c.Param("item")); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	ref, err := scanAttachmentArchive(s.database.reader.QueryRowContext(ctx, `SELECT a.object_key,a.sha256,a.size,a.uncompressed_size,a.codec,a.schema_version,a.kind,a.retention_class
+	ref, err := scanAttachmentArchive(s.database.reader.QueryRowContext(ctx, `SELECT a.object_key,a.sha256,a.size,a.uncompressed_size,a.codec,a.schema_version,a.kind,a.retention_class,a.storage_binding_id,a.customer_owned
 FROM attachments a JOIN attachment_archive_references r ON r.attachment_id=a.id
-WHERE r.organization_id=? AND r.project_id=? AND r.work_item_id=? AND a.organization_id=r.organization_id AND a.kind='archive' AND a.sha256=?`, scope.organization, scope.project, c.Param("item"), c.Param("digest")))
+WHERE r.organization_id=? AND r.project_id=? AND r.work_item_id=? AND a.organization_id=r.organization_id AND a.kind='archive' AND a.sha256=? AND (?=0 OR a.storage_binding_id=?) ORDER BY a.created_at DESC,a.id LIMIT 1`, scope.organization, scope.project, c.Param("item"), c.Param("digest"), c.QueryParams().Has("binding"), c.QueryParam("binding")))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
