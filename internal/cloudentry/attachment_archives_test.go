@@ -1,0 +1,236 @@
+package cloudentry
+
+import (
+	"bytes"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+type archiveFailureTransport struct {
+	next http.RoundTripper
+	path string
+}
+
+func (f archiveFailureTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method == http.MethodPost && r.URL.Path == f.path {
+		return nil, errors.New("fixture-transport-secret https://objects.example.test/?X-Amz-Signature=fixture-secret")
+	}
+	return f.next.RoundTrip(r)
+}
+
+func TestArchiveRoutesLifecycle(t *testing.T) {
+	t.Parallel()
+	var logs bytes.Buffer
+	f := newEntryFixtureWithLogger(t, slog.New(slog.NewTextHandler(&logs, nil)))
+	store := newSpacesFixture(t, false)
+	storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service.attachments = storage
+	alice := newBrowser(t, f.service.Handler())
+	content := strings.Repeat("fixture-content-secret archived detail\n", 1000)
+	var previous attachment.ArchiveReference
+	for _, org := range []string{"org_alpha", "org_beta"} {
+		alice.login("/organizations/"+org+"/organization", "user_alice:p"+org)
+		_, page := alice.get("/organizations/" + org + "/organization")
+		csrf := csrfFrom(t, page)
+		project := attachmentProject(t, alice, org)
+		base := "/api/v2/organizations/" + org + "/projects/" + project
+		headers := map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf, "X-Detent-Archive-Schema": "1"}
+		items := make([]tracker.NativeIssue, 2)
+		for index := range items {
+			input := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: org + "-" + strconv.Itoa(index)}, Title: []string{"Execution detail", "Review result"}[index], State: "Backlog"}
+			raw, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := attachmentRequest(t, alice, http.MethodPost, base+"/work-items", bytes.NewReader(raw), headers)
+			if response.Code != http.StatusOK {
+				t.Fatalf("create item=%d %s", response.Code, response.Body.String())
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &items[index]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		db, err := sql.Open("sqlite", f.fixtures[org].path+"?_pragma=foreign_keys(1)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := db.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		usage := func() int64 {
+			t.Helper()
+			var used int64
+			if err := db.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&used); err != nil {
+				t.Fatal(err)
+			}
+			return used
+		}
+		count := func(query string) int {
+			t.Helper()
+			var n int
+			if err := db.QueryRowContext(t.Context(), query).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			return n
+		}
+		before := usage()
+		target := base + "/work-items/" + string(items[0].WorkItemID) + "/archives"
+		if org == "org_alpha" {
+			store.mu.Lock()
+			store.failPutResponse = true
+			store.mu.Unlock()
+			response := attachmentRequest(t, alice, http.MethodPost, target, strings.NewReader(content), headers)
+			if response.Code != http.StatusBadGateway || count("SELECT count(*) FROM attachments WHERE kind='archive'") != 0 || usage() != before {
+				t.Fatalf("failed upload committed metadata: %d %s", response.Code, response.Body.String())
+			}
+			store.mu.Lock()
+			store.failPutResponse = false
+			store.mu.Unlock()
+			original := f.service.config.transport
+			metadataPath := base + "/attachment-metadata/archives/" + string(items[0].WorkItemID)
+			f.service.config.transport = func(o Organization) (http.RoundTripper, error) {
+				next, err := original(o)
+				return archiveFailureTransport{next: next, path: metadataPath}, err
+			}
+			response = attachmentRequest(t, alice, http.MethodPost, target, strings.NewReader(content), headers)
+			if response.Code != http.StatusBadGateway || count("SELECT count(*) FROM attachments WHERE kind='archive'") != 0 {
+				t.Fatalf("precommit interruption committed a reference: %d %s", response.Code, response.Body.String())
+			}
+			f.service.config.transport = original
+			storage, err = attachment.NewStorage(t.Context(), store.config(), store.transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.service.attachments = storage
+		}
+		puts := 0
+		for _, request := range store.requests() {
+			if strings.HasPrefix(request, "PUT orgs/") {
+				puts++
+			}
+		}
+		var ref attachment.ArchiveReference
+		for _, item := range items {
+			target = base + "/work-items/" + string(item.WorkItemID) + "/archives"
+			response := attachmentRequest(t, alice, http.MethodPost, target, strings.NewReader(content), headers)
+			if response.Code != http.StatusCreated {
+				t.Fatalf("upload=%d %s", response.Code, response.Body.String())
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &ref); err != nil || ref.Validate(org) != nil {
+				t.Fatal("invalid archive reference")
+			}
+			if strings.Contains(response.Body.String(), "fixture-content-secret") || strings.Contains(response.Body.String(), "X-Amz-") {
+				t.Fatal("upload leaked archive data or credentials")
+			}
+			read := attachmentRequest(t, alice, http.MethodGet, target+"/"+ref.SHA256+"/access", nil, nil)
+			if read.Code != http.StatusOK || read.Header().Get("Cache-Control") != "private, no-store" {
+				t.Fatalf("read=%d %s", read.Code, read.Body.String())
+			}
+			var access attachment.ArchiveRead
+			if err := json.Unmarshal(read.Body.Bytes(), &access); err != nil || access.ArchiveReference != ref || access.URL == "" || time.Until(access.ExpiresAt) > attachment.ArchiveReadLifetime || time.Until(access.ExpiresAt) < attachment.ArchiveReadLifetime-time.Minute {
+				t.Fatal("invalid archive access")
+			}
+			if strings.Contains(read.Body.String(), "fixture-content-secret") || strings.Contains(read.Body.String(), store.config().SecretAccessKey) {
+				t.Fatal("archive response leaked secret")
+			}
+		}
+		if usage()-before != ref.CompressedSize || count("SELECT count(*) FROM attachments WHERE kind='archive'") != 1 || count("SELECT count(*) FROM attachment_archive_references") != 2 {
+			t.Fatal("archive bytes were not metered once per organization")
+		}
+		if org == "org_alpha" {
+			for _, request := range store.requests() {
+				if strings.HasPrefix(request, "PUT orgs/") {
+					puts--
+				}
+			}
+			if puts != 0 {
+				t.Fatal("restart reuploaded existing archive")
+			}
+		}
+		missing := attachmentRequest(t, alice, http.MethodGet, base+"/work-items/wi_missing/archives/"+ref.SHA256+"/access", nil, nil)
+		if missing.Code != http.StatusNotFound {
+			t.Fatalf("missing item read=%d", missing.Code)
+		}
+		var archiveID string
+		if err := db.QueryRowContext(t.Context(), "SELECT id FROM attachments WHERE kind='archive'").Scan(&archiveID); err != nil {
+			t.Fatal(err)
+		}
+		for _, method := range []string{http.MethodGet, http.MethodDelete} {
+			response := attachmentRequest(t, alice, method, base+"/attachments/"+archiveID, nil, headers)
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("archive reachable through attachment %s: %d", method, response.Code)
+			}
+		}
+		if _, err := db.ExecContext(t.Context(), "UPDATE attachments SET size=size+1 WHERE id=?", archiveID); err == nil {
+			t.Fatal("archive metadata is mutable")
+		}
+		if _, err := db.ExecContext(t.Context(), "DELETE FROM attachment_archive_references WHERE work_item_id=?", items[0].WorkItemID); err != nil {
+			t.Fatal(err)
+		}
+		organization, err := f.service.readyOrganization(t.Context(), org)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store.mu.Lock()
+		object := store.objects[ref.Key]
+		object.created = time.Now().Add(-2 * attachment.OrphanTTL)
+		store.objects[ref.Key] = object
+		store.mu.Unlock()
+		if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err != nil {
+			t.Fatal(err)
+		}
+		store.mu.Lock()
+		_, exists := store.objects[ref.Key]
+		store.mu.Unlock()
+		if !exists {
+			t.Fatal("unreferenced archive expired")
+		}
+		if previous.Key != "" && (ref.Key == previous.Key || ref.SHA256 != previous.SHA256) {
+			t.Fatal("organization deduplication boundary failed")
+		}
+		previous = ref
+	}
+	store.mu.Lock()
+	n := len(store.objects)
+	store.mu.Unlock()
+	if n != 2 {
+		t.Fatalf("stored blobs=%d, want two tenant-scoped blobs", n)
+	}
+	for _, secret := range []string{"fixture-content-secret", "fixture-transport-secret", "X-Amz-Signature", store.config().SecretAccessKey} {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatalf("secret leaked into logs: %s", secret)
+		}
+	}
+	f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleting' WHERE id='org_alpha'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.finishDeletion(t.Context(), "org_alpha"); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.objects) != 1 {
+		t.Fatal("organization deletion failed to remove its archive prefix")
+	}
+	for key := range store.objects {
+		if !strings.HasPrefix(key, "orgs/org_beta/") {
+			t.Fatal("organization deletion crossed tenant boundary")
+		}
+	}
+}
