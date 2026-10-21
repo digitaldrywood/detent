@@ -361,6 +361,9 @@ func (s *Service) createChange(c echo.Context) error {
 }
 
 func (s *Service) getChange(c echo.Context) error {
+	if handled, err := s.archiveView(c, c.Param("item"), "change:"+c.Param("change"), nil); handled {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	scope, ctx := nativeRequestScope(c), ctx

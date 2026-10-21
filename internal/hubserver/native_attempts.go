@@ -431,6 +431,9 @@ func nativeRuntimeHistoryChanged(previous, observation *tracker.NativeRuntimeObs
 }
 
 func (s *Service) listNativeAttempts(c echo.Context) error {
+	if handled, err := s.archiveView(c, c.Param("item"), "attempts", nil); handled {
+		return err
+	}
 	ctx := c.Request().Context()
 	scope := nativeRequestScope(c)
 	params, err := nativeReadQuery(c)
@@ -628,6 +631,9 @@ func scanNativeAttempt(rows *sql.Rows, now time.Time) (tracker.NativeAttempt, er
 }
 
 func (s *Service) getNativeAttempt(c echo.Context) error {
+	if handled, err := s.archiveView(c, c.Param("item"), "attempt:"+c.Param("attempt"), nil); handled {
+		return err
+	}
 	result, err := s.readNativeAttempt(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("attempt"))
 	if err != nil {
 		return s.nativeAPIError(c, err)

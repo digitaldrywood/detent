@@ -7,7 +7,7 @@ import { RightPanelTabs } from "../../components/RightPanelTabs.tsx";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../../rightPanelLayout.ts";
 import { useMediaQuery } from "../../hooks/useMediaQuery.ts";
 import { detentKeybindings, resolveShortcutCommand, shortcutLabelForCommand } from "../adapters/keybindings.ts";
-import { useRightPanel, type RightPanelSurface } from "../adapters/rightPanel.ts";
+import { type RightPanelController, type RightPanelSurface } from "../adapters/rightPanel.ts";
 import { usePanelAnimationSettings } from "../../panelAnimations.ts";
 import { HUB_ENVIRONMENT_ID } from "../../contracts/index.ts";
 import type { CollaborationEvent, NativeAttempt } from "../../contracts/work.ts";
@@ -135,6 +135,7 @@ export interface RightPanelWorkspace {
 }
 
 export function useRightPanelWorkspace(input: {
+  readonly panel: RightPanelController;
   /** One panel per conversation or issue. */
   readonly scopeKey: string;
   /** The issue the live surfaces read, and the workspace's own scope (§18.1). */
@@ -167,7 +168,7 @@ export function useRightPanelWorkspace(input: {
   readonly title?: string;
 }): RightPanelWorkspace {
   const client = useClient();
-  const panel = useRightPanel(input.workItemId ?? input.scopeKey);
+  const panel = input.panel;
   const shouldUseSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
     usePanelAnimationSettings();

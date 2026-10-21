@@ -47,10 +47,11 @@ const EMPTY: QuerySnapshot<never> = { data: undefined, error: null, updatedAt: 0
  * Entries kept per class. Issue reads (one per opened or hovered issue) have
  * their own small budget, so browsing issues never evicts page reports.
  */
-const LIMITS = { issue: 24, page: 64 } as const;
+const LIMITS = { issue: 24, page: 64, archive: 8 } as const;
 type EntryClass = keyof typeof LIMITS;
 
 function classOf(key: QueryKey): EntryClass {
+  if (key[0] === "archive") return "archive";
   return key[0] === "issue" || key[0] === "issue-head" ? "issue" : "page";
 }
 
@@ -64,6 +65,59 @@ let account: string | null = null;
 let epoch = 0;
 const entries = new Map<string, Entry>();
 const listeners = new Set<() => void>();
+const archiveSizes = new Map<string, { bytes: number; timer: ReturnType<typeof setTimeout> }>();
+
+function removeArchive(id: string): void {
+  const item = entries.get(id)?.key[4];
+  const size = archiveSizes.get(id);
+  if (size !== undefined) clearTimeout(size.timer);
+  archiveSizes.delete(id);
+  entries.get(id)?.controller?.abort();
+  entries.delete(id);
+  if (typeof item === "string") {
+    for (const [relatedId, related] of entries) {
+      if (classOf(related.key) === "issue" && related.key[1] === item && related.observers === 0) {
+        related.controller?.abort();
+        entries.delete(relatedId);
+      }
+    }
+  }
+}
+
+export async function fetchArchiveQuery<T>(key: QueryKey, bytes: number, read: Read<T>): Promise<T> {
+  const id = hash(key);
+  const result = await fetchQuery(key, read, { staleTime: Infinity });
+  const snapshot = getQuerySnapshot<T>(key);
+  if (snapshot.error !== null) throw snapshot.error;
+  if (result === undefined || snapshot.data === undefined) throw new Error("Archived detail is unavailable");
+  const previous = archiveSizes.get(id);
+  if (previous !== undefined) clearTimeout(previous.timer);
+  archiveSizes.delete(id);
+  archiveSizes.set(id, { bytes, timer: setTimeout(() => removeArchive(id), 10 * 60_000) });
+  let total = [...archiveSizes.values()].reduce((sum, value) => sum + value.bytes, 0);
+  for (const [old, size] of archiveSizes) {
+    if (total <= 64 * 1024 * 1024 && archiveSizes.size <= 8) break;
+    total -= size.bytes;
+    removeArchive(old);
+  }
+  return result;
+}
+
+export function invalidateArchiveRevision(scope: QueryKey, revision: string): void {
+  for (const [id, entry] of entries) {
+    if (entry.key[0] === "archive" && matches(entry.key, scope) && entry.key[scope.length] !== revision) removeArchive(id);
+  }
+}
+
+export function clearArchiveCache(resource?: { readonly workItemId?: string; readonly sectionId?: string }): void {
+  for (const [id, entry] of entries) {
+    if (classOf(entry.key) !== "archive") continue;
+    if (resource?.workItemId !== undefined && entry.key[4] !== resource.workItemId) continue;
+    if (resource?.sectionId !== undefined && entry.key[7] !== resource.sectionId && !(typeof entry.key[7] === "string" && entry.key[7].startsWith(resource.sectionId + ":"))) continue;
+    removeArchive(id);
+  }
+  emit();
+}
 
 function hash(key: QueryKey): string {
   return JSON.stringify(key);
@@ -97,7 +151,8 @@ function prune(kind: EntryClass): void {
   for (const [id, entry] of entries) {
     if (count <= LIMITS[kind]) return;
     if (classOf(entry.key) !== kind || entry.observers > 0 || entry.promise !== null) continue;
-    entries.delete(id);
+    if (kind === "archive") removeArchive(id);
+    else entries.delete(id);
     count--;
   }
 }
@@ -225,6 +280,8 @@ export function clearQueryCache(): void {
   account = null;
   for (const entry of entries.values()) entry.controller?.abort();
   entries.clear();
+  for (const value of archiveSizes.values()) clearTimeout(value.timer);
+  archiveSizes.clear();
   emit();
 }
 

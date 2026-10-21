@@ -1,3 +1,4 @@
+import { invalidateArchiveAccess, resolveArchivedResponse } from "../archive.ts";
 // Same-origin HTTP client for the Detent conversation API.
 //
 // Written for this repository. It replaces the POC's WebSocket JSON-RPC
@@ -279,7 +280,7 @@ export function makeHttpClient(options: HttpClientOptions): DetentHttpClient {
     return Effect.flatMap(
       Effect.tryPromise({
         try: async () => {
-          const headers: Record<string, string> = { Accept: "application/json" };
+          const headers: Record<string, string> = { Accept: "application/json", "X-Detent-Archive-Read": "1" };
           if (body !== undefined) headers["Content-Type"] = "application/json";
           if (MUTATION_METHODS.has(method)) headers["X-CSRF-Token"] = options.csrfToken;
           const response = await doFetch(target, {
@@ -297,6 +298,8 @@ export function makeHttpClient(options: HttpClientOptions): DetentHttpClient {
               parsed = undefined;
             }
           }
+          if (response.ok) parsed = await resolveArchivedResponse(parsed, target, doFetch, options);
+          else invalidateArchiveAccess(target, response.status);
           return { ok: response.ok, status: response.status, parsed };
         },
         catch: (cause) =>

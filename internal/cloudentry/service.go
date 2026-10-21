@@ -373,7 +373,7 @@ func (s *Service) boundary(next echo.HandlerFunc) echo.HandlerFunc {
 		header.Set("Cache-Control", "no-store")
 		header.Set("Referrer-Policy", "no-referrer")
 		header.Set("X-Content-Type-Options", "nosniff")
-		header.Set("Content-Security-Policy", contentSecurity)
+		header.Set("Content-Security-Policy", s.contentSecurity())
 		if s.secure {
 			header.Set("Strict-Transport-Security", "max-age=31536000")
 		}
@@ -535,4 +535,11 @@ func (s *Service) csrfValid(c echo.Context, session accountSession, organization
 		value = c.FormValue("csrf")
 	}
 	return subtle.ConstantTimeCompare([]byte(value), []byte(cloudassert.CSRFToken(session.CSRFSecret, organization))) == 1
+}
+
+func (s *Service) contentSecurity() string {
+	if s.config.Attachments == nil {
+		return contentSecurity
+	}
+	return strings.Replace(contentSecurity, "connect-src 'self'", "connect-src 'self' "+strings.TrimRight(s.config.Attachments.Endpoint, "/"), 1)
 }
