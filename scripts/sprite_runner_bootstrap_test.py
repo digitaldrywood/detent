@@ -104,6 +104,9 @@ elif name == "apt-cache":
     print("  Candidate: " + candidates.get(args[-1], "(none)"))
     print("        500 http://archive.ubuntu.com/ubuntu resolute/main amd64 Packages\n" * 4096)
 elif name == "apt-get":
+    for package, binary in (("bubblewrap", "bwrap"), ("socat", "socat")):
+        if package in args:
+            shutil.copy(__file__, root / "bin" / binary)
     for arg in args:
         if arg.startswith(("postgresql-client-", "docker.io=")):
             package, version = arg.split("=", 1)
@@ -119,6 +122,10 @@ elif name == "apt-get":
                     binary.write_text('#!/bin/sh\nprintf "psql (PostgreSQL) ' + package.rsplit("-", 1)[1] + '.10\\n"\n')
                     binary.chmod(0o755)
             (root / (package + ".version")).write_text(version)
+elif name in ("bwrap", "socat"):
+    if os.environ.get("SANDBOX_TOOL_BROKEN") == name:
+        sys.exit(1)
+    print(name + " fixture")
 elif name == "node" and args == ["--version"]:
     print(os.environ.get("FIXTURE_NODE_VERSION", "v24.11.1"))
 elif name == "node":
@@ -211,7 +218,7 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.home.mkdir()
         self.fake_bin = self.root / "bin"
         self.fake_bin.mkdir()
-        for name in ("uname", "nproc", "findmnt", "curl", "npm", "gh", "rg", "fd", "codex", "claude", "sprite-env", "sha256sum", "id", "sudo", "unshare", "dpkg-query", "apt-cache", "apt-get", "node", "docker", "dockerd"):
+        for name in ("uname", "nproc", "findmnt", "curl", "npm", "gh", "rg", "fd", "codex", "claude", "sprite-env", "sha256sum", "id", "sudo", "unshare", "dpkg-query", "apt-cache", "apt-get", "node", "docker", "dockerd", "bwrap", "socat"):
             path = self.fake_bin / name
             path.write_text(STUB)
             path.chmod(0o755)
@@ -269,6 +276,24 @@ class SpriteBootstrapTests(unittest.TestCase):
 
     def registrations(self):
         return [args for command, args in self.calls() if command == "detent" and args[:3] == ["hub", "runner", "register"]]
+
+    def test_sandbox_prerequisites_checked_before_enrollment(self):
+        for tool in ("bwrap", "socat"):
+            with self.subTest(tool=tool):
+                self.env["SANDBOX_TOOL_BROKEN"] = tool
+                result = self.run_bootstrap()
+                del self.env["SANDBOX_TOOL_BROKEN"]
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Codex sandbox prerequisite " + tool, result.stderr)
+                self.assertEqual(self.registrations(), [])
+        result = self.run_bootstrap()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        for package in ("bubblewrap", "socat"):
+            self.assertTrue(any(name == "apt-get" and package in args for name, args in calls))
+        registered = next(i for i, (name, args) in enumerate(calls) if name == "detent" and args[:3] == ["hub", "runner", "register"])
+        for tool, flag in (("bwrap", "--version"), ("socat", "-V")):
+            self.assertTrue(any(name == tool and args == [flag] for name, args in calls[:registered]))
 
     def test_rerun_preserves_identity_and_keeps_token_out_of_arguments(self):
         # Catches shell evaluation of the pasted command, the token in an

@@ -1629,7 +1629,7 @@ func Default() Config {
 			}),
 			ThreadSandbox:  "workspace-write",
 			TurnTimeoutMS:  3600000,
-			ReadTimeoutMS:  5000,
+			ReadTimeoutMS:  60000,
 			StallTimeoutMS: 300000,
 		},
 		Gate: gate.DefaultConfig(),
