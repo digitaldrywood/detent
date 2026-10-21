@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "package_parallelism": 1,
+  "test_parallelism": 1,
+  "package_timeout": "20m0s",
+  "race": false,
+  "packages": [
+    {
+      "package": "github.com/digitaldrywood/detent/internal/workspace",
+      "outcome": "pass",
+      "elapsed_seconds": 460.645,
+      "evidence_file": "internal__workspace.jsonl"
+    }
+  ]
+}
