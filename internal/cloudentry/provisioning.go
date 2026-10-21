@@ -723,7 +723,17 @@ func (s *Service) deleteOrganization(c echo.Context) error {
 
 func (s *Service) finishDeletion(ctx context.Context, id string) error {
 	s.attachmentMu.Lock()
-	defer s.attachmentMu.Unlock()
+	organization, err := s.registry.Organization(ctx, id)
+	s.attachmentMu.Unlock()
+	if err != nil {
+		return err
+	}
+	if organization.State == "deleted" {
+		return nil
+	}
+	if organization.State != "deleting" {
+		return ErrOrganizationConflict
+	}
 	if err := s.eraseOrganizationStorage(ctx, id); err != nil {
 		return err
 	}
