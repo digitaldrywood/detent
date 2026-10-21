@@ -58,15 +58,7 @@ func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) (isolati
 	for _, configured := range cfg.Projects {
 		workflow, err := project.LoadWorkflowContext(ctx, configured)
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-				continue
-			}
-			p := runnerauth.NewProblem("settings_invalid")
-			p.ProjectID = configured.ID
-			p.Subject = configured.ID + "/workflow"
-			p.Check = "load workflow"
-			p.ErrorOutput = err.Error()
-			problems = append(problems, runnerauth.SanitizeProblem(p))
+			problems = append(problems, runnerauth.WorkflowLoadProblems(configured.ID, err)...)
 			continue
 		}
 		for _, backend := range workflow.Config.AgentBackendConfigs() {
