@@ -1,0 +1,17 @@
+package templates
+
+templ DiagnosticsPageV2(data DashboardData) {
+	@AppShell(DiagnosticsShellDataFromDashboard(data), nil) {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden px-5 py-5"
+				sse-swap="snapshot"
+				hx-swap="morph:innerHTML"
+				data-preserve-scroll="diagnostics-scroll"
+			>
+				@ProjectDiagnosticsSnapshot(data)
+			</div>
+		</main>
+	}
+}
