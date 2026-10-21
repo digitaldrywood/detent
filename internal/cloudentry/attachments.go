@@ -264,8 +264,8 @@ func (s *Service) storeAttachment(c echo.Context, organization Organization, pri
 	if err != nil {
 		return attachmentError(c, http.StatusBadRequest, "invalid_attachment", "Invalid attempt evidence authority")
 	}
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(organization.ID, false)
+	defer unlock()
 	current, err := s.readyOrganization(c.Request().Context(), organization.ID)
 	if err != nil || current.Generation != organization.Generation {
 		return attachmentNotFound(c)
@@ -442,8 +442,8 @@ func (s *Service) closeAttachmentBody(body io.ReadCloser, id string) {
 }
 
 func (s *Service) deleteAttachment(c echo.Context) error {
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(c.Param("organization"), false)
+	defer unlock()
 	if s.attachments == nil {
 		return attachmentNotFound(c)
 	}
@@ -523,8 +523,8 @@ func (s *Service) sweepAttachments(ctx context.Context) {
 }
 
 func (s *Service) sweepOrganizationAttachments(ctx context.Context, organization Organization) error {
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(organization.ID, false)
+	defer unlock()
 	status, raw, err := s.serviceCall(ctx, organization, "/internal/v1/attachments/expired", struct{}{}, nil)
 	if err != nil {
 		return err

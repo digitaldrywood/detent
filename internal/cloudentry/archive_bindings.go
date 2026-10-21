@@ -218,8 +218,8 @@ func (s *Service) archiveStorageBinding(c echo.Context) error {
 		return attachmentError(c, http.StatusBadGateway, "archive_storage_unavailable", "Archive storage is unavailable")
 	}
 	b.Versioned = &versioned
-	s.attachmentMu.Lock()
-	defer s.attachmentMu.Unlock()
+	unlock := s.attachmentLocks.lock(organization.ID, true)
+	defer unlock()
 	if err := s.ensureLegacyArchiveBinding(ctx, organization.ID); err != nil {
 		return attachmentError(c, http.StatusServiceUnavailable, "archive_storage_unavailable", "Archive storage is unavailable")
 	}
