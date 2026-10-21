@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -249,6 +250,7 @@ type ResidualReconciler interface {
 }
 
 type Issue struct {
+	ReleaseDelivery         *tracker.ReleaseDelivery
 	Source                  *ChangeSource
 	Checkpoint              *CheckpointRef
 	Landing                 *LandOptions
@@ -696,6 +698,18 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	if err != nil {
 		return Info{}, err
 	}
+	deliveryHead := ""
+	if issue.ReleaseDelivery != nil && issue.Landing == nil {
+		release, err := l.acquireSourceOperation(ctx)
+		if err != nil {
+			return Info{}, err
+		}
+		deliveryHead, err = l.prepareReleaseDelivery(ctx, issue)
+		release()
+		if err != nil {
+			return Info{}, err
+		}
+	}
 	if issue.Source != nil {
 		release, err := l.acquireSourceOperation(ctx)
 		if err != nil {
@@ -764,6 +778,9 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		info, created, err = l.createLandingWorktree(ctx, info, issue)
 	} else {
 		head := "HEAD"
+		if deliveryHead != "" {
+			head = deliveryHead
+		}
 		if issue.Source != nil {
 			head = issue.Source.Version.HeadSHA
 		}

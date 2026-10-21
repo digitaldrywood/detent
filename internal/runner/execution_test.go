@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -787,6 +788,106 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			observed, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
 			if err != nil || observed.HeadSHA != local.HeadSHA || observed.WorkspaceFingerprint != local.WorkspaceFingerprint {
 				t.Fatalf("workspace authority changed: %+v error=%v", observed, err)
+			}
+		})
+	}
+}
+
+type releaseDeliveryExecution struct {
+	testExecution
+	failure *tracker.NativeTerminalFailure
+}
+
+func (e *releaseDeliveryExecution) PrepareFinish(_ context.Context, _, _ string, failure *tracker.NativeTerminalFailure) error {
+	e.failure = failure
+	return nil
+}
+
+type releaseDeliveryAgent struct {
+	fakeCodexClient
+	head string
+}
+
+func (a *releaseDeliveryAgent) RunTurn(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+	a.calls++
+	head, err := exec.CommandContext(ctx, "git", "-C", req.Workspace, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return AgentTurnResult{}, err
+	}
+	a.head = strings.TrimSpace(string(head))
+	if err := update(AgentUpdate{Type: AgentUpdateTurnStarted, TurnID: "delivery-turn"}); err != nil {
+		return AgentTurnResult{}, err
+	}
+	return AgentTurnResult{}, errors.New("stop after observing delivery head")
+}
+
+func TestNativeReleaseDeliveryWorkspace(t *testing.T) {
+	for _, test := range []struct {
+		name                              string
+		wrongBase, movedHead, hookFailure bool
+	}{
+		{name: "fresh checkout starts at delivery head"},
+		{name: "head outside frozen lineage", wrongBase: true},
+		{name: "moved delivery head", movedHead: true},
+		{name: "workspace failure stays instance owned", hookFailure: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			writer := initRunnerSourceRepo(t)
+			remote := filepath.Join(t.TempDir(), "delivery.git")
+			runRunnerGit(t, writer, "clone", "--bare", writer, remote)
+			runRunnerGit(t, writer, "checkout", "-b", "release/v1.2")
+			runRunnerGit(t, writer, "commit", "--allow-empty", "-m", "freeze release")
+			base := strings.TrimSpace(runRunnerGit(t, writer, "rev-parse", "HEAD"))
+			runRunnerGit(t, writer, "push", remote, "HEAD:refs/heads/release/v1.2")
+			runRunnerGit(t, writer, "checkout", "-b", "operator/release-pick")
+			runRunnerGit(t, writer, "commit", "--allow-empty", "-m", "release pick")
+			head := strings.TrimSpace(runRunnerGit(t, writer, "rev-parse", "HEAD"))
+			runRunnerGit(t, writer, "push", remote, "HEAD:refs/heads/operator/release-pick")
+			receiver := filepath.Join(t.TempDir(), "receiver")
+			runRunnerGit(t, writer, "clone", "--single-branch", "--branch", "main", remote, receiver)
+			repository := "https://github.com/example-org/example-project"
+			runRunnerGit(t, receiver, "config", "url."+remote+".insteadOf", repository+".git")
+			runRunnerGit(t, receiver, "remote", "remove", "origin")
+			if test.wrongBase {
+				runRunnerGit(t, writer, "checkout", "release/v1.2")
+				runRunnerGit(t, writer, "commit", "--allow-empty", "-m", "unrelated release tip")
+				base = strings.TrimSpace(runRunnerGit(t, writer, "rev-parse", "HEAD"))
+				runRunnerGit(t, writer, "push", remote, "HEAD:refs/heads/release/v1.2")
+			}
+			if test.movedHead {
+				runRunnerGit(t, writer, "commit", "--allow-empty", "-m", "moved pick")
+				runRunnerGit(t, writer, "push", remote, "HEAD:refs/heads/operator/release-pick")
+			}
+			options := workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: receiver, AutoBranch: true}
+			if test.hookFailure {
+				options.Hooks.AfterCreate = "exit 17"
+			}
+			backend, err := workspace.NewLocalGit(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			delivery := &tracker.ReleaseDelivery{ReleasePickInput: tracker.ReleasePickInput{Repository: repository, PRNumber: 7, BaseRef: "release/v1.2", BaseSHA: base, HeadRef: "operator/release-pick", HeadSHA: head}}
+			execution := &releaseDeliveryExecution{testExecution: testExecution{recovery: tracker.NativeRecovery{Issue: tracker.NativeIssue{ReleaseDelivery: delivery}}}}
+			agent := &releaseDeliveryAgent{}
+			cfg := config.Config{}
+			cfg.Tracker.Kind = config.TrackerHubNative
+			r, err := NewRunner(Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := connector.Issue{ID: "delivery", Identifier: "native#1", State: "Rework", BranchName: delivery.HeadRef, PRRepository: repository, PullRequest: &connector.PullRequest{Number: 7, State: "OPEN", BranchName: delivery.HeadRef, HeadSHA: head, BaseRef: delivery.BaseRef, BaseSHA: base}}
+			result, err := r.Run(t.Context(), RunRequest{ProjectID: "native", Execution: execution, Issue: issue, Mode: RunModeImplement})
+			if test.wrongBase || test.movedHead || test.hookFailure {
+				if err == nil || agent.calls != 0 || result.TurnStarted {
+					t.Fatalf("unsafe delivery started: result=%+v error=%v calls=%d", result, err, agent.calls)
+				}
+				if test.hookFailure && (execution.failure == nil || execution.failure.Attribution != "instance" || execution.failure.ErrorClass != "workspace_hook" || execution.finish != "failed") {
+					t.Fatalf("workspace failure not instance owned: failure=%+v finish=%s error=%v", execution.failure, execution.finish, err)
+				}
+				return
+			}
+			if agent.calls != 1 || agent.head != head || !result.TurnStarted {
+				t.Fatalf("delivery turn: head=%s want=%s calls=%d result=%+v error=%v", agent.head, head, agent.calls, result, err)
 			}
 		})
 	}
