@@ -36,6 +36,7 @@ type spacesFixture struct {
 	public          bool
 	failDelete      bool
 	failPutResponse bool
+	denyArchive     bool
 	transport       http.RoundTripper
 }
 
@@ -48,6 +49,13 @@ func newSpacesFixture(t *testing.T, public bool) *spacesFixture {
 		key := strings.TrimPrefix(r.URL.Path, "/private/")
 		if r.Header.Get("Authorization") == "" && !f.public {
 			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if f.denyArchive && (r.URL.Query().Has("lifecycle") || r.URL.Query().Has("cors")) {
+			w.WriteHeader(http.StatusForbidden)
+			if _, err := io.WriteString(w, `<Error><Code>AccessDenied</Code></Error>`); err != nil {
+				t.Error(err)
+			}
 			return
 		}
 		if r.URL.Query().Has("lifecycle") {
@@ -170,6 +178,29 @@ func TestAttachmentStorageProbe(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Fatal("entry enabled a public bucket")
+	}
+}
+
+func TestAttachmentArchiveConfigurationRefusalKeepsEntryRunning(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
+	t.Parallel()
+	f := newEntryFixture(t)
+	store := newSpacesFixture(t, false)
+	store.denyArchive = true
+	cfg := f.service.config
+	cfg.StateDir = t.TempDir()
+	settings := store.config()
+	cfg.Attachments = &settings
+	cfg.attachmentTransport = store.transport
+	service, err := Open(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("entry refused to start when archive configuration was denied: %v", err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
