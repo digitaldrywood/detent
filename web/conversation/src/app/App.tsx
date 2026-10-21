@@ -13,6 +13,7 @@ import type { ConversationClient } from "../runtime/bootstrap.ts";
 import { readLastProject, useClient, writeLastProject } from "./client.ts";
 import { HealthFindingsProvider } from "./diagnostics/healthFindings.tsx";
 import { useSidebarFindings } from "./adapters/sidebarFindings.ts";
+import { useSidebarHumanActions } from "./adapters/sidebarHumanActions.ts";
 import { SidebarDataProvider } from "./adapters/sidebarData.tsx";
 import { sidebarProjectScopeKey } from "./adapters/shell.ts";
 import { setSidebarProjectScopeKey, useUiStateStore } from "../uiStateStore.ts";
@@ -174,6 +175,7 @@ function ShellBody(): React.ReactElement {
 
   const projects = client.bootstrap.projects;
   const findings = useSidebarFindings(projects);
+  const humanActions = useSidebarHumanActions(projects);
   const [selectedProjectId, setProjectIdState] = React.useState(
     () => readLastProject() ?? projects[0]?.id ?? "",
   );
@@ -316,6 +318,7 @@ function ShellBody(): React.ReactElement {
     },
     attention,
     findings,
+    humanActions,
   };
 
   // `state/entities.ts` reads the same value outside React, for the one path

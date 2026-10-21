@@ -25,6 +25,8 @@ import type { Bootstrap } from "../../src/contracts/index.ts";
 import bootstrapFixture from "../../src/contracts/fixtures/bootstrap.json";
 import { conversation } from "./builders.ts";
 import { renderSidebar, resetSidebarState, rowFor } from "./sidebarHarness.tsx";
+import { useSidebarHumanActions } from "../../src/app/adapters/sidebarHumanActions.ts";
+import itemFixture from "../../src/contracts/fixtures/work-item.json";
 
 afterEach(() => {
   cleanup();
@@ -301,31 +303,34 @@ describe("the thread sidebar", () => {
 });
 
 
-it("places finding rows below attention issues with one age signal and navigation", async () => {
+it("renders only human actions while retaining the diagnostic findings count", async () => {
   const findings = [
     { id: "hf_1", class: "instance", summary: "Runner attention", next_action: "Check runner", subject: { kind: "runner", id: "runner_1" }, opened_at: "2026-10-06T09:00:00Z", resolved_at: null, severity: "attention", label: "Studio", to: "/fleet" },
     { id: "hf_2", class: "human", summary: "Human attention", next_action: "Check issue", subject: { kind: "work_item", id: "wi_2" }, opened_at: "2026-10-06T10:00:00Z", resolved_at: null, severity: "attention", label: "#2 Migration question", to: "/work/i/wi_2?tab=diagnostics" },
   ] as const;
-  const harness = await renderSidebar({ findings, conversations: [needsYou] });
+  const action = { id: "wi_2", label: "#2 Migration question", to: "/work/i/wi_2", opened_at: "2026-10-06T10:00:00Z" };
+  const harness = await renderSidebar({ findings, conversations: [needsYou], humanActions: [action] });
   const group = screen.getByTestId("sidebar-needs-you");
   expect(within(group).getAllByRole("button").map((row) => row.dataset.testid)).toEqual([
-    "sidebar-needs-you-shelf-toggle", "attention-issue-conv_needs", "finding-hf_1", "finding-hf_2",
+    "sidebar-needs-you-shelf-toggle", "attention-issue-wi_2",
   ]);
   expect(screen.getByTestId("diagnostics-findings-count").textContent).toBe("2");
-  for (const finding of findings) {
-    const row = screen.getByTestId(`finding-${finding.id}`);
-    expect(row.querySelectorAll("time")).toHaveLength(1);
-    expect(row.querySelector("[data-slot=badge]")).toBeNull();
-    fireEvent.click(row);
-    expect(harness.onNavigate).toHaveBeenLastCalledWith(finding.to);
-  }
-  fireEvent.click(screen.getByTestId("sidebar-needs-you-shelf-toggle"));
   expect(screen.queryByTestId("finding-hf_1")).toBeNull();
+  expect(screen.queryByTestId("finding-hf_2")).toBeNull();
+  const row = screen.getByTestId("attention-issue-wi_2");
+  expect(row.querySelectorAll("time")).toHaveLength(1);
+  fireEvent.click(row);
+  expect(harness.onNavigate).toHaveBeenLastCalledWith(action.to);
+  fireEvent.click(screen.getByTestId("sidebar-needs-you-shelf-toggle"));
+  expect(screen.queryByTestId("attention-issue-wi_2")).toBeNull();
 });
 
 const mocks = vi.hoisted(() => ({
   listHealthFindings: vi.fn(),
   getWorkItem: vi.fn(),
+  getProject: vi.fn(),
+  listWorkItems: vi.fn(),
+  getExplanation: vi.fn(),
   runnerNames: new Map<string, { display: string; host: string }>(),
   realHttp: false,
   eventsUrl: (id: string) => `/projects/${id}/events`,
@@ -443,32 +448,54 @@ it.each(["mount", "health event"])("retries the current health tick after a fail
   expect(mocks.listHealthFindings).toHaveBeenCalledTimes((attempts + 1) * 2);
 });
 
-it("renders human waits oldest first with ages from their starts", async () => {
+it("reads current human holds without promoting dependency waits or stale health findings", async () => {
   vi.stubGlobal("EventSource", Source);
   vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-20T12:00:00Z"));
-  const projects = [{ id: "p1", name: "Example project", can_write: true }];
-  const findings = [
-    { id: "hf_recent", subject: { kind: "work_item", id: "wi_recent" }, opened_at: "2026-10-20T10:00:00Z" },
-    { id: "hf_old", subject: { kind: "work_item", id: "wi_old" }, opened_at: "2026-10-17T12:00:00Z" },
-  ].map((finding) => ({ ...finding, signal: "unanswered_human_wait", class: "human", severity: "attention", summary: "Human attention", next_action: "Answer the question", resolved_at: null, last_seen_at: "2026-10-20T11:59:00Z" }));
-  mocks.listHealthFindings.mockResolvedValue({ items: findings, last_tick_at: "2026-10-20T11:59:00Z" });
-  mocks.getWorkItem.mockImplementation(async (_project, id) => ({ number: id === "wi_old" ? 1 : 2, title: "Waiting for an answer" }));
-  const { result } = renderHook(() => useSidebarFindings(projects), {
-    wrapper: ({ children }) => <HealthFindingsProvider projects={projects}>{children}</HealthFindingsProvider>,
-  });
-  await waitFor(() => expect(result.current.map((finding) => finding.id)).toEqual(["hf_old", "hf_recent"]));
-  await renderSidebar({ findings: result.current, conversations: [needsYou] });
-  const rows = within(screen.getByTestId("sidebar-needs-you")).getAllByRole("button");
-  expect(rows.map((row) => row.dataset.testid)).toEqual([
-    "sidebar-needs-you-shelf-toggle", "attention-issue-conv_needs", "finding-hf_old", "finding-hf_recent",
-  ]);
+  const projects = [{ id: "p1", name: "Example project", can_write: true }, { id: "p2", name: "Read only", can_write: false }];
+  const issue = (id: string, state = "Blocked") => ({ ...itemFixture, project_id: "p1", work_item_id: id, state, terminal: false });
+  let items = [issue("wi_dependency"), issue("wi_old"), issue("wi_recent"), issue("wi_answered"), issue("wi_resumed", "Todo"),
+    { ...issue("wi_contract"), issue_contract: { human_action: "Approve the product decision" } }];
+  let answered = false;
+  mocks.getProject.mockResolvedValue({ states: [
+    { name: "Blocked", terminal: false, dispatchable: false },
+    { name: "Todo", terminal: false, dispatchable: true },
+    { name: "Backlog", terminal: false, dispatchable: false },
+  ] });
+  mocks.listWorkItems.mockImplementation(async () => ({ items }));
+  mocks.getExplanation.mockImplementation(async (_project, id) => ({
+    current_lane: { name: id === "wi_resumed" ? "Todo" : "Blocked", freshness: "available" },
+    required_gate: { state: "unavailable", source_state: "unavailable" },
+    latest_transition: { at: id === "wi_old" ? "2026-10-17T12:00:00Z" : "2026-10-20T10:00:00Z" },
+    native_runtime: { attempt: { updated_at: "2026-10-20T11:59:00Z", disposition: {
+      status: "blocked", human_action: !["wi_dependency", "wi_answered", "wi_contract"].includes(id) && !answered,
+    } } },
+  }));
+  const { result } = renderHook(() => useSidebarHumanActions(projects));
+  await waitFor(() => expect(result.current.map((action) => action.id)).toEqual(["wi_old", "wi_contract", "wi_recent"]));
+  expect(mocks.getProject.mock.calls.map(([id]) => id)).toEqual(["p1"]);
+  expect(mocks.listWorkItems).toHaveBeenCalledWith(expect.objectContaining({ state: ["Blocked"] }));
+  await renderSidebar({ humanActions: result.current, conversations: [] });
   for (const [id, start, label] of [
-    ["hf_old", "2026-10-17T12:00:00Z", "3d"],
-    ["hf_recent", "2026-10-20T10:00:00Z", "2h"],
-  ] as const) {
-    const age = within(screen.getByTestId(`finding-${id}`)).getByText(label);
-    expect(age.getAttribute("datetime")).toBe(start);
+    ["wi_old", "2026-10-17T12:00:00Z", "3d"],
+    ["wi_recent", "2026-10-20T10:00:00Z", "2h"],
+  ]) {
+    expect(within(screen.getByTestId(`attention-issue-${id}`)).getByText(label!).getAttribute("datetime")).toBe(start);
   }
+  items = [issue("wi_old", "Todo"), issue("wi_dependency")];
+  await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "1" })));
+  await waitFor(() => expect(result.current).toEqual([]));
+  items = [issue("wi_recent")];
+  await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "2" })));
+  await waitFor(() => expect(result.current.map((action) => action.id)).toEqual(["wi_recent"]));
+  answered = true;
+  await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "3" })));
+  await waitFor(() => expect(result.current).toEqual([]));
+});
+
+it("keeps health findings and failed or waiting conversations out of Needs you without a current human action", async () => {
+  await renderSidebar({ findings: [{ id: "hf_stall", class: "flow", severity: "attention", summary: "Delivery stalled", next_action: "Inspect flow", subject: { kind: "project", id: "p1" }, opened_at: "2026-10-20T10:00:00Z", resolved_at: null, label: "Example project", to: "/diagnostics" }], conversations: [needsYou, conversation({ execution: { ...running.execution, status: "failed" } })] });
+  expect(screen.queryByTestId("sidebar-needs-you")).toBeNull();
+  expect(screen.getByTestId("diagnostics-findings-count").textContent).toBe("1");
 });
 
 it("shares project events while reading every page, filtering and resolving findings", async () => {

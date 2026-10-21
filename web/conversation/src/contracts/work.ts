@@ -160,6 +160,7 @@ export const NativeVerification = Schema.Struct({
 export type NativeVerification = typeof NativeVerification.Type;
 
 export const NativeIssue = Schema.Struct({
+  issue_contract: Schema.optional(Schema.Struct({ human_action: Schema.optional(Schema.String) })),
   archive_summary: Schema.optional(Schema.Struct({ revision: Schema.String, attempts: Schema.Array(Schema.Unknown) })),
   reporter_status: Schema.optional(Schema.Literals(["submitted", "planned", "in_progress", "done", "cancelled"])),
   type: Schema.optional(Schema.Literals(["bug", "change_request"])),

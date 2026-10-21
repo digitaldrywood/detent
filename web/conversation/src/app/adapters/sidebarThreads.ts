@@ -27,8 +27,6 @@ export const ISSUE_LANES: readonly IssueLane[] = ["Needs you", "Running", "Waiti
 export function issueLane(conversation: Conversation): IssueLane | null {
   switch (conversation.execution.status) {
     case "waiting_input":
-    case "failed":
-    case "unknown":
       return "Needs you";
     case "starting":
     case "running":
@@ -37,6 +35,8 @@ export function issueLane(conversation: Conversation): IssueLane | null {
     case "waiting_for_runner":
       return "Waiting";
     case "idle":
+    case "failed":
+    case "unknown":
     case "completed":
     case "interrupted":
       return null;
