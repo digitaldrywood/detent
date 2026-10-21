@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -281,6 +282,9 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	appID, privateKey := lookupEnv("DETENT_HUB_GITHUB_APP_ID"), lookupEnv("DETENT_HUB_GITHUB_APP_PRIVATE_KEY")
 	if appID != "" && privateKey != "" {
 		result.GitHubApp = &connectorgithub.InstallationTokenConfig{AppID: appID, PrivateKey: privateKey, LookupEnv: lookupEnv}
+	}
+	result.ArchiveCredentials = func(_ context.Context, organization, reference string) (attachment.Credentials, error) {
+		return attachment.CredentialsFromEnvironment(organization, reference, lookupEnv)
 	}
 	if config.Attachments != nil {
 		config.Attachments.AccessKeyID = lookupEnv("DETENT_ATTACHMENTS_ACCESS_KEY_ID")
