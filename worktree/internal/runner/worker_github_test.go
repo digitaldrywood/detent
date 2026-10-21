@@ -1,0 +1,1299 @@
+package runner
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+)
+
+func TestNewWorkerGitHubPolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		workerToken       string
+		orchestratorToken string
+		environment       map[string]string
+		resolveGH         workerGitHubTokenResolver
+		wantEnabled       bool
+		wantMode          workerGitHubCredentialMode
+		wantToken         string
+		wantErrText       string
+	}{
+		{name: "unset remains disabled", wantMode: workerGitHubCredentialDisabled},
+		{name: "dedicated literal", workerToken: "worker-token", orchestratorToken: "orchestrator-token", wantEnabled: true, wantMode: workerGitHubCredentialUnclassified, wantToken: "worker-token"},
+		{name: "dedicated environment reference", workerToken: "$WORKER_TOKEN", orchestratorToken: "orchestrator-token", environment: map[string]string{"WORKER_TOKEN": "worker-token"}, wantEnabled: true, wantMode: workerGitHubCredentialUnclassified, wantToken: "worker-token"},
+		{name: "exact token classifies shared", workerToken: "$WORKER_TOKEN", orchestratorToken: "shared-token", environment: map[string]string{"WORKER_TOKEN": "shared-token"}, wantEnabled: true, wantMode: workerGitHubCredentialShared, wantToken: "shared-token"},
+		{name: "gh sentinel resolves", workerToken: "gh", orchestratorToken: "ambient-token", resolveGH: func(context.Context) (string, error) { return " ambient-token\n", nil }, wantEnabled: true, wantMode: workerGitHubCredentialShared, wantToken: "ambient-token"},
+		{name: "gh sentinel without orchestrator user token is distinct", workerToken: "gh", resolveGH: func(context.Context) (string, error) { return "ambient-token", nil }, wantEnabled: true, wantMode: workerGitHubCredentialDistinct, wantToken: "ambient-token"},
+		{name: "gh sentinel with different orchestrator token needs principal classification", workerToken: "gh", orchestratorToken: "orchestrator-token", resolveGH: func(context.Context) (string, error) { return "ambient-token", nil }, wantEnabled: true, wantMode: workerGitHubCredentialUnclassified, wantToken: "ambient-token"},
+		{name: "gh sentinel resolution failure", workerToken: "gh", resolveGH: func(context.Context) (string, error) { return "", errors.New("not logged in") }, wantErrText: "resolve worker.github_token via gh auth token after 3 attempts"},
+		{name: "missing referenced credential", workerToken: "$WORKER_TOKEN", orchestratorToken: "orchestrator-token", wantErrText: "WORKER_TOKEN is empty"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Default()
+			cfg.Tracker.Kind = config.TrackerGitHub
+			cfg.Tracker.Endpoint = "https://api.github.com/graphql"
+			cfg.Tracker.APIKey = tt.orchestratorToken
+			cfg.Worker.GitHubToken = tt.workerToken
+			var logs bytes.Buffer
+			policy, err := newWorkerGitHubPolicy(context.Background(), cfg, "detent", "digitaldrywood/detent#1724", func(key string) string {
+				return tt.environment[key]
+			}, tt.resolveGH, nil, slog.New(slog.NewTextHandler(&logs, nil)))
+			if tt.wantErrText != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErrText) {
+					t.Fatalf("newWorkerGitHubPolicy() error = %v, want containing %q", err, tt.wantErrText)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("newWorkerGitHubPolicy() error = %v", err)
+			}
+			if policy.Enabled != tt.wantEnabled {
+				t.Fatalf("Enabled = %t, want %t", policy.Enabled, tt.wantEnabled)
+			}
+			if policy.CredentialMode != tt.wantMode {
+				t.Fatalf("CredentialMode = %q, want %q", policy.CredentialMode, tt.wantMode)
+			}
+			if tt.wantMode == workerGitHubCredentialShared {
+				policy.Principal.Login = "detent-worker[bot]"
+				policy.PrincipalID = 42
+				classified, classifyErr := policy.classifyCredential(context.Background())
+				if classifyErr != nil {
+					t.Fatalf("classifyCredential() error = %v", classifyErr)
+				}
+				policy = classified
+				if !strings.Contains(logs.String(), "worker github credential uses shared REST budget") {
+					t.Fatalf("logs = %q, want shared-budget warning", logs.String())
+				}
+			}
+			if tt.wantEnabled && (!strings.HasPrefix(policy.CredentialIdentity, "github-rest:") || policy.Token != tt.wantToken) {
+				t.Fatalf("policy = %#v, want redacted identity and resolved worker token", policy)
+			}
+			if tt.wantEnabled {
+				probeCtx, cancel := policy.ProbeContext(context.Background())
+				_, hasDeadline := probeCtx.Deadline()
+				cancel()
+				if !hasDeadline {
+					t.Fatal("worker github probe context has no deadline")
+				}
+			}
+		})
+	}
+}
+
+func TestResolveWorkerGitHubSecretRetries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		resolve      workerGitHubTokenResolver
+		wantToken    string
+		wantCalls    int
+		wantSleeps   []time.Duration
+		wantErr      bool
+		wantDeadline bool
+	}{
+		{
+			name: "transient failures recover",
+			resolve: func() workerGitHubTokenResolver {
+				calls := 0
+				return func(context.Context) (string, error) {
+					calls++
+					if calls < 3 {
+						return "", errors.New("keychain busy")
+					}
+					return "resolved-token", nil
+				}
+			}(),
+			wantToken:  "resolved-token",
+			wantCalls:  3,
+			wantSleeps: []time.Duration{10 * time.Millisecond, 20 * time.Millisecond},
+		},
+		{
+			name: "per-attempt deadlines exhaust",
+			resolve: func(ctx context.Context) (string, error) {
+				<-ctx.Done()
+				return "", ctx.Err()
+			},
+			wantCalls:    3,
+			wantSleeps:   []time.Duration{10 * time.Millisecond, 20 * time.Millisecond},
+			wantErr:      true,
+			wantDeadline: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			calls := 0
+			var sleeps []time.Duration
+			resolver := func(ctx context.Context) (string, error) {
+				calls++
+				return tt.resolve(ctx)
+			}
+			token, err := resolveWorkerGitHubSecret(t.Context(), "gh", nil, resolver, workerGitHubTokenResolutionOptions{
+				Timeout:      5 * time.Millisecond,
+				MaxAttempts:  3,
+				RetryBackoff: 10 * time.Millisecond,
+				Sleep: func(_ context.Context, delay time.Duration) error {
+					sleeps = append(sleeps, delay)
+					return nil
+				},
+			})
+			if token != tt.wantToken || (err != nil) != tt.wantErr {
+				t.Fatalf("resolveWorkerGitHubSecret() = %q, %v; want %q, error %t", token, err, tt.wantToken, tt.wantErr)
+			}
+			if calls != tt.wantCalls {
+				t.Fatalf("resolver calls = %d, want %d", calls, tt.wantCalls)
+			}
+			if !slices.Equal(sleeps, tt.wantSleeps) {
+				t.Fatalf("retry sleeps = %v, want %v", sleeps, tt.wantSleeps)
+			}
+			if !tt.wantErr {
+				return
+			}
+			resolutionErr, ok := AsWorkerGitHubTokenResolutionError(err)
+			if !ok || resolutionErr.Attempts != 3 || resolutionErr.Timeout != 5*time.Millisecond {
+				t.Fatalf("error = %#v, want typed resolution error with retry evidence", err)
+			}
+			if tt.wantDeadline && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("error = %v, want context deadline exceeded", err)
+			}
+		})
+	}
+}
+
+func TestResolveWorkerGitHubSecretHonorsParentCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	calls := 0
+	_, err := resolveWorkerGitHubSecret(ctx, "gh", nil, func(context.Context) (string, error) {
+		calls++
+		return "", errors.New("unexpected call")
+	}, workerGitHubTokenResolutionOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("resolveWorkerGitHubSecret() error = %v, want context canceled", err)
+	}
+	if errors.Is(err, ErrWorkerGitHubTokenResolution) {
+		t.Fatalf("resolveWorkerGitHubSecret() error = %v, parent cancellation classified as infrastructure", err)
+	}
+	if calls != 0 {
+		t.Fatalf("resolver calls = %d, want 0", calls)
+	}
+}
+
+func TestLogWorkerGitHubPolicyErrorUsesResolutionEvent(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	runner := &Runner{
+		projectID: "detent",
+		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	runner.logWorkerGitHubPolicyError(connector.Issue{
+		ID: "issue-worker-github-token", Identifier: "digitaldrywood/detent#2055",
+	}, &WorkerGitHubTokenResolutionError{
+		Attempts: 3,
+		Timeout:  15 * time.Second,
+		Err:      context.DeadlineExceeded,
+	}, telemetry.WorkAttemptIDKey, int64(2055))
+
+	if !strings.Contains(logs.String(), "worker_github_token_resolution_unavailable") || !strings.Contains(logs.String(), "attempts=3") || !strings.Contains(logs.String(), "timeout_ms=15000") {
+		t.Fatalf("logs = %q, want token-resolution event with retry evidence", logs.String())
+	}
+	if strings.Contains(logs.String(), "worker_github_credential_refused") {
+		t.Fatalf("logs = %q, resolution failure used generic credential-refused event", logs.String())
+	}
+}
+
+func TestWorkerCredentialBlockerError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		message            string
+		want               bool
+		wantApprovalDenied bool
+	}{
+		{name: "reported missing authentication", message: "Blocked by missing GitHub authentication.\n\n`gh issue view` and `gh pr view` fail.", want: true},
+		{name: "credential detail after generic blocker heading", message: "Blocked.\n\nGitHub authentication is unavailable, so `gh issue view` fails.", want: true},
+		{name: "reported disabled credential policy", message: "Work is blocked: GitHub credential injection is disabled for this worker.", want: true},
+		{name: "reported git credential failure", message: "Blocked because git push failed: could not read username for HTTPS remote.", want: true},
+		{name: "budget scheduler question", message: "Should we replace project timers with a credential-scoped scheduler using GitHub's rate-budget reset window?"},
+		{name: "would enable", message: "Would you enable GitHub connector write access?", want: true, wantApprovalDenied: true},
+		{name: "manually open", message: "Could you manually open the PR?", want: true, wantApprovalDenied: true},
+		{name: "can I open manually", message: "Can I open the PR manually?", want: true, wantApprovalDenied: true},
+		{name: "manual design", message: "Should workers manually open the PR?"},
+		{name: "enable design", message: "Should we enable GitHub connector write access?"},
+		{name: "credential design question", message: "Should GitHub authentication use one credential per project?"},
+		{name: "authentication support question", message: "GitHub authentication failed; can you repair it?", want: true, wantApprovalDenied: true},
+		{name: "missing credential support question", message: "GitHub credentials are unavailable; can you restore worker access?", want: true, wantApprovalDenied: true},
+		{name: "connector write question", message: "Could you enable GitHub connector write access or open the PR manually?", want: true, wantApprovalDenied: true},
+		{name: "successful fix mentioning incident", message: "Fixed the path that previously reported Blocked by missing GitHub authentication."},
+		{name: "unrelated blocker", message: "Blocked by an ambiguous product decision."},
+		{name: "unrelated authentication blocker", message: "Blocked because authentication is required for the private package registry."},
+		{name: "credential diagnosis without blocker", message: "GitHub authentication was missing, so I configured the worker and completed the change."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := workerCredentialBlockerError(tt.message)
+			if (err != nil) != tt.want {
+				t.Fatalf("workerCredentialBlockerError() = %v, want error %t", err, tt.want)
+			}
+			if err != nil && !IsDeliverableConfigurationError(err) {
+				t.Fatalf("IsDeliverableConfigurationError(%v) = false, want true", err)
+			}
+			if err != nil {
+				var deliverableErr *DeliverableCommandError
+				if !errors.As(err, &deliverableErr) || !forgeavailability.WriteOperation(deliverableErr.Operation) {
+					t.Fatalf("workerCredentialBlockerError() = %#v, want classified write operation", err)
+				}
+				if deliverableErr.ApprovalDenied != tt.wantApprovalDenied {
+					t.Fatalf("ApprovalDenied = %t, want %t", deliverableErr.ApprovalDenied, tt.wantApprovalDenied)
+				}
+			}
+		})
+	}
+}
+
+func TestNewWorkerGitHubPolicyUsesGitHubEndpointForNonGitHubTracker(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Default()
+	cfg.Tracker.Kind = "linear"
+	cfg.Tracker.Endpoint = "https://api.linear.app/graphql"
+	cfg.Tracker.APIKey = "linear-secret"
+	cfg.Worker.GitHubToken = "worker-token"
+	policy, err := newWorkerGitHubPolicy(context.Background(), cfg, "detent", "digitaldrywood/detent#1724", func(string) string { return "" }, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("newWorkerGitHubPolicy() error = %v", err)
+	}
+	if policy.GraphQLURL != "https://api.github.com/graphql" {
+		t.Fatalf("GraphQLURL = %q, want public GitHub API", policy.GraphQLURL)
+	}
+	if policy.RateLimitURL != "https://api.github.com/rate_limit" {
+		t.Fatalf("RateLimitURL = %q, want public GitHub API", policy.RateLimitURL)
+	}
+	if policy.OrchestratorToken != "" {
+		t.Fatalf("OrchestratorToken = %q, want non-GitHub tracker credential excluded", policy.OrchestratorToken)
+	}
+}
+
+func TestConfigureWorkerGitHubEnvironment(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		token string
+	}{
+		{name: "disabled clears ambient tokens"},
+		{name: "dedicated token overrides ambient tokens", token: "worker-token"},
+		{name: "resolved ambient token overrides ambient tokens", token: "ambient-token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tempDir := t.TempDir()
+			request := AgentTurnRequest{
+				TempDir: tempDir,
+				Environment: procgroup.Environment{Variables: map[string]string{
+					"GH_TOKEN":                "ambient-gh",
+					"GITHUB_TOKEN":            "ambient-github",
+					"GH_ENTERPRISE_TOKEN":     "ambient-gh-enterprise",
+					"GITHUB_ENTERPRISE_TOKEN": "ambient-github-enterprise",
+					"EXISTING":                "value",
+				}},
+				workerGitHub: workerGitHubPolicy{Token: tt.token},
+			}
+			if err := configureWorkerGitHubEnvironment(&request); err != nil {
+				t.Fatalf("configureWorkerGitHubEnvironment() error = %v", err)
+			}
+			if request.Environment.Variables["GH_TOKEN"] != "" || request.Environment.Variables["GITHUB_TOKEN"] != "" {
+				t.Fatal("worker token environment was not cleared")
+			}
+			if request.Environment.Variables["GH_ENTERPRISE_TOKEN"] != "" || request.Environment.Variables["GITHUB_ENTERPRISE_TOKEN"] != "" {
+				t.Fatal("worker enterprise token environment was not cleared")
+			}
+			if request.Environment.Variables["EXISTING"] != "value" {
+				t.Fatalf("EXISTING = %q, want value", request.Environment.Variables["EXISTING"])
+			}
+			configDir := filepath.Join(tempDir, "github-cli")
+			if request.Environment.Variables["GH_CONFIG_DIR"] != configDir {
+				t.Fatalf("GH_CONFIG_DIR = %q, want %q", request.Environment.Variables["GH_CONFIG_DIR"], configDir)
+			}
+			if info, err := os.Stat(configDir); err != nil || !info.IsDir() {
+				t.Fatalf("worker github config directory = %v, %v", info, err)
+			}
+			hostsPath := filepath.Join(configDir, "hosts.yml")
+			data, err := os.ReadFile(hostsPath)
+			if tt.token == "" {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("disabled credential file: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var hosts map[string]map[string]string
+			if err := json.Unmarshal(data, &hosts); err != nil {
+				t.Fatal(err)
+			}
+			if hosts["github.com"]["oauth_token"] != tt.token || hosts["github.com"]["git_protocol"] != "https" {
+				t.Fatal("credential file does not contain selected authentication")
+			}
+			info, err := os.Stat(hostsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+				t.Fatalf("credential permissions = %o", info.Mode().Perm())
+			}
+			request.workerGitHub.Token = ""
+			if err := configureWorkerGitHubEnvironment(&request); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(hostsPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("disabled credential retained: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkerGitHubSentinelResolvesAndInjects(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		sentinel string
+	}{
+		{name: "gh", sentinel: "gh"},
+		{name: "gh auth alias", sentinel: "${gh auth token}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Default()
+			cfg.Worker.GitHubToken = tt.sentinel
+			policy, err := newWorkerGitHubPolicy(context.Background(), cfg, "detent", "digitaldrywood/detent#1796", nil, func(context.Context) (string, error) {
+				return "resolved-token", nil
+			}, nil, nil)
+			if err != nil {
+				t.Fatalf("newWorkerGitHubPolicy() error = %v", err)
+			}
+			request := AgentTurnRequest{
+				TempDir: t.TempDir(),
+				Environment: procgroup.Environment{Variables: map[string]string{
+					"GH_CONFIG_DIR": "/ambient/config",
+					"GH_TOKEN":      "ambient-token",
+				}},
+				workerGitHub: policy,
+			}
+			if err := configureWorkerGitHubEnvironment(&request); err != nil {
+				t.Fatalf("configureWorkerGitHubEnvironment() error = %v", err)
+			}
+			if request.Environment.Variables["GH_TOKEN"] != "" || request.Environment.Variables["GITHUB_TOKEN"] != "" {
+				t.Fatal("worker token environment was not cleared")
+			}
+			if request.Environment.Variables["GH_CONFIG_DIR"] == "/ambient/config" {
+				t.Fatal("GH_CONFIG_DIR preserved ambient GitHub CLI configuration")
+			}
+		})
+	}
+}
+
+func TestRunAgentBackendTurnAppliesWorkerGitHubPolicy(t *testing.T) {
+	t.Parallel()
+
+	server := workerGitHubRateLimitServer(t, func(int64) int64 { return 4200 })
+	t.Cleanup(server.Close)
+	tests := []struct {
+		name   string
+		policy workerGitHubPolicy
+		token  string
+	}{
+		{name: "disabled"},
+		{name: "dedicated", policy: workerGitHubTestPolicy(server, new(bytes.Buffer)), token: "worker-token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			backend := &workerGitHubCaptureBackend{}
+			_, runErr, cleanupErr := runAgentBackendTurn(context.Background(), backend, AgentTurnRequest{
+				Workspace: t.TempDir(),
+				Environment: procgroup.Environment{Variables: map[string]string{
+					"GH_TOKEN":     "ambient-gh",
+					"GITHUB_TOKEN": "ambient-github",
+				}},
+				workerGitHub: tt.policy,
+			}, nil)
+			if runErr != nil || cleanupErr != nil {
+				t.Fatalf("runAgentBackendTurn() errors = %v, %v", runErr, cleanupErr)
+			}
+			variables := backend.request.Environment.Variables
+			if variables["GH_TOKEN"] != "" || variables["GITHUB_TOKEN"] != "" {
+				t.Fatal("worker token environment was not cleared")
+			}
+			if variables["GH_ENTERPRISE_TOKEN"] != "" || variables["GITHUB_ENTERPRISE_TOKEN"] != "" {
+				t.Fatal("worker enterprise token environment was not cleared")
+			}
+			if variables["GH_CONFIG_DIR"] != filepath.Join(backend.request.TempDir, "github-cli") {
+				t.Fatalf("GH_CONFIG_DIR = %q, want isolated worker scratch", variables["GH_CONFIG_DIR"])
+			}
+		})
+	}
+}
+
+func TestWorkerGitHubGovernorPublishesBudgetAttribution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		mode            workerGitHubCredentialMode
+		reserve         int64
+		wantConsumer    string
+		wantFamily      string
+		wantAttribution string
+	}{
+		{name: "distinct principal attributes worker pool", mode: workerGitHubCredentialDistinct, reserve: 1000, wantConsumer: telemetry.RESTConsumerWorker, wantFamily: "worker credential", wantAttribution: "worker"},
+		{name: "shared principal leaves pool attribution indeterminate", mode: workerGitHubCredentialShared, reserve: 1250, wantConsumer: telemetry.RESTConsumerSharedPool, wantFamily: "shared credential pool", wantAttribution: "indeterminate"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := workerGitHubRateLimitServer(t, func(int64) int64 { return 4200 })
+			t.Cleanup(server.Close)
+			var logs bytes.Buffer
+			policy := workerGitHubTestPolicy(server, &logs)
+			policy.CredentialMode = tt.mode
+			policy.MinRemaining = tt.reserve
+			var update AgentUpdate
+			governedCtx, stop, err := startWorkerGitHubGovernor(context.Background(), policy, func(got AgentUpdate) error {
+				update = got
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("startWorkerGitHubGovernor() error = %v", err)
+			}
+			if governedCtx == nil {
+				t.Fatal("governed context is nil")
+			}
+			if err := stop(); err != nil {
+				t.Fatalf("stop governor error = %v", err)
+			}
+			if update.RateLimits == nil || len(update.RateLimits.GitHubRESTBudgets) != 1 {
+				t.Fatalf("RateLimits = %#v, want one governed budget", update.RateLimits)
+			}
+			budget := update.RateLimits.GitHubRESTBudgets[0]
+			if budget.Consumer != tt.wantConsumer || budget.EndpointFamily != tt.wantFamily || budget.Remaining != 4200 || budget.MinRemainingReserve != tt.reserve {
+				t.Fatalf("budget = %#v, want consumer %q family %q reserve %d", budget, tt.wantConsumer, tt.wantFamily, tt.reserve)
+			}
+			for _, want := range []string{"consumer=" + tt.wantConsumer, "remaining=4200", "reserve=" + strconv.FormatInt(tt.reserve, 10), "credential_identity=github-rest:", "usage_attribution=" + tt.wantAttribution} {
+				if !strings.Contains(logs.String(), want) {
+					t.Fatalf("logs = %q, want containing %q", logs.String(), want)
+				}
+			}
+		})
+	}
+}
+
+func TestWorkerGitHubGovernorStopsAtReserve(t *testing.T) {
+	t.Parallel()
+
+	server := workerGitHubRateLimitServer(t, func(call int64) int64 {
+		if call == 1 {
+			return 1300
+		}
+		return 1200
+	})
+	t.Cleanup(server.Close)
+	var logs bytes.Buffer
+	poll := make(chan time.Time, 1)
+	policy := workerGitHubTestPolicy(server, &logs)
+	policy.CredentialMode = workerGitHubCredentialShared
+	policy.MinRemaining = 1250
+	policy.Poll = poll
+	governedCtx, stop, err := startWorkerGitHubGovernor(context.Background(), policy, nil)
+	if err != nil {
+		t.Fatalf("startWorkerGitHubGovernor() error = %v", err)
+	}
+	poll <- time.Now()
+	<-governedCtx.Done()
+	if !errors.Is(context.Cause(governedCtx), ErrWorkerGitHubRESTReserved) {
+		t.Fatalf("context cause = %v, want ErrWorkerGitHubRESTReserved", context.Cause(governedCtx))
+	}
+	if err := stop(); !errors.Is(err, ErrWorkerGitHubRESTReserved) {
+		t.Fatalf("stop governor error = %v, want ErrWorkerGitHubRESTReserved", err)
+	}
+	for _, want := range []string{"consumer=shared_pool", "credential_identity=github-rest:worker"} {
+		if !strings.Contains(context.Cause(governedCtx).Error(), want) {
+			t.Fatalf("context cause = %q, want containing %q", context.Cause(governedCtx), want)
+		}
+	}
+	for _, want := range []string{"remaining=1200", "worker_reserved_headroom=1250", "orchestrator_dispatch_floor=1000"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("logs = %q, want containing %q", logs.String(), want)
+		}
+	}
+}
+
+func TestWorkerGitHubGovernorRefusesLaunchAtReserve(t *testing.T) {
+	t.Parallel()
+
+	server := workerGitHubRateLimitServer(t, func(int64) int64 { return 1000 })
+	defer server.Close()
+	var logs bytes.Buffer
+	policy := workerGitHubTestPolicy(server, &logs)
+	_, _, err := startWorkerGitHubGovernor(context.Background(), policy, nil)
+	if !errors.Is(err, ErrWorkerGitHubRESTReserved) {
+		t.Fatalf("startWorkerGitHubGovernor() error = %v, want ErrWorkerGitHubRESTReserved", err)
+	}
+	if !strings.Contains(logs.String(), "worker_reserved_headroom=1000") {
+		t.Fatalf("logs = %q, want reserved headroom warning", logs.String())
+	}
+}
+
+func TestWorkerGitHubCredentialPrincipalClassification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		orchestratorUserID int64
+		wantMode           workerGitHubCredentialMode
+		wantWarning        bool
+	}{
+		{name: "same principal uses shared budget", orchestratorUserID: 42, wantMode: workerGitHubCredentialShared, wantWarning: true},
+		{name: "distinct principal remains isolated", orchestratorUserID: 84, wantMode: workerGitHubCredentialDistinct},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := workerGitHubPrincipalServer(t, tt.orchestratorUserID)
+			t.Cleanup(server.Close)
+			var logs bytes.Buffer
+			policy := workerGitHubTestPolicy(server, &logs)
+			policy.CredentialMode = workerGitHubCredentialUnclassified
+			policy.OrchestratorToken = "orchestrator-token"
+			policy.MinRemaining = 1250
+			classified, err := policy.classifyCredential(context.Background())
+			if err != nil {
+				t.Fatalf("classifyCredential() error = %v", err)
+			}
+			if classified.CredentialMode != tt.wantMode {
+				t.Fatalf("CredentialMode = %q, want %q", classified.CredentialMode, tt.wantMode)
+			}
+			if classified.PrincipalID != 42 || classified.Principal.Login != "detent-worker[bot]" || classified.Principal.Kind != "Bot" {
+				t.Fatalf("Principal = %#v, want Detent worker bot", classified.Principal)
+			}
+			warning := strings.Contains(logs.String(), "worker github credential uses shared REST budget")
+			if warning != tt.wantWarning {
+				t.Fatalf("shared-budget warning present = %t, want %t: %q", warning, tt.wantWarning, logs.String())
+			}
+		})
+	}
+}
+
+func TestRunnerWorkerGitHubBudgetRecoveryOwnership(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
+	t.Parallel()
+	var identityReads, budgetReads atomic.Int64
+	var actor atomic.Int64
+	var remaining atomic.Int64
+	remaining.Store(4900)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Header.Get("Authorization") == "Bearer revoked-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch req.URL.Path {
+		case "/graphql":
+			identityReads.Add(1)
+			_, _ = fmt.Fprintf(w, `{"data":{"viewer":{"databaseId":42,"login":%q,"__typename":"User"}}}`, fmt.Sprintf("current-user-%d", actor.Load()))
+		case "/rate_limit":
+			budgetReads.Add(1)
+			_, _ = fmt.Fprintf(w, `{"resources":{"core":{"limit":5000,"used":100,"remaining":%d,"reset":2000000000}}}`, remaining.Load())
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(server.Close)
+	cfg := config.Config{}
+	cfg.Tracker.Kind = config.TrackerGitHub
+	cfg.Tracker.Endpoint = server.URL + "/graphql"
+	cfg.Tracker.APIKey = "shared-token"
+	cfg.Tracker.GitHubRESTMinReserve = 300
+	cfg.Worker.GitHubToken = "shared-token"
+	cfg.Worker.GitHubRESTMinReserve = 500
+	cfg.Worker.GitHubRESTPollIntervalMS = 3600000
+	r := &Runner{workflow: config.Workflow{Config: cfg}}
+	for _, phase := range []string{"cold", "warm"} {
+		beforeIdentity, beforeBudget := identityReads.Load(), budgetReads.Load()
+		for number := range 10 {
+			identifier := fmt.Sprintf("fixture/detent#%d", number+1)
+			observed, supported, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{Identifier: identifier})
+			if err != nil || !supported || observed.Remaining != 4900 || observed.Consumer != telemetry.RESTConsumerSharedPool {
+				t.Fatalf("current shared budget = %+v, supported=%t, error=%v", observed, supported, err)
+			}
+			actor.Add(1)
+			policy, err := r.workerGitHubPolicy(t.Context(), cfg, identifier)
+			if err != nil || policy.PrincipalID != 42 || policy.Principal.Login != fmt.Sprintf("current-user-%d", actor.Load()) {
+				t.Fatalf("renamed launch principal = %+v, error=%v", policy.Principal, err)
+			}
+			_, stop, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := stop(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if ids, budgets := identityReads.Load()-beforeIdentity, budgetReads.Load()-beforeBudget; ids != 10 || budgets != 20 {
+			t.Fatalf("%s batch reads: identity=%d current_budget=%d, want10/20", phase, ids, budgets)
+		}
+	}
+	beforeIdentity, beforeBudget := identityReads.Load(), budgetReads.Load()
+	results := make(chan error, 10)
+	for range 10 {
+		go func() {
+			_, _, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{Identifier: "fixture/detent#1"})
+			results <- err
+		}()
+	}
+	for range 10 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if identityReads.Load() != beforeIdentity || budgetReads.Load()-beforeBudget != 10 {
+		t.Fatal("parallel recovery retained duplicate identity reads or lost current budgets")
+	}
+	cfg.Worker.GitHubToken = "other-token"
+	r.workflow.Config = cfg
+	beforeIdentity = identityReads.Load()
+	if budget, _, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{}); err != nil || budget.Consumer != telemetry.RESTConsumerSharedPool || identityReads.Load()-beforeIdentity != 2 {
+		t.Fatalf("different tokens for same principal: budget=%+v error=%v", budget, err)
+	}
+	cfg.Worker.GitHubToken = "shared-token"
+	cfg.Worker.GitHubRESTMinReserve = 300
+	r.workflow.Config = cfg
+	if _, _, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{}); !errors.Is(err, ErrWorkerGitHubSharedReserve) {
+		t.Fatalf("changed shared reserve = %v", err)
+	}
+	cfg.Worker.GitHubRESTMinReserve = 500
+	cfg.Worker.GitHubToken, cfg.Tracker.APIKey = "revoked-token", "revoked-token"
+	r.workflow.Config = cfg
+	var monitorErr *WorkerGitHubBudgetMonitorError
+	if _, supported, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{}); !supported || !errors.As(err, &monitorErr) || monitorErr.Operation != "recovery_probe" {
+		t.Fatalf("revoked recovery token: supported=%t error=%v", supported, err)
+	}
+	if _, err := r.workerGitHubPolicy(t.Context(), cfg, "fixture/detent#1"); !errors.As(err, &monitorErr) || monitorErr.Operation != "credential_classification_worker" {
+		t.Fatalf("revoked launch token = %v", err)
+	}
+}
+
+func TestWorkerGitHubSharedReserveValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		mode      workerGitHubCredentialMode
+		reserve   int64
+		wantError bool
+	}{
+		{name: "shared reserve above floor", mode: workerGitHubCredentialShared, reserve: 1250},
+		{name: "shared reserve equal to floor", mode: workerGitHubCredentialShared, reserve: 1000, wantError: true},
+		{name: "distinct reserve equal to floor remains valid", mode: workerGitHubCredentialDistinct, reserve: 1000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			policy := workerGitHubPolicy{
+				Enabled:           true,
+				CredentialMode:    tt.mode,
+				PrincipalID:       42,
+				MinRemaining:      tt.reserve,
+				OrchestratorFloor: 1000,
+			}
+			policy.Principal.Login = "detent-worker[bot]"
+			_, err := policy.classifyCredential(context.Background())
+			if got := errors.Is(err, ErrWorkerGitHubSharedReserve); got != tt.wantError {
+				t.Fatalf("classifyCredential() error = %v, shared reserve error=%t, want %t", err, got, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestWorkerGitHubGovernorBoundsStalledProbe(t *testing.T) {
+	t.Parallel()
+
+	requestStarted := make(chan struct{}, 1)
+	cancelProbe := make(chan context.CancelFunc, 1)
+	policy := workerGitHubPolicy{
+		Enabled:            true,
+		CredentialMode:     workerGitHubCredentialDistinct,
+		Token:              "worker-token",
+		CredentialIdentity: "github-rest:worker",
+		GraphQLURL:         "https://api.github.test/graphql",
+		RateLimitURL:       "https://api.github.test/rate_limit",
+		HTTPClient: workerGitHubHTTPClientFunc(func(request *http.Request) (*http.Response, error) {
+			requestStarted <- struct{}{}
+			<-request.Context().Done()
+			return nil, request.Context().Err()
+		}),
+		ProbeContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
+			probeCtx, cancel := context.WithCancel(ctx)
+			cancelProbe <- cancel
+			return probeCtx, cancel
+		},
+	}
+	preclassifyWorkerGitHubPolicy(&policy)
+	type governorResult struct {
+		ctxErr error
+		stop   func() error
+		err    error
+	}
+	result := make(chan governorResult, 1)
+	go func() {
+		ctx, stop, err := startWorkerGitHubGovernor(context.Background(), policy, nil)
+		result <- governorResult{ctxErr: ctx.Err(), stop: stop, err: err}
+	}()
+
+	var cancel context.CancelFunc
+	select {
+	case cancel = <-cancelProbe:
+	case <-time.After(2 * time.Second):
+		t.Fatal("probe context was not created")
+	}
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("probe request did not start")
+	}
+	cancel()
+	select {
+	case got := <-result:
+		if got.err != nil || got.ctxErr != nil {
+			t.Fatalf("launch probe timeout stopped governor: error=%v context=%v", got.err, got.ctxErr)
+		}
+		if err := got.stop(); err != nil {
+			t.Fatalf("stop governor: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("governor did not return after the probe context was canceled")
+	}
+}
+
+func TestWorkerGitHubProbeFailureIsInstanceDiagnostic(t *testing.T) {
+	t.Parallel()
+	for _, phase := range []string{"launch", "periodic"} {
+		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				var logs bytes.Buffer
+				poll := make(chan time.Time, 1)
+				observed := make(chan struct{}, 1)
+				var calls atomic.Int64
+				policy := workerGitHubPolicy{
+					Enabled: true, CredentialMode: workerGitHubCredentialDistinct,
+					Token: "worker-token", CredentialIdentity: "github-rest:worker",
+					RateLimitURL: "https://api.github.test/rate_limit",
+					MinRemaining: 1000, Poll: poll,
+					HTTPClient: workerGitHubHTTPClientFunc(func(request *http.Request) (*http.Response, error) {
+						call := calls.Add(1)
+						if (phase == "launch" && call == 1) || (phase == "periodic" && call == 2) {
+							<-request.Context().Done()
+							observed <- struct{}{}
+							return nil, request.Context().Err()
+						}
+						return workerGitHubRateLimitResponse(), nil
+					}),
+					ProbeContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
+						if (phase == "launch" && calls.Load() == 0) || (phase == "periodic" && calls.Load() == 1) {
+							return context.WithDeadline(ctx, time.Now().Add(-time.Second))
+						}
+						return context.WithCancel(ctx)
+					},
+					Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+				}
+				preclassifyWorkerGitHubPolicy(&policy)
+				governedCtx, stop, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
+				if err != nil || governedCtx.Err() != nil {
+					t.Fatalf("launch: error=%v context=%v", err, governedCtx.Err())
+				}
+				if phase == "periodic" {
+					poll <- time.Now()
+					select {
+					case <-observed:
+					case <-time.After(2 * time.Second):
+						t.Fatal("periodic timeout was not observed")
+					}
+				}
+				synctest.Wait()
+				if governedCtx.Err() != nil {
+					t.Fatalf("probe timeout canceled active turn: %v", governedCtx.Err())
+				}
+				if err := stop(); err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(logs.String(), "scope=instance") ||
+					!strings.Contains(logs.String(), "operation="+phase+"_probe") ||
+					!strings.Contains(logs.String(), context.DeadlineExceeded.Error()) {
+					t.Fatalf("probe failure lacks instance attribution: %s", logs.String())
+				}
+			})
+		})
+	}
+}
+
+func TestWorkerGitHubPeriodicMonitorFailureThroughSupervisor(t *testing.T) {
+	t.Parallel()
+
+	poll := make(chan time.Time, 1)
+	probeDone := make(chan struct{})
+	var calls atomic.Int64
+	policy := workerGitHubPolicy{
+		Enabled:            true,
+		CredentialMode:     workerGitHubCredentialDistinct,
+		Token:              "worker-token",
+		CredentialIdentity: "github-rest:worker",
+		RateLimitURL:       "https://api.github.test/rate_limit",
+		GraphQLURL:         "https://api.github.test/graphql",
+		MinRemaining:       1000,
+		OrchestratorFloor:  1000,
+		Poll:               poll,
+		HTTPClient: workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+			if calls.Add(1) > 1 {
+				close(probeDone)
+				return nil, errors.New("periodic DNS failure")
+			}
+			return workerGitHubRateLimitResponse(), nil
+		}),
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	preclassifyWorkerGitHubPolicy(&policy)
+	backend := workerGitHubGovernorBackend{
+		policy:    policy,
+		poll:      poll,
+		result:    RunResult{FinalState: FinalStateCompleted, TurnStarted: true, Tokens: TokenTotals{InputTokens: 2_000_000, OutputTokens: 1_000_000, TotalTokens: 3_000_000}},
+		probeDone: probeDone,
+	}
+	supervisor, err := NewSupervisor(backend, SupervisorConfig{})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+	completion := supervisor.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-2028"}, Attempt: 4})
+
+	if completion.Err != nil || completion.Result.FinalState != FinalStateCompleted {
+		t.Fatalf("completion = %#v, want successful active turn after probe failure", completion)
+	}
+	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
+		t.Fatalf("generic retry state = %v, %d, %s; want completed turn", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+	if completion.Result.Tokens.TotalTokens != 3_000_000 {
+		t.Fatalf("tokens = %#v, want actual usage intact", completion.Result.Tokens)
+	}
+}
+
+func TestMergeAgentRateLimitsPreservesWorkerAndProviderBudgets(t *testing.T) {
+	t.Parallel()
+
+	worker := &telemetry.RateLimits{GitHubRESTBudgets: []telemetry.RESTBudget{{Consumer: telemetry.RESTConsumerWorker, CredentialIdentity: "worker", Remaining: 4000}}}
+	provider := &telemetry.RateLimits{LimitID: "codex", Primary: &telemetry.RateLimitBucket{Remaining: 50}}
+	merged := mergeAgentRateLimits(worker, provider)
+	if merged.LimitID != "codex" || merged.Primary == nil || merged.Primary.Remaining != 50 {
+		t.Fatalf("merged provider rate limits = %#v", merged)
+	}
+	if len(merged.GitHubRESTBudgets) != 1 || merged.GitHubRESTBudgets[0].Consumer != telemetry.RESTConsumerWorker {
+		t.Fatalf("merged worker budgets = %#v", merged.GitHubRESTBudgets)
+	}
+}
+
+func workerGitHubRateLimitServer(t *testing.T, remaining func(int64) int64) *httptest.Server {
+	t.Helper()
+	var calls atomic.Int64
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/graphql":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"viewer":{"databaseId":42,"login":"detent-worker[bot]","__typename":"Bot"}}}`))
+		case "/rate_limit":
+			if r.Header.Get("Authorization") != "Bearer worker-token" {
+				t.Errorf("Authorization = %q, want worker bearer token", r.Header.Get("Authorization"))
+			}
+			value := remaining(calls.Add(1))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"resources":{"core":{"limit":5000,"used":%s,"remaining":%s,"reset":%s}}}`,
+				strconv.FormatInt(5000-value, 10),
+				strconv.FormatInt(value, 10),
+				strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10),
+			)
+		default:
+			t.Errorf("path = %q, want /graphql or /rate_limit", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func workerGitHubPrincipalServer(t *testing.T, orchestratorUserID int64) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/graphql" {
+			t.Errorf("path = %q, want /graphql", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		userID := int64(42)
+		login := "detent-worker[bot]"
+		if r.Header.Get("Authorization") == "Bearer orchestrator-token" {
+			userID = orchestratorUserID
+			login = "detent-orchestrator[bot]"
+			if userID == 42 {
+				login = "detent-worker[bot]"
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"data":{"viewer":{"databaseId":%d,"login":%q,"__typename":"Bot"}}}`, userID, login)
+	}))
+}
+
+func workerGitHubTestPolicy(server *httptest.Server, logs *bytes.Buffer) workerGitHubPolicy {
+	return workerGitHubPolicy{
+		Enabled:            true,
+		CredentialMode:     workerGitHubCredentialDistinct,
+		Token:              "worker-token",
+		CredentialIdentity: "github-rest:worker",
+		RateLimitURL:       server.URL + "/rate_limit",
+		GraphQLURL:         server.URL + "/graphql",
+		MinRemaining:       1000,
+		OrchestratorFloor:  1000,
+		PollInterval:       time.Hour,
+		HTTPClient:         server.Client(),
+		Logger:             slog.New(slog.NewTextHandler(logs, nil)),
+		ProjectID:          "detent",
+		IssueIdentifier:    "digitaldrywood/detent#1724",
+	}
+}
+
+type workerGitHubCaptureBackend struct {
+	request AgentTurnRequest
+}
+
+type workerGitHubGovernorBackend struct {
+	policy    workerGitHubPolicy
+	poll      chan<- time.Time
+	result    RunResult
+	probeDone <-chan struct{}
+}
+
+type workerGitHubHTTPClientFunc func(*http.Request) (*http.Response, error)
+
+func (f workerGitHubHTTPClientFunc) Do(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func (b workerGitHubGovernorBackend) Run(ctx context.Context, _ RunRequest) (RunResult, error) {
+	governedCtx, stop, err := startWorkerGitHubGovernor(ctx, b.policy, nil)
+	if err != nil {
+		return b.result, err
+	}
+	b.poll <- time.Now()
+	select {
+	case <-b.probeDone:
+	case <-ctx.Done():
+		return b.result, ctx.Err()
+	}
+	if governedCtx.Err() != nil {
+		return b.result, context.Cause(governedCtx)
+	}
+	return b.result, stop()
+}
+
+func workerGitHubRateLimitResponse() *http.Response {
+	resetAt := time.Now().Add(time.Hour).Unix()
+	body := fmt.Sprintf(`{"resources":{"core":{"limit":5000,"used":800,"remaining":4200,"reset":%d}}}`, resetAt)
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func workerGitHubPrincipalResponse() *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"data":{"viewer":{"databaseId":42,"login":"detent-worker[bot]","__typename":"Bot"}}}`)),
+	}
+}
+
+func preclassifyWorkerGitHubPolicy(policy *workerGitHubPolicy) {
+	policy.PrincipalID = 42
+	policy.Principal.Login = "detent-worker[bot]"
+}
+
+func (b *workerGitHubCaptureBackend) RunTurn(_ context.Context, request AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
+	b.request = request
+	return AgentTurnResult{}, nil
+}
+
+func TestWorkerGitHubFilteredEnvironment(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+	gh, err := exec.LookPath("gh")
+	if err != nil {
+		t.Skip("gh is not installed")
+	}
+	for _, host := range []string{"github.com", "github.example.com"} {
+		t.Run(host, func(t *testing.T) {
+			request := AgentTurnRequest{TempDir: t.TempDir(), workerGitHub: workerGitHubPolicy{Token: "test-worker-token", Principal: connector.IssueActor{Login: "worker"}, GraphQLURL: "https://" + host + "/api/graphql"}}
+			if err := configureWorkerGitHubEnvironment(&request); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.CommandContext(t.Context(), gh, "auth", "token", "--hostname", host)
+			cmd.Env = []string{"GH_CONFIG_DIR=" + request.Environment.Variables["GH_CONFIG_DIR"], "PATH=" + os.Getenv("PATH")}
+			output, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("gh cannot read credentials without token environment: %v", err)
+			}
+			if strings.TrimSpace(string(output)) != "test-worker-token" {
+				t.Fatal("gh read a different credential")
+			}
+		})
+	}
+}
+
+func TestWorkerGitHubCLIAuthStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("local HTTP fixture requires Unix sockets")
+	}
+	gh, err := exec.LookPath("gh")
+	if err != nil {
+		t.Skip("gh is not installed")
+	}
+	dir := t.TempDir()
+	t.Chdir(dir)
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(t.Context(), "unix", "gh.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "token test-worker-token" && r.Header.Get("Authorization") != "Bearer test-worker-token" {
+			t.Error("CLI did not send selected credential")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-OAuth-Scopes", "repo, read:org")
+		if strings.HasSuffix(r.URL.Path, "/graphql") {
+			_, _ = io.WriteString(w, `{"data":{"viewer":{"login":"worker"}}}`)
+		} else {
+			_, _ = io.WriteString(w, `{"login":"worker"}`)
+		}
+	}))
+	if err := server.Listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+	policy := workerGitHubPolicy{Token: "test-worker-token", Principal: connector.IssueActor{Login: "worker"}, GraphQLURL: "https://github.com/graphql"}
+	request := AgentTurnRequest{TempDir: dir, workerGitHub: policy}
+	if err := configureWorkerGitHubEnvironment(&request); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "github-cli", "config.yml"), []byte("http_unix_socket: gh.sock\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), gh, "auth", "status", "--hostname", policy.cliHost())
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GH_CONFIG_DIR=" + request.Environment.Variables["GH_CONFIG_DIR"], "HOME=" + dir}
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("gh auth status: %v: %s", err, output)
+	}
+}
+
+func TestWorkerGitHubCLIAuthenticationPreflight(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
+	// Keep real gh startup outside the parallel helper-process fixtures. The
+	// production probe deadline still applies, including on hosted Windows.
+	if _, err := exec.LookPath("gh"); err != nil {
+		t.Skip("gh is not installed")
+	}
+	for _, tc := range []struct {
+		name    string
+		remove  bool
+		inherit bool
+		token   string
+		wantErr bool
+	}{
+		{name: "inherited global token", token: "test-global-token", inherit: true},
+		{name: "inherited global token missing config", token: "test-global-token", inherit: true, remove: true, wantErr: true},
+		{name: "disabled"}, {name: "configured", token: "test-worker-token"}, {name: "missing config", token: "test-worker-token", remove: true, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := workerGitHubPolicy{Token: tc.token, Principal: connector.IssueActor{Login: "worker"}}
+			if tc.inherit {
+				cfg := config.Default().WithRuntimeGitHubToken(tc.token)
+				var err error
+				policy, err = newWorkerGitHubPolicy(t.Context(), cfg, "example", "#2794", func(string) string { return "" }, nil, nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !policy.Enabled || policy.Token != tc.token {
+					t.Fatal("inherited credential policy was disabled or unresolved")
+				}
+			}
+			policy.Principal = connector.IssueActor{Login: "worker"}
+			request := AgentTurnRequest{TempDir: t.TempDir(), workerGitHub: policy}
+			if err := configureWorkerGitHubEnvironment(&request); err != nil {
+				t.Fatal(err)
+			}
+			if tc.remove {
+				if err := os.Remove(filepath.Join(request.TempDir, "github-cli", "hosts.yml")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := policy.verifyCLIAuthentication(t.Context(), request.Environment)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("preflight error = %v", err)
+			}
+			if tc.wantErr && (!errors.Is(err, ErrWorkerGitHubBudgetMonitor) || !strings.Contains(err.Error(), "instance") || strings.Contains(err.Error(), tc.token)) {
+				t.Fatalf("unclassified or unsafe error: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkerGitHubClassificationSecondaryCooldown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
+	t.Parallel()
+	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+			defer server.Close()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
+			policy.CredentialMode = workerGitHubCredentialUnclassified
+			policy.HTTPClient = workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+				cancel()
+				return &http.Response{StatusCode: status, Header: http.Header{"Retry-After": []string{"60"}}, Body: io.NopCloser(strings.NewReader(`{"message":"You have exceeded a secondary rate limit"}`))}, nil
+			})
+			_, _, err := startWorkerGitHubGovernor(ctx, policy, nil)
+			if errors.Is(err, ErrWorkerGitHubBudgetMonitor) {
+				t.Fatalf("secondary throttle registered monitor failure: %v", err)
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("error = %v, want canceled cooldown wait", err)
+			}
+		})
+	}
+}
+
+func TestWorkerGitHubClassificationWaitsForSharedCooldown(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		status   int
+		body     string
+		existing bool
+	}{
+		{"secondary 403", 403, `{"message":"You have exceeded a secondary rate limit"}`, false},
+		{"secondary 429", 429, `{"message":"You have exceeded a secondary rate limit"}`, false},
+		{"graphql secondary error", 200, `{"errors":[{"type":"RATE_LIMITED","message":"secondary rate limit"}]}`, false},
+		{"existing shared cooldown", 403, `{"message":"You have exceeded a secondary rate limit"}`, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// Repetitions share the process registry, but synctest resets time.
+			// Both clients still share this invocation's credential and cooldown.
+			token := t.TempDir()
+			synctest.Test(t, func(t *testing.T) {
+				started := time.Now()
+				calls := 0
+				client := workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					if calls == 1 {
+						return &http.Response{StatusCode: tt.status, Header: http.Header{"Retry-After": []string{"60"}}, Body: io.NopCloser(strings.NewReader(tt.body))}, nil
+					}
+					if time.Since(started) < time.Minute {
+						t.Errorf("probe bypassed shared cooldown after %s", time.Since(started))
+					}
+					return workerGitHubPrincipalResponse(), nil
+				})
+				policy := workerGitHubPolicy{Enabled: true, CredentialMode: workerGitHubCredentialUnclassified, Token: token, GraphQLURL: "https://github.test/graphql", HTTPClient: client}
+				if tt.existing {
+					shared, err := githubconnector.NewClient(githubconnector.ClientConfig{Endpoint: policy.GraphQLURL, TokenSource: githubconnector.StaticTokenSource(policy.Token), HTTPClient: client})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := shared.GraphQL(t.Context(), "query { viewer { login } }", nil, nil); !errors.Is(err, githubconnector.ErrRateLimited) {
+						t.Fatalf("seed cooldown: %v", err)
+					}
+				}
+				classified, err := policy.classifyCredential(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if classified.PrincipalID <= 0 || calls != 2 {
+					t.Fatalf("principal = %#v, calls = %d", classified.Principal, calls)
+				}
+				if time.Since(started) != time.Minute {
+					t.Fatalf("cooldown = %s, want one minute", time.Since(started))
+				}
+			})
+		})
+	}
+}
