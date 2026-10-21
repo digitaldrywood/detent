@@ -29,7 +29,7 @@ func (s *Service) readRunnerCapacity(ctx context.Context, scope nativeScope, res
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if backend != "" && (runnerauth.CapacityRequest{ExpectedConfigRevision: strings.Repeat("0", 64), Capacity: 1, Backend: backend}).Validate() != nil {
-		return nil, nativeInvalid("Backend must be a bounded provider identifier")
+		return nil, nativePublicInvalid("Backend must be a bounded provider identifier")
 	}
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -60,7 +60,7 @@ func (s *Service) readRunnerCapacity(ctx context.Context, scope nativeScope, res
 
 func (s *Service) updateRunnerCapacityCommand(ctx context.Context, scope nativeScope, resource string, request runnerCapacityChange) (any, error) {
 	if request.ExpectedRevision < 1 || request.Validate() != nil || strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativeInvalid("A bounded capacity, configuration revision, runner revision and idempotency key are required")
+		return nil, nativePublicInvalid("A bounded capacity, configuration revision, runner revision and idempotency key are required")
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -99,7 +99,7 @@ func (s *Service) updateRunnerCapacityCommand(ctx context.Context, scope nativeS
 		return nil, nativeConflict(tracker.Revision(r.Revision))
 	}
 	if !freshCapacityConfig(r, now) || r.CapacityConfig.Revision != request.ExpectedConfigRevision {
-		return nil, &nativeError{Code: "revision_conflict", Message: "Current enrolled runner configuration evidence is required; read runner capacity again", status: http.StatusConflict}
+		return nil, &nativeError{Code: "revision_conflict", Message: "Current enrolled runner configuration evidence is required; read runner capacity again", status: http.StatusConflict, publicMessage: true}
 	}
 	before, err := s.database.hostedConsumption(ctx, tx, now)
 	if err != nil {
@@ -153,7 +153,7 @@ func (s *Service) getRunnerCapacity(c echo.Context) error {
 func (s *Service) updateRunnerCapacity(c echo.Context) error {
 	var request runnerCapacityChange
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok {

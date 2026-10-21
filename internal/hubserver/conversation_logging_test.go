@@ -191,7 +191,7 @@ func TestConversationLoggingCommandPath(t *testing.T) {
 	t.Run("stale execution on the api path", func(t *testing.T) {
 		response := f.command(t, f.token, record.ID, conversation.Command{Key: "q-stale", Kind: conversation.CommandMessage, Text: conversationLogSentinel, Expected: conversation.Expected{AttemptID: "att_none"}})
 		requireNativeError(t, response, http.StatusConflict, "stale_execution")
-		requireConversationLogFields(t, sink.only(t, "conversation.stale_execution"), map[string]any{
+		requireConversationLogFields(t, sink.only(t, "API request refused"), map[string]any{
 			"conversation_id":     record.ID,
 			"expected_attempt_id": "att_none",
 			"current_attempt_id":  "",
@@ -219,7 +219,7 @@ func TestConversationLoggingCommandPath(t *testing.T) {
 			"lease_id": "lease_absent", "fencing_token": 1, "attempt_id": "att_worker", "events": []map[string]any{},
 		})
 		requireNativeError(t, response, http.StatusConflict, "stale_execution")
-		found := sink.events(t, "conversation.stale_execution")
+		found := sink.events(t, "API request refused")
 		if len(found) != 2 {
 			t.Fatalf("conversation.stale_execution records = %d, want 2", len(found))
 		}

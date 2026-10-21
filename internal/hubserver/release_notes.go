@@ -123,7 +123,7 @@ func (s *Service) releaseNotesAPI(c echo.Context) error {
 	if c.Request().Method == http.MethodPut {
 		build, ok := s.runningRelease()
 		if !ok {
-			return s.nativeAPIError(c, nativeInvalid("The running release is unavailable"))
+			return s.nativeAPIError(c, nativePublicInvalid("The running release is unavailable"))
 		}
 		_, err := s.database.db.ExecContext(ctx, `INSERT INTO hosted_release_preferences (organization_id,user_id,version,build_time) VALUES (?,?,?,?) ON CONFLICT (organization_id,user_id) DO UPDATE SET version=excluded.version,build_time=excluded.build_time WHERE excluded.build_time>=hosted_release_preferences.build_time`, s.config.Hosted.OrganizationID, credential.Hosted.Subject, build.Version, build.BuildTime.UTC().Format("2006-01-02T15:04:05.000000000Z"))
 		if err != nil {
@@ -134,13 +134,13 @@ func (s *Service) releaseNotesAPI(c echo.Context) error {
 	if value := c.QueryParam("limit"); value != "" {
 		limit, err := strconv.Atoi(value)
 		if err != nil || limit < 1 {
-			return s.nativeAPIError(c, nativeInvalid("Invalid release notes limit"))
+			return s.nativeAPIError(c, nativePublicInvalid("Invalid release notes limit"))
 		}
 		request.Limit = limit
 	}
 	page, err := s.readReleaseNotes(ctx, credential, request)
 	if errors.Is(err, operatortool.ErrInvalidArguments) {
-		return s.nativeAPIError(c, nativeInvalid("Invalid release notes pagination"))
+		return s.nativeAPIError(c, nativePublicInvalid("Invalid release notes pagination"))
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)

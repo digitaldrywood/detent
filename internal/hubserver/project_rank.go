@@ -65,7 +65,7 @@ func (s *Service) updateHostedProjectRank(c echo.Context) error {
 	}
 	var change projectRankChange
 	if err := decodeAPIJSON(c, &change); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.updateOrganizationProjectRankCommand(c.Request().Context(), credential, change)
 	if err != nil {
@@ -86,7 +86,7 @@ func (s *Service) updateOrganizationProjectRankCommand(ctx context.Context, cred
 			return nil, nativeConflict(tracker.Revision(value.Revision))
 		}
 		if errors.Is(err, projectsettings.ErrInvalid) {
-			return nil, nativeInvalid("Order must include every readable project once")
+			return nil, nativePublicInvalid("Order must include every readable project once")
 		}
 		if err != nil {
 			return nil, err
