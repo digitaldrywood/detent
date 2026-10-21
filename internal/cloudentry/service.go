@@ -377,7 +377,7 @@ func (s *Service) boundary(next echo.HandlerFunc) echo.HandlerFunc {
 		header.Set("Cache-Control", "no-store")
 		header.Set("Referrer-Policy", "no-referrer")
 		header.Set("X-Content-Type-Options", "nosniff")
-		header.Set("Content-Security-Policy", s.archiveContentSecurity(c))
+		header.Set("Content-Security-Policy", contentSecurity)
 		if s.secure {
 			header.Set("Strict-Transport-Security", "max-age=31536000")
 		}

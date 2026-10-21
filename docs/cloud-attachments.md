@@ -274,7 +274,12 @@ link-local and metadata addresses, validates all DNS answers and pins a public
 address on each connection. It disables environment proxies and refuses HTTP
 redirects. CORS permits only the exact application origin for GET and HEAD;
 bucket lifecycle rules that expire archive content are refused. Organization
-pages permit validated current and historical endpoints in `connect-src`.
+pages permit validated current and historical endpoints in `connect-src`. Binding
+revisions can reuse an endpoint without a limit; each organization can retain
+at most 16 distinct origins totaling 4,096 bytes, including separators. Hostname
+case variants share one origin. A binding that exceeds either limit is refused
+without changing existing references. Preexisting history exceeding these limits
+receives the base CSP without archive origins rather than an oversized header.
 Bucket, region, network and CORS failures represent unavailable archive detail;
 they do not erase archive metadata or history. Customer-bucket archive bytes
 are excluded from the hosted storage allowance. Hosted archive bytes remain

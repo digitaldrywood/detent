@@ -20,30 +20,72 @@ import (
 
 const archiveBindingSelect = `SELECT organization_id,id,revision,backend,endpoint,region,bucket,prefix,credential_reference,versioned FROM archive_storage_bindings`
 
-func (s *Service) archiveContentSecurity(c echo.Context) string {
-	policy := contentSecurity
-	organization := c.Param("organization")
-	if !ValidOrganizationID(organization) {
-		return policy
-	}
-	rows, err := s.registry.store.reader.QueryContext(c.Request().Context(), `SELECT DISTINCT endpoint FROM archive_storage_bindings WHERE organization_id=?`, organization)
+const maxArchiveOrigins = 16
+const maxArchiveOriginBytes = 4096
+
+func archiveBindingOrigins(ctx context.Context, q queryer, organization, candidate string) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `WITH RECURSIVE origins(endpoint) AS (
+ SELECT (SELECT endpoint FROM archive_storage_bindings WHERE organization_id=? ORDER BY endpoint COLLATE NOCASE LIMIT 1)
+ UNION ALL
+ SELECT (SELECT endpoint FROM archive_storage_bindings WHERE organization_id=? AND endpoint>origins.endpoint COLLATE NOCASE ORDER BY endpoint COLLATE NOCASE LIMIT 1)
+ FROM origins WHERE endpoint IS NOT NULL LIMIT ?
+) SELECT substr(endpoint,1,?) FROM origins WHERE endpoint IS NOT NULL`, organization, organization, maxArchiveOrigins+1, maxArchiveOriginBytes+1)
 	if err != nil {
-		return policy
+		return nil, err
 	}
 	defer rows.Close()
-	for rows.Next() {
-		var endpoint string
-		if rows.Scan(&endpoint) != nil {
-			return contentSecurity
+	origins := make([]string, 0, maxArchiveOrigins)
+	total := 0
+	add := func(endpoint string) error {
+		endpoint = strings.ToLower(endpoint)
+		if !artifact.ValidOrigin(endpoint) || !strings.HasPrefix(endpoint, "https://") {
+			return attachment.ErrInvalid
 		}
-		if artifact.ValidOrigin(endpoint) && strings.HasPrefix(endpoint, "https://") {
-			policy = strings.Replace(policy, "connect-src 'self'", "connect-src 'self' "+endpoint, 1)
+		for _, origin := range origins {
+			if origin == endpoint {
+				return nil
+			}
+		}
+		total += len(endpoint) + 1
+		if len(origins) == maxArchiveOrigins || total > maxArchiveOriginBytes {
+			return attachment.ErrInvalid
+		}
+		origins = append(origins, endpoint)
+		return nil
+	}
+	for count := 0; rows.Next(); count++ {
+		if count == maxArchiveOrigins {
+			return nil, attachment.ErrInvalid
+		}
+		var endpoint string
+		if err := rows.Scan(&endpoint); err != nil {
+			return nil, err
+		}
+		if err := add(endpoint); err != nil {
+			return nil, err
 		}
 	}
-	if rows.Err() != nil {
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if candidate != "" {
+		if err := add(candidate); err != nil {
+			return nil, err
+		}
+	}
+	return origins, nil
+}
+
+func (s *Service) archiveContentSecurity(c echo.Context) string {
+	organization := c.Param("organization")
+	if !ValidOrganizationID(organization) {
 		return contentSecurity
 	}
-	return policy
+	origins, err := archiveBindingOrigins(c.Request().Context(), s.registry.store.reader, organization, "")
+	if err != nil || len(origins) == 0 {
+		return contentSecurity
+	}
+	return strings.Replace(contentSecurity, "connect-src 'self'", "connect-src 'self' "+strings.Join(origins, " "), 1)
 }
 
 func scanArchiveBinding(row rowScanner) (attachment.StorageBinding, error) {
@@ -69,9 +111,21 @@ func (s *Service) ensureLegacyArchiveBinding(ctx context.Context, organization s
 		return attachment.ErrInvalid
 	}
 
-	_, err := s.registry.store.db.ExecContext(ctx, `INSERT INTO archive_storage_bindings(organization_id,id,revision,backend,endpoint,region,bucket,prefix,credential_reference,versioned)
+	tx, err := s.registry.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := archiveBindingOrigins(ctx, tx, organization, b.Endpoint); err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `INSERT INTO archive_storage_bindings(organization_id,id,revision,backend,endpoint,region,bucket,prefix,credential_reference,versioned)
  SELECT ?,?,0,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM organizations WHERE id=? AND state IN ('ready','deleting')) ON CONFLICT(organization_id,id) DO NOTHING`, organization, "", b.Backend, b.Endpoint, b.Region, b.Bucket, b.Prefix, b.CredentialReference, b.Versioned, organization)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Service) currentArchiveBinding(ctx context.Context, organization string) (attachment.StorageBinding, error) {
@@ -101,6 +155,11 @@ func (s *Service) saveArchiveBinding(ctx context.Context, b attachment.StorageBi
 	if current != expected {
 		return b, ErrOrganizationConflict
 	}
+	if _, err := archiveBindingOrigins(ctx, tx, b.Organization, b.Endpoint); err != nil {
+		return b, err
+	}
+	b.Endpoint = strings.ToLower(b.Endpoint)
+
 	b.Revision = current + 1
 	digest := sha256.Sum256([]byte(b.Organization + "\n" + strconv.FormatInt(b.Revision, 10)))
 	b.ID = "asb_" + hex.EncodeToString(digest[:16])
@@ -227,6 +286,9 @@ func (s *Service) archiveStorageBinding(c echo.Context) error {
 		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Storage audit is unavailable")
 	}
 	b, err = s.saveArchiveBinding(ctx, b, input.ExpectedRevision)
+	if errors.Is(err, attachment.ErrInvalid) {
+		return attachmentError(c, http.StatusBadRequest, "invalid_binding", "Archive storage origins exceed the supported limit")
+	}
 	if errors.Is(err, ErrOrganizationConflict) {
 		return attachmentError(c, http.StatusConflict, "revision_conflict", "Storage changed; reload and try again")
 	}

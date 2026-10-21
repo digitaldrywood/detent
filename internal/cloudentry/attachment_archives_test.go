@@ -43,6 +43,93 @@ func (f archiveValidationTransport) RoundTrip(r *http.Request) (*http.Response, 
 	return f.next.RoundTrip(r)
 }
 
+func TestArchiveContentSecurityBounds(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		origins int
+		suffix  string
+	}{
+		{name: "origin count", origins: 16, suffix: "example.test"},
+		{name: "origin bytes", origins: 15, suffix: strings.Repeat(strings.Repeat("a", 60)+".", 4) + "test:443"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			browser := newBrowser(t, f.service.Handler())
+			for _, organization := range []string{"org_alpha", "org_beta"} {
+				browser.login("/organizations/"+organization+"/organization", "user_alice:p"+organization)
+				binding := attachment.StorageBinding{Organization: organization, Backend: "s3", Region: "region", Bucket: "private", CredentialReference: "reference"}
+				var first attachment.StorageBinding
+				for index := range test.origins {
+					binding.Endpoint = "https://a" + strconv.Itoa(index) + "." + test.suffix
+					stored, err := f.service.saveArchiveBinding(t.Context(), binding, int64(index))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if index == 0 {
+						first = stored
+					}
+				}
+				binding.Endpoint = "https://overflow." + test.suffix
+				if _, err := f.service.saveArchiveBinding(t.Context(), binding, int64(test.origins)); !errors.Is(err, attachment.ErrInvalid) {
+					t.Fatalf("excess origin accepted: %v", err)
+				}
+				binding.Endpoint = strings.Replace(first.Endpoint, "a0.", "A0.", 1)
+				for revision := test.origins; revision < test.origins+2; revision++ {
+					if _, err := f.service.saveArchiveBinding(t.Context(), binding, int64(revision)); err != nil {
+						t.Fatalf("same origin could not be reused: %v", err)
+					}
+				}
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), `INSERT INTO archive_storage_bindings
+ SELECT organization_id,?,?,backend,upper(endpoint),region,bucket,prefix,credential_reference,versioned
+ FROM archive_storage_bindings WHERE organization_id=? AND id=?`, "legacy_case", test.origins+3, organization, first.ID); err != nil {
+					t.Fatal(err)
+				}
+				anonymous := newBrowser(t, f.service.Handler())
+				response := attachmentRequest(t, anonymous, http.MethodGet, "/organizations/"+organization+"/organization", nil, nil)
+				if response.Header().Get("Content-Security-Policy") != contentSecurity {
+					t.Fatal("anonymous response expanded archive origins")
+				}
+				response = attachmentRequest(t, browser, http.MethodGet, "/organizations/"+organization+"/organization", nil, nil)
+				policy := response.Header().Get("Content-Security-Policy")
+				if len(policy) > len(contentSecurity)+4096 || strings.Count(policy, first.Endpoint) != 1 {
+					t.Fatalf("unbounded or duplicated origins: %q", policy)
+				}
+				for index := range test.origins {
+					if !strings.Contains(policy, "https://a"+strconv.Itoa(index)+"."+test.suffix) {
+						t.Fatal("historical origin was lost")
+					}
+				}
+				ref, _, err := attachment.PrepareArchive(organization, 1, strings.NewReader("archive"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				ref.BindingID, ref.CustomerOwned = first.ID, true
+				f.service.config.ArchiveCredentials = func(context.Context, string, string) (attachment.Credentials, error) {
+					return attachment.Credentials{AccessKeyID: "fixture-access", SecretAccessKey: "fixture-secret"}, nil
+				}
+				f.service.config.attachmentTransport = newSpacesFixture(t, false).transport
+				storage, err := f.service.archiveStorageForReference(t.Context(), organization, ref)
+				if err != nil {
+					t.Fatal(err)
+				}
+				read, err := storage.PresignArchive(t.Context(), ref)
+				if err != nil || !strings.HasPrefix(read.URL, first.Endpoint+"/") {
+					t.Fatalf("historical reference moved: %v", err)
+				}
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), `INSERT INTO archive_storage_bindings(organization_id,id,revision,backend,endpoint,region,bucket,prefix,credential_reference)
+ VALUES(?,?,?,'s3',?,'region','private','','reference')`, organization, "legacy_overflow", test.origins+4, "https://overflow."+test.suffix); err != nil {
+					t.Fatal(err)
+				}
+				response = attachmentRequest(t, browser, http.MethodGet, "/organizations/"+organization+"/organization", nil, nil)
+				if response.Header().Get("Content-Security-Policy") != contentSecurity {
+					t.Fatal("oversized historical policy did not fail closed")
+				}
+			}
+		})
+	}
+}
+
 func TestArchiveBindingValidationIsolation(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
