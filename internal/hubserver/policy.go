@@ -553,7 +553,7 @@ func (d *database) leasePolicyID(ctx context.Context, lease tracker.LeaseID) (st
 	return id, err
 }
 
-func requireLeaseRouting(ctx context.Context, tx *sql.Tx, lease tracker.LeaseID) error {
+func requireLeaseRouting(ctx context.Context, tx nativeQueryer, lease tracker.LeaseID) error {
 	var runner, machine, tags, state, raw string
 	var access bool
 	err := tx.QueryRowContext(ctx, `SELECT r.id, r.machine_id, r.tags_json, r.state, p.metadata_json,

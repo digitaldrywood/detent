@@ -21,10 +21,11 @@ import (
 )
 
 type memoryRunDetails struct {
-	mu      sync.Mutex
-	data    map[string][]byte
-	fail    bool
-	uploads int
+	mu         sync.Mutex
+	data       map[string][]byte
+	fail       bool
+	uploads    int
+	afterStore func()
 }
 
 func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
@@ -44,6 +45,9 @@ func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, d
 		m.uploads++
 	}
 	m.data[ref.Key] = bytes.Clone(data)
+	if m.afterStore != nil {
+		m.afterStore()
+	}
 	return ref, nil
 }
 
@@ -308,6 +312,107 @@ func TestNativeRunDetailUploadFailures(t *testing.T) {
 			var stored storedRun
 			if err := json.Unmarshal([]byte(raw), &stored); err != nil || stored.Detail == nil || stored.Sequence != event.Data.Sequence {
 				t.Fatalf("attempt failed to progress from reference after upload recovery: %v", err)
+			}
+		})
+	}
+}
+
+func TestNativeRunDetailAdmission(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name         string
+		released     bool
+		expired      bool
+		sequence     int64
+		cancelled    bool
+		body         string
+		status       int
+		duringUpload bool
+		replay       bool
+		batchGap     bool
+	}{
+		{name: "lease expires during upload", duringUpload: true, sequence: 2, status: http.StatusConflict},
+		{name: "expired durable replay", expired: true, replay: true, status: http.StatusOK},
+		{name: "released durable replay", released: true, replay: true, status: http.StatusOK},
+		{name: "batch sequence gap", batchGap: true, sequence: 4, status: http.StatusConflict},
+		{name: "expired checkpoint", expired: true, sequence: 2, status: http.StatusConflict},
+		{name: "released checkpoint", released: true, sequence: 2, status: http.StatusConflict},
+		{name: "skipped sequence", sequence: 3, status: http.StatusConflict},
+		{name: "changed replay", sequence: 1, status: http.StatusConflict},
+		{name: "released cancellation with content", released: true, cancelled: true, sequence: 2, body: "unowned completion", status: http.StatusConflict},
+		{name: "released cancellation acknowledgment", released: true, cancelled: true, sequence: 2, status: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &memoryRunDetails{}
+			now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+			f := newDefaultNativeFixture(t, Config{RunDetails: store, now: func() time.Time { return now }})
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			issue := f.create(t, "work")
+			worker := f.worker(t, "worker")
+			lease := claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID)
+			event := nativeStartedEvent(lease)
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+			original := event
+			if test.released {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET released_at=? WHERE lease_id=?", formatHubTime(now), lease.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.expired {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(now), lease.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "next", test.sequence
+			event.Data.Handoff = nativeTestCheckpoint()
+			if test.cancelled {
+				event.Type, event.Data.Outcome, event.Data.Handoff = "run.finished", "cancelled", nil
+				event.Data.CompletionBody = test.body
+			}
+			if test.replay {
+				event = original
+			}
+			if test.batchGap {
+				observation := original
+				observation.Type, observation.IdempotencyKey, observation.Data.Sequence = "run.observed", "observation", 2
+				observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: now}
+				event.Data.Runtime = observation.Data.Runtime
+				event.PriorEvents = []tracker.NativeRunEvent{observation}
+			}
+			if test.duringUpload {
+				store.afterStore = func() {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(now), lease.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), test.status)
+			wantUploads := 1
+			if test.duringUpload {
+				wantUploads = 2
+			}
+			if store.uploads != wantUploads {
+				t.Fatalf("rejected or identity-only event uploaded detail: %d uploads", store.uploads)
+			}
+			var references int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachment_archive_references").Scan(&references); err != nil {
+				t.Fatal(err)
+			}
+			if references != 1 {
+				t.Fatalf("rejected event committed %d references", references)
+			}
+			var sequence int64
+			var status string
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence,status FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&sequence, &status); err != nil {
+				t.Fatal(err)
+			}
+			if test.cancelled && test.status == http.StatusOK {
+				if sequence != 2 || status != "cancelled" {
+					t.Fatalf("cancellation acknowledgment lost: %d %s", sequence, status)
+				}
+			} else if sequence != 1 || status != "running" {
+				t.Fatalf("rejected event changed attempt: %d %s", sequence, status)
 			}
 		})
 	}
