@@ -99,6 +99,8 @@ const SETTINGS_INDEX: readonly IndexEntry[] = [
     keywords: "shortcut keyboard slash",
   },
   { section: "whats-new", title: "What's new", targetId: "settings-whats-new", keywords: "release notes changelog new improved fixed builds" },
+  { section: "integrations", title: "Slack", targetId: "slack-notifications", keywords: "notifications incoming webhook" },
+  { section: "integrations", title: "Sprites", targetId: "sprites", keywords: "organization token Fly" },
   { section: "about", title: "Detent", targetId: "settings-about", keywords: "version build hub api" },
   {
     section: "about",

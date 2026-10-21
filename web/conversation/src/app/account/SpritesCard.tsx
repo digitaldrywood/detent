@@ -4,11 +4,64 @@ import React from "react";
 import { Button } from "../../components/ui/button.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { SettingsRow } from "../settings/settingsLayout.tsx";
+import { IntegrationStatus, IntegrationTitle } from "../settings/integrationStatus.tsx";
 import { useAccountApi } from "./context.ts";
 import { ControlError } from "./controls.tsx";
 import { useResource } from "./useResource.ts";
 
 export function SpritesCard({ projectId, canManage }: {
+  readonly projectId: string;
+  readonly canManage: boolean;
+}): React.ReactElement {
+  return projectId ? <ProjectSpritesCard projectId={projectId} canManage={canManage} /> : <OrganizationSpritesRow canManage={canManage} />;
+}
+
+function OrganizationSpritesRow({ canManage }: { readonly canManage: boolean }): React.ReactElement {
+  const api = useAccountApi();
+  const status = useResource(() => api.spritesSecret(""), [api]);
+  const [editing, setEditing] = React.useState(false);
+  const [token, setToken] = React.useState("");
+  const [pending, setPending] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const change = async (remove: boolean) => {
+    const value = token;
+    setToken("");
+    setPending(true);
+    setError(null);
+    try {
+      status.set(remove ? await api.removeSpritesSecret("") : await api.setSpritesSecret("", value));
+      setEditing(false);
+    } catch {
+      setError(remove ? "Could not remove the token. Try again." : "Could not save the token. Check the organization token and try again, or ask the Hub operator to check its secret key configuration.");
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return <SettingsRow
+    id="sprites"
+    title={<IntegrationTitle title="Sprites organization token" help="Projects inherit this token unless they set an override. Use a dedicated Fly organization and set a spend alert." secret="token" />}
+    status={status.value === undefined ? (status.error === null ? "Loading…" : "Could not load Sprites settings.") : <IntegrationStatus tone={status.value.present ? "connected" : "empty"}>
+      {status.value.present ? <>Connected to {status.value.organization_slug} · <a className="text-info-foreground underline" href="https://sprites.dev/account" target="_blank" rel="noreferrer">Manage in Sprites</a></> : "Not set up"}
+    </IntegrationStatus>}
+    control={canManage ? <div className="flex w-full min-w-0 flex-col items-start gap-2 sm:items-end">
+      {editing ? <form className="flex w-full min-w-0 flex-col gap-2 sm:w-96" onSubmit={(event) => { event.preventDefault(); if (token.trim() && !pending) void change(false); }}>
+        <Input aria-label="Sprites organization token" type="password" size="sm" autoComplete="off" spellCheck={false} value={token} maxLength={8192} disabled={pending} onChange={(event) => setToken(event.target.value)} placeholder="Organization token" />
+        <div className="flex justify-end gap-2">
+          <Button size="sm" type="button" variant="ghost" disabled={pending} onClick={() => { setToken(""); setError(null); setEditing(false); }}>Cancel</Button>
+          <Button size="sm" type="submit" disabled={pending || !token.trim()}>{pending ? "Saving…" : "Save"}</Button>
+        </div>
+      </form> : <div className="flex flex-wrap gap-2">
+        <Button size="sm" type="button" variant="outline" disabled={pending || status.value === undefined} onClick={() => { setToken(""); setError(null); setEditing(true); }}>{status.value?.present ? "Replace token" : "Set token"}</Button>
+        {status.value?.present ? <Button size="sm" variant="ghost" type="button" disabled={pending} onClick={() => void change(true)}>Remove</Button> : null}
+      </div>}
+      {error ? <ControlError message={error} /> : null}
+    </div> : <span className="text-sm text-muted-foreground">Owner or admin access required to change the token.</span>}
+  />;
+}
+
+function ProjectSpritesCard({ projectId, canManage }: {
   readonly projectId: string;
   readonly canManage: boolean;
 }): React.ReactElement {
