@@ -34,6 +34,28 @@ type CheckpointRefPublisher interface {
 	PushCheckpointRef(ctx context.Context, info Info, issue Issue, previous CheckpointRef, validate func(context.Context) error) (CheckpointRef, bool, error)
 }
 
+type CheckpointWorktree interface {
+	RestoreCheckpointForFinalization(context.Context, Info, Issue, CheckpointRef) (Info, Issue, error)
+}
+
+func (l *LocalGit) RestoreCheckpointForFinalization(ctx context.Context, original Info, issue Issue, checkpoint CheckpointRef) (Info, Issue, error) {
+	issue.Identifier += "-finalization-" + checkpoint.CommitSHA
+	issue.BranchName = ""
+	issue.Source = nil
+	issue.Checkpoint = &checkpoint
+	info, err := l.Create(ctx, issue)
+	if err != nil {
+		return Info{}, issue, err
+	}
+	if info.Path == original.Path || info.Branch == original.Branch {
+		return Info{}, issue, errors.New("checkpoint finalization requires a separate workspace and branch")
+	}
+	if _, err := runGitAt(ctx, info.Path, "read-tree", checkpoint.TreeSHA); err != nil {
+		return Info{}, issue, fmt.Errorf("stage captured checkpoint tree: %w", err)
+	}
+	return info, issue, nil
+}
+
 func CheckpointRefName(issue Issue) string {
 	id := strings.TrimSpace(issue.ID)
 	if id == "" {

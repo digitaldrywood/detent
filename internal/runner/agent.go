@@ -1354,16 +1354,8 @@ func (r *Runner) runAgentTurn(
 		},
 	)
 	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, workerReapErr)
-	if workerReapErr != nil {
-		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, workerReapErr))
-	}
 	if cause := context.Cause(ctx); cooperativeStopError(cause) || durationLimitError(cause) {
-		cause = errors.Join(firstCancellationCause(turnErr, cause, "runner.session"), cause)
-		if workerReapErr != nil {
-			turnErr = errors.Join(cause, fmt.Errorf("%w: %w", ErrWorkerProcessReap, workerReapErr))
-		} else {
-			turnErr = cause
-		}
+		turnErr = errors.Join(firstCancellationCause(turnErr, cause, "runner.session"), cause)
 	}
 	var memoryErr *SessionMemoryCeilingError
 	if errors.As(turnErr, &memoryErr) {
@@ -1391,6 +1383,9 @@ func (r *Runner) runAgentTurn(
 	cleanupErr := agentTurnCleanupError(turnErr, turnResult)
 	if cleanupErr != nil {
 		turnErr = nil
+	}
+	if workerReapErr != nil {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, workerReapErr))
 	}
 	cleanupErr = errors.Join(cleanupErr, scratchCleanupErr)
 	if turnErr != nil {
@@ -2544,6 +2539,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			commandFinishedAttrs = append(commandFinishedAttrs,
 				"cleanup_error", errorString(cleanupErr),
 				"cleanup_class", "agent_turn_cleanup",
+				"attribution", "instance",
 			)
 		}
 		if turnErr != nil || cleanupErr != nil {
@@ -2572,17 +2568,35 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		req.retainCheckpoint = (turnErr != nil || blocked) && (req.Execution != nil || result.Checkpoint != nil)
 		req.finalizeNativeWork = req.Execution != nil && mode == RunModeImplement && turnErr == nil && !blocked
 		cleanupWorkspace := false
-		if errors.Is(turnErr, ErrWorkerProcessReap) {
-			preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-			_, preserveErr := r.PreserveWorkspace(preserveCtx, req.Issue)
-			cancel()
-			turnErr = errors.Join(turnErr, preserveErr)
-			r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_admission_workspace_retained",
-				telemetry.WorkAttemptIDKey, req.WorkAttemptID,
-				telemetry.DetentSessionIDKey, sessionID,
-				"workspace_path", info.Path,
-				"error", turnErr,
-			)
+		if errors.Is(cleanupErr, ErrWorkerProcessReap) || errors.Is(turnErr, ErrWorkerProcessReap) {
+			resume := AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}
+			restored, restoredIssue, err := r.prepareReapedExecution(afterRunCtx, req, runWorkspace, info, workspaceIssue, resume, req.finalizeNativeWork)
+			if err != nil {
+				turnErr = errors.Join(turnErr, err)
+			} else if restored.Path != "" {
+				if usage, ok := runWorkspace.(workspace.Usage); ok {
+					release, err := usage.Use(afterRunCtx, restoredIssue)
+					if err != nil {
+						turnErr = errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, err)
+					} else {
+						releaseWorkspace()
+						releaseWorkspace = release
+					}
+				}
+				if turnErr == nil {
+					info, workspaceIssue = restored, restoredIssue
+					turnRequest.Workspace, processRequest.Workspace = info.Path, info.Path
+					if diffs, ok := req.Execution.(DiffExecution); ok {
+						diffs.SetDiffSource(r.attemptDiffSource(afterRunCtx, info, workspaceIssue))
+					}
+					if evidence, ok := req.Execution.(EvidenceSourceExecution); ok {
+						evidence.SetEvidenceSource(workspaceEvidenceSource(info.Path))
+					}
+					req.checkpointRefs = newCheckpointRefs(runWorkspace, req.Execution, info, workspaceIssue, nil)
+					cleanupWorkspace, err = r.prepareExecutionCompletion(afterRunCtx, req, runWorkspace, info, workspaceIssue, resume, result.TurnStarted)
+					turnErr = errors.Join(turnErr, err)
+				}
+			}
 		} else {
 			var err error
 			cleanupWorkspace, err = r.prepareExecutionCompletion(afterRunCtx, req, runWorkspace, info, workspaceIssue, AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}, result.TurnStarted)
@@ -3857,15 +3871,20 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	)
 	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, workerReapErr)
 	if workerReapErr != nil {
-		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, workerReapErr))
+		afterRunPending = false
+		if preserver, ok := runWorkspace.(workspace.IssuePreserver); ok {
+			_, preserveErr := preserver.PreserveIssue(context.WithoutCancel(sessionCtx), workspaceIssue)
+			workerReapErr = errors.Join(workerReapErr, preserveErr)
+		}
+		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_check_cleanup_failed",
+			telemetry.DetentSessionIDKey, sessionID,
+			"workspace_path", info.Path,
+			"attribution", "instance",
+			"error", workerReapErr,
+		)
 	}
 	if cause := context.Cause(sessionCtx); cooperativeStopError(cause) || durationLimitError(cause) {
-		cause = errors.Join(firstCancellationCause(turnErr, cause, "runner.session"), cause)
-		if workerReapErr != nil {
-			turnErr = errors.Join(cause, fmt.Errorf("%w: %w", ErrWorkerProcessReap, workerReapErr))
-		} else {
-			turnErr = cause
-		}
+		turnErr = errors.Join(firstCancellationCause(turnErr, cause, "runner.session"), cause)
 	}
 	turnErr = sessionBrake.wrapTurnLimit(ctx, turnErr)
 	turnErr = sessionBrake.wrapDuration(ctx, turnErr, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
