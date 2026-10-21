@@ -109,8 +109,9 @@ type recentActivityArguments struct {
 }
 
 type explainItemArguments struct {
-	ProjectID string `json:"project_id"`
-	Reference string `json:"reference"`
+	ProjectID string   `json:"project_id"`
+	Reference string   `json:"reference"`
+	Include   []string `json:"include,omitempty"`
 }
 
 func (e *Executor) boardState(ctx context.Context, raw json.RawMessage) (Result, error) {
@@ -224,6 +225,9 @@ func (e *Executor) explainItem(ctx context.Context, raw json.RawMessage) (Result
 	}
 	request.ProjectID = strings.TrimSpace(request.ProjectID)
 	request.Reference = strings.TrimSpace(request.Reference)
+	if len(request.Include) > 1 || len(request.Include) == 1 && request.Include[0] != "summary" {
+		return Result{}, ErrInvalidArguments
+	}
 	if request.ProjectID == "" || request.Reference == "" {
 		return Result{}, fmt.Errorf("%w: project_id and reference are required", ErrInvalidArguments)
 	}
@@ -240,6 +244,9 @@ func (e *Executor) explainItem(ctx context.Context, raw json.RawMessage) (Result
 	}
 	if _, authorized := ctx.Value(authorityKey{}).(Authority); authorized && result.Identity.ProjectID != request.ProjectID {
 		return Result{}, ErrAccessDenied
+	}
+	if slices.Contains(request.Include, "summary") {
+		return encodeResult(compactExplanation(result))
 	}
 	return encodeResult(result)
 }

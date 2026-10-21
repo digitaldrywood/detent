@@ -90,11 +90,12 @@ type Provenance struct {
 }
 
 type NativeIssue struct {
-	ReleaseDelivery    *ReleaseDelivery     `json:"release_delivery,omitempty"`
-	IssueContract      *issuecontract.State `json:"issue_contract,omitempty" yaml:"issue_contract,omitempty"`
-	OmittedFields      []string             `json:"omitted_fields,omitempty"`
-	LinkedSource       *LinkedIssueSource   `json:"linked_source,omitempty"`
-	IgnoreDependencies bool                 `json:"ignore_dependencies,omitempty"`
+	LatestTransitionReason string               `json:"-"`
+	ReleaseDelivery        *ReleaseDelivery     `json:"release_delivery,omitempty"`
+	IssueContract          *issuecontract.State `json:"issue_contract,omitempty" yaml:"issue_contract,omitempty"`
+	OmittedFields          []string             `json:"omitted_fields,omitempty"`
+	LinkedSource           *LinkedIssueSource   `json:"linked_source,omitempty"`
+	IgnoreDependencies     bool                 `json:"ignore_dependencies,omitempty"`
 	NativeReference
 	WebURL             string              `json:"web_url"`
 	PublicationReused  bool                `json:"publication_reused,omitempty"`

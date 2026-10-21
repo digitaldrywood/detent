@@ -1164,9 +1164,21 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 					if setupOnly && (attempt.Identity != nil || attempt.Runtime.LocalAttemptID != 169 || attempt.Runtime.Generation != 28 || failure == nil || failure.Stage != "pre_provider" || failure.Attribution != "instance" || failure.Provider != "" || failure.Error != "after_create exit status 127: script not found [redacted] [redacted]" || !failure.ObservedAt.Equal(at)) {
 						t.Fatalf("MCP lost setup diagnostic or selected older provider history: %s", result.Content)
 					}
-					for _, private := range []string{"/private/source", "/private/error", "private-prompt", "private-secret", "private-rpc-data"} {
-						if strings.Contains(string(result.Content), private) {
-							t.Fatalf("MCP exposed %q", private)
+					outputs := []operatortool.Result{result}
+					if tool == operatortool.ExplainItem {
+						args["include"] = []string{"summary"}
+						compact, compactErr := call(tool, args)
+						var summary explain.IssueExplanation
+						if compactErr != nil || json.Unmarshal(compact.Content, &summary) != nil || summary.FailureSignature == nil || summary.FailureSignature.Signature != wantSignature || summary.Attempt == nil || summary.Attempt.NativeID != started.Data.AttemptID || summary.NativeRuntime != nil {
+							t.Fatalf("compact MCP lost redacted failure summary: %s error=%v", compact.Content, compactErr)
+						}
+						outputs = append(outputs, compact)
+					}
+					for _, output := range outputs {
+						for _, private := range []string{"/private/source", "/private/error", "private-prompt", "private-secret", "private-rpc-data"} {
+							if strings.Contains(string(output.Content), private) {
+								t.Fatalf("MCP exposed %q", private)
+							}
 						}
 					}
 				})
