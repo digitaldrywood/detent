@@ -1,10 +1,12 @@
 package attachment
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -145,6 +147,28 @@ func archiveTransport(endpoint string) (*http.Transport, error) {
 	return transport, nil
 }
 
+type archiveResponseTransport struct {
+	next   http.RoundTripper
+	bucket string
+}
+
+func (t archiveResponseTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := t.next.RoundTrip(request)
+	if err != nil {
+		return nil, err
+	}
+	limit := int64(maxArchiveControlResponseBytes)
+	if request.Method == http.MethodGet && response.StatusCode == http.StatusOK && request.URL.Path != "/"+t.bucket && request.URL.Path != "/"+t.bucket+"/" {
+		limit = MaxBytes
+	}
+	data, err := readArchiveResponse(response, limit)
+	if err != nil {
+		return nil, err
+	}
+	response.Body = io.NopCloser(bytes.NewReader(data))
+	return response, nil
+}
+
 func NewBindingStorage(ctx context.Context, b StorageBinding, secret Credentials, transport http.RoundTripper) (ArchiveStorage, error) {
 	if b.Validate() != nil || secret.AccessKeyID == "" || secret.SecretAccessKey == "" {
 		return nil, ErrInvalid
@@ -159,7 +183,7 @@ func NewBindingStorage(ctx context.Context, b StorageBinding, secret Credentials
 		}
 		transport = guarded
 	}
-	client := &http.Client{Transport: transport, Timeout: time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{Transport: archiveResponseTransport{next: transport, bucket: b.Bucket}, Timeout: time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	store := &spaces{http: client, prefix: b.Prefix, config: Config{Endpoint: b.Endpoint, Region: b.Region, Bucket: b.Bucket}}
 	store.client = s3.NewFromConfig(aws.Config{Region: b.Region, Credentials: credentials.NewStaticCredentialsProvider(secret.AccessKeyID, secret.SecretAccessKey, ""), HTTPClient: client, RetryMaxAttempts: 2}, func(options *s3.Options) {
 		options.BaseEndpoint = aws.String(b.Endpoint)

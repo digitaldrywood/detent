@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -245,6 +246,108 @@ func TestArchiveBindingEndpoints(t *testing.T) {
 	}
 	if _, err := CredentialsFromEnvironment("org_alpha", "missing", func(string) string { return "" }); err == nil {
 		t.Fatal("missing credentials accepted")
+	}
+}
+
+type archiveResponseBody struct {
+	io.Reader
+	read   int
+	closed bool
+}
+
+func (b *archiveResponseBody) Read(data []byte) (int, error) {
+	n, err := b.Reader.Read(data)
+	b.read += n
+	return n, err
+}
+
+func (b *archiveResponseBody) Close() error { b.closed = true; return nil }
+
+func TestArchiveBindingResponseLimits(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, operation, query, xml       string
+		status                            int
+		knownLength, oversized, versioned bool
+	}{
+		{name: "versioning at limit", operation: "versioning", query: "versioning", xml: `<VersioningConfiguration/>`, status: http.StatusOK},
+		{name: "versioning oversized", operation: "versioning", query: "versioning", xml: `<VersioningConfiguration/>`, status: http.StatusOK, oversized: true},
+		{name: "lifecycle oversized", operation: "configure", query: "lifecycle", xml: `<LifecycleConfiguration/>`, status: http.StatusOK, oversized: true},
+		{name: "cors oversized", operation: "configure", query: "cors", xml: `<Result/>`, status: http.StatusOK, oversized: true},
+		{name: "listing oversized", operation: "erase", query: "list-type", xml: `<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`, status: http.StatusOK, oversized: true},
+		{name: "version listing oversized", operation: "erase", query: "versions", xml: `<ListVersionsResult><IsTruncated>false</IsTruncated></ListVersionsResult>`, status: http.StatusOK, oversized: true, versioned: true},
+		{name: "error oversized", operation: "versioning", query: "versioning", xml: `<Error><Code>AccessDenied</Code><Message>fixture-secret</Message></Error>`, status: http.StatusForbidden, oversized: true},
+		{name: "advertised oversized", operation: "versioning", query: "versioning", xml: `<VersioningConfiguration/>`, status: http.StatusOK, oversized: true, knownLength: true},
+		{name: "object above control limit", operation: "object", status: http.StatusOK},
+		{name: "object oversized", operation: "object", status: http.StatusOK, oversized: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			limit := 1 << 20
+			if test.operation == "object" {
+				limit = MaxBytes
+			}
+			size := limit
+			if test.oversized {
+				size += 1 << 16
+			}
+			var bodies []*archiveResponseBody
+			transport := storageTransport(func(r *http.Request) (*http.Response, error) {
+				if test.operation == "object" || r.URL.Query().Has(test.query) {
+					body := &archiveResponseBody{Reader: io.MultiReader(strings.NewReader(test.xml), io.LimitReader(strings.NewReader(strings.Repeat(" ", size)), int64(size-len(test.xml))))}
+					bodies = append(bodies, body)
+					response := storageResponse(test.status, "")
+					response.Body = body
+					response.ContentLength = -1
+					if test.knownLength {
+						response.ContentLength = int64(size)
+					}
+					return response, nil
+				}
+				if r.URL.Query().Has("versioning") {
+					configuration := `<VersioningConfiguration/>`
+					if test.versioned {
+						configuration = `<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>`
+					}
+					return storageResponse(http.StatusOK, configuration), nil
+				}
+				return storageResponse(http.StatusOK, `<LifecycleConfiguration/>`), nil
+			})
+			b := StorageBinding{Organization: "org_alpha", Backend: "s3", Endpoint: "https://objects.example.test", Region: "region", Bucket: "private", CredentialReference: "reference"}
+			storage, err := NewBindingStorage(t.Context(), b, Credentials{AccessKeyID: "fixture-access", SecretAccessKey: "fixture-secret"}, transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch test.operation {
+			case "versioning":
+				_, err = storage.ArchiveVersioning(t.Context())
+			case "configure":
+				err = storage.ConfigureArchiveReads(t.Context(), []string{"https://app.example.test"})
+			case "erase":
+				var receipt DeletionReceipt
+				receipt, err = storage.(OrganizationEraser).EraseOrganization(t.Context(), "org_alpha")
+				if test.oversized && (receipt.Complete || len(receipt.Remaining) == 0) {
+					t.Fatal("oversized listing completed deletion")
+				}
+			case "object":
+				var body io.ReadCloser
+				body, err = storage.Open(t.Context(), "orgs/org_alpha/blobs/sha256/aa/object")
+				if err == nil {
+					_, err = io.Copy(io.Discard, body)
+					err = errors.Join(err, body.Close())
+				}
+			}
+			if (err != nil) != test.oversized {
+				t.Fatalf("oversized=%t error=%v", test.oversized, err)
+			}
+			if len(bodies) == 0 {
+				t.Fatal("response fixture was not read")
+			}
+			for _, body := range bodies {
+				if !body.closed || body.read > limit+1 {
+					t.Fatalf("unbounded response: read=%d closed=%t limit=%d", body.read, body.closed, limit)
+				}
+			}
+		})
 	}
 }
 
