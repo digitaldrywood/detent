@@ -145,7 +145,7 @@ func (s *conversationStore) resolveMessageContents(ctx context.Context, query na
 			message.Text, message.Data, message.contentHash = cached.content.Text, cached.content.Data, cached.hash
 			continue
 		}
-		ref, err := scanAttachmentArchive(query.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, message.ContentID, organization))
+		ref, err := scanAttachmentArchive(query.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class,storage_binding_id,customer_owned FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, message.ContentID, organization))
 		if err != nil {
 			return err
 		}
@@ -290,7 +290,7 @@ func (s *conversationStore) recordContentArchive(ctx context.Context, tx *sql.Tx
  VALUES(?,?,?,?,'archive.gz','application/gzip',?,?,?,'archive',?,?,?,?,?) ON CONFLICT DO NOTHING`, id, organization, project, uploader, ref.CompressedSize, ref.SHA256, conversationTime(now), ref.Retention, ref.Key, ref.UncompressedSize, ref.Codec, ref.SchemaVersion); err != nil {
 		return err
 	}
-	stored, err := scanAttachmentArchive(tx.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, id, organization))
+	stored, err := scanAttachmentArchive(tx.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class,storage_binding_id,customer_owned FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, id, organization))
 	if err != nil {
 		return err
 	}
