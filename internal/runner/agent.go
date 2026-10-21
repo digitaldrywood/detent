@@ -1632,6 +1632,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	req.workspaceBackend = runWorkspace
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	if req.Execution != nil {
+		workspaceIssue.ReleaseDelivery = req.Execution.Recovery().Issue.ReleaseDelivery
+	}
 	workspaceIssue.FreshCheckout = false
 	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework)

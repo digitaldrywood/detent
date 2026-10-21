@@ -245,26 +245,31 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 	if !diff.IsEmpty() {
 		return MergePrepareResult{Status: MergePrepareStatusDirty, DiffStat: diff}, nil
 	}
-	remote := strings.TrimSpace(opts.Remote)
-	if remote == "" {
-		remote = defaultGitRemote
-	}
-	target := strings.TrimSpace(opts.TargetBranch)
-	if target == "" {
-		target, err = remoteDefaultBranch(ctx, info.Path, remote)
+	var base string
+	if issue.ReleaseDelivery != nil {
+		base = issue.ReleaseDelivery.BaseSHA
+	} else {
+		remote := strings.TrimSpace(opts.Remote)
+		if remote == "" {
+			remote = defaultGitRemote
+		}
+		target := strings.TrimSpace(opts.TargetBranch)
+		if target == "" {
+			target, err = remoteDefaultBranch(ctx, info.Path, remote)
+			if err != nil {
+				return MergePrepareResult{}, err
+			}
+		}
+		ref := "refs/remotes/" + remote + "/" + target
+		if _, err := runGitAt(ctx, info.Path, "fetch", remote, "+refs/heads/"+target+":"+ref); err != nil {
+			return MergePrepareResult{}, err
+		}
+		resolved, err := runGitAt(ctx, info.Path, "rev-parse", "--verify", ref+"^{commit}")
 		if err != nil {
 			return MergePrepareResult{}, err
 		}
+		base = strings.TrimSpace(resolved)
 	}
-	ref := "refs/remotes/" + remote + "/" + target
-	if _, err := runGitAt(ctx, info.Path, "fetch", remote, "+refs/heads/"+target+":"+ref); err != nil {
-		return MergePrepareResult{}, err
-	}
-	base, err := runGitAt(ctx, info.Path, "rev-parse", "--verify", ref+"^{commit}")
-	if err != nil {
-		return MergePrepareResult{}, err
-	}
-	base = strings.TrimSpace(base)
 	if err := validate(ctx); err != nil {
 		return MergePrepareResult{}, err
 	}

@@ -35,6 +35,7 @@ type deferredCompletion struct {
 	Result                 runpkg.RunResult               `json:"result"`
 	Error                  string                         `json:"error,omitempty"`
 	TerminalState          store.WorkAttemptTerminalState `json:"terminal_state,omitempty"`
+	WorkspacePreparation   bool                           `json:"workspace_preparation,omitempty"`
 	WorkerProcessReap      bool                           `json:"worker_process_reap,omitempty"`
 	NativeRecoveryRequired bool                           `json:"native_recovery_required,omitempty"`
 	CompletedAt            time.Time                      `json:"completed_at"`
@@ -108,6 +109,7 @@ func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr er
 	record := deferredCompletion{
 		Schema:                 deferredCompletionSchema,
 		TerminalState:          terminalStateForRun(event.Err, event.Result.FinalState),
+		WorkspacePreparation:   errors.Is(event.Err, runpkg.ErrWorkspacePreparation),
 		WorkerProcessReap:      errors.Is(event.Err, runpkg.ErrWorkerProcessReap),
 		NativeRecoveryRequired: errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired),
 		Running:                running,
@@ -233,6 +235,9 @@ func (r deferredCompletion) completion() runpkg.Completion {
 		}, r.ForgeAvailability.ErrorClass, event.Err)
 	}
 	if event.Err != nil {
+		if r.WorkspacePreparation {
+			event.Err = errors.Join(runpkg.ErrWorkspacePreparation, event.Err)
+		}
 		if r.WorkerProcessReap {
 			event.Err = errors.Join(runpkg.ErrWorkerProcessReap, event.Err)
 		}

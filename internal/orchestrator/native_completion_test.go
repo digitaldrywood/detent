@@ -234,12 +234,15 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		mode             string
 		preProvider      bool
 		preInstance      bool
+		releaseDelivery  bool
 		wantAuthority    bool
 		recovery         *tracker.NativeRecovery
 		cleared          bool
 	}{
 		{name: "PLAN ordinary provider failure retains ordinary completion", mode: runpkg.RunModePlan, sourceState: "Todo", states: planRecovery, runErr: errors.New("provider failed"), turnStarted: true, wantOrdinary: true, wantContinue: true},
 		{name: "PLAN post-provider recovery error retains ordinary completion", mode: runpkg.RunModePlan, sourceState: "Todo", states: planRecovery, runErr: runpkg.ErrNativeRecoveryRequired, turnStarted: true, wantOrdinary: true, wantContinue: true},
+		{name: "release delivery repository setup failure retains Rework", sourceState: "Rework", preProvider: true, states: reworkRetry, humanReview: &no, runErr: fmt.Errorf("%w: create workspace: invalid pull request repository", runpkg.ErrWorkspacePreparation), preInstance: true, releaseDelivery: true, roundTrip: true},
+		{name: "release delivery unavailable base retains Rework", sourceState: "Rework", preProvider: true, states: reworkRetry, humanReview: &no, runErr: fmt.Errorf("%w: create workspace: resolve recovery base: local progress base branch is unavailable", runpkg.ErrWorkspacePreparation), preInstance: true, releaseDelivery: true},
 		{name: "PLAN pre-provider checkpoint recovery retries the instance", mode: runpkg.RunModePlan, sourceState: "Todo", preProvider: true, states: planRecovery, runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), preInstance: true},
 		{name: "CODE pre-provider checkpoint recovery retries the instance", preProvider: true, states: planRecovery, humanReview: &no, runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), preInstance: true},
 		{name: "CODE pre_provider external effect uncertainty retries the instance", preProvider: true, states: planRecovery, humanReview: &no, runErr: fmt.Errorf("%w: external_effect_uncertain", runpkg.ErrNativeRecoveryRequired), preInstance: true},
@@ -482,6 +485,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				t.Parallel()
 			}
 			issue := completionTransitionIssue(firstNonBlank(test.sourceState, "In Progress"), "")
+			if test.releaseDelivery {
+				issue.PRRepository = "https://github.com/example-org/example-project"
+				issue.BranchName = "operator/release-pick"
+				issue.PullRequest = &connector.PullRequest{Number: 7, State: "OPEN", BranchName: issue.BranchName, HeadSHA: head, BaseRef: "release/v1.2", BaseSHA: strings.Repeat("a", 40)}
+			}
 			if test.blockerState != "" {
 				issue.DependencySource = connector.BlockedRefSourceNative
 				issue.Metadata = map[string]string{"hub_profile": "native", "hub_revision": "6"}

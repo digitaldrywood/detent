@@ -65,6 +65,10 @@ func (l *LocalGit) LocalProgress(ctx context.Context, info Info, issue Issue) (L
 }
 
 func (l *LocalGit) localProgressBase(ctx context.Context, path string, issue Issue) (string, error) {
+	if issue.ReleaseDelivery != nil {
+		base, err := runGitAt(ctx, path, "rev-parse", "--verify", "--end-of-options", issue.ReleaseDelivery.BaseSHA+"^{commit}")
+		return strings.TrimSpace(base), err
+	}
 	if branch := strings.TrimSpace(issue.ProgressBaseRef); branch != "" {
 		for _, ref := range []string{"refs/remotes/origin/" + branch, "refs/heads/" + branch} {
 			if base, err := runGitAt(ctx, path, "rev-parse", "--verify", ref+"^{commit}"); err == nil {
