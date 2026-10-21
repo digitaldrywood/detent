@@ -172,7 +172,7 @@ type saveOnboardingRequest struct {
 func (s *Service) saveOnboarding(c echo.Context) error {
 	var request saveOnboardingRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	if err := request.Progress.Validate(); err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))

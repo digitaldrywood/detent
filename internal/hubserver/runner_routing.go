@@ -342,7 +342,7 @@ func (request runnerRoutingRequest) effective(current runnerauth.Routing) runner
 func (s *Service) updateRunnerRouting(c echo.Context) error {
 	var request runnerRoutingRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok {
@@ -359,7 +359,7 @@ func (s *Service) updateRunnerRouting(c echo.Context) error {
 func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeScope, resource string, request runnerRoutingRequest) (any, error) {
 	change := request.RoutingChange
 	if len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("Project capacity updates require an idempotency key of 1 to 128 characters")
+		return nil, nativeInvalid("Project capacity updates require an idempotency key of 1 to 128 characters")
 	}
 	scope.managedRunner = resource
 	scope.managedRunnerScope = request.Normalized().Scope
@@ -371,7 +371,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 			return nil, err
 		}
 		if request.ProjectCapacityLimits != nil && !maps.Equal(request.ProjectCapacityLimits, r.ProjectCapacityLimits) && strings.TrimSpace(request.IdempotencyKey) == "" {
-			return nil, nativePublicInvalid("Project capacity updates require an idempotency key of 1 to 128 characters")
+			return nil, nativeInvalid("Project capacity updates require an idempotency key of 1 to 128 characters")
 		}
 		operation := "runner_routing " + resource
 		hash, err := nativeCommandHash(request)
@@ -405,7 +405,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 				owned = true
 			}
 			if !owned {
-				return nil, &nativeError{Code: "access_denied", Message: "Only the runner owner may change its allowed projects", status: http.StatusForbidden, publicMessage: true}
+				return nil, &nativeError{Code: "access_denied", Message: "Only the runner owner may change its allowed projects", status: http.StatusForbidden}
 			}
 		}
 		if change.ProjectRanks == nil {
@@ -430,7 +430,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		}
 		for project := range change.ProjectCapacityLimits {
 			if !change.AllowsProject(project) {
-				return nil, nativePublicInvalid("Project capacity limits require existing runner project access")
+				return nil, nativeInvalid("Project capacity limits require existing runner project access")
 			}
 		}
 		projects := slices.Clone(change.ProjectIDs)
@@ -450,7 +450,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 				return nil, err
 			}
 			if count != 1 {
-				return nil, nativePublicInvalid("Runner projects must belong to the organization")
+				return nil, nativeInvalid("Runner projects must belong to the organization")
 			}
 		}
 		tags, err := marshalNative(change.Tags)
@@ -506,7 +506,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 func (s *Service) updateRunnerHost(c echo.Context) error {
 	var change runnerauth.HostChange
 	if err := decodeAPIJSON(c, &change); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok {
@@ -523,7 +523,7 @@ func (s *Service) updateRunnerHost(c echo.Context) error {
 func (s *Service) updateRunnerHostCommand(ctx context.Context, scope nativeScope, resource string, change runnerauth.HostChange) (any, error) {
 	change.DisplayName = strings.TrimSpace(change.DisplayName)
 	if change.DisplayName == "" || len(change.DisplayName) > 200 || strings.ContainsAny(change.DisplayName, "\r\n\x00") || change.Capacity < 0 || change.Capacity > 10000 {
-		return nil, nativePublicInvalid("Host name and a capacity between 0 and 10000 are required")
+		return nil, nativeInvalid("Host name and a capacity between 0 and 10000 are required")
 	}
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, _ time.Time) (any, error) {
 		var revision int64
@@ -672,7 +672,7 @@ func readRunnerForDispatch(ctx context.Context, tx *sql.Tx, scope nativeScope, n
 func (s *Service) validateRunnerLease(c echo.Context) error {
 	var request tracker.NativeLeaseMutation
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	return s.runnerReadTransaction(c, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		return validateRunnerLeaseTx(ctx, tx, nativeRequestScope(c), tracker.LeaseID(c.Param("lease")), request.FencingToken, now)

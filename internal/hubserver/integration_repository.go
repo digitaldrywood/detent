@@ -23,7 +23,7 @@ type bindNativeRepositoryRequest struct {
 func (s *Service) bindNativeRepository(c echo.Context) error {
 	var request bindNativeRepositoryRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	result, err := s.bindNativeRepositoryCommand(c.Request().Context(), nativeRequestScope(c), nativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Feature: hostedMutationFeature(c)}, request)
 	if err != nil {
@@ -40,16 +40,16 @@ func (s *Service) bindNativeRepositoryCommand(ctx context.Context, scope nativeS
 
 	owner, name, valid := splitRepositoryFullName(request.Repository)
 	if !valid {
-		return nil, nativePublicInvalid("Repository must be owner/name")
+		return nil, nativeInvalid("Repository must be owner/name")
 	}
 	if request.Source == "runner_checkout" {
 		return s.bindRunnerCheckoutCommand(ctx, scope, options, request.Mutation, request.ExpectedRevision, owner+"/"+name)
 	}
 	if request.Source != "" {
-		return nil, nativePublicInvalid("Repository source is invalid")
+		return nil, nativeInvalid("Repository source is invalid")
 	}
 	if s.config.ReconcileBackend == nil {
-		return nil, nativePublicInvalid("GitHub repository transport is not configured")
+		return nil, nativeInvalid("GitHub repository transport is not configured")
 	}
 	current, err := readProjectIntegration(ctx, s.database.reader, scope)
 	if err != nil {
@@ -62,7 +62,7 @@ func (s *Service) bindNativeRepositoryCommand(ctx context.Context, scope nativeS
 		return nil, nativeConflict(current.Revision)
 	}
 	if current.Profile != "native" || current.RepositoryID != 0 {
-		return nil, nativePublicInvalid("Only an unbound native project can attach a repository; existing bindings are immutable")
+		return nil, nativeInvalid("Only an unbound native project can attach a repository; existing bindings are immutable")
 	}
 	snapshot, err := s.config.ReconcileBackend.Reconcile(ctx, ReconcileRequest{Repository: RepositoryTarget{Owner: owner, Name: name}, Profile: "native", SkipIssues: true, SkipRepository: true})
 	if err != nil {
@@ -87,7 +87,7 @@ func (s *Service) bindNativeRepositoryCommand(ctx context.Context, scope nativeS
 			return nil, err
 		}
 		if exists != 0 {
-			return nil, nativePublicInvalid("Repository already belongs to another project; use that project's explicit cutover")
+			return nil, nativeInvalid("Repository already belongs to another project; use that project's explicit cutover")
 		}
 		repository := normalizedRepository{NodeID: snapshot.Repository.NodeID, DatabaseID: snapshot.Repository.DatabaseID, Owner: snapshot.Repository.Owner, Name: snapshot.Repository.Name}
 		stamp, err := newSourceStamp(snapshot.Repository.UpdatedAt, repository)

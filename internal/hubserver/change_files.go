@@ -16,7 +16,7 @@ import (
 
 func validateReviewBundle(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, bundle tracker.ChangeReviewBundle, now time.Time) error {
 	if !artifact.ValidID(bundle.ArtifactID, "artifact") || bundle.Revision < 1 || !artifact.ValidHash(bundle.SHA256, 64) || bundle.HeadSHA != version.HeadSHA {
-		return nativePublicInvalid("Review bundle identity does not match the version")
+		return nativeInvalid("Review bundle identity does not match the version")
 	}
 	var raw []byte
 	if err := tx.QueryRowContext(ctx, "SELECT reference_json FROM artifact_references WHERE organization_id=? AND project_id=? AND work_item_id=? AND artifact_id=? AND revision=?", scope.organization, scope.project, change.WorkItemID, bundle.ArtifactID, bundle.Revision).Scan(&raw); err != nil {
@@ -27,7 +27,7 @@ func validateReviewBundle(ctx context.Context, tx *sql.Tx, scope nativeScope, ch
 		return err
 	}
 	if ref.SHA256 != bundle.SHA256 || !changerequest.ReviewBundleMatches(version, ref) || !now.Before(ref.ExpiresAt) || ref.Availability != "available" {
-		return nativePublicInvalid("Review bundle is unavailable or does not match the version")
+		return nativeInvalid("Review bundle is unavailable or does not match the version")
 	}
 	return nil
 }
@@ -72,7 +72,7 @@ func (s *Service) changeViewedFilesCommand(ctx context.Context, scope nativeScop
 func (s *Service) viewChangeFile(c echo.Context) error {
 	var request tracker.ViewChangeFile
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.viewChangeFileCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), c.Param("version"), request, now)
@@ -89,7 +89,7 @@ func (s *Service) viewChangeFileCommand(ctx context.Context, tx *sql.Tx, scope n
 		return nil, err
 	}
 	if !artifact.ValidHash(request.FileSHA256, 64) {
-		return nil, nativePublicInvalid("An opaque file digest is required")
+		return nil, nativeInvalid("An opaque file digest is required")
 	}
 	if err := validateReviewBundle(ctx, tx, scope, change, version, request.Bundle, now); err != nil {
 		return nil, err
@@ -99,7 +99,7 @@ func (s *Service) viewChangeFileCommand(ctx context.Context, tx *sql.Tx, scope n
 		return nil, err
 	}
 	if count >= 4096 {
-		return nil, nativePublicInvalid("Viewed file limit reached for this version")
+		return nil, nativeInvalid("Viewed file limit reached for this version")
 	}
 	_, err = tx.ExecContext(ctx, "INSERT INTO change_viewed_files(version_id,principal_id,manifest_sha256,file_sha256,viewed) VALUES(?,?,?,?,?) ON CONFLICT(version_id,principal_id,manifest_sha256,file_sha256) DO UPDATE SET viewed=excluded.viewed", version.ID, scope.credential.ID, request.Bundle.SHA256, request.FileSHA256, request.Viewed)
 	return tracker.ChangeViewedFile{ManifestSHA256: request.Bundle.SHA256, FileSHA256: request.FileSHA256, Viewed: request.Viewed}, err

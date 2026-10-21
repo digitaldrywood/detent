@@ -93,7 +93,7 @@ func (t *coordinatorToolset) slashAction(ctx context.Context, record conversatio
 		fields["state"] = args.State
 	case "propose_backlog_admission":
 		if args.Priority != nil || args.State != "" || issue.State != "Backlog" {
-			return nil, nativePublicInvalid("Admission requires a Backlog item")
+			return nil, nativeInvalid("Admission requires a Backlog item")
 		}
 		targetState = "Todo"
 		fields["state"] = targetState

@@ -192,14 +192,14 @@ func readProjectPolicyHistory(ctx context.Context, query nativeQueryer, scope st
 		limit = defaultAPIPageLimit
 	}
 	if limit < 1 || limit > maxAPIPageLimit {
-		return result, nativePublicInvalid("History page limit is invalid")
+		return result, nativeInvalid("History page limit is invalid")
 	}
 	var before int64
 	if after != "" {
 		var err error
 		before, err = strconv.ParseInt(after, 10, 64)
 		if err != nil || before < 1 {
-			return result, nativePublicInvalid("History cursor is invalid")
+			return result, nativeInvalid("History cursor is invalid")
 		}
 	}
 	result, err := readProjectPolicy(ctx, query, scope)

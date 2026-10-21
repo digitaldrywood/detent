@@ -70,7 +70,7 @@ func (s *Service) updateOrganizationModelSelection(c echo.Context) error {
 func (s *Service) updateCloudModelSelection(c echo.Context) error {
 	var request cloudModelSelectionRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
 	scope.requireHostedAdmin = true

@@ -71,7 +71,7 @@ func (t *coordinatorToolset) proposeStopRun(ctx context.Context, record conversa
 		return nil, err
 	}
 	if !found || requireCurrentLease(lease, lease.session.FencingToken, t.coordinator.service.server.config.now()) != nil {
-		return nil, nativePublicInvalid("This item has no active runner attempt")
+		return nil, nativeInvalid("This item has no active runner attempt")
 	}
 	project, err := readNativeProject(ctx, query, scope)
 	if err != nil {

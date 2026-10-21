@@ -101,11 +101,11 @@ func (s *Service) hostedBillingConfig() *HostedBillingConfig {
 
 func (s *Service) reloadHostedRuntime(c echo.Context) error {
 	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
-		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
+		return c.NoContent(http.StatusForbidden)
 	}
 	var update HostedRuntimeUpdate
 	if err := decodeAPIJSON(c, &update); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	if err := s.applyHostedRuntime(c.Request().Context(), &update); err != nil {
 		return s.nativeAPIError(c, err)
@@ -118,7 +118,7 @@ func (s *Service) reloadHostedRuntime(c echo.Context) error {
 
 func (s *Service) readHostedRuntime(c echo.Context) error {
 	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
-		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
+		return c.NoContent(http.StatusForbidden)
 	}
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
@@ -133,7 +133,7 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
 	if update.Reason == "" || len(update.Reason) > 500 {
-		return nativePublicInvalid("A bounded reload reason is required")
+		return nativeInvalid("A bounded reload reason is required")
 	}
 	plans := defaultHostedPlans(s.config.Hosted)
 	if !update.Plans.IsZero() {
@@ -147,7 +147,7 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 	}
 	if !plans.IsZero() {
 		if err := plans.validate(); err != nil {
-			return nativePublicInvalid("Reloaded entitlement configuration is invalid")
+			return nativeInvalid("Reloaded entitlement configuration is invalid")
 		}
 	}
 	var config *HostedBillingConfig
@@ -156,10 +156,10 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 		next.Prices = slices.Clone(update.Prices)
 		config = &next
 		if err := config.validate(&plans); err != nil {
-			return nativePublicInvalid("Reloaded billing prices are invalid")
+			return nativeInvalid("Reloaded billing prices are invalid")
 		}
 	} else if len(update.Prices) != 0 {
-		return nativePublicInvalid("Enabling billing requires a restart")
+		return nativeInvalid("Enabling billing requires a restart")
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -169,7 +169,7 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 	actor := s.config.Hosted.EntitlementAdministrator
 	if update.StageID != "" {
 		if _, err := uuid.Parse(update.StageID); err != nil || !s.hostedShared() {
-			return nativePublicInvalid("Runtime preparation requires a shared entry and a publication identity")
+			return nativeInvalid("Runtime preparation requires a shared entry and a publication identity")
 		}
 	}
 	if err := s.database.seedHostedPlans(ctx, tx, plans, actor, update.Reason, update.StageID); err != nil {

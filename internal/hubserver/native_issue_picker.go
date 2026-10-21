@@ -36,10 +36,10 @@ func nativeIssuePickerRequested(params map[string][]string) (bool, error) {
 		return false, nil
 	}
 	if len(values) != 1 || values[0] != nativeIssuePickerFields {
-		return false, nativePublicInvalid("fields supports picker")
+		return false, nativeInvalid("fields supports picker")
 	}
 	if _, include := params["include"]; include {
-		return false, nativePublicInvalid("fields=picker cannot be combined with include")
+		return false, nativeInvalid("fields=picker cannot be combined with include")
 	}
 	return true, nil
 }

@@ -19,7 +19,7 @@ const nativeVerificationReopenState = "Todo"
 func (s *Service) verifyNativeIssue(c echo.Context) error {
 	var request tracker.VerifyFix
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	result, err := s.verifyNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
 	if err != nil {
@@ -62,7 +62,7 @@ func (s *Service) verifyNativeIssueCommand(ctx context.Context, scope nativeScop
 		return nil, nativeVerificationInvalid("Comment must be at most 64 KiB")
 	}
 	if request.ExpectedRevision < 0 {
-		return nil, nativePublicInvalid("Expected revision must be positive")
+		return nil, nativeInvalid("Expected revision must be positive")
 	}
 	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/verification"), Item: item, Feature: "collaboration"}
 	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
@@ -71,7 +71,7 @@ func (s *Service) verifyNativeIssueCommand(ctx context.Context, scope nativeScop
 			return nil, err
 		}
 		if issue.Profile != "native" {
-			return nil, nativePublicInvalid("Compatibility project content is externally owned")
+			return nil, nativeInvalid("Compatibility project content is externally owned")
 		}
 		if !nativeVerificationAnswerer(scope, issue) {
 			return nil, operatortool.ErrAccessDenied

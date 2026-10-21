@@ -271,7 +271,7 @@ func (s *Service) appUpdates(c echo.Context) error {
 	credential, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		if status == http.StatusForbidden {
-			return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
+			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
 		}
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
@@ -459,7 +459,7 @@ func (s *Service) appBootstrapPayload(c echo.Context) error {
 	credential, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		if status == http.StatusForbidden {
-			return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", appBootstrapRefusal{Code: "forbidden", Message: "This account has no access to this organization", Details: appBootstrapRefusalDetails{Organization: s.config.Hosted.OrganizationID, CSRFToken: s.hostedPageCSRF(c)}})
+			return c.JSON(http.StatusForbidden, appBootstrapRefusal{Code: "forbidden", Message: "This account has no access to this organization", Details: appBootstrapRefusalDetails{Organization: s.config.Hosted.OrganizationID, CSRFToken: s.hostedPageCSRF(c)}})
 		}
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}

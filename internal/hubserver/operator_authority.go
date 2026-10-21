@@ -70,14 +70,14 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
 				return s.nativeAPIError(c, err)
 			}
-			return s.refusedAPIError(c, status, "access_denied", operatortool.ErrAccessDenied.Error(), apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
+			return c.JSON(status, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 		}
 		organization := c.Param("organization")
 		if organization == "" && s.config.Hosted != nil {
 			organization = s.config.Hosted.OrganizationID
 		}
 		if selected := strings.TrimSpace(c.Request().Header.Get("X-Detent-Organization")); selected != "" && selected != organization {
-			return s.refusedAPIError(c, http.StatusForbidden, "access_denied", operatortool.ErrAccessDenied.Error(), apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
+			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 		}
 		identity := operatorIdentity(credential, organization)
 		var token string
@@ -159,7 +159,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 		})
 		authority, err := s.operatorCurrentAuthority(ctx, credential, organization)
 		if err != nil || !identity.Valid() || authority.Identity != identity || authority.Check(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, OrganizationID: organization}) != nil {
-			return s.refusedAPIError(c, http.StatusForbidden, "access_denied", operatortool.ErrAccessDenied.Error(), apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
+			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 		}
 		ctx = s.withOperatorCatalog(ctx, credential, organization)
 		request := c.Request().WithContext(ctx)
@@ -169,7 +169,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			// caller-supplied Forwarded/X-Forwarded-Host permission switch.
 			public, err := url.Parse(s.config.Hosted.PublicURL)
 			if err != nil || public.Host == "" {
-				return s.refusedAPIError(c, http.StatusForbidden, "access_denied", operatortool.ErrAccessDenied.Error(), apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
+				return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 			}
 			request.Host = public.Host
 		}

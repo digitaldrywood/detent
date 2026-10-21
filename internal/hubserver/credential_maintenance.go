@@ -38,17 +38,14 @@ func (s *Service) requireCredentialMaintenance(next echo.HandlerFunc) echo.Handl
 		}
 		credential, status, err := s.authenticateAPIRequest(c)
 		if err != nil {
-			if status == http.StatusForbidden {
-				return s.hostedJSONError(c, status, "Instance administrator credential is not authorized")
-			}
 			return c.NoContent(status)
 		}
 		if credential.Scope != apiScopeAdmin || credential.NativeOnly || credential.Hosted != nil || credential.Runner.RunnerID != "" {
-			return s.hostedJSONError(c, http.StatusForbidden, "A non-native instance administrator credential is required")
+			return c.NoContent(http.StatusForbidden)
 		}
 		var members int
 		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_members WHERE principal_id = ?", credential.ID).Scan(&members); err != nil || members != 0 {
-			return s.hostedJSONError(c, http.StatusForbidden, "Hosted member credentials cannot maintain instance credentials")
+			return c.NoContent(http.StatusForbidden)
 		}
 		identity := &auth.HostedIdentity{Subject: credential.ID, CreatedAt: s.config.now()}
 		route := c.Request().Method + " " + c.Request().URL.Path

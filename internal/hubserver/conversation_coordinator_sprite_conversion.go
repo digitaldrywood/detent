@@ -55,11 +55,11 @@ func (t *coordinatorToolset) promoteSpritesTokenTool(ctx context.Context, record
 		return nil, err
 	}
 	if existing.Present {
-		return nil, nativePublicInvalid("An organization Sprites token is already configured")
+		return nil, nativeInvalid("An organization Sprites token is already configured")
 	}
 	change, _, _, err := firstProjectSpritesToken(ctx, s.database.reader, scope)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nativePublicInvalid("No existing project Sprites token is available")
+		return nil, nativeInvalid("No existing project Sprites token is available")
 	}
 	if err != nil {
 		return nil, err
@@ -92,14 +92,14 @@ func (s *Service) executePromoteSpritesToken(ctx context.Context, action chat.Ac
 			return err
 		}
 		if existing.Present {
-			return nativePublicInvalid("An organization Sprites token is already configured")
+			return nativeInvalid("An organization Sprites token is already configured")
 		}
 		current, slug, envelope, err := firstProjectSpritesToken(ctx, tx, scope)
 		if err != nil {
 			return err
 		}
 		if current != change {
-			return nativePublicInvalid("The source Sprites token changed; request a new preview")
+			return nativeInvalid("The source Sprites token changed; request a new preview")
 		}
 		token, err := s.config.SecretKeys.Open(envelope, secretAAD(string(scope.organization), string(change.ProjectID), flySpritesToken))
 		if err != nil {

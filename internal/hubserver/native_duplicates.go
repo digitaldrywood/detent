@@ -198,7 +198,7 @@ WHERE token = ? AND organization_id = ? AND project_id = ? AND principal_id = ? 
 AND julianday(created_at) > julianday(?)
 RETURNING matches_json`, request.ChallengeToken, scope.organization, scope.project, scope.actor().PrincipalID, request.IdempotencyKey, hash, formatHubTime(now.Add(-duplicateChallengeLifetime))).Scan(&encoded)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nativePublicInvalid("Duplicate challenge is invalid, expired or already used")
+		return nil, nativeInvalid("Duplicate challenge is invalid, expired or already used")
 	}
 	if err != nil {
 		return nil, err
@@ -210,7 +210,7 @@ RETURNING matches_json`, request.ChallengeToken, scope.organization, scope.proje
 	var related []possibleDuplicate
 	for _, number := range request.NotDuplicateOf {
 		if slices.ContainsFunc(related, func(match possibleDuplicate) bool { return match.Number == number }) {
-			return nil, nativePublicInvalid("Not duplicate of must contain unique issue numbers")
+			return nil, nativeInvalid("Not duplicate of must contain unique issue numbers")
 		}
 		found := false
 		for _, match := range matches {
@@ -221,7 +221,7 @@ RETURNING matches_json`, request.ChallengeToken, scope.organization, scope.proje
 			}
 		}
 		if !found {
-			return nil, nativePublicInvalid("Not duplicate of must name a challenged issue number")
+			return nil, nativeInvalid("Not duplicate of must name a challenged issue number")
 		}
 	}
 	return related, nil

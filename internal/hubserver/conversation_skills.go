@@ -15,11 +15,11 @@ func updateRunnerSkills(ctx context.Context, tx *sql.Tx, scope nativeScope, repo
 		return nil
 	}
 	if scope.credential.Runner.RunnerID == "" {
-		return nativePublicInvalid("Skill reports require an enrolled runner")
+		return nativeInvalid("Skill reports require an enrolled runner")
 	}
 	for _, skill := range *report {
 		if !skills.ValidProviderSkill(skill) {
-			return nativePublicInvalid("Invalid runner skill metadata")
+			return nativeInvalid("Invalid runner skill metadata")
 		}
 	}
 	raw, err := json.Marshal(*report)

@@ -291,7 +291,7 @@ func (s *Service) admitRunnerRequest(c echo.Context, credential apiCredential) e
 	now := s.config.now().UTC()
 	if retry := m.admit(now, credential.Runner.RunnerID, c.Request().Method+" "+c.Path(), capacity, projects); retry > 0 {
 		c.Response().Header().Set("Retry-After", strconv.Itoa(retry))
-		return s.refusedAPIError(c, http.StatusTooManyRequests, "runner_request_budget", "Runner request budget exceeded; retry after the current minute", apiErrorResponse{Code: "runner_request_budget", Message: "Runner request budget exceeded; retry after the current minute"})
+		return c.JSON(429, apiErrorResponse{Code: "runner_request_budget", Message: "Runner request budget exceeded; retry after the current minute"})
 	}
 	return nil
 }

@@ -127,7 +127,7 @@ func (s *Service) readUrgentRunnerUpdateCommand(ctx context.Context, scope nativ
 func (s *Service) markUrgentRunnerUpdate(c echo.Context) error {
 	var request urgentRunnerUpdateChange
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok {
@@ -145,10 +145,10 @@ func (s *Service) markUrgentRunnerUpdate(c echo.Context) error {
 func (s *Service) markUrgentRunnerUpdateCommand(ctx context.Context, scope nativeScope, request urgentRunnerUpdateChange) (any, error) {
 	request.Version = strings.TrimPrefix(strings.TrimSpace(request.Version), "v")
 	if _, err := update.CompareVersions(request.Version, request.Version); err != nil || request.ExpectedRevision < 0 || strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("A release version, expected revision and idempotency key are required")
+		return nil, nativeInvalid("A release version, expected revision and idempotency key are required")
 	}
 	if !request.Confirm {
-		return nil, &nativeError{Code: "confirmation_required", Message: "Confirm updating all runners below the selected release", status: http.StatusPreconditionRequired, publicMessage: true}
+		return nil, &nativeError{Code: "confirmation_required", Message: "Confirm updating all runners below the selected release", status: http.StatusPreconditionRequired}
 	}
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		const operation = "urgent_runner_update"
@@ -173,7 +173,7 @@ func (s *Service) markUrgentRunnerUpdateCommand(ctx context.Context, scope nativ
 		if current.Request != nil {
 			comparison, err := update.CompareVersions(request.Version, current.Request.Version)
 			if err != nil || comparison < 0 {
-				return nil, nativePublicInvalid("An urgent release cannot lower the existing update target")
+				return nil, nativeInvalid("An urgent release cannot lower the existing update target")
 			}
 		}
 		value := urgentRunnerUpdate{Revision: current.Revision + 1, Request: &runnerauth.UpdateRequest{ID: newNativeID("update"), RequestedAt: now, Service: "detent", Version: request.Version, Release: true, Urgent: true}}

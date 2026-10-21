@@ -67,28 +67,28 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 	defer cancelRead()
 	var request tracker.NativeClaim
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	if err := validateProviderCandidates(request.ProviderCandidates); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if request.LandingCapacity < 0 {
-		return s.nativeAPIError(c, nativePublicInvalid("Landing capacity must be non-negative"))
+		return s.nativeAPIError(c, nativeInvalid("Landing capacity must be non-negative"))
 	}
 	if request.ProtocolMajor != tracker.NativeProtocolMajor || !slices.Contains(request.Capabilities, "scoped_collaboration") || !slices.Contains(request.Capabilities, "native_issues") {
-		return s.nativeAPIError(c, nativePublicInvalid("Native protocol and required collaboration capabilities must be negotiated"))
+		return s.nativeAPIError(c, nativeInvalid("Native protocol and required collaboration capabilities must be negotiated"))
 	}
 	for _, capability := range request.Capabilities {
 		if !slices.Contains([]string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability, tracker.NativeWorkspaceCapability, tracker.NativeLandingCapacityCapability}, capability) {
-			return s.nativeAPIError(c, nativePublicInvalid("Unknown required capability"))
+			return s.nativeAPIError(c, nativeInvalid("Unknown required capability"))
 		}
 	}
 	if len(request.SessionID) > 128 {
-		return s.nativeAPIError(c, nativePublicInvalid("Session ID is too long"))
+		return s.nativeAPIError(c, nativeInvalid("Session ID is too long"))
 	}
 	ttl, err := apiTTL(request.TTLSeconds)
 	if err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Lease TTL is invalid"))
+		return s.nativeAPIError(c, nativeInvalid("Lease TTL is invalid"))
 	}
 	scope := nativeRequestScope(c)
 	if request.WorkItemID == "" && len(request.ProviderCandidates) == 1 {
@@ -164,14 +164,14 @@ func (s *Service) renewNativeLease(c echo.Context) error {
 	}
 	var request tracker.NativeLeaseMutation
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	if request.LandingCapacity < 0 {
-		return s.nativeAPIError(c, nativePublicInvalid("Landing capacity must be non-negative"))
+		return s.nativeAPIError(c, nativeInvalid("Landing capacity must be non-negative"))
 	}
 	ttl, err := apiTTL(request.TTLSeconds)
 	if err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Lease TTL is invalid"))
+		return s.nativeAPIError(c, nativeInvalid("Lease TTL is invalid"))
 	}
 	lease, err := s.database.renew(c.Request().Context(), tracker.RenewRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, TTL: ttl}, true, request.LandingCapacity, nativeRequestScope(c))
 	if err != nil {
@@ -186,10 +186,10 @@ func (s *Service) releaseNativeLease(c echo.Context) error {
 	}
 	var request tracker.NativeLeaseMutation
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	if request.CancelAttempt && request.Reason != "cancelled" || !slices.Contains([]string{"completed", "cancelled", "failed", "work_item_hydration_failed", "work_item_identity_missing", "released"}, request.Reason) {
-		return s.nativeAPIError(c, nativePublicInvalid("Release reason is invalid"))
+		return s.nativeAPIError(c, nativeInvalid("Release reason is invalid"))
 	}
 	if err := s.database.releaseLease(c.Request().Context(), tracker.ReleaseRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, Reason: request.Reason}, request.CancelAttempt, nativeRequestScope(c)); err != nil {
 		return s.nativeAPIError(c, err)
@@ -223,10 +223,10 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	if strings.TrimSpace(string(request.ID)) == "" || len(request.ID) > 128 || strings.TrimSpace(request.Hostname) == "" || len(request.Hostname) > 200 || len(request.DisplayName) > 200 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || request.Capacity < 0 || !validRunnerPlatform(request.OS, request.Architecture) {
-		return s.nativeAPIError(c, nativePublicInvalid("Machine identity, hostname, version, and nonnegative capacity are required"))
+		return s.nativeAPIError(c, nativeInvalid("Machine identity, hostname, version, and nonnegative capacity are required"))
 	}
 	scope := nativeRequestScope(c)
 	now := formatHubTime(s.config.now())
@@ -234,7 +234,7 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if !workspacesession.ValidIsolation(request.WorkspaceIsolation) {
-		return s.nativeAPIError(c, nativePublicInvalid("Workspace isolation must be sandbox, container or user"))
+		return s.nativeAPIError(c, nativeInvalid("Workspace isolation must be sandbox, container or user"))
 	}
 	if scope.credential.Runner.RunnerID != "" {
 		return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
@@ -265,16 +265,16 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 		})
 	}
 	if request.WorkspaceCapabilities != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Workspace capabilities require an enrolled runner"))
+		return s.nativeAPIError(c, nativeInvalid("Workspace capabilities require an enrolled runner"))
 	}
 	if len(request.ProviderReports) != 0 {
-		return s.nativeAPIError(c, nativePublicInvalid("Provider reports require an enrolled runner"))
+		return s.nativeAPIError(c, nativeInvalid("Provider reports require an enrolled runner"))
 	}
 	if request.Skills != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Skill reports require an enrolled runner"))
+		return s.nativeAPIError(c, nativeInvalid("Skill reports require an enrolled runner"))
 	}
 	if request.CheckoutRepository != nil && *request.CheckoutRepository != "" {
-		return s.nativeAPIError(c, nativePublicInvalid("Checkout reports require an enrolled runner"))
+		return s.nativeAPIError(c, nativeInvalid("Checkout reports require an enrolled runner"))
 	}
 	result, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at, organization_id, token_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

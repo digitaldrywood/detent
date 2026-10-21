@@ -240,7 +240,7 @@ type conversationTurnEventsResponse struct {
 
 func (identity conversationWorkerIdentity) validate() error {
 	if strings.TrimSpace(string(identity.LeaseID)) == "" || identity.FencingToken <= 0 || strings.TrimSpace(identity.AttemptID) == "" {
-		return nativePublicInvalid("lease_id, fencing_token and attempt_id are required")
+		return nativeInvalid("lease_id, fencing_token and attempt_id are required")
 	}
 	return nil
 }
@@ -249,7 +249,7 @@ func conversationIdentityFromHeaders(c echo.Context) (conversationWorkerIdentity
 	header := c.Request().Header
 	token, err := strconv.ParseInt(strings.TrimSpace(header.Get(conversationHeaderFencingToken)), 10, 64)
 	if err != nil {
-		return conversationWorkerIdentity{}, nativePublicInvalid("A numeric fencing token header is required")
+		return conversationWorkerIdentity{}, nativeInvalid("A numeric fencing token header is required")
 	}
 	identity := conversationWorkerIdentity{
 		LeaseID:      tracker.LeaseID(strings.TrimSpace(header.Get(conversationHeaderLease))),
@@ -700,13 +700,13 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 	c, s := r.service, r.service.server
 	var request conversationBindRequest
 	if err := decodeAPIJSON(e, &request); err != nil {
-		return s.invalidAPIRequest(e, err)
+		return invalidAPIRequest(e, err)
 	}
 	if err := request.validate(); err != nil {
 		return s.nativeAPIError(e, err)
 	}
 	if strings.TrimSpace(request.RunID) == "" {
-		return s.nativeAPIError(e, nativePublicInvalid("run_id is required"))
+		return s.nativeAPIError(e, nativeInvalid("run_id is required"))
 	}
 	ctx := e.Request().Context()
 	scope := nativeRequestScope(e)
@@ -825,7 +825,7 @@ func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 	c, s := r.service, r.service.server
 	var request conversationUnbindRequest
 	if err := decodeAPIJSON(e, &request); err != nil {
-		return s.invalidAPIRequest(e, err)
+		return invalidAPIRequest(e, err)
 	}
 	if err := request.validate(); err != nil {
 		return s.nativeAPIError(e, err)
@@ -835,7 +835,7 @@ func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 		"cancelled": conversation.ExecutionInterrupted, "interrupted": conversation.ExecutionInterrupted,
 	}[request.Outcome]
 	if !ok {
-		return s.nativeAPIError(e, nativePublicInvalid("outcome must be succeeded, failed, cancelled or interrupted"))
+		return s.nativeAPIError(e, nativeInvalid("outcome must be succeeded, failed, cancelled or interrupted"))
 	}
 	ctx := e.Request().Context()
 	scope := nativeRequestScope(e)
@@ -934,13 +934,13 @@ func conversationControlQuery(e echo.Context) (after int64, wait time.Duration, 
 	if raw := strings.TrimSpace(e.QueryParam("after")); raw != "" {
 		after, err = strconv.ParseInt(raw, 10, 64)
 		if err != nil || after < 0 {
-			return 0, 0, nativePublicInvalid("after must be a non-negative cursor")
+			return 0, 0, nativeInvalid("after must be a non-negative cursor")
 		}
 	}
 	if raw := strings.TrimSpace(e.QueryParam("wait")); raw != "" {
 		seconds, err := strconv.Atoi(raw)
 		if err != nil || seconds < 0 {
-			return 0, 0, nativePublicInvalid("wait must be a number of seconds")
+			return 0, 0, nativeInvalid("wait must be a number of seconds")
 		}
 		wait = min(time.Duration(seconds)*time.Second, conversationControlMaxWait)
 	}
@@ -1011,17 +1011,17 @@ func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
 	c, s := r.service, r.service.server
 	var request conversationTurnEventsRequest
 	if err := decodeAPIJSON(e, &request); err != nil {
-		return s.invalidAPIRequest(e, err)
+		return invalidAPIRequest(e, err)
 	}
 	if err := request.validate(); err != nil {
 		return s.nativeAPIError(e, err)
 	}
 	if len(request.Events) > conversationMaxTurnEvents {
-		return s.nativeAPIError(e, nativePublicInvalid("Too many events in one batch"))
+		return s.nativeAPIError(e, nativeInvalid("Too many events in one batch"))
 	}
 	request.BatchKey = strings.TrimSpace(request.BatchKey)
 	if len(request.BatchKey) > conversation.MaxCommandKeyBytes {
-		return s.nativeAPIError(e, nativePublicInvalid(fmt.Sprintf("batch_key must be at most %d bytes", conversation.MaxCommandKeyBytes)))
+		return s.nativeAPIError(e, nativeInvalid(fmt.Sprintf("batch_key must be at most %d bytes", conversation.MaxCommandKeyBytes)))
 	}
 	ctx := e.Request().Context()
 	scope := nativeRequestScope(e)
@@ -1107,7 +1107,7 @@ func (c *conversationService) applyTurnEvent(ctx context.Context, tx *sql.Tx, tu
 	case "execution_status":
 		status := conversation.ExecutionStatus(event.Status)
 		if !status.Valid() {
-			return nativePublicInvalid("execution_status carries an unknown status")
+			return nativeInvalid("execution_status carries an unknown status")
 		}
 		turn.execution.Status = status
 		turn.execution.Error = strings.TrimSpace(event.Error)
@@ -1121,7 +1121,7 @@ func (c *conversationService) applyTurnEvent(ctx context.Context, tx *sql.Tx, tu
 func (c *conversationService) applyTurnStarted(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	turnID := strings.TrimSpace(event.TurnID)
 	if turnID == "" {
-		return nativePublicInvalid("turn_started requires a turn_id")
+		return nativeInvalid("turn_started requires a turn_id")
 	}
 	if current := turn.execution.Owner.TurnID; current != "" && current != turnID {
 		return conversationStale("Another turn is still in progress")
@@ -1158,10 +1158,10 @@ func (c *conversationService) applyTurnStarted(ctx context.Context, tx *sql.Tx, 
 func (c *conversationService) applyDelta(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	item := strings.TrimSpace(event.ProviderItemID)
 	if item == "" {
-		return nativePublicInvalid("delta requires a provider_item_id")
+		return nativeInvalid("delta requires a provider_item_id")
 	}
 	if len(event.Text) > conversationMaxDeltaBytes {
-		return nativePublicInvalid("delta text is too long")
+		return nativeInvalid("delta text is too long")
 	}
 	owner := turn.execution.Owner
 	// Only the message identity and its stored length are needed: the
@@ -1196,7 +1196,7 @@ func (c *conversationService) applyDelta(ctx context.Context, tx *sql.Tx, turn *
 func (c *conversationService) applyItem(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	kind := conversation.MessageKind(event.Kind)
 	if kind != conversation.MessageTool && kind != conversation.MessageStatus {
-		return nativePublicInvalid("item kind must be tool or status")
+		return nativeInvalid("item kind must be tool or status")
 	}
 	data, err := conversationItemData(event.Data)
 	if err != nil {
@@ -1218,11 +1218,11 @@ func conversationItemData(raw json.RawMessage) (json.RawMessage, error) {
 		return nil, nil
 	}
 	if len(raw) > conversationMaxItemDataBytes {
-		return nil, nativePublicInvalid("item data is too long")
+		return nil, nativeInvalid("item data is too long")
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err != nil {
-		return nil, nativePublicInvalid("item data must be a JSON object")
+		return nil, nativeInvalid("item data must be a JSON object")
 	}
 	return raw, nil
 }
@@ -1241,7 +1241,7 @@ func conversationTruncate(value string, limit int) string {
 func (c *conversationService) applyQuestionOpened(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	requestID := strings.TrimSpace(event.RequestID)
 	if requestID == "" {
-		return nativePublicInvalid("question_opened requires a request_id and prompts")
+		return nativeInvalid("question_opened requires a request_id and prompts")
 	}
 	if err := conversation.ValidatePrompts(event.Prompts); err != nil {
 		return nativeInvalid(err.Error())
@@ -1293,7 +1293,7 @@ func (c *conversationService) applyQuestionOpened(ctx context.Context, tx *sql.T
 func (c *conversationService) applyControlResult(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	key := strings.TrimSpace(event.Key)
 	if key == "" {
-		return nativePublicInvalid("control_result requires a key")
+		return nativeInvalid("control_result requires a key")
 	}
 	messages, err := c.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND command_key = ? ORDER BY seq", turn.record.ID, key)
 	if err != nil {
@@ -1323,7 +1323,7 @@ func (c *conversationService) applyControlResult(ctx context.Context, tx *sql.Tx
 		delivery, questionStatus = conversation.DeliveryUnknown, conversation.QuestionUnknown
 		failure = &conversation.ReceiptError{Code: "unknown", Message: strings.TrimSpace(event.Error)}
 	default:
-		return nativePublicInvalid("control_result status must be delivered, rejected or unknown")
+		return nativeInvalid("control_result status must be delivered, rejected or unknown")
 	}
 	if err := c.setControlDelivery(ctx, tx, message, delivery, failure, turn.now); err != nil {
 		return err
@@ -1366,7 +1366,7 @@ func (c *conversationService) applyControlResult(ctx context.Context, tx *sql.Tx
 func (c *conversationService) applyTurnCompleted(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	turnID := strings.TrimSpace(event.TurnID)
 	if turnID == "" {
-		return nativePublicInvalid("turn_completed requires a turn_id")
+		return nativeInvalid("turn_completed requires a turn_id")
 	}
 	if current := turn.execution.Owner.TurnID; current != "" && current != turnID {
 		return conversationStale("The completed turn is not the current turn")
@@ -1380,7 +1380,7 @@ func (c *conversationService) applyTurnCompleted(ctx context.Context, tx *sql.Tx
 	case "failed":
 		delivery = conversation.DeliveryFailed
 	default:
-		return nativePublicInvalid("turn_completed status must be completed, interrupted or failed")
+		return nativeInvalid("turn_completed status must be completed, interrupted or failed")
 	}
 	responding, err := c.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND role = 'assistant' AND attempt_id = ? AND turn_id = ? AND delivery = 'responding' ORDER BY seq", turn.record.ID, turn.execution.Owner.AttemptID, turnID)
 	if err != nil {

@@ -371,7 +371,7 @@ func TestHostedNativeRejectionMessages(t *testing.T) {
 		{"source", "source_verification", "source", "sentinel-private", "publication rejected: category=source_verification field=source [private error text omitted]"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			service := &Service{config: Config{Hosted: &HostedConfig{}, Logger: discardLogger()}}
+			service := &Service{config: Config{Hosted: &HostedConfig{}}}
 			response := httptest.NewRecorder()
 			c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/", nil), response)
 			if err := service.nativeAPIError(c, nativeRejection(nativeInvalid(test.message), test.category, test.field)); err != nil {

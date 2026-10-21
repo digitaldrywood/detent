@@ -143,7 +143,7 @@ func (t *coordinatorToolset) spriteTool(ctx context.Context, record conversation
 	if call.Name == "set_sprite_pool" {
 		args.apply(&settings)
 	} else if settings.Revision == 0 || settings.MaxRunners == 0 {
-		return nil, nativePublicInvalid("Configure and enable the Sprite pool with set_sprite_pool before scaling up")
+		return nil, nativeInvalid("Configure and enable the Sprite pool with set_sprite_pool before scaling up")
 	}
 	if call.Name == "scale_up_sprite_pool" {
 		if _, err := s.spritePoolAuthority(ctx, s.database.reader, scope); err != nil {
@@ -181,14 +181,14 @@ func (s *Service) validateCoordinatorSpriteChange(ctx context.Context, scope nat
 	}
 	if settings.MaxRunners > 0 {
 		if s.config.SecretKeys == nil || s.config.Hosted == nil {
-			return nativePublicInvalid("Sprite pools require hosted configuration and the organization secret store")
+			return nativeInvalid("Sprite pools require hosted configuration and the organization secret store")
 		}
 		status, err := readSecretStatus(ctx, s.database.reader, scope)
 		if err != nil {
 			return err
 		}
 		if !status.Present {
-			return nativePublicInvalid("Set the Sprites organization token through set_sprites_token before enabling the pool")
+			return nativeInvalid("Set the Sprites organization token through set_sprites_token before enabling the pool")
 		}
 	}
 	return nil

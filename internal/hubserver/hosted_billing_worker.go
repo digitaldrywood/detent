@@ -125,11 +125,11 @@ func (s *Service) hostedStripeWebhook(c echo.Context) error {
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(c.Response(), c.Request().Body, 1024*1024))
 	if err != nil {
-		return s.hostedJSONError(c, http.StatusBadRequest, "Billing webhook body could not be read within the size limit")
+		return c.NoContent(http.StatusBadRequest)
 	}
 	event, err := billing.VerifyModeEvent(body, c.Request().Header.Get("Stripe-Signature"), cfg.WebhookSecret, s.config.now(), cfg.mode() == billing.ModeLive)
 	if err != nil {
-		return s.hostedJSONError(c, http.StatusBadRequest, "Billing webhook signature, timestamp or mode is invalid")
+		return c.NoContent(http.StatusBadRequest)
 	}
 	if !event.Relevant() {
 		return c.NoContent(http.StatusOK)

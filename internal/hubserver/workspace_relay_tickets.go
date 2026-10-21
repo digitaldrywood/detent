@@ -140,7 +140,7 @@ func (s *Service) requireRelayOrigin(c echo.Context) error {
 	}
 	presented, err := url.Parse(origin)
 	if err != nil || presented.Scheme != allowed.Scheme || presented.Host != allowed.Host {
-		return &nativeError{Code: "forbidden", Message: "The relay refuses this origin", status: http.StatusForbidden, publicMessage: true}
+		return &nativeError{Code: "forbidden", Message: "The relay refuses this origin", status: http.StatusForbidden}
 	}
 	return nil
 }

@@ -106,7 +106,7 @@ type startGitHubImportRequest struct {
 func (s *Service) startGitHubImport(c echo.Context) error {
 	var request startGitHubImportRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, s.startGitHubImportOperation(request))
 }
@@ -118,7 +118,7 @@ func (s *Service) startGitHubImportOperation(request startGitHubImportRequest) f
 			return nil, err
 		}
 		if !integration.ManualImportEnabled || integration.RepositoryID == 0 || request.IssueNumber <= 0 {
-			return nil, nativePublicInvalid("Enable manual intake on a repository-backed project and provide a positive issue number")
+			return nil, nativeInvalid("Enable manual intake on a repository-backed project and provide a positive issue number")
 		}
 		var id string
 		err = tx.QueryRowContext(ctx, "SELECT id FROM github_imports WHERE project_id = ? AND issue_number = ?", scope.project, request.IssueNumber).Scan(&id)
@@ -164,7 +164,7 @@ func (s *Service) advanceGitHubImport(c echo.Context) error {
 		ExpectedRevision tracker.Revision `json:"expected_revision,string"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	id := c.Param("import")
 	key := request.IdempotencyKey
@@ -191,7 +191,7 @@ func (s *Service) advanceGitHubImport(c echo.Context) error {
 			if readErr != nil {
 				return s.nativeAPIError(c, readErr)
 			}
-			return s.refusedAPIError(c, http.StatusTooManyRequests, failure.Code, "Import retry is not ready", current)
+			return c.JSON(http.StatusTooManyRequests, current)
 		}
 		return s.nativeAPIError(c, err)
 	}
@@ -207,7 +207,7 @@ func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope nativeSc
 	}
 
 	if s.config.ImportBackend == nil {
-		return nil, nativePublicInvalid("GitHub import transport is not configured")
+		return nil, nativeInvalid("GitHub import transport is not configured")
 	}
 	current, err := readGitHubImport(ctx, s.database.reader, scope, id)
 	if err != nil {
@@ -220,14 +220,14 @@ func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope nativeSc
 		return json.Marshal(current)
 	}
 	if current.RetryAfter != nil && s.config.now().Before(*current.RetryAfter) {
-		return nil, &nativeError{Code: "invalid_request", Message: "Import retry is not ready", status: http.StatusTooManyRequests, publicMessage: true}
+		return nil, &nativeError{Code: "invalid_request", Message: "Import retry is not ready", status: http.StatusTooManyRequests}
 	}
 	integration, err := readProjectIntegration(ctx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}
 	if !integration.ManualImportEnabled {
-		return nil, nativePublicInvalid("Manual intake is disabled")
+		return nil, nativeInvalid("Manual intake is disabled")
 	}
 	page, fetchErr := s.fetchImportPage(ctx, integration, current)
 	return s.executeNativeMutation(ctx, scope, options, tracker.Mutation{IdempotencyKey: key}, input, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
@@ -267,11 +267,11 @@ func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope nativeSc
 
 func applyGitHubImportPage(ctx context.Context, tx *sql.Tx, scope nativeScope, integration ProjectIntegration, current GitHubImport, page GitHubImportPage, now time.Time) error {
 	if page.NextCursor != "" && page.NextCursor == current.Cursor {
-		return nativePublicInvalid("GitHub pagination did not advance")
+		return nativeInvalid("GitHub pagination did not advance")
 	}
 	if current.Stage == "issue" {
 		if page.Issue == nil || page.Issue.Number != current.IssueNumber {
-			return nativePublicInvalid("GitHub import returned the wrong issue")
+			return nativeInvalid("GitHub import returned the wrong issue")
 		}
 		if err := importGitHubIssue(ctx, tx, scope, integration, &current, *page.Issue, now); err != nil {
 			return err
@@ -284,7 +284,7 @@ func applyGitHubImportPage(ctx context.Context, tx *sql.Tx, scope nativeScope, i
 	}
 	for _, record := range page.Records {
 		if record.SourceKey == "" || !json.Valid(record.Data) {
-			return nativePublicInvalid("GitHub import record is incomplete")
+			return nativeInvalid("GitHub import record is incomplete")
 		}
 		raw, err := marshalNative(record)
 		if err != nil {
@@ -374,7 +374,7 @@ func (s *Service) fetchImportPage(ctx context.Context, integration ProjectIntegr
 
 func importGitHubIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, integration ProjectIntegration, current *GitHubImport, source IssueSource, now time.Time) error {
 	if source.NodeID == "" || source.CreatedAt.IsZero() || source.UpdatedAt.IsZero() {
-		return nativePublicInvalid("GitHub issue provenance is incomplete")
+		return nativeInvalid("GitHub issue provenance is incomplete")
 	}
 	if integration.Profile == "github_compatible" {
 		stamp, err := newSourceStamp(source.UpdatedAt, normalizedIssue(source))
@@ -470,7 +470,7 @@ func (s *Service) listGitHubImportRecords(c echo.Context) error {
 	}
 	after, err := strconv.ParseInt("0"+cursor.After, 10, 64)
 	if err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Invalid import cursor"))
+		return s.nativeAPIError(c, nativeInvalid("Invalid import cursor"))
 	}
 	rows, err := s.database.reader.QueryContext(ctx, "SELECT sequence, record_json, current_dependency FROM github_import_records WHERE import_id = ? AND sequence > ? ORDER BY sequence LIMIT ?", c.Param("import"), after, limit+1)
 	if err != nil {

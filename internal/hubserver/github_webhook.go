@@ -76,12 +76,12 @@ func (s *Service) receiveGitHubWebhook(c echo.Context, verifiedByEntry bool) err
 	if err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
-			return s.refusedAPIError(c, http.StatusRequestEntityTooLarge, "payload_too_large", "GitHub webhook payload is too large", webhookErrorResponse{
+			return c.JSON(http.StatusRequestEntityTooLarge, webhookErrorResponse{
 				Code:    "payload_too_large",
 				Message: "GitHub webhook payload is too large",
 			})
 		}
-		return s.refusedAPIError(c, http.StatusBadRequest, "invalid_payload", "GitHub webhook payload is invalid", webhookErrorResponse{
+		return c.JSON(http.StatusBadRequest, webhookErrorResponse{
 			Code:    "invalid_payload",
 			Message: "GitHub webhook payload is invalid",
 		})
@@ -90,7 +90,7 @@ func (s *Service) receiveGitHubWebhook(c echo.Context, verifiedByEntry bool) err
 	deliveryID := strings.TrimSpace(request.Header.Get("X-GitHub-Delivery"))
 	eventType := strings.TrimSpace(request.Header.Get("X-GitHub-Event"))
 	if deliveryID == "" || eventType == "" {
-		return s.refusedAPIError(c, http.StatusBadRequest, "invalid_headers", "GitHub webhook delivery and event headers are required", webhookErrorResponse{
+		return c.JSON(http.StatusBadRequest, webhookErrorResponse{
 			Code:    "invalid_headers",
 			Message: "GitHub webhook delivery and event headers are required",
 		})
@@ -102,7 +102,7 @@ func (s *Service) receiveGitHubWebhook(c echo.Context, verifiedByEntry bool) err
 		})
 	}
 	if !json.Valid(payload) {
-		return s.refusedAPIError(c, http.StatusBadRequest, "invalid_payload", "GitHub webhook payload is invalid", webhookErrorResponse{
+		return c.JSON(http.StatusBadRequest, webhookErrorResponse{
 			Code:    "invalid_payload",
 			Message: "GitHub webhook payload is invalid",
 		})
@@ -112,7 +112,7 @@ func (s *Service) receiveGitHubWebhook(c echo.Context, verifiedByEntry bool) err
 		Action string `json:"action"`
 	}
 	if err := json.Unmarshal(payload, &metadata); err != nil {
-		return s.refusedAPIError(c, http.StatusBadRequest, "invalid_payload", "GitHub webhook payload is invalid", webhookErrorResponse{
+		return c.JSON(http.StatusBadRequest, webhookErrorResponse{
 			Code:    "invalid_payload",
 			Message: "GitHub webhook payload is invalid",
 		})
@@ -143,7 +143,7 @@ func (s *Service) receiveGitHubWebhook(c echo.Context, verifiedByEntry bool) err
 	}
 	result, err := s.database.recordWebhook(request.Context(), receipt)
 	if errors.Is(err, ErrWebhookDeliveryConflict) {
-		return s.refusedAPIError(c, http.StatusConflict, "delivery_conflict", "GitHub webhook delivery ID conflicts with an earlier delivery", webhookErrorResponse{
+		return c.JSON(http.StatusConflict, webhookErrorResponse{
 			Code:    "delivery_conflict",
 			Message: "GitHub webhook delivery ID conflicts with an earlier delivery",
 		})

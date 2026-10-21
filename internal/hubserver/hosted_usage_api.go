@@ -66,7 +66,7 @@ func (s *Service) usageCredentialError(c echo.Context, err error) error {
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
 	if errors.Is(err, auth.ErrHostedIdentity) {
-		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
+		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return s.nativeAPIError(c, nativeNotFound())
@@ -261,7 +261,7 @@ func usageRangeWindow(value string, now time.Time) (usageWindow, error) {
 	name := strings.TrimSpace(value)
 	if strings.HasPrefix(name, "month:") {
 		if name == "month:" {
-			return usageWindow{}, nativePublicInvalid("Month must be YYYY-MM in UTC")
+			return usageWindow{}, nativeInvalid("Month must be YYYY-MM in UTC")
 		}
 		return costMonth(strings.TrimPrefix(name, "month:"), now)
 	}
@@ -270,7 +270,7 @@ func usageRangeWindow(value string, now time.Time) (usageWindow, error) {
 	}
 	span, known := usageRanges[name]
 	if !known {
-		return usageWindow{}, nativePublicInvalid("Range must be 24h, 7d, 30d, 90d or month:YYYY-MM in UTC")
+		return usageWindow{}, nativeInvalid("Range must be 24h, 7d, 30d, 90d or month:YYYY-MM in UTC")
 	}
 	// Usage is stored per UTC hour, so the window starts on an hour boundary:
 	// the current partial hour plus the full hours before it, span in all.

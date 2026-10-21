@@ -13,13 +13,13 @@ import (
 func (s *Service) previewProviderCandidates(c echo.Context) error {
 	var request tracker.NativeCapacityPreview
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	if request.Limit < 0 || request.Limit > 100 {
-		return s.nativeAPIError(c, nativePublicInvalid("Candidate limit must be between 1 and 100"))
+		return s.nativeAPIError(c, nativeInvalid("Candidate limit must be between 1 and 100"))
 	}
 	if request.LandingCapacity < 0 {
-		return s.nativeAPIError(c, nativePublicInvalid("Landing capacity must be non-negative"))
+		return s.nativeAPIError(c, nativeInvalid("Landing capacity must be non-negative"))
 	}
 	return s.runnerReadTransaction(c, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		scope := nativeRequestScope(c)

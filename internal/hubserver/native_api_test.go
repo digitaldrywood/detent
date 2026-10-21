@@ -1,13 +1,10 @@
 package hubserver
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,8 +17,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -261,98 +256,6 @@ func TestNativeIssueOrganizationLookup(t *testing.T) {
 	}
 }
 
-func TestNativeAPIError(t *testing.T) {
-	t.Parallel()
-	expectedAttempt, currentAttempt := "attempt_expected", "attempt_current"
-	for _, test := range []struct {
-		name, code, reason, level string
-		err                       error
-		status                    int
-	}{
-		{"validation", "invalid_request", "This runner has active work. Drain it and wait for its leases to finish or expire before removing it.", "WARN", &nativeError{Code: "invalid_request", Message: "This runner has active work. Drain it and wait for its leases to finish or expire before removing it.", status: http.StatusUnprocessableEntity, publicMessage: true}, http.StatusUnprocessableEntity},
-		{"key refusal", "scope_required", "Write access is required", "WARN", &apikey.Refusal{Code: "scope_required", Message: "Write access is required"}, http.StatusForbidden},
-		{"identity collision", "identity_collision", "Identity is already registered; create a fresh host identity and enroll it explicitly", "WARN", runnerCollision(), http.StatusConflict},
-		{"access denied", "access_denied", "operator access is unavailable", "WARN", operatortool.ErrAccessDenied, http.StatusForbidden},
-		{"expired session", "access_denied", "Access is no longer available", "WARN", auth.ErrInvalidSession, http.StatusForbidden},
-		{"allowance", "allowance_exhausted", "Hosted active_runners allowance reached (2 of 2). Existing data, reading, export and billing remain available.", "WARN", &hostedLimitError{Resource: "active_runners", Allowance: 2, Consumption: 2}, http.StatusTooManyRequests},
-		{"request refusal", "invalid_request", "A project is required", "WARN", &operatortool.RequestError{Code: "invalid_request", Message: "A project is required"}, http.StatusUnprocessableEntity},
-		{"private validation", "invalid_request", "Unprocessable Entity: invalid request", "WARN", nativeInvalid("private-context"), http.StatusUnprocessableEntity},
-		{"publication rejection", "invalid_request", "publication rejected: category=version_validation field=source [private error text omitted]", "WARN", nativeRejection(nativeInvalid("private-context"), "version_validation", "source"), http.StatusUnprocessableEntity},
-		{"lease conflict", "lease_conflict", "Work item is already leased", "WARN", tracker.ErrLeaseConflict, http.StatusConflict},
-		{"invalid claim", "invalid_request", "Request is invalid", "WARN", tracker.ErrInvalidClaimRequest, http.StatusUnprocessableEntity},
-		{"revision conflict", "revision_conflict", "Resource has changed", "WARN", nativeConflict(7), http.StatusConflict},
-		{"operator revision conflict", "revision_conflict", "Runner has changed; read its current revision before retrying", "WARN", runnerRevisionConflict(9), http.StatusConflict},
-		{"operator execution conflict", "stale_execution", "The exact runner attempt is no longer current", "WARN", &operatortool.ConflictError{Code: "stale_execution", Message: "The exact runner attempt is no longer current", CurrentRevision: 11, Details: &operatortool.ConflictDetails{ExpectedAttemptID: &expectedAttempt, CurrentAttemptID: &currentAttempt}}, http.StatusConflict},
-		{"not found", "not_found", "Resource was not found", "", sql.ErrNoRows, http.StatusNotFound},
-		{"internal error", "native_operation_failed", "Native operation could not be completed", "ERROR", errors.New("database unavailable"), http.StatusInternalServerError},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			for _, hosted := range []bool{false, true} {
-				t.Run(fmt.Sprintf("hosted=%t", hosted), func(t *testing.T) {
-					var logs bytes.Buffer
-					service := &Service{config: Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))}}
-					if hosted {
-						service.config.Hosted = &HostedConfig{}
-					}
-					recorded := httptest.NewRecorder()
-					request := httptest.NewRequest(http.MethodDelete, "/private-target?token=query-secret", strings.NewReader("body-secret"))
-					request.Header.Set("Authorization", "Bearer header-secret")
-					c := echo.New().NewContext(request, recorded)
-					c.SetPath(nativeBase + "/runners/:runner")
-					c.SetParamNames("organization", "project", "runner")
-					c.SetParamValues("org_example", "prj_example", "runner_example")
-					if err := service.nativeAPIError(c, fmt.Errorf("private-context: %w", test.err)); err != nil {
-						t.Fatal(err)
-					}
-					failure := requireNativeCode(t, recorded, test.status, test.code)
-					if failure.Message != test.reason {
-						t.Fatalf("reason = %q, want %q", failure.Message, test.reason)
-					}
-					if test.name == "publication rejection" && failure.Details["rejection"] == nil {
-						t.Fatalf("missing publication rejection details: %s", recorded.Body.String())
-					}
-					if test.level == "" {
-						if logs.Len() != 0 {
-							t.Fatalf("unexpected logs: %s", &logs)
-						}
-						return
-					}
-					var entry map[string]any
-					if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
-						t.Fatalf("expected exactly one JSON log entry: %v: %s", err, &logs)
-					}
-					if entry["level"] != test.level || entry["error"] == nil {
-						t.Fatalf("log = %#v", entry)
-					}
-					if test.level == "WARN" {
-						for key, want := range map[string]any{"code": test.code, "reason": test.reason, "route": nativeBase + "/runners/:runner", "organization_id": "org_example", "project_id": "prj_example", "method": http.MethodDelete} {
-							if entry[key] != want {
-								t.Errorf("log %s = %v, want %v", key, entry[key], want)
-							}
-						}
-						for _, private := range []string{"private-context", "private-target", "query-secret", "header-secret", "body-secret"} {
-							if strings.Contains(logs.String(), private) || strings.Contains(recorded.Body.String(), private) {
-								t.Fatalf("private context escaped: %s", private)
-							}
-						}
-					}
-					if test.name == "revision conflict" && !hosted && failure.CurrentRevision != 7 {
-						t.Fatalf("current revision = %d, want 7", failure.CurrentRevision)
-					}
-					if test.name == "operator revision conflict" && failure.CurrentRevision != 9 {
-						t.Fatalf("current revision = %d, want 9", failure.CurrentRevision)
-					}
-					if test.name == "operator execution conflict" {
-						if failure.CurrentRevision != 11 || failure.Details["expected_attempt_id"] != "attempt_expected" || failure.Details["current_attempt_id"] != "attempt_current" {
-							t.Fatalf("conflict fields changed: %s", recorded.Body.String())
-						}
-					}
-				})
-			}
-		})
-	}
-}
-
 func TestNativeWorkflowRefusalCode(t *testing.T) {
 	for _, hosted := range []bool{false, true} {
 		name := "local"
@@ -377,12 +280,12 @@ func TestNativeWorkflowRefusalCode(t *testing.T) {
 			}
 			recorded := httptest.NewRecorder()
 			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/workflow", nil), recorded)
-			service := &Service{config: Config{Hosted: &HostedConfig{}, Logger: discardLogger()}}
-			if err := service.nativeAPIError(context, &nativeError{Code: failure.Code, Message: failure.Message, status: http.StatusUnprocessableEntity, publicMessage: true}); err != nil {
+			service := &Service{config: Config{Hosted: &HostedConfig{}}}
+			if err := service.nativeAPIError(context, &nativeError{Code: failure.Code, Message: failure.Message, status: http.StatusUnprocessableEntity}); err != nil {
 				t.Fatal(err)
 			}
 			redacted := requireNativeCode(t, recorded, http.StatusUnprocessableEntity, "transition_not_allowed")
-			if redacted.Message != "Workflow transition is not allowed" {
+			if redacted.Message != "The requested operation is unavailable" {
 				t.Fatalf("hosted message = %q", redacted.Message)
 			}
 			recorded = httptest.NewRecorder()

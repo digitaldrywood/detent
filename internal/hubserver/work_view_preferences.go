@@ -48,13 +48,13 @@ func (s *Service) workViewPreference(c echo.Context) error {
 		}
 	case http.MethodPut:
 		if err := decodeAPIJSON(c, &value); err != nil {
-			return s.invalidAPIRequest(c, err)
+			return invalidAPIRequest(c, err)
 		}
 		if value.Query == nil || len(*value.Query) > 8192 {
-			return s.nativeAPIError(c, nativePublicInvalid("A view query of at most 8192 bytes is required"))
+			return s.nativeAPIError(c, nativeInvalid("A view query of at most 8192 bytes is required"))
 		}
 		if _, err := url.ParseQuery(*value.Query); err != nil {
-			return s.nativeAPIError(c, nativePublicInvalid("The view query is invalid"))
+			return s.nativeAPIError(c, nativeInvalid("The view query is invalid"))
 		}
 		_, err = s.database.db.ExecContext(ctx, `INSERT INTO hosted_work_view_preferences (organization_id, user_id, scope, view_query) VALUES (?, ?, ?, ?) ON CONFLICT (organization_id, user_id, scope) DO UPDATE SET view_query = excluded.view_query`, scope.organization, credential.Hosted.Subject, scope.project, *value.Query)
 	case http.MethodDelete:

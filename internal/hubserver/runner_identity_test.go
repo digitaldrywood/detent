@@ -1,13 +1,11 @@
 package hubserver
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -48,8 +46,7 @@ func TestRunnerRemoval(t *testing.T) {
 		{name: "busy sibling", attempt: true, sibling: true, want: http.StatusNoContent},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			var logs bytes.Buffer
-			f := newDefaultNativeFixture(t, Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
+			f := newDefaultNativeFixture(t, Config{})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			r.enroll(t)
 			worker := r
@@ -102,20 +99,10 @@ func TestRunnerRemoval(t *testing.T) {
 					t.Fatalf("MCP refusal = %v", err)
 				}
 			} else {
-				logs.Reset()
 				response := performHubAPIRequest(t, f.service, http.MethodDelete, r.identityPath(), testHubAdminToken, nil)
 				requireNativeStatus(t, response, test.want)
 				if !removed && !strings.Contains(response.Body.String(), "active work") {
 					t.Fatalf("missing active-work explanation: %s", response.Body.String())
-				}
-				if !removed {
-					var entry map[string]any
-					if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
-						t.Fatalf("expected exactly one refusal log: %v: %s", err, &logs)
-					}
-					if entry["level"] != "WARN" || entry["code"] != "invalid_request" {
-						t.Fatalf("refusal log = %#v", entry)
-					}
 				}
 			}
 			var removedAt, revokedAt sql.NullString

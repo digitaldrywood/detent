@@ -224,7 +224,7 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 	}
 	if landingCapacity > 0 {
 		if len(scopes) != 1 {
-			return tracker.Lease{}, nativePublicInvalid("Landing admission requires a native project lease")
+			return tracker.Lease{}, nativeInvalid("Landing admission requires a native project lease")
 		}
 		if err := reserveNativeLandingCapacity(ctx, tx, scopes[0], record, landingCapacity, now); err != nil {
 			return tracker.Lease{}, err

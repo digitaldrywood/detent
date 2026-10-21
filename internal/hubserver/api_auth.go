@@ -124,7 +124,7 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 				if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
 					return s.nativeAPIError(c, err)
 				}
-				return s.refusedAPIError(c, status, "unauthorized", "Valid scoped API token is required", apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
+				return c.JSON(status, apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
 			}
 			if s.config.Hosted != nil {
 				if credential.Hosted != nil && c.Path() == runnerBase+"/:runner/routing" && c.Request().Method == http.MethodGet {
@@ -139,14 +139,14 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 				}
 			}
 			if credential.HostedKeyScope != "" && !hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeWrite) && !hostedReadRequest(c) {
-				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "API key permission does not permit writes", apiErrorResponse{Code: "insufficient_scope", Message: "API key permission does not permit writes"})
+				return c.NoContent(http.StatusForbidden)
 			}
 			if credential.Runner.RunnerID != "" && !runnerOperationAllowed(c, credential.Runner.Operations) {
-				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "Runner does not permit this operation", apiErrorResponse{Code: "insufficient_scope", Message: "Runner does not permit this operation"})
+				return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "insufficient_scope", Message: "Runner does not permit this operation"})
 			}
 			if strings.HasPrefix(c.Path(), "/api/v1/") {
 				if credential.NativeOnly {
-					return s.refusedAPIError(c, http.StatusForbidden, "native_protocol_required", "Scoped tokens require the native protocol", apiErrorResponse{Code: "native_protocol_required", Message: "Scoped tokens require the native protocol"})
+					return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "native_protocol_required", Message: "Scoped tokens require the native protocol"})
 				}
 				if err := s.requireCompatibilityResource(c); err != nil {
 					return err
@@ -161,7 +161,7 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 					return next(c)
 				}
 			}
-			return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "API token scope does not permit this operation", apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
+			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
 		}
 	}
 }
@@ -311,7 +311,7 @@ func apiBearerToken(c echo.Context) (string, error) {
 func (s *Service) createAPIToken(c echo.Context) error {
 	var request tokenRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	response, err := s.createAPITokenFor(c.Request().Context(), request)
 	if err != nil {

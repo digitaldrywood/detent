@@ -173,7 +173,7 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 	disposition := attempt.Disposition
 	reason := strings.ReplaceAll(request.ReasonDetail, " ", "_")
 	if !valid || prior != request.State || disposition.HumanAction || disposition.ReasonCode != "" && (disposition.ReasonCode != "instance_limitation" || !instanceOwnedBlockers(disposition)) || !disposition.Blockers || len(disposition.BlockerEvidence) == 0 || reason != "recorded_blocker_recovery" && reason != "dependency_auto_unblock" {
-		return nativePublicInvalid("Recorded blockers do not authorize recovery")
+		return nativeInvalid("Recorded blockers do not authorize recovery")
 	}
 	project, err := readNativeProject(ctx, tx, scope)
 	if err != nil {
@@ -182,14 +182,14 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 	if !slices.ContainsFunc(project.States, func(state tracker.NativeState) bool {
 		return state.Name == prior && state.Dispatchable && !state.Terminal && !state.OperatorOnly
 	}) {
-		return nativePublicInvalid("Recorded blocker return lane is not dispatchable")
+		return nativeInvalid("Recorded blocker return lane is not dispatchable")
 	}
 	for _, blocker := range disposition.BlockerEvidence {
 		if blocker.Owner == workpad.BlockerOwnerInstance {
 			continue
 		}
 		if blocker.Unverifiable || blocker.Owner != workpad.BlockerOwnerOrchestrator || blocker.Predicate == nil || blocker.Predicate.Type != workpad.PredicateIssueState {
-			return nativePublicInvalid("Recorded blocker cannot be verified by native dependencies")
+			return nativeInvalid("Recorded blocker cannot be verified by native dependencies")
 		}
 		reference := blocker.Predicate.Identifier
 		if reference == "" {
@@ -206,7 +206,7 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 			})
 		}
 		if !ready {
-			return nativePublicInvalid("Recorded dependency remains unfinished")
+			return nativeInvalid("Recorded dependency remains unfinished")
 		}
 	}
 	var satisfied bool
@@ -214,7 +214,7 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 		return err
 	}
 	if !satisfied {
-		return nativePublicInvalid("Native dependencies remain unfinished")
+		return nativeInvalid("Native dependencies remain unfinished")
 	}
 	return nil
 }

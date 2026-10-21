@@ -59,7 +59,7 @@ type hostedEntitlementReport struct {
 
 func (s *Service) hostedPlanReport(c echo.Context) error {
 	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
-		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
+		return c.NoContent(http.StatusForbidden)
 	}
 	report, err := s.database.hostedEntitlementReport(c.Request().Context())
 	if err != nil {
@@ -125,12 +125,12 @@ func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitleme
 
 func (s *Service) updateHostedPlan(c echo.Context) error {
 	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
-		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
+		return c.NoContent(http.StatusForbidden)
 	}
 
 	var command hostedPlanCommand
 	if err := decodeAPIJSON(c, &command); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	if err := s.database.applyHostedPlanCommand(c.Request().Context(), s.config.Hosted.EntitlementAdministrator, command); err != nil {
 		return s.nativeAPIError(c, err)
@@ -140,10 +140,10 @@ func (s *Service) updateHostedPlan(c echo.Context) error {
 
 func (d *database) applyHostedPlanCommand(ctx context.Context, actor string, command hostedPlanCommand) error {
 	if d.hostedBilling && (command.Action == "subscription" || command.Action == "end_subscription") {
-		return nativePublicInvalid("Stripe reconciliation owns subscription access; use separate complimentary grants for operator access")
+		return nativeInvalid("Stripe reconciliation owns subscription access; use separate complimentary grants for operator access")
 	}
 	if d.plans() == nil || !hostedSafeID(command.ID) || strings.TrimSpace(command.Reason) == "" || len(command.Reason) > 500 || command.ExpectedRevision < 1 || !slices.Contains([]string{"base", "subscription", "end_subscription", "grant", "revoke", "create_plan"}, command.Action) {
-		return nativePublicInvalid("A command ID, revision, action and bounded audit reason are required")
+		return nativeInvalid("A command ID, revision, action and bounded audit reason are required")
 	}
 	raw, err := json.Marshal(command)
 	if err != nil {
@@ -180,13 +180,13 @@ func (d *database) applyHostedPlanCommand(ctx context.Context, actor string, com
 	}
 	if slices.Contains([]string{"base", "subscription", "grant"}, command.Action) {
 		if _, err := d.readHostedPlan(ctx, tx, command.Plan); err != nil {
-			return nativePublicInvalid("The plan version must exist")
+			return nativeInvalid("The plan version must exist")
 		}
 	}
 	switch command.Action {
 	case "create_plan":
 		if command.Definition == nil || command.Plan != command.Definition.PlanReference || validateHostedPlan(*command.Definition) != nil {
-			return nativePublicInvalid("A valid new plan definition matching the plan reference is required")
+			return nativeInvalid("A valid new plan definition matching the plan reference is required")
 		}
 		var exists bool
 		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM hosted_plans WHERE id=? AND version=?)", command.Plan.ID, command.Plan.Version).Scan(&exists); err != nil {
@@ -204,7 +204,7 @@ func (d *database) applyHostedPlanCommand(ctx context.Context, actor string, com
 		_, err = tx.ExecContext(ctx, "UPDATE hosted_plan_assignments SET base_id = ?,base_version = ? WHERE organization_id = ?", command.Plan.ID, command.Plan.Version, d.hostedOrganization)
 	case "subscription":
 		if command.ExpiresAt == nil || !command.ExpiresAt.After(now) {
-			return nativePublicInvalid("Subscription-derived access requires a future validity deadline")
+			return nativeInvalid("Subscription-derived access requires a future validity deadline")
 		}
 		_, err = tx.ExecContext(ctx, "UPDATE hosted_plan_assignments SET subscription_id = ?,subscription_version = ?,subscription_expires_at = ? WHERE organization_id = ?", command.Plan.ID, command.Plan.Version, formatHubTime(*command.ExpiresAt), d.hostedOrganization)
 	case "end_subscription":
@@ -254,18 +254,18 @@ func (d *database) auditHostedPlanCommand(ctx context.Context, tx *sql.Tx, actor
 
 func insertHostedComplimentaryGrant(ctx context.Context, tx *sql.Tx, command hostedPlanCommand, now time.Time) error {
 	if !hostedSafeID(command.GrantID) || len(command.Scope) == 0 || len(command.Scope) > len(hostedAllowanceNames())+len(hostedFeatureNames()) {
-		return nativePublicInvalid("A grant ID and explicit allowance or feature scope are required")
+		return nativeInvalid("A grant ID and explicit allowance or feature scope are required")
 	}
 	for _, scope := range command.Scope {
 		if !slices.Contains(hostedAllowanceNames(), scope) && !slices.Contains(hostedFeatureNames(), scope) {
-			return nativePublicInvalid("Grant scope is unknown")
+			return nativeInvalid("Grant scope is unknown")
 		}
 	}
 	if command.StartsAt.IsZero() {
 		command.StartsAt = now.UTC()
 	}
 	if command.ExpiresAt != nil && (!command.ExpiresAt.After(now) || !command.ExpiresAt.After(command.StartsAt)) {
-		return nativePublicInvalid("Grant expiry must follow its start and the current time")
+		return nativeInvalid("Grant expiry must follow its start and the current time")
 	}
 	raw, err := json.Marshal(HostedGrant{ID: command.GrantID, Plan: command.Plan, Scope: command.Scope, StartsAt: command.StartsAt, ExpiresAt: command.ExpiresAt})
 	if err != nil {

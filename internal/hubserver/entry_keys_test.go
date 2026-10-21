@@ -1,10 +1,8 @@
 package hubserver
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -67,24 +65,6 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 						}
 						if write.Code != wantWrite {
 							t.Fatalf("write=%d want=%d %s", write.Code, wantWrite, write.Body.String())
-						}
-						if role == "owner" && member && access == "all" {
-							key.Permission = apikey.ScopeRead
-							var logs bytes.Buffer
-							previousLogger := f.service.config.Logger
-							f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
-							denied := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: f.base + "/work-items", body: `{"title":"private-token"}`, mutate: mutate})
-							f.service.config.Logger = previousLogger
-							key.Permission = apikey.ScopeWrite
-							failure := requireNativeCode(t, denied, http.StatusForbidden, "insufficient_scope")
-							var entry map[string]any
-							if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
-								t.Fatalf("expected exactly one JSON log entry: %v: %s", err, &logs)
-							}
-							const reason = "API key permission does not permit writes"
-							if failure.Message != reason || entry["reason"] != reason || entry["level"] != "WARN" || entry["code"] != "insufficient_scope" || strings.Contains(logs.String()+denied.Body.String(), "private-token") {
-								t.Fatalf("refusal = %#v, log = %#v", failure, entry)
-							}
 						}
 						if kind == "service" || member {
 							claims := f.claims(nil, cloudassert.KindKey, http.MethodGet, f.base+"/work-items", nil)
@@ -163,19 +143,10 @@ func TestEntryKeyCallReportsMoveItemRequestErrors(t *testing.T) {
 		{"graph", "transition_not_allowed", "Workflow transition is not allowed", map[string]any{"target_state": "Blocked", "expected_revision": revision}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			var logs bytes.Buffer
-			f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 			response := move("move-errors-"+strings.ReplaceAll(test.name, " ", "-"), test.arguments)
 			failure := requireNativeCode(t, response, http.StatusUnprocessableEntity, test.code)
 			if test.message == "" && !strings.HasPrefix(failure.Message, "move_item cannot resume an item already in the requested state") || test.message != "" && failure.Message != test.message {
 				t.Fatalf("message=%q want %q", failure.Message, test.message)
-			}
-			var entry map[string]any
-			if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
-				t.Fatalf("expected exactly one refusal log: %v: %s", err, &logs)
-			}
-			if entry["level"] != "WARN" || entry["code"] != test.code || entry["reason"] != failure.Message || entry["route"] != "/internal/v1/keys/call" {
-				t.Fatalf("refusal log = %#v", entry)
 			}
 		})
 	}

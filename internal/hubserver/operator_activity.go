@@ -47,7 +47,7 @@ func (s *Service) hostedActivity(c echo.Context) error {
 	if value := c.QueryParam("limit"); value != "" {
 		limit, err := strconv.Atoi(value)
 		if err != nil || limit < 1 || limit > operatortool.MaxItemLimit {
-			return s.nativeAPIError(c, nativePublicInvalid("Invalid activity limit"))
+			return s.nativeAPIError(c, nativeInvalid("Invalid activity limit"))
 		}
 		r.Limit = limit
 	}
@@ -57,10 +57,10 @@ func (s *Service) hostedActivity(c echo.Context) error {
 	}
 	result, err := s.executeActivityRead(c.Request().Context(), operatortool.Call{Name: operatortool.Activity, Arguments: raw})
 	if errors.Is(err, operatortool.ErrInvalidArguments) {
-		return s.nativeAPIError(c, nativePublicInvalid("Invalid activity filters or window"))
+		return s.nativeAPIError(c, nativeInvalid("Invalid activity filters or window"))
 	}
 	if errors.Is(err, operatortool.ErrAccessDenied) {
-		return s.refusedAPIError(c, http.StatusForbidden, "access_denied", operatortool.ErrAccessDenied.Error(), apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
+		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: err.Error()})
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)

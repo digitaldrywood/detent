@@ -30,7 +30,7 @@ func storeRunnerAdmissionObservation(ctx context.Context, tx *sql.Tx, scope nati
 		return nil
 	}
 	if observation.RunnerRevision < 1 || !observation.ReceivedAt.IsZero() {
-		return nativePublicInvalid("Admission observation requires the observed runner revision")
+		return nativeInvalid("Admission observation requires the observed runner revision")
 	}
 	if err := validateNativeAdmissionContext(observation.Context); err != nil {
 		return err
@@ -42,7 +42,7 @@ func storeRunnerAdmissionObservation(ctx context.Context, tx *sql.Tx, scope nati
 		return err
 	}
 	if len(raw) > 8192 {
-		return nativePublicInvalid("Admission observation exceeds its bound")
+		return nativeInvalid("Admission observation exceeds its bound")
 	}
 	result, err := tx.ExecContext(ctx, "UPDATE machines SET capabilities_json=json_set(capabilities_json, ?, json(?)) WHERE id=? AND organization_id=?", admissionObservationPath(scope.credential.Runner.RunnerID, scope.project), string(raw), scope.credential.Runner.MachineID, scope.organization)
 	return requireRunnerUpdate(result, err)

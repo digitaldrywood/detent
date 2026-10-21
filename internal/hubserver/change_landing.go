@@ -234,7 +234,7 @@ func reviewInstructions(change tracker.ChangeRequest, review tracker.ChangeRevie
 func (s *Service) landChange(c echo.Context) error {
 	var request tracker.LandChangeVersion
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		change, err := readChange(ctx, tx, scope, c.Param("item"), c.Param("change"))
@@ -242,24 +242,24 @@ func (s *Service) landChange(c echo.Context) error {
 			return nil, err
 		}
 		if change.WorkItemID != tracker.NativeWorkItemID(c.Param("item")) {
-			return nil, nativePublicInvalid("Land through the Change Request's primary issue")
+			return nil, nativeInvalid("Land through the Change Request's primary issue")
 		}
 		version, err := readChangeVersion(ctx, tx, change.ID, c.Param("version"))
 		if err != nil {
 			return nil, err
 		}
 		if !changerequest.ValidHash(request.MergeSHA, 40) && !changerequest.ValidHash(request.MergeSHA, 64) {
-			return nil, nativePublicInvalid("The landed commit must be a lowercase commit identity")
+			return nil, nativeInvalid("The landed commit must be a lowercase commit identity")
 		}
 		if strings.TrimSpace(request.BaseRef) == "" || len(request.BaseRef) > 256 || !slices.Contains([]string{"squash", "merge", "rebase"}, request.Method) {
-			return nil, nativePublicInvalid("Landing names the base branch and a merge method of squash, merge or rebase")
+			return nil, nativeInvalid("Landing names the base branch and a merge method of squash, merge or rebase")
 		}
 		delivery, associated, err := readReleaseDelivery(ctx, tx, scope, string(change.WorkItemID))
 		if err != nil {
 			return nil, err
 		}
 		if associated && (delivery.ChangeID != change.ID || delivery.VersionID != version.ID || delivery.HeadSHA != version.HeadSHA || delivery.BaseRef != request.BaseRef) {
-			return nil, nativePublicInvalid("Landing must cover the associated release version and branch")
+			return nil, nativeInvalid("Landing must cover the associated release version and branch")
 		}
 		if landed := change.CurrentLanding(); landed != nil {
 			if landed.VersionID == version.ID && landed.MergeSHA == request.MergeSHA {
@@ -278,11 +278,11 @@ func (s *Service) landChange(c echo.Context) error {
 			return nil, &nativeError{Code: "not_reviewed", Message: "Only a reviewed current version lands: " + strings.Join(detail.Summary.Messages, " "), status: 409}
 		}
 		if associated && (request.Receipt == nil || request.Receipt.BaseSHA != delivery.BaseSHA || request.Receipt.HeadSHA != version.HeadSHA || request.Receipt.MergeSHA != request.MergeSHA) {
-			return nil, nativePublicInvalid("Release landing must retain the reviewed base and head")
+			return nil, nativeInvalid("Release landing must retain the reviewed base and head")
 		}
 		if version.Policy.Gates.SecurityAudit && !version.Policy.Gates.GitHubPullRequest && !associated {
 			if request.Receipt == nil || request.Receipt.SecurityAudit == nil || request.Receipt.BaseSHA == "" || request.Receipt.MergeSHA != request.MergeSHA {
-				return nil, nativePublicInvalid("landing requires security audit evidence for its exact base and head")
+				return nil, nativeInvalid("landing requires security audit evidence for its exact base and head")
 			}
 			audit := request.Receipt.SecurityAudit
 			run := audit.Run
@@ -305,7 +305,7 @@ func (s *Service) landChange(c echo.Context) error {
 				}
 			}
 			if !evaluation.Allowed || audit.Verdict != "pass" || !audit.Landing || !recorded {
-				return nil, nativePublicInvalid("landing security audit does not match recorded approval for the integrated change")
+				return nil, nativeInvalid("landing security audit does not match recorded approval for the integrated change")
 			}
 		}
 		quality, err := readLandingQualitySnapshot(ctx, tx, scope, change, version, now)

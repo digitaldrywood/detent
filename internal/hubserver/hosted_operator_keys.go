@@ -337,7 +337,7 @@ func (s *Service) createHostedAPIKeyFor(ctx context.Context, credential apiCrede
 		return tokenResponse{}, err
 	}
 	if !request.validExpiry() || len(request.Projects) > 200 {
-		return tokenResponse{}, nativePublicInvalid("Choose Never or 1–90 days and at most 200 projects")
+		return tokenResponse{}, nativeInvalid("Choose Never or 1–90 days and at most 200 projects")
 	}
 	var message string
 	request.ProjectAccess, message = resolveHostedProjectAccess(request.ProjectAccess, request.Projects)

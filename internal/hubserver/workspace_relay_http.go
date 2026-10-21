@@ -55,7 +55,7 @@ func (s *Service) openWorkspaceRelay(c echo.Context) error {
 	}
 	ticket := strings.TrimSpace(c.QueryParam("ticket"))
 	if ticket == "" {
-		return s.nativeAPIError(c, nativePublicInvalid("A relay ticket is required"))
+		return s.nativeAPIError(c, nativeInvalid("A relay ticket is required"))
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()

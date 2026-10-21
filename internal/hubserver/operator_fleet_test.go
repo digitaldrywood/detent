@@ -49,26 +49,6 @@ func TestHubOperatorConflictProjection(t *testing.T) {
 	}
 }
 
-func TestHubOperatorRefusalProjection(t *testing.T) {
-	t.Parallel()
-	for _, public := range []bool{false, true} {
-		t.Run(fmt.Sprintf("public=%t", public), func(t *testing.T) {
-			failure := &nativeError{Code: "invalid_request", Message: "Drain the runner before removing it", status: http.StatusUnprocessableEntity, publicMessage: public}
-			err := safeHubOperatorError(fmt.Errorf("private-context: %w", failure))
-			var request *operatortool.RequestError
-			if !public {
-				if errors.As(err, &request) || !errors.Is(err, errHubOperatorUnavailable) {
-					t.Fatalf("private refusal exposed: %v", err)
-				}
-				return
-			}
-			if !errors.As(err, &request) || request.Code != "invalid_request" || request.Message != "Drain the runner before removing it" {
-				t.Fatalf("refusal = %#v, error = %v", request, err)
-			}
-		})
-	}
-}
-
 func TestRunnerUpdateMCP(t *testing.T) {
 	for _, fromRelease := range []bool{false, true} {
 		t.Run(fmt.Sprintf("from release %t", fromRelease), func(t *testing.T) {

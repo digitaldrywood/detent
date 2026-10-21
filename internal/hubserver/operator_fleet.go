@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -397,9 +396,6 @@ func safeHubOperatorError(err error) error {
 	}
 	if errors.As(err, &problem) && problem.Code == "idempotency_conflict" {
 		return &operatortool.ConflictError{Code: problem.Code, Message: "The request_id was already used with different content"}
-	}
-	if errors.As(err, &problem) && problem.status == http.StatusUnprocessableEntity && problem.publicMessage {
-		return &operatortool.RequestError{Code: problem.Code, Message: problem.Message}
 	}
 	if errors.Is(err, mutation.ErrConflict) {
 		return &operatortool.ConflictError{Code: "idempotency_conflict", Message: "The request_id was already used with different content"}

@@ -42,7 +42,7 @@ func (s *Service) nativePage(c echo.Context) (int, nativeCursor, []byte, error) 
 func nativeReadQuery(c echo.Context) (url.Values, error) {
 	params, err := url.ParseQuery(c.Request().URL.RawQuery)
 	if err != nil {
-		return nil, nativePublicInvalid("Query is invalid")
+		return nil, nativeInvalid("Query is invalid")
 	}
 	return params, nil
 }
@@ -60,10 +60,10 @@ func (s *Service) readNativePageLimit(ctx context.Context, scope nativeScope, pa
 		limit, err = strconv.Atoi(value)
 	}
 	if limit < 1 || limit > maximum {
-		err = nativePublicInvalid("Page limit is invalid")
+		err = nativeInvalid("Page limit is invalid")
 	}
 	if err != nil {
-		return 0, nativeCursor{}, nil, nativePublicInvalid("Page limit is invalid")
+		return 0, nativeCursor{}, nil, nativeInvalid("Page limit is invalid")
 	}
 	requestedCursor := params.Get("cursor")
 	cloned := url.Values{}
@@ -92,23 +92,23 @@ func (s *Service) readNativePageLimit(ctx context.Context, scope nativeScope, pa
 	}
 	parts := strings.Split(value, ".")
 	if len(parts) != 2 || len(value) > 4096 {
-		return 0, cursor, nil, nativePublicInvalid("Cursor is invalid")
+		return 0, cursor, nil, nativeInvalid("Cursor is invalid")
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return 0, cursor, nil, nativePublicInvalid("Cursor is invalid")
+		return 0, cursor, nil, nativeInvalid("Cursor is invalid")
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return 0, cursor, nil, nativePublicInvalid("Cursor is invalid")
+		return 0, cursor, nil, nativeInvalid("Cursor is invalid")
 	}
 	mac := hmac.New(sha256.New, key)
 	mac.Write(payload)
 	if !hmac.Equal(signature, mac.Sum(nil)) {
-		return 0, cursor, nil, nativePublicInvalid("Cursor signature is invalid")
+		return 0, cursor, nil, nativeInvalid("Cursor signature is invalid")
 	}
 	if err := json.Unmarshal(payload, &cursor); err != nil || cursor.Version != 2 || cursor.Scope != fingerprint || cursor.Expires <= s.config.now().Unix() {
-		return 0, cursor, nil, nativePublicInvalid("Cursor scope changed or expired; restart the query")
+		return 0, cursor, nil, nativeInvalid("Cursor scope changed or expired; restart the query")
 	}
 	return limit, cursor, key, nil
 }
@@ -130,7 +130,7 @@ func validateNativeQuery(params url.Values, fields ...string) error {
 	}
 	for key, values := range params {
 		if !allowed[key] || len(values) != 1 || len(values[0]) > 4096 {
-			return nativePublicInvalid("Query contains an unsupported field or value")
+			return nativeInvalid("Query contains an unsupported field or value")
 		}
 	}
 	return nil
@@ -139,14 +139,14 @@ func validateNativeQuery(params url.Values, fields ...string) error {
 func nativeCreatedBy(scope nativeScope, params url.Values) (string, error) {
 	value := strings.TrimSpace(params.Get("created_by"))
 	if len(value) > 256 {
-		return "", nativePublicInvalid("created_by is invalid")
+		return "", nativeInvalid("created_by is invalid")
 	}
 	if value != "me" {
 		return value, nil
 	}
 	actor := scope.actor()
 	if actor.Kind != "human" || actor.PrincipalID == "" {
-		return "", nativePublicInvalid("created_by=me requires a human identity")
+		return "", nativeInvalid("created_by=me requires a human identity")
 	}
 	return actor.PrincipalID, nil
 }
@@ -157,7 +157,7 @@ func validateNativeIssueQuery(params url.Values) error {
 		switch key {
 		case "type":
 			if len(values) > 2 {
-				return nativePublicInvalid("type must be bug or change_request")
+				return nativeInvalid("type must be bug or change_request")
 			}
 			for _, value := range values {
 				if err := validateNativeIssueType(value, true); err != nil {
@@ -175,7 +175,7 @@ func validateNativeIssueQuery(params url.Values) error {
 			}
 		case "state", "label", "assignee", "priority":
 			if len(values) > 32 || len(strings.Join(values, "\x00")) > 4096 {
-				return nativePublicInvalid("Query contains an unsupported field or value")
+				return nativeInvalid("Query contains an unsupported field or value")
 			}
 		default:
 			single[key] = values
@@ -193,7 +193,7 @@ func parseNativeIssueIncludes(value string) (bool, error) {
 	}
 	for name := range strings.SplitSeq(value, ",") {
 		if name = strings.TrimSpace(name); name != "workspace" && name != "work" && name != "summary" && name != "board" {
-			return false, nativePublicInvalid("include supports workspace,work,summary,board")
+			return false, nativeInvalid("include supports workspace,work,summary,board")
 		}
 	}
 	return slices.ContainsFunc(strings.Split(value, ","), func(name string) bool { return strings.TrimSpace(name) == "workspace" }), nil
@@ -229,7 +229,7 @@ func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, p
 	}
 	if slices.Contains(strings.Split(params.Get("include"), ","), "board") {
 		if params.Has("created_after") || params.Has("created_before") || params.Has("updated_after") {
-			return tracker.NativeIssuePage{}, nativePublicInvalid("Date filters require an issue list projection")
+			return tracker.NativeIssuePage{}, nativeInvalid("Date filters require an issue list projection")
 		}
 		return s.readBoardIssues(ctx, scope, params)
 	}
@@ -242,7 +242,7 @@ func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, p
 		return tracker.NativeIssuePage{}, err
 	}
 	if sort := params.Get("sort"); sort != "" && sort != "closed" {
-		return tracker.NativeIssuePage{}, nativePublicInvalid("sort supports closed")
+		return tracker.NativeIssuePage{}, nativeInvalid("sort supports closed")
 	}
 	includeWorkspace, err := parseNativeIssueIncludes(params.Get("include"))
 	if err != nil {
@@ -273,7 +273,7 @@ func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, p
 	searchQuery := strings.TrimSpace(params.Get("q"))
 	workIncluded := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "work" })
 	if summary && workIncluded {
-		return tracker.NativeIssuePage{}, nativePublicInvalid("summary cannot include work")
+		return tracker.NativeIssuePage{}, nativeInvalid("summary cannot include work")
 	}
 
 	var work *tracker.NativeWorkSummary
@@ -444,7 +444,7 @@ func (s *Service) readComments(ctx context.Context, scope nativeScope, item stri
 		}
 		if size+len(encoded)+1 > operatortool.MaxResultBytes {
 			if len(page.Items) == 0 {
-				return tracker.Page[tracker.NativeComment]{}, nativePublicInvalid("A single comment exceeds the 256 KiB page budget after JSON encoding; use work_bulk_export to read the complete stored comment")
+				return tracker.Page[tracker.NativeComment]{}, nativeInvalid("A single comment exceeds the 256 KiB page budget after JSON encoding; use work_bulk_export to read the complete stored comment")
 			}
 			hasMore = true
 			break
@@ -486,7 +486,7 @@ func (s *Service) readHistory(ctx context.Context, scope nativeScope, item strin
 	}
 	view := params.Get("view")
 	if view != "" && view != "blockers" {
-		return tracker.Page[tracker.CollaborationEvent]{}, nativePublicInvalid("view supports blockers")
+		return tracker.Page[tracker.CollaborationEvent]{}, nativeInvalid("view supports blockers")
 	}
 	dataColumn := "data_json"
 	if view == "blockers" {
@@ -519,14 +519,14 @@ func (s *Service) readHistory(ctx context.Context, scope nativeScope, item strin
 	}
 	generation := summary.RemovedEvents
 	if params.Get("cursor") != "" && cursor.Compaction != generation {
-		return tracker.Page[tracker.CollaborationEvent]{}, nativePublicInvalid("History was compacted; restart the query")
+		return tracker.Page[tracker.CollaborationEvent]{}, nativeInvalid("History was compacted; restart the query")
 	}
 	cursor.Compaction = generation
 	var after int64
 	if cursor.After != "" {
 		after, err = strconv.ParseInt(cursor.After, 10, 64)
 		if err != nil {
-			return tracker.Page[tracker.CollaborationEvent]{}, nativePublicInvalid("History cursor is invalid")
+			return tracker.Page[tracker.CollaborationEvent]{}, nativeInvalid("History cursor is invalid")
 		}
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT id, sequence, type, schema_version, actor_json, `+dataColumn+`, recorded_at FROM collaboration_events
@@ -647,7 +647,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		if value := params.Get(filter.name); value != "" {
 			date, err := time.Parse(time.RFC3339Nano, value)
 			if err != nil {
-				return "", nil, nativePublicInvalid("Date filters must be RFC3339 timestamps")
+				return "", nil, nativeInvalid("Date filters must be RFC3339 timestamps")
 			}
 			dateClauses.WriteString(" AND rtrim(i." + filter.column + ", 'Z') " + filter.operator + " ?")
 			args = append(args, strings.TrimSuffix(formatHubTime(date), "Z"))
@@ -672,7 +672,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		query += " AND i.archived = 1"
 	case "all":
 	default:
-		return "", nil, nativePublicInvalid("archived must be true, false or all")
+		return "", nil, nativeInvalid("archived must be true, false or all")
 	}
 	switch params.Get("open") {
 	case "":
@@ -681,7 +681,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 	case "false":
 		query += " AND ws.terminal = 1"
 	default:
-		return "", nil, nativePublicInvalid("open must be true or false")
+		return "", nil, nativeInvalid("open must be true or false")
 	}
 	if value := strings.TrimSpace(params.Get("fingerprint")); value != "" {
 		query += " AND (instr(i.body, ?) > 0 OR EXISTS (SELECT 1 FROM native_comments c WHERE c.work_item_id = i.native_id AND instr(c.body, ?) > 0))"

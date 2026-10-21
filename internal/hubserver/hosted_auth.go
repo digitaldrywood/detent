@@ -271,7 +271,7 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 			return next(c)
 		}
 		if !hostedReadRequest(c) && !bearerAPI && !strings.HasSuffix(c.Path(), "/redeem") && !s.hostedCSRFValid(c) {
-			return s.refusedAPIError(c, http.StatusForbidden, "invalid_csrf", "Reload the form and try again", apiErrorResponse{Code: "invalid_csrf", Message: "Reload the form and try again"})
+			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "invalid_csrf", Message: "Reload the form and try again"})
 		}
 		if !hostedReadRequest(c) && !bearerAPI {
 			s.hostedMutationMu.Lock()

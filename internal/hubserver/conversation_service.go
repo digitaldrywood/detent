@@ -438,7 +438,7 @@ func (c *conversationService) logStaleExecution(path, conversationID string, err
 }
 
 func conversationAlreadyLinked(existing string) error {
-	err := &nativeError{Code: "conversation_already_linked", Message: "The conversation or issue is already linked", status: http.StatusConflict, publicMessage: true}
+	err := &nativeError{Code: "conversation_already_linked", Message: "The conversation or issue is already linked", status: http.StatusConflict}
 	if existing != "" {
 		err.Details = map[string]any{"existing_conversation_id": existing}
 	}
@@ -446,7 +446,7 @@ func conversationAlreadyLinked(existing string) error {
 }
 
 func conversationQuestionAnswered() error {
-	return &nativeError{Code: "question_already_answered", Message: "The question has already been answered", status: http.StatusConflict, publicMessage: true}
+	return &nativeError{Code: "question_already_answered", Message: "The question has already been answered", status: http.StatusConflict}
 }
 
 func conversationUnsupported(message string) error {
@@ -454,11 +454,11 @@ func conversationUnsupported(message string) error {
 }
 
 func conversationShareRequired() error {
-	return &nativeError{Code: "share_history_required", Message: "Linking shares the conversation history; confirm with share_history", status: http.StatusUnprocessableEntity, publicMessage: true}
+	return &nativeError{Code: "share_history_required", Message: "Linking shares the conversation history; confirm with share_history", status: http.StatusUnprocessableEntity}
 }
 
 func conversationProjectFixed() error {
-	return &nativeError{Code: "conversation_project_fixed", Message: "Conversations never move between projects", status: http.StatusUnprocessableEntity, publicMessage: true}
+	return &nativeError{Code: "conversation_project_fixed", Message: "Conversations never move between projects", status: http.StatusUnprocessableEntity}
 }
 
 func conversationQueueFull() error {
@@ -473,7 +473,7 @@ func translateConversationError(err error) error {
 	}
 	var revision *errConversationRevision
 	if errors.As(err, &revision) {
-		return &nativeError{Code: "revision_conflict", Message: "The conversation changed; reload and retry", status: http.StatusConflict, publicMessage: true}
+		return &nativeError{Code: "revision_conflict", Message: "The conversation changed; reload and retry", status: http.StatusConflict}
 	}
 	if errors.Is(err, conversation.ErrStaleExecution) {
 		return conversationStale(err.Error())

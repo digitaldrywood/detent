@@ -77,7 +77,7 @@ func (s *Service) getProjectPolicy(c echo.Context) error {
 func (s *Service) approveProjectPolicy(c echo.Context) error {
 	var change policy.Change
 	if err := decodeAPIJSON(c, &change); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	if change.ObservedPolicyID == "" {
 		if err := change.Policy.Validate(); err != nil {
@@ -102,7 +102,7 @@ func (s *Service) approveProjectPolicy(c echo.Context) error {
 func (s *Service) observeProjectPolicy(c echo.Context) error {
 	var observation policy.Observation
 	if err := decodeAPIJSON(c, &observation); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	descriptor, err := workflowconfig.ResolveSharedPolicy(observation.Descriptor)
 	if err != nil {
@@ -206,7 +206,7 @@ func (s *Service) revokeProjectPolicy(c echo.Context) error {
 		ExpectedID string `json:"expected_policy_id"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	scope, err := s.policyScope(c)
 	if err != nil {
@@ -242,7 +242,7 @@ func (d *database) approvePolicy(ctx context.Context, scope, actor string, chang
 func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor string, change policy.Change, landing policyLanding) (result policy.Approval, resultErr error) {
 	if change.ObservedPolicyID != "" {
 		if !reflect.ValueOf(change.Policy).IsZero() {
-			return result, nativePublicInvalid("Supply either observed_policy_id or policy, not both")
+			return result, nativeInvalid("Supply either observed_policy_id or policy, not both")
 		}
 		now, err := d.currentTime()
 		if err != nil {
@@ -259,7 +259,7 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 			}
 		}
 		if change.Policy.ID == "" {
-			return result, nativePublicInvalid("observed_policy_id does not identify a current authorized observation in this project")
+			return result, nativeInvalid("observed_policy_id does not identify a current authorized observation in this project")
 		}
 	}
 	resolved, err := workflowconfig.ResolveSharedPolicy(change.Policy)
@@ -511,7 +511,7 @@ func validateClaimPolicy(ctx context.Context, tx *sql.Tx, query claimCandidateQu
 	var raw string
 	if err := tx.QueryRowContext(ctx, "SELECT metadata_json FROM policy_revisions WHERE scope = ? AND policy_id = ?", scope, query.PolicyID).Scan(&raw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", nativePublicInvalid("Claim configuration has not been reported for this project")
+			return "", nativeInvalid("Claim configuration has not been reported for this project")
 		}
 		return "", err
 	}
@@ -525,7 +525,7 @@ func validateClaimPolicy(ctx context.Context, tx *sql.Tx, query claimCandidateQu
 	}
 	var tags []string
 	if runnerID == "" && (approval.Policy.Requirements.RunnerID != "" || approval.Policy.Requirements.MachineID != "" || len(approval.Policy.Requirements.RequiredTags) != 0) {
-		return "", &nativeError{Code: "selector_no_match", Message: "Constrained routing requires an administrator-enrolled runner; legacy registration cannot assert trusted host identity or tags", status: http.StatusConflict, publicMessage: true}
+		return "", &nativeError{Code: "selector_no_match", Message: "Constrained routing requires an administrator-enrolled runner; legacy registration cannot assert trusted host identity or tags", status: http.StatusConflict}
 	}
 	if runnerID != "" {
 		var raw string
@@ -571,7 +571,7 @@ JOIN policy_revisions p ON p.scope = lp.scope AND p.policy_id = lp.policy_id WHE
 		return nativeNotFound()
 	}
 	if state == "disabled" {
-		return &nativeError{Code: "runner_disabled", Message: "Runner is disabled", status: http.StatusConflict, publicMessage: true}
+		return &nativeError{Code: "runner_disabled", Message: "Runner is disabled", status: http.StatusConflict}
 	}
 	var descriptor policy.Descriptor
 	var authorizedTags []string
@@ -609,5 +609,5 @@ func (d *database) revokePolicy(ctx context.Context, scope, actor, expectedID st
 }
 
 func revokeProjectPolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor, expectedID string, now time.Time) (any, error) {
-	return nil, &nativeError{Code: "operation_retired", Message: "Repository configuration does not require execution approval; pause the runner or remove project access to stop work", status: http.StatusGone, publicMessage: true}
+	return nil, &nativeError{Code: "operation_retired", Message: "Repository configuration does not require execution approval; pause the runner or remove project access to stop work", status: http.StatusGone}
 }

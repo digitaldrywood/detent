@@ -20,12 +20,12 @@ const coordinatorArchiveMaxItems = 50
 
 func validateCoordinatorArchiveIDs(ids []string) error {
 	if len(ids) < 1 || len(ids) > coordinatorArchiveMaxItems {
-		return nativePublicInvalid("An archive must contain 1 to 50 issues")
+		return nativeInvalid("An archive must contain 1 to 50 issues")
 	}
 	seen := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		if !strings.HasPrefix(id, "wi_") || len(id) > 256 || seen[id] {
-			return nativePublicInvalid("Unique native work item IDs are required")
+			return nativeInvalid("Unique native work item IDs are required")
 		}
 		seen[id] = true
 	}

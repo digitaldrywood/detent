@@ -1,10 +1,7 @@
 package hubserver
 
 import (
-	"bytes"
 	"database/sql"
-	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -355,32 +352,8 @@ func TestConversationAPIListVisibility(t *testing.T) {
 		if got := ids(list(f.token, f.base+"/conversations?settled=true")); strings.Join(got, ",") != private.ID {
 			t.Fatalf("settled=true ids = %v", got)
 		}
-		for _, test := range []struct {
-			query, reason string
-		}{
-			{"limit=-1", "Query parameter limit must be a non-negative integer"},
-			{"limit=private-query", "Query parameter limit must be a non-negative integer"},
-			{"settled=private-query", "Query parameter settled must be true or false"},
-		} {
-			t.Run(test.query, func(t *testing.T) {
-				var logs bytes.Buffer
-				previousLogger := f.service.config.Logger
-				f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
-				defer func() { f.service.config.Logger = previousLogger }()
-				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations?"+test.query, f.token, nil)
-				failure := requireNativeCode(t, response, http.StatusUnprocessableEntity, "invalid_request")
-				var entry map[string]any
-				if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
-					t.Fatalf("expected exactly one refusal log: %v: %s", err, &logs)
-				}
-				if failure.Message != test.reason || entry["level"] != "WARN" || entry["code"] != "invalid_request" || entry["reason"] != test.reason || entry["error"] != test.reason || entry["route"] != nativeBase+"/conversations" {
-					t.Fatalf("refusal = %#v, log = %#v", failure, entry)
-				}
-				if strings.Contains(logs.String()+response.Body.String(), "private-query") {
-					t.Fatal("rejected query value escaped")
-				}
-			})
-		}
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations?settled=maybe", f.token, nil)
+		requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
 	})
 }
 

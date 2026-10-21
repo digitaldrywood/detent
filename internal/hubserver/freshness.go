@@ -62,11 +62,11 @@ func (s *Service) repositoryFreshness(c echo.Context) error {
 	}
 	limit, err := parsePageLimit(c.QueryParam("limit"))
 	if err != nil {
-		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_query", "limit must be between 1 and 200", apiErrorResponse{Code: "invalid_query", Message: "limit must be between 1 and 200"})
+		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_query", Message: "limit must be between 1 and 200"})
 	}
 	cursor, err := decodeWorkItemCursor(c.QueryParam("cursor"))
 	if err != nil || cursor.Version != 0 && (cursor.Sort != "repository" || cursor.Order != "asc") {
-		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_cursor", "Repository cursor is invalid", apiErrorResponse{Code: "invalid_cursor", Message: "Repository cursor is invalid"})
+		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_cursor", Message: "Repository cursor is invalid"})
 	}
 	if cursor.Version != 0 {
 		for index, repository := range result.Repositories {

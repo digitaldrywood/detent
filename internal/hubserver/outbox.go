@@ -409,7 +409,7 @@ func (s *Service) commitOutbox(ctx context.Context, record outboxRecord, apply f
 		return OutboxItem{}, err
 	}
 	if (profile == "native" && record.kind != MutationMergePullRequest) || (!enabled && record.kind == MutationMergePullRequest) {
-		return OutboxItem{}, nativePublicInvalid("GitHub mutation is not permitted by the project integration profile")
+		return OutboxItem{}, nativeInvalid("GitHub mutation is not permitted by the project integration profile")
 	}
 
 	existing, found, err := findOutboxByKey(ctx, tx, record.idempotencyKey)

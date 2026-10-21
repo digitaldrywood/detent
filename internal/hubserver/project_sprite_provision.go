@@ -313,7 +313,7 @@ func (s *Service) poolSpriteTokenAvailable(ctx context.Context, scope nativeScop
 func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, member spritePoolMember, settings spritePoolSettings, enrollment runnerauth.Enrollment) error {
 	version := "v" + strings.TrimPrefix(s.config.Version, "v")
 	if !regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(version) {
-		return nativePublicInvalid("Sprite provisioning requires a Hub built from a pinned release")
+		return nativeInvalid("Sprite provisioning requires a Hub built from a pinned release")
 	}
 	body, err := json.Marshal(struct {
 		Name string `json:"name"`

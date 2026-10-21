@@ -158,11 +158,11 @@ func (s *Service) readSpritePool(ctx context.Context, scope nativeScope) (sprite
 func (s *Service) setSpritePool(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	if !canManageProjectSecrets(scope.credential) {
-		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Sprite pool settings require owner or admin access", apiErrorResponse{Code: "forbidden", Message: "Sprite pool settings require owner or admin access"})
+		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Sprite pool settings require owner or admin access"})
 	}
 	var input spritePoolChange
 	if err := decodeAPIJSON(c, &input); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	view, err := s.setSpritePoolCommand(c.Request().Context(), scope, input)
 	if err != nil {

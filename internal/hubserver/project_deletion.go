@@ -25,7 +25,7 @@ func (s *Service) deleteCloudProject(c echo.Context) error {
 	c.Set("native_scope", scope)
 	var request deleteCloudProjectRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	return s.nativeMutationStatus(c, http.StatusOK, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		project, err := readNativeProject(ctx, tx, scope)

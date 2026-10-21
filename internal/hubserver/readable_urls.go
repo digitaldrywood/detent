@@ -54,7 +54,7 @@ func setOrganizationSlug(ctx context.Context, tx *sql.Tx, id, slug string) error
 		return err
 	}
 	if err == nil && owner != id {
-		return nativePublicInvalid("This slug is already reserved")
+		return nativeInvalid("This slug is already reserved")
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO organization_slugs(slug,organization_id) VALUES(?,?) ON CONFLICT DO NOTHING", slug, id); err != nil {
 		return err
@@ -113,14 +113,14 @@ func (s *Service) slugSettings(c echo.Context) error {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if project == "" && s.hostedShared() {
-		return s.nativeAPIError(c, nativePublicInvalid("Edit the organization slug through the shared entry"))
+		return s.nativeAPIError(c, nativeInvalid("Edit the organization slug through the shared entry"))
 	}
 	var input struct {
 		Slug         string `json:"slug"`
 		ExpectedSlug string `json:"expected_slug"`
 	}
 	if err := decodeAPIJSON(c, &input); err != nil {
-		return s.invalidAPIRequest(c, err)
+		return invalidAPIRequest(c, err)
 	}
 	if err := readableurl.Validate(input.Slug); err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
@@ -138,7 +138,7 @@ func (s *Service) slugSettings(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if current != input.ExpectedSlug {
-		return s.nativeAPIError(c, nativePublicInvalid("The slug changed; reload and try again"))
+		return s.nativeAPIError(c, nativeInvalid("The slug changed; reload and try again"))
 	}
 	if project == "" {
 		err = setOrganizationSlug(ctx, tx, string(scope.organization), input.Slug)
@@ -149,7 +149,7 @@ func (s *Service) slugSettings(c echo.Context) error {
 			err = nil
 		}
 		if err == nil && owner != "" && owner != project {
-			err = nativePublicInvalid("This slug is already reserved")
+			err = nativeInvalid("This slug is already reserved")
 		}
 		if err == nil {
 			_, err = tx.ExecContext(ctx, "INSERT INTO project_slugs(organization_id,slug,project_id) VALUES(?,?,?) ON CONFLICT DO NOTHING", scope.organization, input.Slug, project)

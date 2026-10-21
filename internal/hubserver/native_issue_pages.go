@@ -86,7 +86,7 @@ func (s *Service) readIssuePageItems(ctx context.Context, query string, args []a
 	position := cursor.Issues
 	if position == nil {
 		if cursor.After != "" {
-			return nil, nil, 0, nativePublicInvalid("Work list order changed; restart the query")
+			return nil, nil, 0, nativeInvalid("Work list order changed; restart the query")
 		}
 		projected, err := s.projectIssuePage(ctx, query, args, sort, search)
 		if err != nil {
@@ -115,7 +115,7 @@ func (s *Service) readIssuePageItems(ctx context.Context, query string, args []a
 	var exists int
 	err := s.database.reader.QueryRowContext(ctx, "SELECT 1 FROM native_issue_pages WHERE id = ? AND scope = ? AND expires = ?", position.Snapshot, cursor.Scope, cursor.Expires).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil, 0, nativePublicInvalid("Work list cursor expired; restart the query")
+		return nil, nil, 0, nativeInvalid("Work list cursor expired; restart the query")
 	}
 	if err != nil {
 		return nil, nil, 0, err

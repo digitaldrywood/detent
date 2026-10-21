@@ -260,7 +260,7 @@ func (s *Service) hostedBillingJSON(c echo.Context) error {
 	}
 	credential, err := s.hostedBillingOwner(c.Request().Context(), c)
 	if err != nil {
-		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Billing requires an organization owner without support impersonation", apiErrorResponse{Code: "forbidden", Message: "Billing requires an organization owner without support impersonation"})
+		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Billing requires an organization owner without support impersonation"})
 	}
 	ctx := c.Request().Context()
 	if err := s.hostedAudit(ctx, credential.Hosted, "billing_viewed", c.Path(), "", http.StatusOK); err != nil {
@@ -278,7 +278,7 @@ func (s *Service) hostedBillingUsageJSON(c echo.Context) error {
 	cfg := s.hostedBillingConfig()
 	credential, err := s.hostedAdministrator(c)
 	if err != nil {
-		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Plan and usage require owner or admin access", apiErrorResponse{Code: "forbidden", Message: "Plan and usage require owner or admin access"})
+		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Plan and usage require owner or admin access"})
 	}
 	view, err := s.readBillingView(c.Request().Context())
 	if err != nil {

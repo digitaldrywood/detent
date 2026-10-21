@@ -39,7 +39,7 @@ func nativeBoardFilter(scope nativeScope, params url.Values, lanes bool) (string
 		where.WriteString(" AND b.archived=1")
 	case "all":
 	default:
-		return "", nil, nativePublicInvalid("archived must be true, false or all")
+		return "", nil, nativeInvalid("archived must be true, false or all")
 	}
 	if lanes {
 		switch params.Get("open") {
@@ -49,7 +49,7 @@ func nativeBoardFilter(scope nativeScope, params url.Values, lanes bool) (string
 		case "false":
 			where.WriteString(" AND b.terminal=1")
 		default:
-			return "", nil, nativePublicInvalid("open must be true or false")
+			return "", nil, nativeInvalid("open must be true or false")
 		}
 	}
 	for _, filter := range []struct{ name, clause string }{
@@ -144,10 +144,10 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 		return page, err
 	}
 	if params.Get("include") != "board" || params.Has("fingerprint") {
-		return page, nativePublicInvalid("board cannot include other projections or fingerprints")
+		return page, nativeInvalid("board cannot include other projections or fingerprints")
 	}
 	if sort := params.Get("sort"); sort != "" && sort != "closed" {
-		return page, nativePublicInvalid("sort supports closed")
+		return page, nativeInvalid("sort supports closed")
 	}
 	pageParams := params
 	requestedLimit, limitErr := strconv.Atoi(params.Get("limit"))

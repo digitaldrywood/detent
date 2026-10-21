@@ -38,11 +38,11 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		if audit {
 			return "", auditInvalid("implementation review and acceptance validation must be separate results", "review")
 		}
-		return "", nativePublicInvalid("implementation review and acceptance validation must be separate results")
+		return "", nativeInvalid("implementation review and acceptance validation must be separate results")
 	}
 	if request.Validator == nil && !implementationReview && !audit {
 		if worker {
-			return "", &nativeError{status: 403, Code: "forbidden", Message: "workers may only submit validator reviews", publicMessage: true}
+			return "", &nativeError{status: 403, Code: "forbidden", Message: "workers may only submit validator reviews"}
 		}
 		return "", nil
 	}
