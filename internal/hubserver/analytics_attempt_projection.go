@@ -98,8 +98,27 @@ type analyticsAttemptLanding struct {
 	ObservedAt      time.Time             `json:"observed_at"`
 }
 
+type analyticsPhases struct {
+	items     []tracker.NativePhase
+	malformed bool
+}
+
+func (p *analyticsPhases) UnmarshalJSON(raw []byte) error {
+	if json.Unmarshal(raw, &p.items) != nil {
+		p.items, p.malformed = nil, true
+	}
+	return nil
+}
+
+func (p analyticsPhases) MarshalJSON() ([]byte, error) {
+	if p.malformed {
+		return []byte(`"malformed"`), nil
+	}
+	return json.Marshal(p.items)
+}
+
 type analyticsAttemptRuntime struct {
-	Phases          []tracker.NativePhase            `json:"phases"`
+	Phases          analyticsPhases                  `json:"phases"`
 	PhasesDropped   int                              `json:"phases_dropped"`
 	Activity        *workflowmetrics.ActivityProfile `json:"activity,omitempty"`
 	Identity        agentidentity.Identity           `json:"identity,omitzero"`

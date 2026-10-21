@@ -639,13 +639,12 @@ func TestHostedSecuritySupportSessionConstraints(t *testing.T) {
 				requireNativeStatus(t, f.request(t, user, http.MethodGet, "/api/cloud/metadata", nil), http.StatusForbidden)
 				if wantWrite != http.StatusOK {
 					var count int
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id=?", user.identity.Hosted.SessionID).Scan(&count); err != nil || count != 0 {
-						t.Fatalf("routine reads created %d audit rows: %v", count, err)
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id=?", user.identity.Hosted.SessionID).Scan(&count); err != nil || count != 1 {
+						t.Fatalf("support read audit rows=%d, want 1: %v", count, err)
 					}
-					return
 				}
 				var actor, effective, organization, reason, raw string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,effective_user,organization_id,reason,event || route || project_id FROM hosted_audit WHERE session_id = ? ORDER BY id LIMIT 1", user.identity.Hosted.SessionID).Scan(&actor, &effective, &organization, &reason, &raw); err != nil {
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,effective_user,organization_id,reason,event || route || project_id FROM hosted_audit WHERE session_id = ? ORDER BY id DESC LIMIT 1", user.identity.Hosted.SessionID).Scan(&actor, &effective, &organization, &reason, &raw); err != nil {
 					t.Fatal(err)
 				}
 				if actor != "support@example.test" || effective != user.identity.Subject || organization != "org_security" || reason != "customer-request" || strings.Contains(raw, "private-body-sentinel") || strings.Contains(raw, user.token) {
@@ -829,13 +828,17 @@ func TestHostedSecuritySSEAudit(t *testing.T) {
 			if kind != "activity" {
 				t.Fatalf("initial event = %q", kind)
 			}
-			var count int
-			err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id = ? AND route = ?", user.identity.Hosted.SessionID, "GET /projects/:project/events").Scan(&count)
+			var count, attributed int
+			err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*),coalesce(sum(actual_actor=? AND effective_user=? AND reason=?),0) FROM hosted_audit WHERE session_id = ? AND route = ?", actor, user.identity.Subject, user.identity.Hosted.SupportReason, user.identity.Hosted.SessionID, "GET /projects/:project/events").Scan(&count, &attributed)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if count != 0 {
-				t.Fatalf("routine stream read created %d audit rows", count)
+			want := 0
+			if actor != "" {
+				want = 1
+			}
+			if count != want || attributed != want {
+				t.Fatalf("stream read audit rows=%d attributed=%d, want %d", count, attributed, want)
 			}
 		})
 	}
@@ -1203,12 +1206,16 @@ func TestHostedRepeatedReadsAreNotAudited(t *testing.T) {
 			for range 3 {
 				requireNativeStatus(t, f.request(t, user, http.MethodGet, f.base, nil), http.StatusOK)
 			}
-			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id = ? AND event = 'action' AND route LIKE 'GET %'", user.identity.Hosted.SessionID).Scan(&count); err != nil {
+			var count, attributed int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*),coalesce(sum(actual_actor=? AND effective_user=? AND reason=?),0) FROM hosted_audit WHERE session_id = ? AND event = 'action' AND route LIKE 'GET %'", test.support, user.identity.Subject, user.identity.Hosted.SupportReason, user.identity.Hosted.SessionID).Scan(&count, &attributed); err != nil {
 				t.Fatal(err)
 			}
-			if count != 0 {
-				t.Fatalf("read audit rows = %d, want 0", count)
+			want := 0
+			if test.support != "" {
+				want = 3
+			}
+			if count != want || attributed != want {
+				t.Fatalf("read audit rows=%d attributed=%d, want %d", count, attributed, want)
 			}
 		})
 	}

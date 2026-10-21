@@ -130,9 +130,16 @@ func TestRunnerHubProblems(t *testing.T) {
 				running := runnerauth.BuildEvidence{Version: "1.0.0", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
 				applied := running
 				applied.Version, applied.Commit, applied.SHA256, applied.VerifiedRelease = "1.0.1", strings.Repeat("c", 40), strings.Repeat("d", 64), true
+				request := runnerauth.UpdateRequest{ID: "update-fixture", Service: "detent", Release: true, Version: "1.0.1", ExpectedBuildRevision: strings.Repeat("e", 64), RequestedAt: now}
+				desired, err := json.Marshal(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET routing_settings_json = json_set(routing_settings_json, '$.update_request', json(?)) WHERE id = ?", string(desired), r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
 				report := &runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Supported: true, Running: running, ObservedAt: now,
-					Receipt: &runnerauth.UpdateReceipt{Status: "applied", ExecutionArtifact: true, Applied: &applied, ObservedAt: now,
-						Request: runnerauth.UpdateRequest{ID: "update-fixture", Service: "detent", Release: true, Version: "1.0.1", ExpectedBuildRevision: "build-fixture", RequestedAt: now}}}
+					Receipt: &runnerauth.UpdateReceipt{Status: "applied", ExecutionArtifact: true, Applied: &applied, ObservedAt: now, Request: request}}
 				report.Revision = report.BuildRevision()
 				heartbeat["update"] = report
 				heartbeat["version"], heartbeat["os"], heartbeat["architecture"] = "1.0.0", "linux", "amd64"
