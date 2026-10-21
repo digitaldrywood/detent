@@ -124,7 +124,7 @@ type Service struct {
 	verified          sessionVerifications
 	refreshes         refreshLocks
 	attachments       attachment.Storage
-	attachmentMu      sync.RWMutex
+	attachmentLocks   attachmentLocks
 	attachmentSweepAt time.Time
 	diffBodySweepAt   time.Time
 	githubRoutes      githubRoutes
