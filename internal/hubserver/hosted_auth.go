@@ -586,7 +586,10 @@ func (s *Service) hostedAuditWith(ctx context.Context, exec hostedExecer, identi
 	if identity == nil {
 		return nil
 	}
-	if key, ok := ctx.Value(entryKeyAuditContext{}).(bool); ok && key && (event == "action" || event == "administration") {
+	if audit := entryKeyAuditFrom(ctx); audit != nil && (event == "action" || event == "administration") {
+		if _, transactional := exec.(*sql.Tx); transactional {
+			return s.auditEntryKey(ctx, exec, audit, status)
+		}
 		return nil
 	}
 	if _, ok := mutation.FromContext(ctx); !ok && status < http.StatusBadRequest {

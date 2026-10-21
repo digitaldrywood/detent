@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -221,5 +222,109 @@ func TestEntryKeyCallReportsMoveItemRequestErrors(t *testing.T) {
 	decodeHubResponse(t, moved, &receipt)
 	if receipt.Data.State != "Done" {
 		t.Fatalf("state=%q", receipt.Data.State)
+	}
+}
+
+type entryKeyAuditWriter struct {
+	*httptest.ResponseRecorder
+	beforeWrite func()
+}
+
+func (w *entryKeyAuditWriter) WriteHeader(status int) {
+	if w.beforeWrite != nil {
+		before := w.beforeWrite
+		w.beforeWrite = nil
+		before()
+	}
+	w.ResponseRecorder.WriteHeader(status)
+}
+
+func (w *entryKeyAuditWriter) Write(body []byte) (int, error) {
+	if w.beforeWrite != nil {
+		before := w.beforeWrite
+		w.beforeWrite = nil
+		before()
+	}
+	return w.ResponseRecorder.Write(body)
+}
+
+func TestEntryKeyMutationAuditCommit(t *testing.T) {
+	for _, transport := range []string{"HTTP", "tool"} {
+		for _, failure := range []string{"cancel response", "reject audit insert", "reject audit update"} {
+			t.Run(transport+"/"+failure, func(t *testing.T) {
+				f := newHostedSharedFixture(t)
+				user := f.user(t, "key_owner", "owner", "key-owner@example.test", "write", "")
+				operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project)
+				for i := range 2 {
+					key := apikey.KeyAuthority{ID: fmt.Sprintf("key_audit_%d", i), Kind: "personal", Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: "all"}}
+					title := fmt.Sprintf("Audited mutation %d", i)
+					target := f.base + "/work-items"
+					args := map[string]any{"title": title, "body": nativeContractTestBody, "state": "Todo", "idempotency_key": fmt.Sprintf("audit-%d", i)}
+					var payload any = args
+					if transport == "tool" {
+						target = "/internal/v1/keys/call"
+						payload = map[string]any{"name": operatortool.FileIssue, "connection_id": "audit-commit-" + key.ID, "arguments": map[string]any{"project_id": f.project, "title": title, "description": nativeContractTestBody, "state": "Todo", "request_id": fmt.Sprintf("audit-%d", i)}}
+					}
+					body, err := json.Marshal(payload)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if i == 0 {
+						switch failure {
+						case "reject audit insert":
+							operatorSQL(t, f.hostedSecurityFixture, `CREATE TRIGGER reject_key_audit BEFORE INSERT ON hosted_audit WHEN NEW.event='key_call' BEGIN SELECT RAISE(ABORT,'audit unavailable'); END`)
+						case "reject audit update":
+							operatorSQL(t, f.hostedSecurityFixture, `CREATE TRIGGER reject_key_audit BEFORE UPDATE ON hosted_audit WHEN NEW.event='key_call' AND NEW.status=200 BEGIN SELECT RAISE(ABORT,'audit unavailable'); END`)
+						}
+					}
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					request := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body)).WithContext(ctx)
+					request.Header.Set("Content-Type", "application/json")
+					claims := f.claims(nil, cloudassert.KindKey, http.MethodPost, request.URL.RequestURI(), body)
+					claims.Key, claims.Subject, claims.ProviderOrganization, claims.Role = &key, user.identity.Subject, "org_provider", "owner"
+					assertion, err := cloudassert.Sign(f.key, claims)
+					if err != nil {
+						t.Fatal(err)
+					}
+					request.Header.Set(cloudassert.Header, assertion)
+					recorder := httptest.NewRecorder()
+					writer := &entryKeyAuditWriter{ResponseRecorder: recorder}
+					if failure == "cancel response" {
+						writer.beforeWrite = func() {
+							var count int
+							if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id=? AND event='key_call' AND status=200", key.ID).Scan(&count); err != nil {
+								t.Fatal(err)
+							}
+							if count != 1 {
+								t.Errorf("mutation reached response before durable audit: count=%d", count)
+							}
+							cancel()
+						}
+					}
+					f.service.Handler().ServeHTTP(writer, request)
+					var items, audits int
+					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE title=?", title).Scan(&items); err != nil {
+						t.Fatal(err)
+					}
+					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id=? AND event='key_call'", key.ID).Scan(&audits); err != nil {
+						t.Fatal(err)
+					}
+					wantItems, wantAudits := 0, 1
+					if failure == "cancel response" {
+						wantItems = 1
+						requireNativeStatus(t, recorder, http.StatusOK)
+					} else {
+						requireNativeStatus(t, recorder, http.StatusInternalServerError)
+					}
+					if failure == "reject audit insert" {
+						wantAudits = 0
+					}
+					if items != wantItems || audits != wantAudits {
+						t.Fatalf("items=%d audits=%d want items=%d audits=%d", items, audits, wantItems, wantAudits)
+					}
+				}
+			})
+		}
 	}
 }
