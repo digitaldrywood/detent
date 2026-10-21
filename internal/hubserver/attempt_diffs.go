@@ -354,6 +354,7 @@ func (s *Service) postAttemptDiff(c echo.Context) error {
 // attempt's work item is resolved in the caller's scope, so a reader that
 // cannot see the issue cannot see its diff.
 func (s *Service) getAttemptDiff(c echo.Context) error {
+
 	attemptID := c.Param("attempt")
 	if !validNativeID(attemptID, "attempt") {
 		return s.nativeAPIError(c, nativeNotFound())
@@ -378,6 +379,22 @@ func (s *Service) getAttemptDiff(c echo.Context) error {
 			return s.nativeAPIError(c, nativeInvalid("source must be attempt or workspace"))
 		}
 		source = raw
+	}
+	if c.Request().Header.Get("X-Detent-Archive-Read") == "1" && c.QueryParam("source") != tracker.DiffSourceWorkspace {
+		scope := nativeRequestScope(c)
+		var item string
+		err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT work_item_id FROM issue_archive_sections WHERE organization_id=? AND project_id=? AND section_id=? ORDER BY archive_revision DESC LIMIT 1", scope.organization, scope.project, "diff:"+c.Param("attempt")).Scan(&item)
+		if err == nil {
+			section := "diff:" + c.Param("attempt")
+			if c.QueryParam("at") != "" {
+				section += ":" + c.QueryParam("at")
+			}
+			if handled, err := s.archiveView(c, item, section, nil); handled {
+				return err
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return s.nativeAPIError(c, err)
+		}
 	}
 	result, err := s.readAttemptDiff(c.Request().Context(), nativeRequestScope(c), "", attemptID, source, seq)
 	if err != nil {
@@ -413,6 +430,11 @@ func (s *Service) readAttemptDiff(ctx context.Context, scope nativeScope, item, 
 // answers 200 with `{"diff": null}` rather than a 404 the client would have to
 // tell apart from a permission failure.
 func (s *Service) getWorkItemDiff(c echo.Context) error {
+	if c.QueryParam("source") != tracker.DiffSourceWorkspace {
+		if handled, err := s.archiveView(c, c.Param("item"), "diff", nil); handled {
+			return err
+		}
+	}
 	if err := validateNativeQuery(c.QueryParams(), "source"); err != nil {
 		return s.nativeAPIError(c, err)
 	}

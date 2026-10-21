@@ -38,6 +38,11 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.service.attachments = storage
+	storageConfig := store.config()
+	f.service.config.Attachments = &storageConfig
+	if policy := f.service.contentSecurity(); !strings.Contains(policy, "connect-src 'self' "+storageConfig.Endpoint+" ") || strings.Contains(policy, "connect-src *") {
+		t.Fatal("archive CSP does not restrict storage to its configured endpoint")
+	}
 	alice := newBrowser(t, f.service.Handler())
 	content := strings.Repeat("fixture-content-secret archived detail\n", 1000)
 	var previous attachment.ArchiveReference
@@ -217,6 +222,25 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 				var access attachment.ArchiveRead
 				if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &access) != nil || access.ArchiveReference != archive {
 					t.Fatal("distinct archives are not both usable")
+				}
+			}
+		}
+		for _, item := range items {
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO issue_archive_sections(organization_id,project_id,work_item_id,archive_revision,section_id,attachment_id) SELECT organization_id,project_id,work_item_id,?, ?,attachment_id FROM attachment_archive_references WHERE organization_id=? AND project_id=? AND work_item_id=? AND attachment_id=?`, 1, "issue", org, project, item.WorkItemID, archiveID); err != nil {
+				t.Fatal(err)
+			}
+			access := base + "/work-items/" + string(item.WorkItemID) + "/archives/" + ref.SHA256 + "/access"
+			for _, test := range []struct {
+				query  string
+				status int
+			}{
+				{"?section=issue&revision=1", http.StatusOK},
+				{"?section=issue&revision=2", http.StatusNotFound},
+				{"", http.StatusNotFound},
+			} {
+				read := attachmentRequest(t, alice, http.MethodGet, access+test.query, nil, nil)
+				if read.Code != test.status {
+					t.Fatalf("section access %s: %d %s", test.query, read.Code, read.Body.String())
 				}
 			}
 		}

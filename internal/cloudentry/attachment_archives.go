@@ -3,6 +3,7 @@ package cloudentry
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -82,7 +83,11 @@ func (s *Service) readArchive(c echo.Context) error {
 	if err != nil || !safeID(c.Param("item")) || !artifact.ValidHash(c.Param("digest"), 64) {
 		return attachmentNotFound(c)
 	}
-	status, raw, err := s.attachmentCall(c, organization, http.MethodGet, "/archives/"+c.Param("item")+"/"+c.Param("digest"), nil)
+	suffix := "/archives/" + c.Param("item") + "/" + c.Param("digest")
+	if c.QueryParam("section") != "" {
+		suffix += "?" + url.Values{"section": {c.QueryParam("section")}, "revision": {c.QueryParam("revision")}}.Encode()
+	}
+	status, raw, err := s.attachmentCall(c, organization, http.MethodGet, suffix, nil)
 	if err != nil || status != http.StatusOK {
 		return attachmentCallError(c, status, raw, err, false)
 	}

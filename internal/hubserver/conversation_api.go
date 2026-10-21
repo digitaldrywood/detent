@@ -622,6 +622,21 @@ func (s *Service) readableConversationProjects(ctx context.Context, scope native
 }
 
 func (s *Service) getWorkItemConversation(c echo.Context) error {
+	if c.QueryParam("metadata") == "true" {
+		tx, err := s.database.reader.BeginTx(c.Request().Context(), &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		defer tx.Rollback()
+		record, err := s.conversations.readLinkedConversation(c.Request().Context(), tx, nativeRequestScope(c), c.Param("item"))
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSON(http.StatusOK, conversationSnapshot{Skills: []skills.ProviderSkill{}, Conversation: projectConversation(record), Messages: []conversationMessageResource{}, Questions: []conversation.Question{}, Cursor: record.EventSeq})
+	}
+	if handled, err := s.archiveConversationView(c); handled {
+		return err
+	}
 	value, err := s.readWorkItemConversationSnapshot(c.Request().Context(), nativeRequestScope(c), c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -637,6 +652,9 @@ func (s *Service) readWorkItemConversationSnapshot(ctx context.Context, scope na
 // the latest message page and the pending questions are read in one
 // transaction so that the returned cursor matches the messages exactly.
 func (s *Service) getConversation(c echo.Context) error {
+	if handled, err := s.archiveConversationView(c); handled {
+		return err
+	}
 	value, err := s.readConversationSnapshot(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"))
 	if err != nil {
 		return s.nativeAPIError(c, err)

@@ -994,7 +994,8 @@ describe("the issue effort property", () => {
     { name: "reported effort", effort: "high", hasAttempt: true, expected: "gpt-6.1-sol · high" },
     { name: "unreported effort", effort: undefined, hasAttempt: true, expected: "gpt-6.1-sol · effort unavailable" },
     { name: "no attempt", effort: undefined, hasAttempt: false, expected: "No effort set" },
-  ])("shows $name from the latest attempt instead of labels", async ({ effort, hasAttempt, expected }) => {
+    { name: "archived summary", effort: "high", hasAttempt: true, expected: "gpt-6.1-sol · high", archived: true },
+  ])("shows $name from the latest attempt instead of labels", async ({ effort, hasAttempt, expected, archived = false }) => {
     const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&completed_window=all", (fetch) => async (input, init) => {
       const response = await fetch(input, init);
       if (/\/attempts(?:\?|$)/.test(String(input))) {
@@ -1004,7 +1005,7 @@ describe("the issue effort property", () => {
       }
       if (/\/work-items\/[^/?]+$/.test(String(input))) {
         const body = await response.json();
-        return Response.json({ ...body, labels: ["effort:low"] });
+        return Response.json({ ...body, labels: ["effort:low"], ...(archived ? { archive_summary: { revision: "1", attempts: [ATTEMPTS[0], { ...ATTEMPTS.at(-1)!, identity: { role: "code", backend: "codex", model: "gpt-6.1-sol", reasoning_effort: effort } }] } } : {}) });
       }
       return response;
     });

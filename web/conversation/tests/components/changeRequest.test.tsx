@@ -2,6 +2,9 @@
 //
 // The Change Request page's body: the round, its diff, the verdict, and the
 // two decisions a reviewer makes on it.
+import { webcrypto } from "node:crypto";
+import { archiveFixture } from "../archiveFixture.ts";
+import { decodeArchive } from "../../src/runtime/archiveDecode.ts";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -35,7 +38,7 @@ vi.mock("@pierre/diffs/react", async (importOriginal) => ({
   ),
 }));
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 const NOW = Date.parse("2026-09-09T12:00:00Z");
 const PROJECT = projectFixture as unknown as NativeProject;
@@ -69,8 +72,22 @@ function renderView(overrides: Partial<ChangeRequestViewProps> = {}) {
 }
 
 describe("the Change Request page", () => {
-  it("draws the round's stored diff and names the round", () => {
-    renderView();
+  it("shows an archive failure instead of claiming that a round has no diff", () => {
+    renderView({ diff: null, diffError: "Archived detail is unavailable (checksum mismatch)." });
+    expect(screen.getByText("Archived detail is unavailable (checksum mismatch).")).toBeTruthy();
+    expect(screen.queryByText("No stored diff is available for this round.", { exact: false })).toBeNull();
+  });
+  it.each(["hot", "archived"])("draws the %s round's stored diff and names the round", async (storage) => {
+    vi.stubGlobal("crypto", webcrypto);
+    let change = CHANGE;
+    let diff = ATTEMPT_DIFF;
+    if (storage === "archived") {
+      const archivedChange = await archiveFixture(CHANGE, `change:${CHANGE.change.change_id}`);
+      const archivedDiff = await archiveFixture(ATTEMPT_DIFF, "diff");
+      change = await decodeArchive(archivedChange.response(), archivedChange.descriptor) as ChangeDetail;
+      diff = await decodeArchive(archivedDiff.response(), archivedDiff.descriptor) as AttemptDiff;
+    }
+    renderView({ change, diff });
     expect(screen.getByTestId("diff-files").textContent).toContain("changed file");
     expect(screen.getByTestId("change-round-card").textContent).toContain(
       `Round ${currentVersion(CHANGE)!.number}`,

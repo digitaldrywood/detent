@@ -2507,6 +2507,53 @@ member. URLs are transient capabilities and must never be persisted or logged.
 The metadata endpoints under `/attachment-metadata/archives` are private to
 the signed entry-to-Hub boundary.
 
+Browser detail reads send `X-Detent-Archive-Read: 1`. For archived sections,
+the issue, attempt, Change, diff, conversation and revision endpoints return
+`{archive, current, projection}` instead of assembling full detail. `archive`
+contains organization, project and work-item identities, a decimal-string
+`revision`, `section_id`, compressed SHA-256, compressed and uncompressed byte
+sizes, `codec`, `schema_version` and an authorized same-origin `access_path`.
+`current` contains the current SQLite metadata. Hot reads retain their existing
+response shape. Agent reads without this header retain their existing contract.
+
+The archive producer publishes a complete revision in `issue_archive_sections`
+only after all objects have verified attachment references. Rows use the same
+positive `archive_revision` for the whole work item; readers select its highest
+published revision. Sections are `issue`, `attempts`, `attempt:{attempt_id}`,
+`change:{change_id}`, `diff`, `diff:{attempt_id}` (with `:{sequence}` for an
+explicit generation), `conversation:{conversation_id}`, and
+`revision:{comment_id}:{revision}` (empty comment ID for an issue revision).
+Each gzip member contains UTF-8 JSON
+`{"schema_version":1,"section_id":"issue","data":{"body":"Example"}}`.
+Other sections' `data` uses the existing endpoint response schema. The issue
+section includes `attempts`, an array of timeline run summaries using the
+attempt schema, without full runtime detail. The issue and issue-revision
+sections never contain dependencies, blockers, dependents, related issues or
+viewer-filtered reason fields. Those fields come only from current authorized
+SQLite reads. Comments and timeline events also remain SQLite reads.
+
+Section access requires the descriptor's `section` and `revision` query
+parameters. A digest-only request cannot access an object published in this
+manifest. The Hub repeats issue/project authorization and conversation audience
+authorization before issuing access. Reporters cannot access private execution
+sections. Missing sections of a published archive return `archive_unavailable`,
+never an empty history. The metadata-only linked-conversation read uses
+`GET /work-items/{item}/conversation?metadata=true`; it authorizes the
+conversation but does not load messages.
+
+The browser fetches object bytes without credentials or redirects, verifies the
+compressed digest and sizes, then uses a Web Worker and streaming
+`DecompressionStream("gzip")` to bound decoding to 16 MiB. HTTP Content-Encoding
+is refused, preventing automatic decoding followed by a second gzip decode.
+The worker validates the envelope and the client validates the endpoint schema.
+An expired URL renews through authorization once, then stops. The existing query
+cache holds decoded sections under client/session, organization, project, issue,
+archive revision and digest identities. Its archive budget is eight sections
+and 64 MiB with ten minutes of idle retention. Account/organization/grant changes,
+sign-out and archive revision changes clear the applicable cached data. Archive
+payloads and URLs have no disk, localStorage, IndexedDB or service-worker cache.
+The Cloud entry adds only the configured storage endpoint to CSP `connect-src`.
+
 Archives use the existing hosted attachment bucket and organization-deletion
 prefix. They survive source deletion and attachment expiry, remain charged once
 per blob in the organization's `collaboration_bytes` storage-tier usage, and are

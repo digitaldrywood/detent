@@ -172,6 +172,7 @@ export interface ChangeRequestViewProps {
   readonly version: ChangeVersion | null;
   readonly diff: AttemptDiff | null;
   readonly diffLoading: boolean;
+  readonly diffError?: string | null;
   /** A project write grant permits discussion comments. */
   readonly canWrite: boolean;
   /** Hosted reviews require an owner or admin with a project write grant. */
@@ -229,7 +230,7 @@ export function ChangeRequestView(props: ChangeRequestViewProps): React.ReactEle
           >
             {props.diffLoading
               ? "Reading the diff…"
-              : version === null
+              : props.diffError ? props.diffError : version === null
                 ? "This change has no published version, so there is no diff to show."
                 : "No stored diff is available for this round. The head and base are listed on the right."}
           </div>
@@ -703,6 +704,7 @@ export function ChangeRequestPage(): React.ReactElement {
         version={version}
         diff={roundDiff.diff}
         diffLoading={roundDiff.loading}
+        diffError={roundDiff.error}
         canWrite={canWrite}
         canReview={canReview}
         busy={busy}
