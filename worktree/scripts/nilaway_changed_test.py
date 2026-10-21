@@ -1,0 +1,173 @@
+import contextlib
+import hashlib
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import tempfile
+import unittest
+from unittest import mock
+
+
+spec = importlib.util.spec_from_file_location(
+    "nilaway_changed", Path(__file__).with_name("nilaway-changed.py")
+)
+audit = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(audit)
+VERSION = re.search(
+    r"^NILAWAY_VERSION \?= (\S+)$", (audit.ROOT / "Makefile").read_text(), re.MULTILINE
+).group(1)
+
+
+class ReverseDependentAuditTests(unittest.TestCase):
+    def test_provider_change_and_reviewed_importer_baseline(self):
+        scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
+        if scratch is None:
+            self.fail("Set TMPDIR, TMP, or TEMP for the NilAway fixture")
+        with tempfile.TemporaryDirectory(dir=scratch) as directory:
+            root = Path(directory)
+            (root / "go.mod").write_text("module example.test/nilaway\n\ngo 1.26\n")
+            (root / "provider").mkdir()
+            provider = root / "provider" / "provider.go"
+            provider.write_text("package provider\n\nfunc Value() *int { return new(int) }\n")
+            (root / "importer").mkdir()
+            importer = root / "importer" / "importer.go"
+            importer.write_text(
+                'package importer\n\nimport "example.test/nilaway/provider"\n\n'
+                "func Read() int { return *provider.Value() }\n"
+            )
+            baseline = root / "baseline.json"
+            baseline.write_text("[]")
+
+            def git(*args):
+                return subprocess.check_output(
+                    ["git", "-c", "user.name=NilAway Fixture", "-c", "user.email=nilaway@example.test",
+                     "-c", "commit.gpgsign=false", *args], cwd=root, text=True, stderr=subprocess.STDOUT
+                ).strip()
+
+            git("init")
+            git("add", ".")
+            git("commit", "-m", "safe provider")
+            git("tag", "v0.0.0")
+
+            def run_audit(checkout=root):
+                output = io.StringIO()
+                with mock.patch.object(audit, "ROOT", checkout), mock.patch.object(audit, "BASELINE", baseline), \
+                     mock.patch("sys.argv", ["nilaway-changed.py", VERSION, "example.test/nilaway"]), \
+                     contextlib.redirect_stdout(output):
+                    code = audit.main()
+                return code, output.getvalue()
+
+            code, output = run_audit()
+            self.assertEqual(code, 0, output)
+            provider.write_text("package provider\n\nfunc Value() *int { return nil }\n")
+            git("add", "provider/provider.go")
+            git("commit", "-m", "provider becomes nullable")
+            self.assertEqual(git("diff", "--name-only", "v0.0.0", "HEAD"), "provider/provider.go")
+
+            code, output = run_audit()
+            self.assertEqual(code, 1, output)
+            diagnostic = next(
+                (match for line in output.splitlines() if (match := audit.DIAGNOSTIC.search(line))), None
+            )
+            self.assertIsNotNone(diagnostic, output)
+            self.assertTrue(diagnostic["path"].endswith("importer/importer.go"), output)
+            line = int(diagnostic["line"])
+            baseline.write_text(json.dumps([{
+                "file": "importer/importer.go", "line": line, "column": int(diagnostic["column"]),
+                "rule": "Potential nil panic detected",
+                "source_sha256": hashlib.sha256(importer.read_text().splitlines()[line - 1].encode()).hexdigest(),
+            }]))
+            code, output = run_audit()
+            self.assertEqual(code, 0, output)
+            self.assertIn("1 reviewed legacy diagnostics", output)
+
+            with tempfile.TemporaryDirectory(dir=scratch) as other_directory:
+                checkout = Path(other_directory) / "checkout"
+                shutil.copytree(root, checkout)
+                code, output = run_audit(checkout)
+                self.assertEqual(code, 0, output)
+                self.assertIn("1 reviewed legacy diagnostics", output)
+
+            reviewed = f'{importer}:{line}:{diagnostic["column"]}: Potential nil panic detected\n'
+            foreign = root.parent / "removed-checkout" / "importer" / "importer.go"
+            foreign_reviewed = reviewed.replace(str(importer), str(foreign))
+            nested = root / ".detent" / "workspaces" / "removed-checkout" / "importer" / "importer.go"
+            existing = root / ".detent" / "workspaces" / "existing-checkout" / "importer" / "importer.go"
+            existing.parent.mkdir(parents=True)
+            existing.write_text(importer.read_text().replace("return *provider.Value()", "return 0"))
+            cases = [
+                (foreign_reviewed, 0),
+                (foreign_reviewed.replace(str(foreign), "../removed-checkout/importer/importer.go"), 0),
+                (foreign_reviewed.replace(f':{diagnostic["column"]}:', f':{int(diagnostic["column"]) + 1}:'), 1),
+                (foreign_reviewed.replace("Potential nil panic detected", "another analyzer failure"), 1),
+                (foreign_reviewed.replace("/importer/importer.go", "/other/importer.go"), 1),
+            ]
+            for path in (str(nested), nested.relative_to(root).as_posix(), str(existing), existing.relative_to(root).as_posix()):
+                replay = reviewed.replace(str(importer), path)
+                cases.extend([
+                    (replay, 0),
+                    (replay.replace(f':{diagnostic["column"]}:', f':{int(diagnostic["column"]) + 1}:'), 1),
+                ])
+            for replay, expected in cases:
+                with self.subTest(replay=replay), mock.patch.object(
+                    audit.subprocess, "run", side_effect=[
+                        subprocess.CompletedProcess([], 0, ""),
+                        subprocess.CompletedProcess([], 1, replay),
+                    ],
+                ):
+                    code, output = run_audit()
+                    self.assertEqual(code, expected, output)
+                    self.assertIn("reviewed legacy diagnostics" if expected == 0 else "Unexpected NilAway diagnostics", output)
+
+            related = f'(Same nil source could also cause potential nil panic(s) at 1 other place(s): "importer/importer.go:{line}:{diagnostic["column"]}".)\n'
+            with mock.patch.object(
+                audit.subprocess, "run", side_effect=[
+                    subprocess.CompletedProcess([], 0, ""),
+                    subprocess.CompletedProcess([], 1, reviewed + related),
+                ],
+            ):
+                code, output = run_audit()
+                self.assertEqual(code, 0, output)
+                self.assertIn("1 reviewed legacy diagnostics", output)
+
+            for returncode, failure in ((1, "nilaway: signal: killed\n"), (-9, ""), (2, "")):
+                with self.subTest(returncode=returncode, failure=failure), mock.patch.object(
+                    audit.subprocess, "run", side_effect=[
+                        subprocess.CompletedProcess([], 0, ""),
+                        subprocess.CompletedProcess([], returncode, reviewed + failure),
+                    ],
+                ):
+                    code, output = run_audit()
+                    self.assertEqual(code, 1, output)
+                    self.assertNotIn("Audited all Go packages", output)
+
+            with mock.patch.object(
+                audit.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "tool install failed"),
+            ) as install:
+                code, output = run_audit()
+                self.assertEqual(code, 1, output)
+                self.assertIn("tool install failed", output)
+                self.assertEqual(install.call_count, 1)
+
+            importer.write_text(importer.read_text().replace("return *provider.Value()", "return *provider.Value() /* changed */"))
+            code, output = run_audit()
+            self.assertEqual(code, 1, output)
+            self.assertIn("Unexpected NilAway diagnostics", output)
+            with mock.patch.object(
+                audit.subprocess, "run", side_effect=[
+                    subprocess.CompletedProcess([], 0, ""),
+                    subprocess.CompletedProcess([], 1, foreign_reviewed),
+                ],
+            ):
+                code, output = run_audit()
+                self.assertEqual(code, 1, output)
+                self.assertIn("Unexpected NilAway diagnostics", output)
+
+
+if __name__ == "__main__":
+    unittest.main()
