@@ -484,7 +484,7 @@ ORDER BY l.fencing_token DESC
 LIMIT 1`, workItemID))
 }
 
-func readLeaseByID(ctx context.Context, tx *sql.Tx, leaseID tracker.LeaseID) (leaseRecord, bool, error) {
+func readLeaseByID(ctx context.Context, tx nativeQueryer, leaseID tracker.LeaseID) (leaseRecord, bool, error) {
 	return scanLeaseRecord(tx.QueryRowContext(ctx, `
 SELECT l.issue_id, l.lease_id, l.fencing_token, l.machine_id, m.hostname, m.display_name, l.session_id, l.acquired_at, l.renewed_at, l.expires_at, l.released_at
 FROM leases l
