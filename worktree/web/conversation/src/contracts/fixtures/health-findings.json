@@ -1,0 +1,43 @@
+{
+  "items": [
+    {
+      "id": "finding_watch",
+      "severity": "watch",
+      "class": "capacity",
+      "summary": "Runner claims are waiting for capacity",
+      "next_action": "Check runner limits and active slots.",
+      "opened_at": "2026-10-06T16:00:00Z",
+      "subject": {
+        "kind": "runner",
+        "id": "runner_fixture"
+      }
+    },
+    {
+      "id": "finding_attention",
+      "severity": "attention",
+      "class": "flow",
+      "summary": "Repeated attempts without progress",
+      "next_action": "Review the issue's recorded failures before retrying.",
+      "opened_at": "2026-10-06T15:00:00Z",
+      "subject": {
+        "kind": "work_item",
+        "id": "wi_fixture",
+        "project_id": "prj_fixture"
+      }
+    },
+    {
+      "id": "finding_project",
+      "severity": "watch",
+      "class": "human",
+      "summary": "Project work is waiting on an answer",
+      "next_action": "Review the pending question.",
+      "opened_at": "2026-10-06T14:00:00Z",
+      "subject": {
+        "kind": "project",
+        "id": "prj_fixture",
+        "project_id": "prj_fixture"
+      }
+    }
+  ],
+  "last_tick_at": "2026-10-06T16:58:00Z"
+}
