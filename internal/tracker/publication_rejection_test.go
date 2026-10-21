@@ -13,6 +13,7 @@ func TestTerminalPublicationRejectionAllowlist(t *testing.T) {
 	}{
 		{"acceptance", PublicationRejection{Category: "acceptance_validation", Field: "validator.version_id"}, true},
 		{"security audit", PublicationRejection{Category: "security_audit", Field: "execution_session"}, true},
+		{"security audit reviewer digest", PublicationRejection{Category: "security_audit", Field: "run.reviewer_digest"}, true},
 		{"event", PublicationRejection{Category: "event_validation", Field: "data.outcome"}, true},
 		{"runtime", PublicationRejection{Category: "runtime_validation", Field: "data.runtime.activity"}, true},
 		{"execution", PublicationRejection{Category: "execution_validation", Field: "data.finalization"}, true},
