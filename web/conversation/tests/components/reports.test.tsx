@@ -61,6 +61,28 @@ function panel(title: string) {
 }
 
 describe("organization Reports Overview", () => {
+  it.each([
+    ["project", { range: "30d" }],
+    ["project", { labels: "cloud" }],
+    ["organization", { range: "30d" }],
+    ["organization", { labels: "cloud" }],
+  ] as const)("shows a failed %s read after changing %j with cached data", async (scope, search) => {
+    activeProjectId = scope === "project" ? "prj_alpha" : null;
+    const router = await openReports();
+    expect(screen.getByLabelText("Headline metrics")).toBeTruthy();
+    let rejectRead!: (error: Error) => void;
+    const nextRead = new Promise<never>((_, reject) => { rejectRead = reject; });
+    const read = vi.spyOn(api, scope === "project" ? "reports" : "organizationReports").mockReturnValueOnce(nextRead);
+    await act(async () => { await router.navigate({ to: "/reports", search: { project: scope === "project" ? "prj_alpha" : "all", ...search } as never }); });
+    await waitFor(() => expect(read).toHaveBeenCalled());
+    for (const button of screen.getAllByRole("button", { name: "Refresh reports" })) expect.soft((button as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { rejectRead(new Error("Report read failed")); });
+    expect(await screen.findByText("Reports are temporarily unavailable.")).toBeTruthy();
+    expect(screen.queryByLabelText("Headline metrics")).toBeNull();
+    expect(screen.queryByRole("heading", { name: scope === "project" ? "Shipped per day" : "By project" })).toBeNull();
+    for (const button of screen.getAllByRole("button", { name: "Refresh reports" })) expect((button as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("loads at sidebar organization scope and renders every approved section and project tooltip", async () => {
     const router = await openReports();
     expect(router.state.location.search).toMatchObject({ project: "all" });

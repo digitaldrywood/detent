@@ -262,7 +262,7 @@ func TestAnalyticsRollupMigrationBackfill(t *testing.T) {
 	for _, version := range []struct {
 		id   int64
 		name string
-	}{{20261014233000, "analytics_attempt_projection"}, {20261014200000, "drop_redundant_attempt_indexes"}, {20261014160000, "analytics_attempt_payload"}, {20261014120000, "analytics_rollup_report_columns"}, {20261013083000, "analytics_rollups"}} {
+	}{{20261021193000, "reports_attempt_window"}, {20261014233000, "analytics_attempt_projection"}, {20261014200000, "drop_redundant_attempt_indexes"}, {20261014160000, "analytics_attempt_payload"}, {20261014120000, "analytics_rollup_report_columns"}, {20261013083000, "analytics_rollups"}} {
 		migration, err := migrationFiles.ReadFile("migrations/" + strconv.FormatInt(version.id, 10) + "_" + version.name + ".sql")
 		if err != nil {
 			t.Fatal(err)

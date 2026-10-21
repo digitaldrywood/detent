@@ -116,6 +116,7 @@ export function ReportsRoute(): React.ReactElement {
       orgScope={orgScope}
       options={options}
       pending={orgScope ? tab === "overview" && organization.pending : projectId !== null && reports.pending}
+      refreshing={orgScope ? organization.refreshing : reports.refreshing}
       error={orgScope ? tab === "overview" ? organization.error : null : reports.error}
       projects={sidebar?.projects ?? []}
       project={project ?? null}
@@ -158,6 +159,7 @@ export function ReportsView({
   orgScope = false,
   options,
   pending,
+  refreshing,
   error,
   projects,
   project,
@@ -172,6 +174,7 @@ export function ReportsView({
   readonly orgScope?: boolean;
   readonly options?: ReportsFacets | undefined;
   readonly pending: boolean;
+  readonly refreshing: boolean;
   readonly error: string | null;
   readonly projects: readonly BootstrapProject[];
   readonly project: BootstrapProject | null;
@@ -285,8 +288,8 @@ export function ReportsView({
                 Export CSV
               </Button>
             ) : null}
-            <Button size="icon-sm" variant="ghost" aria-label="Refresh reports" disabled={pending} onClick={onRefresh}>
-              <RefreshIcon refreshing={pending} />
+            <Button size="icon-sm" variant="ghost" aria-label="Refresh reports" disabled={pending || refreshing} onClick={onRefresh}>
+              <RefreshIcon refreshing={pending || refreshing} />
             </Button>
           </div>
         </div>
@@ -328,8 +331,8 @@ export function ReportsView({
             </PopoverPopup>
           </Popover>
           {orgScope && tab === "overview" ? <Toggle size="sm" variant="outline" pressed={search.compare} onPressedChange={(pressed) => setSearch({ compare: pressed })}>vs {range.prior}</Toggle> : null}
-          <Button size="icon" variant="ghost" aria-label="Refresh reports" disabled={pending} onClick={onRefresh} className="ml-auto">
-            <RefreshIcon refreshing={pending} />
+          <Button size="icon" variant="ghost" aria-label="Refresh reports" disabled={pending || refreshing} onClick={onRefresh} className="ml-auto">
+            <RefreshIcon refreshing={pending || refreshing} />
           </Button>
         </div>
         <TabsList aria-label="Report sections" className="ps-(--workspace-gutter-start) pe-(--workspace-gutter-end)">

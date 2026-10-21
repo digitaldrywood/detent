@@ -756,7 +756,7 @@ func (s *Service) readReportsPrior(ctx context.Context, q nativeQueryer, scope n
 	if err != nil {
 		return err
 	}
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`+scoped, append([]any{scope.organization, scope.project, formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)}, scopedArgs...)...).Scan(&attempts); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND a.updated_at>=? AND a.updated_at<? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`+scoped, append([]any{scope.organization, scope.project, prior.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), prior.To.UTC().Add(48 * time.Hour).Format(time.DateOnly), formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)}, scopedArgs...)...).Scan(&attempts); err != nil {
 		return fmt.Errorf("read prior attempts: %w", err)
 	}
 	failures, partial, err := readNativeFailures(ctx, q, scope, "", &prior)

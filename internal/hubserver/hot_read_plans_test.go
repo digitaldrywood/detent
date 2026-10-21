@@ -527,6 +527,7 @@ func TestAnalyticsRollupReportPlans(t *testing.T) {
 // productionProjectShape is the row population of one production project.
 type productionProjectShape struct {
 	issues, attempts, usage, leases, comments int
+	days                                      int
 }
 
 // pyroApexShape matches the production project whose Reports took 4 to 17
@@ -543,6 +544,10 @@ func seedProductionProject(t testing.TB, s *Service, scope nativeScope, shape pr
 	t.Helper()
 	now := formatHubTime(s.config.now().UTC())
 	org, project := string(scope.organization), string(scope.project)
+	days := shape.days
+	if days == 0 {
+		days = 2
+	}
 	statements := []struct {
 		query string
 		args  []any
@@ -552,11 +557,11 @@ SELECT ?,name,name,terminal,dispatchable,?,? FROM (SELECT 'Backlog' AS name,0 AS
  UNION ALL SELECT 'Rework',0,1 UNION ALL SELECT 'Merging',0,0 UNION ALL SELECT 'Done',1,0 UNION ALL SELECT 'Cancelled',1,0) AS wanted
 WHERE NOT EXISTS(SELECT 1 FROM workflow_states ws WHERE ws.project_id=? AND ws.detent_state=wanted.name)`, []any{project, now, now, project}},
 		{`WITH RECURSIVE n(k) AS (SELECT 0 UNION ALL SELECT k+1 FROM n WHERE k<?-1),
-shaped AS (SELECT k,strftime('%Y-%m-%dT%H:%M:%SZ',?,'-'||(172800-k*144000/?)||' seconds') AS created,
+shaped AS (SELECT k,strftime('%Y-%m-%dT%H:%M:%SZ',?,'-'||(?-k*?/?)||' seconds') AS created,
  CASE WHEN k%11<4 THEN 'Done' WHEN k%11=4 THEN 'Cancelled' WHEN k%11<9 THEN 'Backlog' WHEN k%11=9 THEN 'Todo' ELSE 'In Progress' END AS state FROM n)
 INSERT INTO issues(workflow_state_id,native_id,organization_id,project_id,number,title,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,native_created_at,native_updated_at)
 SELECT (SELECT min(id) FROM workflow_states WHERE project_id=? AND detent_state=state),'wi_shaped_'||k,?,?,100000+k,'Shaped issue '||k,'https://example.test/'||k,'open','v1',created,created,created,created,created,created FROM shaped`,
-			[]any{shape.issues, now, shape.issues, project, org, project}},
+			[]any{shape.issues, now, days * 86400, days*86400 - 28800, shape.issues, project, org, project}},
 		{`WITH steps(state,seq,kind,from_state,to_state,offset) AS (VALUES
  ('Done',2,'workflow.transitioned','Backlog','Todo',600),('Done',3,'scheduler.decision','','',900),('Done',4,'workflow.transitioned','Todo','In Progress',1200),
  ('Done',5,'workflow.transitioned','In Progress','Merging',7200),('Done',6,'workflow.transitioned','Merging','Rework',7800),('Done',7,'scheduler.decision','','',8000),

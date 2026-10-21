@@ -31,6 +31,7 @@ export interface ReportsRead {
   readonly report: ReportsReport | null;
   /** True only on a first load: nothing cached for this project yet. */
   readonly pending: boolean;
+  readonly refreshing: boolean;
   readonly error: string | null;
   readonly refresh: () => Promise<void>;
 }
@@ -47,9 +48,10 @@ export function useReports(api: AccountApi, view: ReportsView | null): ReportsRe
     { staleTime: REPORTS_STALE_MS, keepPreviousIn: JSON.stringify([scopeOf(api), view?.projectId ?? null]) },
   );
   return {
-    report: query.data ?? null,
+    report: query.error === null ? query.data ?? null : null,
     pending: query.pending,
-    error: query.error !== null && query.data === undefined ? "Reports are temporarily unavailable." : null,
+    refreshing: query.refreshing,
+    error: query.error !== null ? "Reports are temporarily unavailable." : null,
     refresh: query.refresh,
   };
 }
@@ -76,9 +78,10 @@ export function useOrganizationReports(api: AccountApi, view: ReportsView & { re
     { staleTime: REPORTS_STALE_MS, keepPreviousIn: JSON.stringify([scopeOf(api), view === null]) },
   );
   return {
-    report: query.data ?? null,
+    report: query.error === null ? query.data ?? null : null,
     pending: query.pending,
-    error: query.error !== null && query.data === undefined ? "Reports are temporarily unavailable." : null,
+    refreshing: query.refreshing,
+    error: query.error !== null ? "Reports are temporarily unavailable." : null,
     refresh: query.refresh,
   };
 }

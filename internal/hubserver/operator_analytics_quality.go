@@ -84,7 +84,7 @@ func analyticsEventsInRecordedOrder(q nativeQueryer) string {
 func readQualityLandings(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) ([]nativeAnalyticsLanding, error) {
 	issues, issueArgs := reportsIssueClause(ctx, "l.work_item_id")
 	rows, err := queryAnalyticsRows(ctx, q, `WITH reopened_items(work_item_id) AS MATERIALIZED (
-SELECT e.work_item_id FROM collaboration_events e WHERE e.organization_id=? AND e.project_id=? AND e.type='workflow.transitioned' AND julianday(e.recorded_at)>=julianday(?) AND julianday(e.recorded_at)<julianday(?) AND lower(json_extract(e.data_json,'$.from_state'))='done'
+SELECT e.work_item_id FROM collaboration_events e WHERE e.organization_id=? AND e.project_id=? AND e.type='workflow.transitioned' AND e.recorded_at>=? AND e.recorded_at<? AND julianday(e.recorded_at)>=julianday(?) AND julianday(e.recorded_at)<julianday(?) AND lower(json_extract(e.data_json,'$.from_state'))='done'
 ),escaped_versions(change_id,version_id) AS MATERIALIZED (
 SELECT e.change_id,e.version_id FROM change_evidence e INDEXED BY change_evidence_analytics_escape CROSS JOIN change_requests c ON c.id=e.change_id
 WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND json_extract(e.record_json,'$.escape') IS NOT NULL AND julianday(json_extract(e.record_json,'$.escape.observed_at'))>=julianday(?) AND julianday(json_extract(e.record_json,'$.escape.observed_at'))<julianday(?)
@@ -104,7 +104,7 @@ julianday(json_extract(landing,'$.landed_at'))>=julianday(?) OR l.work_item_id I
 OR (l.id,l.version_id) IN (SELECT change_id,version_id FROM escaped_versions))
 `+issues+`
 `, append([]any{
-		scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To),
+		scope.organization, scope.project, w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly), formatHubTime(w.From), formatHubTime(w.To),
 		scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To),
 		scope.organization, scope.project, w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly),
 		scope.organization, scope.project, w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly),
