@@ -122,6 +122,24 @@ func TestEntryKeyCallReportsMoveItemRequestErrors(t *testing.T) {
 	requireNativeStatus(t, created, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, created, &issue)
+	auditCount := func() int {
+		t.Helper()
+		var count int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE session_id=?", key.ID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	beforeRead := auditCount()
+	requireNativeStatus(t, f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, target: f.base + "/work-items", mutate: mutate}), http.StatusOK)
+	encodedRead, err := json.Marshal(map[string]any{"name": operatortool.WorkItem, "arguments": map[string]any{"project_id": f.project, "reference": issue.WorkItemID}, "connection_id": "move-errors"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireNativeStatus(t, f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: "/internal/v1/keys/call", body: string(encodedRead), mutate: mutate}), http.StatusOK)
+	if auditCount() != beforeRead {
+		t.Fatal("successful reads wrote audit rows")
+	}
 	move := func(requestID string, arguments map[string]any) *httptest.ResponseRecorder {
 		t.Helper()
 		arguments["project_id"], arguments["identifier"], arguments["request_id"] = f.project, issue.WorkItemID, requestID
@@ -143,15 +161,31 @@ func TestEntryKeyCallReportsMoveItemRequestErrors(t *testing.T) {
 		{"graph", "transition_not_allowed", "Workflow transition is not allowed", map[string]any{"target_state": "Blocked", "expected_revision": revision}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			beforeAudit := auditCount()
 			response := move("move-errors-"+strings.ReplaceAll(test.name, " ", "-"), test.arguments)
+			if auditCount() != beforeAudit+1 {
+				t.Fatalf("refusal wrote %d audit rows", auditCount()-beforeAudit)
+			}
 			failure := requireNativeCode(t, response, http.StatusUnprocessableEntity, test.code)
 			if test.message == "" && !strings.HasPrefix(failure.Message, "move_item cannot resume an item already in the requested state") || test.message != "" && failure.Message != test.message {
 				t.Fatalf("message=%q want %q", failure.Message, test.message)
 			}
 		})
 	}
+	beforeAudit := auditCount()
 	moved := move("move-errors-done", map[string]any{"target_state": "Done", "expected_revision": revision})
 	requireNativeStatus(t, moved, http.StatusOK)
+	if auditCount() != beforeAudit+1 {
+		t.Fatalf("mutation wrote %d audit rows", auditCount()-beforeAudit)
+	}
+	var operation, resource string
+	var status int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT route,json_extract(mutation_json,'$.resource'),status FROM hosted_audit WHERE session_id=? ORDER BY id DESC LIMIT 1", key.ID).Scan(&operation, &resource, &status); err != nil {
+		t.Fatal(err)
+	}
+	if operation != operatortool.MoveItem || resource != string(issue.WorkItemID) || status != http.StatusOK {
+		t.Fatalf("audit operation=%s resource=%s status=%d", operation, resource, status)
+	}
 	var receipt struct {
 		Data tracker.NativeIssue `json:"data"`
 	}
