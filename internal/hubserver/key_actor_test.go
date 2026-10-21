@@ -262,14 +262,34 @@ func TestMCPKeyIssueContract(t *testing.T) {
 						t.Fatalf("actor=%+v want=%+v", actor, wantActor)
 					}
 					var auditJSON, human string
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,mutation_json FROM hosted_audit WHERE route='mcp edit_item' ORDER BY id DESC LIMIT 1").Scan(&human, &auditJSON); err != nil {
-						t.Fatal(err)
-					}
-					var metadata mutation.Metadata
-					if err := json.Unmarshal([]byte(auditJSON), &metadata); err != nil || metadata.ViaKey != key.ID || metadata.ActorKind != wantActor.Kind || want && human != user.identity.Subject || !want && human != wantActor.PrincipalID {
-						t.Fatalf("audit=%s actor=%s error=%v", auditJSON, human, err)
-					}
-					if deployment != "shared entry" {
+					if deployment == "shared entry" {
+						var effective, project, route string
+						var status int
+						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,effective_user,project_id,route,status,mutation_json FROM hosted_audit WHERE session_id=? AND event='key_call' ORDER BY id DESC LIMIT 1", key.ID).Scan(&human, &effective, &project, &route, &status, &auditJSON); err != nil {
+							t.Fatal(err)
+						}
+						var metadata struct {
+							KeyID     string `json:"key_id"`
+							Owner     string `json:"owner"`
+							Kind      string `json:"kind"`
+							Operation string `json:"operation"`
+							Resource  string `json:"resource"`
+						}
+						wantHuman := user.identity.Subject
+						if !want {
+							wantHuman = "service:" + key.ID
+						}
+						if err := json.Unmarshal([]byte(auditJSON), &metadata); err != nil || metadata.KeyID != key.ID || metadata.Owner != wantHuman || metadata.Kind != kind || metadata.Operation != operatortool.EditItem || metadata.Resource != string(issue.WorkItemID) || human != wantHuman || effective != wantHuman || project != string(f.project) || route != operatortool.EditItem || status != http.StatusOK {
+							t.Fatalf("key audit=%s actor=%s effective=%s project=%s route=%s status=%d error=%v", auditJSON, human, effective, project, route, status, err)
+						}
+					} else {
+						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actual_actor,mutation_json FROM hosted_audit WHERE route='mcp edit_item' ORDER BY id DESC LIMIT 1").Scan(&human, &auditJSON); err != nil {
+							t.Fatal(err)
+						}
+						var metadata mutation.Metadata
+						if err := json.Unmarshal([]byte(auditJSON), &metadata); err != nil || metadata.ViaKey != key.ID || metadata.ActorKind != wantActor.Kind || want && human != user.identity.Subject || !want && human != wantActor.PrincipalID {
+							t.Fatalf("audit=%s actor=%s error=%v", auditJSON, human, err)
+						}
 						update := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "cli-save"}, ExpectedRevision: issue.Revision, Body: &body}
 						path := f.base + "/work-items/" + string(issue.WorkItemID)
 						var response *httptest.ResponseRecorder
