@@ -722,9 +722,9 @@ func (s *Service) deleteOrganization(c echo.Context) error {
 }
 
 func (s *Service) finishDeletion(ctx context.Context, id string) error {
-	s.attachmentMu.Lock()
+	unlock := s.attachmentLocks.lock(id, true)
 	organization, err := s.registry.Organization(ctx, id)
-	s.attachmentMu.Unlock()
+	unlock()
 	if err != nil {
 		return err
 	}

@@ -14,8 +14,8 @@ func (s *Service) tenantContent(ctx context.Context, organization Organization, 
 	if request.Organization != organization.ID || request.Reference.Validate(organization.ID) != nil {
 		return nil, attachment.ErrInvalid
 	}
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(organization.ID, false)
+	defer unlock()
 	current, err := s.readyOrganization(ctx, organization.ID)
 	if err != nil || current.Generation != organization.Generation {
 		return nil, attachment.ErrInvalid

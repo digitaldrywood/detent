@@ -15,8 +15,8 @@ func (s *Service) tenantArchiveReader(organization Organization) entryauthority.
 		if ref.Validate(organization.ID) != nil || ref.UncompressedSize > attachment.MaxSectionBytes {
 			return result, attachment.ErrInvalid
 		}
-		s.attachmentMu.RLock()
-		defer s.attachmentMu.RUnlock()
+		unlock := s.attachmentLocks.lock(organization.ID, false)
+		defer unlock()
 		current, err := s.readyOrganization(ctx, organization.ID)
 		if err != nil || current.Generation != organization.Generation {
 			return result, attachment.ErrInvalid

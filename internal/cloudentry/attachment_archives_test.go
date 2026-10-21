@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,11 +74,6 @@ func TestArchiveBindingValidationIsolation(t *testing.T) {
 					return nil
 				}
 				checks++
-				if !f.service.attachmentMu.TryLock() {
-					t.Error("customer capability discovery holds the shared attachment lock")
-					return errors.New("attachment lock unavailable during discovery")
-				}
-				f.service.attachmentMu.Unlock()
 				if err := f.service.finishDeletion(r.Context(), "org_beta"); err != nil {
 					return err
 				}
@@ -152,11 +148,6 @@ func TestArchiveDeletionIsolation(t *testing.T) {
 					return nil
 				}
 				checks++
-				if !f.service.attachmentMu.TryLock() {
-					t.Error("customer deletion holds the shared attachment lock")
-					return errors.New("attachment lock unavailable during deletion")
-				}
-				f.service.attachmentMu.Unlock()
 				if _, err := f.service.readyOrganization(r.Context(), "org_alpha"); err == nil {
 					return errors.New("deleting organization accepts writes")
 				}
@@ -183,6 +174,111 @@ func TestArchiveDeletionIsolation(t *testing.T) {
 			}
 			if _, exists := store.objects[key]; exists {
 				t.Fatal("archive was not erased")
+			}
+		})
+	}
+}
+
+func TestArchiveUploadIsolation(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"initial read", "upload", "verification"} {
+		t.Run(stage, func(t *testing.T) {
+			f := newEntryFixture(t)
+			store := newSpacesFixture(t, false)
+			f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
+			f.service.config.ArchiveCredentials = func(context.Context, string, string) (attachment.Credentials, error) {
+				return attachment.Credentials{AccessKeyID: store.config().AccessKeyID, SecretAccessKey: store.config().SecretAccessKey}, nil
+			}
+			if _, err := f.service.saveArchiveBinding(t.Context(), attachment.StorageBinding{Organization: "org_alpha", Backend: "s3", Endpoint: "https://1.1.1.1", Region: "region", Bucket: "private", CredentialReference: "reference"}, 0); err != nil {
+				t.Fatal(err)
+			}
+			alice := newBrowser(t, f.service.Handler())
+			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			_, page := alice.get("/organizations/org_alpha/organization")
+			project := attachmentProject(t, alice, "org_alpha")
+			base := "/api/v2/organizations/org_alpha/projects/" + project
+			headers := map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrfFrom(t, page), "X-Detent-Archive-Schema": "1"}
+			raw, err := json.Marshal(tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "upload_isolation"}, Title: "Archived detail", State: "Backlog"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			created := attachmentRequest(t, alice, http.MethodPost, base+"/work-items", bytes.NewReader(raw), headers)
+			var item tracker.NativeIssue
+			if created.Code != http.StatusOK || json.Unmarshal(created.Body.Bytes(), &item) != nil {
+				t.Fatalf("create item=%d %s", created.Code, created.Body.String())
+			}
+			entered, release := make(chan struct{}), make(chan struct{})
+			releaseUpload := sync.OnceFunc(func() { close(release) })
+			reads := 0
+			f.service.config.attachmentTransport = archiveValidationTransport{next: store.transport, check: func(r *http.Request) error {
+				if !strings.Contains(r.URL.Path, "/orgs/org_alpha/blobs/") {
+					return nil
+				}
+				if r.Method == http.MethodGet {
+					reads++
+				}
+				stall := stage == "initial read" && r.Method == http.MethodGet && reads == 1 || stage == "upload" && r.Method == http.MethodPut || stage == "verification" && r.Method == http.MethodGet && reads == 2
+				if stall {
+					close(entered)
+					select {
+					case <-release:
+					case <-r.Context().Done():
+						return r.Context().Err()
+					}
+				}
+				return nil
+			}}
+			uploadFinished := make(chan struct{})
+			var uploadStatus int
+			target := base + "/work-items/" + string(item.WorkItemID) + "/archives"
+			go func() {
+				defer close(uploadFinished)
+				uploadStatus = attachmentRequest(t, alice, http.MethodPost, target, strings.NewReader("archive content"), headers).Code
+			}()
+			defer func() { releaseUpload(); <-uploadFinished }()
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal("upload did not reach storage")
+			}
+			if _, err := f.service.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state='deleting' WHERE id IN ('org_alpha','org_beta')"); err != nil {
+				t.Fatal(err)
+			}
+			alphaFinished, betaFinished := make(chan struct{}), make(chan struct{})
+			var alphaError, betaError error
+			go func() { defer close(alphaFinished); alphaError = f.service.finishDeletion(t.Context(), "org_alpha") }()
+			go func() { defer close(betaFinished); betaError = f.service.finishDeletion(t.Context(), "org_beta") }()
+			defer func() { releaseUpload(); <-alphaFinished; <-betaFinished }()
+			select {
+			case <-betaFinished:
+			case <-ctx.Done():
+				t.Fatal("another organization's deletion stalled behind the upload")
+			}
+			if betaError != nil {
+				t.Fatal(betaError)
+			}
+			if rejected := attachmentRequest(t, alice, http.MethodPost, target, strings.NewReader("late archive"), headers); rejected.Code != http.StatusNotFound {
+				t.Fatalf("deleting organization accepted upload: %d", rejected.Code)
+			}
+			select {
+			case <-alphaFinished:
+				t.Fatal("same organization deletion did not drain its upload")
+			default:
+			}
+			releaseUpload()
+			<-uploadFinished
+			<-alphaFinished
+			if uploadStatus != http.StatusCreated || alphaError != nil {
+				t.Fatalf("upload=%d deletion error=%v", uploadStatus, alphaError)
+			}
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			for key := range store.objects {
+				if strings.HasPrefix(key, "orgs/org_alpha/") {
+					t.Fatalf("deletion retained completed upload %s", key)
+				}
 			}
 		})
 	}
