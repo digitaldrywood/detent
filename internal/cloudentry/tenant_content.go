@@ -14,15 +14,15 @@ func (s *Service) tenantContent(ctx context.Context, organization Organization, 
 	if request.Organization != organization.ID || request.Reference.Validate(organization.ID) != nil {
 		return nil, attachment.ErrInvalid
 	}
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(organization.ID, false)
+	defer unlock()
 	current, err := s.readyOrganization(ctx, organization.ID)
 	if err != nil || current.Generation != organization.Generation {
 		return nil, attachment.ErrInvalid
 	}
-	storage, ok := s.attachments.(attachment.ArchiveStorage)
-	if !ok {
-		return nil, artifact.ErrStorage
+	storage, err := s.archiveStorageForReference(ctx, organization.ID, request.Reference)
+	if err != nil {
+		return nil, err
 	}
 	if request.Write {
 		return nil, attachment.StoreArchive(ctx, storage, organization.ID, request.Reference, request.Data)
