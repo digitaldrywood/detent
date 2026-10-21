@@ -88,6 +88,9 @@ func TestAPIRefusals(t *testing.T) {
 		{"outbox limit", "/api/v1/outbox/health?limit=0", "", "invalid_query", "limit must be between 1 and 200", http.StatusUnprocessableEntity, (*Service).outboxHealth},
 		{"backup destination", "/api/v1/backup", `{}`, "invalid_request", "A new absolute backup output path is required", http.StatusUnprocessableEntity, (*Service).backupDatabase},
 		{"attachment metadata", nativeBase + "/attempts/:attempt/attachment-metadata", `{}`, "invalid_request", "Invalid attachment metadata", http.StatusUnprocessableEntity, (*Service).recordCloudAttachment},
+		{"archive query", nativeBase + "/work-items?archive_url=private-token", "", "invalid_request", "archive_url supports true or false", http.StatusUnprocessableEntity, (*Service).listNativeIssues},
+		{"repeated archive query", nativeBase + "/work-items?archive_url=true&archive_url=false", "", "invalid_request", "archive_url supports true or false", http.StatusUnprocessableEntity, (*Service).listNativeIssues},
+		{"archive reference", attachmentMetadataBase + "/archives/:item", `{}`, "invalid_request", "Invalid archive reference", http.StatusUnprocessableEntity, (*Service).recordAttachmentArchive},
 		{"attempt evidence", nativeBase + "/attempts/:attempt/evidence", "", "invalid_request", "Invalid attempt evidence", http.StatusUnprocessableEntity, func(s *Service, c echo.Context) error {
 			c.SetParamNames("attempt")
 			c.SetParamValues("attempt_example")
@@ -132,8 +135,8 @@ func TestAPIRefusals(t *testing.T) {
 			recorded := httptest.NewRecorder()
 			c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body)), recorded)
 			c.SetPath(strings.SplitN(test.path, "?", 2)[0])
-			c.SetParamNames("id")
-			c.SetParamValues("1")
+			c.SetParamNames("id", "organization", "project")
+			c.SetParamValues("1", "private-organization", "private-project")
 			if err := test.handle(service, c); err != nil {
 				t.Fatal(err)
 			}
@@ -145,7 +148,10 @@ func TestAPIRefusals(t *testing.T) {
 			if entry["level"] != "WARN" || entry["code"] != test.code || entry["reason"] != test.reason || entry["error"] != test.reason || entry["route"] != c.Path() || failure.Message != test.reason {
 				t.Fatalf("refusal = %#v, log = %#v", failure, entry)
 			}
-			for _, private := range []string{"private-token", "test-secret"} {
+			if entry["organization_id"] != "" || entry["project_id"] != "" {
+				t.Fatalf("unvalidated scope in log = %#v", entry)
+			}
+			for _, private := range []string{"private-token", "test-secret", "private-organization", "private-project"} {
 				if strings.Contains(logs.String(), private) || strings.Contains(recorded.Body.String(), private) {
 					t.Fatalf("private context escaped: %s", private)
 				}
