@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"reflect"
@@ -259,9 +260,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		return err
 	}
 
-	if err := s.reconcileReleasedExecutions(ctx, source); err != nil {
-		return err
-	}
+	s.reconcileReleasedExecutions(ctx, source)
 	machine.HostMetrics = nil
 	s.mu.Lock()
 	s.nativeHeartbeats[project] = s.now()
@@ -529,13 +528,14 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	return issues, nil
 }
 
-func (s *Scheduler) reconcileReleasedExecutions(ctx context.Context, source *NativeConnector) error {
+func (s *Scheduler) reconcileReleasedExecutions(ctx context.Context, source *NativeConnector) {
 	if s.client.runner == nil || s.releasedStopped == nil {
-		return nil
+		return
 	}
 	file, err := runnerauth.Load(s.client.runner.path)
 	if err != nil {
-		return err
+		slog.Default().Warn("released execution reconciliation skipped", "project_id", source.client.project, "error", fmt.Errorf("load runner identity: %w", err))
+		return
 	}
 	s.client.runner.routingMu.Lock()
 	var released []runnerauth.ReleasedExecution
@@ -547,44 +547,50 @@ func (s *Scheduler) reconcileReleasedExecutions(ctx context.Context, source *Nat
 		if reference.ProjectID != source.client.project {
 			continue
 		}
-		path, err := nativeItemPath(reference.WorkItemID)
-		if err != nil {
-			return err
+		if err := s.reconcileReleasedExecution(ctx, source, file.Identity, reference); err != nil {
+			slog.Default().Warn("released execution reconciliation failed", "project_id", source.client.project, "work_item_id", reference.WorkItemID, "attempt_id", reference.AttemptID, "error", err)
 		}
-		var attempt tracker.NativeAttempt
-		if err := source.client.client.request(ctx, http.MethodGet, source.client.base()+path+"/attempts/"+reference.AttemptID, nil, &attempt); err != nil {
-			return err
-		}
-		if attempt.AttemptID != reference.AttemptID || attempt.MachineID != file.Identity.MachineID || attempt.RunnerID != file.Identity.RunnerID || attempt.ClaimReleasedAt == nil || attempt.Identity == nil || attempt.Outcome != "" && attempt.Outcome != "interrupted" || !attempt.Checkpoint.PreservesSource() || attempt.Runtime == nil || attempt.Runtime.WorkerLaunch == nil {
-			continue
-		}
-		launch := attempt.Runtime.WorkerLaunch
-		if launch.PID <= 0 || launch.GroupID <= 0 || launch.ProcessStart.IsZero() {
-			continue
-		}
-		s.mu.Lock()
-		claim, known := s.nativeClaims[string(reference.WorkItemID)]
-		s.mu.Unlock()
-		if known && claim.lease.ID == attempt.LeaseID {
-			continue
-		}
-		observations, err := procgroup.Observe([]procgroup.Identity{{PID: launch.PID, GroupID: launch.GroupID, StartedAt: launch.ProcessStart}})
-		if err != nil {
-			return err
-		}
-		if len(observations) != 1 || !observations[0].GroupObserved || observations[0].Alive || observations[0].Stale {
-			continue
-		}
-		stopped, err := s.releasedStopped(ctx, reference.WorkItemID, attempt)
-		if err != nil {
-			return err
-		}
-		if !stopped {
-			continue
-		}
-		if err := cancelNativeReleasedAttempt(ctx, source.client, reference.WorkItemID, attempt); err != nil {
-			return err
-		}
+	}
+}
+
+func (s *Scheduler) reconcileReleasedExecution(ctx context.Context, source *NativeConnector, identity runnerauth.Identity, reference runnerauth.ReleasedExecution) error {
+	path, err := nativeItemPath(reference.WorkItemID)
+	if err != nil {
+		return fmt.Errorf("item path: %w", err)
+	}
+	var attempt tracker.NativeAttempt
+	if err := source.client.client.request(ctx, http.MethodGet, source.client.base()+path+"/attempts/"+reference.AttemptID, nil, &attempt); err != nil {
+		return fmt.Errorf("read attempt: %w", err)
+	}
+	if attempt.AttemptID != reference.AttemptID || attempt.MachineID != identity.MachineID || attempt.RunnerID != identity.RunnerID || attempt.ClaimReleasedAt == nil || attempt.Identity == nil || attempt.Outcome != "" && attempt.Outcome != "interrupted" || !attempt.Checkpoint.PreservesSource() || attempt.Runtime == nil || attempt.Runtime.WorkerLaunch == nil {
+		return nil
+	}
+	launch := attempt.Runtime.WorkerLaunch
+	if launch.PID <= 0 || launch.GroupID <= 0 || launch.ProcessStart.IsZero() {
+		return nil
+	}
+	s.mu.Lock()
+	claim, known := s.nativeClaims[string(reference.WorkItemID)]
+	s.mu.Unlock()
+	if known && claim.lease.ID == attempt.LeaseID {
+		return nil
+	}
+	observations, err := procgroup.Observe([]procgroup.Identity{{PID: launch.PID, GroupID: launch.GroupID, StartedAt: launch.ProcessStart}})
+	if err != nil {
+		return fmt.Errorf("observe worker: %w", err)
+	}
+	if len(observations) != 1 || !observations[0].GroupObserved || observations[0].Alive || observations[0].Stale {
+		return nil
+	}
+	stopped, err := s.releasedStopped(ctx, reference.WorkItemID, attempt)
+	if err != nil {
+		return fmt.Errorf("check providers stopped: %w", err)
+	}
+	if !stopped {
+		return nil
+	}
+	if err := cancelNativeReleasedAttempt(ctx, source.client, reference.WorkItemID, attempt); err != nil {
+		return fmt.Errorf("acknowledge released attempt: %w", err)
 	}
 	return nil
 }

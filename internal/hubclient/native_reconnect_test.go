@@ -35,6 +35,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 		missingLaunch       bool
 		staleLaunch         bool
 		missingProcessProof bool
+		stopCheckFails      bool
 		replacement         bool
 	}{
 		{name: "running"},
@@ -44,6 +45,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 		{name: "released held source after restart", released: true, hold: true},
 		{name: "released source without worker proof", released: true, missingLaunch: true},
 		{name: "released source without cleanup owner", released: true, missingProcessProof: true},
+		{name: "released source cleanup failure keeps heartbeat", released: true, stopCheckFails: true},
 		{name: "released source with stale worker identity", released: true, staleLaunch: true},
 		{name: "interrupted", outcome: "interrupted"},
 		{name: "legacy Hub running", legacy: true},
@@ -99,6 +101,9 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				}
 				if !test.missingProcessProof {
 					scheduler.releasedStopped = func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error) {
+						if test.stopCheckFails && providersStopped.Load() {
+							return false, errors.New("provider stop check failed")
+						}
 						return providersStopped.Load(), nil
 					}
 				}
@@ -286,7 +291,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				}
 				after, err := h.admin.Recovery(t.Context(), current.WorkItemID)
 				want := "cancelled"
-				if test.missingLaunch || test.missingProcessProof || runtime.GOOS == "windows" || runtime.GOOS == "plan9" || runtime.GOOS == "js" || runtime.GOOS == "wasip1" {
+				if test.missingLaunch || test.missingProcessProof || test.stopCheckFails || runtime.GOOS == "windows" || runtime.GOOS == "plan9" || runtime.GOOS == "js" || runtime.GOOS == "wasip1" {
 					want = test.outcome
 				}
 				if err != nil || len(after.Attempts) != 2 || after.Attempts[0].Outcome != want || !reflect.DeepEqual(after.Attempts[0].Checkpoint, before.Attempts[0].Checkpoint) || !reflect.DeepEqual(after.Attempts[1].NativeRunData, before.Attempts[1].NativeRunData) || after.Issue.Revision != current.Revision || after.Issue.State != current.State {
