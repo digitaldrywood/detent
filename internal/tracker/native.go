@@ -90,6 +90,7 @@ type Provenance struct {
 }
 
 type NativeIssue struct {
+	LatestTransitionReason string `json:"-"`
 	ReleaseDelivery    *ReleaseDelivery     `json:"release_delivery,omitempty"`
 	IssueContract      *issuecontract.State `json:"issue_contract,omitempty" yaml:"issue_contract,omitempty"`
 	OmittedFields      []string             `json:"omitted_fields,omitempty"`

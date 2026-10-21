@@ -213,10 +213,21 @@ func (s *Service) listNativeIssues(c echo.Context) error {
 	if params.Get("fields") == nativeIssuePickerFields {
 		return c.JSON(http.StatusOK, nativeIssuePickerResponse(page))
 	}
+	if nativeSummaryRequested(params) {
+		return c.JSON(http.StatusOK, operatortool.NativeSummaryPageView(page))
+	}
 	return c.JSON(http.StatusOK, page)
 }
 
+func nativeSummaryRequested(params url.Values) bool {
+	return slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "summary" })
+}
+
 func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+	return s.readIssuesProjection(ctx, scope, params, nativeSummaryRequested(params))
+}
+
+func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, params url.Values, compact bool) (tracker.NativeIssuePage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	picker, err := nativeIssuePickerRequested(params)
@@ -324,13 +335,27 @@ func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.
 		if summary {
 			issue = operatortool.NativeListIssue(issue)
 		}
+		if compact {
+			transition, err := latestNativeRuntimeEvent(ctx, s.database.reader, scope, id, "workflow.transitioned", "")
+			if err != nil {
+				return tracker.NativeIssuePage{}, err
+			}
+			issue.LatestTransitionReason = transition.Data.ReasonDetail
+			if issue.LatestTransitionReason == "" {
+				issue.LatestTransitionReason = transition.Data.Reason
+			}
+		}
 		if summary || workIncluded {
 			candidate := tracker.Page[tracker.NativeIssue]{Items: append(page.Items, issue)}
 			candidate.NextCursor, err = encodeNativeCursor(next, key)
 			if err != nil {
 				return tracker.NativeIssuePage{}, err
 			}
-			raw, encodeErr := json.Marshal(operatortool.NativeItemPage(string(scope.project), candidate))
+			var projection any = operatortool.NativeItemPage(string(scope.project), candidate)
+			if compact {
+				projection = operatortool.NativeSummaryPageView(tracker.NativeIssuePage{Page: candidate, Total: total})
+			}
+			raw, encodeErr := json.Marshal(projection)
 			if encodeErr != nil {
 				return tracker.NativeIssuePage{}, encodeErr
 			}
