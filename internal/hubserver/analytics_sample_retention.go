@@ -185,6 +185,13 @@ WHERE r.metric='residence_hour' AND r.hour<? GROUP BY r.organization_id,r.projec
 	if err := addAnalyticsHour(ctx, tx, scope, hour, "residence_coverage", "", 1, float64(end.Transitions-begin.Transitions), 0, 0, unavailable, end.AtNS); err != nil {
 		return false, err
 	}
+	todo := 0
+	if end.State == "Todo" {
+		todo = 1
+	}
+	if err := addAnalyticsHour(ctx, tx, scope, hour, "diagnostics_todo", "", 1, float64(todo), 0, 0, unavailable, end.AtNS); err != nil {
+		return false, err
+	}
 	next := hour + 3600
 	if states[end.State].Terminal {
 		var future sql.NullInt64
