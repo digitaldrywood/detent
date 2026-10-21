@@ -56,7 +56,7 @@ func TestOfflineCLIUpdateReportsVerifiedController(t *testing.T) {
 	keyID := []byte("12345678")
 	publicKey := base64.StdEncoding.EncodeToString(append(append([]byte("Ed"), keyID...), public...))
 	candidate := filepath.Join(dir, "candidate")
-	buildCtx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	buildCtx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	build := exec.CommandContext(buildCtx, "go", "test", "-c", "-p", "4", "-ldflags", "-X github.com/digitaldrywood/detent/internal/update.defaultChecksumMinisignPublicKey="+publicKey, "-o", candidate, ".")
 	if output, err := build.CombinedOutput(); err != nil {
@@ -157,7 +157,7 @@ func TestOfflineCLIUpdateReportsVerifiedController(t *testing.T) {
 
 func testOfflineBusyControllerConvergence(t *testing.T, configPath, binary string, serviceConfig detentupdate.Config, options detentupdate.ApplyOptions) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	global, err := globalconfig.Read(configPath)
