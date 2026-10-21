@@ -143,6 +143,9 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 				return c.NoContent(http.StatusUnauthorized)
 			}
 			audit := &entryKeyAudit{claims: claims, operation: request.Method + " " + c.Path(), project: c.Param("project"), resource: c.Param("item")}
+			if keyInternal {
+				audit.operation = request.Method + " " + path
+			}
 			if audit.resource == "" {
 				audit.resource = audit.project
 			}

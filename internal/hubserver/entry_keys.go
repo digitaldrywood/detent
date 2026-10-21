@@ -71,6 +71,9 @@ func entryKeyAuditFrom(ctx context.Context) *entryKeyAudit {
 }
 
 func (a *entryKeyAudit) readOnly() bool {
+	if a.operation == http.MethodPost+" /internal/v1/keys/catalog" {
+		return true
+	}
 	if definition, found := operatortool.Lookup(a.operation); found {
 		return definition.Annotations.ReadOnly
 	}
