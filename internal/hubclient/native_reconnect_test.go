@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -27,6 +28,8 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 	for _, test := range []struct {
 		name                string
 		outcome             string
+		effort              string
+		observedIdentity    bool
 		legacy              bool
 		hiddenDependency    bool
 		hold                bool
@@ -42,6 +45,8 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 		{name: "released source after restart", released: true},
 		{name: "released source preserves newer claim", released: true, replacement: true},
 		{name: "released interrupted source after restart", released: true, outcome: "interrupted"},
+		{name: "released interrupted source with configured effort", released: true, outcome: "interrupted", effort: "high"},
+		{name: "released interrupted source with observed identity", released: true, outcome: "interrupted", observedIdentity: true, replacement: true},
 		{name: "released held source after restart", released: true, hold: true},
 		{name: "released source without worker proof", released: true, missingLaunch: true},
 		{name: "released source without cleanup owner", released: true, missingProcessProof: true},
@@ -113,7 +118,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 			h.scheduler = newScheduler()
 			h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
-			executionIdentity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
+			executionIdentity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test", ReasoningEffort: test.effort}
 			if err := execution.Start(t.Context(), executionIdentity); err != nil {
 				t.Fatal(err)
 			}
@@ -154,7 +159,11 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 					launch = &tracker.NativeWorkerLaunch{PID: worker.PID, GroupID: worker.GroupID, ProcessStart: worker.StartedAt, PolicyID: h.descriptor.ID, ExecutionVersion: "test", ControlVersion: "test", ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), Protocol: 6, SelectedAt: time.Now()}
 				}
 			}
-			if err := execution.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{WorkerLaunch: launch, LocalAttemptID: 41, Generation: 1, HeartbeatAt: time.Now(), Phase: "implementation"}); err != nil {
+			observation := tracker.NativeRuntimeObservation{WorkerLaunch: launch, LocalAttemptID: 41, Generation: 1, HeartbeatAt: time.Now(), Phase: "implementation"}
+			if test.observedIdentity {
+				observation.Identity = agentidentity.RuntimeUpdate("resolved-model", "openai", "medium", "", time.Now())
+			}
+			if err := execution.ObserveRuntime(t.Context(), observation); err != nil {
 				t.Fatal(err)
 			}
 			checkpoint := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", WorkspaceDigest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", ExternalEffect: "none", EffectState: "none"}
