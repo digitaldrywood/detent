@@ -13,8 +13,9 @@ func TestHostedAuditSecurityEvents(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	user := f.user(t, "owner", "owner", "owner@example.test", "write", "support@example.test")
 	for _, test := range []struct {
-		name, event, route string
-		mutation, keep     bool
+		name, event, route      string
+		mutation, keep, support bool
+		status                  int
 	}{
 		{name: "HTTP read", event: "action", route: "GET /projects"},
 		{name: "HTTP head", event: "action", route: "HEAD /projects"},
@@ -34,13 +35,25 @@ func TestHostedAuditSecurityEvents(t *testing.T) {
 		{name: "HTTP mutation", event: "action", route: "PATCH /work-items/:item", keep: true},
 		{name: "MCP mutation", event: "action", route: "mcp update_issue", mutation: true, keep: true},
 		{name: "billing mutation", event: "succeeded", route: "billing_change", mutation: true, keep: true},
+		{name: "read refusal", event: "action", route: "GET /denied", status: http.StatusForbidden, keep: true},
+		{name: "read error", event: "action", route: "GET /failed", status: http.StatusInternalServerError, keep: true},
+		{name: "impersonation", event: "support_started", route: "POST /support", support: true, keep: true},
+		{name: "support read", event: "action", route: "GET /support", support: true, keep: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := t.Context()
 			if test.mutation {
 				ctx = mutation.WithContext(ctx, mutation.Metadata{Action: "update", Source: "mcp", CorrelationID: "correlation", RetryIdentity: "private-retry", InputHash: "private-input"})
 			}
-			if err := f.service.hostedAudit(ctx, user.identity.Hosted, test.event, test.route, string(f.project), http.StatusOK); err != nil {
+			identity := *user.identity.Hosted
+			if !test.support && !test.mutation {
+				identity.SupportActor, identity.SupportReason = "", ""
+			}
+			status := test.status
+			if status == 0 {
+				status = http.StatusOK
+			}
+			if err := f.service.hostedAudit(ctx, &identity, test.event, test.route, string(f.project), status); err != nil {
 				t.Fatal(err)
 			}
 			var count int
@@ -204,6 +217,46 @@ SELECT 'org_security','session','actor','actor','','backlog '||i,'','',200,?,?,?
 		}
 		if events := readEvents(); remaining != want.backlog || events != want.events {
 			t.Fatalf("retained events=%s backlog=%d want %+v", events, remaining, want)
+		}
+	}
+}
+
+func TestHostedAuditLegacyReadCleanup(t *testing.T) {
+	f := newHostedSecurityFixture(t)
+	now := f.service.config.now()
+	for _, test := range []struct {
+		route, event, actor, effective, reason string
+		status                                 int
+	}{
+		{"GET /items", "action", "actor", "actor", "", 200},
+		{"GET /items", "action", "actor", "actor", "", 403},
+		{"GET /items", "key_call", "actor", "actor", "", 500},
+		{"GET /items", "action", "support", "actor", "support access", 200},
+		{"GET /items", "session_started", "actor", "actor", "", 200},
+		{"POST /items", "action", "actor", "actor", "", 200},
+	} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at) VALUES(?,?,?,?,?,?,?,'',?,?,?,?)`, f.service.config.Hosted.OrganizationID, test.event, test.actor, test.effective, test.reason, test.event, test.route, test.status, formatHubTime(now), formatHubTime(now.Add(time.Hour)), formatHubTime(now)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
+INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at)
+SELECT ?,'legacy','actor','actor','','action','GET /poll','',200,?,?,? FROM n`, commandReceiptPruneBatch+7, f.service.config.Hosted.OrganizationID, formatHubTime(now), formatHubTime(now.Add(time.Hour)), formatHubTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	for pass, want := range []int{8, 0, 0} {
+		if err := f.service.expireNativeRecords(t.Context(), now); err != nil {
+			t.Fatal(err)
+		}
+		var reads, kept int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_audit WHERE route LIKE 'GET %' AND status<400 AND actual_actor=effective_user AND reason='' AND event='action'`).Scan(&reads); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_audit WHERE session_id<>'legacy' AND NOT (event='action' AND status=200 AND actual_actor=effective_user AND route LIKE 'GET %')`).Scan(&kept); err != nil {
+			t.Fatal(err)
+		}
+		if reads != want || kept != 5 {
+			t.Fatalf("pass %d remaining reads=%d want=%d security rows=%d", pass, reads, want, kept)
 		}
 	}
 }

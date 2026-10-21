@@ -413,8 +413,15 @@ func TestAccessKeyOrganizationControls(t *testing.T) {
 	defer db.Close()
 	for _, event := range []string{"key_call", "organization_key_policy_denied", "organization_key_blocked", "personal_key_blocked"} {
 		var count int
-		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE event=? AND mutation_json LIKE ?", event, "%"+key.ID+"%").Scan(&count); err != nil || count == 0 {
-			t.Fatalf("missing target audit %s count=%d err=%v", event, count, err)
+		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE event=? AND mutation_json LIKE ?", event, "%"+key.ID+"%").Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if event == "key_call" {
+			if count != 0 {
+				t.Fatalf("successful reads wrote %d target audit rows", count)
+			}
+		} else if count == 0 {
+			t.Fatalf("missing target audit %s", event)
 		}
 	}
 	notices := attachmentRequest(t, owner, http.MethodGet, "/api/cloud/account/key-notifications", nil, nil)
