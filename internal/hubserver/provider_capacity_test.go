@@ -474,7 +474,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 				if _, err := writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, []healthFinding{finding}); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := tx.ExecContext(t.Context(), `INSERT INTO health_finding_issues(finding_id,project_id,work_item_id,reported_evidence_json) SELECT id,?,?,evidence_json FROM health_findings`, f.project.ID, issues[0].WorkItemID); err != nil {
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO health_finding_issues(finding_id,project_id,work_item_id,reported_evidence_digest) SELECT id,?,?,'' FROM health_findings`, f.project.ID, issues[0].WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now.Add(time.Minute), nil); err != nil {

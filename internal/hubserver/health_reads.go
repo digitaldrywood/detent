@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type healthFindingsPage struct {
@@ -74,7 +72,7 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	}
 	resolved := state == "resolved"
 	visibility := ""
-	args := []any{scope.project, scope.organization, state, resolved, scope.project, state, since, since, since, after}
+	args := []any{scope.project, scope.credential.HostedRole, scope.actor().PrincipalID, scope.actor().PrincipalID, scope.organization, state, resolved, scope.project, state, since, since, since, after}
 	if scope.credential.HostedRole == "reporter" {
 		condition, visibilityArgs := scope.issueVisibilitySQL("i")
 		visibility = " AND EXISTS(SELECT 1 FROM health_finding_issues fi JOIN issues i ON i.native_id=fi.work_item_id WHERE fi.finding_id=health_findings.id AND i.organization_id=? AND i.project_id=? AND (" + condition + "))"
@@ -83,7 +81,10 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	}
 	args = append(args, limit+1)
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,
- COALESCE((SELECT work_item_id FROM health_finding_issues WHERE finding_id=health_findings.id AND project_id=?), '') FROM health_findings
+ (SELECT json_group_array(json_object('project_id',l.project_id,'work_item_id',l.work_item_id))
+ FROM health_finding_issues l JOIN issues linked ON linked.native_id=l.work_item_id
+ WHERE l.finding_id=health_findings.id AND l.project_id=?
+ AND (?<>'reporter' OR (COALESCE(json_extract(linked.actor_json,'$.principal_id'),'')=? AND ?<>''))) FROM health_findings
  WHERE organization_id=? AND (?='all' OR (resolved_at IS NOT NULL)=?) AND EXISTS(SELECT 1 FROM json_each(projects_json) WHERE value=?)
  AND ((?='all' AND resolved_at IS NULL) OR ?='' OR julianday(last_seen_at)>=julianday(?) OR julianday(resolved_at)>=julianday(?)) AND rowid>?`+visibility+` ORDER BY rowid LIMIT ?`, args...)
 	if err != nil {
@@ -97,13 +98,15 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		var subject, opened, seen, evidence string
 		var ended, slackFailed sql.NullString
 		var slackStatus sql.NullInt64
-		var item tracker.NativeWorkItemID
-		if err := rows.Scan(&rowid, &f.ID, &f.Fingerprint, &f.Signal, &f.Class, &subject, &opened, &seen, &ended, &f.Severity, &f.Summary, &f.NextAction, &evidence, &f.EmailUnavailable, &slackFailed, &slackStatus, &item); err != nil {
+		var links string
+		if err := rows.Scan(&rowid, &f.ID, &f.Fingerprint, &f.Signal, &f.Class, &subject, &opened, &seen, &ended, &f.Severity, &f.Summary, &f.NextAction, &evidence, &f.EmailUnavailable, &slackFailed, &slackStatus, &links); err != nil {
 			return page, err
 		}
-		if item != "" {
+		if err := json.Unmarshal([]byte(links), &f.Issues); err != nil {
+			return page, err
+		}
+		if len(f.Issues) != 0 {
 			f.FiledBy = "health_detector"
-			f.Issues = []healthFindingIssue{{ProjectID: scope.project, WorkItemID: item}}
 		}
 		if len(page.Items) == limit {
 			page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(last, 10)))

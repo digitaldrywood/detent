@@ -86,7 +86,7 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := tx.ExecContext(t.Context(), `INSERT INTO health_finding_issues(finding_id,project_id,work_item_id,reported_evidence_json) SELECT id,?,?,evidence_json FROM health_findings`, f.project.ID, owner.WorkItemID); err != nil {
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO health_finding_issues(finding_id,project_id,work_item_id,reported_evidence_digest) SELECT id,?,?,'' FROM health_findings`, f.project.ID, owner.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 				if err := tx.Commit(); err != nil {
@@ -109,6 +109,7 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 				{name: "later finding reuses issue", offset: 67 * time.Minute, active: true, comments: 5},
 				{name: "terminal issue stays handled", offset: 68 * time.Minute, active: true, changed: true, terminal: true, comments: 5},
 				{name: "terminal resolution stays handled", offset: 69 * time.Minute, comments: 5},
+				{name: "manual terminal suppresses later episode", offset: 130 * time.Minute, active: true, comments: 5},
 			} {
 				t.Run(step.name, func(t *testing.T) {
 					if step.terminal && owner.WorkItemID != "" {
@@ -175,7 +176,7 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 					}
 					if owner.WorkItemID == "" {
 						owner, firstFinding = issue, read.ID
-						if issue.Priority == nil || *issue.Priority != 1 || !slices.Equal(issue.Labels, []string{"infrastructure"}) || !strings.HasPrefix(issue.Title, "intake(instance): retry_storm on work_item ") {
+						if issue.Priority == nil || *issue.Priority != 1 || !slices.Equal(issue.Labels, []string{"infrastructure"}) || issue.Title != "intake(instance): retry_storm: protocol failure" {
 							t.Fatalf("instance routing = %+v", issue)
 						}
 						if issue.State != "Backlog" || issue.Actor != (tracker.Actor{Kind: "integration", PrincipalID: "health_detector"}) {
@@ -185,7 +186,7 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 							t.Fatal("diagnostic report fabricated an execution contract")
 						}
 						origin, ok := issueorigin.Parse(issue.Body)
-						if !ok || origin.Fingerprint != read.Fingerprint || origin.Source != read.ID || origin.Instance != "health_detector" {
+						if !ok || origin.Fingerprint != "1d5d5e843dc0caa89c068f4d504ec65a4791ead9f512e1741ec30ca58e84db79" || origin.Source != read.ID || origin.Instance != "health_detector" {
 							t.Fatalf("origin = %+v", origin)
 						}
 						for _, text := range []string{read.ID, "Repeated failures.", "Inspect the protocol signature.", "attempt_one", "protocol failure", formatHubTime(now)} {
