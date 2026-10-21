@@ -140,8 +140,17 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 			if claims.Key == nil || bearer {
 				return c.NoContent(http.StatusUnauthorized)
 			}
-			request = request.WithContext(context.WithValue(request.Context(), entryKeyAuditContext{}, true))
+			audit := &entryKeyAudit{claims: claims, operation: request.Method + " " + c.Path(), project: c.Param("project"), resource: c.Param("item")}
+			if audit.resource == "" {
+				audit.resource = audit.project
+			}
+			request = request.WithContext(context.WithValue(request.Context(), entryKeyAuditContext{}, audit))
 			c.SetRequest(request)
+			if path != "/internal/v1/keys/call" {
+				if err := s.auditEntryKey(request.Context(), s.database.db, audit, 0); err != nil {
+					return s.internalAPIError(c, "audit_unavailable", "Key audit is unavailable", err)
+				}
+			}
 			result := next(c)
 			status := c.Response().Status
 			if result != nil {
@@ -151,7 +160,9 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 					status = failure.Code
 				}
 			}
-			if err := s.auditEntryKey(c, claims, status); err != nil {
+			auditCtx, cancelAudit := context.WithTimeout(context.WithoutCancel(request.Context()), 2*time.Second)
+			defer cancelAudit()
+			if err := s.auditEntryKey(auditCtx, s.database.db, audit, status); err != nil {
 				return s.internalAPIError(c, "audit_unavailable", "Key audit is unavailable", err)
 			}
 			return result
