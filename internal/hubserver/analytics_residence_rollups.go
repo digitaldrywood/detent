@@ -285,13 +285,14 @@ func residenceSampleItem(sample analyticsResidenceSample, states map[string]trac
 // the requested points. An issue's sample at a point is its last edge earlier
 // in the point's hour, or else its last hourly sample before that hour.
 type analyticsResidenceFrames struct {
-	states  map[string]tracker.NativeState
-	ids     []string
-	points  map[int64]int
-	issues  map[string]int
-	samples []*analyticsResidenceSample
-	cutoffs map[string]residenceCutoff
-	clipped bool
+	retained map[string]time.Time
+	states   map[string]tracker.NativeState
+	ids      []string
+	points   map[int64]int
+	issues   map[string]int
+	samples  []*analyticsResidenceSample
+	cutoffs  map[string]residenceCutoff
+	clipped  bool
 }
 
 // residenceRow is one residence rollup row; edges sort by hour, AtNS and
@@ -353,6 +354,27 @@ func readAnalyticsResidenceFrames(ctx context.Context, q nativeQueryer, scope na
 	var err error
 	out.states, err = analyticsResidenceStates(ctx, q, scope)
 	if err != nil {
+		return out, err
+	}
+	out.retained = map[string]time.Time{}
+	retained, err := q.QueryContext(ctx, `SELECT work_item_id,through_hour FROM analytics_residence_retention WHERE organization_id=? AND project_id=? AND through_hour>?`, scope.organization, scope.project, w.From.Unix())
+	if err != nil {
+		return out, err
+	}
+	defer retained.Close()
+	for retained.Next() {
+		var id string
+		var hour int64
+		if err := retained.Scan(&id, &hour); err != nil {
+			return out, err
+		}
+		at := time.Unix(hour, 0).UTC()
+		out.retained[id] = at
+		if at.Before(w.To) {
+			points = append(points, at)
+		}
+	}
+	if err := errors.Join(retained.Err(), retained.Close()); err != nil {
 		return out, err
 	}
 	issues, issueArgs := reportsIssueClause(ctx, "i.native_id")
@@ -559,6 +581,10 @@ func summarizeResidenceFrames(frames analyticsResidenceFrames, from, to time.Tim
 	causes := map[string]operatortool.AnalyticsReworkCause{}
 	var system, held, queue, lead []float64
 	for _, id := range frames.ids {
+		from := maxTime(from, frames.retained[id])
+		if !from.Before(to) {
+			continue
+		}
 		end := frames.at(to, id)
 		begin := frames.at(from, id)
 		item := residenceSampleItem(end, frames.states, to)
@@ -683,6 +709,9 @@ func projectAnalyticsResidenceRollups(ctx context.Context, q nativeQueryer, scop
 		out.Unavailable = append(out.Unavailable, "lane_residence_and_unclaimed_waits_unavailable", "queue_time")
 	} else if frames.clipped {
 		out.Unavailable = append(out.Unavailable, "lane_residence_complete_population", "queue_time_complete_population")
+	}
+	if err := addAnalyticsResidenceHours(ctx, q, scope, out); err != nil {
+		return err
 	}
 	return projectResidencePipelineRollups(ctx, q, scope, frames, out)
 }

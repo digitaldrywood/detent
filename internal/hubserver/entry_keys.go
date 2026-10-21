@@ -54,16 +54,48 @@ func (s *Service) entryKeyCredential(ctx context.Context, claims cloudassert.Cla
 	return credential, http.StatusOK, nil
 }
 
-func (s *Service) auditEntryKey(c echo.Context, claims cloudassert.Claims) error {
+type entryKeyAuditContext struct{}
+
+func (s *Service) auditEntryKey(c echo.Context, claims cloudassert.Claims, status int) error {
+	operation, operationSet := c.Get("key_audit_operation").(string)
+	if !operationSet {
+		operation = c.Request().Method + " " + c.Path()
+	}
+	project, projectSet := c.Get("key_audit_project").(string)
+	if !projectSet {
+		project = c.Param("project")
+	}
+	resource, resourceSet := c.Get("key_audit_resource").(string)
+	if !resourceSet {
+		resource = c.Param("item")
+	}
+	if resource == "" {
+		resource = c.Param("item")
+	}
+	if resource == "" {
+		resource = c.Param("project")
+	}
+	if operation == "" {
+		operation = c.Request().Method + " " + c.Path()
+	}
+	read := c.Request().Method == http.MethodGet || c.Request().Method == http.MethodHead || c.Request().Method == http.MethodOptions
+	if definition, found := operatortool.Lookup(operation); found {
+		read = definition.Annotations.ReadOnly
+	}
+	if read && status < http.StatusBadRequest {
+		return nil
+	}
 	metadata, err := json.Marshal(struct {
-		KeyID string `json:"key_id"`
-		Owner string `json:"owner"`
-		Kind  string `json:"kind"`
-	}{claims.Key.ID, claims.Subject, claims.Key.Kind})
+		KeyID     string `json:"key_id"`
+		Owner     string `json:"owner"`
+		Kind      string `json:"kind"`
+		Operation string `json:"operation"`
+		Resource  string `json:"resource"`
+	}{claims.Key.ID, claims.Subject, claims.Key.Kind, operation, resource})
 	if err != nil {
 		return err
 	}
-	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json) VALUES(?,?,?,?,'','key_call',?,'',0,?,?,?,?)`, claims.Audience, claims.Key.ID, claims.Subject, claims.Subject, claims.Method+" "+claims.Path, formatHubTime(claims.IssuedAt), formatHubTime(claims.ExpiresAt), formatHubTime(s.config.now()), string(metadata))
+	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json) VALUES(?,?,?,?,'','key_call',?,?,?,?,?,?,?)`, claims.Audience, claims.Key.ID, claims.Subject, claims.Subject, operation, project, status, formatHubTime(claims.IssuedAt), formatHubTime(claims.ExpiresAt), formatHubTime(s.config.now()), string(metadata))
 	return err
 }
 
@@ -99,6 +131,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	if err := decodeAPIJSON(c, &call); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
+	c.Set("key_audit_operation", call.Name)
 	if call.ConnectionID == "" || len(call.ConnectionID) > 256 {
 		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
@@ -125,11 +158,19 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		return s.refusedAPIError(c, http.StatusForbidden, "role_denied", "The current organization role does not allow this call", apikey.Refusal{Code: "role_denied", Message: "The current organization role does not allow this call"})
 	}
 	var selector struct {
-		ProjectID string `json:"project_id"`
+		ProjectID  string `json:"project_id"`
+		Identifier string `json:"identifier"`
+		Reference  string `json:"reference"`
 	}
 	if json.Unmarshal(call.Arguments, &selector) != nil {
 		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
+	c.Set("key_audit_project", selector.ProjectID)
+	resource := selector.Identifier
+	if resource == "" {
+		resource = selector.Reference
+	}
+	c.Set("key_audit_resource", resource)
 	if selector.ProjectID != "" && !credential.EntryKey.Allows(selector.ProjectID) {
 		return s.refusedAPIError(c, http.StatusForbidden, "key_project_denied", "The project is outside this key's access context", apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"})
 	}

@@ -586,16 +586,23 @@ func (s *Service) hostedAuditWith(ctx context.Context, exec hostedExecer, identi
 	if identity == nil {
 		return nil
 	}
-	if _, ok := mutation.FromContext(ctx); !ok {
+	if key, ok := ctx.Value(entryKeyAuditContext{}).(bool); ok && key && (event == "action" || event == "administration") {
+		return nil
+	}
+	if _, ok := mutation.FromContext(ctx); !ok && status < http.StatusBadRequest {
 		switch event {
 		case "billing_viewed", "billing_exported":
-			return nil
+			if identity.SupportActor == "" {
+				return nil
+			}
 		case "action", "administration":
 			method, _, _ := strings.Cut(route, " ")
 			switch method {
 			case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
 			default:
-				return nil
+				if identity.SupportActor == "" {
+					return nil
+				}
 			}
 		}
 	}

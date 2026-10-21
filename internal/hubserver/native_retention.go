@@ -35,6 +35,11 @@ func (s *Service) expireNativeRecords(ctx context.Context, now time.Time) error 
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM hosted_audit WHERE rowid IN (SELECT rowid FROM hosted_audit
+WHERE route LIKE 'GET %' AND status<400 AND actual_actor=effective_user AND reason=''
+AND event IN ('action','administration','key_call','billing_viewed','billing_exported') ORDER BY id LIMIT ?)`, commandReceiptPruneBatch); err != nil {
+		return fmt.Errorf("delete legacy successful audit reads: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM hosted_audit WHERE rowid IN (SELECT rowid FROM hosted_audit
 WHERE julianday(recorded_at)<julianday(?) ORDER BY julianday(recorded_at) LIMIT ?)`, formatHubTime(now.Add(-hostedAuditRetention)), commandReceiptPruneBatch); err != nil {
 		return fmt.Errorf("expire hosted audit: %w", err)
 	}
