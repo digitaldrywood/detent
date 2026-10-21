@@ -693,12 +693,13 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 	outcome := e.preparedOutcome
 	finished := e.data.Outcome != ""
 	interrupted := e.data.Outcome == "interrupted"
-	settled, expectedState := e.settled, e.claim.recovery.Issue.State
+	expectedState := e.claim.recovery.Issue.State
+	publicationUnavailable := outcome == "succeeded" && !e.settled && e.change != nil && e.change.Error != ""
 	e.mu.Unlock()
 	var finishErr error
 	var rejection *nativeCompletionRejection
 	if outcome != "" && !finished {
-		if !settled && expectedState != "" {
+		if publicationUnavailable && expectedState != "" {
 			issue, err := e.claim.source.client.Issue(ctx, e.claim.lease.WorkItemID)
 			if err != nil {
 				finishErr = e.executionError(err)
