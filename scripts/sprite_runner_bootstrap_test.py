@@ -5,37 +5,27 @@ import hashlib
 import json
 import os
 import pathlib
+import select
+import signal
 import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 
-STUB = r'''#!/usr/bin/env python3
-import hashlib, json, os, pathlib, shutil, subprocess, sys
+PYTHON_STUB = r'''import json, os, pathlib, sys
+sys.argv = sys.argv[1:]
+__file__ = sys.argv[0]
 root = pathlib.Path(os.environ["FIXTURE_ROOT"])
 name, args = pathlib.Path(sys.argv[0]).name, sys.argv[1:]
 with (root / "calls.jsonl").open("a") as log:
     log.write(json.dumps([name, args]) + "\n")
-if name == "uname":
-    print("Linux" if args == ["-s"] else os.environ.get("FIXTURE_ARCH", "x86_64"))
-elif name == "findmnt":
-    if not os.environ.get("FIXTURE_LOCAL_DISK"):
-        sys.exit(1)
-    print("ext4 " + os.environ["FIXTURE_LOCAL_DISK"])
-elif name == "nproc":
-    print(os.environ.get("FIXTURE_NPROC", "8"))
-elif name == "id":
-    print("1000" if args == ["-u"] else "sprite")
-elif name == "sudo":
-    if args == ["test", "-w", "/sys/fs/cgroup"]:
-        sys.exit(0 if os.environ.get("DOCKER_SUPPORTED") else 1)
-    sys.exit(subprocess.run(args).returncode)
-elif name == "unshare":
-    sys.exit(0 if os.environ.get("DOCKER_SUPPORTED") else 1)
-elif name == "curl":
+if name == "curl":
+    import hashlib, shutil
     url = args[args.index("--location") + 1]
     dest = pathlib.Path(args[args.index("--output") + 1])
     if url.endswith("/go.mod"):
@@ -52,30 +42,14 @@ elif name == "curl":
         if "/sharkdp/fd/" in url and os.environ.get("FD_CORRUPT"):
             dest.write_bytes(b"corrupt archive")
 elif name == "sha256sum" and args[:1] != ["--check"]:
+    import hashlib
     print(hashlib.sha256(pathlib.Path(args[0]).read_bytes()).hexdigest() + "  " + args[0])
 elif name == "sha256sum":
+    import hashlib
     checksum, filename = sys.stdin.read().split()
     sys.exit(0 if hashlib.sha256(pathlib.Path(filename).read_bytes()).hexdigest() == checksum else 1)
-elif name == "go":
-    caches = {"GOCACHE": os.environ.get("GOCACHE") or os.path.join(os.environ["HOME"], ".cache/go-build"),
-              "GOMODCACHE": os.environ.get("GOMODCACHE") or os.path.join(os.environ["HOME"], "go/pkg/mod")}
-    if args == ["version"]:
-        print("go version go1.26.6 linux/amd64")
-    elif args[:1] == ["env"]:
-        print(caches[args[1]])
-    elif args[:1] == ["clean"]:
-        shutil.rmtree(caches["GOCACHE" if args[1] == "-cache" else "GOMODCACHE"], ignore_errors=True)
-    elif os.environ.get("GO_INSTALL_FAIL"):
-        sys.exit(1)
-    else:
-        shutil.copy(__file__, pathlib.Path(os.environ["GOBIN"]) / "detent")
-elif name == "npm" and args == ["--version"]:
-    print(os.environ.get("FIXTURE_NPM_VERSION", "11.6.2"))
-elif name == "npm" and args[:3] == ["config", "get", "cache"]:
-    print(os.path.join(os.getcwd(), os.environ.get("npm_config_cache") or os.environ.get("NPM_CONFIG_CACHE") or os.environ.get("FIXTURE_NPMRC_CACHE") or os.path.join(os.environ["HOME"], ".npm")))
-elif name == "npm" and args[:2] == ["cache", "verify"]:
-    (pathlib.Path(os.environ.get("npm_config_cache") or os.path.join(os.environ["HOME"], ".npm")) / "_cacache").mkdir(parents=True, exist_ok=True)
 elif name == "npm":
+    import shutil
     if os.environ.get("FIXTURE_NPM_POPULATES"):
         npm_cache = pathlib.Path(os.path.join(os.environ["HOME"], ".npm"))
         for entry in ("_cacache", "_logs"):
@@ -104,6 +78,7 @@ elif name == "apt-cache":
     print("  Candidate: " + candidates.get(args[-1], "(none)"))
     print("        500 http://archive.ubuntu.com/ubuntu resolute/main amd64 Packages\n" * 4096)
 elif name == "apt-get":
+    import shutil
     for package, binary in (("bubblewrap", "bwrap"), ("socat", "socat")):
         if package in args:
             shutil.copy(__file__, root / "bin" / binary)
@@ -122,34 +97,8 @@ elif name == "apt-get":
                     binary.write_text('#!/bin/sh\nprintf "psql (PostgreSQL) ' + package.rsplit("-", 1)[1] + '.10\\n"\n')
                     binary.chmod(0o755)
             (root / (package + ".version")).write_text(version)
-elif name in ("bwrap", "socat"):
-    if os.environ.get("SANDBOX_TOOL_BROKEN") == name:
-        sys.exit(1)
-    print(name + " fixture")
-elif name == "node" and args == ["--version"]:
-    print(os.environ.get("FIXTURE_NODE_VERSION", "v24.11.1"))
-elif name == "node":
-    script = sys.stdin.read()
-    if args[:1] == ["-p"] or (len(args) > 1 and args[1].endswith("/yaml")) or args[1:2] == ["setup-manifest"]:
-        sys.exit(subprocess.run([os.environ["FIXTURE_NODE"], *args], input=script, text=True).returncode)
-    if not (root / "chromium-ready").exists() or os.environ.get("BROWSER_FAIL"):
-        sys.exit(1)
-    pathlib.Path(args[-1]).write_bytes(b"PNG fixture")
-    print("Chromium fixture: headless screenshot verified")
-elif name == "playwright":
-    if args[:1] == ["install"]:
-        (root / "chromium-ready").touch()
-    else:
-        print("Version 1.63.0")
-elif name == "docker":
-    if args == ["info"]:
-        sys.exit(0 if (root / "service-detent-docker.json").exists() else 1)
-    print("Docker version 29.1.3, build fixture")
-elif name == "rg":
-    print("ripgrep 0.0.0" if pathlib.Path(__file__).parent == root / "bin" else "ripgrep 15.2.0")
-elif name == "fd":
-    print("fd 0.0.0" if pathlib.Path(__file__).parent == root / "bin" else "fd 10.3.0")
 elif name == "detent":
+    import hashlib
     if args[:3] == ["hub", "runner", "register"]:
         tier = "sandbox"
         for index, arg in enumerate(args):
@@ -191,18 +140,139 @@ elif name == "sprite-env":
         if os.environ.get("CHECKPOINT_FAIL"):
             sys.exit(1)
         print('{"id":"v1"}')
-elif name in ("codex", "claude", "gh"):
-    if args[-1:] == ["status"]:
-        auth_path = {"codex": ".codex/auth.json", "claude": ".claude/.credentials.json", "gh": ".config/gh/hosts.yml"}[name]
-        sys.exit(0 if (pathlib.Path.home() / auth_path).is_file() else 1)
-    if name == "gh" and pathlib.Path(__file__).parent == root / "bin":
-        print("gh version 2.0.0 (fixture)")
-    else:
-        print({"codex": "codex-cli 0.160.0", "claude": "2.1.289 (Claude Code)", "gh": "gh version 2.101.0 (fixture)"}[name])
+
 '''
+
+STUB = r'''#!/bin/bash
+name=${0##*/}
+status=0
+execute=false
+case $name in
+    uname) if [[ $1 == -s ]]; then output=Linux; else output=${FIXTURE_ARCH:-x86_64}; fi ;;
+    nproc) output=${FIXTURE_NPROC:-8} ;;
+    id) if [[ $1 == -u ]]; then output=1000; else output=sprite; fi ;;
+    findmnt) output="ext4 ${FIXTURE_LOCAL_DISK:-}"; [[ -n ${FIXTURE_LOCAL_DISK:-} ]] || status=1 ;;
+    unshare) output=; [[ -n ${DOCKER_SUPPORTED:-} ]] || status=1 ;;
+    sudo)
+        output=
+        if [[ $1 == test && $2 == -w && $3 == /sys/fs/cgroup ]]; then
+            [[ -n ${DOCKER_SUPPORTED:-} ]] || status=1
+        else execute=true; fi ;;
+    go)
+        output=
+        case $1 in
+            version) output='go version go1.26.6 linux/amd64' ;;
+            env) if [[ $2 == GOCACHE ]]; then output=${GOCACHE:-$HOME/.cache/go-build}; else output=${GOMODCACHE:-$HOME/go/pkg/mod}; fi ;;
+            clean) if [[ $2 == -cache ]]; then rm -rf -- "${GOCACHE:-$HOME/.cache/go-build}"; else rm -rf -- "${GOMODCACHE:-$HOME/go/pkg/mod}"; fi ;;
+            *) if [[ -n ${GO_INSTALL_FAIL:-} ]]; then status=1; else cp -- "$0" "$GOBIN/detent"; fi ;;
+        esac ;;
+    npm)
+        output=
+        if [[ $1 == --version ]]; then output=${FIXTURE_NPM_VERSION:-11.6.2}
+        elif [[ $1 == config && $2 == get && $3 == cache ]]; then
+            output=${npm_config_cache:-${NPM_CONFIG_CACHE:-${FIXTURE_NPMRC_CACHE:-$HOME/.npm}}}
+            [[ $output == /* ]] || output="$PWD/$output"
+        elif [[ $1 == cache && $2 == verify ]]; then mkdir -p -- "${npm_config_cache:-$HOME/.npm}/_cacache"
+        else ''' + "exec " + shlex.quote(sys.executable) + " -S -c " + shlex.quote(PYTHON_STUB) + r''' "$0" "$@"; fi ;;
+    bwrap|socat) output="$name fixture"; [[ ${SANDBOX_TOOL_BROKEN:-} != "$name" ]] || status=1 ;;
+    rg|fd)
+        if [[ ${0%/*} == "$FIXTURE_ROOT/bin" ]]; then
+            output="$name 0.0.0"
+            [[ $name != rg ]] || output='ripgrep 0.0.0'
+        elif [[ $name == rg ]]; then output='ripgrep 15.2.0'; else output='fd 10.3.0'; fi ;;
+    codex|claude|gh)
+        if [[ ${!#} == status ]]; then
+            output=
+            case $name in
+                codex) auth=.codex/auth.json ;;
+                claude) auth=.claude/.credentials.json ;;
+                gh) auth=.config/gh/hosts.yml ;;
+            esac
+            [[ -f $HOME/$auth ]] || status=1
+        else
+            case $name in
+                codex) output='codex-cli 0.160.0' ;;
+                claude) output='2.1.289 (Claude Code)' ;;
+                gh) if [[ ${0%/*} == "$FIXTURE_ROOT/bin" ]]; then output='gh version 2.0.0 (fixture)'; else output='gh version 2.101.0 (fixture)'; fi ;;
+            esac
+        fi ;;
+    node)
+        output=
+        if [[ $1 == --version ]]; then output=${FIXTURE_NODE_VERSION:-v24.11.1}
+        elif [[ $1 == -p || ${2:-} == */yaml || ${2:-} == setup-manifest ]]; then execute=true
+        elif [[ ! -f $FIXTURE_ROOT/chromium-ready || -n ${BROWSER_FAIL:-} ]]; then status=1
+        else printf 'PNG fixture' > "${!#}"; output='Chromium fixture: headless screenshot verified'; fi ;;
+    docker) output='Docker version 29.1.3, build fixture'; if [[ $1 == info && ! -f $FIXTURE_ROOT/service-detent-docker.json ]]; then status=1; fi ;;
+    playwright) if [[ $1 == install ]]; then : > "$FIXTURE_ROOT/chromium-ready"; output=; else output='Version 1.63.0'; fi ;;
+    *) ''' + "exec " + shlex.quote(sys.executable) + " -S -c " + shlex.quote(PYTHON_STUB) + r''' "$0" "$@" ;;
+esac
+{
+    printf '["%s",[' "$name"
+    separator=
+    for arg in "$@"; do
+        arg=${arg//\/\\}
+        arg=${arg//\"/\\\"}
+        arg=${arg//$'\n'/\\n}
+        arg=${arg//$'\r'/\\r}
+        arg=${arg//$'\t'/\\t}
+        printf '%s"%s"' "$separator" "$arg"
+        separator=,
+    done
+    printf ']]\n'
+} >> "$FIXTURE_ROOT/calls.jsonl"
+if [[ $execute == true ]]; then
+    if [[ $name == node ]]; then exec "$FIXTURE_NODE" "$@"; else exec "$@"; fi
+fi
+[[ -z $output ]] || printf '%s\n' "$output"
+exit "$status"
+'''
+
 
 TOKEN = "det_enroll_fixture_secret"
 ENROLLMENT = f"detent hub runner register --url https://hub.example/organizations/org_example --token {TOKEN} --name 'Build host' --capacity 2 --isolation-tier native-trusted --service\n"
+
+
+def run_fixture_command(command, *, input, env):
+    with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, env=env, text=True,
+                          start_new_session=True) as process:
+        try:
+            stdout, stderr = process.communicate(input, timeout=20)
+        except BaseException:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            raise
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+class BootstrapProcessTests(unittest.TestCase):
+    def test_timeout_joins_descendants_before_returning(self):
+        communicate = subprocess.Popen.communicate
+        groups = []
+
+        def expire(process, *args, **kwargs):
+            if kwargs.get("timeout") == 20:
+                groups.append(process.pid)
+                self.assertTrue(select.select([process.stdout], [], [], 5)[0])
+                self.assertEqual(process.stdout.readline(), "ready\n")
+                raise subprocess.TimeoutExpired(process.args, 20)
+            return communicate(process, *args, timeout=5, **kwargs)
+
+        script = "import os; r,w=os.pipe(); child=os.fork(); print('ready',flush=True) if child==0 else None; os.read(r,1) if child==0 else os.waitpid(child,0)"
+        try:
+            with mock.patch.object(subprocess.Popen, "communicate", expire):
+                with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                    run_fixture_command([sys.executable, "-c", script], input="", env=os.environ)
+                self.assertEqual(caught.exception.timeout, 20)
+        finally:
+            for group in groups:
+                try:
+                    os.killpg(group, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
 
 class SpriteBootstrapTests(unittest.TestCase):
@@ -265,8 +335,8 @@ class SpriteBootstrapTests(unittest.TestCase):
     def run_bootstrap(self, extra=(), enrollment=None):
         if enrollment is None:
             enrollment = ENROLLMENT
-        return subprocess.run(["bash", str(self.script), *extra], input=enrollment,
-                              env=self.env, text=True, capture_output=True, timeout=20)
+        return run_fixture_command(["bash", str(self.script), *extra], input=enrollment,
+                                   env=self.env)
 
     def calls(self):
         log = self.root / "calls.jsonl"
@@ -883,9 +953,11 @@ class SpriteBootstrapTests(unittest.TestCase):
                 self.fresh_sprite()
                 for key, value in env.items():
                     self.env[key] = value
-                result = self.run_bootstrap(extra=("--setup-manifest", str(path), *extra))
-                for key in env:
-                    del self.env[key]
+                try:
+                    result = self.run_bootstrap(extra=("--setup-manifest", str(path), *extra))
+                finally:
+                    for key in env:
+                        del self.env[key]
                 self.assertNotIn(TOKEN, result.stdout + result.stderr)
                 if failure:
                     self.assertNotEqual(result.returncode, 0)
@@ -960,9 +1032,11 @@ class SpriteBootstrapTests(unittest.TestCase):
                 if prepare:
                     prepare()
                 self.env.update(env)
-                result = self.run_bootstrap(extra=("--config", str(self.home / "global.yaml")) if name == "config file in home" else ())
-                for key in env:
-                    del self.env[key]
+                try:
+                    result = self.run_bootstrap(extra=("--config", str(self.home / "global.yaml")) if name == "config file in home" else ())
+                finally:
+                    for key in env:
+                        del self.env[key]
                 for repair in repairs:
                     self.assertIn(repair, self.calls())
                 if name == "relocated GitHub login":
