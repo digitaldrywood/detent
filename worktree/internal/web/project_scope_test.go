@@ -1,0 +1,332 @@
+package web
+
+import (
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web/templates"
+)
+
+func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC)
+	got, ok := projectScopedSnapshot(telemetry.Snapshot{
+		GeneratedAt: now,
+		Project:     telemetry.Project{DisplayName: "multiple projects"},
+		AgentPools: []telemetry.AgentPool{
+			{Name: "default", Used: 1, Capacity: 2},
+			{Name: "code", Used: 5, Capacity: 5},
+		},
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project:    telemetry.Project{ID: "detent", DisplayName: "Detent", Pool: "code"},
+				Counts:     telemetry.Counts{Running: 1, Queue: 1, Blocked: 1, Completed: 1},
+				Tokens:     telemetry.Tokens{Input: 10, Output: 20, Total: 30},
+				Throughput: telemetry.TokenThroughput{TokensPerSecond: 2.5, WindowSeconds: 60, Tokens: 150},
+				Dispatch:   telemetry.DispatchStatus{ProjectID: "detent", CandidateCount: 2, Stalled: true, NeedsHumanAttention: true},
+			},
+			{
+				Project: telemetry.Project{ID: "pyroapex", DisplayName: "Pyro Apex"},
+				Counts:  telemetry.Counts{Running: 1, Queue: 1},
+				Tokens:  telemetry.Tokens{Input: 100, Output: 200, Total: 300},
+			},
+		},
+		Concurrency: telemetry.ConcurrencyHistory{
+			Available:    true,
+			AttemptCount: 4,
+			Series: []telemetry.ConcurrencySeries{
+				{Buckets: []telemetry.ConcurrencyBucket{{Max: 3}}},
+				{ProjectID: "detent", Buckets: []telemetry.ConcurrencyBucket{{Max: 2}}},
+				{ProjectID: "site", Buckets: []telemetry.ConcurrencyBucket{{Max: 1}}},
+			},
+		},
+		Pipeline: []telemetry.Issue{
+			{ID: "detent-pipeline", Identifier: "example-org/example-project#1", ProjectID: "detent"},
+			{ID: "pyro-pipeline", Identifier: "example-org/pyroapex#1", ProjectID: "pyroapex"},
+		},
+		BoardIssues: []telemetry.Issue{
+			{ID: "detent-board", Identifier: "example-org/example-project#6", ProjectID: "detent"},
+			{ID: "pyro-board", Identifier: "example-org/pyroapex#6", ProjectID: "pyroapex"},
+		},
+		TrackerDrift: telemetry.TrackerDrift{
+			UntrackedOpen: []telemetry.Issue{
+				{ID: "detent-untracked", Identifier: "example-org/example-project#771", ProjectID: "detent"},
+				{ID: "pyro-untracked", Identifier: "example-org/pyroapex#71", ProjectID: "pyroapex"},
+			},
+			OpenTerminal: []telemetry.Issue{
+				{ID: "detent-terminal", Identifier: "example-org/example-project#583", ProjectID: "detent"},
+				{ID: "pyro-terminal", Identifier: "example-org/pyroapex#58", ProjectID: "pyroapex"},
+			},
+		},
+		Running: []telemetry.Running{
+			{Issue: telemetry.Issue{ID: "detent-running", Identifier: "example-org/example-project#2", ProjectID: "detent"}},
+			{Issue: telemetry.Issue{ID: "pyro-running", Identifier: "example-org/pyroapex#2", ProjectID: "pyroapex"}},
+		},
+		Queue: []telemetry.Queued{
+			{Issue: telemetry.Issue{ID: "detent-queued", Identifier: "example-org/example-project#3", ProjectID: "detent"}},
+			{Issue: telemetry.Issue{ID: "pyro-queued", Identifier: "example-org/pyroapex#3", ProjectID: "pyroapex"}},
+		},
+		Blocked: []telemetry.Blocked{
+			{Issue: telemetry.Issue{ID: "detent-blocked", Identifier: "example-org/example-project#4", ProjectID: "detent"}},
+			{Issue: telemetry.Issue{ID: "pyro-blocked", Identifier: "example-org/pyroapex#4", ProjectID: "pyroapex"}},
+		},
+		Shipped: []telemetry.Completed{
+			{Issue: telemetry.Issue{ID: "same-native-id", ProjectID: "detent", State: "Done"}, CompletedAt: now},
+			{Issue: telemetry.Issue{ID: "same-native-id", ProjectID: "pyroapex", State: "Done"}, CompletedAt: now},
+		},
+		Completed: []telemetry.Completed{
+			{Issue: telemetry.Issue{ID: "detent-completed", Identifier: "example-org/example-project#5", ProjectID: "detent"}},
+			{Issue: telemetry.Issue{ID: "pyro-completed", Identifier: "example-org/pyroapex#5", ProjectID: "pyroapex"}},
+		},
+		CIUnavailable: []telemetry.CICondition{
+			{ProjectID: "detent", UnstartedCheckCount: 4, PullRequestCount: 2},
+			{ProjectID: "pyroapex", UnstartedCheckCount: 3, PullRequestCount: 2},
+		},
+		FailureBreakers: []telemetry.FailureBreaker{
+			{ProjectID: "detent", Class: "session_token_ceiling"},
+			{ProjectID: "pyroapex", Class: "deliverable_command_failure"},
+		},
+		DispatchRecoveries: []telemetry.DispatchRecovery{
+			{ProjectID: "detent", Kind: "github_rest", Status: "ramping"},
+			{ProjectID: "pyroapex", Kind: "backend_capacity", Status: "waiting"},
+		},
+		DispatchStalls: []telemetry.DispatchStatus{
+			{ProjectID: "detent", CandidateCount: 2, Stalled: true, NeedsHumanAttention: true},
+			{ProjectID: "pyroapex", CandidateCount: 1, Stalled: true, NeedsHumanAttention: true},
+		},
+		LaneSignalWarnings: []telemetry.LaneSignalWarning{
+			{ProjectID: "detent", IssueID: "detent-lane-signal"},
+			{ProjectID: "pyroapex", IssueID: "pyro-lane-signal"},
+		},
+		StrandedActiveIssues: []telemetry.StrandedIssue{
+			{ProjectID: "detent", IssueID: "detent-stranded"},
+			{ProjectID: "pyroapex", IssueID: "pyro-stranded"},
+		},
+		AdmissionProposals: []telemetry.AdmissionProposal{
+			{ID: "detent-proposal", ProjectID: "detent"},
+			{ID: "pyro-proposal", ProjectID: "pyroapex"},
+		},
+	}, "detent")
+
+	if !ok {
+		t.Fatal("projectScopedSnapshot() ok = false, want true")
+	}
+	if got.Project.ID != "detent" || got.Project.DisplayName != "Detent" || got.Project.Pool != "code" {
+		t.Fatalf("Project = %#v, want detent metadata", got.Project)
+	}
+	if !reflect.DeepEqual(got.AgentPools, []telemetry.AgentPool{
+		{Name: "default", Used: 1, Capacity: 2},
+		{Name: "code", Used: 5, Capacity: 5},
+	}) {
+		t.Fatalf("AgentPools = %#v, want fleet pool telemetry retained", got.AgentPools)
+	}
+	if got.Counts != (telemetry.Counts{Running: 1, Queue: 1, Blocked: 1, Completed: 1}) {
+		t.Fatalf("Counts = %#v, want detent counts", got.Counts)
+	}
+	if got.Tokens.Total != 30 || got.Throughput.TokensPerSecond != 2.5 {
+		t.Fatalf("tokens/throughput = %#v/%#v, want detent totals", got.Tokens, got.Throughput)
+	}
+	if len(got.Concurrency.Series) != 1 || got.Concurrency.Series[0].ProjectID != "detent" || got.Concurrency.Series[0].Buckets[0].Max != 2 {
+		t.Fatalf("Concurrency = %#v, want detent project history", got.Concurrency)
+	}
+	if len(got.Pipeline) != 1 || got.Pipeline[0].ID != "detent-pipeline" {
+		t.Fatalf("Pipeline = %#v, want only detent row", got.Pipeline)
+	}
+	if len(got.BoardIssues) != 1 || got.BoardIssues[0].ID != "detent-board" {
+		t.Fatalf("BoardIssues = %#v, want only detent row", got.BoardIssues)
+	}
+	if len(got.TrackerDrift.UntrackedOpen) != 1 || got.TrackerDrift.UntrackedOpen[0].ID != "detent-untracked" {
+		t.Fatalf("TrackerDrift.UntrackedOpen = %#v, want only detent row", got.TrackerDrift.UntrackedOpen)
+	}
+	if len(got.TrackerDrift.OpenTerminal) != 1 || got.TrackerDrift.OpenTerminal[0].ID != "detent-terminal" {
+		t.Fatalf("TrackerDrift.OpenTerminal = %#v, want only detent row", got.TrackerDrift.OpenTerminal)
+	}
+	if len(got.Running) != 1 || got.Running[0].ID != "detent-running" {
+		t.Fatalf("Running = %#v, want only detent row", got.Running)
+	}
+	if len(got.Queue) != 1 || got.Queue[0].ID != "detent-queued" {
+		t.Fatalf("Queue = %#v, want only detent row", got.Queue)
+	}
+	if len(got.Blocked) != 1 || got.Blocked[0].ID != "detent-blocked" {
+		t.Fatalf("Blocked = %#v, want only detent row", got.Blocked)
+	}
+	if len(got.Shipped) != 1 || got.Shipped[0].ProjectID != "detent" || !got.Shipped[0].CompletedAt.Equal(now) {
+		t.Fatalf("Shipped = %#v, want only authorized detent delivery", got.Shipped)
+	}
+	if len(got.Completed) != 1 || got.Completed[0].ID != "detent-completed" {
+		t.Fatalf("Completed = %#v, want only detent row", got.Completed)
+	}
+	if len(got.AdmissionProposals) != 1 || got.AdmissionProposals[0].ID != "detent-proposal" {
+		t.Fatalf("AdmissionProposals = %#v, want only detent proposal", got.AdmissionProposals)
+	}
+	if len(got.CIUnavailable) != 1 || got.CIUnavailable[0].ProjectID != "detent" {
+		t.Fatalf("CIUnavailable = %#v, want only detent condition", got.CIUnavailable)
+	}
+	if len(got.FailureBreakers) != 1 || got.FailureBreakers[0].Class != "session_token_ceiling" {
+		t.Fatalf("FailureBreakers = %#v, want only detent row", got.FailureBreakers)
+	}
+	if len(got.DispatchRecoveries) != 1 || got.DispatchRecoveries[0].Kind != "github_rest" {
+		t.Fatalf("DispatchRecoveries = %#v, want only detent row", got.DispatchRecoveries)
+	}
+	if len(got.DispatchStalls) != 1 || got.DispatchStalls[0].ProjectID != "detent" || !got.Dispatch.NeedsHumanAttention {
+		t.Fatalf("Dispatch/DispatchStalls = %#v/%#v, want only detent stall", got.Dispatch, got.DispatchStalls)
+	}
+	if len(got.LaneSignalWarnings) != 1 || got.LaneSignalWarnings[0].IssueID != "detent-lane-signal" {
+		t.Fatalf("LaneSignalWarnings = %#v, want only detent row", got.LaneSignalWarnings)
+	}
+	if len(got.StrandedActiveIssues) != 1 || got.StrandedActiveIssues[0].IssueID != "detent-stranded" {
+		t.Fatalf("StrandedActiveIssues = %#v, want only detent row", got.StrandedActiveIssues)
+	}
+}
+
+func TestProjectScopedSnapshotRecomputesWorkflowSummaries(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC)
+	detentEnteredAt := now.Add(-90 * time.Second)
+	pyroEnteredAt := now.Add(-15 * time.Minute)
+	got, ok := projectScopedSnapshot(telemetry.Snapshot{
+		GeneratedAt: now,
+		Project:     telemetry.Project{DisplayName: "multiple projects"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+			{Project: telemetry.Project{ID: "pyroapex", DisplayName: "Pyro Apex"}},
+		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:                    "detent-card",
+				Identifier:            "example-org/example-project#722",
+				ProjectID:             "detent",
+				Title:                 "Detent metrics",
+				State:                 "Todo",
+				CurrentLaneEnteredAt:  &detentEnteredAt,
+				CurrentLaneAgeSeconds: 90,
+			},
+			{
+				ID:                    "pyro-card",
+				Identifier:            "example-org/pyroapex#91",
+				ProjectID:             "pyroapex",
+				Title:                 "Pyro Apex task",
+				State:                 "Rework",
+				CurrentLaneEnteredAt:  &pyroEnteredAt,
+				CurrentLaneAgeSeconds: 900,
+			},
+		},
+		WorkflowMetrics: telemetry.WorkflowMetrics{
+			Available: true,
+			Windows: []telemetry.WorkflowMetricsWindow{
+				{
+					Label: "24h",
+					Lanes: []telemetry.WorkflowPhaseMetric{
+						{ProjectID: "detent", PhaseName: "Todo", Count: 1, AverageSeconds: 30},
+						{ProjectID: "pyroapex", PhaseName: "Rework", Count: 2, AverageSeconds: 900, Bottleneck: true},
+					},
+				},
+			},
+			OldestCards: []telemetry.WorkflowLaneAge{
+				{ProjectID: "pyroapex", IssueID: "pyro-card", Identifier: "example-org/pyroapex#91", AgeSeconds: 900},
+			},
+			ActiveBottleneck: telemetry.WorkflowBottleneck{
+				Kind:       "lane_age",
+				Label:      "Oldest lane",
+				ProjectID:  "pyroapex",
+				IssueID:    "pyro-card",
+				Identifier: "example-org/pyroapex#91",
+				Seconds:    900,
+				Count:      1,
+			},
+		},
+	}, "detent")
+
+	if !ok {
+		t.Fatal("projectScopedSnapshot() ok = false, want true")
+	}
+	if len(got.WorkflowMetrics.Windows) != 1 || len(got.WorkflowMetrics.Windows[0].Lanes) != 1 {
+		t.Fatalf("WorkflowMetrics.Windows = %#v, want only detent lane metrics", got.WorkflowMetrics.Windows)
+	}
+	if got.WorkflowMetrics.Windows[0].Lanes[0].ProjectID != "detent" {
+		t.Fatalf("WorkflowMetrics.Windows[0].Lanes[0].ProjectID = %q, want detent", got.WorkflowMetrics.Windows[0].Lanes[0].ProjectID)
+	}
+	if !got.WorkflowMetrics.Windows[0].Lanes[0].Bottleneck {
+		t.Fatalf("WorkflowMetrics.Windows[0].Lanes[0].Bottleneck = false, want true")
+	}
+	if len(got.WorkflowMetrics.OldestCards) != 1 {
+		t.Fatalf("WorkflowMetrics.OldestCards = %#v, want one detent card", got.WorkflowMetrics.OldestCards)
+	}
+	if got.WorkflowMetrics.OldestCards[0].ProjectID != "detent" || got.WorkflowMetrics.OldestCards[0].IssueID != "detent-card" {
+		t.Fatalf("WorkflowMetrics.OldestCards[0] = %#v, want recomputed detent card", got.WorkflowMetrics.OldestCards[0])
+	}
+	if got.WorkflowMetrics.ActiveBottleneck.ProjectID != "detent" || got.WorkflowMetrics.ActiveBottleneck.IssueID != "detent-card" {
+		t.Fatalf("WorkflowMetrics.ActiveBottleneck = %#v, want recomputed detent bottleneck", got.WorkflowMetrics.ActiveBottleneck)
+	}
+}
+
+func TestProjectScopedSnapshotFallsBackToSingleProjectRows(t *testing.T) {
+	t.Parallel()
+
+	got, ok := projectScopedSnapshot(telemetry.Snapshot{
+		Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		BoardIssues: []telemetry.Issue{
+			{ID: "board", Identifier: "example-org/example-project#1"},
+		},
+		Running: []telemetry.Running{
+			{Issue: telemetry.Issue{ID: "running", Identifier: "example-org/example-project#2"}},
+		},
+	}, "detent")
+
+	if !ok {
+		t.Fatal("projectScopedSnapshot() ok = false, want true")
+	}
+	if len(got.Running) != 1 || got.Running[0].ID != "running" {
+		t.Fatalf("Running = %#v, want single-project rows", got.Running)
+	}
+	if len(got.BoardIssues) != 1 || got.BoardIssues[0].ID != "board" {
+		t.Fatalf("BoardIssues = %#v, want single-project rows", got.BoardIssues)
+	}
+}
+
+func TestProjectTimeSeriesBucketsSamples(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
+	got := projectTimeSeriesResponse([]templates.ProjectSmallMultiple{
+		{
+			ID:   "detent",
+			Name: "Detent",
+			Samples: []templates.ProjectSmallMultipleSample{
+				{At: now.Add(-3 * time.Minute), Running: 1, Completed: 1, ThroughputTokensPerSecond: 1.5, SpendUSD: 2.0},
+				{At: now.Add(-time.Minute), Running: 2, Completed: 3, ThroughputTokensPerSecond: 4.5, SpendUSD: 5.0},
+			},
+		},
+		{
+			ID:   "pyroapex",
+			Name: "Pyro Apex",
+			Samples: []templates.ProjectSmallMultipleSample{
+				{At: now.Add(-time.Minute), Running: 1, Completed: 2, ThroughputTokensPerSecond: 2.0, SpendUSD: 1.25},
+			},
+		},
+	}, "", now, 4*time.Minute, 2*time.Minute)
+
+	if len(got.Labels) != 3 {
+		t.Fatalf("Labels len = %d, want 3: %#v", len(got.Labels), got.Labels)
+	}
+	wantLabels := []string{"2026-06-12T11:56:00Z", "2026-06-12T11:58:00Z", "2026-06-12T12:00:00Z"}
+	if !reflect.DeepEqual(got.Labels, wantLabels) {
+		t.Fatalf("Labels = %#v, want machine timestamps %#v", got.Labels, wantLabels)
+	}
+	if len(got.RunningAgents) != 2 {
+		t.Fatalf("RunningAgents len = %d, want 2: %#v", len(got.RunningAgents), got.RunningAgents)
+	}
+	if got.RunningAgents[0].ProjectID != "detent" || got.RunningAgents[0].Data[0] != 1 || got.RunningAgents[0].Data[1] != 2 {
+		t.Fatalf("detent running dataset = %#v, want bucketed running counts", got.RunningAgents[0])
+	}
+	if got.TokensPerSecond.Data[0] != 1.5 || got.TokensPerSecond.Data[1] != 6.5 {
+		t.Fatalf("TokensPerSecond = %#v, want summed bucket throughput", got.TokensPerSecond)
+	}
+	if got.Completions[1].ProjectID != "pyroapex" || got.Completions[1].Data[1] != 2 {
+		t.Fatalf("pyroapex completions dataset = %#v, want bucketed completions", got.Completions[1])
+	}
+}

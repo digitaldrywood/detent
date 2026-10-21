@@ -1,0 +1,1240 @@
+package github
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestReadinessProjectItemsReadReportsMissingAccess(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		status: http.StatusForbidden,
+		body:   `{"message":"Resource not accessible by integration"}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+	})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.projectItemsReadCheck(context.Background(), []string{"Todo"})
+	if got.Status != ReadinessFail {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessFail, got)
+	}
+	if !strings.Contains(got.Detail, "cannot read ProjectV2 items") {
+		t.Fatalf("Detail = %q, want ProjectV2 read failure", got.Detail)
+	}
+}
+
+// The reported board had 759 items, 641 Done. The diagnostic must count the
+// entire unarchived board, not just the states eligible for dispatch.
+func TestReadinessProjectSize(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		response   graphqlTestResponse
+		stateMap   map[string]string
+		wantStatus ReadinessStatus
+		wantDetail string
+		wantQuery  string
+	}{
+		{
+			name:       "reported Done-heavy board",
+			response:   graphqlTestResponse{body: `{"data":{"node":{"items":{"totalCount":759},"doneItems":{"totalCount":641}}}}`},
+			wantStatus: ReadinessWarn,
+			wantDetail: "board has 759 items (641 Done); ProjectV2 polling re-reads all 759 every cycle, including Done items; this may exhaust the shared GraphQL budget",
+			wantQuery:  `status:"Done"`,
+		},
+		{
+			name:       "empty board",
+			response:   graphqlTestResponse{body: `{"data":{"node":{"items":{"totalCount":0},"doneItems":{"totalCount":0}}}}`},
+			wantStatus: ReadinessOK,
+			wantDetail: "board has 0 items (0 Done)",
+			wantQuery:  `status:"Done"`,
+		},
+		{
+			name:       "at advisory threshold",
+			response:   graphqlTestResponse{body: `{"data":{"node":{"items":{"totalCount":300},"doneItems":{"totalCount":250}}}}`},
+			wantStatus: ReadinessOK,
+			wantDetail: "board has 300 items (250 Done)",
+			wantQuery:  `status:"Done"`,
+		},
+		{
+			name:       "above threshold with mapped Done status",
+			response:   graphqlTestResponse{body: `{"data":{"node":{"items":{"totalCount":301},"doneItems":{"totalCount":1}}}}`},
+			stateMap:   map[string]string{"Done": "Shipped to production"},
+			wantStatus: ReadinessWarn,
+			wantDetail: "board has 301 items (1 Done)",
+			wantQuery:  `status:"Shipped to production"`,
+		},
+		{
+			name:       "board unavailable",
+			response:   graphqlTestResponse{body: `{"data":{"node":null}}`},
+			wantStatus: ReadinessWarn,
+			wantDetail: "counts unavailable",
+			wantQuery:  `status:"Done"`,
+		},
+		{
+			name:       "counts omitted",
+			response:   graphqlTestResponse{body: `{"data":{"node":{"items":{},"doneItems":{}}}}`},
+			wantStatus: ReadinessWarn,
+			wantDetail: "counts unavailable",
+			wantQuery:  `status:"Done"`,
+		},
+		{
+			name:       "count read denied",
+			response:   graphqlTestResponse{status: http.StatusForbidden, body: `{"message":"Resource not accessible by integration"}`},
+			wantStatus: ReadinessWarn,
+			wantDetail: "cannot read ProjectV2 board item counts",
+			wantQuery:  `status:"Done"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := newGraphQLTestServer(t, []graphqlTestResponse{
+				{body: `{"data":{"viewer":{"login":"operator"},"node":{"__typename":"ProjectV2","id":"PVT_1"}}}`},
+				tt.response,
+				{method: http.MethodGet, path: "/rate_limit", body: `{"resources":{}}`},
+			})
+			c := newGitHubTestConnector(t, server, Config{
+				ProjectSlug: "PVT_1",
+				StateMap:    tt.stateMap,
+			})
+			checker := githubReadinessChecker{connector: c}
+			checks := checker.Check(context.Background(), ReadinessConfig{})
+			var found bool
+			for _, check := range checks {
+				if check.Name != "GitHub ProjectV2 polling cost" {
+					continue
+				}
+				found = true
+				if check.Status != tt.wantStatus || !strings.Contains(check.Detail, tt.wantDetail) {
+					t.Fatalf("check = %#v, want %s with %q", check, tt.wantStatus, tt.wantDetail)
+				}
+				if !strings.Contains(check.Hint, "github_status_source: label") || !strings.Contains(check.Hint, "archive Done") {
+					t.Fatalf("Hint = %q, want label-mode and archiving advice", check.Hint)
+				}
+			}
+			if !found {
+				t.Fatalf("missing polling-cost check: %#v", checks)
+			}
+			requests := server.requests()
+			if len(requests) != 3 {
+				t.Fatalf("requests = %d, want authentication, one count read, and rate limit", len(requests))
+			}
+			query := requests[1]["query"].(string)
+			if strings.Contains(query, "nodes") || strings.Contains(query, "pageInfo") {
+				t.Fatalf("count query fetches item data: %s", query)
+			}
+			variables := requests[1]["variables"].(map[string]any)
+			if variables["projectId"] != "PVT_1" || variables["doneQuery"] != tt.wantQuery {
+				t.Fatalf("variables = %#v, want project PVT_1 and Done filter %q", variables, tt.wantQuery)
+			}
+		})
+	}
+}
+
+func TestReadinessConnectorConfigDefaultsLookupEnvForAppCredentials(t *testing.T) {
+	t.Setenv("DETENT_TEST_GITHUB_APP_ID", "123")
+	t.Setenv("DETENT_TEST_GITHUB_APP_INSTALLATION_ID", "987")
+	t.Setenv("DETENT_TEST_GITHUB_APP_PRIVATE_KEY", "private-key")
+
+	cfg := readinessConnectorConfig(Config{
+		GitHubAppID:             "$DETENT_TEST_GITHUB_APP_ID",
+		GitHubAppInstallationID: "$DETENT_TEST_GITHUB_APP_INSTALLATION_ID",
+		GitHubAppPrivateKey:     "$DETENT_TEST_GITHUB_APP_PRIVATE_KEY",
+		TokenSource:             staticTokenSource("token"),
+	})
+
+	if !hasGitHubAppCredentials(cfg, cfg.LookupEnv) {
+		t.Fatal("hasGitHubAppCredentials() = false, want env-backed credentials detected")
+	}
+}
+
+func TestReadinessProjectStatusWriteReportsMissingProjectWrite(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"}}]}}}}`,
+		},
+		{
+			body: `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_todo","name":"Todo"}]}}}}`,
+		},
+		{
+			status: http.StatusForbidden,
+			body:   `{"message":"Resource not accessible by integration"}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+	})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.projectStatusWriteCheck(context.Background(), readinessProbeIssue{
+		ID:  "I_kw1",
+		Ref: issueRef{Owner: "digitaldrywood", Name: "detent", Number: 1},
+	}, true)
+	if got.Status != ReadinessFail {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessFail, got)
+	}
+	if !strings.Contains(got.Detail, "cannot update ProjectV2 item field value") {
+		t.Fatalf("Detail = %q, want project write failure", got.Detail)
+	}
+}
+
+func TestReadinessIssueFieldCheckUsesBoardlessStatusSource(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/orgs/digitaldrywood/issue-fields?per_page=100",
+			body:   `[{"id":10,"node_id":"IFSS_status","name":"Status","data_type":"single_select","options":[{"id":1,"name":"Todo","color":"gray"}]}]`,
+		},
+		{
+			method: http.MethodGet,
+			body:   `{"total_count":0,"items":[]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/rate_limit",
+			body:   `{"resources":{"core":{"limit":5000,"used":100,"remaining":4900,"reset":1781560800},"graphql":{"limit":5000,"used":20,"remaining":4980,"reset":1781560800}}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceIssueField,
+		Repository:         "digitaldrywood/detent",
+		StatusField:        "Status",
+	})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.Check(context.Background(), ReadinessConfig{
+		StatusStates: []string{"Todo"},
+		ReadStates:   []string{"Todo"},
+	})
+	if len(got) != 6 {
+		t.Fatalf("checks len = %d, want auth, access, mappings, read, repository warning, rate limit: %#v", len(got), got)
+	}
+	for _, check := range got {
+		if strings.Contains(check.Name, "project") {
+			t.Fatalf("check name = %q, want no ProjectV2 checks in issue_field mode", check.Name)
+		}
+	}
+	if got[1].Name != "GitHub issue field access" || got[1].Status != ReadinessOK {
+		t.Fatalf("issue field access check = %#v, want OK", got[1])
+	}
+	if got[2].Name != "GitHub issue field Status mappings" || got[2].Status != ReadinessOK {
+		t.Fatalf("issue field mappings check = %#v, want OK", got[2])
+	}
+	if got[3].Name != "GitHub issue field issue read" || got[3].Status != ReadinessOK {
+		t.Fatalf("issue field read check = %#v, want OK", got[3])
+	}
+	if got[5].Name != "GitHub API rate limit" || got[5].Status != ReadinessOK {
+		t.Fatalf("rate limit check = %#v, want OK", got[5])
+	}
+	if !strings.Contains(got[5].Detail, "REST core remaining 4900/5000") || !strings.Contains(got[5].Detail, "GraphQL remaining 4980/5000") {
+		t.Fatalf("rate limit detail = %q, want REST and GraphQL visibility", got[5].Detail)
+	}
+}
+
+func TestReadinessIssueFieldStatusWriteReappliesProbeValue(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/1/issue-field-values?per_page=100",
+			body:   `[{"issue_field_id":10,"node_id":"IFV_1","data_type":"single_select","single_select_option":{"id":1,"name":"Todo","color":"gray"}}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/orgs/digitaldrywood/issue-fields?per_page=100",
+			body:   `[{"id":10,"node_id":"IFSS_status","name":"Status","data_type":"single_select","options":[{"id":1,"name":"Todo","color":"gray"}]}]`,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/repos/digitaldrywood/detent/issues/1/issue-field-values",
+			body:   `[{"issue_field_id":10,"node_id":"IFV_1","data_type":"single_select","single_select_option":{"id":1,"name":"Todo","color":"gray"}}]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceIssueField,
+		Repository:         "digitaldrywood/detent",
+		StatusField:        "Status",
+	})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.issueFieldStatusWriteCheck(context.Background(), readinessProbeIssue{
+		ID:  "I_kw1",
+		Ref: issueRef{Owner: "digitaldrywood", Name: "detent", Number: 1},
+	}, true)
+	if got.Status != ReadinessOK {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessOK, got)
+	}
+	if !strings.Contains(got.Detail, "reapplied existing issue field Status value") {
+		t.Fatalf("Detail = %q, want issue field write proof", got.Detail)
+	}
+}
+
+func TestReadinessLabelIssueReadReportsStatusLabelConflicts(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Atodo&page=1&per_page=100&state=all",
+			body:   `[{"node_id":"I_604","number":604,"title":"Todo race","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/604","assignees":[],"labels":[{"name":"detent:todo"},{"name":"detent:in-progress"},{"name":"bug"}]}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Ain-progress&page=1&per_page=100&state=all",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		ActiveStates:       []string{"Todo", "In Progress"},
+	})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.labelIssuesReadCheck(context.Background(), []string{"Todo", "In Progress"})
+	if got.Status != ReadinessWarn {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessWarn, got)
+	}
+	for _, want := range []string{"#604", "detent:todo", "detent:in-progress"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+	if !strings.Contains(got.Hint, "Remove all but one") {
+		t.Fatalf("Hint = %q, want remediation guidance", got.Hint)
+	}
+}
+
+func TestReadinessLabelStatusWriteUsesRepositoryLabelProbeWithoutIssue(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodPost,
+		path:   "/repos/digitaldrywood/detent/labels",
+		status: http.StatusUnprocessableEntity,
+		headers: map[string]string{
+			"X-Accepted-GitHub-Permissions": "issues=write",
+		},
+		body: `{"message":"Validation Failed"}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+	})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.writeChecks(context.Background(), ReadinessConfig{
+		AllowWriteProbes:        true,
+		RequireLabelStatusWrite: true,
+	}, readinessProbeIssue{}, false)
+	if len(got) != 1 {
+		t.Fatalf("checks len = %d, want 1: %#v", len(got), got)
+	}
+	check := got[0]
+	if check.Status != ReadinessOK {
+		t.Fatalf("Status = %s, want %s: %#v", check.Status, ReadinessOK, check)
+	}
+	for _, want := range []string{"GitHub status label update", "HTTP 422", "issues=write"} {
+		if !strings.Contains(check.Name+" "+check.Detail, want) {
+			t.Fatalf("check = %#v, want containing %q", check, want)
+		}
+	}
+	requests := server.requests()
+	if len(requests) != 1 {
+		t.Fatalf("requests len = %d, want 1: %#v", len(requests), requests)
+	}
+	body, ok := requests[0]["body"].(map[string]any)
+	if !ok {
+		t.Fatalf("request body = %#v, want object", requests[0]["body"])
+	}
+	if body["name"] != "" || body["color"] != "not-a-hex-color" {
+		t.Fatalf("request body = %#v, want intentionally invalid label create", body)
+	}
+}
+
+func TestReadinessLabelIssueWritesUseInvalidIssueCreateWithoutProbe(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodPost,
+		path:   "/repos/digitaldrywood/detent/issues",
+		status: http.StatusUnprocessableEntity,
+		headers: map[string]string{
+			"X-Accepted-GitHub-Permissions": "issues=write",
+		},
+		body: `{"message":"Validation Failed"}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+	})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.writeChecks(context.Background(), ReadinessConfig{
+		AllowWriteProbes:     true,
+		RequireIssueComments: true,
+		RequireAssigneeWrite: true,
+		RequireIssueClose:    true,
+	}, readinessProbeIssue{}, false)
+	if len(got) != 1 {
+		t.Fatalf("checks len = %d, want 1: %#v", len(got), got)
+	}
+	check := got[0]
+	if check.Status != ReadinessOK {
+		t.Fatalf("Status = %s, want %s: %#v", check.Status, ReadinessOK, check)
+	}
+	for _, want := range []string{"GitHub issue write permission", "HTTP 422", "issues=write"} {
+		if !strings.Contains(check.Name+" "+check.Detail, want) {
+			t.Fatalf("check = %#v, want containing %q", check, want)
+		}
+	}
+	requests := server.requests()
+	if len(requests) != 1 {
+		t.Fatalf("requests len = %d, want 1: %#v", len(requests), requests)
+	}
+	body, ok := requests[0]["body"].(map[string]any)
+	if !ok {
+		t.Fatalf("request body = %#v, want object", requests[0]["body"])
+	}
+	if body["title"] != "" {
+		t.Fatalf("request body = %#v, want intentionally invalid issue create", body)
+	}
+}
+
+func TestReadinessLabelModeWriteChecksPassWithoutProbeIssue(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/labels?per_page=100",
+			body:   `[{"name":"detent:todo"}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Atodo&page=1&per_page=100&state=all",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent",
+			body:   `{"full_name":"digitaldrywood/detent","permissions":{"push":true,"pull":true}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?per_page=1&state=all",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent",
+			body:   `{"full_name":"digitaldrywood/detent","permissions":{"push":true,"pull":true}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/rate_limit",
+			body:   `{"resources":{"core":{"limit":5000,"used":100,"remaining":4900,"reset":1781560800},"graphql":{"limit":5000,"used":20,"remaining":4980,"reset":1781560800}}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		ActiveStates:       []string{"Todo"},
+	})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.Check(context.Background(), ReadinessConfig{
+		Repositories:            []string{"digitaldrywood/detent"},
+		StatusStates:            []string{"Todo"},
+		ReadStates:              []string{"Todo"},
+		RequireLabelStatusWrite: true,
+		RequireIssueComments:    true,
+		RequireAssigneeWrite:    true,
+		RequireIssueClose:       true,
+	})
+	for _, check := range got {
+		if check.Status != ReadinessOK {
+			t.Fatalf("%s Status = %s, want %s: %#v", check.Name, check.Status, ReadinessOK, check)
+		}
+		if strings.Contains(check.Detail, "tracker.write_probe_issue") {
+			t.Fatalf("%s Detail = %q, want no scratch issue requirement", check.Name, check.Detail)
+		}
+	}
+	requests := server.requests()
+	if len(requests) != 6 {
+		t.Fatalf("requests len = %d, want 6: %#v", len(requests), requests)
+	}
+	if requests[4]["method"] != http.MethodGet || requests[4]["path"] != "/repos/digitaldrywood/detent" {
+		t.Fatalf("fifth request = %#v, want read-only repository permission introspection", requests[4])
+	}
+	for _, request := range requests {
+		if request["method"] == http.MethodPost || request["method"] == http.MethodPut || request["method"] == http.MethodPatch {
+			t.Fatalf("request = %#v, want no mutation in default readiness", request)
+		}
+	}
+}
+
+func TestReadinessReadOnlyIssueWritePermissionFailsWithoutWriteRole(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodGet,
+		path:   "/repos/digitaldrywood/detent",
+		body:   `{"full_name":"digitaldrywood/detent","permissions":{"pull":true}}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.writeChecks(context.Background(), ReadinessConfig{
+		Repositories:         []string{"digitaldrywood/detent"},
+		RequireIssueComments: true,
+	}, readinessProbeIssue{}, false)
+	if len(got) != 1 {
+		t.Fatalf("checks len = %d, want 1: %#v", len(got), got)
+	}
+	check := got[0]
+	if check.Status != ReadinessFail {
+		t.Fatalf("Status = %s, want %s: %#v", check.Status, ReadinessFail, check)
+	}
+	for _, want := range []string{"Issues: write", "pull", "issue comments"} {
+		if !strings.Contains(check.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", check.Detail, want)
+		}
+	}
+	requests := server.requests()
+	if len(requests) != 1 {
+		t.Fatalf("requests len = %d, want 1: %#v", len(requests), requests)
+	}
+	if requests[0]["method"] != http.MethodGet {
+		t.Fatalf("request method = %s, want GET", requests[0]["method"])
+	}
+}
+
+func TestReadinessReadOnlyIssueWritePermissionAllowsTriageRole(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodGet,
+		path:   "/repos/digitaldrywood/detent",
+		body:   `{"full_name":"digitaldrywood/detent","permissions":{"triage":true,"pull":true}}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.writeChecks(context.Background(), ReadinessConfig{
+		Repositories:            []string{"digitaldrywood/detent"},
+		RequireLabelStatusWrite: true,
+		RequireIssueComments:    true,
+		RequireAssigneeWrite:    true,
+		RequireIssueClose:       true,
+	}, readinessProbeIssue{}, false)
+	if len(got) != 1 {
+		t.Fatalf("checks len = %d, want 1: %#v", len(got), got)
+	}
+	check := got[0]
+	if check.Status != ReadinessOK {
+		t.Fatalf("Status = %s, want %s: %#v", check.Status, ReadinessOK, check)
+	}
+	for _, want := range []string{"repository permission triage", "status label updates", "issue comments", "assignee updates", "issue close"} {
+		if !strings.Contains(check.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", check.Detail, want)
+		}
+	}
+}
+
+func TestReadinessReadOnlyIssueFieldStatusWriteRequiresPushRole(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodGet,
+		path:   "/repos/digitaldrywood/detent",
+		body:   `{"full_name":"digitaldrywood/detent","permissions":{"triage":true,"pull":true}}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.writeChecks(context.Background(), ReadinessConfig{
+		Repositories:                 []string{"digitaldrywood/detent"},
+		RequireIssueFieldStatusWrite: true,
+	}, readinessProbeIssue{}, false)
+	if len(got) != 1 {
+		t.Fatalf("checks len = %d, want 1: %#v", len(got), got)
+	}
+	check := got[0]
+	if check.Status != ReadinessFail {
+		t.Fatalf("Status = %s, want %s: %#v", check.Status, ReadinessFail, check)
+	}
+	for _, want := range []string{"repository push permission", "triage", "issue field Status updates"} {
+		if !strings.Contains(check.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", check.Detail, want)
+		}
+	}
+	if strings.Contains(check.Hint, "triage") {
+		t.Fatalf("Hint = %q, want push-or-stronger guidance", check.Hint)
+	}
+}
+
+func TestReadinessProjectWritePermissionUsesViewerCanUpdate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		viewerCanUpdate bool
+		wantStatus      ReadinessStatus
+		wantDetail      string
+	}{
+		{
+			name:            "can update",
+			viewerCanUpdate: true,
+			wantStatus:      ReadinessOK,
+			wantDetail:      "viewer can update ProjectV2 PVT_1",
+		},
+		{
+			name:            "cannot update",
+			viewerCanUpdate: false,
+			wantStatus:      ReadinessFail,
+			wantDetail:      "Projects: write",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			body := fmt.Sprintf(`{"data":{"node":{"__typename":"ProjectV2","id":"PVT_1","viewerCanUpdate":%t}}}`, tt.viewerCanUpdate)
+			server := newGraphQLTestServer(t, []graphqlTestResponse{{
+				body: body,
+			}})
+			c := newGitHubTestConnector(t, server, Config{
+				ProjectSlug: "PVT_1",
+			})
+			checker := githubReadinessChecker{connector: c}
+
+			got := checker.writeChecks(context.Background(), ReadinessConfig{
+				RequireProjectStatusWrite: true,
+			}, readinessProbeIssue{}, false)
+			if len(got) != 1 {
+				t.Fatalf("checks len = %d, want 1: %#v", len(got), got)
+			}
+			check := got[0]
+			if check.Status != tt.wantStatus {
+				t.Fatalf("Status = %s, want %s: %#v", check.Status, tt.wantStatus, check)
+			}
+			if !strings.Contains(check.Detail, tt.wantDetail) {
+				t.Fatalf("Detail = %q, want containing %q", check.Detail, tt.wantDetail)
+			}
+			requests := server.requests()
+			if len(requests) != 1 {
+				t.Fatalf("requests len = %d, want 1: %#v", len(requests), requests)
+			}
+			if !strings.Contains(requests[0]["query"].(string), "viewerCanUpdate") {
+				t.Fatalf("query = %q, want ProjectV2 viewerCanUpdate introspection", requests[0]["query"])
+			}
+		})
+	}
+}
+
+func TestReadinessLabelStatusWriteUsesScratchIssueWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	issueBody := `{"node_id":"I_kw1","number":1,"title":"Scratch","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1","labels":[{"name":"detent:todo"},{"name":"bug"}]}`
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/1",
+			body:   issueBody,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/1",
+			body:   issueBody,
+		},
+		{
+			method: http.MethodPut,
+			path:   "/repos/digitaldrywood/detent/issues/1/labels",
+			body:   `[{"name":"bug"},{"name":"detent:todo"}]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		ActiveStates:       []string{"Todo", "In Progress"},
+	})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.writeChecks(context.Background(), ReadinessConfig{
+		AllowWriteProbes:        true,
+		RequireLabelStatusWrite: true,
+	}, readinessProbeIssue{
+		ID:  "I_kw1",
+		Ref: issueRef{Owner: "digitaldrywood", Name: "detent", Number: 1},
+	}, true)
+	if len(got) != 1 {
+		t.Fatalf("checks len = %d, want 1: %#v", len(got), got)
+	}
+	check := got[0]
+	if check.Status != ReadinessOK {
+		t.Fatalf("Status = %s, want %s: %#v", check.Status, ReadinessOK, check)
+	}
+	if !strings.Contains(check.Detail, "reapplied existing status label on the write probe issue") {
+		t.Fatalf("Detail = %q, want scratch issue write proof", check.Detail)
+	}
+	requests := server.requests()
+	if len(requests) != 3 {
+		t.Fatalf("requests len = %d, want 3: %#v", len(requests), requests)
+	}
+	if requests[2]["path"] != "/repos/digitaldrywood/detent/issues/1/labels" {
+		t.Fatalf("third request path = %q, want issue labels endpoint", requests[2]["path"])
+	}
+}
+
+func TestReadinessIssueCommentReportsMissingAccess(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodPost,
+		path:   "/repos/digitaldrywood/detent/issues/1/comments",
+		status: http.StatusForbidden,
+		headers: map[string]string{
+			"X-Accepted-GitHub-Permissions": "issues=write",
+		},
+		body: `{"message":"Resource not accessible by integration"}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.issueCommentWriteCheck(context.Background(), readinessProbeIssue{
+		ID:  "I_kw1",
+		Ref: issueRef{Owner: "digitaldrywood", Name: "detent", Number: 1},
+	}, true)
+	if got.Status != ReadinessFail {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessFail, got)
+	}
+	for _, want := range []string{"create issue comments", "issues=write"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+}
+
+func TestReadinessAssigneeReportsMissingAccess(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodPost,
+		path:   "/repos/digitaldrywood/detent/issues/1/assignees",
+		status: http.StatusForbidden,
+		headers: map[string]string{
+			"X-Accepted-GitHub-Permissions": "issues=write",
+		},
+		body: `{"message":"Resource not accessible by integration"}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.assigneeWriteCheck(context.Background(), readinessProbeIssue{
+		ID:  "I_kw1",
+		Ref: issueRef{Owner: "digitaldrywood", Name: "detent", Number: 1},
+	}, true)
+	if got.Status != ReadinessFail {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessFail, got)
+	}
+	for _, want := range []string{"update issue assignees", "issues=write"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+}
+
+func TestReadinessWriteProbeTargetWarnsWhenClosed(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodGet,
+		path:   "/repos/digitaldrywood/detent/issues/1",
+		body:   `{"node_id":"I_kw1","number":1,"title":"Scratch","state":"closed","html_url":"https://github.com/digitaldrywood/detent/issues/1"}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{})
+	checker := githubReadinessChecker{connector: c}
+
+	probe, hasProbe, check := checker.resolveWriteProbe(context.Background(), ReadinessConfig{
+		AllowWriteProbes:  true,
+		WriteProbeIssue:   "digitaldrywood/detent#1",
+		RequireIssueClose: true,
+	})
+	if !hasProbe {
+		t.Fatal("hasProbe = false, want true")
+	}
+	if probe.State != "closed" {
+		t.Fatalf("probe.State = %q, want closed", probe.State)
+	}
+	if check == nil {
+		t.Fatal("check = nil, want warning")
+		return
+	}
+	if check.Status != ReadinessWarn {
+		t.Fatalf("Status = %s, want %s: %#v", check.Status, ReadinessWarn, *check)
+	}
+	for _, want := range []string{"state closed", "dedicated open scratch issue"} {
+		if !strings.Contains(check.Detail+check.Hint, want) {
+			t.Fatalf("check = %#v, want containing %q", *check, want)
+		}
+	}
+}
+
+func TestReadinessIssueCloseTreatsOpenHTTP200AsPermissionProof(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/1",
+			body:   `{"node_id":"I_kw1","number":1,"title":"Scratch","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1"}`,
+		},
+		{
+			method: http.MethodPatch,
+			path:   "/repos/digitaldrywood/detent/issues/1",
+			status: http.StatusOK,
+			headers: map[string]string{
+				"X-Accepted-GitHub-Permissions": "issues=write",
+			},
+			body: `{"node_id":"I_kw1","number":1,"title":"` + strings.Repeat("x", maxErrorBodyBytes) + `","state":"open"}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.issueCloseWriteCheck(context.Background(), readinessProbeIssue{
+		ID:  "I_kw1",
+		Ref: issueRef{Owner: "digitaldrywood", Name: "detent", Number: 1},
+	}, true)
+	if got.Status != ReadinessOK {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessOK, got)
+	}
+	for _, want := range []string{"HTTP 200", "issues=write", "remained open"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+}
+
+func TestReadinessIssueCloseTreatsClosedHTTP200AsUnchangedPermissionProof(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/1",
+			body:   `{"node_id":"I_kw1","number":1,"title":"Scratch","state":"closed","html_url":"https://github.com/digitaldrywood/detent/issues/1"}`,
+		},
+		{
+			method: http.MethodPatch,
+			path:   "/repos/digitaldrywood/detent/issues/1",
+			status: http.StatusOK,
+			headers: map[string]string{
+				"X-Accepted-GitHub-Permissions": "issues=write",
+			},
+			body: `{"node_id":"I_kw1","number":1,"state":"closed"}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.issueCloseWriteCheck(context.Background(), readinessProbeIssue{
+		ID:  "I_kw1",
+		Ref: issueRef{Owner: "digitaldrywood", Name: "detent", Number: 1},
+	}, true)
+	if got.Status != ReadinessOK {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessOK, got)
+	}
+	for _, want := range []string{"HTTP 200", "issues=write", "remained closed"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+}
+
+func TestReadinessIssueCloseWarnsWhenProbeChangesOpenToClosed(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/1",
+			body:   `{"node_id":"I_kw1","number":1,"title":"Scratch","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1"}`,
+		},
+		{
+			method: http.MethodPatch,
+			path:   "/repos/digitaldrywood/detent/issues/1",
+			status: http.StatusOK,
+			headers: map[string]string{
+				"X-Accepted-GitHub-Permissions": "issues=write",
+			},
+			body: `{"node_id":"I_kw1","number":1,"state":"closed"}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.issueCloseWriteCheck(context.Background(), readinessProbeIssue{
+		ID:  "I_kw1",
+		Ref: issueRef{Owner: "digitaldrywood", Name: "detent", Number: 1},
+	}, true)
+	if got.Status != ReadinessWarn {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessWarn, got)
+	}
+	for _, want := range []string{"HTTP 200", "issues=write", "changed from open to closed"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+}
+
+func TestReadinessPullRequestChecksReportsMissingAccess(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent",
+			body:   `{"default_branch":"main"}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/main/check-runs?per_page=100",
+			status: http.StatusForbidden,
+			headers: map[string]string{
+				"X-Accepted-GitHub-Permissions": "checks=read",
+			},
+			body: `{"message":"Resource not accessible by integration"}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.repositoryPullRequestChecksCheck(context.Background(), "digitaldrywood/detent")
+	if got.Status != ReadinessFail {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessFail, got)
+	}
+	for _, want := range []string{"checks=read", "token cannot read endpoint"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+}
+
+func TestReadinessGitHubAppSelectedRepositoriesAreCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	got := missingInstallationRepositories(InstallationTokenDetails{
+		RepositorySelection: "selected",
+		Repositories: []InstallationRepository{{
+			FullName: "DigitalDryWood/Detent",
+		}},
+	}, []string{"digitaldrywood/detent"})
+	if len(got) != 0 {
+		t.Fatalf("missingInstallationRepositories() = %#v, want none", got)
+	}
+}
+
+func TestReadinessGitHubAppInstallationReportsMissingPermissions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
+	t.Parallel()
+
+	now := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
+	privateKey := testPrivateKeyPEM(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations/987/access_tokens" {
+			t.Fatalf("path = %s, want installation token path", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		response := map[string]any{
+			"token":                "installation-token",
+			"expires_at":           now.Add(time.Hour).Format(time.RFC3339),
+			"repository_selection": "all",
+			"permissions": map[string]string{
+				"issues":                "read",
+				"organization_projects": "read",
+				"pull_requests":         "read",
+				"checks":                "read",
+			},
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Fatalf("Encode() error = %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	checker := githubReadinessChecker{cfg: Config{
+		Endpoint:                server.URL + "/graphql",
+		HTTPClient:              server.Client(),
+		GitHubAppID:             "123",
+		GitHubAppInstallationID: "987",
+		GitHubAppPrivateKey:     privateKey,
+		Now:                     func() time.Time { return now },
+	}}
+
+	got := checker.appInstallationCheck(context.Background(), ReadinessConfig{
+		RequireProjectStatusWrite: true,
+		RequireIssueComments:      true,
+		RequirePullRequestRead:    true,
+		RequirePullRequestChecks:  true,
+		Repositories:              []string{"digitaldrywood/detent"},
+	})
+	if got.Status != ReadinessFail {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessFail, got)
+	}
+	for _, want := range []string{"Projects: write", "Issues: write"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+}
+
+func TestReadinessGitHubAppInstallationIssueFieldModeSkipsProjectsPermission(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
+	t.Parallel()
+
+	now := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
+	privateKey := testPrivateKeyPEM(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations/987/access_tokens" {
+			t.Fatalf("path = %s, want installation token path", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		response := map[string]any{
+			"token":                "installation-token",
+			"expires_at":           now.Add(time.Hour).Format(time.RFC3339),
+			"repository_selection": "all",
+			"permissions": map[string]string{
+				"issues": "read",
+			},
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Fatalf("Encode() error = %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	checker := githubReadinessChecker{cfg: Config{
+		Endpoint:                server.URL + "/graphql",
+		HTTPClient:              server.Client(),
+		GitHubAppID:             "123",
+		GitHubAppInstallationID: "987",
+		GitHubAppPrivateKey:     privateKey,
+		Now:                     func() time.Time { return now },
+	}}
+
+	got := checker.appInstallationCheck(context.Background(), ReadinessConfig{
+		RequireIssueFieldRead:        true,
+		RequireIssueFieldStatusWrite: true,
+		RequireIssueComments:         true,
+		RequirePullRequestRead:       true,
+		RequirePullRequestChecks:     true,
+		Repositories:                 []string{"digitaldrywood/detent"},
+	})
+	if got.Status != ReadinessFail {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessFail, got)
+	}
+	for _, want := range []string{"Issue Fields: read", "Issues: write"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+	if strings.Contains(got.Detail, "Projects") {
+		t.Fatalf("Detail = %q, want no Projects permission requirement in issue_field mode", got.Detail)
+	}
+}
+
+func TestReadinessGitHubAppInstallationLabelModeSkipsProjectAndIssueFieldPermissions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
+	t.Parallel()
+
+	now := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
+	privateKey := testPrivateKeyPEM(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations/987/access_tokens" {
+			t.Fatalf("path = %s, want installation token path", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		response := map[string]any{
+			"token":                "installation-token",
+			"expires_at":           now.Add(time.Hour).Format(time.RFC3339),
+			"repository_selection": "all",
+			"permissions": map[string]string{
+				"issues": "read",
+			},
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Fatalf("Encode() error = %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	checker := githubReadinessChecker{cfg: Config{
+		Endpoint:                server.URL + "/graphql",
+		HTTPClient:              server.Client(),
+		GitHubAppID:             "123",
+		GitHubAppInstallationID: "987",
+		GitHubAppPrivateKey:     privateKey,
+		Now:                     func() time.Time { return now },
+	}}
+
+	got := checker.appInstallationCheck(context.Background(), ReadinessConfig{
+		RequireLabelStatusWrite: true,
+		Repositories:            []string{"digitaldrywood/detent"},
+	})
+	if got.Status != ReadinessFail {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessFail, got)
+	}
+	if !strings.Contains(got.Detail, "Issues: write") {
+		t.Fatalf("Detail = %q, want Issues write requirement", got.Detail)
+	}
+	for _, forbidden := range []string{"Projects", "Issue Fields"} {
+		if strings.Contains(got.Detail, forbidden) {
+			t.Fatalf("Detail = %q, want no %s permission requirement in label mode", got.Detail, forbidden)
+		}
+	}
+}
+
+func TestReadinessUnconfiguredProbeIssueWarns(t *testing.T) {
+	t.Parallel()
+
+	checker := githubReadinessChecker{}
+	got := checker.probeReadChecks(context.Background(), ReadinessConfig{
+		RequireIssueChildrenRead: true,
+		RequireIssueParentsRead:  true,
+	}, readinessProbeIssue{}, false)
+	if len(got) != 2 {
+		t.Fatalf("checks len = %d, want 2: %#v", len(got), got)
+	}
+	for _, check := range got {
+		if check.Status != ReadinessWarn {
+			t.Fatalf("%s Status = %s, want %s", check.Name, check.Status, ReadinessWarn)
+		}
+		if !strings.Contains(check.Detail, "issue relationship read capability not proven") {
+			t.Fatalf("%s Detail = %q, want unproven read detail", check.Name, check.Detail)
+		}
+	}
+}
+
+func TestReadinessIssueRelationshipReadsUseRepositoryIssueSample(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			body:   `{"total_count":1,"items":[{"node_id":"I_sample","number":251,"title":"Sample","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/251"}]}`,
+		},
+		{
+			body: `{"data":{"node":{"subIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
+		{
+			body: `{"data":{"node":{"trackedIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
+		{
+			body: `{"data":{"node":{"id":"I_sample","number":251,"repository":{"nameWithOwner":"digitaldrywood/detent"},"parent":null,"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			body:   `{"total_count":0,"items":[]}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+	})
+	checker := githubReadinessChecker{connector: c}
+	cfg := ReadinessConfig{
+		Repositories:             []string{"digitaldrywood/detent"},
+		RequireIssueChildrenRead: true,
+		RequireIssueParentsRead:  true,
+	}
+
+	target, hasTarget, targetCheck := checker.resolveIssueRelationshipReadTarget(context.Background(), cfg, readinessProbeIssue{}, false)
+	if targetCheck != nil {
+		t.Fatalf("targetCheck = %#v, want nil", *targetCheck)
+	}
+	if !hasTarget {
+		t.Fatal("hasTarget = false, want sampled issue")
+	}
+	got := checker.probeReadChecks(context.Background(), cfg, target, hasTarget)
+	if len(got) != 2 {
+		t.Fatalf("checks len = %d, want 2: %#v", len(got), got)
+	}
+	for _, check := range got {
+		if check.Status != ReadinessOK {
+			t.Fatalf("%s Status = %s, want %s: %#v", check.Name, check.Status, ReadinessOK, check)
+		}
+		if !strings.Contains(check.Detail, "sample issue digitaldrywood/detent#251") {
+			t.Fatalf("%s Detail = %q, want sampled issue detail", check.Name, check.Detail)
+		}
+		if strings.Contains(check.Detail, "write_probe_issue") {
+			t.Fatalf("%s Detail = %q, want no write_probe_issue requirement", check.Name, check.Detail)
+		}
+	}
+
+	requests := server.requests()
+	if len(requests) != 5 {
+		t.Fatalf("requests len = %d, want 5: %#v", len(requests), requests)
+	}
+	if requests[0]["method"] != http.MethodGet || !strings.HasPrefix(requests[0]["path"].(string), "/search/issues?") {
+		t.Fatalf("first request = %#v, want issue search sample", requests[0])
+	}
+	for _, request := range requests {
+		if request["method"] == http.MethodPut || request["method"] == http.MethodPatch || request["method"] == http.MethodDelete ||
+			request["method"] == http.MethodPost && request["path"] != "/" {
+			t.Fatalf("request = %#v, want no mutation for relationship read checks", request)
+		}
+	}
+}
+
+func TestReadinessUnconfiguredWriteProbeWarns(t *testing.T) {
+	t.Parallel()
+
+	checker := githubReadinessChecker{}
+	got := checker.writeChecks(context.Background(), ReadinessConfig{
+		AllowWriteProbes:          true,
+		RequireProjectStatusWrite: true,
+		RequireIssueComments:      true,
+		RequireAssigneeWrite:      true,
+		RequireIssueClose:         true,
+		ProjectFieldWrites:        []ReadinessProjectFieldWrite{{Name: "Owner"}},
+	}, readinessProbeIssue{}, false)
+	if len(got) != 5 {
+		t.Fatalf("checks len = %d, want 5: %#v", len(got), got)
+	}
+	for _, check := range got {
+		if check.Status != ReadinessWarn {
+			t.Fatalf("%s Status = %s, want %s", check.Name, check.Status, ReadinessWarn)
+		}
+		if !strings.Contains(check.Detail, "write capability not proven") {
+			t.Fatalf("%s Detail = %q, want unproven write detail", check.Name, check.Detail)
+		}
+	}
+}
