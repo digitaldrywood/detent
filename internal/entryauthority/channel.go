@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
 
@@ -68,11 +69,18 @@ func closeFiles(files ...*os.File) error {
 	return result
 }
 
+type Archives struct {
+	Reader   ArchiveReader
+	Contents attachment.ArchiveContentStore
+}
+
 type authorityServer struct {
-	binding Binding
-	budget  time.Duration
-	resolve func(Request) (cloudassert.Claims, error)
-	archive func(ArchiveRequest) (ArchiveResponse, error)
+	binding        Binding
+	budget         time.Duration
+	resolve        func(Request) (cloudassert.Claims, error)
+	contents       attachment.ArchiveContentStore
+	contentContext func(time.Time) (context.Context, context.CancelFunc)
+	archive        func(ArchiveRequest) (ArchiveResponse, error)
 }
 
 func (s *authorityServer) Handshake(binding Binding, result *Handshake) error {
@@ -102,7 +110,7 @@ type Parent struct {
 	done   chan struct{}
 }
 
-func Start(ctx context.Context, binding Binding, budget time.Duration, resolve Resolver, archives ...ArchiveReader) (*Parent, error) {
+func Start(ctx context.Context, binding Binding, budget time.Duration, resolve Resolver, archives ...Archives) (*Parent, error) {
 	parentRead, childWrite, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -121,17 +129,24 @@ func Start(ctx context.Context, binding Binding, budget time.Duration, resolve R
 		defer end()
 		return resolve(lookup, request.Origin)
 	}
-	service := &authorityServer{binding: binding, budget: budget, resolve: current}
-	if len(archives) == 1 && archives[0] != nil {
-		service.archive = func(request ArchiveRequest) (ArchiveResponse, error) {
-			lookup, stop := context.WithTimeout(ctx, budget)
-			defer stop()
-			lookup, end := context.WithDeadline(lookup, request.Deadline)
-			defer end()
-			return archives[0](lookup, request.Reference, request.Presign)
+	authority := &authorityServer{binding: binding, budget: budget, resolve: current, contentContext: func(deadline time.Time) (context.Context, context.CancelFunc) {
+		lookup, cancel := context.WithTimeout(ctx, budget)
+		lookup, end := context.WithDeadline(lookup, deadline)
+		return lookup, func() { end(); cancel() }
+	}}
+	if len(archives) == 1 {
+		authority.contents = archives[0].Contents
+		if archives[0].Reader != nil {
+			authority.archive = func(request ArchiveRequest) (ArchiveResponse, error) {
+				lookup, stop := context.WithTimeout(ctx, budget)
+				defer stop()
+				lookup, end := context.WithDeadline(lookup, request.Deadline)
+				defer end()
+				return archives[0].Reader(lookup, request.Reference, request.Presign)
+			}
 		}
 	}
-	if err := server.RegisterName("Authority", service); err != nil {
+	if err := server.RegisterName("Authority", authority); err != nil {
 		close(p.done)
 		return nil, errors.Join(err, p.Close())
 	}
@@ -205,4 +220,56 @@ func (c *Client) Close() error {
 		return err
 	}
 	return nil
+}
+
+type ContentRequest struct {
+	Organization string
+	Content      []byte
+	Reference    attachment.ArchiveReference
+	Deadline     time.Time
+}
+
+func (s *authorityServer) PublishContent(request ContentRequest, ref *attachment.ArchiveReference) error {
+	if s.contents == nil || request.Organization != s.binding.Organization || request.Deadline.IsZero() || len(request.Content) > attachment.MaxArchiveBytes {
+		return cloudassert.ErrInvalid
+	}
+	ctx, cancel := s.contentContext(request.Deadline)
+	defer cancel()
+	if ctx.Err() != nil {
+		return cloudassert.ErrInvalid
+	}
+	result, err := s.contents.PublishContent(ctx, s.binding.Organization, request.Content)
+	if err != nil {
+		return errors.New("archive publication unavailable")
+	}
+	*ref = result
+	return nil
+}
+func (s *authorityServer) ReadContent(request ContentRequest, content *[]byte) error {
+	if s.contents == nil || request.Organization != s.binding.Organization || request.Deadline.IsZero() || request.Reference.Validate(s.binding.Organization) != nil {
+		return cloudassert.ErrInvalid
+	}
+	ctx, cancel := s.contentContext(request.Deadline)
+	defer cancel()
+	if ctx.Err() != nil {
+		return cloudassert.ErrInvalid
+	}
+	result, err := s.contents.ReadContent(ctx, s.binding.Organization, request.Reference)
+	if err != nil {
+		return errors.New("archive content unavailable")
+	}
+	*content = result
+	return nil
+}
+func (c *Client) PublishContent(ctx context.Context, organization string, content []byte) (attachment.ArchiveReference, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.budget)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	return callAuthority[attachment.ArchiveReference](ctx, c, "PublishContent", ContentRequest{Organization: organization, Content: content, Deadline: deadline})
+}
+func (c *Client) ReadContent(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.budget)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	return callAuthority[[]byte](ctx, c, "ReadContent", ContentRequest{Organization: organization, Reference: ref, Deadline: deadline})
 }

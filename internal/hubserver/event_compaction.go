@@ -37,6 +37,10 @@ AND NOT EXISTS (SELECT 1 FROM conversation_questions q WHERE q.conversation_id=c
 AND NOT EXISTS (SELECT 1 FROM leases l JOIN issues i ON i.id=l.issue_id WHERE i.organization_id=c.organization_id AND i.project_id=c.project_id AND (i.native_id=c.work_item_id OR l.lease_id=json_extract(c.execution_json,'$.lease_id')) AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?))
 AND COALESCE((SELECT scanned_sequence FROM event_compactions s WHERE s.organization_id=c.organization_id AND s.project_id=c.project_id AND s.aggregate_kind='conversation' AND s.aggregate_id=c.id),0)<c.event_seq`
 
+const terminalConversationBatch = `(a.status<>'running' OR l.released_at IS NOT NULL OR julianday(l.expires_at)<=julianday(?))`
+const compactableConversationContent = `EXISTS (SELECT 1 FROM conversation_events e JOIN conversation_messages m ON m.conversation_id=e.conversation_id AND m.id=json_extract(e.body_json,'$.message_id') WHERE e.conversation_id=c.id AND e.type='message.delta' AND m.delivery IN ('delivered','completed','interrupted','failed','rejected','unknown'))
+OR EXISTS (SELECT 1 FROM conversation_starts cs JOIN conversation_turn_batches b ON b.attempt_id=cs.attempt_id JOIN native_attempts a ON a.id=b.attempt_id JOIN leases l ON l.lease_id=a.lease_id WHERE cs.conversation_id=c.id AND ` + terminalConversationBatch + `)`
+
 type eventCompactionCandidate struct {
 	organization tracker.OrganizationID
 	project      tracker.ProjectID
@@ -65,6 +69,8 @@ type eventCompactionPlan struct {
 	eventCompactionCandidate
 	obsolete []obsoleteEvent
 	spans    []int64
+	batches  []conversationBatchReceipt
+	full     bool
 }
 
 func planEventCompaction(ctx context.Context, q nativeQueryer, now time.Time) ([]eventCompactionPlan, error) {
@@ -72,8 +78,8 @@ func planEventCompaction(ctx context.Context, q nativeQueryer, now time.Time) ([
 	rows, err := q.QueryContext(ctx, `SELECT * FROM (SELECT i.organization_id,i.project_id,'work_item',i.native_id,i.event_sequence,`+closedWork+` FROM issues i
 LEFT JOIN event_compactions s ON s.organization_id=i.organization_id AND s.project_id=i.project_id AND s.aggregate_kind='work_item' AND s.aggregate_id=i.native_id
 WHERE `+compactableWork+` ORDER BY i.event_sequence-COALESCE(s.scanned_sequence,0) DESC LIMIT 4)
-UNION ALL SELECT * FROM (SELECT c.organization_id,c.project_id,'conversation',c.id,c.event_seq,0 FROM conversations c WHERE `+compactableConversation+` LIMIT 4)`,
-		closedBefore, formatHubTime(now), closedBefore, settledBefore, settledBefore, formatHubTime(now.Add(-eventRetention)), formatHubTime(now))
+UNION ALL SELECT * FROM (SELECT c.organization_id,c.project_id,'conversation',c.id,c.event_seq,0 FROM conversations c WHERE (`+compactableConversation+`) OR (`+compactableConversationContent+`) LIMIT 4)`,
+		closedBefore, formatHubTime(now), closedBefore, settledBefore, settledBefore, formatHubTime(now.Add(-eventRetention)), formatHubTime(now), formatHubTime(now))
 	if err != nil {
 		return nil, fmt.Errorf("select compaction candidates: %w", err)
 	}
@@ -92,7 +98,14 @@ UNION ALL SELECT * FROM (SELECT c.organization_id,c.project_id,'conversation',c.
 	for index := range plans {
 		plan := &plans[index]
 		if plan.kind == "conversation" {
-			plan.obsolete, err = obsoleteConversationEvents(ctx, q, plan.id, eventCompactionBatch)
+			if err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM conversations c WHERE c.id=? AND "+compactableConversation+")", plan.id, formatHubTime(now.Add(-eventRetention)), formatHubTime(now)).Scan(&plan.full); err != nil {
+				return nil, err
+			}
+			plan.batches, err = obsoleteConversationBatches(ctx, q, plan.id, now, eventCompactionBatch)
+			if err != nil {
+				return nil, err
+			}
+			plan.obsolete, err = obsoleteConversationEvents(ctx, q, plan.id, eventCompactionBatch, plan.full)
 		} else {
 			plan.obsolete, plan.spans, err = obsoleteWorkItemEvents(ctx, q, plan.eventCompactionCandidate, now)
 		}
@@ -170,6 +183,20 @@ type obsoleteEvent struct {
 }
 
 func compactEventAggregate(ctx context.Context, tx *sql.Tx, plan eventCompactionPlan, now time.Time, budget int64) (int64, int64, error) {
+	var retired int64
+	receiptWork := min(int64(len(plan.batches)), budget)
+	for _, batch := range plan.batches[:receiptWork] {
+		result, err := tx.ExecContext(ctx, `DELETE FROM conversation_turn_batches WHERE attempt_id=? AND batch_key=? AND EXISTS(SELECT 1 FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id WHERE a.id=conversation_turn_batches.attempt_id AND `+terminalConversationBatch+`)`, batch.attempt, batch.key, formatHubTime(now))
+		if err != nil {
+			return 0, 0, err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return 0, 0, err
+		}
+		retired += count
+	}
+	budget -= receiptWork
 	events := plan.obsolete
 	if int64(len(events)) > budget {
 		events = events[:budget]
@@ -228,7 +255,9 @@ WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence IN (SEL
 	}
 	scanned := int64(0)
 	if processed < budget && int64(len(plan.obsolete)+len(plan.spans)) <= budget {
-		scanned = plan.head
+		if plan.full {
+			scanned = plan.head
+		}
 	}
 	if deleted > 0 {
 		summary.CompactedAt = now.UTC()
@@ -251,12 +280,12 @@ ON CONFLICT(organization_id,project_id,aggregate_kind,aggregate_id) DO UPDATE SE
 	if err != nil {
 		return 0, 0, fmt.Errorf("record event compaction: %w", err)
 	}
-	return deleted, processed, nil
+	return deleted + retired, processed + receiptWork, nil
 }
 
-func obsoleteConversationEvents(ctx context.Context, q nativeQueryer, conversation string, limit int64) ([]obsoleteEvent, error) {
+func obsoleteConversationEvents(ctx context.Context, q nativeQueryer, conversation string, limit int64, full bool) ([]obsoleteEvent, error) {
 	rows, err := q.QueryContext(ctx, `SELECT e.seq,e.type,length(CAST(e.body_json AS BLOB))
-FROM conversation_events e WHERE e.conversation_id=? AND (
+FROM conversation_events e WHERE e.conversation_id=? AND ((e.type='message.delta' AND EXISTS(SELECT 1 FROM conversation_messages m WHERE m.conversation_id=e.conversation_id AND m.id=json_extract(e.body_json,'$.message_id') AND m.delivery IN ('delivered','completed','interrupted','failed','rejected','unknown'))) OR (? AND (
 e.type IN ('message.delta','heartbeat')
 OR (e.type='message.updated' AND json_extract(e.body_json,'$.id') IS NOT NULL AND e.seq < (
 SELECT max(latest.seq) FROM conversation_events latest WHERE latest.conversation_id=e.conversation_id AND latest.type='message.updated'
@@ -274,7 +303,7 @@ WHERE conversation_id=e.conversation_id AND type='conversation.updated' AND seq>
 AND json_extract(e.body_json,'$.title','$.visibility','$.status','$.preferences','$.subject_work_item_id','$.work_item_id','$.linked_at') IS (
 SELECT json_extract(body_json,'$.title','$.visibility','$.status','$.preferences','$.subject_work_item_id','$.work_item_id','$.linked_at') FROM conversation_events
 WHERE conversation_id=e.conversation_id AND type='conversation.updated' AND seq<e.seq ORDER BY seq DESC LIMIT 1)))
-ORDER BY e.seq LIMIT ?`, conversation, limit)
+)) ORDER BY e.seq LIMIT ?`, conversation, full, limit)
 	if err != nil {
 		return nil, fmt.Errorf("select obsolete conversation events: %w", err)
 	}
@@ -529,4 +558,23 @@ func tenantEventStorage(ctx context.Context, q nativeQueryer) (tenantEventStorag
 (SELECT coalesce(sum(pgsize),0) FROM dbstat WHERE name='conversation_events'),
 (SELECT count(*) FROM collaboration_events),(SELECT count(*) FROM conversation_events)`).Scan(&size.DatabaseBytes, &size.FreeBytes, &size.CollaborationBytes, &size.ConversationBytes, &size.CollaborationRows, &size.ConversationRows)
 	return size, err
+}
+
+type conversationBatchReceipt struct{ attempt, key string }
+
+func obsoleteConversationBatches(ctx context.Context, q nativeQueryer, id string, now time.Time, limit int64) ([]conversationBatchReceipt, error) {
+	rows, err := q.QueryContext(ctx, `SELECT b.attempt_id,b.batch_key FROM conversation_turn_batches b JOIN conversation_starts cs ON cs.attempt_id=b.attempt_id JOIN native_attempts a ON a.id=b.attempt_id JOIN leases l ON l.lease_id=a.lease_id WHERE cs.conversation_id=? AND `+terminalConversationBatch+` ORDER BY b.attempt_id,b.batch_key LIMIT ?`, id, formatHubTime(now), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var batches []conversationBatchReceipt
+	for rows.Next() {
+		var batch conversationBatchReceipt
+		if err := rows.Scan(&batch.attempt, &batch.key); err != nil {
+			return nil, err
+		}
+		batches = append(batches, batch)
+	}
+	return batches, errors.Join(rows.Err(), rows.Close())
 }

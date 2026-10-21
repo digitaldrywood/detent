@@ -15,6 +15,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
@@ -24,11 +25,12 @@ import (
 const hostedSharedClaimsKey = "hosted_shared_claims"
 
 type HostedSharedEntry struct {
-	Issuer      string
-	PublicKeys  []ed25519.PublicKey
-	Generation  int64
-	ResolveKey  entryauthority.Resolver
-	ReadArchive entryauthority.ArchiveReader
+	Issuer          string
+	PublicKeys      []ed25519.PublicKey
+	Generation      int64
+	ResolveKey      entryauthority.Resolver
+	ArchiveContents attachment.ArchiveContentStore
+	ReadArchive     entryauthority.ArchiveReader
 
 	verifier *cloudassert.Verifier
 }

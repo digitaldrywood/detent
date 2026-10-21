@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -20,8 +21,10 @@ import (
 // product. Transactional operations take the caller's *sql.Tx so that state
 // and the events describing it commit together.
 type conversationStore struct {
-	db     *sql.DB
-	reader *sql.DB
+	db       *sql.DB
+	reader   *sql.DB
+	contents attachment.ArchiveContentStore
+	database *database
 }
 
 func newConversationStore(db *sql.DB) *conversationStore {
@@ -114,7 +117,10 @@ type conversationRecord struct {
 }
 
 type conversationMessageRecord struct {
+	Revision       int64
 	ID             string
+	ContentID      string
+	contentHash    string
 	ConversationID string
 	Seq            int64
 	Role           conversation.Role
@@ -579,12 +585,12 @@ WHERE id = ? AND organization_id = ? AND project_id = ? AND revision = ?`,
 	return &errConversationRevision{ConversationID: record.ID, Current: current}
 }
 
-const conversationMessageColumns = `id, conversation_id, seq, role, kind, text, data_json, delivery, attempt_id, thread_id, turn_id, provider_item_id, actor_json, command_key, created_at, updated_at`
+const conversationMessageColumns = `id, conversation_id, seq, role, kind, text, data_json, delivery, attempt_id, thread_id, turn_id, provider_item_id, actor_json, command_key, created_at, updated_at, content_attachment_id, revision`
 
 func scanConversationMessage(row conversationScanner) (conversationMessageRecord, error) {
 	var message conversationMessageRecord
 	var data, actor, created, updated string
-	if err := row.Scan(&message.ID, &message.ConversationID, &message.Seq, &message.Role, &message.Kind, &message.Text, &data, &message.Delivery, &message.AttemptID, &message.ThreadID, &message.TurnID, &message.ProviderItemID, &actor, &message.CommandKey, &created, &updated); err != nil {
+	if err := row.Scan(&message.ID, &message.ConversationID, &message.Seq, &message.Role, &message.Kind, &message.Text, &data, &message.Delivery, &message.AttemptID, &message.ThreadID, &message.TurnID, &message.ProviderItemID, &actor, &message.CommandKey, &created, &updated, &message.ContentID, &message.Revision); err != nil {
 		return message, err
 	}
 	message.Data = json.RawMessage(data)
@@ -639,10 +645,16 @@ func (s *conversationStore) appendMessage(ctx context.Context, tx *sql.Tx, messa
 	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(seq), 0) + 1 FROM conversation_messages WHERE conversation_id = ?", message.ConversationID).Scan(&message.Seq); err != nil {
 		return fmt.Errorf("allocate message sequence: %w", err)
 	}
+	storedText, storedData, contentID, err := s.messageStorage(ctx, tx, *message)
+	if err != nil {
+		return err
+	}
+	message.ContentID = contentID
+	message.Revision = 1
 	if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_messages (`+conversationMessageColumns+`)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		message.ID, message.ConversationID, message.Seq, message.Role, message.Kind, message.Text, string(message.Data), message.Delivery,
-		message.AttemptID, message.ThreadID, message.TurnID, message.ProviderItemID, actor, message.CommandKey, conversationTime(message.CreatedAt), conversationTime(message.UpdatedAt),
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		message.ID, message.ConversationID, message.Seq, message.Role, message.Kind, storedText, storedData, message.Delivery,
+		message.AttemptID, message.ThreadID, message.TurnID, message.ProviderItemID, actor, message.CommandKey, conversationTime(message.CreatedAt), conversationTime(message.UpdatedAt), contentID, message.Revision,
 	); err != nil {
 		return fmt.Errorf("insert message: %w", err)
 	}
@@ -660,9 +672,13 @@ func (s *conversationStore) updateMessage(ctx context.Context, tx *sql.Tx, messa
 	if err != nil {
 		return fmt.Errorf("encode message actor: %w", err)
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE conversation_messages SET text = ?, data_json = ?, delivery = ?, attempt_id = ?, thread_id = ?, turn_id = ?, provider_item_id = ?, actor_json = ?, updated_at = ?
+	storedText, storedData, contentID, err := s.messageStorage(ctx, tx, message)
+	if err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE conversation_messages SET text = ?, data_json = ?, delivery = ?, attempt_id = ?, thread_id = ?, turn_id = ?, provider_item_id = ?, actor_json = ?, updated_at = ?, content_attachment_id = ?, revision = revision+1
 WHERE id = ? AND conversation_id = ?`,
-		message.Text, string(message.Data), message.Delivery, message.AttemptID, message.ThreadID, message.TurnID, message.ProviderItemID, actor, conversationTime(message.UpdatedAt),
+		storedText, storedData, message.Delivery, message.AttemptID, message.ThreadID, message.TurnID, message.ProviderItemID, actor, conversationTime(message.UpdatedAt), contentID,
 		message.ID, message.ConversationID)
 	if err != nil {
 		return fmt.Errorf("update message: %w", err)
@@ -722,6 +738,9 @@ func (s *conversationStore) listMessages(ctx context.Context, query nativeQuerye
 	pointers := make([]*conversationMessageRecord, 0, len(messages))
 	for i := range messages {
 		pointers = append(pointers, &messages[i])
+	}
+	if err := s.resolveMessageContents(ctx, query, pointers); err != nil {
+		return nil, err
 	}
 	if err := resolveMessageReferences(ctx, query, pointers); err != nil {
 		return nil, err
@@ -942,7 +961,7 @@ func (s *conversationStore) appendEvent(ctx context.Context, tx *sql.Tx, convers
 	if body == nil {
 		body = map[string]any{}
 	}
-	encoded, err := marshalNative(body)
+	encoded, err := marshalNative(compactConversationEvent(body))
 	if err != nil {
 		return 0, fmt.Errorf("encode event: %w", err)
 	}
@@ -985,8 +1004,11 @@ func (s *conversationStore) listEvents(ctx context.Context, query nativeQueryer,
 		}
 		events = append(events, event)
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("list events: %w", err)
+	}
+	if err := s.resolveEventContent(ctx, query, conversationID, events); err != nil {
+		return nil, err
 	}
 	return events, nil
 }

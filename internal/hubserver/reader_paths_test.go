@@ -326,6 +326,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"nativeIssueJSON":              "The mutation response reads back the browser path of the issue this request just wrote.",
 	}
 	transactionReasons := map[string]string{
+		"prepareContents":                   "The request reserves and verifies its own archive catalog rows and storage allowance before uploading content.",
 		"collectIssueEmails":                "Queues notification batches and advances their event cursors atomically.",
 		"claimIssueEmail":                   "Deletes a due notification batch and reads its recipient in the same transaction before delivery.",
 		"issueNotificationPreference":       "Updates the member preference and deletes queued notifications atomically on PUT; GET uses the reader.",

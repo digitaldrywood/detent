@@ -13,6 +13,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -20,6 +21,7 @@ import (
 
 // ConversationConfig enables the conversation product on the hub.
 type ConversationConfig struct {
+	ArchiveContents attachment.ArchiveContentStore `yaml:"-"`
 	// Enabled mounts the conversation API and streams.
 	Enabled bool
 	// Backend runs coordinator turns for conversations without a linked
@@ -153,11 +155,16 @@ func newConversationService(server *Service, cfg ConversationConfig) *conversati
 		config: cfg,
 		logger: server.config.Logger.With("component", "conversation"),
 	}
+	service.store.reader = server.database.reader
+	service.store.database = server.database
+	service.store.contents = cfg.ArchiveContents
+	if server.config.Hosted != nil && server.config.Hosted.SharedEntry != nil {
+		service.store.contents = server.config.Hosted.SharedEntry.ArchiveContents
+	}
 	service.coordinator = newConversationCoordinator(service)
 	service.controls = newConversationControlRouter(service)
 	service.settle = make(chan struct{})
 	service.settled = make(chan struct{})
-	service.store.reader = server.database.reader
 	go service.settleLoop()
 	return service
 }
@@ -595,6 +602,8 @@ type conversationResource struct {
 }
 
 type conversationMessageResource struct {
+	revision       int64
+	contentID      string
 	ID             string                   `json:"id"`
 	ConversationID string                   `json:"conversation_id"`
 	Seq            int64                    `json:"seq"`
@@ -804,6 +813,8 @@ func projectMessage(record conversationMessageRecord) conversationMessageResourc
 		data = record.Data
 	}
 	return conversationMessageResource{
+		contentID:      record.ContentID,
+		revision:       record.Revision,
 		ID:             record.ID,
 		ConversationID: record.ConversationID,
 		Seq:            record.Seq,
@@ -1005,6 +1016,9 @@ func (c *conversationService) updateMessage(ctx context.Context, tx *sql.Tx, mes
 	if err := c.store.updateMessage(ctx, tx, message); err != nil {
 		return err
 	}
+	if err := tx.QueryRowContext(ctx, "SELECT content_attachment_id,revision FROM conversation_messages WHERE id=? AND conversation_id=?", message.ID, message.ConversationID).Scan(&message.ContentID, &message.Revision); err != nil {
+		return err
+	}
 	if message.Delivery.Terminal() {
 		record, err := c.store.readConversationByID(ctx, tx, message.ConversationID)
 		if err != nil {
@@ -1038,18 +1052,15 @@ func (c *conversationService) appendDelta(ctx context.Context, tx *sql.Tx, messa
 // message's byte length before the append; the stored text is never read
 // back and rewritten, so a long streamed message costs only its new bytes.
 func (c *conversationService) appendDeltaAt(ctx context.Context, tx *sql.Tx, conversationID, messageID string, offset int64, text string, now time.Time) error {
-	result, err := tx.ExecContext(ctx, "UPDATE conversation_messages SET text = text || ?, updated_at = ? WHERE id = ? AND conversation_id = ?", text, conversationTime(now), messageID, conversationID)
-	if err != nil {
-		return fmt.Errorf("append message delta: %w", err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("append message delta: %w", err)
-	}
-	if affected == 0 {
+	var revision int64
+	err := tx.QueryRowContext(ctx, "UPDATE conversation_messages SET text = text || ?, updated_at = ?, revision=revision+1 WHERE id = ? AND conversation_id = ? RETURNING revision", text, conversationTime(now), messageID, conversationID).Scan(&revision)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nativeNotFound()
 	}
-	if _, err := c.store.appendEvent(ctx, tx, conversationID, conversation.EventMessageDelta, conversationDeltaBody(messageID, offset, text), now); err != nil {
+	if err != nil {
+		return fmt.Errorf("append message delta: %w", err)
+	}
+	if _, err := c.store.appendEvent(ctx, tx, conversationID, conversation.EventMessageDelta, conversationDeltaFact{MessageID: messageID, Revision: revision, Offset: offset, Bytes: len(text)}, now); err != nil {
 		return err
 	}
 	return nil
