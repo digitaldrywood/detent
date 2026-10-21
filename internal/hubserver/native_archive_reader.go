@@ -334,8 +334,10 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 			projection = append(projection, "json_extract(value, '$["+strconv.Itoa(index)+"]')")
 		}
 		quoted := make([]string, len(columns))
+		liveProjection := make([]string, len(columns))
 		for i, column := range columns {
 			quoted[i] = `"` + strings.ReplaceAll(column, `"`, `""`) + `"`
+			liveProjection[i] = "live." + quoted[i]
 		}
 		raw, err := json.Marshal(table.Rows)
 		if err != nil {
@@ -347,19 +349,54 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 		}
 		var identity []string
 		for _, index := range primaryColumns {
-			identity = append(identity, fmt.Sprintf("main.%s.%s IS json_extract(value,'$[%d]')", name, quoted[index], index))
+			identity = append(identity, "live."+quoted[index]+" IS archived."+quoted[index])
 		}
-		condition := ""
-		result.values = append(result.values, string(raw), string(raw))
+		result.values = append(result.values, string(raw))
+		var conditions []string
+		for _, field := range []struct{ column, value string }{
+			{"organization_id", section.OrganizationID},
+			{"project_id", section.ProjectID},
+			{"work_item_id", section.WorkItemID},
+		} {
+			if slices.Contains(columns, field.column) {
+				conditions = append(conditions, "live."+field.column+"=?")
+				result.values = append(result.values, field.value)
+			}
+		}
+		var subjectColumn string
+		switch name {
+		case "native_attempts":
+			subjectColumn = "id"
+		case "native_attempt_events", "attempt_diffs":
+			subjectColumn = "attempt_id"
+		case "change_versions", "change_evidence":
+			subjectColumn = "change_id"
+		case "collaboration_versions":
+			subjectColumn = "record_id"
+		case "conversation_messages", "conversation_events":
+			subjectColumn = "conversation_id"
+		case "collaboration_events":
+			subjectColumn = "work_item_id"
+		case "attempt_diff_files":
+			conditions = append(conditions, "live.diff_id IN (SELECT id FROM main.attempt_diffs WHERE organization_id=? AND project_id=? AND work_item_id=? AND attempt_id=?)")
+			result.values = append(result.values, section.OrganizationID, section.ProjectID, section.WorkItemID, subject)
+		default:
+			return nil, attachment.ErrInvalid
+		}
+		if subjectColumn != "" {
+			conditions = append(conditions, "live."+subjectColumn+"=?")
+			result.values = append(result.values, subject)
+		}
 		if name == "conversation_messages" && first > 0 {
-			condition = " AND (conversation_id!=? OR seq>=?)"
-			result.values = append(result.values, subject, first)
+			conditions = append(conditions, "live.seq>=?")
+			result.values = append(result.values, first)
 		}
 		if name == "collaboration_events" && last > 0 {
-			condition = " AND (work_item_id!=? OR sequence BETWEEN ? AND ?)"
-			result.values = append(result.values, subject, first, last)
+			conditions = append(conditions, "live.sequence BETWEEN ? AND ?")
+			result.values = append(result.values, first, last)
 		}
-		ctes = append(ctes, fmt.Sprintf(`%s(%s) AS MATERIALIZED (SELECT %s FROM json_each(?) UNION ALL SELECT %s FROM main.%s WHERE NOT EXISTS (SELECT 1 FROM json_each(?) WHERE %s)%s)`, name, strings.Join(quoted, ","), strings.Join(projection, ","), strings.Join(quoted, ","), name, strings.Join(identity, " AND "), condition))
+		ctes = append(ctes, fmt.Sprintf(`archive_%s(%s) AS MATERIALIZED (SELECT %s FROM json_each(?)),
+%s AS NOT MATERIALIZED (SELECT * FROM archive_%s UNION ALL SELECT %s FROM main.%s AS live LEFT JOIN archive_%s AS archived ON %s WHERE archived.rowid IS NULL AND %s)`, name, strings.Join(quoted, ","), strings.Join(projection, ","), name, name, strings.Join(liveProjection, ","), name, name, strings.Join(identity, " AND "), strings.Join(conditions, " AND ")))
 	}
 	result.ctes = strings.Join(ctes, ",")
 	return result, nil
