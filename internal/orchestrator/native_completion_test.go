@@ -238,6 +238,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		wantAuthority    bool
 		recovery         *tracker.NativeRecovery
 		cleared          bool
+		reusedAttempt    string
 	}{
 		{name: "PLAN ordinary provider failure retains ordinary completion", mode: runpkg.RunModePlan, sourceState: "Todo", states: planRecovery, runErr: errors.New("provider failed"), turnStarted: true, wantOrdinary: true, wantContinue: true},
 		{name: "PLAN post-provider recovery error retains ordinary completion", mode: runpkg.RunModePlan, sourceState: "Todo", states: planRecovery, runErr: runpkg.ErrNativeRecoveryRequired, turnStarted: true, wantOrdinary: true, wantContinue: true},
@@ -356,6 +357,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "disabled review complete source settles publication refusal", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, VersionID: "version_1", Reviewed: true, VersionError: "the final attempt diff does not identify the current Change Request head", VersionCode: "policy_mismatch"}, states: unfinishedWorkflow, humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantSettled: true, roundTrip: true},
 		{name: "an accepted version without a landing move lands directly", change: accepted, states: workflow, wantDirect: true},
 		{name: "an approval that arrived after the publish lands", change: waiting, states: landing, reviewed: &yes, wantState: "Merging", wantComment: "runner lands it next"},
+		{name: "reused completion names its source attempt in the item comment", change: waiting, states: rework, sourceState: "Rework", reviewed: &yes, reusedAttempt: "attempt_source", wantState: "Merging", wantComment: "Detent reused the completed disposition from attempt attempt_source to resume review without rerunning implementation."},
+		{name: "reused completion discloses its source when acceptance requests rework", change: criterionReview("rework", 1, gate.Finding{Severity: "p2", Body: "Source defect"}), states: unfinishedWorkflow, humanReview: &no, reusedAttempt: "attempt_source", wantState: "Rework", wantComment: "Detent reused the completed disposition from attempt attempt_source to resume review without rerunning implementation."},
 		{name: "a run that published no version cannot succeed on an earlier reviewed one", change: opened, states: landing, reviewed: &yes, wantDeferred: true},
 		{name: "unavailable version evidence retains publication owner", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, Error: "publication unavailable"}, states: landing, wantDeferred: true},
 		{name: "unproven absorbed rework hands off the actual mismatch without publication replay", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, VersionError: "the final attempt diff does not identify the current Change Request head"}, finalMessage: unfinishedReport, states: landing, humanReview: &no, wantSettled: true},
@@ -681,6 +684,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				IssueID: issue.ID, CompletedAt: now, Err: test.runErr,
 				Request: runpkg.RunRequest{Mode: mode, WorkAttemptID: 42, Generation: 7},
 				Result:  runpkg.RunResult{FinalState: finalState, FinalMessage: test.finalMessage, NativeChange: test.change, Tokens: tokens, DiffStats: diffStats, TurnStarted: test.turnStarted || test.wantInstance || test.wantSettled || test.diffStats.Fingerprint != "", ReviewConversationsCleared: test.cleared},
+			}
+			if test.reusedAttempt != "" {
+				copy := *event.Result.NativeChange
+				copy.ReusedDispositionAttemptID = test.reusedAttempt
+				event.Result.NativeChange = &copy
 			}
 			if test.recovery != nil {
 				event.Request.Execution = &nativeLandingJourneyExecution{recovery: *test.recovery}

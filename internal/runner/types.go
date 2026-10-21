@@ -856,9 +856,10 @@ type RunResult struct {
 	// NativeLanding is what a hub-native landing run did with the reviewed
 	// version: landed it, or refused with a reason a person acts on. It is
 	// nil for every other run.
-	NativeLanding    *NativeLanding
-	budgetProjection *dispatchBudgetProjection
-	terminalFailure  *tracker.NativeTerminalFailure
+	NativeLanding              *NativeLanding
+	budgetProjection           *dispatchBudgetProjection
+	terminalFailure            *tracker.NativeTerminalFailure
+	reusedDispositionAttemptID string
 }
 
 // NativeLandingTarget is the reviewed version a landing run puts on the
@@ -919,11 +920,12 @@ func (l NativeLanding) RequiresRework() bool {
 // native item has no pull request; the runner opens the Change Request under
 // the run's lease and reports it here, and the orchestrator moves the item.
 type NativeChange struct {
-	SecurityAudit             *tracker.SecurityAuditReview
-	ImplementationReview      *gate.ValidatorResult
-	ImplementationReviewError string
-	Landing                   *NativeLanding
-	Validator                 *gate.ValidatorResult
+	ReusedDispositionAttemptID string
+	SecurityAudit              *tracker.SecurityAuditReview
+	ImplementationReview       *gate.ValidatorResult
+	ImplementationReviewError  string
+	Landing                    *NativeLanding
+	Validator                  *gate.ValidatorResult
 	// Changed reports that the run's final attempt diff has commits ahead of
 	// its base. A run that committed nothing has nothing to review.
 	Changed bool
