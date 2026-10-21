@@ -29,12 +29,12 @@ func attachmentEvidenceCommand(scope nativeScope, operation string, input attach
 func (s *Service) checkAttachmentEvidence(c echo.Context, input *attachment.EvidenceRequest) (resultErr error) {
 	if c.Param("attempt") == "" {
 		if input != nil {
-			return nativeInvalid("Evidence requires its attempt endpoint")
+			return nativePublicInvalid("Evidence requires its attempt endpoint")
 		}
 		return nil
 	}
 	if input == nil || input.AttemptID != c.Param("attempt") || strings.TrimSpace(input.Caption) == "" || len(input.Caption) > 1024 || !utf8.ValidString(input.Caption) || strings.ContainsAny(input.Caption, "\r\n\x00") || input.IdempotencyKey == "" || input.LeaseID == "" || input.FencingToken <= 0 {
-		return nativeInvalid("Invalid attempt evidence")
+		return nativePublicInvalid("Invalid attempt evidence")
 	}
 	tx, err := s.database.db.BeginTx(c.Request().Context(), nil)
 	if err != nil {

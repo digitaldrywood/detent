@@ -159,7 +159,7 @@ type updateProjectIntegrationRequest struct {
 func (s *Service) updateProjectIntegration(c echo.Context) error {
 	var request updateProjectIntegrationRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
 	scope.requireHostedAdmin = true
@@ -179,7 +179,7 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 		automaticIntake := current.Profile == "native" && (current.Repository != "" || current.CheckoutRepository != "")
 		preserveIntake := automaticIntake && request.Intake == ""
 		if (!preserveIntake && request.Intake != "disabled" && request.Intake != "manual") || (request.Projection != "disabled" && request.Projection != "summary") {
-			return nil, nativeInvalid("Intake must be disabled or manual; projection must be disabled or summary")
+			return nil, nativePublicInvalid("Intake must be disabled or manual; projection must be disabled or summary")
 		}
 		completed, err := archivePeriod(request.ArchiveCompletedAfterDays, current.ArchiveCompletedAfterDays)
 		if err != nil {
@@ -206,10 +206,10 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 			return readProjectIntegration(ctx, tx, scope)
 		}
 		if current.RepositoryID == 0 && ((!preserveIntake && request.Intake != "disabled" && !automaticIntake) || request.Projection != "disabled" || request.RepositoryEnabled) {
-			return nil, nativeInvalid("Attach a GitHub repository before enabling intake, summaries or repository integration")
+			return nil, nativePublicInvalid("Attach a GitHub repository before enabling intake, summaries or repository integration")
 		}
 		if current.Profile == "github_compatible" && request.Projection != "disabled" {
-			return nil, nativeInvalid("Summary projection requires native authority; use explicit cutover first")
+			return nil, nativePublicInvalid("Summary projection requires native authority; use explicit cutover first")
 		}
 		if err := requireIntegrationIdle(ctx, tx, scope, now); err != nil {
 			return nil, err
@@ -269,13 +269,13 @@ func archivePeriod(raw json.RawMessage, current *int) (*int, error) {
 	}
 	var days *int
 	if err := json.Unmarshal(raw, &days); err != nil {
-		return nil, nativeInvalid("Archive period must be 7, 14, 30, 60, 90 days or null")
+		return nil, nativePublicInvalid("Archive period must be 7, 14, 30, 60, 90 days or null")
 	}
 	if days != nil {
 		switch *days {
 		case 7, 14, 30, 60, 90:
 		default:
-			return nil, nativeInvalid("Archive period must be 7, 14, 30, 60, 90 days or null")
+			return nil, nativePublicInvalid("Archive period must be 7, 14, 30, 60, 90 days or null")
 		}
 	}
 	return days, nil
@@ -290,7 +290,7 @@ func requireIntegrationIdle(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		return err
 	}
 	if active != 0 {
-		return nativeInvalid("Finish active leases and processing GitHub writes before changing integration authority")
+		return nativePublicInvalid("Finish active leases and processing GitHub writes before changing integration authority")
 	}
 	return nil
 }

@@ -28,7 +28,7 @@ func (s *Service) checkAttachmentArchive(c echo.Context) error {
 		Reference *attachment.ArchiveReference `json:"reference,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &input); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if input.Reference != nil {
 		return s.writeAttachmentArchive(c, *input.Reference, false)
@@ -49,7 +49,7 @@ func (s *Service) checkAttachmentArchive(c echo.Context) error {
 func (s *Service) recordAttachmentArchive(c echo.Context) error {
 	var ref attachment.ArchiveReference
 	if err := decodeAPIJSON(c, &ref); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.writeAttachmentArchive(c, ref, true)
 }

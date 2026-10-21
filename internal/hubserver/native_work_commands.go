@@ -37,11 +37,11 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 	scope.action = operatortool.FileIssue
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items", Feature: "collaboration"}
 	if len(request.ChallengeToken) > 128 || len(request.NotDuplicateOf) > 5 || (request.ChallengeToken == "") != (len(request.NotDuplicateOf) == 0) {
-		return nil, nativeInvalid("Supply a duplicate challenge token and one to five issue numbers together")
+		return nil, nativePublicInvalid("Supply a duplicate challenge token and one to five issue numbers together")
 	}
 	if request.ChallengeToken != "" {
 		if request.GitHubIssueURL != "" || request.Provenance != nil {
-			return nil, nativeInvalid("Duplicate confirmation requires an unlinked native issue")
+			return nil, nativePublicInvalid("Duplicate confirmation requires an unlinked native issue")
 		}
 		options.OperationID += "/duplicate-confirmation"
 	}
@@ -79,7 +79,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 				return nil, err
 			} else if !found {
 				if s.config.ReconcileBackend == nil {
-					return nil, nativeInvalid("GitHub App repository transport is unavailable")
+					return nil, nativePublicInvalid("GitHub App repository transport is unavailable")
 				}
 				parts := strings.Split(repository, "/")
 				fetched, err := s.config.ReconcileBackend.Reconcile(ctx, ReconcileRequest{Profile: "native", SkipIssues: true, SkipRepository: true, Repository: RepositoryTarget{Owner: parts[0], Name: parts[1]}})
@@ -90,7 +90,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 					return nil, err
 				}
 				if !strings.EqualFold(fetched.Repository.Owner+"/"+fetched.Repository.Name, repository) {
-					return nil, nativeInvalid("GitHub App repository does not match the linked source")
+					return nil, nativePublicInvalid("GitHub App repository does not match the linked source")
 				}
 				sourceRepository = &fetched.Repository
 			}
@@ -99,7 +99,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		origin, machine := issueorigin.Parse(request.Body)
 		if machine && scope.credential.HostedRole != "reporter" && request.ChallengeToken != "" {
-			return nil, nativeInvalid("Machine reports do not accept duplicate challenges")
+			return nil, nativePublicInvalid("Machine reports do not accept duplicate challenges")
 		}
 		workerReport := machine && origin.Kind == "worker" && request.State == "Backlog" && scope.credential.Runner.RunnerID != "" && request.LeaseID != ""
 		scheduledReport := machine && origin.Kind == "doctor" && origin.Instance == "github-actions" && scope.credential.Scope != apiScopeWorker
@@ -174,7 +174,7 @@ func createNativeMachineIntakeTx(ctx context.Context, tx *sql.Tx, scope nativeSc
 				todo = todo || state.Name == "Todo" && state.Dispatchable && !state.Terminal && !state.OperatorOnly
 			}
 			if !backlog || !todo {
-				return tracker.NativeIssue{}, nativeInvalid("Defect reporting requires nondispatchable Backlog and dispatchable Todo")
+				return tracker.NativeIssue{}, nativePublicInvalid("Defect reporting requires nondispatchable Backlog and dispatchable Todo")
 			}
 			request.State = "Todo"
 			if request.Priority == nil || *request.Priority > 1 {
@@ -220,7 +220,7 @@ func reportNativeMachineOccurrenceTx(ctx context.Context, tx *sql.Tx, scope nati
 		}
 		occurrence := issueorigin.Occurrence(request.Body)
 		if len(occurrence) > 64<<10 {
-			return tracker.NativeIssue{}, nativeInvalid("Comment body must contain 1 byte to 64 KiB")
+			return tracker.NativeIssue{}, nativePublicInvalid("Comment body must contain 1 byte to 64 KiB")
 		}
 		if request.Priority != nil && (issue.Priority == nil || *request.Priority < *issue.Priority) {
 			if err := requireNativeEdit(issue, issue.Revision); err != nil {
@@ -323,7 +323,7 @@ func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScop
 			fields = append(fields, "priority")
 		}
 		if len(fields) == 0 {
-			return nil, nativeInvalid("At least one field must be supplied")
+			return nil, nativePublicInvalid("At least one field must be supplied")
 		}
 		if err := validateNativeContent(issue.Title, issue.Body, issue.Labels, issue.Assignees, issue.Priority); err != nil {
 			return nil, err
@@ -353,10 +353,10 @@ func changeNativeDependencyTx(ctx context.Context, tx *sql.Tx, scope nativeScope
 		return tracker.NativeIssue{}, err
 	}
 	if request.RelationshipType != "" && request.RelationshipType != "dependency" && request.RelationshipType != "related" {
-		return tracker.NativeIssue{}, nativeInvalid("Relationship type must be dependency or related")
+		return tracker.NativeIssue{}, nativePublicInvalid("Relationship type must be dependency or related")
 	}
 	if request.Operation != "add" && request.Operation != "remove" {
-		return tracker.NativeIssue{}, nativeInvalid("Dependency operation must be add or remove")
+		return tracker.NativeIssue{}, nativePublicInvalid("Dependency operation must be add or remove")
 	}
 	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
 	args := append([]any{scope.organization, request.RelatedWorkItemID}, grantArgs...)
@@ -369,7 +369,7 @@ AND (`+condition+`)`, args...).Scan(&blockerID, &blockerProject)
 	}
 	if request.RelationshipType == "related" {
 		if blockerID == dependentID {
-			return tracker.NativeIssue{}, nativeInvalid("An issue cannot be related to itself")
+			return tracker.NativeIssue{}, nativePublicInvalid("An issue cannot be related to itself")
 		}
 		if err := changeRelatedIssuesTx(ctx, tx, blockerID, dependentID, request.Operation, now); err != nil {
 			return tracker.NativeIssue{}, err
@@ -377,7 +377,7 @@ AND (`+condition+`)`, args...).Scan(&blockerID, &blockerProject)
 		return persistNativeIssue(ctx, tx, scope, issue, "issue.edited", tracker.CollaborationData{RelatedWorkItemID: request.RelatedWorkItemID, Operation: request.Operation, Fields: []string{"related"}}, now)
 	}
 	if blockerID == dependentID {
-		return tracker.NativeIssue{}, nativeInvalid("Dependencies cannot form a cycle")
+		return tracker.NativeIssue{}, nativePublicInvalid("Dependencies cannot form a cycle")
 	}
 	if request.Operation == "add" {
 		var cycle int
@@ -386,7 +386,7 @@ AND (`+condition+`)`, args...).Scan(&blockerID, &blockerProject)
 			return tracker.NativeIssue{}, err
 		}
 		if cycle != 0 {
-			return tracker.NativeIssue{}, nativeInvalid("Dependencies cannot form a cycle")
+			return tracker.NativeIssue{}, nativePublicInvalid("Dependencies cannot form a cycle")
 		}
 		_, err = tx.ExecContext(ctx, "INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at) VALUES (?, ?, 'native', ?, ?) ON CONFLICT DO NOTHING", blockerID, dependentID, formatHubTime(now), formatHubTime(now))
 		if err != nil {
@@ -414,10 +414,10 @@ func (s *Service) createNativeCommentCommand(ctx context.Context, scope nativeSc
 			return nil, err
 		}
 		if issue.Profile != "native" {
-			return nil, nativeInvalid("Compatibility project discussion is externally owned")
+			return nil, nativePublicInvalid("Compatibility project discussion is externally owned")
 		}
 		if strings.TrimSpace(request.Body) == "" || len(request.Body) > 64<<10 {
-			return nil, nativeInvalid("Comment body must contain 1 byte to 64 KiB")
+			return nil, nativePublicInvalid("Comment body must contain 1 byte to 64 KiB")
 		}
 		if err := validateNativeProvenance(scope, request.Provenance); err != nil {
 			return nil, err
@@ -452,16 +452,16 @@ func (s *Service) updateNativeCommentCommand(ctx context.Context, scope nativeSc
 			return nil, operatortool.ErrAccessDenied
 		}
 		if request.ExpectedRevision <= 0 {
-			return nil, nativeInvalid("Expected revision must be positive")
+			return nil, nativePublicInvalid("Expected revision must be positive")
 		}
 		if comment.Revision != request.ExpectedRevision {
 			return nil, nativeConflict(comment.Revision)
 		}
 		if comment.Deleted {
-			return nil, nativeInvalid("Deleted comments cannot be changed")
+			return nil, nativePublicInvalid("Deleted comments cannot be changed")
 		}
 		if !request.Deleted && (strings.TrimSpace(request.Body) == "" || len(request.Body) > 64<<10) {
-			return nil, nativeInvalid("Comment body must contain 1 byte to 64 KiB")
+			return nil, nativePublicInvalid("Comment body must contain 1 byte to 64 KiB")
 		}
 		if comment.Body == request.Body && comment.Deleted == request.Deleted {
 			return comment, nil
@@ -528,7 +528,7 @@ func (s *Service) operatorCreateNativeWork(ctx context.Context, scope nativeScop
 func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, name string, request operatortool.WorkArguments) (json.RawMessage, error) {
 	command := tracker.MutationForContext(ctx, "")
 	if request.Target == "pr" {
-		return nil, nativeInvalid("application service is unavailable")
+		return nil, nativePublicInvalid("application service is unavailable")
 	}
 	current, err := s.nativeWorkObservation(ctx, scope, request.Identifier)
 	if err != nil {
@@ -548,12 +548,12 @@ func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, nam
 		return s.verifyNativeIssueCommand(ctx, scope, request.Identifier, tracker.VerifyFix{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), Result: request.Result, Comment: request.Comment})
 	case operatortool.EditComment:
 		if request.ExpectedRevision <= 0 {
-			return nil, nativeInvalid("expected revision is required")
+			return nil, nativePublicInvalid("expected revision is required")
 		}
 		return s.updateNativeCommentCommand(ctx, scope, request.Identifier, request.CommentID, tracker.UpdateComment{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), Body: *request.Body})
 	case operatortool.SetDependency:
 		if request.ExpectedRevision <= 0 {
-			return nil, nativeInvalid("expected revision is required")
+			return nil, nativePublicInvalid("expected revision is required")
 		}
 		return s.changeNativeDependencyCommand(ctx, scope, request.Identifier, tracker.DependencyMutation{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), RelatedWorkItemID: tracker.NativeWorkItemID(request.Related), RelationshipType: request.RelationshipType, Operation: request.Operation})
 	case operatortool.RestoreItem:
@@ -561,7 +561,7 @@ func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, nam
 	case operatortool.OrderItem, operatortool.SetQueuePriority:
 		return nil, &nativeError{Code: "invalid_request", Message: "Queue ordering and priority overrides require a GitHub-compatible project; native projects use issue priority", status: http.StatusUnprocessableEntity, publicMessage: true}
 	default:
-		return nil, nativeInvalid("application service is unavailable")
+		return nil, nativePublicInvalid("application service is unavailable")
 	}
 }
 
@@ -586,14 +586,14 @@ func (s *Service) operatorCompatibilityWork(ctx context.Context, scope nativeSco
 			}
 			if name == operatortool.SetDependency {
 				if request.RelationshipType == "related" {
-					return nil, nativeInvalid("Related links require native issue authority")
+					return nil, nativePublicInvalid("Related links require native issue authority")
 				}
 				_, relatedID, err := readNativeIssue(ctx, tx, scope, request.Related)
 				if err != nil {
 					return nil, err
 				}
 				if relatedID == id {
-					return nil, nativeInvalid("dependency must name another item")
+					return nil, nativePublicInvalid("dependency must name another item")
 				}
 				if err := changeDependencyTx(ctx, tx, id, dependencyMutationRequest{Action: request.Operation, BlockerWorkItemID: relatedID, Provenance: "hub"}, now); err != nil {
 					return nil, err
@@ -606,6 +606,6 @@ func (s *Service) operatorCompatibilityWork(ctx context.Context, scope nativeSco
 			return mutationResponse{WorkItemID: id, Kind: name, Status: "applied"}, nil
 		})
 	default:
-		return nil, nativeInvalid("application service is unavailable")
+		return nil, nativePublicInvalid("application service is unavailable")
 	}
 }

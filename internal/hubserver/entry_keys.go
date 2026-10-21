@@ -132,12 +132,12 @@ func (s *Service) entryKeyAdmin(c echo.Context) error {
 	defer cancel()
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService || claims.Subject == "" || claims.Role != "owner" && claims.Role != "admin" {
-		return c.NoContent(http.StatusForbidden)
+		return s.hostedJSONError(c, http.StatusForbidden, "Organization administrator service access is required")
 	}
 	var role string
 	err := s.database.reader.QueryRowContext(ctx, "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL", claims.Subject).Scan(&role)
 	if err != nil || role != "owner" && role != "admin" {
-		return c.NoContent(http.StatusForbidden)
+		return s.hostedJSONError(c, http.StatusForbidden, "Active organization administrator membership is required")
 	}
 	return c.NoContent(http.StatusOK)
 }
@@ -149,13 +149,13 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		ConnectionID string          `json:"connection_id"`
 	}
 	if err := decodeAPIJSON(c, &call); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if audit := entryKeyAuditFrom(c.Request().Context()); audit != nil {
 		audit.operation = call.Name
 	}
 	if call.ConnectionID == "" || len(call.ConnectionID) > 256 {
-		return invalidAPIRequest(c, operatortool.ErrInvalidArguments)
+		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
 	ctx := operatortool.BindConnection(c.Request().Context(), call.ConnectionID, "shared-entry")
 	if err := (hostedOperatorExecutor{s}).OpenConnection(ctx); err != nil {
@@ -167,17 +167,17 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	}
 	definition, found := operatortool.Lookup(call.Name)
 	if !found {
-		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "tool_unavailable", Message: "This tool is unavailable in the target organization"})
+		return s.refusedAPIError(c, http.StatusForbidden, "tool_unavailable", "This tool is unavailable in the target organization", apikey.Refusal{Code: "tool_unavailable", Message: "This tool is unavailable in the target organization"})
 	}
 	permission := projectToolScope(call.Name, definition.Annotations.ReadOnly)
 	if operatortool.IsAdministration(call.Name) {
 		permission = operatortool.AdministrationScope(call.Name)
 	}
 	if !hostedKeyAllows(credential.HostedKeyScope, permission) {
-		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "key_permission_denied", Message: "The key permission does not allow this call"})
+		return s.refusedAPIError(c, http.StatusForbidden, "key_permission_denied", "The key permission does not allow this call", apikey.Refusal{Code: "key_permission_denied", Message: "The key permission does not allow this call"})
 	}
 	if !hostedRoleAllows(credential.HostedRole, permission, call.Name) {
-		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "role_denied", Message: "The current organization role does not allow this call"})
+		return s.refusedAPIError(c, http.StatusForbidden, "role_denied", "The current organization role does not allow this call", apikey.Refusal{Code: "role_denied", Message: "The current organization role does not allow this call"})
 	}
 	var selector struct {
 		ProjectID  string `json:"project_id"`
@@ -185,7 +185,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		Reference  string `json:"reference"`
 	}
 	if json.Unmarshal(call.Arguments, &selector) != nil {
-		return invalidAPIRequest(c, operatortool.ErrInvalidArguments)
+		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
 	resource := selector.Identifier
 	if resource == "" {
@@ -195,7 +195,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		audit.project, audit.resource = selector.ProjectID, resource
 	}
 	if selector.ProjectID != "" && !credential.EntryKey.Allows(selector.ProjectID) {
-		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"})
+		return s.refusedAPIError(c, http.StatusForbidden, "key_project_denied", "The project is outside this key's access context", apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"})
 	}
 	definitions, err := (hostedOperatorExecutor{s}).ListTools(ctx)
 	if err != nil {
@@ -206,7 +206,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		available = available || d.Name == call.Name
 	}
 	if !available {
-		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "tool_unavailable", Message: "The target organization's role or plan does not provide this tool"})
+		return s.refusedAPIError(c, http.StatusForbidden, "tool_unavailable", "The target organization's role or plan does not provide this tool", apikey.Refusal{Code: "tool_unavailable", Message: "The target organization's role or plan does not provide this tool"})
 	}
 	if audit := entryKeyAuditFrom(ctx); audit != nil {
 		if err := s.auditEntryKey(ctx, s.database.db, audit, 0); err != nil {
@@ -217,17 +217,17 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	if err != nil {
 		var request *operatortool.RequestError
 		if errors.As(err, &request) {
-			return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: request.Code, Message: request.Message})
+			return s.refusedAPIError(c, http.StatusUnprocessableEntity, request.Code, request.Message, apiErrorResponse{Code: request.Code, Message: request.Message})
 		}
 		if errors.Is(err, operatortool.ErrInvalidArguments) {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 		if errors.Is(err, chat.ErrActionNotFound) {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 		var refusal *apikey.Refusal
 		if errors.As(err, &refusal) {
-			return c.JSON(http.StatusForbidden, refusal)
+			return s.nativeAPIError(c, refusal)
 		}
 		return s.nativeAPIError(c, err)
 	}
@@ -280,14 +280,14 @@ func (s *Service) entryKeyAudit(c echo.Context) error {
 		Event string `json:"event"`
 	}
 	if err := decodeAPIJSON(c, &event); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if len(event.KeyID) > 256 || event.Owner == "" || len(event.Owner) > 256 || event.Event == "" || len(event.Event) > 128 {
-		return invalidAPIRequest(c, operatortool.ErrInvalidArguments)
+		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService {
-		return c.NoContent(http.StatusForbidden)
+		return s.hostedJSONError(c, http.StatusForbidden, "Shared service access is required to record key audit events")
 	}
 	metadata, err := json.Marshal(event)
 	if err != nil {
@@ -304,12 +304,12 @@ func (s *Service) entryKeyAudit(c echo.Context) error {
 func (s *Service) entryKeyContext(c echo.Context) error {
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService || claims.Subject == "" {
-		return c.NoContent(http.StatusForbidden)
+		return s.hostedJSONError(c, http.StatusForbidden, "Shared service identity is required to read key context")
 	}
 	var local string
 	err := s.database.auth().QueryRowContext(c.Request().Context(), "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL", claims.Subject).Scan(&local)
 	if err != nil || !auth.ValidOrganizationRole(local) || !auth.ValidOrganizationRole(claims.Role) {
-		return c.NoContent(http.StatusForbidden)
+		return s.hostedJSONError(c, http.StatusForbidden, "Active organization membership and a valid role are required")
 	}
 	credential := apiCredential{Hosted: &auth.HostedIdentity{Subject: claims.Subject}, HostedRole: lesserHostedRole(local, claims.Role)}
 	projects, err := s.hostedReadableProjects(c.Request().Context(), credential)

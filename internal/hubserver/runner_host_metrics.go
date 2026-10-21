@@ -191,7 +191,7 @@ func (s *Service) readRunnerHostHistory(ctx context.Context, organization tracke
 		to = now.Add(time.Hour)
 	}
 	if !from.Before(to) || to.Sub(from) > 720*time.Hour {
-		return nil, nativeInvalid("Host history range must be positive and at most 30 days")
+		return nil, nativePublicInvalid("Host history range must be positive and at most 30 days")
 	}
 	from = from.UTC()
 	from = maxHostHistoryTime(from, now.Add(-719*time.Hour))
