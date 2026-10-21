@@ -453,7 +453,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 			},
 		},
 		{
-			name: "provider rate limit", account: "owner", want: conversationClosedServerError, wantErr: auth.ErrHostedIdentity, wantError: "status 429", credentialStatus: http.StatusInternalServerError,
+			name: "provider rate limit", account: "owner", want: conversationClosedServerError, wantErr: auth.ErrHostedIdentity, wantError: "status 429", credentialStatus: http.StatusServiceUnavailable,
 			mutate: func(_ *testing.T, f *browserHostedFixture, _ nativeScope) {
 				f.service.config.Hosted.Provider = streamMembershipFailureProvider{HostedProvider: f.provider, err: &auth.HostedIdentityError{Reason: auth.HostedReasonProviderUnavailable, Status: http.StatusTooManyRequests}}
 			},
