@@ -1592,7 +1592,7 @@ func buildRunPrompt(workflow config.Workflow, req *RunRequest, mode string, prom
 // continues from and records it on the workspace issue.
 func (r *Runner) recoverRunChangeSource(ctx context.Context, req RunRequest, runWorkspace workspace.Backend, workspaceIssue *workspace.Issue, nativeLanding, sourceRecovery bool) error {
 	source, ok := req.Execution.(ChangeSourceExecution)
-	if !ok || !(workspaceIssue.NativeRework || nativeLanding || sourceRecovery || req.Execution.Recovery().SourceVersionID != "") {
+	if !ok || !workspaceIssue.NativeRework && !nativeLanding && !sourceRecovery && req.Execution.Recovery().SourceVersionID == "" {
 		return nil
 	}
 	if local, ok := runWorkspace.(interface {
