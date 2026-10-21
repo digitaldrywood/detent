@@ -1556,6 +1556,71 @@ func verifyAgentResume(ctx context.Context, backend AgentBackend, process AgentP
 	return verifier.VerifyResume(ctx, process, resume)
 }
 
+// buildRunPrompt renders the turn prompt for the run mode and appends the
+// forge retry, native recovery and native rebase instructions.
+func buildRunPrompt(workflow config.Workflow, req *RunRequest, mode string, promptOptions PromptOptions, reworkPrecheck workspace.MergePrepareResult) (string, error) {
+	var prompt string
+	var err error
+	if mode == RunModeRoutine && req.Admission != nil {
+		prompt, err = BuildAdmissionPrompt(req.Issue, *req.Admission, promptOptions)
+	} else if mode == RunModeRoutine && req.Routine != nil {
+		prompt, err = BuildRoutinePrompt(workflow, req.Issue, *req.Routine, promptOptions)
+	} else {
+		prompt, err = BuildPrompt(workflow, req.Issue, promptOptions)
+	}
+	if err != nil {
+		return "", fmt.Errorf("build prompt: %w", err)
+	}
+	if req.ForgeRetry != nil && !forgeRetryReadOperation(req.ForgeRetry.Operation) {
+		prompt = forgeRetryPrompt(*req.ForgeRetry, req.Issue)
+		if strings.TrimSpace(req.ForgeRetry.Branch) != "" && req.Issue.PullRequest == nil {
+			req.deliverableRecoveryBranch = strings.TrimSpace(req.ForgeRetry.Branch)
+		}
+	}
+	recoveryPrompt, err := nativeRecoveryPrompt(req.Execution)
+	if err != nil {
+		return "", err
+	}
+	prompt += recoveryPrompt
+	if reworkPrecheck.Status != "" {
+		prompt += "\n\nThe runner owns native rebase preparation and finalization. Resolve source conflicts in this worktree and stage the resolved files with git add. Do not run rebase, rebase --continue, branch/ref updates, or signing workarounds. During a paused rebase, leave the resolved index for the runner to finalize; leave additional changes staged for the runner when no rebase is paused.\n" + reworkPrecheck.Message
+	}
+	return prompt, nil
+}
+
+// recoverRunChangeSource recovers the reviewed Change source a native run
+// continues from and records it on the workspace issue.
+func (r *Runner) recoverRunChangeSource(ctx context.Context, req RunRequest, runWorkspace workspace.Backend, workspaceIssue *workspace.Issue, nativeLanding, sourceRecovery bool) error {
+	source, ok := req.Execution.(ChangeSourceExecution)
+	if !ok || !(workspaceIssue.NativeRework || nativeLanding || sourceRecovery || req.Execution.Recovery().SourceVersionID != "") {
+		return nil
+	}
+	if local, ok := runWorkspace.(interface {
+		Existing(workspace.Issue) (workspace.Info, error)
+	}); ok {
+		if existing, existingErr := local.Existing(*workspaceIssue); existingErr == nil {
+			source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+				return workspace.CaptureChangeSource(ctx, existing.Path, base, head)
+			})
+		}
+	}
+
+	recovered, recoverErr := source.RecoverChangeSource(ctx)
+	if recoverErr != nil && !checkpointRefCoversChangeSource(recoverErr, req.Execution.Recovery(), nativeLanding, false) {
+		if errors.Is(recoverErr, ErrChangeSourceVersionSuperseded) {
+			recoverErr = fmt.Errorf("%w: %w", ErrNativeRecoveryRequired, recoverErr)
+		}
+		return fmt.Errorf("recover native Change source: %w", recoverErr)
+	}
+	if recoverErr != nil {
+		r.logWorkerEvent(req.Issue, "worker_change_source_from_checkpoint_ref", "error", recoverErr)
+	}
+	if recovered.Version.ID != "" {
+		workspaceIssue.Source = &recovered
+	}
+	return nil
+}
+
 func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult, returnErr error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -1638,30 +1703,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	workspaceIssue.FreshCheckout = false
 	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework)
-	if source, ok := req.Execution.(ChangeSourceExecution); ok && (workspaceIssue.NativeRework || nativeLanding || reviewRecovery != nil || publicationRecovery || req.Execution.Recovery().SourceVersionID != "") {
-		if local, ok := runWorkspace.(interface {
-			Existing(workspace.Issue) (workspace.Info, error)
-		}); ok {
-			if existing, existingErr := local.Existing(workspaceIssue); existingErr == nil {
-				source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
-					return workspace.CaptureChangeSource(ctx, existing.Path, base, head)
-				})
-			}
-		}
-
-		recovered, recoverErr := source.RecoverChangeSource(ctx)
-		if recoverErr != nil && !checkpointRefCoversChangeSource(recoverErr, req.Execution.Recovery(), nativeLanding, false) {
-			if errors.Is(recoverErr, ErrChangeSourceVersionSuperseded) {
-				recoverErr = fmt.Errorf("%w: %w", ErrNativeRecoveryRequired, recoverErr)
-			}
-			return RunResult{}, fmt.Errorf("recover native Change source: %w", recoverErr)
-		}
-		if recoverErr != nil {
-			r.logWorkerEvent(req.Issue, "worker_change_source_from_checkpoint_ref", "error", recoverErr)
-		}
-		if recovered.Version.ID != "" {
-			workspaceIssue.Source = &recovered
-		}
+	if err := r.recoverRunChangeSource(ctx, req, runWorkspace, &workspaceIssue, nativeLanding, reviewRecovery != nil || publicationRecovery); err != nil {
+		return RunResult{}, err
 	}
 	if req.Execution != nil && !nativeLanding && !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), workspaceIssue) {
 		workspaceIssue.Checkpoint = nativeRestorableCheckpoint(req.Execution.Recovery(), workspaceIssue.Source)
@@ -2158,30 +2201,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			promptOptions.RecoveryState = recoveryState
 		}
 	}
-	var prompt string
-	if mode == RunModeRoutine && req.Admission != nil {
-		prompt, err = BuildAdmissionPrompt(req.Issue, *req.Admission, promptOptions)
-	} else if mode == RunModeRoutine && req.Routine != nil {
-		prompt, err = BuildRoutinePrompt(workflow, req.Issue, *req.Routine, promptOptions)
-	} else {
-		prompt, err = BuildPrompt(workflow, req.Issue, promptOptions)
-	}
-	if err != nil {
-		return RunResult{}, fmt.Errorf("build prompt: %w", err)
-	}
-	if req.ForgeRetry != nil && !forgeRetryReadOperation(req.ForgeRetry.Operation) {
-		prompt = forgeRetryPrompt(*req.ForgeRetry, req.Issue)
-		if strings.TrimSpace(req.ForgeRetry.Branch) != "" && req.Issue.PullRequest == nil {
-			req.deliverableRecoveryBranch = strings.TrimSpace(req.ForgeRetry.Branch)
-		}
-	}
-	recoveryPrompt, err := nativeRecoveryPrompt(req.Execution)
+	prompt, err := buildRunPrompt(workflow, &req, mode, promptOptions, reworkPrecheck)
 	if err != nil {
 		return RunResult{}, err
-	}
-	prompt += recoveryPrompt
-	if reworkPrecheck.Status != "" {
-		prompt += "\n\nThe runner owns native rebase preparation and finalization. Resolve source conflicts in this worktree and stage the resolved files with git add. Do not run rebase, rebase --continue, branch/ref updates, or signing workarounds. During a paused rebase, leave the resolved index for the runner to finalize; leave additional changes staged for the runner when no rebase is paused.\n" + reworkPrecheck.Message
 	}
 	orphanRecovery := resumeState.Orphaned
 	orphanRecoveryOutcome := ""

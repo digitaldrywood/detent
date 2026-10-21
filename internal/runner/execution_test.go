@@ -2034,8 +2034,11 @@ func TestAvailabilityStopRetainsUnreapedWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
-	if !errors.Is(err, ErrWorkerProcessReap) || backend.published || !backend.retained || backend.afterRun {
+	if !errors.Is(err, ErrWorkerProcessReap) || !backend.published || !backend.retained || backend.afterRun {
 		t.Fatalf("error=%v published=%t retained=%t cleaned=%t", err, backend.published, backend.retained, backend.afterRun)
+	}
+	if checkpoint := execution.checkpoint; checkpoint == nil || !checkpoint.GitRef() || execution.finish != "interrupted" {
+		t.Fatalf("checkpoint=%+v finish=%q", checkpoint, execution.finish)
 	}
 }
 

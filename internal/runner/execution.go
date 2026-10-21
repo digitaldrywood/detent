@@ -627,9 +627,11 @@ func (r *Runner) finishExecution(ctx context.Context, req RunRequest, backend wo
 
 func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, finalize bool) (workspace.Info, workspace.Issue, error) {
 	req.checkpointRefs.halt()
+	captureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	defer cancel()
 	preserver, ok := backend.(workspace.IssuePreserver)
 	if ok {
-		if _, err := preserver.PreserveIssue(ctx, issue); err != nil {
+		if _, err := preserver.PreserveIssue(captureCtx, issue); err != nil {
 			return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, err)
 		}
 	}
@@ -639,8 +641,8 @@ func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, bac
 	if !ok {
 		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, ErrWorkspacePreservationUnavailable)
 	}
-	r.pushCheckpointRef(ctx, req.checkpointRefs, req, "stage_finished")
-	state := r.workspaceRecoveryState(backend, ctx, info, issue, "native_checkpoint")
+	r.pushCheckpointRef(captureCtx, req.checkpointRefs, req, "stage_finished")
+	state := r.workspaceRecoveryState(backend, captureCtx, info, issue, "native_checkpoint")
 	checkpoint := executionCheckpointPreservingPublication(req.Execution, state)
 	if !agentResumeEmpty(resume) {
 		checkpoint.Resume = "resume_session"
@@ -653,7 +655,7 @@ func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, bac
 		checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = refs.last.Ref, refs.last.CommitSHA, refs.last.BaseSHA, refs.last.TreeSHA
 		checkpoint.HeadSHA = refs.last.HeadSHA
 	}
-	if err := recordCheckpointRef(ctx, req.checkpointRefs, req.Execution, checkpoint); err != nil {
+	if err := recordCheckpointRef(captureCtx, req.checkpointRefs, req.Execution, checkpoint); err != nil {
 		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, err)
 	}
 	if !finalize {

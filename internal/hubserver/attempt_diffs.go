@@ -452,7 +452,7 @@ func (s *Service) readAttemptDiff(ctx context.Context, scope nativeScope, item, 
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if item == "" {
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT work_item_id FROM native_attempts WHERE organization_id=? AND project_id=? AND id=?", scope.organization, scope.project, attemptID).Scan(&item); err != nil {
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT work_item_id FROM attempt_diffs WHERE organization_id=? AND project_id=? AND attempt_id=? ORDER BY seq DESC LIMIT 1", scope.organization, scope.project, attemptID).Scan(&item); err != nil {
 			return tracker.AttemptDiff{}, err
 		}
 	}
