@@ -632,7 +632,6 @@ func (s *Service) getNativeAttempt(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	result.Identity = nativeAttemptDisplayIdentity(result)
 	return c.JSON(http.StatusOK, result)
 }
 
