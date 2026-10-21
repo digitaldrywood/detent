@@ -64,6 +64,9 @@ export type BootstrapOrganization = typeof BootstrapOrganization.Type;
  * own grant, which a plain member can hold on some projects.
  */
 export const AccountActor = Schema.Struct({
+  first_name: Schema.optional(Schema.String),
+  last_name: Schema.optional(Schema.String),
+  profile_picture_url: Schema.optional(Schema.String),
   principal_id: Schema.String,
   subject: Schema.String,
   email: Schema.String,

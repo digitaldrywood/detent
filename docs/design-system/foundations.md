@@ -77,7 +77,7 @@ Hex values are approximate sRGB conversions of the OKLCH, `color-mix()`, `light-
 | --- | --- | --- | --- | --- |
 | `--appearance-contrast-target` | — | `#000000` | `#ffffff` | `src/app/global.css:93`, dark `src/app/global.css:142` |
 | `--color-zinc-25` | `*-zinc-25` | `#fcfcfc` | same | `src/app/global.css:213` |
-| `--primary` | `*-primary` | `#346bf1` | same | `src/app/index.css:29`, dark `src/app/global.css:754` |
+| `--primary` | `*-primary` | `#346bf1` | same | `src/app/index.css:32`, dark `src/app/global.css:754` |
 | `--primary-foreground` | `*-primary-foreground` | `#ffffff` | same | `src/app/global.css:691` |
 
 **surface**
@@ -270,8 +270,8 @@ Every categorical colour is paired with a label, a legend entry or a mark; colou
 <!-- tokens:fonts:start -->
 | Token | Utility | Light | Dark | Owner |
 | --- | --- | --- | --- | --- |
-| `--font-mono` | `font-mono` | `ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Geist Mono", monospace` | same | `src/app/index.css:24` |
-| `--font-sans` | `font-sans` | `-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Geist", sans-serif` | same | `src/app/index.css:23` |
+| `--font-mono` | `font-mono` | `ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Geist Mono", monospace` | same | `src/app/index.css:27` |
+| `--font-sans` | `font-sans` | `-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Geist", sans-serif` | same | `src/app/index.css:26` |
 | `--font-size-prompt-touch` | — | `max(1rem, 16px)` | same | `src/app/global.css:130` |
 | `--text-2xs` | `text-2xs` | `11px` | same | `src/app/global.css:176` |
 | `--text-2xs--line-height` | — | `calc(1 / 0.6875)` | same | `src/app/global.css:177` |
@@ -284,8 +284,8 @@ Every categorical colour is paired with a label, a legend entry or a mark; colou
 
 | Font face | Owner |
 | --- | --- |
-| Geist | `src/app/index.css:5` |
-| Geist Mono | `src/app/index.css:13` |
+| Geist | `src/app/index.css:8` |
+| Geist Mono | `src/app/index.css:16` |
 <!-- tokens:fonts:end -->
 
 Interface text uses the system stack first, with the embedded Geist faces as fallbacks: `-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Geist", sans-serif`. Monospace text uses `ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Geist Mono", monospace`. `body` reads `var(--font-sans)`, so a runtime appearance override of `--font-sans` reaches all interface text. The sign-in and Templ surfaces keep their own Geist-first stacks ([Brand](brand.md#separate-surface-contracts)).
@@ -542,7 +542,7 @@ Motion is short, eased out and never the only signal of a change.
 | `live-tool-shine` | `src/app/global.css:478` |
 | `live-activity-focus` | `src/app/global.css:513` |
 | `live-activity-focus-counter` | `src/app/global.css:522` |
-| `dc-caret` | `src/app/index.css:58` |
+| `dc-caret` | `src/app/index.css:61` |
 
 | Where | Property | Value | Owner |
 | --- | --- | --- | --- |
@@ -564,7 +564,7 @@ Motion is short, eased out and never the only signal of a change.
 | `.no-transitions, .no-transitions *, .no-transitions *::before, .no-transitions *::after` | animation-duration | `0s !important` | `src/app/global.css:670` |
 | `@media (prefers-reduced-motion: reduce) › .preview-loading-progress, .preview-loading-progress[data-loading="true"]` | transition | `none` | `src/app/global.css:1306` |
 | `@media (prefers-reduced-motion: reduce) › .preview-loading-progress, .preview-loading-progress[data-loading="true"]` | animation | `none` | `src/app/global.css:1307` |
-| `@media (prefers-reduced-motion: no-preference) › .dc-caret` | animation | `dc-caret 1.1s steps(2, end) infinite` | `src/app/index.css:81` |
+| `@media (prefers-reduced-motion: no-preference) › .dc-caret` | animation | `dc-caret 1.1s steps(2, end) infinite` | `src/app/index.css:84` |
 
 | Reduced-motion query | Inside | Owner |
 | --- | --- | --- |
@@ -572,7 +572,7 @@ Motion is short, eased out and never the only signal of a change.
 | `(prefers-reduced-motion: reduce), (forced-colors: active)` | `@utility live-activity-focus` | `src/app/global.css:565` |
 | `(prefers-reduced-motion: reduce), (forced-colors: active)` | `@utility live-activity-focus-counter` | `src/app/global.css:578` |
 | `(prefers-reduced-motion: reduce)` | — | `src/app/global.css:1303` |
-| `(prefers-reduced-motion: no-preference)` | — | `src/app/index.css:79` |
+| `(prefers-reduced-motion: no-preference)` | — | `src/app/index.css:82` |
 <!-- tokens:motion:end -->
 
 Indicator animations are duty-cycled: `skeleton` (2.4s), `status-pulse` (2s, `steps(6)`, opacity 1 to 0.5) and `status-ping` (2s, scale 0.75 to 2) step between a few states, so the compositor paints a handful of frames per cycle. Reuse them; do not add another shimmer or pulse. `live-tool-shine`, `live-activity-focus` and `visible-animate-spin` stay paused until `src/lib/visibleAnimation.ts` sets `--visible-animation-state: running` while the element is visible.

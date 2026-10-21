@@ -148,6 +148,20 @@ start the coordinator when the installed Codex does not know `shell_tool`,
 no coordinator rather than an unsafe one. Keep `codex.command` in the form
 `codex app-server [options]` so the appended flags reach the app server.
 
+### Account widgets
+
+Settings › General embeds the WorkOS UserProfile and UserSecurity widgets.
+The browser requests a user-only widget token from the session-authenticated
+`POST /api/v2/organizations/:organization/widget-token` endpoint with an empty
+JSON body. API keys and support impersonation cannot mint widget tokens; no
+organization or administrative widget scopes are granted.
+
+In the WorkOS application's Sessions settings, include the Cloud web origin in
+the allowed CORS origins. WorkOS owns this cross-origin response policy; the
+Hub does not proxy widget requests. The Cloud CSP allows connections to
+`https://api.workos.com` and profile images from `https://workoscdn.com`.
+Widget styles are bundled locally and use the app's semantic theme tokens.
+
 ### Shared-entry tenant configuration
 
 A dedicated tenant Hub behind the shared entry adds `shared_entry` to its hosted

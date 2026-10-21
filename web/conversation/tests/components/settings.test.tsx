@@ -47,6 +47,22 @@ import { GeneralSettings, PlanSettings, SettingsRoute } from "../../src/app/sett
 import { organizationMCPEndpoint } from "../../src/app/settings/MCPSettings.tsx";
 import { applyHubPaths, resetHubPaths } from "../../src/runtime/basePath.ts";
 
+vi.mock("@workos-inc/widgets", async () => {
+  const React = await import("react");
+  function Widget({ authToken, label }: { authToken: string | (() => Promise<string>); label: string }) {
+    const [token, setToken] = React.useState("");
+    React.useEffect(() => {
+      void (typeof authToken === "string" ? Promise.resolve(authToken) : authToken()).then(setToken).catch(() => undefined);
+    }, [authToken]);
+    return <div data-token={token}>{label}</div>;
+  }
+  return {
+    WorkOsWidgets: ({ children, theme }: { children: React.ReactNode; theme: { appearance: string } }) => <div data-widget-theme={theme.appearance}>{children}</div>,
+    UserProfile: (props: { authToken: string | (() => Promise<string>) }) => <Widget {...props} label="Profile widget" />,
+    UserSecurity: (props: { authToken: string | (() => Promise<string>) }) => <Widget {...props} label="Security widget" />,
+  };
+});
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -117,7 +133,7 @@ describe("which sections an actor gets", () => {
     for (const item of disabled) expect(item.reason).toBeTruthy();
   });
 
-  it.each(["admin", "support", "billing", "viewer", "", undefined])("shows the platform account link only with a platform role (%s)", async (platform_role) => {
+  it.each(["admin", "support", "billing", "viewer", "", undefined])("keeps platform navigation out of General for every platform role (%s)", async (platform_role) => {
     applyHubPaths({ base_path: "/organizations/org_test" });
     renderSidebarNav("/settings/general", {
       http: { origin: "", apiBase: "/api", csrfToken: "c" },
@@ -128,12 +144,7 @@ describe("which sections an actor gets", () => {
       },
     }, <GeneralSettings />);
     await screen.findByRole("button", { name: "Sign out" });
-    const link = screen.queryByRole("link", { name: "Platform console" });
-    if (platform_role) {
-      expect(link?.getAttribute("href")).toBe("/platform/tenants");
-    } else {
-      expect(link).toBeNull();
-    }
+    expect(screen.queryByRole("link", { name: "Platform console" })).toBeNull();
   });
 
   it.each(["", "/organizations/org_test"])("limits personal-key navigation to shared Cloud (%s)", async (mount) => {
@@ -197,6 +208,41 @@ const OWNER_ACCOUNT = {
   http: { origin: "", apiBase: accountFixture.api_base, csrfToken: accountFixture.csrf_token },
   account: Schema.decodeUnknownSync(AccountBootstrap)(accountFixture),
 };
+
+describe("personal account settings", () => {
+  it.each([undefined, "https://workoscdn.com/avatar.png"])("renders account-only sections with avatar %s and authenticated widgets", async (picture) => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => new Response(JSON.stringify(
+      String(url).endsWith("widget-token") ? { token: "personal-widget-token" } : { enabled: true },
+    )));
+    renderSidebarNav("/settings/general", {
+      ...OWNER_ACCOUNT,
+      account: { ...OWNER_ACCOUNT.account, actor: { ...OWNER_ACCOUNT.account.actor, first_name: "Example", last_name: "Person", profile_picture_url: picture } },
+    }, <GeneralSettings />);
+    await waitFor(() => expect(screen.getByText("Profile widget").getAttribute("data-token")).toBe("personal-widget-token"));
+    expect(screen.getByText("Security widget").getAttribute("data-token")).toBe("personal-widget-token");
+    expect([...document.querySelectorAll("h2")].map((node) => node.textContent)).toEqual(["General", "Profile", "Security"]);
+    expect(screen.getByText("Example Person")).toBeTruthy();
+    expect(screen.getByText("Owner")).toBeTruthy();
+    for (const title of ["Organization", "Plan", "Project rank"]) expect(screen.queryByRole("heading", { name: title })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Platform console" })).toBeNull();
+    if (picture) expect(document.querySelector(`img[src="${picture}"]`)).toBeTruthy();
+    else expect(screen.getByText("EP")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "General" }).closest("section")?.querySelector("[title]")).toBeNull();
+    expect(document.querySelector("[data-widget-theme]")).toBeTruthy();
+    expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("widget-token") && init?.method === "POST" && init.body === "{}" && (init.headers as Record<string, string>)["X-CSRF-Token"] === accountFixture.csrf_token)).toBe(true);
+  });
+
+  it("shows safe inline errors in both widget cards when token minting fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => String(url).endsWith("widget-token")
+      ? new Response(JSON.stringify({ code: "unavailable", message: "private-customer-token-sentinel" }), { status: 503 })
+      : new Response(JSON.stringify({ enabled: true })));
+    renderSidebarNav("/settings/general", OWNER_ACCOUNT, <GeneralSettings />);
+    await screen.findByText("Profile settings are temporarily unavailable. Please try again.");
+    expect(screen.getByText("Security settings are temporarily unavailable. Please try again.")).toBeTruthy();
+    expect(screen.queryByText(/private-customer-token-sentinel/)).toBeNull();
+    expect(screen.queryByText("Profile widget")).toBeNull();
+  });
+});
 
 describe("issue notification preference", () => {
   it.each([false, true])("loads the saved preference (%s) and persists a toggle", async (enabled) => {

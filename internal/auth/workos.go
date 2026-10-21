@@ -89,11 +89,12 @@ type workosActor struct {
 }
 
 type workosUser struct {
-	ID            string `json:"id"`
-	Email         string `json:"email"`
-	EmailVerified bool   `json:"email_verified"`
-	FirstName     string `json:"first_name"`
-	LastName      string `json:"last_name"`
+	ProfilePictureURL string `json:"profile_picture_url"`
+	ID                string `json:"id"`
+	Email             string `json:"email"`
+	EmailVerified     bool   `json:"email_verified"`
+	FirstName         string `json:"first_name"`
+	LastName          string `json:"last_name"`
 }
 
 type workosSession struct {
@@ -249,6 +250,9 @@ func (p *workosProvider) Exchange(ctx context.Context, code string, verifier str
 	if !identity.ExpiresAt.After(time.Now()) {
 		return Identity{}, hostedDenial(HostedReasonSessionExpired)
 	}
+	identity.FirstName = response.User.FirstName
+	identity.LastName = response.User.LastName
+	identity.ProfilePictureURL = response.User.ProfilePictureURL
 	return Identity{Subject: identity.Subject, Email: email, EmailVerified: true, Hosted: &identity, Tokens: HostedTokens{AccessToken: response.AccessToken, RefreshToken: response.RefreshToken}}, nil
 }
 
@@ -491,7 +495,7 @@ func (p *workosProvider) User(ctx context.Context, id string) (HostedUser, error
 		return HostedUser{}, ErrHostedIdentity
 	}
 	name := strings.TrimSpace(strings.TrimSpace(user.FirstName) + " " + strings.TrimSpace(user.LastName))
-	return HostedUser{ID: user.ID, Email: email, Name: name}, nil
+	return HostedUser{ID: user.ID, Email: email, Name: name, FirstName: user.FirstName, LastName: user.LastName, ProfilePictureURL: user.ProfilePictureURL}, nil
 }
 
 func (p *workosProvider) Memberships(ctx context.Context, userID string, organizationID string) ([]Membership, error) {
@@ -880,4 +884,24 @@ func (p *workosProvider) request(ctx context.Context, method string, path string
 		return hostedDenial(HostedReasonProviderInvalid)
 	}
 	return nil
+}
+
+func (p *workosProvider) WidgetToken(ctx context.Context, userID string) (string, error) {
+	if !validWorkOSID(userID) {
+		return "", ErrHostedIdentity
+	}
+	request := struct {
+		UserID string   `json:"user_id"`
+		Scopes []string `json:"scopes"`
+	}{UserID: userID, Scopes: []string{}}
+	var response struct {
+		Token string `json:"token"`
+	}
+	if err := p.request(ctx, http.MethodPost, "/widgets/token", request, &response); err != nil {
+		return "", err
+	}
+	if response.Token == "" {
+		return "", ErrHostedIdentity
+	}
+	return response.Token, nil
 }

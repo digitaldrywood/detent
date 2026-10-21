@@ -318,6 +318,13 @@ func TestAppBootstrapPayload(t *testing.T) {
 	f := newBrowserHostedFixture(t, true)
 	browserHostedStatus(t, f.appRequest(t, "", http.MethodGet, "/app/bootstrap"), http.StatusUnauthorized)
 	browserHostedStatus(t, f.appRequest(t, "staff", http.MethodGet, "/app/bootstrap"), http.StatusForbidden)
+	f.provider.mu.Lock()
+	user := f.provider.users["user_browser_owner"]
+	user.FirstName = "Example"
+	user.LastName = "Person"
+	user.ProfilePictureURL = "https://workoscdn.com/avatar.png"
+	f.provider.users["user_browser_owner"] = user
+	f.provider.mu.Unlock()
 	for _, path := range []string{"/app/bootstrap", "/chat/bootstrap"} {
 		t.Run(path, func(t *testing.T) {
 			response := f.appRequest(t, "owner", http.MethodGet, path)
@@ -350,7 +357,7 @@ func TestAppBootstrapPayload(t *testing.T) {
 			if len(payload.Organizations) != 1 || payload.Organizations[0].ID != "org_browser_preview" || !payload.Organizations[0].Current || payload.Organizations[0].Name != payload.Organization.Name || payload.Organizations[0].PublicURL == "" {
 				t.Fatalf("organizations = %#v", payload.Organizations)
 			}
-			if payload.Actor.Subject != "user_browser_owner" || payload.Actor.Role != "owner" || payload.Actor.Email != "owner@example.test" || !payload.Actor.CanManage || payload.Actor.PrincipalID == "" {
+			if payload.Actor.Subject != "user_browser_owner" || payload.Actor.Role != "owner" || payload.Actor.Email != "owner@example.test" || !payload.Actor.CanManage || payload.Actor.PrincipalID == "" || payload.Actor.FirstName != "Example" || payload.Actor.LastName != "Person" || payload.Actor.ProfilePictureURL != "https://workoscdn.com/avatar.png" {
 				t.Fatalf("actor = %#v", payload.Actor)
 			}
 			if len(payload.Projects) != 2 || !payload.Projects[0].CanWrite || payload.Projects[0].Profile != "native" {

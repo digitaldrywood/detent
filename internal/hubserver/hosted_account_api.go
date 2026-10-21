@@ -141,3 +141,29 @@ func (s *Service) hostedInvitationAcceptedBySession(c echo.Context, token string
 	err = s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_invitations WHERE id = ? AND organization_id = ? AND accepted_user_id = ?", invitation.ID, s.config.Hosted.OrganizationID, session.Identity.Subject).Scan(&accepted)
 	return err == nil && accepted == 1
 }
+
+func (s *Service) hostedWidgetToken(c echo.Context) error {
+	c.Response().Header().Set("Cache-Control", "no-store")
+	session, _, err := s.hostedSession(c.Request().Context(), c)
+	if err != nil {
+		return s.hostedAPIError(c, err)
+	}
+	if session.Identity == nil || session.Identity.SupportActor != "" {
+		return s.hostedJSONError(c, http.StatusForbidden, "A personal browser session is required")
+	}
+	var request struct{}
+	if err := decodeAPIJSON(c, &request); err != nil {
+		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Request body is invalid")
+	}
+	provider, ok := s.config.Hosted.Provider.(auth.WidgetTokenProvider)
+	if !ok {
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Account settings are temporarily unavailable")
+	}
+	token, err := provider.WidgetToken(c.Request().Context(), session.Identity.Subject)
+	if err != nil {
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Account settings are temporarily unavailable")
+	}
+	return c.JSON(http.StatusOK, struct {
+		Token string `json:"token"`
+	}{Token: token})
+}

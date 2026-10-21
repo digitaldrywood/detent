@@ -28,7 +28,8 @@ import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
 import type { BillingReport, BillingUsageReport, ComparisonPlan, PlanReport } from "../../contracts/account.ts";
 import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
-import { PLATFORM } from "../entry/api.ts";
+import { Avatar } from "../../components/ui/avatar.tsx";
+import { AccountWidgets } from "./AccountWidgets.tsx";
 import { newKey } from "../account/idempotency.ts";
 import { OrganizationMembersRoute } from "../account/Organization.tsx";
 import { OrganizationOverviewRoute, OrganizationModelsRoute } from "../account/OrganizationOverview.tsx";
@@ -108,7 +109,6 @@ export function AllowanceList({ rows }: { readonly rows: readonly AllowanceRow[]
 
 // --- Sections ---------------------------------------------------------------
 
-/** General: what this session is, and which organization it is acting on. */
 export function GeneralSettings(): React.ReactElement {
   const bootstrap = useAccountBootstrap();
   const api = useAccountApi();
@@ -123,49 +123,30 @@ export function GeneralSettings(): React.ReactElement {
     globalThis.location?.assign(signInPath());
     return null;
   });
+  const actor = bootstrap?.actor;
+  const name = [actor?.first_name, actor?.last_name].filter(Boolean).join(" ").trim() || actor?.email || "Your account";
+  const role = actor?.role ? actor.role.charAt(0).toUpperCase() + actor.role.slice(1) : null;
 
   return (
     <SettingsPageContainer>
-      <SettingsSection
-        id="settings-general"
-        title="General"
-        icon={<Settings2Icon className="size-3.5" />}
-      >
-        <SettingsRow
-          id="settings-general-organization"
-          title="Organization"
-          description="The organization every project, runner and conversation on this session belongs to."
-          control={
-            <span className="text-sm text-foreground">
-              {bootstrap?.organization.name ?? "Not signed in"}
-            </span>
-          }
-        />
+      <SettingsSection id="settings-general" title="General" icon={<Settings2Icon className="size-3.5" />}>
         <SettingsRow
           id="settings-general-account"
-          title="Your account"
-          description={bootstrap?.actor.email ?? "This hub does not report an actor."}
-          status={bootstrap === null ? undefined : `Role: ${bootstrap.actor.role}`}
-          control={
-            <div className="flex flex-wrap items-center gap-2">
-              {bootstrap?.actor.platform_role ? (
-                <Button size="sm" variant="outline" render={<a href={PLATFORM} />}>
-                  Platform console
-                </Button>
-              ) : null}
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={signOut.pending}
-                onClick={() => void signOut.call()}
-              >
-                {signOut.pending ? "Signing out…" : "Sign out"}
-              </Button>
-            </div>
-          }
+          title={<span className="flex items-center gap-3">
+            <Avatar name={name} src={actor?.profile_picture_url} size="md" />
+            <span className="min-w-0">
+              <span className="flex flex-wrap items-center gap-2">{name}{role ? <Badge variant="secondary" size="sm">{role}</Badge> : null}</span>
+              <span className="block break-all text-xs font-normal text-muted-foreground">{actor?.email}</span>
+            </span>
+          </span>}
+          control={<Button className="w-full sm:w-auto" size="sm" variant="outline" disabled={signOut.pending} onClick={() => void signOut.call()}>
+            {signOut.pending ? "Signing out…" : "Sign out"}
+          </Button>}
         />
+        <ControlError message={signOut.error ? "Sign out failed. Please try again." : null} />
         <SettingsRow
           id="settings-general-issue-notifications"
+          controlLayout="inline"
           title="Issue email notifications"
           description="Notify me about issues I filed or commented on."
           control={<Switch
@@ -176,15 +157,8 @@ export function GeneralSettings(): React.ReactElement {
           />}
         />
         <ControlError message={(notifications.error ?? saveNotifications.error)?.message ?? null} />
-        {bootstrap?.plan == null ? null : (
-          <SettingsRow
-            id="settings-general-plan"
-            title="Plan"
-            description={bootstrap.plan.name}
-            status={`Usage window ends ${bootstrap.plan.window_ends_at}`}
-          />
-        )}
       </SettingsSection>
+      <AccountWidgets />
     </SettingsPageContainer>
   );
 }

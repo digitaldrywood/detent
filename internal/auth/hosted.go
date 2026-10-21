@@ -30,13 +30,16 @@ type HostedAccess struct {
 }
 
 type HostedIdentity struct {
-	Subject        string    `json:"subject"`
-	OrganizationID string    `json:"organization_id"`
-	SessionID      string    `json:"session_id"`
-	CreatedAt      time.Time `json:"created_at"`
-	ExpiresAt      time.Time `json:"expires_at"`
-	SupportActor   string    `json:"support_actor,omitempty"`
-	SupportReason  string    `json:"support_reason,omitempty"`
+	FirstName         string    `json:"-"`
+	LastName          string    `json:"-"`
+	ProfilePictureURL string    `json:"-"`
+	Subject           string    `json:"subject"`
+	OrganizationID    string    `json:"organization_id"`
+	SessionID         string    `json:"session_id"`
+	CreatedAt         time.Time `json:"created_at"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	SupportActor      string    `json:"support_actor,omitempty"`
+	SupportReason     string    `json:"support_reason,omitempty"`
 }
 
 type Organization struct {
@@ -56,9 +59,12 @@ type Membership struct {
 }
 
 type HostedUser struct {
-	ID    string `json:"id"`
-	Email string `json:"email"`
-	Name  string `json:"name"`
+	FirstName         string `json:"first_name,omitempty"`
+	LastName          string `json:"last_name,omitempty"`
+	ProfilePictureURL string `json:"profile_picture_url,omitempty"`
+	ID                string `json:"id"`
+	Email             string `json:"email"`
+	Name              string `json:"name"`
 }
 
 type HostedUserProvider interface {
@@ -132,4 +138,8 @@ func ValidSupportReason(reason string) bool {
 	default:
 		return false
 	}
+}
+
+type WidgetTokenProvider interface {
+	WidgetToken(context.Context, string) (string, error)
 }

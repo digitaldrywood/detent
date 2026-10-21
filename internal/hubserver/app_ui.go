@@ -336,13 +336,16 @@ type appBootstrapOrganization struct {
 }
 
 type appBootstrapActor struct {
-	PlatformRole     string `json:"platform_role"`
-	PrincipalID      string `json:"principal_id"`
-	Subject          string `json:"subject"`
-	Email            string `json:"email"`
-	Role             string `json:"role"`
-	CanManage        bool   `json:"can_manage"`
-	CanManageRunners bool   `json:"can_manage_runners"`
+	FirstName         string `json:"first_name,omitempty"`
+	LastName          string `json:"last_name,omitempty"`
+	ProfilePictureURL string `json:"profile_picture_url,omitempty"`
+	PlatformRole      string `json:"platform_role"`
+	PrincipalID       string `json:"principal_id"`
+	Subject           string `json:"subject"`
+	Email             string `json:"email"`
+	Role              string `json:"role"`
+	CanManage         bool   `json:"can_manage"`
+	CanManageRunners  bool   `json:"can_manage_runners"`
 }
 
 type appBootstrapProject struct {
@@ -501,6 +504,17 @@ func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential
 		BasePath:   s.hostedBase(),
 		SignInPath: s.hostedSignInPath(),
 		Version:    s.config.Version,
+	}
+	if session.Identity != nil {
+		if user, err := auth.LookupHostedUser(ctx, s.config.Hosted.Provider, session.Identity.Subject); err == nil {
+			session.Identity.FirstName = user.FirstName
+			session.Identity.LastName = user.LastName
+			session.Identity.ProfilePictureURL = user.ProfilePictureURL
+			payload.Actor.Email = user.Email
+		}
+		payload.Actor.FirstName = session.Identity.FirstName
+		payload.Actor.LastName = session.Identity.LastName
+		payload.Actor.ProfilePictureURL = session.Identity.ProfilePictureURL
 	}
 	if err := s.database.reader.QueryRowContext(ctx, "SELECT name,slug FROM organizations WHERE id = ?", organization).Scan(&payload.Organization.Name, &payload.Organization.Slug); err != nil {
 		return appBootstrap{}, fmt.Errorf("read organization name: %w", err)

@@ -203,6 +203,7 @@ export function makeAccountApi(options: AccountApiOptions) {
   return {
     releaseNotes: (cursor?: string) => send(ReleaseNotesPage, "GET", `${base}/release-notes${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
     markReleaseNotesSeen: () => send(ReleaseNotesPage, "PUT", `${base}/release-notes/seen`, {}),
+    widgetToken: () => send(Schema.Struct({ token: Schema.String }), "POST", `${base}/widget-token`, {}),
     issueNotificationPreference: () => send(Schema.Struct({ enabled: Schema.Boolean }), "GET", `${base}/issue-notification-preference`),
     saveIssueNotificationPreference: (enabled: boolean) => send(Schema.Struct({ enabled: Schema.Boolean }), "PUT", `${base}/issue-notification-preference`, { enabled }),
     personalKeys: (cursor?: string) => send(AccessKeys, "GET", `/api/cloud/account/api-keys${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
