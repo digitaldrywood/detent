@@ -64,6 +64,10 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 }
 
 func newHubRunnerRegisterCommandWithServiceName(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error, serviceName func(string) (string, error)) *cobra.Command {
+	return newHubRunnerRegisterCommandWithCommitReport(version, lookupEnv, startService, privateLocation, report, ghAuthStatus, serviceName, workspace.ProbeCommitReport)
+}
+
+func newHubRunnerRegisterCommandWithCommitReport(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error, serviceName func(string) (string, error), commitReport func(context.Context, string, workspace.CommitIdentity) (workspace.CommitReport, error)) *cobra.Command {
 	var hubURL, token, organization, name, configPath, workspaceRoot, isolationTier string
 	var capacity int
 	var service bool
@@ -143,7 +147,7 @@ func newHubRunnerRegisterCommandWithServiceName(version string, lookupEnv func(s
 				return fmt.Errorf("runner enrolled; save routing configuration: %w", err)
 			}
 			result := runnerRegistration{RunnerID: identity.RunnerID, MachineID: identity.MachineID, Config: paths.config, Identity: paths.identity}
-			result.Commit, err = workspace.ProbeCommitReport(cmd.Context(), "", workspace.CommitIdentity{Name: "Detent runner", Email: string(identity.MachineID) + "@runners.detent.invalid"})
+			result.Commit, err = commitReport(cmd.Context(), "", workspace.CommitIdentity{Name: "Detent runner", Email: string(identity.MachineID) + "@runners.detent.invalid"})
 			if err != nil {
 				return err
 			}
