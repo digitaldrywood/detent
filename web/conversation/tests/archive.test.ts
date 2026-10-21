@@ -1,7 +1,9 @@
 import { archiveFixture as fixture } from "./archiveFixture.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as Effect from "effect/Effect";
 import { decodeArchive, type ArchiveDescriptor } from "../src/runtime/archiveDecode.ts";
 import { resolveArchivedResponse } from "../src/runtime/archive.ts";
+import { makeHttpClient } from "../src/runtime/rpc/http.ts";
 import { authorizeQueryCache, clearQueryCache, fetchArchiveQuery, getQueryData, invalidateArchiveRevision } from "../src/app/lib/queryCache.ts";
 
 afterEach(() => { clearQueryCache(); vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -85,6 +87,13 @@ describe("authorized archive reads", () => {
     await expect(resolveArchivedResponse({ archive: other.descriptor }, "https://cloud.example.test/issue", async () => new Response(null, { status }), owner)).rejects.toThrow("unavailable");
     await resolveArchivedResponse(envelope, "https://cloud.example.test/issue", grants, owner);
     expect(objects).toHaveBeenCalledTimes(2);
+    const http = makeHttpClient({ origin: "https://cloud.example.test", apiBase: "/api", csrfToken: "token",
+      fetch: async () => Response.json({ code: "not_found", message: "Unavailable" }, { status }),
+    });
+    const refusal = await Effect.runPromiseExit(http.getConversation({ projectId: "prj_example", conversationId: "conv_example" }));
+    expect(refusal._tag).toBe("Failure");
+    await resolveArchivedResponse(envelope, "https://cloud.example.test/issue", grants, owner);
+    expect(objects).toHaveBeenCalledTimes(3);
   });
 });
 
