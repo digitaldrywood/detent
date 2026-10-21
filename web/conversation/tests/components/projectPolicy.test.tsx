@@ -156,7 +156,7 @@ describe("repository policy after setup", () => {
     }
     const requests = vi.spyOn(globalThis, "fetch");
     await renderSettings();
-    expect(await screen.findByText("Configuration reported", {}, httpWait)).toBeTruthy();
+    expect(await screen.findByText("Reported", {}, httpWait)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Approve|Paste policy/ })).toBeNull();
     expect(screen.queryByText(/Work is blocked until|waiting for a new policy/)).toBeNull();
     expect(requests.mock.calls.some(([url, init]) => init?.method === "PUT" && String(url).endsWith("/onboarding/policy"))).toBe(false);

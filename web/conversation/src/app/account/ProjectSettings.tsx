@@ -1,10 +1,13 @@
 import { SlugSettings } from "./Organization.tsx";
 import { ModelSelectionSettings } from "./ModelSelectionSettings.tsx";
 import React from "react";
+import { CheckIcon, CircleIcon, PlayIcon } from "lucide-react";
 
 import { SpritesCard } from "./SpritesCard.tsx";
 import { ProjectSpriteControls } from "./ProjectSpriteControls.tsx";
-import { WorkflowRevisions } from "./WorkflowRevisions.tsx";
+import { Badge } from "../../components/ui/badge.tsx";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip.tsx";
+import { useMediaQuery } from "../../hooks/useMediaQuery.ts";
 
 import { Skeleton } from "../../components/ui/skeleton.tsx";
 import { Button } from "../../components/ui/button.tsx";
@@ -15,7 +18,7 @@ import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import { hubPath } from "../../runtime/basePath.ts";
 import { Textarea } from "../../components/ui/textarea.tsx";
-import type { ObservedPolicy, PolicyApproval, ProjectIntegration, Onboarding } from "../../contracts/account.ts";
+import type { ObservedPolicy, PolicyApproval, ProjectIntegration, Onboarding, WorkflowState } from "../../contracts/account.ts";
 import {
   SettingsRow,
   SettingsSection,
@@ -155,20 +158,36 @@ export function ProjectDeletionSettings({ projectName, pending, error, onDelete,
   );
 }
 
+function LaneMarker({ state, initial = false }: { readonly state: WorkflowState; readonly initial?: boolean }) {
+  if (initial) return <PlayIcon aria-label="Initial" className="size-3 fill-current text-muted-foreground" />;
+  if (state.terminal) return <CheckIcon aria-label="Terminal" className="size-3 text-muted-foreground" />;
+  return <CircleIcon aria-label={state.dispatchable ? "Dispatchable" : "Holding"} className={state.dispatchable ? "size-2 fill-primary text-primary" : "size-2 text-muted-foreground"} />;
+}
+
+function LaneDetails({ state }: { readonly state: WorkflowState }) {
+  return <div className="space-y-2 p-1 text-xs">
+    <div className="flex items-center gap-1.5"><LaneMarker state={state} /><span className="font-medium">{state.name}</span><span className="text-muted-foreground">· {state.terminal ? "Terminal" : state.dispatchable ? "Dispatchable" : "Holding"}</span></div>
+    <p className="text-muted-foreground">Can move to</p>
+    <ul aria-label="Allowed transitions" className="flex flex-wrap gap-1">{(state.transitions ?? []).map((name) => <li key={name}><Badge variant="secondary">{name}</Badge></li>)}</ul>
+  </div>;
+}
+
 export function WorkflowSettings({
   integration,
   canManage,
   saving,
   error,
   onSave,
-  revisions,
+  policy = null,
+  observed = [],
 }: {
+  readonly policy?: PolicyApproval | null;
+  readonly observed?: readonly ObservedPolicy[];
   readonly integration: ProjectIntegration;
   readonly canManage: boolean;
   readonly saving: boolean;
   readonly error: string | null;
   readonly onSave: (markdown: string) => void;
-  readonly revisions?: React.ReactNode;
 }): React.ReactElement {
   const states = integration.states ?? [];
   const stored = integration.workflow_markdown ?? `---
@@ -188,36 +207,42 @@ Complete the assigned work.
   useProjectSettingsDirty(draft !== stored);
   const native = integration.profile === "native";
   const repositoryControlled = integration.authority?.workflow === "repository";
+  const phone = useMediaQuery("max-sm");
+  const [selected, setSelected] = React.useState<string | null>(null);
+  const selectedState = states.find((state) => state.name === selected);
+  const repository = integration.checkout_repository || integration.repository;
+  const source = integration.workflow_source || "detent.yaml";
+  const revision = integration.workflow_source_revision || "HEAD";
+  const sourceHref = repository ? `https://github.com/${repository}/blob/${encodeURIComponent(revision)}/${source.split("/").map(encodeURIComponent).join("/")}` : undefined;
   return (
-    <SettingsSection title="Workflow">
-      <SettingsRow
-        title="Project states"
-        description={repositoryControlled
-          ? <span className="[overflow-wrap:anywhere]">Controlled by {integration.checkout_repository || integration.repository || "the repository"}: {integration.workflow_source} at revision {integration.workflow_source_revision}. Edit the repository definition; runners report the updated configuration.</span>
-          : native ? "Author YAML frontmatter and agent instructions in Markdown using the repository workflow schema. Review states and allowed transitions before saving." : "This workflow is owned by the source tracker."}
-        status={
-          <ul className="text-sm [overflow-wrap:anywhere]">
-            {(integration.states ?? []).map((state, index) => (
-              <li key={state.name}>
-                {state.name}{index === 0 ? " · Initial" : ""} · {state.terminal ? "Terminal" : state.dispatchable ? "Dispatchable" : "Nondispatchable"}{state.operator_only ? " · Operator only" : ""}
-              </li>
-            ))}
-          </ul>
-        }
-      >
-        {native && canManage && !repositoryControlled ? (
-          <div className="flex flex-col gap-2 pb-3">
-            <Textarea aria-label="Workflow definition" rows={12} className="font-mono text-xs" value={draft} disabled={saving} onChange={(event) => setDraft(event.currentTarget.value)} />
-            <ControlError message={error} />
-            <div>
-              <Button size="sm" disabled={saving || draft === stored} onClick={() => {
-                onSave(draft);
-              }}>{saving ? "Saving…" : "Save workflow"}</Button>
-            </div>
+    <SettingsSection title="Lanes" headerAction={<div className="flex flex-wrap items-center justify-end gap-3 text-xs text-muted-foreground">
+      <span className="inline-flex items-center gap-1"><CircleIcon aria-hidden className="size-2 fill-primary text-primary" />Dispatchable</span>
+      <span className="inline-flex items-center gap-1"><CircleIcon aria-hidden className="size-2" />Holding</span>
+      <span className="inline-flex items-center gap-1"><CheckIcon aria-hidden className="size-3" />Terminal</span>
+    </div>}>
+      <div className="space-y-3 p-3 sm:p-4">
+        <div className="flex flex-wrap gap-1.5" aria-label="Workflow lanes">
+          {states.map((state, index) => {
+            const chip = <Button size="xs" variant="outline" aria-pressed={selected === state.name} onClick={phone ? () => setSelected(selected === state.name ? null : state.name) : undefined}><LaneMarker state={state} initial={index === 0} />{state.name}</Button>;
+            return phone ? <React.Fragment key={state.name}>{chip}</React.Fragment> : <Tooltip key={state.name} open={selected === state.name} onOpenChange={(open) => setSelected(open ? state.name : null)}>
+              <TooltipTrigger delay={150} closeOnClick={false} render={chip} />
+              <TooltipPopup role="tooltip" side="bottom" align="start"><LaneDetails state={state} /></TooltipPopup>
+            </Tooltip>;
+          })}
+        </div>
+        {phone && selectedState ? <div role="tooltip" className="rounded-md border border-border bg-popover p-2"><LaneDetails state={selectedState} /></div> : null}
+        {repositoryControlled ? <div className="flex items-center gap-2 text-xs text-muted-foreground"><StatusDot tone="ok" />Defined in {sourceHref ? <a href={sourceHref} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2">detent.yaml</a> : "detent.yaml"}</div> : null}
+        {native && canManage && !repositoryControlled ? <div className="space-y-3">
+          <Label htmlFor="project-workflow-definition">Workflow definition</Label>
+          <Textarea id="project-workflow-definition" rows={12} className="font-mono text-xs" value={draft} disabled={saving} onChange={(event) => setDraft(event.currentTarget.value)} />
+          <ControlError message={error} />
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button size="sm" variant="ghost" disabled={saving || draft === stored} onClick={() => setDraft(stored)}>Cancel</Button>
+            <Button size="sm" disabled={saving || draft === stored} onClick={() => onSave(draft)}>{saving ? "Saving…" : "Save workflow"}</Button>
           </div>
-        ) : null}
-      </SettingsRow>
-      {revisions}
+        </div> : null}
+      </div>
+      <PolicyRow policy={policy} observed={observed} />
     </SettingsSection>
   );
 }
@@ -232,8 +257,8 @@ export function PolicyRow({
   return (
     <SettingsRow
       title="Repository configuration"
-      description="The runner reads detent.yaml and WORKFLOW.md from the repository."
-      status={policy === null && observed.length === 0 ? "Waiting for runner configuration" : "Configuration reported"}
+      className="[&>div]:grid [&>div]:grid-cols-[minmax(0,1fr)_auto] [&>div]:items-center"
+      control={<span className="inline-flex items-center gap-2 text-xs text-muted-foreground"><StatusDot tone={policy === null && observed.length === 0 ? "idle" : "ok"} />{policy === null && observed.length === 0 ? "Waiting for runner" : "Reported"}</span>}
     />
   );
 }
@@ -443,18 +468,15 @@ export function ProjectSettingsView({
         />
       </SettingsSection> : null}
 
-      {tab === "workflow" ? <>
-        <SettingsSection title="Execution"><PolicyRow policy={policy} observed={observedPolicies} /></SettingsSection>
-        {workflow}
-      </> : null}
+      {tab === "workflow" ? workflow ?? <WorkflowSettings integration={integration} canManage={false} saving={false} error={null} onSave={() => undefined} policy={policy} observed={observedPolicies} /> : null}
       {tab === "models" ? models : null}
-      {tab === "runners" ? <SettingsSection title="Execution">
+      {tab === "runners" ? <SettingsSection title="Runners & Sprites" hideTitle>
         <SettingsRow
           title="Runner routing"
+          className="[&>div]:grid [&>div]:grid-cols-[minmax(0,1fr)_auto] [&>div]:items-center"
           help={{ label: "Runner routing", text: RUNNER_HELP.routing }}
-          description="Choose which runners handle this project."
           control={
-            <Button size="sm" variant="outline" onClick={onOpenFleet}>
+            <Button size="sm" variant="outline" className="w-full sm:w-auto" onClick={onOpenFleet}>
               Open fleet
             </Button>
           }
@@ -557,17 +579,6 @@ export function ProjectSettingsRoute({ projectId, tab, onboarding, onNavigate }:
   });
 
   const observed = onboarding?.observed_policies ?? [];
-  const loadOlder = useMutation(async () => {
-    const current = policy.value;
-    if (!current?.history_next) return null;
-    const page = await api.policy(projectId, current.history_next);
-    if (page.policy.policy_id !== current.policy.policy_id) {
-      await policy.refresh();
-      return null;
-    }
-    policy.set({ ...page, history: [...(current.history ?? []), ...(page.history ?? [])] });
-    return page;
-  });
   // A runner reports a changed policy whenever the repository changes, so the
   // page looks again while it is open instead of only on the next visit.
   React.useEffect(() => {
@@ -612,21 +623,14 @@ export function ProjectSettingsRoute({ projectId, tab, onboarding, onNavigate }:
       workflow={
         <>
           <WorkflowSettings
+            policy={policy.value ?? onboarding?.policy ?? null}
+            observed={observed}
             integration={integration.value}
             canManage={canManage && project?.can_write === true}
             saving={saveWorkflow.pending}
             error={saveMessage(saveWorkflow.error)}
             onSave={(markdown) => void saveWorkflow.call(markdown)}
-            revisions={
-              <WorkflowRevisions
-                policy={policy.value ?? onboarding?.policy ?? null}
-                observed={observed}
-                repository={integration.value.checkout_repository || integration.value.repository || ""}
-                error={loadOlder.error?.message ?? policy.error?.message ?? null}
-                onLoadOlder={() => void loadOlder.call()}
-                loadingOlder={loadOlder.pending}
-              />
-            }
+
           />
         </>
       }

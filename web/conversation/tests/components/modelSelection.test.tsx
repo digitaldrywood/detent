@@ -53,8 +53,10 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 async function mount(props: { projectId?: string; canManage?: boolean } = {}) {
   render(<ModelSelectionSettings canManage={props.canManage ?? true} projectId={props.projectId} />);
+  const user = userEvent.setup();
+  if (props.projectId) await user.click(await screen.findByRole("button", { name: "Edit model selection" }));
   await screen.findByRole("table", { name: "Stages" });
-  return userEvent.setup();
+  return user;
 }
 async function choose(user: ReturnType<typeof userEvent.setup>, label: string, option: string) {
   await user.click(screen.getByRole("combobox", { name: label }));
@@ -85,11 +87,15 @@ describe("model selection settings", () => {
   it("round-trips inherited and legacy values unchanged when enabling a project override", async () => {
     const legacy: CloudSelection = { ...selection, levels: { ...selection.levels, custom: { model: "unlisted", effort: "max" } }, stages: { ...selection.stages, plan: { model: "gpt-6-astra", effort: "low" }, custom: { level: "custom", issue_complexity: true, effort: "max" } }, fallback_order: ["custom", "normal"] };
     response = { revision: "1", selection: null, effective: legacy };
-    const user = await mount({ projectId: "project_a" });
+    render(<ModelSelectionSettings projectId="project_a" canManage />);
+    const user = userEvent.setup();
+    await screen.findByText("Using organization default");
     expect(screen.queryByRole("region", { name: "Unsaved model selection" })).toBeNull();
+    expect(screen.queryByRole("table")).toBeNull();
+    await user.click(screen.getByRole("switch", { name: "Override organization model selection" }));
+    await user.click(screen.getByRole("button", { name: "Edit model selection" }));
     expect(screen.getByRole("combobox", { name: "Plan stage model" }).textContent).toContain("Complex model");
     expect(screen.getByRole("button", { name: "Code stage effort ceiling: level" }).getAttribute("aria-pressed")).toBe("true");
-    await user.click(screen.getByRole("switch", { name: "Override organization model selection" }));
     expect(await save(user)).toEqual(legacy);
     cleanup();
     await mount({ projectId: "project_a" });
@@ -179,10 +185,34 @@ describe("model selection settings", () => {
     expect((await save(user)).fallback_order).toEqual(["complex", "normal"]);
   });
 
-  it("saves null when disabling a project override and keeps inherited controls disabled", async () => {
+  it("starts inherited projects with a summary and opens the existing editor for an override", async () => {
+    response = { ...response, selection: null };
+    render(<ModelSelectionSettings projectId="project_a" canManage />);
+    const user = userEvent.setup();
+    await screen.findByText("Using organization default");
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit model selection" })).toBeNull();
+    await user.click(screen.getByRole("switch", { name: "Override organization model selection" }));
+    expect(screen.getByText("On · 3 levels · 4 stages")).toBeTruthy();
+    expect(screen.getByText("gpt-6.1-sol")).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Edit model selection" }));
+    await screen.findByRole("table", { name: "Stages" });
+    await user.click(screen.getByRole("switch", { name: "Automatic model selection" }));
+    await user.click(screen.getByRole("button", { name: "Collapse" }));
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.getByRole("region", { name: "Unsaved model selection" })).toBeTruthy();
+    await save(user);
+    expect(context.api.saveModelSelection.mock.calls[0]![0]).toMatchObject({ projectId: "project_a", revision: "1", selection: { ...selection, enabled: false } });
+  });
+
+  it("saves null when disabling a project override and hides inherited controls", async () => {
     const user = await mount({ projectId: "project_a" });
     await user.click(screen.getByRole("switch", { name: "Override organization model selection" }));
-    expect(screen.getByRole("switch", { name: "Automatic model selection" }).getAttribute("aria-disabled")).toBe("true");
+    expect(screen.queryByRole("switch", { name: "Automatic model selection" })).toBeNull();
+    expect(screen.getByText("Using organization default")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Organization models" }).getAttribute("href")).toBe("/settings/organization/models");
     await save(user);
     expect(context.api.saveModelSelection.mock.calls[0]![0]).toMatchObject({ projectId: "project_a", revision: "1", selection: null });
   });

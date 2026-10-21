@@ -94,7 +94,7 @@ describe("settings help interactions", () => {
       policy: { ...policy.policy, policy_id: "policy_old" }, runner_id: "runner_air", runner_ids: ["runner_air", "runner_pro"], observed_at: "2026-10-05T17:00:00Z",
       conflict: state === "conflict", previously_approved: state === "historical",
     }] });
-    await screen.findByText("Configuration reported");
+    await screen.findByText("Reported");
     expect(screen.queryByRole("button", { name: /Approve updated policy/ })).toBeNull();
     expect(screen.queryByText("Runners have conflicting project configurations.")).toBeNull();
 
@@ -261,7 +261,7 @@ describe("project settings help", () => {
       policy: state === "missing" ? null : policy,
       observedPolicies: state === "pending" ? [{ policy: { ...policy.policy, policy_id: "pol_updated" }, runner_id: "runner_example", observed_at: "2026-10-05T00:00:00Z" }] : [],
     });
-    expect(await screen.findByText(state === "missing" ? "Waiting for runner configuration" : "Configuration reported")).toBeTruthy();
+    expect(await screen.findByText(state === "missing" ? "Waiting for runner" : "Reported")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Approve|Paste policy/ })).toBeNull();
 
   });
@@ -275,10 +275,16 @@ describe("project settings help", () => {
     ["Runner routing", /matching a tag never grants project access/],
   ])("explains %s even for a reader", async (label, copy, profile = "native") => {
     const user = userEvent.setup();
-    renderProject(false, { tab: label === "Runner routing" ? "runners" : "repository", integration: { ...integration, profile } });
+    const onOpenFleet = vi.fn();
+    renderProject(false, { tab: label === "Runner routing" ? "runners" : "repository", integration: { ...integration, profile }, onOpenFleet });
     await user.click(await screen.findByRole("button", { name: `About ${label}` }));
     expect((await screen.findByRole("dialog", { name: label })).textContent).toMatch(copy);
     expect(screen.queryByRole("button", { name: "About Repository" })).toBeNull();
+    if (label === "Runner routing") {
+      await user.keyboard("{Escape}");
+      await user.click(screen.getByRole("button", { name: "Open fleet" }));
+      expect(onOpenFleet).toHaveBeenCalledOnce();
+    }
   });
 });
 

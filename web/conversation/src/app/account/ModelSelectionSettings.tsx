@@ -1,5 +1,6 @@
 import { useProjectSettingsDirty } from "../settings/projectSettingsDirty.ts";
 import React from "react";
+import { hubPath } from "../../runtime/basePath.ts";
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
 import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -18,7 +19,7 @@ import type { PreferenceChoice } from "../../contracts/conversation.ts";
 import { useClient } from "../client.ts";
 import { SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
 import { AccountError } from "./api.ts";
-import { ControlError, ToggleControl } from "./controls.tsx";
+import { ControlError, StatusDot, ToggleControl } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
 import { newKey } from "./idempotency.ts";
 import { useMutation, useResource } from "./useResource.ts";
@@ -143,6 +144,7 @@ export function ModelSelectionSettings({ projectId, canManage }: {
   const resource = useResource(() => api.modelSelection(projectId), [api, projectId]);
   const [draft, setDraft] = React.useState<CloudSelection | null>(null);
   const [override, setOverride] = React.useState(false);
+  const [editing, setEditing] = React.useState(projectId === undefined);
   const [saved, setSaved] = React.useState<string | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
   React.useEffect(() => {
@@ -182,17 +184,29 @@ export function ModelSelectionSettings({ projectId, canManage }: {
       update({ ...draft, rules: [...(draft.rules ?? []), { name, level, selector: { labels: { include: [label] } } }] });
     }
   };
+  const modelRows = (["normal_model", "complex_model"] as const).map((field) => <SettingsRow key={field} title={title(field)} description={field === "normal_model" ? "Everyday implementation work." : "Planning, validation and work labelled very complex."}
+        control={<ModelPicker label={title(field)} value={draft[field] ?? ""} models={models} disabled={disabled} onChange={(value) => update({ ...draft, [field]: value })} />} />);
   return <div className="min-w-0 space-y-6">
-    <SettingsSection title="Model selection" tabIndex={canManage ? undefined : 0}>
-      {projectId !== undefined ? <SettingsRow title="Project override" description="Use project settings instead of the organization default. Turn off to inherit the latest organization settings."
-        control={<ToggleControl label="Override organization model selection" checked={override} disabled={!canManage || save.pending} onCheckedChange={(checked) => { setOverride(checked); setSaved(null); save.clearError(); }} />} /> : null}
+    <SettingsSection title={projectId === undefined ? "Model selection" : "Models"} tabIndex={canManage ? undefined : 0}
+      headerAction={projectId !== undefined && override && editing ? <Button size="xs" variant="ghost" onClick={() => setEditing(false)}>Collapse</Button> : null}>
+      {projectId !== undefined ? <SettingsRow title="Project override" className="[&>div]:grid [&>div]:grid-cols-[minmax(0,1fr)_auto] [&>div]:items-center"
+        control={<ToggleControl label="Override organization model selection" checked={override} disabled={!canManage || save.pending} onCheckedChange={(checked) => { setOverride(checked); setEditing(false); setSaved(null); save.clearError(); }} />} /> : null}
+      {projectId !== undefined && !override ? <SettingsRow title="Using organization default"
+        status={<span className="inline-flex items-center gap-2"><StatusDot tone="idle" />{[draft.normal_model, draft.complex_model].map((id) => models.find((model) => model.id === id)?.label ?? id).filter(Boolean).join(" · ")} · automatic selection {draft.enabled ? "on" : "off"}</span>}
+        control={<a href={hubPath("/settings/organization/models")} className="text-sm text-primary underline underline-offset-2">Organization models</a>} /> : null}
+      {projectId !== undefined && override && !editing ? <>
+        {(["normal_model", "complex_model"] as const).map((field) => <SettingsRow key={field} title={title(field)} control={<span className="flex min-w-0 flex-wrap items-baseline gap-2 text-sm"><span>{models.find((model) => model.id === draft[field])?.label}</span><span className="break-all font-mono text-xs text-muted-foreground">{draft[field]}</span></span>} />)}
+        <SettingsRow title="Automatic selection" status={<span className="inline-flex items-center gap-2"><StatusDot tone={draft.enabled ? "ok" : "idle"} />{draft.enabled ? "On" : "Off"} · {levels.length} levels · {stages.length} stages</span>}
+          control={<Button size="sm" variant="outline" className="w-full sm:w-auto" onClick={() => setEditing(true)}>Edit model selection</Button>} />
+      </> : null}
+      {(projectId === undefined || (override && editing)) ? <>
       <SettingsRow title="Automatic selection" description="Pick a model per issue from its complexity. Per-issue effort still stops at each stage’s ceiling."
         control={<ToggleControl label="Automatic model selection" checked={draft.enabled ?? false} disabled={disabled} onCheckedChange={(enabled) => update({ ...draft, enabled })} />} />
+      {projectId !== undefined ? modelRows : null}
+      </> : null}
     </SettingsSection>
-    <SettingsSection title="Models">
-      {(["normal_model", "complex_model"] as const).map((field) => <SettingsRow key={field} title={title(field)} description={field === "normal_model" ? "Everyday implementation work." : "Planning, validation and work labelled very complex."}
-        control={<ModelPicker label={title(field)} value={draft[field] ?? ""} models={models} disabled={disabled} onChange={(value) => update({ ...draft, [field]: value })} />} />)}
-    </SettingsSection>
+    {projectId === undefined ? <SettingsSection title="Models">{modelRows}</SettingsSection> : null}
+    {(projectId === undefined || (override && editing)) ? <>
     <SettingsSection title="Complexity levels">
       <RadioGroup onKeyDown={radioKeys} aria-label="Default complexity" value={defaultLevel} disabled={disabled} onValueChange={(default_level) => { if (typeof default_level === "string") update({ ...draft, default_level }); }}>
         <Table aria-label="Complexity levels" className="min-w-3xl" tabIndex={disabled ? 0 : undefined}>
@@ -254,11 +268,12 @@ export function ModelSelectionSettings({ projectId, canManage }: {
         <label className="flex items-center gap-2 border-t border-border/50 p-3 text-sm font-medium sm:p-4"><Radio value="fail" />Stop with an error</label>
       </RadioGroup>
     </SettingsSection>
+    </> : null}
     <ControlError message={save.error?.isConflict ? "These settings changed. Review the latest values and save again." : save.error?.message ?? null} />
     {saved === resource.value?.revision ? <p role="status" className="text-sm text-muted-foreground">Model selection saved.</p> : null}
     {dirty && canManage ? <div role="region" aria-label="Unsaved model selection" className="sticky bottom-3 z-10 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-card p-3 shadow-lg">
       <p role="status" className="text-sm">You have unsaved changes</p>
-      <div className="flex items-center gap-2">
+      <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
         <Button size="sm" variant="ghost" disabled={save.pending} onClick={() => { if (resource.value) { setDraft(resource.value.effective); setOverride(resource.value.selection !== null); setSaved(null); save.clearError(); } }}>Discard</Button>
         <Button size="sm" disabled={save.pending} onClick={() => void save.call()}>{save.pending ? "Saving…" : "Save changes"}</Button>
       </div>

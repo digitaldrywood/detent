@@ -45,26 +45,32 @@ describe("Sprites credential input", () => {
   it.each([false, true])("clears the write-only field when refusal is %s", async (rejected) => {
     present = false; refuse = rejected; writes.length = 0;
     render(<SpritesCard projectId="project" canManage />);
-    await screen.findByText("No token set");
+    await screen.findByText("Using organization token");
+    expect(screen.queryByLabelText("Sprites organization token")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Set override" }));
     const input = screen.getByLabelText("Sprites organization token") as HTMLInputElement;
     expect(input.type).toBe("password");
     expect(input.autocomplete).toBe("off");
     fireEvent.change(input, { target: { value: TOKEN } });
-    fireEvent.click(screen.getByRole("button", { name: "Set token" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(input.value).toBe("");
     if (rejected) {
       await screen.findByRole("alert");
       expect(document.body.textContent).not.toContain(TOKEN);
     } else {
-      await screen.findByText("Connected to detent-test");
+      await screen.findByText(/Connected to detent-test/);
       expect(screen.getByRole("button", { name: "Replace token" })).toBeTruthy();
-      fireEvent.change(input, { target: { value: TOKEN + "-replacement" } });
+      expect(screen.queryByLabelText("Sprites organization token")).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: "Replace token" }));
+      const replacement = screen.getByLabelText("Sprites organization token") as HTMLInputElement;
+      expect(replacement.value).toBe("");
+      fireEvent.change(replacement, { target: { value: TOKEN + "-replacement" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
       await waitFor(() => expect(writes.length).toBe(2));
       await waitFor(() => expect(screen.getByRole("button", { name: "Remove" }).hasAttribute("disabled")).toBe(false));
       expect(input.value).toBe("");
       fireEvent.click(screen.getByRole("button", { name: "Remove" }));
-      await screen.findByText("No token set");
+      await screen.findByText("Using organization token");
       expect(writes.map((entry) => entry.method)).toEqual(["PUT", "PUT", "DELETE"]);
       expect(document.body.textContent).not.toContain(TOKEN);
     }
@@ -74,7 +80,7 @@ describe("Sprites credential input", () => {
   it("shows the binding without secret controls to a reader", async () => {
     present = true; refuse = false;
     render(<SpritesCard projectId="project" canManage={false} />);
-    await screen.findByText("Connected to detent-test");
+    await screen.findByText(/Connected to detent-test/);
     expect(screen.queryByLabelText("Sprites organization token")).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
   });

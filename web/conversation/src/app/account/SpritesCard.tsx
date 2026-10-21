@@ -1,11 +1,13 @@
 import { useProjectSettingsDirty } from "../settings/projectSettingsDirty.ts";
 import React from "react";
+import { LockKeyholeIcon } from "lucide-react";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { SettingsRow } from "../settings/settingsLayout.tsx";
 import { useAccountApi } from "./context.ts";
-import { ControlError } from "./controls.tsx";
+import { ControlError, StatusDot } from "./controls.tsx";
 import { useResource } from "./useResource.ts";
 
 export function SpritesCard({ projectId, canManage }: {
@@ -14,6 +16,7 @@ export function SpritesCard({ projectId, canManage }: {
 }): React.ReactElement {
   const api = useAccountApi();
   const status = useResource(() => api.spritesSecret(projectId), [api, projectId]);
+  const [editing, setEditing] = React.useState(false);
   const [token, setToken] = React.useState("");
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -27,6 +30,7 @@ export function SpritesCard({ projectId, canManage }: {
     setError(null);
     try {
       status.set(remove ? await api.removeSpritesSecret(projectId) : await api.setSpritesSecret(projectId, value));
+      setEditing(false);
     } catch {
       // A network or provider error must never echo a submitted credential.
       setError(remove ? "Could not remove the token. Try again." : "Could not save the token. Check the organization token and try again, or ask the Hub operator to check its secret key configuration.");
@@ -38,19 +42,19 @@ export function SpritesCard({ projectId, canManage }: {
   return (
     <SettingsRow
       id="sprites"
-      title={projectId ? "Sprites project override" : "Sprites organization token"}
-      description={
-        <>
-          {projectId ? "A project token overrides the organization token. " : "Projects inherit this token unless they set an override. "}A Sprites organization token lets Detent create and drive sprites only in that Fly organization.
-          Use a dedicated Fly organization with nothing else in it, and set a spend alert.
-          {" "}<a className="underline" href="https://sprites.dev/account" target="_blank" rel="noreferrer">Manage or revoke tokens in your Sprites account</a>.
-          {" "}The token is encrypted and write-only. Removing it here removes Detent's copy; revoke it in Sprites to invalidate it.
-        </>
-      }
-      status={status.value === undefined ? (status.error === null ? "Loading…" : "Could not load Sprites settings.") : status.value.present ? `Connected to ${status.value.organization_slug}` : "No token set"}
-      control={
-        canManage ? (
-          <form className="flex w-full flex-col gap-2 sm:max-w-sm" onSubmit={(event) => { event.preventDefault(); if (token.trim() !== "" && !pending) void change(false); }}>
+      title={<span className="inline-flex items-center gap-1.5">Sprites project override<Tooltip>
+        <TooltipTrigger render={<Button size="icon-micro" variant="ghost-muted" aria-label="Token security" />}><LockKeyholeIcon aria-hidden className="size-3" /></TooltipTrigger>
+        <TooltipPopup>Encrypted · write-only</TooltipPopup>
+      </Tooltip></span>}
+      status={status.value === undefined ? (status.error === null ? "Loading…" : "Could not load Sprites settings.") : <span className="inline-flex flex-wrap items-center gap-1.5">
+        <StatusDot tone={status.value.present ? "ok" : "idle"} />{status.value.present ? <>Connected to {status.value.organization_slug} · <a className="text-primary underline underline-offset-2" href="https://sprites.dev/account" target="_blank" rel="noreferrer">Manage in Sprites</a></> : "Using organization token"}
+      </span>}
+      control={canManage && !editing ? <div className="flex w-full gap-2 sm:w-auto">
+        <Button size="sm" variant="outline" className="flex-1 sm:flex-none" disabled={pending || status.value === undefined} onClick={() => { setEditing(true); setError(null); }}>{status.value?.present ? "Replace token" : "Set override"}</Button>
+        {status.value?.present ? <Button size="sm" variant="ghost" disabled={pending} onClick={() => void change(true)}>Remove</Button> : null}
+      </div> : null}
+    >
+      {canManage && editing ? <form className="flex w-full flex-col gap-3 pb-3" onSubmit={(event) => { event.preventDefault(); if (token.trim() !== "" && !pending) void change(false); }}>
             <Input
               aria-label="Sprites organization token"
               type="password"
@@ -62,16 +66,12 @@ export function SpritesCard({ projectId, canManage }: {
               onChange={(event) => setToken(event.target.value)}
               placeholder={status.value?.present ? "Replacement token" : "Organization token"}
             />
-            <div className="flex gap-2">
-              <Button size="sm" type="submit" disabled={pending || token.trim() === "" || status.value === undefined}>
-                {pending ? "Saving…" : status.value?.present ? "Replace token" : "Set token"}
-              </Button>
-              {status.value?.present ? <Button size="sm" variant="outline" type="button" disabled={pending} onClick={() => void change(true)}>Remove</Button> : null}
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <Button size="sm" variant="ghost" type="button" disabled={pending} onClick={() => { setEditing(false); setToken(""); setError(null); }}>Cancel</Button>
+              <Button size="sm" type="submit" disabled={pending || token.trim() === "" || status.value === undefined}>{pending ? "Saving…" : "Save"}</Button>
             </div>
-            {error === null ? null : <ControlError message={error} />}
-          </form>
-        ) : <span className="text-sm text-muted-foreground">Owner or admin access required to change the token.</span>
-      }
-    />
+          </form> : null}
+      <ControlError message={error} />
+    </SettingsRow>
   );
 }

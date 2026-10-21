@@ -65,7 +65,7 @@ describe("project settings URLs and sections", () => {
   it.each([
     ["general", "General", "Archive completed issues"],
     ["repository", "Repository & GitHub", "Pull requests"],
-    ["workflow", "Workflow", "Project states"],
+    ["workflow", "Workflow", "Lanes"],
     ["models", "Models", "Override organization model selection"],
     ["runners", "Runners & Sprites", "Sprites project override"],
     ["danger", "Danger zone", "Delete project"],
@@ -185,12 +185,20 @@ describe("unsaved project settings navigation", () => {
     ["models", "Override organization model selection", "switch"],
   ])("registers unsaved edits from the %s editor", async (tab, label, role) => {
     const { user } = await mount(`/settings/projects/example-project/${tab}`);
+    if (tab === "runners") await user.click(await screen.findByRole("button", { name: "Set override" }));
     const control = role === "textbox" ? await screen.findByLabelText(label) : await screen.findByRole(role, { name: label });
     if (role === "textbox") await waitFor(() => expect((control as HTMLInputElement).disabled).toBe(false));
     if (role === "textbox") fireEvent.change(control, { target: { value: "unsaved-edit" } });
     else await user.click(control);
     await user.click(screen.getByRole("tab", { name: "Repository & GitHub" }));
     expect(await screen.findByRole("alertdialog", { name: "Discard unsaved changes?" })).toBeTruthy();
+    if (tab === "workflow" || tab === "runners") {
+      await user.click(screen.getByRole("button", { name: "Keep editing" }));
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      await user.click(screen.getByRole("tab", { name: "Repository & GitHub" }));
+      await screen.findByRole("switch", { name: "Pull requests" });
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    }
   });
 
   it("clears the guard after an integration save", async () => {
@@ -201,7 +209,7 @@ describe("unsaved project settings navigation", () => {
     await waitFor(() => expect(api.saveIntegration).toHaveBeenCalledWith(expect.objectContaining({ projectId: "proj_example_project", duplicateChallenge: false, archiveCompletedAfterDays: 30 })));
     await waitFor(() => expect((screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement).disabled).toBe(true));
     await user.click(screen.getByRole("tab", { name: "Workflow" }));
-    expect(await screen.findByText("Project states")).toBeTruthy();
+    expect(await screen.findByText("Lanes")).toBeTruthy();
     expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 });

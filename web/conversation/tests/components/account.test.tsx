@@ -46,8 +46,6 @@ import { AccountError } from "../../src/app/account/api.ts";
 import { applyHubPaths, resetHubPaths } from "../../src/runtime/basePath.ts";
 import { noApprovedPolicy, saveMessage, WorkflowSettings, ProjectDeletionSettings, ProjectSettingsRoute } from "../../src/app/account/ProjectSettings.tsx";
 import { allowanceRows, allowanceLabel } from "../../src/app/settings/Settings.tsx";
-import approval from "../../src/contracts/fixtures/account-policy.json";
-import { WorkflowRevisions } from "../../src/app/account/WorkflowRevisions.tsx";
 
 afterEach(cleanup);
 
@@ -842,7 +840,9 @@ describe("the project settings", () => {
     expect((screen.getByRole("textbox", { name: "To confirm, type Retired project below" }) as HTMLInputElement).value).toBe("");
   });
 
-  it("shows the saved workflow and submits a reviewed edit without allowing viewer edits", () => {
+  it.each([false, true])("shows lane details and preserves workflow editing on mobile %s", async (phone) => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    const media = vi.spyOn(window, "matchMedia").mockImplementation((query) => ({ matches: phone, media: query, onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() }));
     const integration = {
       profile: "native", revision: "2", intake: "disabled", projection: "disabled", repository_enabled: false,
       archive_completed_after_days: 30, archive_cancelled_after_days: 7,
@@ -850,24 +850,45 @@ describe("the project settings", () => {
       states: [
         { name: "Backlog", terminal: false, dispatchable: false, operator_only: true, transitions: ["Todo"] },
         { name: "Todo", terminal: false, dispatchable: true, transitions: [] },
+        { name: "Blocked", terminal: false, dispatchable: false, transitions: ["Todo"] },
+        { name: "Done", terminal: true, dispatchable: false, transitions: [] },
       ],
     };
     const onSave = vi.fn();
     const view = render(<WorkflowSettings integration={integration} canManage saving={false} error={null} onSave={onSave} />);
-    expect(screen.getByText("Backlog · Initial · Nondispatchable · Operator only")).toBeTruthy();
+    expect(within(screen.getByRole("button", { name: /Backlog/ })).getByLabelText("Initial")).toBeTruthy();
+    expect(within(screen.getByRole("button", { name: /Todo/ })).getByLabelText("Dispatchable")).toBeTruthy();
+    expect(screen.getByText("Waiting for runner").querySelector("span")?.className).toContain("bg-muted-foreground");
+    expect(within(screen.getByRole("button", { name: /Blocked/ })).getByLabelText("Holding")).toBeTruthy();
+    expect(within(screen.getByRole("button", { name: /Done/ })).getByLabelText("Terminal")).toBeTruthy();
+    const user = userEvent.setup();
+    if (phone) await user.click(screen.getByRole("button", { name: /Backlog/ }));
+    else await user.hover(screen.getByRole("button", { name: /Backlog/ }));
+    const tooltip = await screen.findByRole("tooltip");
+    expect(within(tooltip).getByText(/Holding/)).toBeTruthy();
+    expect(within(tooltip).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["Todo"]);
+    if (phone) await user.click(screen.getByRole("button", { name: /Backlog/ }));
+    else await user.unhover(screen.getByRole("button", { name: /Backlog/ }));
     const states = [...integration.states, { name: "Rework", terminal: false, dispatchable: true, transitions: ["Todo"] }];
     const markdown = "---\ntracker:\n  kind: hub_native\n  active_states: [Todo, Rework]\n---\nComplete the issue.\n";
+    fireEvent.change(screen.getByRole("textbox", { name: "Workflow definition" }), { target: { value: markdown } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect((screen.getByRole("textbox", { name: "Workflow definition" }) as HTMLTextAreaElement).value).not.toBe(markdown);
     fireEvent.change(screen.getByRole("textbox", { name: "Workflow definition" }), { target: { value: markdown } });
     fireEvent.click(screen.getByRole("button", { name: "Save workflow" }));
     expect(onSave).toHaveBeenCalledWith(markdown);
     view.rerender(<WorkflowSettings integration={{ ...integration, states }} canManage={false} saving={false} error={null} onSave={onSave} />);
     expect(screen.queryByRole("textbox", { name: "Workflow definition" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Save workflow" })).toBeNull();
-    expect(screen.getByText("Rework · Dispatchable")).toBeTruthy();
-    view.rerender(<WorkflowSettings integration={{ ...integration, states, authority: { workflow: "repository" }, checkout_repository: "acme/example-project", workflow_source: "detent.yaml", workflow_source_revision: "abc123" }} canManage saving={false} error={null} onSave={onSave} />);
+    expect(screen.getByRole("button", { name: /Rework/ })).toBeTruthy();
+    view.rerender(<WorkflowSettings integration={{ ...integration, states, authority: { workflow: "repository" }, checkout_repository: "example-org/example-project", workflow_source: "detent.yaml", workflow_source_revision: "abc123" }} canManage saving={false} error={null} onSave={onSave} />);
     expect(screen.queryByRole("textbox", { name: "Workflow definition" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Save workflow" })).toBeNull();
-    expect(screen.getByText(/Controlled by acme\/example-project: detent.yaml at revision abc123/)).toBeTruthy();
+    expect(screen.getByText(/Defined in/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "detent.yaml" }).getAttribute("href")).toBe("https://github.com/example-org/example-project/blob/abc123/detent.yaml");
+    expect(screen.queryByText(/abc123/)).toBeNull();
+    media.mockRestore();
+    vi.unstubAllGlobals();
   });
 
   it("reads both shapes of \"nothing is approved\" as an answer, not a failure", () => {
@@ -979,32 +1000,4 @@ describe("the runner name limit", () => {
   ])("counts UTF-8 bytes: $fits", ({ name, fits }) => {
     expect(runnerNameFits(name)).toBe(fits);
   });
-});
-
-const definition = { ...approval.policy, workflow: { source: "detent.yaml", states: [
-  { name: "Todo", dispatchable: true, terminal: false, transitions: [] },
-] } };
-const props = {
-  repository: "acme/orders", canApprove: false, approving: false,
-  onApprove: vi.fn(), error: null, onLoadOlder: vi.fn(), loadingOlder: false,
-};
-
-it("does not invent an initial diff when a stored predecessor is unavailable", () => {
-  render(<WorkflowRevisions {...props} observed={[]} policy={{ ...approval, policy: definition, history: [{
-    id: "2", repository: "acme/orders", commit: "b".repeat(40),
-    previous_definition_digest: "missing", definition_digest: "current", runner_id: "runner_test",
-    applied_by: "runner_test", applied_at: "2026-10-05T12:00:00Z", definition,
-  }] }} />);
-  expect(screen.getByText("The stored definition for this comparison is unavailable.")).toBeTruthy();
-  expect(screen.queryByRole("table")).toBeNull();
-});
-
-it("keeps old approvals out of pending revisions and does not label a digest as a commit", () => {
-  render(<WorkflowRevisions {...props} policy={null} observed={[
-    { policy: { ...definition, policy_id: "old" }, runner_id: "runner_old", observed_at: "2026-10-05T10:00:00Z", previously_approved: true },
-    { policy: definition, runner_id: "runner_test", observed_at: "2026-10-05T12:00:00Z" },
-  ]} />);
-  expect(screen.getAllByRole("heading", { name: "Reported revision" })).toHaveLength(1);
-  expect(screen.getByText("Commit not recorded")).toBeTruthy();
-  expect(screen.queryByText(definition.source_revision)).toBeNull();
 });
