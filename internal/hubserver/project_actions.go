@@ -84,11 +84,8 @@ type projectActionRunReceipt struct {
 	RunID string `json:"run_id"`
 }
 
-// actionKeybindingTaken reports a chord another action in the project already
-// claims. It names the conflict, because the author's next move is to change
-// one of the two rather than to retry.
-func actionKeybindingTaken(keybinding, name string) error {
-	return nativePublicInvalid("The keybinding " + keybinding + " is already used by " + name)
+func actionKeybindingTaken() error {
+	return nativePublicInvalid("The keybinding is already used by another action")
 }
 
 // actionRunReadOnly refuses a run on a workspace held read-only while its
@@ -450,19 +447,19 @@ func (s *Service) applyCreateProjectAction(ctx context.Context, tx *sql.Tx, scop
 	}
 	var err error
 	if record.Name, err = workspacesession.NormalizeActionName(request.Name); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, nativePublicInvalid(err.Error())
 	}
 	if record.Command, err = workspacesession.NormalizeActionCommand(request.Command); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, nativePublicInvalid(err.Error())
 	}
 	if record.Keybinding, err = workspacesession.NormalizeActionKeybinding(request.Keybinding); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, nativePublicInvalid(err.Error())
 	}
 	if record.Icon, err = workspacesession.NormalizeActionIcon(request.Icon); err != nil {
 		return nil, nativeInvalid(err.Error())
 	}
 	if record.PreviewURL, err = workspacesession.NormalizeActionPreviewURL(request.PreviewURL); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, nativePublicInvalid(err.Error())
 	}
 	count, err := countProjectActions(ctx, tx, scope)
 	if err != nil {
@@ -472,15 +469,10 @@ func (s *Service) applyCreateProjectAction(ctx context.Context, tx *sql.Tx, scop
 		return nil, nativePublicInvalid("A project may hold at most " +
 			strconv.Itoa(workspacesession.MaxActionsPerProject) + " actions")
 	}
-	// The chord is checked here as well as by the migration's partial
-	// unique index. The check is what produces an answer the author
-	// can act on -- it names the action holding the chord -- and the
-	// index is the backstop that keeps two concurrent creates from
-	// both passing it.
-	if owner, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
+	if _, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
 		return nil, err
 	} else if found {
-		return nil, actionKeybindingTaken(record.Keybinding, owner.Name)
+		return nil, actionKeybindingTaken()
 	}
 	if err := insertProjectAction(ctx, tx, record); err != nil {
 		return nil, err
@@ -504,17 +496,17 @@ func (s *Service) applyPatchProjectAction(ctx context.Context, tx *sql.Tx, scope
 	}
 	if request.Name != nil {
 		if record.Name, err = workspacesession.NormalizeActionName(*request.Name); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, nativePublicInvalid(err.Error())
 		}
 	}
 	if request.Command != nil {
 		if record.Command, err = workspacesession.NormalizeActionCommand(*request.Command); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, nativePublicInvalid(err.Error())
 		}
 	}
 	if request.Keybinding != nil {
 		if record.Keybinding, err = workspacesession.NormalizeActionKeybinding(*request.Keybinding); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, nativePublicInvalid(err.Error())
 		}
 	}
 	if request.Icon != nil {
@@ -524,7 +516,7 @@ func (s *Service) applyPatchProjectAction(ctx context.Context, tx *sql.Tx, scope
 	}
 	if request.PreviewURL != nil {
 		if record.PreviewURL, err = workspacesession.NormalizeActionPreviewURL(*request.PreviewURL); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, nativePublicInvalid(err.Error())
 		}
 	}
 	if request.OpenPreview != nil {
@@ -533,10 +525,10 @@ func (s *Service) applyPatchProjectAction(ctx context.Context, tx *sql.Tx, scope
 	if request.RunOnWorktreeCreation != nil {
 		record.RunOnWorktreeCreation = *request.RunOnWorktreeCreation
 	}
-	if owner, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
+	if _, found, err := projectActionKeybindingOwner(ctx, tx, scope, record.Keybinding, record.ID); err != nil {
 		return nil, err
 	} else if found {
-		return nil, actionKeybindingTaken(record.Keybinding, owner.Name)
+		return nil, actionKeybindingTaken()
 	}
 	expected := record.Revision
 	record.Revision++
