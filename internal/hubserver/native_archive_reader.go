@@ -347,12 +347,13 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 		if len(primaryColumns) == 0 {
 			return nil, attachment.ErrInvalid
 		}
-		var identity []string
+		var liveIdentity, archivedIdentity []string
 		for _, index := range primaryColumns {
-			identity = append(identity, "live."+quoted[index]+" IS archived."+quoted[index])
+			liveIdentity = append(liveIdentity, "live."+quoted[index])
+			archivedIdentity = append(archivedIdentity, quoted[index])
 		}
 		result.values = append(result.values, string(raw))
-		var conditions []string
+		conditions := []string{"(" + strings.Join(liveIdentity, ",") + ") NOT IN (SELECT " + strings.Join(archivedIdentity, ",") + " FROM archive_" + name + ")"}
 		for _, field := range []struct{ column, value string }{
 			{"organization_id", section.OrganizationID},
 			{"project_id", section.ProjectID},
@@ -396,7 +397,7 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 			result.values = append(result.values, first, last)
 		}
 		ctes = append(ctes, fmt.Sprintf(`archive_%s(%s) AS MATERIALIZED (SELECT %s FROM json_each(?)),
-%s AS NOT MATERIALIZED (SELECT * FROM archive_%s UNION ALL SELECT %s FROM main.%s AS live LEFT JOIN archive_%s AS archived ON %s WHERE archived.rowid IS NULL AND %s)`, name, strings.Join(quoted, ","), strings.Join(projection, ","), name, name, strings.Join(liveProjection, ","), name, name, strings.Join(identity, " AND "), strings.Join(conditions, " AND ")))
+%s AS NOT MATERIALIZED (SELECT * FROM archive_%s UNION ALL SELECT %s FROM main.%s AS live WHERE %s)`, name, strings.Join(quoted, ","), strings.Join(projection, ","), name, name, strings.Join(liveProjection, ","), name, strings.Join(conditions, " AND ")))
 	}
 	result.ctes = strings.Join(ctes, ",")
 	return result, nil
