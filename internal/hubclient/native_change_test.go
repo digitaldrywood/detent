@@ -733,6 +733,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			var refusedPublication tracker.ChangeVersion
 			var advancePublication func()
 			var publicationHead func() string
+			publicationCleared := false
 			var replacePublicationHead func()
 			var publicationCapture func(context.Context, string, string) (tracker.ChangeSourceCapture, error)
 			stalePublication := test.publicationRecovery
@@ -902,6 +903,19 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 				pushLost := false
 				publicationSource = func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+					if test.lostPush != "" {
+						record := opts.PublicationEffect
+						opts.PublicationEffect = func(ctx context.Context, kind, state string, publication workspace.GitHubPublication) error {
+							if opts.UnresolvedEffect && state == "pending" && test.lostPush == "absent" && !publicationCleared {
+								t.Fatal("publication retried before recording the absent external effect")
+							}
+							if err := record(ctx, kind, state, publication); err != nil {
+								return err
+							}
+							publicationCleared = publicationCleared || state == "none"
+							return nil
+						}
+					}
 					if test.lostPush != "" && !pushLost {
 						record := opts.PublicationEffect
 						opts.PublicationEffect = func(ctx context.Context, kind, state string, publication workspace.GitHubPublication) error {
@@ -1444,7 +1458,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					if err := owner.Finish(guarded, test.outcome); err != nil {
 						t.Fatalf("diverged publication branch held the lease as unavailable: %v", err)
 					}
-					if owner.change.Error != "" || owner.change.VersionCode != workspace.LandRefusalHeadMoved || owner.publication != nil || owner.data.Outcome != "failed" || publicationHead() != base {
+					if publicationCleared || owner.change.Error != "" || owner.change.VersionCode != workspace.LandRefusalHeadMoved || owner.publication != nil || owner.data.Outcome != "failed" || publicationHead() != base {
 						t.Fatalf("diverged publication branch was not a recorded head_moved failure: change=%+v outcome=%q", owner.change, owner.data.Outcome)
 					}
 					return

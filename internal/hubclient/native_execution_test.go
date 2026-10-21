@@ -1156,6 +1156,77 @@ func TestNativeCacheWaitRuntimeRecovery(t *testing.T) {
 	}
 }
 
+func TestNativePublicationFailureReleasesMovedItem(t *testing.T) {
+	for _, test := range []struct {
+		name, state string
+		revoked     bool
+	}{
+		{name: "moved to Todo", state: "Todo"},
+		{name: "moved to Done", state: "Done"},
+		{name: "revoked in place", state: "In Progress", revoked: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "publication recovery")
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			guarded, stop, err := execution.Guard(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stop()
+			if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			closed := false
+			if err := execution.KeepWorker(func(context.Context) error { closed = true; return nil }, nil); err != nil {
+				t.Fatal(err)
+			}
+			h.failChanges.fail.Store(true)
+			execution.mu.Lock()
+			execution.preparedOutcome = "succeeded"
+			execution.worktreeState = "unpushed"
+			execution.storedSeq = execution.data.Sequence + 1
+			diff, _ := nativeChangeDiff(nativeChangeFixtureHead("c"), "README.md")(t.Context())
+			execution.lastDiff = &diff
+			execution.change = &runner.NativeChange{Error: "required GitHub PR has an ambiguous publication response"}
+			execution.mu.Unlock()
+			current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.State != test.state {
+				if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: test.state, Reason: "user_requested"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.revoked {
+				if err := h.native.Release(t.Context(), execution.claim.lease, "cancelled"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.scheduler.mu.Lock()
+			claim := h.scheduler.nativeClaims[issue.ID]
+			claim.deadline = time.Now().Add(time.Hour)
+			h.scheduler.nativeClaims[issue.ID] = claim
+			h.scheduler.mu.Unlock()
+			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil && !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+				t.Fatalf("moved item retained transient publication failure: %v", err)
+			}
+			if !closed || execution.hasWorkers() {
+				t.Fatal("moved item retained its worker process")
+			}
+			recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].ClaimReleasedAt == nil {
+				t.Fatalf("moved item retained its execution slot: %+v, %v", recovery.Attempts, err)
+			}
+			if _, retained := h.scheduler.claims[issue.ID]; retained {
+				t.Fatal("moved item retained its scheduling claim")
+			}
+		})
+	}
+}
+
 func TestNativeRejectedCompletionReleasesClaim(t *testing.T) {
 	for _, test := range []struct{ name, category, fault string }{
 		{"event", "event_validation", ""}, {"runtime", "runtime_validation", ""},

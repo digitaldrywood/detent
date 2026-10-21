@@ -293,6 +293,11 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 		}
 		return opts.PublicationEffect(ctx, kind, state, GitHubPublication{Repository: opts.Repository, BaseRef: base, HeadSHA: head, Branch: branch})
 	}
+	if opts.UnresolvedEffect && !exists && len(pulls) == 0 {
+		if err := effect("git_push", "none"); err != nil {
+			return githubLandingPull{}, false, headChanged, err
+		}
+	}
 	push := []string{"push"}
 	if exists {
 		push = append(push, "--force-with-lease=refs/heads/"+branch+":"+previous)

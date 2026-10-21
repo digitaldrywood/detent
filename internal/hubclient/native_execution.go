@@ -415,6 +415,10 @@ func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExec
 	if err := e.validateProviderStart(identity); err != nil {
 		return err
 	}
+	issue, err := e.claim.source.client.Issue(ctx, e.claim.lease.WorkItemID)
+	if err != nil {
+		return err
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.data.Identity != nil {
@@ -425,6 +429,7 @@ func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExec
 	}
 	e.data.Identity = &identity
 	e.role = identity.Role
+	e.claim.recovery.Issue.State = issue.State
 	return e.append(ctx, "run.started", "", nil)
 }
 
@@ -623,6 +628,9 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error
 	done := e.diagnosticOperation("native.finish")
 	defer func() { done(err) }()
 	preparationErr := e.prepareFinish(ctx, outcome)
+	if errors.Is(preparationErr, runner.ErrExecutionAuthorityUnavailable) {
+		return preparationErr
+	}
 	if outcome == "succeeded" && e.change != nil && e.change.Error != "" {
 		return fmt.Errorf("%w: %s", ErrUnavailable, e.change.Error)
 	}
@@ -682,11 +690,20 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 	outcome := e.preparedOutcome
 	finished := e.data.Outcome != ""
 	interrupted := e.data.Outcome == "interrupted"
+	settled, expectedState := e.settled, e.claim.recovery.Issue.State
 	e.mu.Unlock()
 	var finishErr error
 	var rejection *nativeCompletionRejection
 	if outcome != "" && !finished {
-		if e.remaining() <= 0 {
+		if !settled && expectedState != "" {
+			issue, err := e.claim.source.client.Issue(ctx, e.claim.lease.WorkItemID)
+			if err != nil {
+				finishErr = e.executionError(err)
+			} else if !strings.EqualFold(expectedState, issue.State) {
+				outcome = "cancelled"
+			}
+		}
+		if finishErr == nil && e.remaining() <= 0 {
 			finishErr = e.renew(ctx, 0)
 		}
 		if finishErr == nil {

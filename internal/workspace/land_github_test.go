@@ -315,6 +315,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		unknownPrior         bool
 		lostPushReceipt      bool
 		unresolvedEffect     bool
+		checkpointState      string
 		review               string
 	}{
 		{name: "pinned release refuses multiple source commits", method: "squash", external: true, pinnedBase: true, releaseMultiple: true, wantRefusal: LandRefusalHeadMoved},
@@ -357,6 +358,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "prepare refuses a different push repository", prepareOnly: true, wrongRemote: "pushurl", method: "squash", wantRefusal: LandRefusalProtected},
 		{name: "prepare repeats an unresolved write over the recorded PR head", prepareOnly: true, external: true, publicationBranch: "manual/recovery", publicationPrior: true, unresolvedEffect: true, method: "squash"},
 		{name: "prepare refuses an unresolved write over a different branch head", prepareOnly: true, reworked: true, unresolvedEffect: true, preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
+		{name: "prepare clears pending publication when branch and PR are absent", prepareOnly: true, unresolvedEffect: true, checkpointState: "pending", method: "squash"},
+		{name: "prepare clears ambiguous publication when branch and PR are absent", prepareOnly: true, unresolvedEffect: true, checkpointState: "ambiguous", method: "squash"},
+		{name: "prepare preserves pending publication when a different branch head exists", prepareOnly: true, reworked: true, unresolvedEffect: true, checkpointState: "pending", preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
+		{name: "prepare preserves ambiguous publication when a different branch head exists", prepareOnly: true, reworked: true, unresolvedEffect: true, checkpointState: "ambiguous", preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
 		{name: "prepare refuses duplicate matching PRs", prepareOnly: true, duplicatePull: true, preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
 		{name: "landing refuses newer published head", remoteNewer: true, preservePublication: true, pullState: "open", method: "squash", wantRefusal: LandRefusalHeadMoved},
 		{name: "prepare refuses newer remote-only published head", prepareOnly: true, remoteNewer: true, remoteOnlyHead: true, preservePublication: true, pullState: "open", method: "squash", wantRefusal: LandRefusalHeadMoved},
@@ -998,6 +1003,18 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					return nil
 				}
 				lostPushReceipt := false
+				clearedPublication := false
+				if test.checkpointState != "" {
+					opts.PublicationEffect = func(_ context.Context, _, state string, _ GitHubPublication) error {
+						if state == "none" {
+							clearedPublication = true
+						}
+						if state == "pending" && !clearedPublication {
+							return errors.New("publication checkpoint remains unresolved")
+						}
+						return nil
+					}
+				}
 				pushReceiptError := errors.New("push succeeded but its receipt was unavailable")
 				if test.lostPushReceipt {
 					opts.PublicationEffect = func(_ context.Context, kind, state string, _ GitHubPublication) error {
@@ -1036,6 +1053,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					runGit(t, fixture.source, "config", "remote.origin.pushurl", "https://github.com/other/repo.git")
 				}
 				publication, err := fixture.backend.PrepareGitHubPublication(t.Context(), landingInfo, landingIssue, opts)
+				if test.checkpointState != "" && (clearedPublication != (test.wantRefusal == "") || test.wantRefusal != "" && createCalls != 0) {
+					t.Fatalf("publication absence was not reconciled before another write: cleared=%t creates=%d error=%v", clearedPublication, createCalls, err)
+				}
 				if test.lostPushReceipt {
 					if !errors.Is(err, pushReceiptError) || publication.External.ID != "" || createCalls != 0 || strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+publicationBranch)) != fixture.head {
 						t.Fatalf("lost push receipt discarded or misreported the retained PR: %+v, %v", publication, err)
