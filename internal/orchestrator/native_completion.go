@@ -658,7 +658,12 @@ func nativeChangeMetadata(change *runpkg.NativeChange) map[string]any {
 	return metadata
 }
 
-func nativeCompletionComment(change *runpkg.NativeChange, from, to string) string {
+func nativeCompletionComment(change *runpkg.NativeChange, from, to string) (comment string) {
+	defer func() {
+		if change.ReusedDispositionAttemptID != "" {
+			comment += fmt.Sprintf("\n\nDetent reused the completed disposition from attempt %s to resume review without rerunning implementation.", change.ReusedDispositionAttemptID)
+		}
+	}()
 	from, to = displayStateName(from), displayStateName(to)
 	if change.Validator != nil && change.Validator.Verdict == gate.ValidatorVerdictRework {
 		comment := fmt.Sprintf("The validator requested changes to Change Request %s (head %s). Moved from %s to %s.", change.ChangeID, shortCommit(change.HeadSHA), from, to)
