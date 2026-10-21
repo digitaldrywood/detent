@@ -371,6 +371,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"recordHostedRequest":               "Hosted GET accounting updates consumption in its own write transaction.",
 		"reserveHostedInvitationSeat":       "Reserves an invitation seat while checking the plan allowance.",
 		"executeNativeMutation":             "Runs a native mutation with authority, event and replay receipt in one transaction.",
+		"populateTimeIndex":                 "Populates one bounded chunk of typed timestamp facts and its cursor on the existing retention tick.",
 		"expireNativeRecords":               "Deletes one bounded batch of expired native records on the existing maintenance tick.",
 		"compactRetainedEvents":             "Deletes one bounded batch of obsolete event history planned on the reader, on the existing maintenance tick.",
 		"compactAnalyticsSamples":           "Deletes one bounded batch of skip samples already counted by hourly rollups, on the existing maintenance tick.",

@@ -154,6 +154,9 @@ func TestINV18HubMigrationsUseTypedColumns(t *testing.T) {
 			t.Fatal(err)
 		}
 		up, _, _ := strings.Cut(string(raw), "-- +goose Down")
+		if filepath.Base(path) >= "20261021143500" && regexp.MustCompile(`(?is)CREATE\s+(?:UNIQUE\s+)?INDEX\b[^;]*\bjulianday\s*\(`).Match(raw) {
+			t.Errorf("%s adds a nonportable julianday expression index", filepath.Base(path))
+		}
 		if match := jsonColumn.FindString(up); match != "" {
 			t.Errorf("%s adds a JSON column (%q); store typed columns", filepath.Base(path), match)
 		}

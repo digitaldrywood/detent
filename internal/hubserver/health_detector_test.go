@@ -415,6 +415,113 @@ func appendTestHealthEventAs(t *testing.T, f nativeFixture, actor tracker.Actor,
 }
 
 func TestHealthSnapshotRecordedCyclesAndLandings(t *testing.T) {
+	t.Run("portable time windows", func(t *testing.T) {
+		f := newDefaultNativeFixture(t, Config{})
+		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organizations(id,name,created_at) VALUES('org_other_time','Other organization','2026-10-01T00:00:00Z')`); err != nil {
+			t.Fatal(err)
+		}
+		other := newNativeFixture(t, f.service, "org_other_time", "other-time")
+		now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+		tests := []struct{ at string }{
+			{"2026-10-21T11:59:59.9996Z"},
+			{"2026-10-21T11:59:59.999999999Z"},
+			{"2026-10-21T07:00:00-05:00"},
+			{formatHubTime(now.Add(-healthInstanceWindow))},
+			{formatHubTime(now.Add(-healthInstanceWindow - time.Nanosecond))},
+			{"2026-10-21T12:00:00.000000001Z"},
+		}
+		reasons := []string{"policy_mismatch", "runner_heartbeat_stale"}
+		candidates := make(map[tracker.ProjectID]string)
+		for i, fixture := range []nativeFixture{f, other} {
+			item := fixture.create(t, "time windows")
+			candidates[fixture.project.ID] = string(item.WorkItemID)
+			appendTestHealthEvent(t, fixture, item, "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{Landed: true, ObservedAt: now.Add(-time.Minute)}}}}, now.Add(-time.Minute))
+			for index, test := range tests {
+				at, err := parseTimeValue(test.at)
+				if err != nil {
+					t.Fatal(err)
+				}
+				decision := tracker.NativeSchedulerDecision{RunnerID: "runner-time", Source: "native_runner_routing", Outcome: "skipped", Reason: reasons[i], At: at}
+				if at.After(now) {
+					decision.Outcome, decision.Reason = "claimed", ""
+				}
+				raw, err := json.Marshal(tracker.CollaborationData{Decision: &decision})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) VALUES(?,?,?,?,?,'scheduler.decision',1,'{}',?,?)`, newNativeID("evt"), fixture.project.OrganizationID, fixture.project.ID, item.WorkItemID, index+100, string(raw), test.at); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM health_event_times; DELETE FROM time_index_progress WHERE owner='health'"); err != nil {
+			t.Fatal(err)
+		}
+		var before [][]healthTimeEvent
+		var beforeFindings [][]healthFinding
+		for _, phase := range []string{"legacy", "populated"} {
+			if phase == "populated" {
+				if err := f.service.database.populateTimeIndexes(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i, fixture := range []nativeFixture{f, other} {
+				events, err := readHealthTimeEvents(t.Context(), f.service.database.reader, fixture.project.OrganizationID, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(events) != 5 {
+					t.Fatalf("%s events=%+v", phase, events)
+				}
+				for j, event := range events {
+					if event.project != string(fixture.project.ID) {
+						t.Fatal("cross-organization event")
+					}
+					if j > 0 && event.at.Before(events[j-1].at) {
+						t.Fatal("events not ordered by nanosecond")
+					}
+				}
+				if !events[0].at.Equal(now.Add(-healthInstanceWindow)) || !events[len(events)-1].at.Equal(now) {
+					t.Fatalf("cutoff equality lost: %+v", events)
+				}
+				snapshot := healthSnapshot{Projects: []healthProject{{ID: string(fixture.project.ID), Candidates: 1, CandidateIDs: map[string]bool{candidates[fixture.project.ID]: true}, FreeSlots: 1, CandidateSince: now.Add(-time.Hour)}}}
+				if err := readHealthEvents(t.Context(), f.service.database.reader, fixture.project.OrganizationID, now, &snapshot); err != nil {
+					t.Fatal(err)
+				}
+				if !snapshot.Projects[0].LastLanding.Equal(now.Add(-time.Minute)) {
+					t.Fatal("landing changed")
+				}
+				findings := evaluateHealth(now, snapshot)
+				if len(findings) != 1 || findings[0].Signal != "every_candidate_refused" || findings[0].Subject.ID != string(fixture.project.ID) || findings[0].Evidence.Reason != reasons[i] || findings[0].Evidence.Counts["candidates"] != 1 || findings[0].Evidence.Counts["claims"] != 0 || len(findings[0].Evidence.EventIDs) != 1 || findings[0].Evidence.EventIDs[0] != events[len(events)-1].id {
+					t.Fatalf("%s organization %s findings=%+v", phase, fixture.project.OrganizationID, findings)
+				}
+				if phase == "legacy" {
+					before = append(before, events)
+					beforeFindings = append(beforeFindings, findings)
+				} else {
+					if !reflect.DeepEqual(before[i], events) {
+						t.Fatalf("%s changed health events", phase)
+					}
+					if !reflect.DeepEqual(beforeFindings[i], findings) {
+						t.Fatalf("%s changed health findings: before=%+v after=%+v", phase, beforeFindings[i], findings)
+					}
+				}
+			}
+			if phase == "populated" {
+				item := f.create(t, "new event after population")
+				appendTestHealthEvent(t, f, item, "scheduler.decision", tracker.CollaborationData{}, now.Add(-time.Second))
+				events, err := readHealthTimeEvents(t.Context(), f.service.database.reader, f.project.OrganizationID, now)
+				if err != nil || len(events) != 6 {
+					t.Fatalf("new event missing: count=%d err=%v", len(events), err)
+				}
+			}
+		}
+		var old int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM sqlite_schema WHERE name IN ('health_decision_window','health_landing_window','hosted_audit_retention_idx')`).Scan(&old); err != nil || old != 0 {
+			t.Fatalf("old indexes=%d err=%v", old, err)
+		}
+	})
+
 	t.Parallel()
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
@@ -692,6 +799,9 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 				}
 				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?) INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) SELECT 'health-event-'||x,?,?,?,x+100,?,1,'{"kind":"runner","principal_id":"health-test"}','{}',? FROM n`, healthReadLimit+1, f.project.OrganizationID, f.project.ID, item.WorkItemID, kind, formatHubTime(now))
 				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO health_event_times(event_id,organization_id,recorded_at_ns,type,landed) SELECT id,organization_id,?,type,0 FROM collaboration_events WHERE id LIKE 'health-event-%'`, now.UnixNano()); err != nil {
 					t.Fatal(err)
 				}
 			}
