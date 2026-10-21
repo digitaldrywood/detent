@@ -50,6 +50,18 @@ func newSpacesFixture(t *testing.T, public bool) *spacesFixture {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
+		if r.URL.Query().Has("lifecycle") {
+			w.WriteHeader(http.StatusNotFound)
+			_, err := io.WriteString(w, `<Error><Code>NoSuchLifecycleConfiguration</Code></Error>`)
+			if err != nil {
+				t.Error(err)
+			}
+			return
+		}
+		if r.URL.Query().Has("cors") && r.Method == http.MethodPut {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		if !strings.HasPrefix(r.URL.Path, "/private/") && r.URL.Path != "/private" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -84,7 +96,7 @@ func newSpacesFixture(t *testing.T, public bool) *spacesFixture {
 		f.keys = append(f.keys, r.Method+" "+key)
 		switch r.Method {
 		case http.MethodPut:
-			if r.Header.Get("If-None-Match") != "*" {
+			if r.Header.Get("Content-Type") != "application/gzip" && r.Header.Get("If-None-Match") != "*" {
 				t.Error("upload lacks conditional put")
 			}
 			if _, exists := f.objects[key]; exists {
