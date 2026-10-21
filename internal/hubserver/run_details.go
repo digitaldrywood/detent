@@ -225,24 +225,10 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 	if !ok {
 		return ctx, nil
 	}
-	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
-		return ctx, err
-	}
-	if err := requireLeaseRunner(ctx, s.database.reader, request.Data.LeaseID, scope); err != nil {
-		return ctx, err
-	}
-	var fence tracker.FencingToken
-	var leaseItem string
-	if err := s.database.reader.QueryRowContext(ctx, `SELECT l.fencing_token,i.native_id FROM leases l JOIN issues i ON i.id=l.issue_id WHERE l.lease_id=? AND i.organization_id=? AND i.project_id=?`, request.Data.LeaseID, scope.organization, scope.project).Scan(&fence, &leaseItem); err != nil {
-		return ctx, err
-	}
-	if fence != request.Data.FencingToken || leaseItem != item {
-		return ctx, tracker.ErrStaleFencingToken
-	}
 	var previous string
+	var stored storedRun
 	previousErr := s.database.reader.QueryRowContext(ctx, "SELECT data_json FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND id=?", scope.organization, scope.project, item, request.Data.AttemptID).Scan(&previous)
 	if previousErr == nil {
-		var stored storedRun
 		if err := json.Unmarshal([]byte(previous), &stored); err != nil {
 			return ctx, err
 		}
@@ -264,35 +250,39 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 	if len(events) > 8 {
 		return ctx, nativeInvalid("Run detail batches are limited to eight events")
 	}
+	now, err := s.database.currentTime()
+	if err != nil {
+		return ctx, err
+	}
 	runs := make(map[string]tracker.NativeRunData, len(events))
+	var prior *nativeAttemptUpdate
 	for i, event := range events {
 		if len(event.PriorEvents) != 0 && i < len(events)-1 || event.Data.AttemptID != request.Data.AttemptID || event.Data.LeaseID != request.Data.LeaseID || event.Data.FencingToken != request.Data.FencingToken || i < len(events)-1 && event.Type != "run.observed" {
 			return ctx, nativeInvalid("Run detail batch must contain ordered observations for one execution")
 		}
-		if err := validateNativeRunEvent(event); err != nil {
+		issue, termination, err := s.validateNativeRunOwner(ctx, s.database.reader, scope, item, &event, now)
+		if err != nil {
 			return ctx, err
 		}
-		if event.Type == "run.finished" && event.Data.Outcome == "succeeded" {
-			if err := normalizeNativeDependencyBlockers(ctx, s.database.reader, scope, event.Data.Disposition); err != nil {
-				return ctx, err
-			}
+		if event.Data.Sequence <= 0 {
+			return ctx, nativeInvalid("Run detail requires an ordered execution")
 		}
-		data := event.Data
-		if event.Type == "run.finished" && data.Outcome == "cancelled" {
-			var prior string
-			err := s.database.reader.QueryRowContext(ctx, "SELECT data_json FROM native_attempts WHERE id=?", data.AttemptID).Scan(&prior)
-			if err == nil {
-				var previous tracker.NativeRunData
-				if err := decodeRunDetail(ctx, prior, &previous); err != nil {
-					return ctx, err
-				}
-				previous.Sequence, previous.Outcome, previous.Handoff, previous.ArtifactIDs = data.Sequence, data.Outcome, nil, nil
-				data = previous
-			} else if err != sql.ErrNoRows {
-				return ctx, err
-			}
+		update, err := prepareNativeAttempt(ctx, s.database.reader, scope, issue.WorkItemID, &event, now, termination, prior)
+		if err != nil {
+			return ctx, err
 		}
-		runs[runDetailEntry(event.Data)] = data
+		if update.duplicate {
+			continue
+		}
+		prior = &update
+		if termination && stored.Detail != nil {
+			owner.reuse[event.Data.AttemptID] = stored.Detail
+			continue
+		}
+		runs[runDetailEntry(event.Data)] = event.Data
+	}
+	if len(runs) == 0 {
+		return ctx, nil
 	}
 	raw, err := json.Marshal(runs)
 	if err != nil {
