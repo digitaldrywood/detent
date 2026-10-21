@@ -1,0 +1,1595 @@
+package codex
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/runner"
+)
+
+func TestLocalTransportReapedCloseTimeout(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(t.Context(), transportTestDeadlockTimeout)
+	defer cancel()
+	cmd := helperCommand(ctx, "exit-one")
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("helper error = %v, want exit code 1", err)
+	}
+	waitFailure := errors.New("wait failed")
+	for _, test := range []struct {
+		name    string
+		waitErr error
+		want    error
+	}{
+		{name: "nonzero exit after successful termination", waitErr: exitErr},
+		{name: "unexpected wait failure", waitErr: waitFailure, want: waitFailure},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transport := &localTransport{
+				cmd:                  cmd,
+				waitErr:              test.waitErr,
+				exitedAt:             time.Now().UTC(),
+				exitStatus:           cmd.ProcessState.String(),
+				terminationRequested: true,
+				cleanupComplete:      true,
+			}
+			err := transport.closeAfterTermination(context.DeadlineExceeded, nil, nil)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("close error = %v, want deadline evidence", err)
+			}
+			var reaped *reapedTransportTimeoutError
+			if test.want != nil {
+				if !errors.Is(err, test.want) || errors.As(err, &reaped) {
+					t.Fatalf("close error = %v, want unrecovered %v", err, test.want)
+				}
+				return
+			}
+			if !errors.As(err, &reaped) || !reaped.Process.ExitObserved || !reaped.Process.CleanupComplete || !reaped.Process.TerminationRequested || reaped.Process.ExitStatus != "exit status 1" {
+				t.Fatalf("close error = %#v, want verified cleanup with exit status 1", err)
+			}
+		})
+	}
+}
+
+func TestModelCatalogCloseTimeoutAfterReaping(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+	t.Parallel()
+	cleanupFailure := errors.New("output cleanup failed")
+	for _, test := range []struct {
+		name, result                                                string
+		rpcError, unverified, cancel, cleanupFailure, joinedFailure bool
+		want                                                        error
+	}{
+		{name: "verified forced cleanup", result: `{"data":[{"id":"example-model","model":"example-model"}]}`},
+		{name: "live unreaped helper", result: `{"data":[{"id":"example-model","model":"example-model"}]}`, unverified: true, want: ErrTransportClose},
+		{name: "authentication error", rpcError: true, want: ErrResponseError},
+		{name: "invalid response", result: `{"data":"invalid"}`, want: ErrInvalidResponse},
+		{name: "invalid identity", result: `{"data":[{}]}`, want: ErrInvalidResponse},
+		{name: "empty catalog", result: `{"data":[]}`, want: ErrInvalidResponse},
+		{name: "canceled read", result: `{"data":[{"id":"example-model","model":"example-model"}]}`, cancel: true, want: context.Canceled},
+		{name: "additional close failure", result: `{"data":[{"id":"example-model","model":"example-model"}]}`, joinedFailure: true, want: cleanupFailure},
+		{name: "cleanup failure", result: `{"data":[{"id":"example-model","model":"example-model"}]}`, cleanupFailure: true, want: cleanupFailure},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+				cmd := helperCommand(ctx, "catalog-stall")
+				cmd.Env = append(cmd.Env, "DETENT_CODEX_CATALOG_RESULT="+test.result, "DETENT_CODEX_CATALOG_ERROR="+strconv.FormatBool(test.rpcError))
+				return cmd
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			transport, err := factory.NewTransport(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			local := transport.(*localTransport)
+			t.Cleanup(func() {
+				if err := recoverLocalTransportTest(local); err != nil {
+					t.Error(err)
+				}
+			})
+			if test.cleanupFailure {
+				local.waitMu.Lock()
+				local.stdout = catalogCloseFailure{ReadCloser: local.stdout, err: cleanupFailure}
+				local.waitMu.Unlock()
+			}
+			controlled := &catalogCleanupTransport{controlledStartupTransport: &controlledStartupTransport{localTransport: local, test: t}, unverified: test.unverified}
+			if test.cancel {
+				controlled.cancel = cancel
+			}
+			if test.joinedFailure {
+				controlled.closeErr = cleanupFailure
+			}
+			var logs bytes.Buffer
+			server, err := NewAppServer(staticTransportFactory{transport: controlled}, WithReadTimeout(60*time.Second), WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend, err := NewAgentBackend(server, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			models, catalogErr := backend.ListModels(ctx, runner.AgentProcessRequest{})
+			evidence := local.StartupProcessEvidence()
+			if test.unverified {
+				if evidence.ExitObserved || evidence.CleanupComplete || local.cmd.ProcessState != nil {
+					t.Fatalf("helper unexpectedly exited: %+v", evidence)
+				}
+			} else {
+				assertLocalTransportClosed(t, local, "catalog cleanup timeout")
+				if !evidence.ExitObserved || !evidence.CleanupComplete || !evidence.TerminationRequested {
+					t.Fatalf("cleanup evidence = %+v", evidence)
+				}
+			}
+			if test.want != nil {
+				if !errors.Is(catalogErr, test.want) || len(models) != 0 {
+					t.Fatalf("models=%+v error=%v, want %v", models, catalogErr, test.want)
+				}
+				if logs.Len() != 0 {
+					t.Fatalf("failed catalog logged as recovered: %s", &logs)
+				}
+				return
+			}
+			if catalogErr != nil || len(models) != 1 || models[0].ID != "example-model" {
+				t.Fatalf("reaped catalog models=%+v error=%v", models, catalogErr)
+			}
+			if !strings.Contains(logs.String(), `"cleanup_complete":true`) || !strings.Contains(logs.String(), `"termination_requested":true`) {
+				t.Fatalf("missing lifecycle evidence: %s", &logs)
+			}
+		})
+	}
+}
+
+type catalogCleanupTransport struct {
+	*controlledStartupTransport
+	unverified bool
+	cancel     context.CancelFunc
+	closeErr   error
+}
+
+func (t *catalogCleanupTransport) Close(ctx context.Context) error {
+	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) < 59*time.Second {
+		t.test.Error("catalog cleanup lost configured 60s timeout")
+	}
+	if t.cancel != nil {
+		t.cancel()
+	}
+	if t.unverified {
+		return context.DeadlineExceeded
+	}
+	err := t.controlledStartupTransport.Close(ctx)
+	if t.closeErr != nil {
+		return errors.Join(err, t.closeErr)
+	}
+	return err
+}
+
+type catalogCloseFailure struct {
+	io.ReadCloser
+	err error
+}
+
+func (c catalogCloseFailure) Close() error { return errors.Join(c.ReadCloser.Close(), c.err) }
+
+const (
+	oversizedJSONRPCPayloadSize         = 4 * 1024 * 1024
+	helperDrainPayloadSize              = 4 * 1024 * 1024
+	transportTestDeadlockTimeout        = 30 * time.Second
+	transportTestRecoveryTimeout        = 5 * time.Second
+	helperFailureBeforeCloseReadySignal = "invalid frame written; waiting for stdin close"
+	helperCloseBeforeFailureReadySignal = "waiting for stdin close before invalid frame"
+	helperDrainWriteStartedSignal       = "drain write started"
+	helperDrainWriteCompletedSignal     = "drain write completed"
+	helperOversizedFrameWrittenSignal   = "oversized frame written"
+)
+
+func TestStartupTimeoutCapturesCleanupEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+	for _, timeout := range []time.Duration{5 * time.Second, 30 * time.Second} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			t.Parallel()
+			factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+				return helperCommand(ctx, "startup-stall")
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			transport, err := factory.NewTransport(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			local := transport.(*localTransport)
+			t.Cleanup(func() {
+				select {
+				case <-local.done:
+				default:
+					if err := recoverLocalTransportTest(local); err != nil {
+						t.Errorf("recover transport: %v", err)
+					}
+				}
+			})
+			controlled := &controlledStartupTransport{localTransport: local, test: t}
+			var logs bytes.Buffer
+			server, err := NewAppServer(staticTransportFactory{transport: controlled}, WithReadTimeout(timeout), WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+			if err != nil {
+				t.Fatal(err)
+			}
+			timers := newControlledTimeoutFactory()
+			server.timeoutContext = timers.context
+			err = runWithTimeoutExpiration(t, timers, timeout, nil, func() error {
+				_, err := server.RunTurn(t.Context(), RunTurnRequest{}, nil)
+				return err
+			})
+			if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrTransportClose) {
+				t.Fatalf("startup error = %v, want startup and cleanup deadlines", err)
+			}
+			evidence, ok := startupEvidence(err)
+			if !ok || evidence.Stage != "thread/start" || evidence.DeadlineMS != timeout.Milliseconds() {
+				t.Fatalf("startup evidence = %+v", evidence)
+			}
+			before := evidence.BeforeCleanup
+			if before == nil || !before.Ready || before.ExitObserved || before.TerminationRequested || before.CleanupComplete || before.SentMessages != 3 || before.ReceivedMessages != 1 || before.StderrBytes == 0 {
+				t.Fatalf("before cleanup = %+v", before)
+			}
+			if !evidence.Process.TerminationRequested || !evidence.Process.ExitObserved || !evidence.Process.CleanupComplete {
+				t.Fatalf("after cleanup = %+v", evidence.Process)
+			}
+			encoded, encodeErr := json.Marshal(evidence)
+			if encodeErr != nil {
+				t.Fatal(encodeErr)
+			}
+			if strings.Contains(string(encoded), "private") {
+				t.Fatalf("private output in evidence: %s", encoded)
+			}
+			if strings.Contains(logs.String(), "private") || !strings.Contains(logs.String(), `"before_cleanup"`) || !strings.Contains(logs.String(), `"termination_requested":true`) {
+				t.Fatalf("startup log lacks safe diagnostics: %s", &logs)
+			}
+			details, ok := ClassifyCapacityError(err, nil, time.Now())
+			if !ok || details.Kind != backendcapacity.StartupTimeoutKind {
+				t.Fatalf("startup classification = %+v", details)
+			}
+			assertLocalTransportClosed(t, local, "startup timeout")
+		})
+	}
+}
+
+type controlledStartupTransport struct {
+	*localTransport
+	test       *testing.T
+	threadSent bool
+}
+
+func (t *controlledStartupTransport) Send(ctx context.Context, msg Message) error {
+	if msg.Method == "thread/start" {
+		t.threadSent = true
+	}
+	return t.localTransport.Send(ctx, msg)
+}
+
+func (t *controlledStartupTransport) Receive(ctx context.Context) (Message, error) {
+	if t.threadSent {
+		waitForLocalTransportStderr(t.test, t.localTransport, "private startup marker")
+		ctx.(*controlledTimeoutContext).activate()
+	}
+	return t.localTransport.Receive(ctx)
+}
+
+func (t *controlledStartupTransport) Close(ctx context.Context) error {
+	if _, ok := ctx.Deadline(); !ok || ctx.Err() != nil {
+		t.test.Errorf("cleanup context must have a fresh bounded deadline")
+	}
+	expired := &controlledTimeoutContext{done: make(chan struct{})}
+	expired.expire(context.DeadlineExceeded)
+	err := t.localTransport.Close(expired)
+	timer := time.NewTimer(transportTestDeadlockTimeout)
+	defer timer.Stop()
+	select {
+	case <-t.done:
+	case <-timer.C:
+		t.test.Error("startup cleanup did not finish")
+	}
+	return err
+}
+
+func TestLocalTransportRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "roundtrip")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+
+	usage := make(chan procgroup.Usage, 2)
+	ctx := procgroup.WithUsageHandler(context.Background(), func(entry procgroup.Usage) { usage <- entry })
+	transport, err := factory.NewTransport(ctx)
+	if err != nil {
+		t.Fatalf("NewTransport() error = %v", err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := transport.Close(closeCtx); err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("Close() error = %v", err)
+		}
+		if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+			if len(usage) != 1 {
+				t.Fatalf("resource captures = %d, want one", len(usage))
+			}
+			entry := <-usage
+			if entry.PeakMemoryBytes <= 0 || entry.WallSeconds <= 0 || entry.UserCPUSeconds+entry.SystemCPUSeconds <= 0 {
+				t.Fatalf("process resource usage = %+v", entry)
+			}
+			t.Logf("reaped Codex fixture resource usage: %+v", entry)
+		} else if len(usage) != 0 {
+			t.Fatalf("unsupported platform reported process usage")
+		}
+	})
+
+	request := Message{
+		JSONRPC: JSONRPCVersion,
+		ID:      json.RawMessage(`42`),
+		Method:  "ping",
+		Params:  json.RawMessage(`{"value":"hello"}`),
+	}
+
+	if err := transport.Send(context.Background(), request); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	response, err := transport.Receive(context.Background())
+	if err != nil {
+		t.Fatalf("Receive() error = %v", err)
+	}
+
+	if response.JSONRPC != JSONRPCVersion {
+		t.Fatalf("JSONRPC = %q, want %q", response.JSONRPC, JSONRPCVersion)
+	}
+	if string(response.ID) != "42" {
+		t.Fatalf("ID = %s, want 42", response.ID)
+	}
+	assertJSONEqual(t, response.Result, json.RawMessage(`{"echoedMethod":"ping","ok":true}`))
+}
+
+func TestLocalTransportReceivesOversizedFrame(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "oversized-frame")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+	transport, err := factory.NewTransport(context.Background())
+	if err != nil {
+		t.Fatalf("NewTransport() error = %v", err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = transport.Close(closeCtx)
+	})
+
+	// Wait for subprocess startup and frame emission before receiving. This tests
+	// frame size support, not helper startup or serialization speed under load.
+	waitForLocalTransportStderr(t, transport.(*localTransport), helperOversizedFrameWrittenSignal)
+	receiveCtx, cancel := context.WithTimeout(t.Context(), transportTestDeadlockTimeout)
+	defer cancel()
+	msg, err := transport.Receive(receiveCtx)
+	if err != nil {
+		t.Fatalf("Receive() error = %v", err)
+	}
+	if msg.Method != "item/agentMessage" {
+		t.Fatalf("Method = %q, want item/agentMessage", msg.Method)
+	}
+	var params struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		t.Fatalf("unmarshal params: %v", err)
+	}
+	if len(params.Text) != oversizedJSONRPCPayloadSize {
+		t.Fatalf("params text length = %d, want %d", len(params.Text), oversizedJSONRPCPayloadSize)
+	}
+}
+
+func TestLocalTransportCloseDrainsAfterReadFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		mode               string
+		receiveBeforeClose bool
+		readySignal        string
+	}{
+		{
+			name:               "failure reported before close",
+			mode:               "invalid-frame-backpressure",
+			receiveBeforeClose: true,
+			readySignal:        helperFailureBeforeCloseReadySignal,
+		},
+		{
+			name:        "failure arrives after close starts",
+			mode:        "close-before-invalid-frame-backpressure",
+			readySignal: helperCloseBeforeFailureReadySignal,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+				return helperCommand(ctx, tt.mode)
+			})
+			if err != nil {
+				t.Fatalf("NewLocalTransportFactory() error = %v", err)
+			}
+			transport, err := factory.NewTransport(context.Background())
+			if err != nil {
+				t.Fatalf("NewTransport() error = %v", err)
+			}
+			local, ok := transport.(*localTransport)
+			if !ok {
+				t.Fatalf("transport = %T, want *localTransport", transport)
+			}
+			t.Cleanup(func() {
+				select {
+				case <-local.done:
+					return
+				default:
+				}
+				if err := recoverLocalTransportTest(local); err != nil {
+					t.Errorf("recover local transport: %v", err)
+				}
+			})
+
+			waitForLocalTransportStderr(t, local, tt.readySignal)
+
+			if tt.receiveBeforeClose {
+				receiveCtx, cancelReceive := context.WithTimeout(context.Background(), transportTestDeadlockTimeout)
+				defer cancelReceive()
+				_, err = transport.Receive(receiveCtx)
+				if !errors.Is(err, ErrInvalidFrame) {
+					t.Fatalf("Receive() error = %v, want ErrInvalidFrame", err)
+				}
+			}
+
+			closeCtx, cancelClose := context.WithTimeout(context.Background(), transportTestDeadlockTimeout)
+			defer cancelClose()
+			if err := transport.Close(closeCtx); err != nil {
+				recoveryErr := recoverLocalTransportTest(local)
+				t.Fatalf("Close() error = %v; recovery error = %v", err, recoveryErr)
+			}
+			assertLocalTransportClosed(t, local, tt.name)
+			for _, signal := range []string{helperDrainWriteStartedSignal, helperDrainWriteCompletedSignal} {
+				if !strings.Contains(local.stderrText(), signal) {
+					t.Fatalf("helper stderr = %q, want signal %q", local.stderrText(), signal)
+				}
+			}
+		})
+	}
+}
+
+func TestLocalTransportReceiveHonorsContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "silent")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+
+	transport, err := factory.NewTransport(context.Background())
+	if err != nil {
+		t.Fatalf("NewTransport() error = %v", err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := transport.Close(closeCtx); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	receiveCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err = transport.Receive(receiveCtx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Receive() error = %v, want context deadline exceeded", err)
+	}
+}
+
+func TestLocalTransportEarlyExitIncludesStatusAndStderr(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "exit-stderr")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+	server, err := NewAppServer(factory, WithReadTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	err = server.CheckHealth(context.Background())
+	if err == nil {
+		t.Fatal("CheckHealth() error = nil, want early exit diagnostics")
+	}
+	for _, want := range []string{"exit status 23", "broken launch environment"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("CheckHealth() error = %v, want containing %q", err, want)
+		}
+	}
+}
+
+func TestTailBufferKeepsBoundedSuffix(t *testing.T) {
+	t.Parallel()
+
+	buffer := newTailBuffer(5)
+	if _, err := buffer.Write([]byte("abcdef")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if got := buffer.String(); got != "bcdef" {
+		t.Fatalf("String() = %q, want %q", got, "bcdef")
+	}
+}
+
+func TestLocalTransportFactoryAppliesWorkerTempDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "silent")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+
+	tempDir := t.TempDir()
+	toolBin := t.TempDir()
+	ctx := withWorkerTempDir(context.Background(), tempDir)
+	ctx = withWorkerEnvironment(ctx, procgroup.Environment{
+		Variables:    map[string]string{"GOCACHE": "/shared/go-build", "GOMODCACHE": "/shared/go-mod"},
+		PathPrefixes: []string{toolBin},
+	})
+	transport, err := factory.NewTransport(ctx)
+	if err != nil {
+		t.Fatalf("NewTransport() error = %v", err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := transport.Close(closeCtx); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	local, ok := transport.(*localTransport)
+	if !ok {
+		t.Fatalf("transport = %T, want *localTransport", transport)
+	}
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		if got := environmentValue(local.cmd.Env, name); got != tempDir {
+			t.Fatalf("%s = %q, want %q", name, got, tempDir)
+		}
+	}
+	for name, want := range map[string]string{"GOCACHE": "/shared/go-build", "GOMODCACHE": "/shared/go-mod"} {
+		if got := environmentValue(local.cmd.Env, name); got != want {
+			t.Fatalf("%s = %q, want %q", name, got, want)
+		}
+	}
+	if got := environmentValue(local.cmd.Env, "PATH"); !strings.HasPrefix(got, toolBin+string(os.PathListSeparator)) {
+		t.Fatalf("PATH = %q, want prefix %q", got, toolBin)
+	}
+}
+
+func TestLocalTransportFactoryAppliesWorkerWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		host string
+	}{
+		{name: "tmux host checkout", host: "tmux"},
+		{name: "systemd working directory", host: "systemd"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			hostDir := t.TempDir()
+			workspace := t.TempDir()
+			probePath := filepath.Join(t.TempDir(), "workspace-probe.json")
+			factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+				cmd := helperCommand(ctx, "workspace-probe")
+				cmd.Dir = hostDir
+				return cmd
+			})
+			if err != nil {
+				t.Fatalf("NewLocalTransportFactory() error = %v", err)
+			}
+
+			ctx := withWorkerWorkspace(context.Background(), workspace)
+			ctx = withWorkerEnvironment(ctx, procgroup.Environment{Variables: map[string]string{
+				"DETENT_WORKSPACE":             workspace,
+				"DETENT_CODEX_TRANSPORT_PROBE": probePath,
+			}})
+			transport, err := factory.NewTransport(ctx)
+			if err != nil {
+				t.Fatalf("NewTransport() error = %v", err)
+			}
+			t.Cleanup(func() {
+				closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := transport.Close(closeCtx); err != nil {
+					t.Fatalf("Close() error = %v", err)
+				}
+			})
+
+			local, ok := transport.(*localTransport)
+			if !ok {
+				t.Fatalf("transport = %T, want *localTransport", transport)
+			}
+			if local.cmd.Dir != workspace {
+				t.Fatalf("cmd.Dir = %q, want workspace %q instead of %s host directory %q", local.cmd.Dir, workspace, tt.host, hostDir)
+			}
+			if got := environmentValue(local.cmd.Env, "DETENT_WORKSPACE"); got != workspace {
+				t.Fatalf("DETENT_WORKSPACE = %q, want %q", got, workspace)
+			}
+
+			probe := waitForWorkspaceProbe(t, probePath)
+			if probe.WorkingDirectory != workspace {
+				t.Fatalf("child working directory = %q, want %q", probe.WorkingDirectory, workspace)
+			}
+			if runtime.GOOS != "windows" && probe.PWD != workspace {
+				t.Fatalf("child PWD = %q, want %q", probe.PWD, workspace)
+			}
+			if probe.DetentWorkspace != workspace {
+				t.Fatalf("child DETENT_WORKSPACE = %q, want %q", probe.DetentWorkspace, workspace)
+			}
+		})
+	}
+}
+
+func TestLocalTransportSendHonorsContextDuringBlockedWrite(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "block-send")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+
+	transport, err := factory.NewTransport(context.Background())
+	if err != nil {
+		t.Fatalf("NewTransport() error = %v", err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		if err := transport.Close(closeCtx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	params, err := json.Marshal(strings.Repeat("x", oversizedJSONRPCPayloadSize))
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	sendCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	err = transport.Send(sendCtx, Message{
+		ID:     json.RawMessage(`1`),
+		Method: "large",
+		Params: params,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Send() error = %v, want context deadline exceeded", err)
+	}
+}
+
+func TestLocalTransportCloseExitsAfterTurnErrorBackpressure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "turn-error-backpressure")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+	capturingFactory := &capturingLocalTransportFactory{factory: factory}
+	server, err := NewAppServer(capturingFactory,
+		WithReadTimeout(500*time.Millisecond),
+		WithTurnTimeout(5*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err = server.RunTurn(runCtx, RunTurnRequest{
+		Workspace: t.TempDir(),
+		Prompt:    "fail mid stream",
+	}, waitForLocalTransportReceiveBackpressure(t, capturingFactory))
+	if !errors.Is(err, ErrTurnFailed) {
+		t.Fatalf("RunTurn() error = %v, want ErrTurnFailed", err)
+	}
+	assertLocalTransportClosed(t, capturingFactory.transport, "turn error backpressure")
+}
+
+func TestLocalTransportCloseDrainsAfterSuccessfulTurnBackpressure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "turn-complete-backpressure")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+	capturingFactory := &capturingLocalTransportFactory{factory: factory}
+	server, err := NewAppServer(capturingFactory,
+		WithReadTimeout(2*time.Second),
+		WithTurnTimeout(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := server.RunTurn(runCtx, RunTurnRequest{
+		Workspace: t.TempDir(),
+		Prompt:    "complete then drain",
+	}, waitForLocalTransportReceiveBackpressure(t, capturingFactory))
+	if err != nil {
+		assertLocalTransportClosed(t, capturingFactory.transport, "successful turn backpressure after RunTurn error")
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.ThreadID != "thread-1" || result.TurnID != "turn-1" {
+		t.Fatalf("RunTurn() result = %#v, want thread-1 turn-1", result)
+	}
+	assertLocalTransportClosed(t, capturingFactory.transport, "successful turn backpressure")
+}
+
+func TestLocalTransportPublishReceivedStopsDuringBackpressure(t *testing.T) {
+	t.Parallel()
+
+	transport := &localTransport{
+		received: make(chan transportResult),
+		readStop: make(chan struct{}),
+	}
+
+	published := make(chan bool, 1)
+	go func() {
+		published <- transport.publishReceived(transportResult{
+			msg: Message{
+				JSONRPC: JSONRPCVersion,
+				Method:  "item/agentMessage/delta",
+				Params:  json.RawMessage(`{"delta":"queued"}`),
+			},
+		})
+	}()
+
+	transport.stopReading()
+
+	select {
+	case got := <-published:
+		if got {
+			t.Fatal("publishReceived() = true, want false after read stop during backpressure")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("publishReceived() stayed blocked after read stop")
+	}
+
+	select {
+	case result := <-transport.received:
+		t.Fatalf("received unexpected result after read stop: %#v", result)
+	default:
+	}
+}
+
+func TestLocalTransportCloseUnblocksBlockedWriteAndPublish(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+
+	params, err := json.Marshal(strings.Repeat("x", oversizedJSONRPCPayloadSize))
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "blocked-write-publish")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+
+	transport, err := factory.NewTransport(context.Background())
+	if err != nil {
+		t.Fatalf("NewTransport() error = %v", err)
+	}
+	local, ok := transport.(*localTransport)
+	if !ok {
+		t.Fatalf("transport = %T, want *localTransport", transport)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = transport.Close(closeCtx)
+	})
+
+	stdin := newCloseWaitsForWriteCloser(local.stdin)
+	local.stdin = stdin
+	local.codec.writer = bufio.NewWriter(stdin)
+
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- transport.Send(context.Background(), Message{
+			ID:     json.RawMessage(`1`),
+			Method: "large",
+			Params: params,
+		})
+	}()
+
+	select {
+	case <-stdin.writeStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Send() did not start writing")
+	}
+	waitForReceivedBufferFull(t, local, "blocked write and publish")
+	select {
+	case err := <-sendDone:
+		t.Fatalf("Send() returned before close with full receive buffer: %v", err)
+	default:
+	}
+
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelClose()
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- transport.Close(closeCtx)
+	}()
+
+	select {
+	case err := <-sendDone:
+		if err == nil {
+			t.Fatal("Send() error = nil, want blocked write interrupted by close")
+		}
+	case <-closeCtx.Done():
+		local.stopReading()
+		_ = procgroup.TerminateTree(local.cmd, local.processGroupID)
+		select {
+		case <-sendDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Send() could not be recovered after Close() blocked")
+		}
+		select {
+		case <-closeDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Close() could not be recovered after blocked write")
+		}
+		t.Fatalf("Send() stayed blocked after Close(): %v", closeCtx.Err())
+	}
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-closeCtx.Done():
+		t.Fatalf("Close() did not complete: %v", closeCtx.Err())
+	}
+	assertLocalTransportClosed(t, local, "blocked write and publish")
+}
+
+func TestLocalTransportSendWrapsCloseErrorAfterContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	closeErr := errors.New("close stdin failed")
+	stdin := newBlockingWriteCloser(closeErr)
+	transport := &localTransport{
+		stdin:    stdin,
+		codec:    NewCodec(nil, stdin),
+		sendLock: make(chan struct{}, 1),
+		done:     make(chan struct{}),
+	}
+	transport.sendLock <- struct{}{}
+
+	sendCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- transport.Send(sendCtx, Message{Method: "blocked"})
+	}()
+
+	select {
+	case <-stdin.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Send() did not start writing")
+	}
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Send() error = %v, want context canceled", err)
+		}
+		if !errors.Is(err, closeErr) {
+			t.Fatalf("Send() error = %v, want close error in chain", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Send() did not return after context cancellation")
+	}
+}
+
+func TestLocalTransportCloseKillsUnresponsiveProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "ignore-close")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+
+	transport, err := factory.NewTransport(context.Background())
+	if err != nil {
+		t.Fatalf("NewTransport() error = %v", err)
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	err = transport.Close(closeCtx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close() error = %v, want context deadline exceeded", err)
+	}
+}
+
+func TestLocalTransportCloseWrapsKillErrorAfterContextCancellation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
+	t.Parallel()
+
+	cmd := helperCommand(context.Background(), "exit")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	killErr := cmd.Process.Kill()
+	if killErr == nil {
+		t.Fatal("Kill() error = nil, want post-exit process error")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		close(done)
+	}()
+
+	closeCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	transport := &localTransport{
+		cmd:   cmd,
+		stdin: noopWriteCloser{},
+		done:  done,
+	}
+
+	err := transport.Close(closeCtx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Close() error = %v, want context canceled", err)
+	}
+	if !errors.Is(err, killErr) {
+		t.Fatalf("Close() error = %v, want kill error %v in chain", err, killErr)
+	}
+}
+
+func TestLocalTransportFactoryRejectsInvalidCommandFactories(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		newCommand CommandFactory
+	}{
+		{name: "nil factory", newCommand: nil},
+		{name: "nil command", newCommand: func(context.Context) *exec.Cmd { return nil }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			factory, err := NewLocalTransportFactory(tt.newCommand)
+			if tt.newCommand == nil {
+				if err == nil {
+					t.Fatal("NewLocalTransportFactory() error = nil, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewLocalTransportFactory() error = %v", err)
+			}
+
+			_, err = factory.NewTransport(context.Background())
+			if err == nil {
+				t.Fatal("NewTransport() error = nil, want error")
+			}
+		})
+	}
+}
+
+func TestLocalTransportHelperProcess(t *testing.T) {
+	if os.Getenv("DETENT_CODEX_TRANSPORT_HELPER") != "1" {
+		return
+	}
+
+	mode := os.Getenv("DETENT_CODEX_TRANSPORT_MODE")
+
+	switch mode {
+	case "roundtrip":
+		helperRoundTrip()
+	case "oversized-frame":
+		helperOversizedFrame()
+	case "invalid-frame-backpressure":
+		helperInvalidFrameBackpressure(false)
+	case "close-before-invalid-frame-backpressure":
+		helperInvalidFrameBackpressure(true)
+	case "silent":
+		_, _ = io.Copy(io.Discard, os.Stdin)
+	case "workspace-probe":
+		workingDirectory, err := os.Getwd()
+		if err != nil {
+			helperBackpressureExit("read working directory", err)
+		}
+		payload, err := json.Marshal(workspaceProbe{
+			WorkingDirectory: workingDirectory,
+			PWD:              os.Getenv("PWD"),
+			DetentWorkspace:  os.Getenv("DETENT_WORKSPACE"),
+		})
+		if err != nil {
+			helperBackpressureExit("marshal workspace probe", err)
+		}
+		probePath := os.Getenv("DETENT_CODEX_TRANSPORT_PROBE")
+		tempPath := probePath + ".tmp"
+		if err := os.WriteFile(tempPath, payload, 0o600); err != nil {
+			helperBackpressureExit("write workspace probe", err)
+		}
+		if err := os.Rename(tempPath, probePath); err != nil {
+			helperBackpressureExit("publish workspace probe", err)
+		}
+		_, _ = io.Copy(io.Discard, os.Stdin)
+	case "block-send":
+		time.Sleep(time.Hour)
+	case "ignore-close":
+		time.Sleep(time.Hour)
+	case "startup-stall":
+		codec := NewCodec(os.Stdin, os.Stdout)
+		helperBackpressureRespond(codec, initializeRequestID, "initialize", json.RawMessage(`{"userAgent":"private"}`))
+		helperBackpressureExpect(codec, 0, "initialized")
+		helperBackpressureExpect(codec, threadStartRequestID, "thread/start")
+		helperBackpressureSignal("private startup marker")
+		time.Sleep(time.Hour)
+	case "catalog-stall":
+		codec := NewCodec(os.Stdin, os.Stdout)
+		helperBackpressureRespond(codec, initializeRequestID, "initialize", json.RawMessage(`{"userAgent":"fixture"}`))
+		helperBackpressureExpect(codec, 0, "initialized")
+		helperBackpressureExpect(codec, modelListRequestID, "model/list")
+		response := Message{ID: json.RawMessage(strconv.Itoa(modelListRequestID)), Result: json.RawMessage(os.Getenv("DETENT_CODEX_CATALOG_RESULT"))}
+		if os.Getenv("DETENT_CODEX_CATALOG_ERROR") == "true" {
+			response.Result = nil
+			response.Error = &RPCError{Code: -32000, Message: "authentication required"}
+		}
+		if err := codec.WriteMessage(response); err != nil {
+			helperBackpressureExit("write catalog", err)
+		}
+		time.Sleep(time.Hour)
+	case "exit":
+		return
+	case "exit-one":
+		os.Exit(1)
+	case "exit-stderr":
+		fmt.Fprint(os.Stderr, "broken launch environment")
+		os.Exit(23)
+	case "turn-error-backpressure":
+		helperTurnBackpressure(json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed"}}`), true)
+	case "turn-complete-backpressure":
+		helperTurnBackpressure(json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`), false)
+	case "blocked-write-publish":
+		helperFloodOutput(NewCodec(os.Stdin, os.Stdout), false)
+	default:
+		os.Exit(2)
+	}
+
+	os.Exit(0)
+}
+
+func helperCommand(ctx context.Context, mode string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLocalTransportHelperProcess$")
+	cmd.Env = append(os.Environ(),
+		"DETENT_CODEX_TRANSPORT_HELPER=1",
+		"DETENT_CODEX_TRANSPORT_MODE="+mode,
+	)
+	return cmd
+}
+
+func environmentValue(environment []string, name string) string {
+	value := ""
+	for _, entry := range environment {
+		key, candidate, ok := strings.Cut(entry, "=")
+		if ok && key == name {
+			value = candidate
+		}
+	}
+	return value
+}
+
+type workspaceProbe struct {
+	WorkingDirectory string `json:"working_directory"`
+	PWD              string `json:"pwd"`
+	DetentWorkspace  string `json:"detent_workspace"`
+}
+
+func waitForWorkspaceProbe(t *testing.T, path string) workspaceProbe {
+	t.Helper()
+
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		payload, err := os.ReadFile(path)
+		if err == nil {
+			var probe workspaceProbe
+			if err := json.Unmarshal(payload, &probe); err != nil {
+				t.Fatalf("unmarshal workspace probe: %v", err)
+			}
+			return probe
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read workspace probe: %v", err)
+		}
+		select {
+		case <-timer.C:
+			t.Fatal("timed out waiting for workspace probe")
+		case <-ticker.C:
+		}
+	}
+}
+
+func helperTurnBackpressure(completedParams json.RawMessage, blockAfterFlood bool) {
+	codec := NewCodec(os.Stdin, os.Stdout)
+	helperBackpressureRespond(codec, initializeRequestID, "initialize", json.RawMessage(`{"userAgent":"codex-cli/test"}`))
+	helperBackpressureExpect(codec, 0, "initialized")
+	helperBackpressureRespond(codec, threadStartRequestID, "thread/start", json.RawMessage(`{"thread":{"id":"thread-1"}}`))
+	helperBackpressureRespond(codec, configReadRequestID, "config/read", json.RawMessage(`{"config":{"model":"gpt-5.6"}}`))
+	helperBackpressureRespond(codec, turnStartRequestID, "turn/start", json.RawMessage(`{"turn":{"id":"turn-1"}}`))
+
+	if err := codec.WriteMessage(Message{
+		Method: "turn/completed",
+		Params: completedParams,
+	}); err != nil {
+		helperBackpressureExit("write turn/completed", err)
+	}
+	helperFloodOutput(codec, blockAfterFlood)
+}
+
+func helperFloodOutput(codec *Codec, blockAfterFlood bool) {
+	for i := range 1024 {
+		msg := Message{
+			JSONRPC: JSONRPCVersion,
+			Method:  "item/agentMessage/delta",
+			Params:  json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"still streaming"}`),
+		}
+		if err := codec.WriteMessage(msg); err != nil {
+			helperBackpressureExit("write output flood", err)
+		}
+		if blockAfterFlood && i == 1023 {
+			time.Sleep(time.Hour)
+		}
+	}
+}
+
+func helperOversizedFrame() {
+	params, err := json.Marshal(map[string]string{
+		"text": strings.Repeat("x", oversizedJSONRPCPayloadSize),
+	})
+	if err != nil {
+		helperBackpressureExit("marshal oversized frame", err)
+	}
+	if err := NewCodec(os.Stdin, os.Stdout).WriteMessage(Message{
+		Method: "item/agentMessage",
+		Params: params,
+	}); err != nil {
+		helperBackpressureExit("write oversized frame", err)
+	}
+	helperBackpressureSignal(helperOversizedFrameWrittenSignal)
+}
+
+func helperInvalidFrameBackpressure(closeBeforeFailure bool) {
+	if closeBeforeFailure {
+		helperBackpressureSignal(helperCloseBeforeFailureReadySignal)
+		helperWaitForStdinClose()
+	}
+
+	if _, err := fmt.Fprintln(os.Stdout, "{not-json}"); err != nil {
+		helperBackpressureExit("write invalid frame", err)
+	}
+
+	if !closeBeforeFailure {
+		helperBackpressureSignal(helperFailureBeforeCloseReadySignal)
+		helperWaitForStdinClose()
+	}
+
+	helperBackpressureSignal(helperDrainWriteStartedSignal)
+	if _, err := io.Copy(os.Stdout, strings.NewReader(strings.Repeat("x", helperDrainPayloadSize))); err != nil {
+		helperBackpressureExit("write drain payload", err)
+	}
+	helperBackpressureSignal(helperDrainWriteCompletedSignal)
+}
+
+func helperWaitForStdinClose() {
+	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		helperBackpressureExit("wait for stdin close", err)
+	}
+}
+
+func helperBackpressureSignal(signal string) {
+	if _, err := fmt.Fprintln(os.Stderr, signal); err != nil {
+		os.Exit(7)
+	}
+}
+
+func helperBackpressureRespond(codec *Codec, id int, method string, result json.RawMessage) {
+	helperBackpressureExpect(codec, id, method)
+	if err := codec.WriteMessage(Message{
+		ID:     json.RawMessage(strconv.Itoa(id)),
+		Result: result,
+	}); err != nil {
+		helperBackpressureExit("write "+method+" response", err)
+	}
+}
+
+func helperBackpressureExpect(codec *Codec, id int, method string) {
+	msg, err := codec.ReadMessage()
+	if err != nil {
+		helperBackpressureExit("read "+method, err)
+	}
+	if msg.Method != method {
+		helperBackpressureExit("read "+method, fmt.Errorf("method = %q", msg.Method))
+	}
+	if id == 0 && len(msg.ID) != 0 {
+		helperBackpressureExit("read "+method, fmt.Errorf("id = %s, want notification", msg.ID))
+	}
+	if id != 0 && !requestIDMatches(msg.ID, id) {
+		helperBackpressureExit("read "+method, fmt.Errorf("id = %s, want %d", msg.ID, id))
+	}
+}
+
+func helperBackpressureExit(stage string, err error) {
+	fmt.Fprintf(os.Stderr, "backpressure helper %s: %v\n", stage, err)
+	os.Exit(7)
+}
+
+func helperRoundTrip() {
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 0, 64*1024), oversizedJSONRPCPayloadSize)
+
+	if !scanner.Scan() {
+		os.Exit(3)
+	}
+
+	var request Message
+	if err := json.Unmarshal(scanner.Bytes(), &request); err != nil {
+		os.Exit(4)
+	}
+
+	result, err := json.Marshal(map[string]any{
+		"echoedMethod": request.Method,
+		"ok":           true,
+	})
+	if err != nil {
+		os.Exit(5)
+	}
+
+	response := Message{
+		JSONRPC: JSONRPCVersion,
+		ID:      request.ID,
+		Result:  result,
+	}
+
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(response); err != nil {
+		os.Exit(6)
+	}
+}
+
+type blockingWriteCloser struct {
+	closeErr     error
+	writeStarted chan struct{}
+	closed       chan struct{}
+	startOnce    sync.Once
+	closeOnce    sync.Once
+}
+
+func newBlockingWriteCloser(closeErr error) *blockingWriteCloser {
+	return &blockingWriteCloser{
+		closeErr:     closeErr,
+		writeStarted: make(chan struct{}),
+		closed:       make(chan struct{}),
+	}
+}
+
+func (w *blockingWriteCloser) Write([]byte) (int, error) {
+	w.startOnce.Do(func() {
+		close(w.writeStarted)
+	})
+	<-w.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (w *blockingWriteCloser) Close() error {
+	w.closeOnce.Do(func() {
+		close(w.closed)
+	})
+	return w.closeErr
+}
+
+type noopWriteCloser struct{}
+
+func (noopWriteCloser) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (noopWriteCloser) Close() error {
+	return nil
+}
+
+type closeWaitsForWriteCloser struct {
+	writer       io.WriteCloser
+	writeStarted chan struct{}
+	writeDone    chan struct{}
+	startOnce    sync.Once
+	doneOnce     sync.Once
+}
+
+func newCloseWaitsForWriteCloser(writer io.WriteCloser) *closeWaitsForWriteCloser {
+	return &closeWaitsForWriteCloser{
+		writer:       writer,
+		writeStarted: make(chan struct{}),
+		writeDone:    make(chan struct{}),
+	}
+}
+
+func (w *closeWaitsForWriteCloser) Write(p []byte) (int, error) {
+	w.startOnce.Do(func() {
+		close(w.writeStarted)
+	})
+	n, err := w.writer.Write(p)
+	w.doneOnce.Do(func() {
+		close(w.writeDone)
+	})
+	return n, err
+}
+
+func (w *closeWaitsForWriteCloser) Close() error {
+	<-w.writeDone
+	return w.writer.Close()
+}
+
+type capturingLocalTransportFactory struct {
+	factory   *LocalTransportFactory
+	transport *localTransport
+}
+
+func (f *capturingLocalTransportFactory) NewTransport(ctx context.Context) (Transport, error) {
+	transport, err := f.factory.NewTransport(ctx)
+	if err != nil {
+		return nil, err
+	}
+	local, ok := transport.(*localTransport)
+	if !ok {
+		return nil, errors.New("transport is not local")
+	}
+	f.transport = local
+	return transport, nil
+}
+
+func assertLocalTransportClosed(t *testing.T, transport *localTransport, scenario string) {
+	t.Helper()
+
+	if transport == nil {
+		t.Fatalf("%s: captured transport is nil", scenario)
+		return
+	}
+	assertChannelClosed(t, transport.readDone, scenario, "readLoop")
+	assertChannelClosed(t, transport.done, scenario, "wait")
+	if transport.cmd == nil {
+		t.Fatalf("%s: command is nil, want reaped process", scenario)
+		return
+	}
+	if transport.cmd.ProcessState == nil {
+		t.Fatalf("%s: ProcessState is nil, want reaped process", scenario)
+	}
+}
+
+func waitForLocalTransportStderr(t *testing.T, transport *localTransport, signal string) {
+	t.Helper()
+
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(transportTestDeadlockTimeout)
+	defer timer.Stop()
+
+	for !strings.Contains(transport.stderrText(), signal) {
+		select {
+		case <-ticker.C:
+		case <-timer.C:
+			t.Fatalf("helper stderr = %q, want signal %q", transport.stderrText(), signal)
+		}
+	}
+}
+
+func recoverLocalTransportTest(transport *localTransport) error {
+	transport.stopReading()
+	closeErr := transport.closeStdin()
+	terminateErr := procgroup.TerminateTree(transport.cmd, transport.processGroupID)
+	if errors.Is(terminateErr, os.ErrProcessDone) {
+		terminateErr = nil
+	}
+	joinErr := waitForLocalTransportTestGoroutines(transport, transportTestRecoveryTimeout)
+	return errors.Join(closeErr, terminateErr, joinErr)
+}
+
+func waitForLocalTransportTestGoroutines(transport *localTransport, timeout time.Duration) error {
+	readDone := transport.readDone
+	done := transport.done
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for readDone != nil || done != nil {
+		select {
+		case <-readDone:
+			readDone = nil
+		case <-done:
+			done = nil
+		case <-timer.C:
+			return errors.New("timed out joining local transport goroutines")
+		}
+	}
+	return nil
+}
+
+func waitForLocalTransportReceiveBackpressure(t *testing.T, factory *capturingLocalTransportFactory) UpdateHandler {
+	t.Helper()
+
+	return func(update Update) error {
+		if update.Type != UpdateTurnCompleted {
+			return nil
+		}
+		if factory.transport == nil {
+			t.Fatal("captured transport is nil while waiting for receive backpressure")
+		}
+		waitForReceivedBufferFull(t, factory.transport, "turn completed")
+		return nil
+	}
+}
+
+func waitForReceivedBufferFull(t *testing.T, transport *localTransport, scenario string) {
+	t.Helper()
+
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+
+	for len(transport.received) < cap(transport.received) {
+		select {
+		case <-ticker.C:
+		case <-timer.C:
+			t.Fatalf("%s: receive buffer did not fill", scenario)
+		}
+	}
+}
+
+func assertChannelClosed(t *testing.T, ch <-chan struct{}, scenario string, name string) {
+	t.Helper()
+
+	select {
+	case <-ch:
+	default:
+		t.Fatalf("%s: %s still running after RunTurn returned", scenario, name)
+	}
+}
