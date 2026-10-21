@@ -2,9 +2,9 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -22,88 +22,72 @@ func (s *Service) hostedPlatformUsers(c echo.Context) error {
 	if err := decodeAPIJSON(c, &input); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	query, err := platformusers.Parse(input.Text)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, apiErrorResponse{Code: "invalid_query", Message: "Enter at least three characters"})
-	}
+	query := platformusers.Parse(input.Text)
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	result := platformusers.TenantResult{Members: []platformusers.TenantMember{}, Invitations: []platformusers.TenantInvitation{}}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT email,user_id,role,created_at FROM hosted_members
-WHERE active=1 AND CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 END ORDER BY lower(email),user_id`, query.Exact, query.Text, query.Text)
+	rows, err := s.database.reader.QueryContext(ctx, `WITH users AS (
+SELECT 'm:' || user_id AS cursor,email,user_id AS subject,role,created_at AS at FROM hosted_members WHERE active=1
+UNION ALL
+SELECT 'i:' || id,email,'','',expires_at FROM hosted_invitations WHERE organization_id=? AND accepted_user_id=''
+)
+SELECT cursor,email,subject,role,at FROM users
+WHERE cursor>? AND CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 END
+ORDER BY cursor LIMIT ?`, s.config.Hosted.OrganizationID, input.After, query.Exact, query.Text, query.Text, platformusers.Limit+1)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	processed := 0
+	more := false
 	for rows.Next() {
-		var member platformusers.TenantMember
-		if err := rows.Scan(&member.Email, &member.Subject, &member.Role, &member.JoinedAt); err != nil {
+		if processed == platformusers.Limit {
+			more = true
+			break
+		}
+		var cursor, email, subject, role, at string
+		if err := rows.Scan(&cursor, &email, &subject, &role, &at); err != nil {
 			return err
 		}
-		result.Members = append(result.Members, member)
-	}
-	err = rows.Err()
-	if err != nil {
-		return err
-	}
-	rows, err = s.database.reader.QueryContext(ctx, `SELECT id,email,expires_at FROM hosted_invitations
-WHERE organization_id=? AND accepted_user_id='' AND CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 END ORDER BY lower(email),id`, s.config.Hosted.OrganizationID, query.Exact, query.Text, query.Text)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id string
-		var invitation platformusers.TenantInvitation
-		if err := rows.Scan(&id, &invitation.Email, &invitation.ExpiresAt); err != nil {
-			return err
-		}
-		if invitation.ExpiresAt == "" {
-			pending, err := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, id)
+		previous := result
+		if cursor[:2] == "m:" {
+			result.Members = append(result.Members, platformusers.TenantMember{Email: email, Subject: subject, Role: role, JoinedAt: at})
+		} else {
+			if at == "" {
+				pending, err := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, cursor[2:])
+				if err != nil {
+					return err
+				}
+				at = formatHubTime(pending.ExpiresAt)
+			}
+			expires, err := time.Parse(time.RFC3339Nano, at)
 			if err != nil {
 				return err
 			}
-			invitation.ExpiresAt = formatHubTime(pending.ExpiresAt)
+			if expires.After(s.config.now()) {
+				result.Invitations = append(result.Invitations, platformusers.TenantInvitation{Email: email, ExpiresAt: at})
+			}
 		}
-		expires, err := time.Parse(time.RFC3339Nano, invitation.ExpiresAt)
+		result.NextCursor = cursor
+		body, err := json.Marshal(result)
 		if err != nil {
 			return err
 		}
-		if expires.After(s.config.now()) {
-			result.Invitations = append(result.Invitations, invitation)
+		if len(body) > 60<<10 {
+			if processed == 0 {
+				return errors.New("platform user exceeds tenant page limit")
+			}
+			result = previous
+			more = true
+			break
 		}
+		processed++
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	emails := make(map[string]bool)
-	for _, member := range result.Members {
-		emails[strings.ToLower(member.Email)] = true
+	if !more {
+		result.NextCursor = ""
 	}
-	for _, invitation := range result.Invitations {
-		emails[strings.ToLower(invitation.Email)] = true
-	}
-	ordered := make([]string, 0, len(emails))
-	for email := range emails {
-		ordered = append(ordered, email)
-	}
-	sort.Strings(ordered)
-	for _, email := range ordered[min(len(ordered), platformusers.Limit):] {
-		delete(emails, email)
-	}
-	members := result.Members[:0]
-	for _, member := range result.Members {
-		if emails[strings.ToLower(member.Email)] {
-			members = append(members, member)
-		}
-	}
-	result.Members = members
-	invitations := result.Invitations[:0]
-	for _, invitation := range result.Invitations {
-		if emails[strings.ToLower(invitation.Email)] {
-			invitations = append(invitations, invitation)
-		}
-	}
-	result.Invitations = invitations
 	return c.JSON(http.StatusOK, result)
 }

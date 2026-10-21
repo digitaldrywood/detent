@@ -737,6 +737,12 @@ func TestHostedPlatformUsers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for i := range 55 {
+		f.member(t, fmt.Sprintf("large%02d", i), "member", "")
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET user_id=user_id || ? WHERE email LIKE 'large%'", strings.Repeat("s", 2000)); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		query                        string
 		status, members, invitations int
@@ -744,36 +750,54 @@ func TestHostedPlatformUsers(t *testing.T) {
 		{"MATCH@example.test", 200, 1, 1},
 		{"match", 200, 2, 2},
 		{"match@example.test.example.org", 200, 0, 0},
-		{"cap", 200, 0, 50},
+		{"cap", 200, 0, 55},
 		{"missing", 200, 0, 0},
-		{"ab", 400, 0, 0},
+		{"ab", 200, 0, 0},
+		{"", 200, 57, 57},
+		{"large", 200, 55, 0},
 	} {
 		t.Run(test.query, func(t *testing.T) {
-			body, err := json.Marshal(platformusers.Query{Text: test.query})
-			if err != nil {
-				t.Fatal(err)
-			}
-			response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/platform/users", body: string(body)})
-			if response.Code != test.status {
-				t.Fatalf("search = %d %s", response.Code, response.Body)
-			}
-			if test.status != 200 {
-				return
-			}
-			var result platformusers.TenantResult
-			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-				t.Fatal(err)
+			result := platformusers.TenantResult{}
+			cursor := ""
+			seen := map[string]bool{}
+			for {
+				input := map[string]string{"q": test.query}
+				if cursor != "" {
+					input["after"] = cursor
+				}
+				body, err := json.Marshal(input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/platform/users", body: string(body)})
+				if response.Code != test.status || response.Body.Len() > 64<<10 {
+					t.Fatalf("search = %d, %d bytes", response.Code, response.Body.Len())
+				}
+				var page platformusers.TenantResult
+				if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+					t.Fatal(err)
+				}
+				if len(page.Members)+len(page.Invitations) > 50 || strings.Contains(response.Body.String(), "private-project-sentinel") {
+					t.Fatal("unbounded page or customer content leak")
+				}
+				result.Members = append(result.Members, page.Members...)
+				result.Invitations = append(result.Invitations, page.Invitations...)
+				cursor = page.NextCursor
+				if cursor == "" {
+					break
+				}
+				if seen[cursor] {
+					t.Fatal("cursor did not advance")
+				}
+				seen[cursor] = true
 			}
 			if len(result.Members) != test.members || len(result.Invitations) != test.invitations {
-				t.Fatalf("result = %+v", result)
+				t.Fatalf("result totals = %d members, %d invitations", len(result.Members), len(result.Invitations))
 			}
 			for _, member := range result.Members {
 				if member.JoinedAt == "" || member.Subject == "" || member.Role == "" {
 					t.Fatalf("member = %+v", member)
 				}
-			}
-			if strings.Contains(response.Body.String(), "private-project-sentinel") {
-				t.Fatalf("customer content leaked: %s", response.Body)
 			}
 		})
 	}
