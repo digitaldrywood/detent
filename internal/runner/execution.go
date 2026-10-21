@@ -624,6 +624,53 @@ func (r *Runner) finishExecution(ctx context.Context, req RunRequest, backend wo
 	backend.AfterRun(afterCtx, info, issue)
 }
 
+func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, finalize bool) (workspace.Info, workspace.Issue, error) {
+	req.checkpointRefs.halt()
+	preserver, ok := backend.(workspace.IssuePreserver)
+	if ok {
+		if _, err := preserver.PreserveIssue(ctx, issue); err != nil {
+			return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, err)
+		}
+	}
+	if req.Execution == nil {
+		return workspace.Info{}, issue, nil
+	}
+	if !ok {
+		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, ErrWorkspacePreservationUnavailable)
+	}
+	r.pushCheckpointRef(ctx, req.checkpointRefs, req, "stage_finished")
+	state := r.workspaceRecoveryState(backend, ctx, info, issue, "native_checkpoint")
+	checkpoint := executionCheckpointPreservingPublication(req.Execution, state)
+	if !agentResumeEmpty(resume) {
+		checkpoint.Resume = "resume_session"
+	} else {
+		checkpoint.Resume = "manual_recovery"
+	}
+	req.checkpointRefs.apply(&checkpoint)
+	if err := recordCheckpointRef(ctx, req.checkpointRefs, req.Execution, checkpoint); err != nil {
+		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, err)
+	}
+	if !finalize {
+		return workspace.Info{}, issue, nil
+	}
+	if !checkpoint.GitRef() || checkpoint.UncertainForgeEffect() || req.checkpointRefs.lastPushFailed() {
+		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired)
+	}
+	restoredIssue := issue
+	restoredIssue.Identifier += "-finalization-" + checkpoint.CommitSHA
+	restoredIssue.BranchName = ""
+	restoredIssue.Source = nil
+	restoredIssue.Checkpoint = &workspace.CheckpointRef{Ref: checkpoint.Ref, CommitSHA: checkpoint.CommitSHA, HeadSHA: checkpoint.HeadSHA, BaseSHA: checkpoint.BaseSHA, TreeSHA: checkpoint.TreeSHA}
+	restored, err := backend.Create(ctx, restoredIssue)
+	if err != nil {
+		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, err)
+	}
+	if restored.Path == info.Path || restored.Branch == info.Branch {
+		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, errors.New("checkpoint finalization requires a separate workspace and branch"))
+	}
+	return restored, restoredIssue, nil
+}
+
 func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, turnStarted bool) (bool, error) {
 	if req.finalizeNativeWork && !req.retainCheckpoint {
 		if execution, ok := req.Execution.(PublicationSourceExecution); ok {

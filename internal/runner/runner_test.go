@@ -1726,6 +1726,7 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 		wantScratch bool
 	}{
 		{name: "completed turn"},
+		{name: "completed turn with survivors", reapErr: errors.New("workspace processes remained after SIGKILL"), wantReap: true, wantScratch: true},
 		{name: "cancelled turn", runErr: context.Canceled, wantErr: context.Canceled, wantReap: true},
 		{name: "cancelled turn reap deadline", runErr: context.Canceled, wantErr: context.Canceled, reapErr: context.DeadlineExceeded, wantReap: true, wantScratch: true},
 	}
@@ -1736,6 +1737,9 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 
 			workspacePath := t.TempDir()
 			backend := &scratchWritingAgentBackend{runErr: tt.runErr}
+			if tt.name == "completed turn with survivors" {
+				backend.workerProcess = procgroup.Identity{PID: 2345}
+			}
 			t.Cleanup(func() {
 				if err := workspace.CleanupWorkerScratch(workspacePath, backend.tempDir); err != nil {
 					t.Errorf("fixture scratch cleanup: %v", err)
@@ -1782,13 +1786,13 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 			if reaped != tt.wantReap {
 				t.Fatalf("workspace reaped = %v, want %v", reaped, tt.wantReap)
 			}
-			if got := errors.Is(execution.err, ErrWorkerProcessReap); got != tt.wantScratch {
+			if got := errors.Is(execution.cleanupErr, ErrWorkerProcessReap); got != tt.wantScratch {
 				t.Fatalf("worker reap failure = %v, want %v: %v", got, tt.wantScratch, execution.err)
 			}
-			if tt.reapErr != nil && !errors.Is(execution.err, tt.reapErr) {
+			if tt.reapErr != nil && !errors.Is(execution.cleanupErr, tt.reapErr) {
 				t.Fatalf("turn error = %v, want reap cause %v", execution.err, tt.reapErr)
 			}
-			if execution.cleanupErr != nil {
+			if execution.cleanupErr != nil && !tt.wantScratch {
 				t.Fatalf("scratch removal error: %v (turn error: %v)", execution.cleanupErr, execution.err)
 			}
 			if scratchRoot := workspace.WorkerScratchRoot(workspacePath); backend.tempDir == "" || !strings.HasPrefix(backend.tempDir, scratchRoot+string(filepath.Separator)) {
