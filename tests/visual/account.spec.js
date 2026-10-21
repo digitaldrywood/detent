@@ -829,7 +829,7 @@ for (const theme of ["dark", "light"]) {
       await expect(page.getByRole("heading", { name: "API keys & MCP", exact: true })).toBeVisible();
       await page.evaluate((mode) => { document.documentElement.dataset.theme = mode; document.documentElement.classList.toggle("dark", mode === "dark"); }, theme);
       await expect(page).toHaveURL(new RegExp(`${mount}/settings/mcp$`));
-      await expect(page.getByRole("heading", { name: "Your personal keys", exact: true })).toBeVisible();
+      await expect(page.getByRole("tab", { name: "Personal 1", exact: true })).toBeVisible();
       await expect(page.getByRole("button", { name: "Create key", exact: true })).toHaveCount(1);
       await expect(page.getByRole("button", { name: "Copy MCP setup prompt", exact: true })).toHaveCount(1);
       await expect(page.getByRole("textbox", { name: "MCP endpoint value" })).toHaveValue("https://cloud.example.test/mcp");
@@ -851,10 +851,9 @@ for (const theme of ["dark", "light"]) {
       await page.keyboard.press("Escape");
       await expect(page.getByRole("button", { name: "Create key", exact: true })).toBeFocused();
       await page.goto(new URL(`${mount}/settings/mcp`, hub.fixture.url).toString());
-      await expect(page.getByRole("heading", { name: "Organization service keys", exact: true })).toBeVisible();
       await page.evaluate((mode) => { document.documentElement.dataset.theme = mode; document.documentElement.classList.toggle("dark", mode === "dark"); }, theme);
       await expect(page.getByRole("heading", { name: "Member keys", exact: true })).toBeVisible();
-      await expect(page.getByLabel("Personal keys", { exact: true })).toHaveValue("approval");
+      await expect(page.getByRole("combobox", { name: "Personal keys", exact: true })).toHaveValue("approval");
       await expect(page.getByRole("button", { name: "Approve My cross-org agent", exact: true })).toBeVisible();
       await expect(page.getByRole("button", { name: "Block My cross-org agent for this org", exact: true })).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
