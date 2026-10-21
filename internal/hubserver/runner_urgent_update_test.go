@@ -210,6 +210,11 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 	if snapshot.Routing.State != "active" || snapshot.Routing.UpdateRequest.Version != "1.2.5" {
 		t.Fatalf("superseded delivery interrupted its session: %+v", snapshot)
 	}
+	foreign := *urgent.Request
+	foreign.ID = "update_superseded_elsewhere"
+	if snapshot := heartbeat(t, f, late, "1.2.3", &runnerauth.UpdateReceipt{Request: foreign, Status: "draining", ObservedAt: now}); snapshot.Routing.UpdateRequest == nil || snapshot.Routing.UpdateRequest.Version != "1.2.5" {
+		t.Fatalf("an unrecognized update receipt blocked the heartbeat: %+v", snapshot)
+	}
 	const runningVersion = "0.121.4-op.r.325.gaaaaaaaaaaaa"
 	const targetVersion = "0.121.4-op.r.326.gbbbbbbbbbbbb"
 	for _, test := range []struct {

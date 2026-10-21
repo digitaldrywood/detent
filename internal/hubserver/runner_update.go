@@ -169,7 +169,7 @@ func (s *Service) storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, 
 					return err
 				}
 				if !accepted {
-					return nativeInvalid("Update receipt does not belong to this enrolled runner request")
+					report.Receipt = nil
 				}
 			}
 		}
