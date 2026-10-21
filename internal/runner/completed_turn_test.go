@@ -1,9 +1,12 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -12,7 +15,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -388,6 +393,98 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				}
 
 			})
+		})
+	}
+}
+
+type reapedExecutionWorkspace struct {
+	completedExecutionWorkspace
+	captureErr error
+	original   workspace.Info
+	restored   bool
+}
+
+func (w *reapedExecutionWorkspace) PushCheckpointRef(ctx context.Context, _ workspace.Info, _ workspace.Issue, previous workspace.CheckpointRef, validate func(context.Context) error) (workspace.CheckpointRef, bool, error) {
+	if err := validate(ctx); err != nil {
+		return previous, false, err
+	}
+	if w.captureErr != nil {
+		return previous, false, w.captureErr
+	}
+	return workspace.CheckpointRef{Ref: tracker.CheckpointRefPrefix + "work", CommitSHA: strings.Repeat("c", 40), HeadSHA: "completed-head", BaseSHA: strings.Repeat("b", 40), TreeSHA: strings.Repeat("e", 40)}, true, nil
+}
+
+func (w *reapedExecutionWorkspace) RestoreCheckpointForFinalization(_ context.Context, original workspace.Info, issue workspace.Issue, checkpoint workspace.CheckpointRef) (workspace.Info, workspace.Issue, error) {
+	if !w.retained || checkpoint.CommitSHA != strings.Repeat("c", 40) || checkpoint.TreeSHA != strings.Repeat("e", 40) {
+		return workspace.Info{}, issue, errors.New("restore requires retained workspace and immutable checkpoint")
+	}
+	w.original = original
+	w.restored = true
+	return workspace.Info{Path: filepath.Join(filepath.Dir(original.Path), "restored"), Branch: "restored"}, issue, nil
+}
+
+func (w *reapedExecutionWorkspace) FinalizeNativeWork(ctx context.Context, info workspace.Info, issue workspace.Issue, validate func(context.Context) error) (string, error) {
+	if !w.restored || info.Path == w.original.Path || info.Branch == w.original.Branch {
+		return "", errors.New("finalization used mutable survivor workspace")
+	}
+	return w.completedExecutionWorkspace.FinalizeNativeWork(ctx, info, issue, validate)
+}
+
+func TestCompletedNativeTurnReapFailure(t *testing.T) {
+	turnFailure := errors.New("implementation failed")
+	for _, test := range []struct {
+		name         string
+		captureErr   error
+		turnErr      error
+		wantRecovery bool
+	}{
+		{name: "captured source completes"},
+		{name: "uncaptured source recovers", captureErr: errors.New("checkpoint upload unavailable"), wantRecovery: true},
+		{name: "failed turn keeps its failure", turnErr: turnFailure},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &reapedExecutionWorkspace{completedExecutionWorkspace: completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: "native"}, recoveryStates: []workspace.RecoveryState{{HeadSHA: "completed-head", WorkspaceFingerprint: "completed-digest"}}}}}, captureErr: test.captureErr}
+			execution := &finalizingTestExecution{}
+			agent := &completedTurnBackend{fakeCodexClient: fakeCodexClient{err: test.turnErr, result: AgentTurnResult{ThreadID: "finished-thread", SessionID: "finished-session"}, updates: []AgentUpdate{{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 1234}}, {Type: AgentUpdateTurnCompleted, Status: "completed"}}}, afterTurn: func() {}}
+			var logs bytes.Buffer
+			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent, Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.sleepInhibitor = func(context.Context, func()) (func(), error) { return func() {}, nil }
+			r.reapWorkspaceProcesses = func(context.Context, string, time.Duration) (int, error) {
+				return 1, errors.New("workspace processes remained after SIGKILL")
+			}
+			supervisor, err := NewSupervisor(r, SupervisorConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			completion := supervisor.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "work", Identifier: "example-org/example-project#1"}, Mode: RunModeImplement})
+			wantSuccess := test.turnErr == nil && !test.wantRecovery
+			if (completion.Err == nil) != wantSuccess || execution.published != wantSuccess || backend.finalized != wantSuccess || !backend.retained || agent.calls != 1 {
+				t.Fatalf("error=%v published=%t finalized=%t retained=%t calls=%d", completion.Err, execution.published, backend.finalized, backend.retained, agent.calls)
+			}
+			if test.turnErr != nil && (!errors.Is(completion.Err, test.turnErr) || execution.finish != "failed") {
+				t.Fatalf("lost turn failure: %v", completion.Err)
+			}
+			if errors.Is(completion.Err, ErrNativeRecoveryRequired) != test.wantRecovery {
+				t.Fatalf("recovery error=%v", completion.Err)
+			}
+			if test.wantRecovery && (!errors.Is(completion.Err, ErrWorkerProcessReap) || execution.finish != "interrupted" || execution.checkpoint == nil || execution.checkpoint.Resume != "resume_session" || backend.restored) {
+				t.Fatalf("recovery error=%v outcome=%s checkpoint=%+v restored=%t", completion.Err, execution.finish, execution.checkpoint, backend.restored)
+			}
+			if test.wantRecovery {
+				r.store = &fakeSessionStore{resumeState: store.AgentResumeState{ProviderThreadID: "finished-thread", ProviderSessionID: "finished-session"}}
+				execution.recovery.Attempts = []tracker.NativeAttempt{{Status: execution.finish, Checkpoint: execution.checkpoint, NativeRunData: tracker.NativeRunData{Identity: &tracker.NativeExecutionIdentity{Role: RoleCode, Backend: "codex"}, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 1}}}}
+				_, runtime, _, _ := r.runtimeSnapshot()
+				resume, err := r.nativeInterruptedResumeState(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, runtime)
+				if err != nil || resume.ProviderThreadID != "finished-thread" || resume.ProviderSessionID != "finished-session" {
+					t.Fatalf("finished implementation did not retain its provider resume: %+v %v", resume, err)
+				}
+			}
+			if !strings.Contains(logs.String(), `"attribution":"instance"`) || !strings.Contains(logs.String(), "workspace processes remained after SIGKILL") {
+				t.Fatalf("missing instance cleanup evidence: %s", logs.String())
+			}
 		})
 	}
 }
