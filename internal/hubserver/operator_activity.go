@@ -181,14 +181,31 @@ func readActivityAttempts(ctx context.Context, q nativeQueryer, organization str
 	out := []operatortool.ActivityAttempt{}
 	for rows.Next() {
 		var a operatortool.ActivityAttempt
-		var phasesRaw, started, finished, workspaceRaw string
+		var phasesRaw, started, finished, workspaceRaw, runRaw string
 		var dropped int
-		if err := rows.Scan(&a.AttemptID, &a.WorkItemID, &a.Number, &a.Title, &a.ProjectID, &a.ProjectName, &a.RunnerID, &a.Stage, &a.Phase, &phasesRaw, &dropped, &started, &a.SessionID, &a.ChangeID, &a.PullRequestURL, &a.Outcome, &finished, &workspaceRaw); err != nil {
+		if err := rows.Scan(&a.AttemptID, &a.WorkItemID, &a.Number, &a.Title, &a.ProjectID, &a.ProjectName, &a.RunnerID, &a.Stage, &a.Phase, &phasesRaw, &dropped, &started, &a.SessionID, &a.ChangeID, &a.PullRequestURL, &a.Outcome, &finished, &workspaceRaw, &runRaw); err != nil {
 			return nil, err
 		}
 		a.StartedAt, err = parseTimeValue(started)
 		if err != nil {
 			return nil, err
+		}
+		var stored storedRun
+		if err := json.Unmarshal([]byte(runRaw), &stored); err != nil {
+			return nil, err
+		}
+		if stored.Detail != nil {
+			var run tracker.NativeRunData
+			if err := decodeRunDetail(ctx, runRaw, &run); err != nil {
+				return nil, err
+			}
+			if run.Runtime != nil {
+				phasesRaw, err = marshalNative(run.Runtime.Phases)
+				if err != nil {
+					return nil, err
+				}
+				dropped = run.Runtime.PhasesDropped
+			}
 		}
 		var phases []tracker.NativePhase
 		if json.Unmarshal([]byte(phasesRaw), &phases) != nil {
@@ -245,7 +262,7 @@ SELECT a.id,a.work_item_id,i.number,i.title,a.project_id,p.name,a.runner_id,
  coalesce(json_extract(a.data_json,'$.session_id'),l.session_id,''),a.change_id,
  coalesce(nullif(json_extract(a.data_json,'$.finalization.publication.external.url'),''),(SELECT json_extract(v.record_json,'$.external.url') FROM change_requests c JOIN change_versions v ON v.id=json_extract(c.record_json,'$.current_version_id') AND v.change_id=c.id WHERE c.id=a.change_id AND c.organization_id=a.organization_id AND c.project_id=a.project_id),''),
  CASE WHEN a.status='running' THEN 'interrupted' ELSE a.status END,a.effective_finished_at,
- (SELECT json_group_array(ws.id) FROM workspace_sessions ws WHERE ws.organization_id=a.organization_id AND ws.project_id=a.project_id AND ws.subject_work_item_id=a.work_item_id AND ws.attempt_id=a.id AND ws.state IN ('requested','starting','ready','idle'))
+ (SELECT json_group_array(ws.id) FROM workspace_sessions ws WHERE ws.organization_id=a.organization_id AND ws.project_id=a.project_id AND ws.subject_work_item_id=a.work_item_id AND ws.attempt_id=a.id AND ws.state IN ('requested','starting','ready','idle')), a.data_json
 FROM linked a JOIN leases l ON l.lease_id=a.lease_id
 JOIN issues i ON i.organization_id=a.organization_id AND i.project_id=a.project_id AND i.native_id=a.work_item_id
 JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id`

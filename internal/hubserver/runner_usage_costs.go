@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -135,8 +136,35 @@ func recordRunnerUsageCosts(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 				o.AmountMicros, o.Basis = o.EstimatedAmountMicros, "estimated"
 			}
 		}
-		if _, err := recordCostObservation(ctx, tx, organization, project, o, now); err != nil {
+		var previous costObservation
+		if kind == "incremental" {
+			var raw string
+			err := tx.QueryRowContext(ctx, `SELECT observation_json FROM usage_cost_observations WHERE organization_id=? AND provider=? AND provider_account=? AND source_id=? AND period_start=? AND period_end=? ORDER BY revision DESC LIMIT 1`, organization, o.Provider, o.ProviderAccount, o.SourceID, o.From.UTC().Format(costTimeLayout), o.To.UTC().Format(costTimeLayout)).Scan(&raw)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if err == nil {
+				if err := json.Unmarshal([]byte(raw), &previous); err != nil {
+					return err
+				}
+			}
+		}
+		recorded, err := recordCostObservation(ctx, tx, organization, project, o, now)
+		if err != nil {
 			return err
+		}
+		if recorded && kind == "incremental" {
+			var cost, oldCost float64
+			if o.EstimatedAmountMicros != nil {
+				cost = float64(*o.EstimatedAmountMicros) / 1e6
+			}
+			if previous.EstimatedAmountMicros != nil {
+				oldCost = float64(*previous.EstimatedAmountMicros) / 1e6
+			}
+			delta := tracker.NativeUsage{Input: o.Input - previous.Input, CachedInput: o.CachedInput - previous.CachedInput, Output: o.Output - previous.Output, CostEstimate: cost - oldCost}
+			if err := updateAttemptUsageSummary(ctx, tx, scope, request.Data.AttemptID, delta); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

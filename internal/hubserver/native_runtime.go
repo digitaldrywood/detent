@@ -211,6 +211,7 @@ func (s *Service) getNativeRuntime(c echo.Context) error {
 }
 
 func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
+	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -466,7 +467,7 @@ func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope native
 	if err := json.Unmarshal([]byte(actor), &e.Actor); err != nil {
 		return tracker.CollaborationEvent{}, err
 	}
-	if err := json.Unmarshal([]byte(data), &e.Data); err != nil {
+	if err := decodeRunHistory(ctx, data, &e.Data); err != nil {
 		return tracker.CollaborationEvent{}, err
 	}
 	e.RecordedAt, err = parseTimeValue(at)

@@ -544,6 +544,7 @@ type NativeClaim struct {
 }
 
 type NativeLease struct {
+	RunDetailBatching   bool                          `json:"run_detail_batching,omitempty"`
 	IsolationPolicy     *isolation.Policy             `json:"isolation_policy,omitempty"`
 	ProviderReservation *providercapacity.Reservation `json:"provider_reservation,omitempty"`
 	ServerTime          time.Time                     `json:"server_time"`
@@ -626,6 +627,7 @@ type NativeEvidence struct {
 }
 
 type NativeRunEvent struct {
+	PriorEvents []NativeRunEvent `json:"prior_events,omitempty"`
 	Mutation
 	Type          string        `json:"type"`
 	SchemaVersion int           `json:"schema_version"`

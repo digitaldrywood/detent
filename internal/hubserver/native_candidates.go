@@ -276,7 +276,7 @@ const nativeCandidateCompletionEvidence = `
    AND length(CAST(COALESCE(json_extract(a.data_json, '$.completion_body'), '') AS BLOB)) <= 65536
    THEN COALESCE(json_extract(a.data_json, '$.completion_body'), '') ELSE '' END AS completion_body,
  COALESCE(json_extract(a.checkpoint_json, '$.head_sha'), ''),
- COALESCE(json_extract(a.checkpoint_json, '$.workspace_digest'), '')
+ COALESCE(json_extract(a.checkpoint_json, '$.workspace_digest'), ''), COALESCE(a.data_json, '{}')
  FROM page JOIN issues i ON i.id = page.id
  JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
  JOIN workflow_states ws ON ws.id = i.workflow_state_id
@@ -315,9 +315,9 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 	scanned := 0
 	for rows.Next() {
 		var unanswered bool
-		var project, body, head, digest string
+		var project, body, head, digest, runRaw string
 		var typed sql.NullBool
-		if err := rows.Scan(&last, &unanswered, &project, &typed, &body, &head, &digest); err != nil {
+		if err := rows.Scan(&last, &unanswered, &project, &typed, &body, &head, &digest, &runRaw); err != nil {
 			return nil, 0, 0, err
 		}
 		scanned++
@@ -326,6 +326,13 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 				continue
 			}
 			if !typed.Bool {
+				var run tracker.NativeRunData
+				if err := decodeRunDetail(ctx, runRaw, &run); err != nil {
+					return nil, 0, 0, err
+				}
+				if run.CompletionBody != "" {
+					body = run.CompletionBody
+				}
 				signal, reported := workpad.SignalFromComment(body, "", project)
 				if !reported || signal == nil || signal.Invalid != nil || signal.Status != workpad.StatusComplete || len(signal.Blockers) != 0 ||
 					signal.HumanAction != "" || signal.ReasonCode != "" || signal.Fields["completion_kind"] == "operational" {
@@ -373,7 +380,7 @@ func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.Wo
 	}
 	var data tracker.NativeRunData
 	var source tracker.NativeCheckpoint
-	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+	if err := decodeRunDetail(ctx, raw, &data); err != nil {
 		return tracker.NativeAnsweredExclusion{}, err
 	}
 	if err := json.Unmarshal([]byte(checkpoint), &source); err != nil {

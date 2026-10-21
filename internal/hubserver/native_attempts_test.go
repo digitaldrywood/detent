@@ -186,7 +186,7 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}
+	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}}
 	f := newNativeFixture(t, openTestService(t, config), "", "recovery")
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "work")
