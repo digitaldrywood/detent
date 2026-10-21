@@ -58,7 +58,7 @@ func TestOfflineCLIUpdateReportsVerifiedController(t *testing.T) {
 	candidate := filepath.Join(dir, "candidate")
 	buildCtx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
-	build := exec.CommandContext(buildCtx, "go", "test", "-c", "-p", "4", "-ldflags", "-X github.com/digitaldrywood/detent/internal/update.defaultChecksumMinisignPublicKey="+publicKey, "-o", candidate, ".")
+	build := exec.CommandContext(buildCtx, "go", "test", "-c", "-p", "4", "-ldflags", "-s -w -X github.com/digitaldrywood/detent/internal/update.defaultChecksumMinisignPublicKey="+publicKey, "-o", candidate, ".")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build controller fixture: %v\n%s", err, output)
 	}
