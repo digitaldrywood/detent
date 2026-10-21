@@ -157,6 +157,7 @@ func safeBillingError(err error) error {
 }
 
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
+	ctx = e.service.freshRunDetailContext(ctx)
 	call, err = e.service.normalizeToolReferences(ctx, call)
 	if err != nil {
 		return result, err

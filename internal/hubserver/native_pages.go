@@ -52,6 +52,7 @@ func (s *Service) readNativePage(ctx context.Context, scope nativeScope, path st
 }
 
 func (s *Service) readNativePageLimit(ctx context.Context, scope nativeScope, path string, params url.Values, maximum, defaultLimit int) (int, nativeCursor, []byte, error) {
+	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	limit := defaultLimit
@@ -226,6 +227,7 @@ func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.
 }
 
 func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, params url.Values, compact bool) (tracker.NativeIssuePage, error) {
+	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	picker, err := nativeIssuePickerRequested(params)
@@ -413,6 +415,7 @@ func (s *Service) listNativeComments(c echo.Context) error {
 }
 
 func (s *Service) readComments(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
+	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/comments"
@@ -482,6 +485,7 @@ func (s *Service) listNativeHistory(c echo.Context) error {
 }
 
 func (s *Service) readHistory(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.CollaborationEvent], error) {
+	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/history"
@@ -557,10 +561,22 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence >
 		if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
-		if err := json.Unmarshal([]byte(data), &event.Data); err != nil {
+		if err := decodeRunHistory(ctx, data, &event.Data); err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
 		if event.Data.Run != nil {
+			var stored struct {
+				Run storedRun `json:"run"`
+			}
+			if err := json.Unmarshal([]byte(data), &stored); err != nil {
+				return tracker.Page[tracker.CollaborationEvent]{}, err
+			}
+			if stored.Run.Detail != nil {
+				data, err = marshalNative(event.Data)
+				if err != nil {
+					return tracker.Page[tracker.CollaborationEvent]{}, err
+				}
+			}
 			event.Data.Run.Runtime = event.Data.Run.Runtime.WithoutActivitySpans()
 		}
 		if event.RecordedAt, err = parseTimeValue(recorded); err != nil {

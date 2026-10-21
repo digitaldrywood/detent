@@ -260,6 +260,10 @@ AND attempt_id=? AND source='attempt' AND seq=? AND producer_lease_id=? AND prod
 			return false, false, nativeExecutionConflict("PR publication head changed after verification; reconcile the current source before completion")
 		}
 	}
+	storedEncoded, err := encodeRunDetail(ctx, data, false)
+	if err != nil {
+		return false, false, err
+	}
 	var previousJSON, status string
 	var sequence int64
 	err = tx.QueryRowContext(ctx, "SELECT data_json, sequence, status FROM native_attempts WHERE id = ?", data.AttemptID).Scan(&previousJSON, &sequence, &status)
@@ -302,7 +306,7 @@ AND attempt_id=? AND source='attempt' AND seq=? AND producer_lease_id=? AND prod
 			status = data.Outcome
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO native_attempts (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, started_at, updated_at, work_item_revision, dispatch_generation)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organization, scope.project, item, data.LeaseID, data.FencingToken, data.RunID, data.Sequence, status, encoded, formatHubTime(now), formatHubTime(now), revision, dispatch.generation)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organization, scope.project, item, data.LeaseID, data.FencingToken, data.RunID, data.Sequence, status, storedEncoded, formatHubTime(now), formatHubTime(now), revision, dispatch.generation)
 		if err != nil {
 			return false, false, err
 		}
@@ -310,7 +314,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organi
 		return false, false, err
 	default:
 		var previous tracker.NativeRunData
-		if err := json.Unmarshal([]byte(previousJSON), &previous); err != nil {
+		if err := decodeRunDetail(ctx, previousJSON, &previous); err != nil {
 			return false, false, err
 		}
 		if termination {
@@ -338,7 +342,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organi
 			event.Data = data
 		}
 		data.Evidence = previous.Evidence
-		encoded, err = marshalNative(data)
+		storedEncoded, err = encodeRunDetail(ctx, data, false)
 		if err != nil {
 			return false, false, err
 		}
@@ -379,10 +383,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organi
 		}
 		if usageCorrection {
 			publish = false
-			if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET sequence=?,data_json=? WHERE id=?", data.Sequence, encoded, data.AttemptID); err != nil {
+			if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET sequence=?,data_json=? WHERE id=?", data.Sequence, storedEncoded, data.AttemptID); err != nil {
 				return false, false, err
 			}
-		} else if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET sequence = ?, status = ?, data_json = ?, updated_at = ? WHERE id = ?", data.Sequence, status, encoded, formatHubTime(now), data.AttemptID); err != nil {
+		} else if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET sequence = ?, status = ?, data_json = ?, updated_at = ? WHERE id = ?", data.Sequence, status, storedEncoded, formatHubTime(now), data.AttemptID); err != nil {
 			return false, false, err
 		}
 	}
@@ -392,7 +396,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organi
 		}
 	}
 	if data.Handoff != nil {
-		checkpoint, err := marshalNative(data.Handoff)
+		checkpoint, err := encodeRunCheckpoint(ctx, data)
 		if err != nil {
 			return false, false, err
 		}
@@ -403,6 +407,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organi
 		if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET checkpoint_json = ?, artifact_ids_json = ? WHERE id = ?", checkpoint, artifacts, data.AttemptID); err != nil {
 			return false, false, err
 		}
+	}
+	if err := recordRunDetailReference(ctx, tx, scope, item, data, formatHubTime(now)); err != nil {
+		return false, false, err
 	}
 	_, err = tx.ExecContext(ctx, "INSERT INTO native_attempt_events (attempt_id, sequence, request_hash) VALUES (?, ?, ?)", data.AttemptID, data.Sequence, digest)
 	return err == nil, publish, err
@@ -448,6 +455,7 @@ func (s *Service) listNativeAttempts(c echo.Context) error {
 }
 
 func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeAttempt], error) {
+	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/attempts"
@@ -489,9 +497,13 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fe
 	defer rows.Close()
 	var attempts []tracker.NativeAttempt
 	for rows.Next() {
-		attempt, err := scanNativeAttempt(rows, s.config.now())
+		attempt, err := scanNativeAttempt(ctx, rows, s.config.now())
 		if err != nil {
 			return tracker.Page[tracker.NativeAttempt]{}, err
+		}
+		if view != "" {
+			attempt.Runtime = nil
+			attempt.RuntimeFreshness = "unavailable"
 		}
 		attempts = append(attempts, attempt)
 	}
@@ -563,18 +575,18 @@ func nativeAttemptDisplayIdentity(attempt tracker.NativeAttempt) *tracker.Native
 	return &identity
 }
 
-func scanNativeAttempt(rows *sql.Rows, now time.Time) (tracker.NativeAttempt, error) {
+func scanNativeAttempt(ctx context.Context, rows *sql.Rows, now time.Time) (tracker.NativeAttempt, error) {
 	var attempt tracker.NativeAttempt
 	var data, started, updated, artifacts, expires, renewed string
 	var checkpoint, released sql.NullString
 	if err := rows.Scan(&data, &attempt.Status, &started, &updated, &checkpoint, &artifacts, &expires, &released, &renewed, &attempt.WorkItemRevision, &attempt.DispatchGeneration); err != nil {
 		return attempt, err
 	}
-	if err := json.Unmarshal([]byte(data), &attempt.NativeRunData); err != nil {
+	if err := decodeRunDetail(ctx, data, &attempt.NativeRunData); err != nil {
 		return attempt, err
 	}
 	if checkpoint.Valid {
-		if err := json.Unmarshal([]byte(checkpoint.String), &attempt.Checkpoint); err != nil {
+		if err := decodeRunCheckpoint(ctx, checkpoint.String, &attempt.Checkpoint); err != nil {
 			return attempt, err
 		}
 	}
@@ -642,6 +654,7 @@ func (s *Service) getNativeAttempt(c echo.Context) error {
 }
 
 func (s *Service) readNativeAttempt(ctx context.Context, scope nativeScope, item, id string) (tracker.NativeAttempt, error) {
+	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	return readNativeAttempt(ctx, s.database.reader, scope, item, id, s.config.now())
@@ -676,7 +689,7 @@ func readNativeAttemptRecord(ctx context.Context, q nativeQueryer, scope nativeS
 		}
 		return tracker.NativeAttempt{}, nativeNotFound()
 	}
-	return scanNativeAttempt(rows, now)
+	return scanNativeAttempt(ctx, rows, now)
 }
 
 func leaseReleaseFailure(ctx context.Context, tx *sql.Tx, data tracker.NativeRunData, now time.Time) (tracker.NativeTerminalFailure, error) {
@@ -707,8 +720,15 @@ WHERE a.lease_id = ? AND a.fencing_token = ? AND a.organization_id = ? AND a.pro
 	if err != nil {
 		return err
 	}
+	var stored storedRun
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		return err
+	}
+	if owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext); ok && stored.Detail != nil {
+		owner.reuse[stored.AttemptID] = stored.Detail
+	}
 	var previous tracker.NativeRunData
-	if err := json.Unmarshal([]byte(raw), &previous); err != nil {
+	if err := decodeRunDetail(ctx, raw, &previous); err != nil {
 		return err
 	}
 	if previous.Identity == nil {

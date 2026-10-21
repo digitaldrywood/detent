@@ -20,6 +20,7 @@ import (
 
 func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, item string, projected ...bool) (tracker.NativeRecovery, error) {
 	ctx = s.contentContext(ctx)
+	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	bounded := len(projected) > 0 && projected[0]
@@ -141,7 +142,7 @@ ORDER BY a.fencing_token LIMIT 5`, scope.organization, scope.project, item, sour
 	}
 	defer rows.Close()
 	for rows.Next() {
-		attempt, err := scanNativeAttempt(rows, s.config.now())
+		attempt, err := scanNativeAttempt(ctx, rows, s.config.now())
 		if err != nil {
 			return result, err
 		}

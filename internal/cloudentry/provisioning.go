@@ -160,6 +160,7 @@ func (s *Service) tenantSpec(organization Organization) TenantSpec {
 		Content: func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
 			return s.tenantContent(ctx, organization, request)
 		},
+		RunDetails: tenantDetailStore{service: s, allocation: organization},
 		ResolveKey: func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
 			return s.resolveTenantKey(ctx, organization, origin)
 		},

@@ -68,6 +68,7 @@ func linkedSourceNumber(source string) int {
 }
 
 func (s *Service) linkedSourceContext(ctx context.Context) context.Context {
+	ctx = s.runDetailContext(ctx)
 	base := ""
 	if s.config.Hosted != nil {
 		base = s.config.Hosted.PublicURL
