@@ -19,6 +19,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 )
 
+const maxArchiveControlResponseBytes = 1 << 20
+
 func (s *spaces) PutArchive(ctx context.Context, ref ArchiveReference, data []byte) error {
 	if !validArchiveKey(ref) || int64(len(data)) != ref.CompressedSize || artifact.Digest(data) != ref.SHA256 {
 		return ErrInvalid
@@ -129,11 +131,19 @@ func (c archiveLifecycleHTTP) Do(request *http.Request) (*http.Response, error) 
 	if err != nil || response.StatusCode < 200 || response.StatusCode >= 300 {
 		return response, err
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
-	err = errors.Join(err, response.Body.Close())
-	if err != nil || len(data) > 1<<20 || xml.Unmarshal(data, c.configuration) != nil {
+	data, err := readArchiveResponse(response, maxArchiveControlResponseBytes)
+	if err != nil || xml.Unmarshal(data, c.configuration) != nil {
 		return nil, artifact.ErrStorage
 	}
 	response.Body = io.NopCloser(bytes.NewReader(data))
 	return response, nil
+}
+
+func readArchiveResponse(response *http.Response, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	err = errors.Join(err, response.Body.Close())
+	if err != nil || int64(len(data)) > limit {
+		return nil, artifact.ErrStorage
+	}
+	return data, nil
 }
