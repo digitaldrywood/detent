@@ -267,11 +267,10 @@ test("project settings show the integration and refuse to edit it for a viewer",
   page,
 }) => {
   const errors = watchConsole(page);
-  // §17.3: this path redirects into the Integrations section of settings.
-  await openAs(page, "owner", `/projects/${hub.fixture.project_id}/settings`);
+  await openAs(page, "owner", `/settings/projects/${hub.fixture.project_id}/repository`);
 
-  await expect(page).toHaveURL(/\/settings\/integrations\?project=/);
-  await expectOneHeadingOne(page, "Settings");
+  await expect(page).toHaveURL(/\/settings\/projects\/[^/]+\/repository$/);
+  await expectOneHeadingOne(page, /settings$/);
   await expect(page.getByLabel("Go to Detent Cloud")).toHaveCount(1);
   await expect(page.getByText(/Hub GitHub integration is unavailable/)).toBeVisible();
   await expect(page.getByRole("switch", { name: "Pull requests" })).toHaveCount(0);
@@ -288,7 +287,7 @@ test("project settings show the integration and refuse to edit it for a viewer",
     "console errors on project settings",
   ).toEqual([]);
 
-  await openAs(page, "viewer", `/projects/${hub.fixture.project_id}/settings`);
+  await openAs(page, "viewer", `/settings/projects/${hub.fixture.project_id}/repository`);
   await expect(page.getByText(/Hub GitHub integration is unavailable/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Associate runner checkout" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Save changes" })).toHaveCount(0);
@@ -392,9 +391,9 @@ for (const state of [
     let releaseIntegration;
     integrationReady = new Promise((resolve) => { releaseIntegration = resolve; });
     try {
-      await page.goto(new URL(`/settings/integrations?project=${hub.fixture.project_id}`, hub.fixture.url).toString(), { waitUntil: "domcontentloaded" });
-      await expect(page.getByRole("heading", { name: /settings$/, level: 2 })).toBeVisible();
-      await expect(page.getByRole("status").filter({ hasText: "Loading the project settings." })).toBeVisible();
+      await page.goto(new URL(`/settings/projects/${hub.fixture.project_id}/repository`, hub.fixture.url).toString(), { waitUntil: "domcontentloaded" });
+      await expect(page.getByRole("heading", { name: /settings$/, level: 1 })).toBeVisible();
+      await expect(page.getByRole("status", { name: "Loading project settings" })).toBeVisible();
     } finally {
       releaseIntegration();
     }

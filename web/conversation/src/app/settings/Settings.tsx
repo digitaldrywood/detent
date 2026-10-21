@@ -5,7 +5,6 @@ import {
   ClockIcon,
   LockKeyholeIcon,
   TriangleAlertIcon,
-  BlocksIcon,
   CreditCardIcon,
   InfoIcon,
   KeyboardIcon,
@@ -22,13 +21,6 @@ import { Badge } from "../../components/ui/badge.tsx";
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert.tsx";
 import { Kbd } from "../../components/ui/kbd.tsx";
 import {
-  Select,
-  SelectItem,
-  SelectPopup,
-  SelectTrigger,
-  SelectValue,
-} from "../../components/ui/select.tsx";
-import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
   WorkspaceBreadcrumbSeparator,
@@ -41,7 +33,7 @@ import { PLATFORM } from "../entry/api.ts";
 import { newKey } from "../account/idempotency.ts";
 import { OrganizationMembersRoute } from "../account/Organization.tsx";
 import { OrganizationOverviewRoute, OrganizationModelsRoute } from "../account/OrganizationOverview.tsx";
-import { ProjectSettingsRoute } from "../account/ProjectSettings.tsx";
+import { projectSettingsPath } from "./projectSettings.ts";
 import { useMutation, useResource } from "../account/useResource.ts";
 import { RunnersSettings } from "../fleet/RunnersSection.tsx";
 import { setupStepsLeftLabel } from "../work/components/FirstRun.tsx";
@@ -263,7 +255,7 @@ export function ProjectsSettings({
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => onNavigate?.(`/settings/integrations?project=${project.id}`)}
+                    onClick={() => onNavigate?.(projectSettingsPath(project))}
                   >
                     Settings
                   </Button>
@@ -282,77 +274,12 @@ export function ProjectsSettings({
   );
 }
 
-export function IntegrationsSettings({
-  project,
-  onNavigate,
-}: {
-  readonly project: string | null;
-  readonly onNavigate?: (to: string) => void;
-}): React.ReactElement {
+export function IntegrationsSettings(): React.ReactElement {
   const bootstrap = useAccountBootstrap();
-  const projects = bootstrap?.projects ?? [];
-  const selected = project ?? projects[0]?.id ?? "";
-
-  if (projects.length === 0) {
-    return (
-      <SettingsPageContainer>
-        <SlackSettings />
-        {bootstrap ? <SettingsSection title="Organization Sprites"><SpritesCard projectId="" canManage={bootstrap.actor.can_manage} /></SettingsSection> : null}
-        <SettingsSection
-          id="settings-integrations"
-          title="Integrations"
-          icon={<BlocksIcon className="size-3.5" />}
-        >
-          <SettingsRow
-            title="No projects yet"
-            description="An integration binds one project to one repository, so there has to be a project first."
-          />
-        </SettingsSection>
-      </SettingsPageContainer>
-    );
-  }
-
-  const picker = (
-    <>
-      <SlackSettings />
-        {bootstrap ? <SettingsSection title="Organization Sprites"><SpritesCard projectId="" canManage={bootstrap.actor.can_manage} /></SettingsSection> : null}
-      <SettingsSection
-        id="settings-integrations"
-        title="Integrations"
-        icon={<BlocksIcon className="size-3.5" />}
-      >
-        <SettingsRow
-          title="Project"
-          description="Integration, intake, projection and policy are configured per project."
-          control={
-            <Select
-              value={selected}
-              onValueChange={(value) =>
-                onNavigate?.(`/settings/integrations?project=${String(value)}`)
-              }
-            >
-              <SelectTrigger aria-label="Project" size="sm" className="min-w-44">
-                <SelectValue>
-                  {projects.find((candidate) => candidate.id === selected)?.name ?? selected}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup>
-                {projects.map((candidate) => (
-                  <SelectItem key={candidate.id} value={candidate.id}>
-                    {candidate.name}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-      </SettingsSection>
-    </>
-  );
-
-  // One scroll container, not two: the picker goes inside the project screen's
-  // own `SettingsPageContainer` through its `header` slot.
-  return <ProjectSettingsRoute key={selected} projectId={selected} onNavigate={onNavigate} header={picker} />;
+  return <SettingsPageContainer>
+    <SlackSettings />
+    {bootstrap ? <SettingsSection title="Organization Sprites"><SpritesCard projectId="" canManage={bootstrap.actor.can_manage} /></SettingsSection> : null}
+  </SettingsPageContainer>;
 }
 
 export function planPriceText(plan: PlanReport): string {
@@ -1154,13 +1081,10 @@ export function AboutSettings(): React.ReactElement {
 
 export function SettingsRoute({
   section = DEFAULT_SECTION,
-  project = null,
   onNavigate,
 }: {
   /** The path segment after `/settings`. */
   readonly section?: SettingsSectionId;
-  /** `?project=`, for the Integrations section. */
-  readonly project?: string | null;
   /** The router's navigation. Absent in a test that renders the page alone. */
   readonly onNavigate?: (to: string) => void;
 }): React.ReactElement {
@@ -1182,10 +1106,8 @@ export function SettingsRoute({
     ? requestedSection
     : DEFAULT_SECTION;
   const activeLabel = items.find((item) => item.id === activeId)?.label ?? SETTINGS_SECTION_LABELS[activeId];
-  const projectName = bootstrap?.projects.find((candidate) => candidate.id === project)?.name;
   usePageTitle(
     activeId === "general" ? "Settings" : activeId === "runners" ? "Runners" : activeLabel,
-    projectName,
   );
 
   return (
@@ -1209,7 +1131,7 @@ export function SettingsRoute({
       </WorkspacePageHeader>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <SettingsBody section={activeId} project={project} onNavigate={onNavigate} />
+        <SettingsBody section={activeId} onNavigate={onNavigate} />
       </div>
     </div>
   );
@@ -1217,11 +1139,9 @@ export function SettingsRoute({
 
 function SettingsBody({
   section,
-  project,
   onNavigate,
 }: {
   readonly section: SettingsSectionId;
-  readonly project: string | null;
   readonly onNavigate?: (to: string) => void;
 }): React.ReactElement {
   switch (section) {
@@ -1236,7 +1156,7 @@ function SettingsBody({
     case "runners":
       return <RunnersSettings />;
     case "integrations":
-      return <IntegrationsSettings project={project} onNavigate={onNavigate} />;
+      return <IntegrationsSettings />;
     case "mcp":
       return <MCPSettings />;
     case "plan":

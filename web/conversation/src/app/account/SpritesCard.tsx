@@ -1,3 +1,4 @@
+import { useProjectSettingsDirty } from "../settings/projectSettingsDirty.ts";
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
@@ -17,6 +18,7 @@ export function SpritesCard({ projectId, canManage }: {
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
+  useProjectSettingsDirty(token.trim() !== "");
   const change = async (remove: boolean) => {
     // The input is cleared as soon as the request starts, including on failure.
     const value = token;

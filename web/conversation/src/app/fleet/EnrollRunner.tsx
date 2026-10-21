@@ -1,3 +1,4 @@
+import { projectSettingsPath } from "../settings/projectSettings.ts";
 import { KeyRoundIcon } from "lucide-react";
 import React from "react";
 
@@ -460,7 +461,7 @@ export function EnrollRunnerDialog({
                   <p key={entry.id} className="text-xs text-warning">
                     {entry.present === false ? "No Sprites token is set" : "Could not check the Sprites token"} for {entry.id === "" ? "the organization" : projects.find((project) => project.id === entry.id)?.name}. Without it the Hub cannot wake the Sprite.{entry.id === "" ? "" : " You can uncheck the project to continue without it."}{" "}
                     {entry.error === null ? null : <>{entry.error}{" "}</>}
-                    <a className="underline" href={`${bootstrap?.base_path ?? ""}/settings/integrations${entry.id === "" ? "" : `?project=${encodeURIComponent(entry.id)}`}#sprites`}>Set a Sprites token</a>
+                    <a className="underline" href={`${bootstrap?.base_path ?? ""}${entry.id === "" ? "/settings/integrations" : projectSettingsPath(bootstrap?.projects.find((project) => project.id === entry.id) ?? entry.id, "runners")}#sprites`}>Set a Sprites token</a>
                   </p>
                 ))}
               </> : null}

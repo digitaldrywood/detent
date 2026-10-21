@@ -5,6 +5,7 @@ import React from "react";
 import { SpritesCard } from "./SpritesCard.tsx";
 import { WorkflowRevisions } from "./WorkflowRevisions.tsx";
 
+import { Skeleton } from "../../components/ui/skeleton.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { Alert, AlertTitle } from "../../components/ui/alert.tsx";
 import { AlertDialog, AlertDialogTrigger, AlertDialogPopup, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogClose } from "../../components/ui/alert-dialog.tsx";
@@ -13,16 +14,16 @@ import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import { hubPath } from "../../runtime/basePath.ts";
 import { Textarea } from "../../components/ui/textarea.tsx";
-import type { ObservedPolicy, PolicyApproval, ProjectIntegration, ProjectOnboardingSummary } from "../../contracts/account.ts";
+import type { ObservedPolicy, PolicyApproval, ProjectIntegration, Onboarding } from "../../contracts/account.ts";
 import {
-  SettingsPageContainer,
   SettingsRow,
   SettingsSection,
   SettingsWarning,
   SettingsUnavailableGroup,
 } from "../settings/settingsLayout.tsx";
 import { RUNNER_HELP } from "../fleet/runnerHelp.ts";
-import { setupStepsLeftLabel } from "../work/components/FirstRun.tsx";
+import type { ProjectSettingsTab } from "../settings/projectSettings.ts";
+import { useProjectSettingsDirty } from "../settings/projectSettingsDirty.ts";
 import { AccountError } from "./api.ts";
 import { ControlError, NativeSelect, PathValue, StatusDot, ToggleControl } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
@@ -183,6 +184,7 @@ Complete the assigned work.
   React.useEffect(() => {
     setDraft(stored);
   }, [stored]);
+  useProjectSettingsDirty(draft !== stored);
   const native = integration.profile === "native";
   const repositoryControlled = integration.authority?.workflow === "repository";
   return (
@@ -236,7 +238,6 @@ export function PolicyRow({
 }
 
 export function ProjectSettingsView({
-  projectName,
   integration,
   policy,
   canManage,
@@ -248,14 +249,14 @@ export function ProjectSettingsView({
   saveError,
   onOpenFleet,
   onOpenSetup,
-  onboarding,
   intakeHref,
-  header,
   sprites,
   workflow,
   deletion,
+  tab,
+  identity,
+  models,
 }: {
-  readonly projectName: string;
   readonly integration: ProjectIntegration;
   readonly policy: PolicyApproval | null;
   readonly canManage: boolean;
@@ -267,17 +268,13 @@ export function ProjectSettingsView({
   readonly saveError: string | null;
   readonly onOpenFleet: () => void;
   readonly onOpenSetup?: () => void;
-  readonly onboarding?: ProjectOnboardingSummary;
   readonly intakeHref?: string;
-  /**
-   * Rendered above the screen, inside its own scroll container. The settings
-   * page puts its project picker here (§17.3): two `SettingsPageContainer`s
-   * side by side would be two scrolling columns rather than one page.
-   */
-  readonly header?: React.ReactNode;
   readonly sprites?: React.ReactNode;
   readonly workflow?: React.ReactNode;
   readonly deletion?: React.ReactNode;
+  readonly tab: ProjectSettingsTab;
+  readonly identity?: React.ReactNode;
+  readonly models?: React.ReactNode;
 }): React.ReactElement {
   const unbound = (integration.repository ?? "").length === 0;
   const repository = integration.checkout_repository || integration.repository || "";
@@ -290,32 +287,19 @@ export function ProjectSettingsView({
   const dirty = draftChanged(draft, draftOf(integration));
 
   return (
-    <SettingsPageContainer>
-      {header}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-3 sm:px-4">
-        <h2 className="text-xl font-semibold tracking-[-0.01em]">{projectName} settings</h2>
-        {canManage ? (
+    <div className="flex min-w-0 flex-col gap-8">
+      {(tab === "general" || tab === "repository") && canManage ? (
+        <div className="flex justify-end">
           <Button size="sm" disabled={!dirty || saving} onClick={onSave}>
             {saving ? "Saving…" : "Save changes"}
           </Button>
-        ) : null}
-      </div>
-
-      {saveError === null ? null : (
-        <SettingsWarning>
-          <b className="font-semibold">This change was not saved.</b> {saveError}
-        </SettingsWarning>
-      )}
-
-      {onboarding && !onboarding.ready ? (
-        <SettingsSection title="Project setup">
-          <SettingsRow
-            title={setupStepsLeftLabel(onboarding.steps.filter((step) => step.state !== "ready").length)}
-            control={<Button size="sm" onClick={onOpenSetup}>Finish setup</Button>}
-          />
-        </SettingsSection>
+        </div>
       ) : null}
-
+      {saveError === null ? null : (
+        <SettingsWarning><b className="font-semibold">This change was not saved.</b> {saveError}</SettingsWarning>
+      )}
+      {tab === "general" ? identity : null}
+      {tab === "repository" ? (
       <SettingsSection title="Repository">
         <SettingsRow
           title="Repository"
@@ -418,7 +402,9 @@ export function ProjectSettingsView({
         </SettingsUnavailableGroup>
       </SettingsSection>
 
-      {integration.profile === "native" ? <SettingsSection title="Issue filing">
+      ) : null}
+
+      {tab === "general" && integration.profile === "native" ? <SettingsSection title="Issue filing">
         <SettingsRow
           title="Check for duplicate issues"
           description="Ask filers to review likely matches before creating a new issue."
@@ -431,7 +417,7 @@ export function ProjectSettingsView({
         />
       </SettingsSection> : null}
 
-      {integration.profile === "native" ? <SettingsSection title="Archiving">
+      {tab === "general" && integration.profile === "native" ? <SettingsSection title="Archiving">
         <SettingsRow
           title="Archive completed issues"
           description="Done issues leave the board, lists and counts after this long. They stay in search and can be restored."
@@ -456,13 +442,12 @@ export function ProjectSettingsView({
         />
       </SettingsSection> : null}
 
-      {workflow}
-
-      <SettingsSection title="Execution">
-        <PolicyRow
-          policy={policy}
-          observed={observedPolicies}
-        />
+      {tab === "workflow" ? <>
+        <SettingsSection title="Execution"><PolicyRow policy={policy} observed={observedPolicies} /></SettingsSection>
+        {workflow}
+      </> : null}
+      {tab === "models" ? models : null}
+      {tab === "runners" ? <SettingsSection title="Execution">
         <SettingsRow
           title="Runner routing"
           help={{ label: "Runner routing", text: RUNNER_HELP.routing }}
@@ -474,21 +459,17 @@ export function ProjectSettingsView({
           }
         />
         {sprites}
-      </SettingsSection>
-      {deletion}
-    </SettingsPageContainer>
+      </SettingsSection> : null}
+      {tab === "danger" ? deletion : null}
+    </div>
   );
 }
 
-export function ProjectSettingsRoute({
-  projectId,
-  onNavigate,
-  header,
-}: {
+export function ProjectSettingsRoute({ projectId, tab, onboarding, onNavigate }: {
   readonly projectId: string;
+  readonly tab: ProjectSettingsTab;
+  readonly onboarding?: Onboarding;
   readonly onNavigate?: (to: string) => void;
-  /** See `ProjectSettingsView`'s own `header`. */
-  readonly header?: React.ReactNode;
 }): React.ReactElement {
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
@@ -574,8 +555,7 @@ export function ProjectSettingsRoute({
     }
   });
 
-  const setup = useResource(() => api.onboarding(projectId), [api, projectId]);
-  const observed = setup.value?.observed_policies ?? [];
+  const observed = onboarding?.observed_policies ?? [];
   const loadOlder = useMutation(async () => {
     const current = policy.value;
     if (!current?.history_next) return null;
@@ -591,44 +571,27 @@ export function ProjectSettingsRoute({
   // page looks again while it is open instead of only on the next visit.
   React.useEffect(() => {
     const timer = globalThis.setInterval(() => {
-      void setup.refresh();
       void policy.refresh();
     }, OBSERVED_POLICY_REFRESH_MS);
     return () => globalThis.clearInterval(timer);
-  }, [setup.refresh, policy.refresh]);
+  }, [policy.refresh]);
 
-  if (integration.error !== null && integration.error.isAccessError) {
-    return (
-      <SettingsPageContainer>
-        {header}
-        <h2 className="px-3 text-xl font-semibold sm:px-4">Project settings</h2>
-        <SettingsSection title="Not available">
-          <SettingsRow
-            title="You do not have access to this project"
-            description="Ask an owner or admin for a grant on it, or pick a different project."
-          />
-        </SettingsSection>
-      </SettingsPageContainer>
-    );
+  useProjectSettingsDirty(draft !== null && integration.value !== undefined && draftChanged(draft, draftOf(integration.value)));
+
+  if (integration.error?.isAccessError) {
+    return <SettingsSection title="Not available"><SettingsRow title="You do not have access to this project" description="Ask an owner or admin for a grant on it, or pick a different project." /></SettingsSection>;
   }
-
   if (integration.value === undefined || draft === null) {
-    return (
-      <SettingsPageContainer>
-        {header}
-        <h2 className="px-3 text-xl font-semibold sm:px-4">Project settings</h2>
-        <p role="status" className="px-3 text-sm text-muted-foreground sm:px-4">
-          {integration.error === null
-            ? "Loading the project settings."
-            : integration.error.message}
-        </p>
-      </SettingsPageContainer>
-    );
+    return integration.error === null ? (
+      <div role="status" aria-label="Loading project settings" className="space-y-3">
+        <Skeleton className="h-5 w-32" /><Skeleton className="h-24 w-full" /><Skeleton className="h-24 w-full" />
+      </div>
+    ) : <p role="status" className="text-sm text-muted-foreground">{integration.error.message}</p>;
   }
 
   return (
     <ProjectSettingsView
-      projectName={project?.name ?? projectId}
+      tab={tab}
       integration={integration.value}
       policy={policy.value ?? null}
       canManage={canManage}
@@ -638,17 +601,15 @@ export function ProjectSettingsRoute({
       observedPolicies={observed}
       saving={save.pending}
       saveError={saveMessage(save.error)}
-      header={header}
       deletion={canManage && project?.can_write === true ? <ProjectDeletionSettings key={projectId} projectName={project.name} pending={remove.pending} error={remove.error?.message ?? null} onDelete={() => void remove.call()} onDismiss={remove.clearError} /> : null}
       onOpenFleet={() => onNavigate?.("/settings/runners")}
       intakeHref={`/projects/${projectId}/setup`}
       onOpenSetup={onNavigate ? () => onNavigate(`/projects/${projectId}/setup`) : undefined}
-      onboarding={setup.value}
       sprites={<><SpritesCard key={projectId} projectId={projectId} canManage={canManage} /></>}
+      identity={<SlugSettings projectId={projectId} canManage={canManage && project?.can_write === true} />}
+      models={<ModelSelectionSettings projectId={projectId} canManage={canManage && project?.can_write === true} />}
       workflow={
         <>
-          <SlugSettings projectId={projectId} canManage={canManage && project?.can_write === true} />
-          <ModelSelectionSettings projectId={projectId} canManage={canManage && project?.can_write === true} />
           <WorkflowSettings
             integration={integration.value}
             canManage={canManage && project?.can_write === true}
@@ -657,7 +618,7 @@ export function ProjectSettingsRoute({
             onSave={(markdown) => void saveWorkflow.call(markdown)}
             revisions={
               <WorkflowRevisions
-                policy={policy.value ?? setup.value?.policy ?? null}
+                policy={policy.value ?? onboarding?.policy ?? null}
                 observed={observed}
                 repository={integration.value.checkout_repository || integration.value.repository || ""}
                 error={loadOlder.error?.message ?? policy.error?.message ?? null}

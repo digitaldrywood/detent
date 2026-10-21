@@ -24,7 +24,7 @@ function fleet(longErrors = false) {
     ...base, id: `runner_${index}`, machine_id: `machine_${index}`, display_name: ["Example desktop", "Example laptop", "Example build host"][index], hostname: `example-host-${index}`,
     health: "online", capacity_health: "online", connection_health: "online", state: index === 2 ? "draining" : "active", claim_refusal_reason: "", host_capacity: capacity, host_used: 1, capacity_limit: index === 0 ? 2 : capacity, reported_capacity: index === 0 ? 2 : capacity, provider_capacity: [],
     update: index === 2 ? { status: "draining", desired: { version: "v1.0.0" } } : undefined,
-    problems: longErrors ? [{ code: index === 1 ? "policy_mismatch" : "settings_invalid", project_id: index === 1 ? hub.fixture.project_id : "prj_optional", subject: "project configuration", check: "load settings", message: raw, error_output: raw, fix_hint: raw, first_seen: "2026-10-07T10:00:00Z" }] : [],
+    problems: longErrors ? [{ code: index === 1 ? "settings_rejected" : "settings_invalid", project_id: index === 1 ? hub.fixture.project_id : "prj_optional", subject: "project configuration", check: "load settings", message: raw, error_output: raw, fix_hint: raw, first_seen: "2026-10-07T10:00:00Z" }] : [],
   })) };
 }
 
@@ -251,7 +251,8 @@ for (const theme of ["light", "dark"]) {
       await expect(attention).toContainText("Optional project");
       await expect(attention).toContainText("Not taking work because project settings could not be loaded");
       await expect(attention).toContainText("Example project");
-      await expect(attention.getByRole("link", { name: "Review policy" })).toHaveAttribute("href", `/settings/integrations?project=${hub.fixture.project_id}`);
+      await expect(attention).toContainText("Runner settings could not be applied");
+      await expect(attention).toContainText("Runner operator: check routing cache permissions and configured host services.");
       await expect(page.getByText("Instrumentation coverage", { exact: true })).toHaveCount(0);
       await expect(page.getByText(/policy_digest|git command error_output/)).toHaveCount(0);
       await expect(page.getByRole("button", { name: "Refresh diagnostics" })).toBeEnabled();
