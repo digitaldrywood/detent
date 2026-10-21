@@ -971,6 +971,16 @@ func TestNativeReviewThreadTools(t *testing.T) {
 	}
 }
 
+type completionLandingExecution struct {
+	landingRunExecution
+	failure *tracker.NativeTerminalFailure
+}
+
+func (e *completionLandingExecution) PrepareFinish(_ context.Context, _, _ string, failure *tracker.NativeTerminalFailure) error {
+	e.failure = failure
+	return nil
+}
+
 func TestNativeLandingAdmissionAndQuotaOutcomes(t *testing.T) {
 	originalClient := http.DefaultClient
 	http.DefaultClient = &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {
@@ -990,26 +1000,45 @@ func TestNativeLandingAdmissionAndQuotaOutcomes(t *testing.T) {
 	cfg.Tracker.Kind = config.TrackerGitHub
 	cfg.Tracker.Endpoint = "https://native-finish.test/graphql"
 	for _, test := range []struct {
-		name      string
-		admission error
-		waiting   bool
+		name        string
+		admission   error
+		waiting     bool
+		pushRefusal string
+		deferred    bool
 	}{
 		{name: "GitHub quota remains a capacity error"},
 		{name: "project capacity becomes successful landing wait", admission: &workspace.LandRefusal{Reason: "Project landing capacity is full"}, waiting: true},
 		{name: "unreviewed source remains a nonwaiting refusal", admission: &workspace.LandRefusal{Kind: workspace.LandRefusalNothing, Reason: "Current Change version is not ready for native landing"}},
+		{name: "permission denied retains push evidence", pushRefusal: workspace.LandRefusalProtected},
+		{name: "deferred permission denied retains push evidence", pushRefusal: workspace.LandRefusalProtected, deferred: true},
+		{name: "moved base retains push evidence", pushRefusal: workspace.LandRefusalBaseMoved},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			execution := &landingRunExecution{startErr: test.admission, landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "squash", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}}
-			backend := &landingBackend{Backend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, err: quota}
+			execution := &completionLandingExecution{landingRunExecution: landingRunExecution{startErr: test.admission, landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "squash", Repository: "https://github.com/example/repo", GitHubPullRequest: test.pushRefusal == ""}}}}
+			backend := &validationLandingBackend{landingBackend{Backend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}, recoveryStates: []workspace.RecoveryState{{HeadSHA: head}}}, err: quota}}
+			if test.pushRefusal != "" {
+				token := "gh" + "p_" + strings.Repeat("x", 36)
+				backend.err = fmt.Errorf("%w: %w", &workspace.LandRefusal{Kind: test.pushRefusal, Reason: "the base branch refused the push"}, &workspace.CommandError{Command: "git", Args: []string{"push", "origin", "HEAD:refs/heads/develop"}, Err: errors.New("exit status 128"), Output: "Permission denied token=" + token})
+			}
 			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := r.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "native", State: "Merging"}, Mode: RunModeMerge, Execution: execution})
+			result, err := r.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "native", State: "Merging"}, Mode: RunModeMerge, Execution: execution, DeferExecutionFinish: test.deferred})
 			if result.RuntimeIdentity.Role != RoleMerge || result.RuntimeIdentity.BackendKind != "git" || result.RuntimeIdentity.ResolvedModel.Value != "none" {
 				t.Fatalf("native landing result identity = %#v", result.RuntimeIdentity)
 			}
-			if test.admission != nil {
+			if test.pushRefusal != "" {
+				if err != nil || result.FinalState != FinalStateCompleted || result.Output != RunOutputNativeLandingRefused || result.NativeLanding == nil || result.NativeLanding.RefusalKind != test.pushRefusal || result.NativeLanding.Landed {
+					t.Fatalf("push refusal changed: result=%#v err=%v", result, err)
+				}
+				if !execution.stopped || !test.deferred && execution.finish != "succeeded" || test.deferred && execution.finish != "" {
+					t.Fatalf("push refusal completion changed: stopped=%t finish=%q", execution.stopped, execution.finish)
+				}
+				if execution.failure == nil || execution.failure.ErrorClass != "git_push" || execution.failure.Summary != "Permission denied [redacted]" || strings.Contains(execution.failure.Error, strings.Repeat("x", 36)) {
+					t.Fatalf("completion lost sanitized push diagnostics: %#v", execution.failure)
+				}
+			} else if test.admission != nil {
 				if err != nil || execution.finish != "succeeded" || !execution.stopped || result.NativeLanding == nil || result.NativeLanding.HeadSHA != head || result.NativeLanding.Landed || result.NativeLanding.Waiting != test.waiting || backend.githubCalled {
 					t.Fatalf("admission did not preserve healthy wait/refusal: result%#v, execution%#v, error%v", result, execution, err)
 				}
