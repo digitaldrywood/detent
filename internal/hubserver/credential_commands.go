@@ -58,7 +58,7 @@ func (s *Service) createAPITokenFor(ctx context.Context, request tokenRequest) (
 		var message string
 		request.ProjectAccess, message = resolveHostedProjectAccess(request.ProjectAccess, request.ProjectIDs)
 		if message != "" {
-			return tokenResponse{}, nativeInvalid(message)
+			return tokenResponse{}, nativePublicInvalid(message)
 		}
 		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: issuer}
 		for _, project := range request.ProjectIDs {
