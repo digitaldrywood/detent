@@ -1,0 +1,107 @@
+[
+  {
+    "window": "before_removal",
+    "lo": "2026-09-29T00:00:00+00:00",
+    "hi": "2026-09-29T22:49:43+00:00",
+    "hours": 22.8286,
+    "repository_merged_prs": 35,
+    "repository_prs_per_24h": 36.8,
+    "prs": [
+      3246,
+      3274,
+      3265,
+      3264,
+      3263,
+      3260,
+      3236,
+      3225,
+      3214,
+      3215,
+      3210,
+      3206,
+      3204,
+      3201,
+      3199,
+      3184,
+      3182,
+      3196,
+      3180,
+      3181,
+      3195,
+      3194,
+      3189,
+      3178,
+      3193,
+      3192,
+      3175,
+      3174,
+      3173,
+      3186,
+      3163,
+      3164,
+      3179,
+      3146,
+      3157
+    ],
+    "legacy_terminal_runs": 92,
+    "legacy_completed_runs": 68,
+    "legacy_max_observed_queue": 12,
+    "wait_seconds": {
+      "median": 0.201,
+      "max": 5380.374
+    },
+    "hold_seconds": {
+      "median": 680.461,
+      "max": 1688.64
+    },
+    "prs_with_local_attempt_history": [
+      3157,
+      3246,
+      3265,
+      3274
+    ],
+    "local_attempt_attributed_pr_count": 4,
+    "local_attempt_attributed_prs_per_24h": 4.21
+  },
+  {
+    "window": "after_removal",
+    "lo": "2026-09-29T22:49:43+00:00",
+    "hi": "2026-09-30T04:15:46+00:00",
+    "hours": 5.4342,
+    "repository_merged_prs": 15,
+    "repository_prs_per_24h": 66.25,
+    "prs": [
+      3329,
+      3319,
+      3316,
+      3317,
+      3315,
+      3314,
+      3262,
+      3313,
+      3312,
+      3311,
+      3305,
+      3270,
+      3302,
+      3233,
+      3293
+    ],
+    "legacy_terminal_runs": 4,
+    "legacy_completed_runs": 4,
+    "legacy_max_observed_queue": 2,
+    "wait_seconds": {
+      "median": 547.576,
+      "max": 2735.016
+    },
+    "hold_seconds": {
+      "median": 1524.396,
+      "max": 1997.308
+    },
+    "prs_with_local_attempt_history": [
+      3270
+    ],
+    "local_attempt_attributed_pr_count": 1,
+    "local_attempt_attributed_prs_per_24h": 4.42
+  }
+]

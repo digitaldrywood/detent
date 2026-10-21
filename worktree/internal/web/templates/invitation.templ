@@ -1,0 +1,27 @@
+package templates
+
+// InvitationPage is deliberately public and carries no account or token data.
+templ InvitationPage(message string) {
+	<!DOCTYPE html>
+	<html lang="en" data-theme="dark">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="referrer" content="no-referrer"/>
+			<title>Invitation unavailable · Detent</title>
+			<link rel="icon" type="image/svg+xml" href="/static/img/detent-mark.svg"/>
+			<link rel="stylesheet" href="/static/css/output.css"/>
+		</head>
+		<body class="min-h-screen bg-page font-sans text-text antialiased">
+			<main class="grid min-h-screen place-items-center p-4">
+				<section aria-label="Invitation unavailable" class="w-full max-w-lg space-y-5 rounded-card border border-line bg-surface p-6">
+					<a href="https://detent.build" class="inline-flex min-h-11 items-center gap-3 text-sm font-semibold"><img src="/static/img/detent-mark.svg" alt="" class="size-6"/>Detent</a>
+					<h1 class="text-2xl font-semibold">Invitation unavailable</h1>
+					<p role="alert" class="break-words text-sm">{ message }</p>
+					<p class="text-sm text-sec">Ask the person who invited you for a new invitation.</p>
+					<a href="https://detent.build" class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Go to detent.build</a>
+				</section>
+			</main>
+		</body>
+	</html>
+}
