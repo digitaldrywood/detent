@@ -183,6 +183,9 @@ func readChangeVersionSnapshot(ctx context.Context, query nativeQueryer, changeI
 	if err := json.Unmarshal([]byte(raw), &version); err != nil {
 		return version, fmt.Errorf("decode version snapshot: %w", err)
 	}
+	if err := hydrateChangeRecord(ctx, query, &version); err != nil {
+		return version, err
+	}
 	return version, nil
 }
 
@@ -311,6 +314,14 @@ func changeRows[T any](ctx context.Context, query nativeQueryer, statement strin
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read snapshot rows: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for i := range result {
+		if err := hydrateChangeRecord(ctx, query, &result[i]); err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
 }

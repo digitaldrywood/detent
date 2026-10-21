@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -80,6 +81,29 @@ func scanAttemptDiff(row interface{ Scan(...any) error }) (attemptDiffRecord, er
 
 // readAttemptDiffFiles reads one stored diff's files in producer order.
 func readAttemptDiffFiles(ctx context.Context, query nativeQueryer, diffID string) ([]tracker.AttemptDiffFile, error) {
+	ref := contentReference()
+	var organization string
+	var expired bool
+	if err := query.QueryRowContext(ctx, `SELECT organization_id,object_key,object_sha256,object_bytes,content_bytes,manifest_expired FROM attempt_diffs WHERE id=?`, diffID).Scan(&organization, &ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize, &expired); err != nil {
+		return nil, err
+	}
+	if ref.Key != "" {
+		data, err := readChangeContent(ctx, organization, ref)
+		if err != nil {
+			return nil, err
+		}
+		var files []tracker.AttemptDiffFile
+		if err := json.Unmarshal(data, &files); err != nil {
+			return nil, err
+		}
+		for i := range files {
+			if expired && files[i].PatchBody != nil {
+				files[i].PatchBody = nil
+				files[i].PatchExpired = true
+			}
+		}
+		return files, nil
+	}
 	rows, err := query.QueryContext(ctx, `SELECT path, old_path, status, additions, deletions, binary, patch, truncated, denied, patch_object, patch_sha256, patch_size, patch_expired
 FROM attempt_diff_files WHERE diff_id = ? ORDER BY position`, diffID)
 	if err != nil {
@@ -248,18 +272,33 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		len(files), patchBytes, postedBytes, truncated, formatHubTime(now)); err != nil {
 		return receipt, fmt.Errorf("insert attempt diff: %w", err)
 	}
-	for position, file := range files {
-		var body diffbody.Reference
-		if file.PatchBody != nil {
-			body = *file.PatchBody
+	if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
+		data, err := json.Marshal(files)
+		if err != nil {
+			return receipt, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_diff_files (diff_id, position, path, old_path, status,
+		ref, err := preparedChangeContent(ctx, string(scope.organization), data)
+		if err != nil {
+			return receipt, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE attempt_diffs SET object_key=?,object_sha256=?,object_bytes=?,content_bytes=? WHERE id=?`, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, id); err != nil {
+			return receipt, err
+		}
+	} else {
+		for position, file := range files {
+			var body diffbody.Reference
+			if file.PatchBody != nil {
+				body = *file.PatchBody
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_diff_files (diff_id, position, path, old_path, status,
 additions, deletions, binary, patch, truncated, denied, patch_object, patch_sha256, patch_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, position, file.Path, file.OldPath, file.Status, file.Additions, file.Deletions,
-			file.Binary, file.Patch, file.Truncated, file.Denied, body.Key, body.SHA256, body.Bytes); err != nil {
-			return receipt, fmt.Errorf("insert attempt diff file: %w", err)
+				id, position, file.Path, file.OldPath, file.Status, file.Additions, file.Deletions,
+				file.Binary, file.Patch, file.Truncated, file.Denied, body.Key, body.SHA256, body.Bytes); err != nil {
+				return receipt, fmt.Errorf("insert attempt diff file: %w", err)
+			}
 		}
 	}
+
 	return tracker.AttemptDiffReceipt{
 		Accepted: true, DiffID: id, Generation: request.Generation,
 		FileCount: len(files), PatchBytes: patchBytes, Truncated: truncated,
@@ -311,6 +350,11 @@ func (s *Service) postAttemptDiff(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
 	var receipt tracker.AttemptDiffReceipt
+	if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && c.Get("attempt_diff_check") != true {
+		if err := s.prepareDiffManifest(ctx, scope, attemptID, request); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
 	err := s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
 		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
@@ -404,6 +448,7 @@ func (s *Service) getAttemptDiff(c echo.Context) error {
 }
 
 func (s *Service) readAttemptDiff(ctx context.Context, scope nativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
+	ctx = s.contentContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if item == "" {
@@ -506,4 +551,36 @@ func (s *Service) hubTransact(ctx context.Context, fn func(tx *sql.Tx, now time.
 		return fmt.Errorf("commit hub transaction: %w", err)
 	}
 	return nil
+}
+
+func (s *Service) prepareDiffManifest(ctx context.Context, scope nativeScope, attemptID string, request tracker.AttemptDiffRequest) error {
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
+		return err
+	}
+	if _, err := resolveAttemptDiffProducer(ctx, tx, scope, attemptID, request.Producer, s.config.now()); err != nil {
+		return err
+	}
+	files, _, err := validateStoredDiff(ctx, tx, scope, attemptID, request)
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		if s.hostedShared() && file.Patch != "" {
+			return nativeInvalid("Shared diff bodies must arrive through object storage")
+		}
+	}
+	if err := tx.Rollback(); err != nil {
+		return err
+	}
+	data, err := json.Marshal(files)
+	if err != nil {
+		return err
+	}
+	_, err = prepareChangeContent(ctx, string(scope.organization), data)
+	return err
 }

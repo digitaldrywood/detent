@@ -155,6 +155,8 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		clientBuild:        conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
 		pullRequests:       newPullRequestCache(),
 	}
+	workerContext = service.contentContext(workerContext)
+	reconcileContext = service.contentContext(reconcileContext)
 	service.wakeSpriteRunnersAfter = func(scope nativeScope, result json.RawMessage) {
 		service.scheduleSpriteWake(workerContext, scope, result)
 	}
@@ -189,7 +191,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 			return nil, errors.Join(err, database.Close())
 		}
 	}
-	e.Use(service.measureRequests)
+	e.Use(service.measureRequests, service.changeContentMiddleware)
 	service.registerRoutes(e)
 	if service.conversations != nil {
 		if err := service.conversations.start(ctx); err != nil {

@@ -60,6 +60,10 @@ func TestNativeSourceTransfer(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			clock := &leaseTestClock{value: time.Now().UTC()}
 			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: clock.Now}))
+			if test.name == "transfer and duplicate request" {
+				objects := &changeObjectFixture{}
+				f.service.config.content = objects.call
+			}
 			var diagnostics bytes.Buffer
 			f.service.config.Logger = slog.New(slog.NewTextHandler(&diagnostics, nil))
 			a := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
@@ -156,6 +160,14 @@ func TestNativeSourceTransfer(t *testing.T) {
 			if test.released && !test.replacement {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", a.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 			}
+			if test.name == "transfer and duplicate request" {
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.path+"/versions/"+version.ID+"/source", f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				if !bytes.Equal(response.Body.Bytes(), bundle) {
+					t.Fatal("released source bundle changed")
+				}
+			}
+
 			if test.expired {
 				clock.Advance(91 * time.Second)
 			}

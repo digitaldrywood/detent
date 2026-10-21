@@ -133,6 +133,9 @@ func readNativeChangeVersion(ctx context.Context, query nativeQueryer, request t
 	if err := json.Unmarshal([]byte(record), &version); err != nil {
 		return version, false, fmt.Errorf("decode change version %s: %w", request.CurrentVersion, err)
 	}
+	if err := hydrateChangeRecord(ctx, query, &version); err != nil {
+		return version, false, err
+	}
 	if err := resolveVersionPublication(ctx, query, request.ID, &version); err != nil {
 		return version, false, err
 	}

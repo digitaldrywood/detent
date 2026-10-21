@@ -207,6 +207,13 @@ func readChangeSection(ctx context.Context, query nativeQueryer, args operatorto
 			if err := json.Unmarshal(row.raw, &review); err != nil {
 				return operatortool.ChangeReadPage{}, err
 			}
+			if err := hydrateChangeRecord(ctx, query, &review); err != nil {
+				return operatortool.ChangeReadPage{}, err
+			}
+			row.raw, err = json.Marshal(review)
+			if err != nil {
+				return operatortool.ChangeReadPage{}, err
+			}
 			review.Validator = boundedChangeReviewResult(review.Validator)
 			review.ImplementationReview = boundedChangeReviewResult(review.ImplementationReview)
 			detail.Reviews = append(detail.Reviews, review)

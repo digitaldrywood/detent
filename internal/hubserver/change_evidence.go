@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -28,6 +29,9 @@ func (s *Service) reviewChange(c echo.Context) error {
 	var request tracker.ReviewChange
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
+	}
+	if err := s.prepareReviewContent(c, request); err != nil {
+		return s.nativeAPIError(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.reviewChangeCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), c.Param("version"), request, now)
@@ -103,24 +107,24 @@ func (s *Service) discussChange(c echo.Context) error {
 	})
 }
 
-func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID, versionID string, request tracker.ReviewChange, now time.Time) (any, error) {
+func validateChangeReview(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID, versionID string, request tracker.ReviewChange, now time.Time) (tracker.ChangeRequest, tracker.MachineID, error) {
 	change, err := readChange(ctx, tx, scope, item, changeID)
 	if err != nil {
-		return nil, err
+		return tracker.ChangeRequest{}, "", err
 	}
 	if request.ExpectedRevision != 0 && request.ExpectedRevision != change.Revision {
-		return nil, nativeConflict(change.Revision)
+		return tracker.ChangeRequest{}, "", nativeConflict(change.Revision)
 	}
 	version, err := readChangeVersion(ctx, tx, change.ID, versionID)
 	if err != nil {
-		return nil, err
+		return tracker.ChangeRequest{}, "", err
 	}
 	if request.Decision == "approved" && change.CurrentVersion != version.ID || request.ExpectedVersionID != "" && (request.ExpectedVersionID != version.ID || change.CurrentVersion != version.ID) {
-		return nil, nativeConflict(change.Revision)
+		return tracker.ChangeRequest{}, "", nativeConflict(change.Revision)
 	}
 	if request.Bundle != nil {
 		if err := validateReviewBundle(ctx, tx, scope, change, version, *request.Bundle, now); err != nil {
-			return nil, err
+			return tracker.ChangeRequest{}, "", err
 		}
 	}
 	if !slices.Contains([]string{"approved", "changes_requested", "commented"}, request.Decision) || len(request.Body) > 64<<10 {
@@ -139,19 +143,29 @@ func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 			}
 			err = securityAuditRejection("Review decision is invalid or body exceeds 64 KiB", field)
 		}
-		return nil, err
+		return tracker.ChangeRequest{}, "", err
 	}
 	if change.CurrentLanding() != nil {
-		return nil, nativeConflict(change.Revision)
+		return tracker.ChangeRequest{}, "", nativeConflict(change.Revision)
 	}
 	sessionMachineID, err := validateNativeValidatorReview(ctx, tx, scope, change, version, request)
 	if err != nil {
+		return tracker.ChangeRequest{}, "", err
+	}
+	return change, sessionMachineID, nil
+}
+
+func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID, versionID string, request tracker.ReviewChange, now time.Time) (any, error) {
+	change, sessionMachineID, err := validateChangeReview(ctx, tx, scope, item, changeID, versionID, request, now)
+	if err != nil {
 		return nil, err
 	}
+
 	review := tracker.ChangeReview{SecurityAudit: request.SecurityAudit, SessionMachineID: sessionMachineID, ImplementationReview: request.ImplementationReview, Validator: request.Validator, ID: newNativeID("review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: now}
-	if err := insertChangeEvidence(ctx, tx, change.ID, review.VersionID, "review", "", review); err != nil {
+	if err := storeChangeReview(ctx, tx, string(scope.organization), change.ID, review); err != nil {
 		return nil, err
 	}
+
 	switch request.Decision {
 	case "approved":
 		if err := promoteReviewedChange(ctx, tx, scope, change, now); err != nil {
@@ -202,4 +216,32 @@ func (s *Service) discussChangeCommand(ctx context.Context, tx *sql.Tx, scope na
 	}
 	comment := tracker.ChangeDiscussion{Escape: request.Escape, ID: newNativeID("cmt"), VersionID: request.VersionID, Body: request.Body, Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now}
 	return comment, insertChangeEvidence(ctx, tx, change.ID, comment.VersionID, "discussion", sourceKey, comment)
+}
+
+func storeChangeReview(ctx context.Context, tx *sql.Tx, organization, changeID string, review tracker.ChangeReview) error {
+	storedReview := review
+	if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
+		raw, err := json.Marshal(review)
+		if err != nil {
+			return err
+		}
+		storedReview = tracker.ChangeReview{}
+		if err := json.Unmarshal(raw, &storedReview); err != nil {
+			return err
+		}
+		for role, result := range map[string]*gate.ValidatorResult{"validator": storedReview.Validator, "implementation_review": storedReview.ImplementationReview} {
+			if result == nil {
+				continue
+			}
+			for i := range result.Commands {
+				if err := persistCommandOutput(ctx, tx, organization, review.VersionID, review.ID, role, i, &result.Commands[i]); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if err := insertChangeEvidence(ctx, tx, changeID, review.VersionID, "review", "", storedReview); err != nil {
+		return err
+	}
+	return nil
 }

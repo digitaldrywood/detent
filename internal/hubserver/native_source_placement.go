@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -98,17 +99,12 @@ func nativeChangeSourceStored(ctx context.Context, q nativeQueryer, version trac
 	if version.Source == nil {
 		return false, nil
 	}
-	var bundle []byte
-	err := q.QueryRowContext(ctx, "SELECT bundle FROM change_sources WHERE version_id=?", version.ID).Scan(&bundle)
-	if errors.Is(err, sql.ErrNoRows) {
+	bundle, err := readChangeSourceBundle(ctx, q, version)
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, artifact.ErrIntegrity) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
-	}
-	bundle, err = decodeChangeSource(bundle, version.Source.Bytes)
-	if err != nil {
-		return false, nil
 	}
 	return version.Source.Validate(version.BaseSHA, version.HeadSHA, bundle) == nil, nil
 }

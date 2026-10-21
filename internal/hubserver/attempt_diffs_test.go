@@ -1,16 +1,20 @@
 package hubserver
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/diffbody"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -40,12 +44,13 @@ func newAttemptDiffFixture(t *testing.T) *attemptDiffFixture {
 // so a test can change the item between the claim and the start.
 func newClaimedAttemptDiffFixture(t *testing.T) *attemptDiffFixture {
 	t.Helper()
-	return claimedAttemptDiffFixture(t, false)
+	return claimedAttemptDiffFixture(t, false, Config{})
 }
 
-func claimedAttemptDiffFixture(t *testing.T, enrolled bool) *attemptDiffFixture {
+func claimedAttemptDiffFixture(t *testing.T, enrolled bool, cfg Config) *attemptDiffFixture {
 	t.Helper()
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+	cfg.DatabasePath = filepath.Join(t.TempDir(), "hub.db")
+	service := openTestService(t, cfg)
 	f := newNativeFixture(t, service, "", "attempt-diff")
 	fixture := &attemptDiffFixture{nativeFixture: f}
 	policy := hubTestPolicy()
@@ -192,7 +197,7 @@ func TestEnrolledRunnerAttemptDiffAuthorization(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := claimedAttemptDiffFixture(t, true)
+			f := claimedAttemptDiffFixture(t, true, Config{})
 			f.start(t)
 			request := f.request(2, tracker.AttemptDiffFile{Path: "main.go", Status: tracker.DiffStatusModified, Patch: "+fixed"})
 			token, base := f.worker, f.base
@@ -615,5 +620,156 @@ func TestAttemptDiffBodyAllowanceCoversEscaping(t *testing.T) {
 	}
 	if want := int64(6*tracker.MaxDiffBytes + (1 << 20)); maxAttemptDiffRequestBytes != want {
 		t.Fatalf("allowance = %d, want %d", maxAttemptDiffRequestBytes, want)
+	}
+}
+
+func TestAttemptDiffManifest(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	f := claimedAttemptDiffFixture(t, false, Config{now: func() time.Time { return now }})
+	f.start(t)
+	legacy := *f
+	legacy.service = legacyChangeService(t, f.service)
+	objects := &changeObjectFixture{}
+	f.service.config.content = objects.call
+	files := make([]tracker.AttemptDiffFile, 300)
+	for i := range files {
+		files[i] = tracker.AttemptDiffFile{Path: fmt.Sprintf("file-%03d.go", i), Status: tracker.DiffStatusModified, Additions: i, Deletions: i / 2, Patch: "@@ preserved\n+change\n"}
+	}
+	files[1].OldPath = "previous.go"
+	files[1].Status = tracker.DiffStatusRenamed
+	files[2].Binary = true
+	files[3].Truncated = true
+	files[3].Patch = ""
+	files[4].Path = ".env"
+	files[4].Patch = "+private value"
+	expected := append([]tracker.AttemptDiffFile(nil), files...)
+	expected[2].Patch = ""
+	expected[4].Patch, expected[4].Denied = "", true
+	response := f.post(t, f.request(1, files...))
+	requireNativeStatus(t, response, http.StatusAccepted)
+	var receipt tracker.AttemptDiffReceipt
+	decodeHubResponse(t, response, &receipt)
+	var count int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attempt_diff_files WHERE diff_id=?", receipt.DiffID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("per-file SQL rows=%d err=%v", count, err)
+	}
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attempt_diffs WHERE object_key<>'' AND content_bytes>0").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("diff manifests=%d err=%v", count, err)
+	}
+	var maximum int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT max(length(id)+length(attempt_id)+length(organization_id)+length(project_id)+length(work_item_id)+length(source)+length(source_id)+length(base_sha)+length(head_sha)+length(producer_kind)+length(producer_id)+length(producer_runner_id)+length(producer_lease_id)+length(created_at)+length(object_key)+length(object_sha256)+9*8) FROM attempt_diffs`).Scan(&maximum); err != nil {
+		t.Fatal(err)
+	}
+	if maximum > 2048 {
+		t.Fatalf("attempt_diffs row uses %d bytes", maximum)
+	}
+	objects.mu.Lock()
+	objectCount := len(objects.objects)
+	objects.mu.Unlock()
+	if objectCount != 1 {
+		t.Fatalf("stored %d objects, want one manifest for 300 files", objectCount)
+	}
+	response = f.get(t, "")
+	requireNativeStatus(t, response, http.StatusOK)
+	var diff tracker.AttemptDiff
+	decodeHubResponse(t, response, &diff)
+	want := tracker.AttemptDiff{ID: receipt.DiffID, AttemptID: f.attempt, Producer: f.producer(), Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 1}, BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), Files: expected, FileCount: 300, PatchBytes: 297 * int64(len("@@ preserved\n+change\n")), Truncated: true, CreatedAt: diff.CreatedAt}
+	if !reflect.DeepEqual(diff, want) {
+		t.Fatal("manifest changed legacy files or flags")
+	}
+	err := legacy.service.hubTransact(t.Context(), func(tx *sql.Tx, _ time.Time) error {
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO attempt_diffs(id,attempt_id,organization_id,project_id,work_item_id,source,source_id,seq,base_sha,head_sha,producer_kind,producer_id,producer_runner_id,producer_lease_id,producer_fencing_token,file_count,patch_bytes,posted_bytes,truncated,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, want.ID, want.AttemptID, f.project.OrganizationID, f.project.ID, f.issue.WorkItemID, want.Generation.Source, want.Generation.ID, want.Generation.Seq, want.BaseSHA, want.HeadSHA, want.Producer.Kind, want.Producer.ID, want.Producer.RunnerID, want.Producer.LeaseID, want.Producer.FencingToken, want.FileCount, want.PatchBytes, want.PatchBytes, want.Truncated, formatHubTime(want.CreatedAt)); err != nil {
+			return err
+		}
+		for position, file := range expected {
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO attempt_diff_files(diff_id,position,path,old_path,status,additions,deletions,binary,patch,truncated,denied) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, want.ID, position, file.Path, file.OldPath, file.Status, file.Additions, file.Deletions, file.Binary, file.Patch, file.Truncated, file.Denied); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyResponse := legacy.get(t, "")
+	requireNativeStatus(t, legacyResponse, http.StatusOK)
+	if response.Body.String() != legacyResponse.Body.String() {
+		t.Fatal("attempt diff API differs from per-file legacy rows")
+	}
+	itemResponse := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/diff", f.token, nil)
+	requireNativeStatus(t, itemResponse, http.StatusOK)
+	var item tracker.WorkItemDiff
+	decodeHubResponse(t, itemResponse, &item)
+	if item.Diff == nil || !reflect.DeepEqual(*item.Diff, diff) {
+		t.Fatal("work-item diff differs from attempt diff")
+	}
+	legacyItem := performHubAPIRequest(t, legacy.service, http.MethodGet, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/diff", f.token, nil)
+	requireNativeStatus(t, legacyItem, http.StatusOK)
+	if itemResponse.Body.String() != legacyItem.Body.String() {
+		t.Fatal("work-item diff API differs from per-file legacy rows")
+	}
+	operatorCtx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+	page, err := (hubOperatorExecutor{f.service}).Execute(operatorCtx, changeToolCall(operatortool.GetAttemptDiff, operatortool.ChangeArguments{ProjectID: string(f.project.ID), ItemID: string(f.issue.WorkItemID), AttemptID: f.attempt, Limit: 10}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paged operatortool.ChangeResult
+	if err := json.Unmarshal(page.Content, &paged); err != nil {
+		t.Fatal(err)
+	}
+	if paged.Diff == nil || !reflect.DeepEqual(paged.Diff.Files, expected[:10]) {
+		t.Fatal("MCP manifest page changed diff files")
+	}
+	legacyOperatorCtx := changeOperatorContext(t, legacy.service, f.token, string(f.project.OrganizationID))
+	for _, tool := range []string{operatortool.GetAttemptDiff, operatortool.GetWorkItemDiff} {
+		args := operatortool.ChangeArguments{ProjectID: string(f.project.ID), ItemID: string(f.issue.WorkItemID), Limit: 10}
+		if tool == operatortool.GetAttemptDiff {
+			args.AttemptID = f.attempt
+		}
+		actual, err := (hubOperatorExecutor{f.service}).Execute(operatorCtx, changeToolCall(tool, args))
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacyPage, err := (hubOperatorExecutor{legacy.service}).Execute(legacyOperatorCtx, changeToolCall(tool, args))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(actual.Content) != string(legacyPage.Content) {
+			t.Fatalf("%s differs from per-file legacy rows", tool)
+		}
+	}
+	ctx := f.service.contentContext(t.Context())
+	body := diffbody.New(string(f.project.OrganizationID), string(f.project.ID), newNativeID("diff"), 0, "@@ object body")
+	referenced := []tracker.AttemptDiffFile{{Path: "object.go", Status: tracker.DiffStatusModified, PatchBody: &body}}
+	data, err := json.Marshal(referenced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareChangeContent(ctx, string(f.project.OrganizationID), data); err != nil {
+		t.Fatal(err)
+	}
+	err = f.service.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
+		var err error
+		receipt, err = storeAttemptDiff(ctx, tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, f.attempt, string(f.issue.WorkItemID), f.request(2, referenced...), now)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exists, err := f.service.manifestDiffBodyExists(ctx, body.Key)
+	if err != nil || !exists {
+		t.Fatalf("manifest body lookup lost live object: %v", err)
+	}
+	if _, err := f.service.database.db.ExecContext(ctx, "UPDATE attempt_diffs SET manifest_expired=1 WHERE id=?", receipt.DiffID); err != nil {
+		t.Fatal(err)
+	}
+	files, err = readAttemptDiffFiles(ctx, f.service.database.reader, receipt.DiffID)
+	if err != nil || len(files) != 1 || !files[0].PatchExpired || files[0].PatchBody != nil {
+		t.Fatalf("manifest expiry lost: %#v %v", files, err)
+	}
+	exists, err = f.service.manifestDiffBodyExists(ctx, body.Key)
+	if err != nil || exists {
+		t.Fatalf("expired manifest retained body: %v", err)
 	}
 }

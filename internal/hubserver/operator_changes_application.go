@@ -54,6 +54,7 @@ func (a hubChangeApplication) result(scope nativeScope, args operatortool.Change
 }
 
 func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args operatortool.ChangeArguments) (value operatortool.ChangeResult, resultErr error) {
+	ctx = a.service.contentContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	defer func() {
@@ -181,6 +182,10 @@ func changeLimit(args operatortool.ChangeArguments) int {
 }
 
 func (a hubChangeApplication) MutateChange(ctx context.Context, name string, args operatortool.ChangeArguments) (operatortool.ChangeResult, error) {
+	ctx = a.service.contentContext(ctx)
+	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
+		ctx = context.WithValue(ctx, changeContentKey{}, &changeContent{call: content.call, register: content.register})
+	}
 	scope, err := a.authorized(ctx, args, name != operatortool.ArtifactAccess)
 	if err != nil {
 		return operatortool.ChangeResult{}, err
@@ -223,6 +228,11 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 				return result, &operatortool.RequestError{Code: failure.Code, Message: message}
 			}
 			return result, err
+		}
+		if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && len(request.SourceBundle) > 0 {
+			if _, err := prepareChangeContent(ctx, string(scope.organization), request.SourceBundle); err != nil {
+				return result, err
+			}
 		}
 		op = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 			return s.publishChangeVersionCommand(ctx, tx, scope, args.ItemID, args.ChangeID, request, now)

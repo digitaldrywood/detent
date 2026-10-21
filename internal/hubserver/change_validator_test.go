@@ -49,6 +49,9 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		r.Validator.CriteriaEvidence[0] = gate.CriterionEvidence{Criterion: "Complete the requested work.", Kind: "receipt", Reference: "make check-app; npx playwright test", ReceiptIDs: []string{"timing_app", "timing_browser"}, Behavior: "Application and browser checks exercise the requested behavior"}
 		r.Validator.Commands = []gate.CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: r.Validator.HeadSHA, TreeSHA: strings.Repeat("d", 40)}, {ReceiptID: "timing_browser", Command: "npx playwright test", HeadSHA: r.Validator.HeadSHA, TreeSHA: strings.Repeat("d", 40)}}
 	}
+	objectOutput := func(r *tracker.ReviewChange) {
+		r.Validator.Commands = []gate.CommandResult{{Command: "make check-land", HeadSHA: r.Validator.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 123, Output: strings.Repeat("validator output\n", 13000)}}
+	}
 	type stageCase struct {
 		mode               string
 		gateKind           string
@@ -166,6 +169,14 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			r.ImplementationReview = r.Validator
 		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"separate session pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"object-backed separate session pass", objectOutput, http.StatusOK, "reviewed", nil},
+		{"object-backed another head", func(r *tracker.ReviewChange) { objectOutput(r); r.Validator.HeadSHA = r.Validator.BaseSHA }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"object-backed invalid decision", func(r *tracker.ReviewChange) { objectOutput(r); r.Decision = "invalid" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"object-backed oversized body", func(r *tracker.ReviewChange) { objectOutput(r); r.Body = strings.Repeat("x", (64<<10)+1) }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"object-backed missing key", func(r *tracker.ReviewChange) { objectOutput(r); r.IdempotencyKey = "" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"object-backed storage rollback", objectOutput, http.StatusInternalServerError, "needs_evidence", nil},
+		{"object-backed storage exhausted", objectOutput, http.StatusTooManyRequests, "needs_evidence", nil},
+
 		{"separate session pass with multiple receipts", multipleReceipts, http.StatusOK, "reviewed", nil},
 		{"recovered source inspection retains failed read history", func(r *tracker.ReviewChange) {
 			multipleReceipts(r)
@@ -210,6 +221,11 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "validator")
+			var objects *changeObjectFixture
+			if strings.HasPrefix(test.name, "object-backed") {
+				objects = &changeObjectFixture{}
+				f.service.config.content = objects.call
+			}
 			descriptor := hubTestPolicy()
 			if test.name == "missing session" {
 				descriptor.Gates.GitHubPullRequest = true
@@ -419,8 +435,110 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				}
 				t.Logf("authenticated audit write bytes=%d", len(raw))
 			}
+			if test.name == "object-backed storage rollback" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER reject_review_storage BEFORE INSERT ON change_evidence WHEN NEW.kind='review' BEGIN SELECT RAISE(ABORT,'review storage failure'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var contentBefore int64
+			if objects != nil {
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'`).Scan(&contentBefore); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.name == "object-backed storage exhausted" {
+				f.service.database.hostedOrganization = f.project.OrganizationID
+				plans := pilotHostedPlans()
+				plans.Plans[0].Allowances["collaboration_bytes"] = contentBefore
+				if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
 			requireNativeStatus(t, response, test.want)
+			if test.name == "object-backed storage exhausted" {
+				request.IdempotencyKey += "-another-output"
+				request.Validator.Commands[0].Output += "distinct rejected output"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request), http.StatusTooManyRequests)
+			}
+			if objects != nil && test.want != http.StatusOK {
+				var charged, registered int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'`).Scan(&charged); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_content_objects`).Scan(&registered); err != nil {
+					t.Fatal(err)
+				}
+				objects.mu.Lock()
+				stored := len(objects.objects)
+				var storedBytes int64
+				for _, data := range objects.objects {
+					storedBytes += int64(len(data))
+				}
+				objects.mu.Unlock()
+				expectedObjects := 0
+				if test.name == "object-backed storage rollback" {
+					expectedObjects = 1
+				}
+				if charged != contentBefore+storedBytes || registered != int64(expectedObjects) || stored != expectedObjects {
+					t.Fatalf("rejected review retained output: charged=%d before=%d registered=%d objects=%d", charged, contentBefore, registered, stored)
+				}
+			}
+
+			if test.name == "object-backed separate session pass" {
+				var stored tracker.ChangeReview
+				decodeHubResponse(t, response, &stored)
+				if stored.Validator == nil || len(stored.Validator.Commands) != 1 || stored.Validator.Commands[0].Output != request.Validator.Commands[0].Output {
+					t.Fatal("review publication lost command output")
+				}
+				var inline, refs int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT max(length(record_json)) FROM change_evidence WHERE kind='review'`).Scan(&inline); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_command_outputs`).Scan(&refs); err != nil {
+					t.Fatal(err)
+				}
+				if inline > 2048 || refs != 1 {
+					t.Fatalf("review output remained inline: bytes=%d refs=%d", inline, refs)
+				}
+
+				objects.mu.Lock()
+				beforeObjects := len(objects.objects)
+				beforeWrites := objects.writes
+				objects.mu.Unlock()
+				var beforeBytes int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'`).Scan(&beforeBytes); err != nil {
+					t.Fatal(err)
+				}
+				original := response.Body.String()
+				replay := performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
+				requireNativeStatus(t, replay, http.StatusOK)
+				if replay.Body.String() != original {
+					t.Fatal("review replay changed the accepted receipt")
+				}
+				conflict := request
+				conflict.Body = "Different payload under the accepted review key"
+				validator := *request.Validator
+				validator.Commands = append([]gate.CommandResult(nil), request.Validator.Commands...)
+				validator.Commands[0].Output = "different output"
+				conflict.Validator = &validator
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, conflict), http.StatusConflict)
+				var afterBytes, afterReferences int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'`).Scan(&afterBytes); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_content_objects`).Scan(&afterReferences); err != nil {
+					t.Fatal(err)
+				}
+				objects.mu.Lock()
+				afterObjects := len(objects.objects)
+				afterWrites := objects.writes
+				objects.mu.Unlock()
+				if beforeBytes != afterBytes || beforeObjects != afterObjects || beforeWrites != afterWrites || afterReferences != 1 {
+					t.Fatal("review replay or key conflict changed stored objects or allowance")
+				}
+			}
+
 			rejectionField := map[string]string{
 				"oversized acceptance body":                              "body",
 				"missing session":                                        "validator.session_id",
@@ -651,7 +769,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				stageReviews++
 				wantSession = 43
 			}
-			current, err := readCurrentChangeDetail(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, detail.Change, f.service.config.now())
+			current, err := readCurrentChangeDetail(f.service.contentContext(t.Context()), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, detail.Change, f.service.config.now())
 			if err != nil || current.Summary.Status != detail.Summary.Status {
 				t.Fatalf("current summary differs: %+v, %v", current.Summary, err)
 			}
@@ -891,7 +1009,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				decodeHubResponse(t, response, &version)
 				response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 				decodeHubResponse(t, response, &detail)
-				current, err = readCurrentChangeDetail(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, detail.Change, f.service.config.now())
+				current, err = readCurrentChangeDetail(f.service.contentContext(t.Context()), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, detail.Change, f.service.config.now())
 				if err != nil || current.Summary.Status != "needs_evidence" || current.Summary.Status != detail.Summary.Status {
 					t.Fatalf("old validator approved new version: %+v, %v", current.Summary, err)
 				}
