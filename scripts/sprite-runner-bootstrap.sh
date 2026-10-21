@@ -470,6 +470,22 @@ apt_install() {
 }
 
 apt_update
+sandbox_packages=()
+for prerequisite in bubblewrap:bwrap:--version socat:socat:-V; do
+    IFS=: read -r package tool version_flag <<<"$prerequisite"
+    if ! command -v "$tool" >/dev/null || ! "$tool" "$version_flag" >/dev/null 2>&1; then
+        sandbox_packages+=("$package")
+    fi
+done
+if [[ ${#sandbox_packages[@]} -gt 0 ]]; then
+    apt_install "${sandbox_packages[@]}"
+fi
+for tool in bwrap socat; do
+    command -v "$tool" >/dev/null || die "Codex sandbox prerequisite $tool is missing from PATH after installation"
+    tool_version_flag=--version
+    [[ $tool != socat ]] || tool_version_flag=-V
+    "$tool" "$tool_version_flag" >/dev/null 2>&1 || die "Codex sandbox prerequisite $tool cannot run"
+done
 psql_package_version=
 for psql_major in 18 17; do
     psql_package="postgresql-client-$psql_major"

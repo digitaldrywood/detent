@@ -36,7 +36,7 @@ const (
 	defaultClientTitle   = "Detent Orchestrator"
 	defaultClientVersion = "0.1.0"
 
-	defaultReadTimeout = 5 * time.Second
+	defaultReadTimeout = time.Minute
 	defaultTurnTimeout = time.Hour
 
 	maxToolFailureDiagnosticBytes = 2048
