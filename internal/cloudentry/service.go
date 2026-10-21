@@ -169,6 +169,13 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 		if err != nil {
 			return nil, fmt.Errorf("configure attachments: %w", err)
 		}
+		archives, ok := attachments.(attachment.ArchiveStorage)
+		if !ok {
+			return nil, errors.New("archive storage is unavailable")
+		}
+		if err := archives.ConfigureArchiveReads(ctx, []string{strings.TrimRight(cfg.PublicURL, "/")}); err != nil {
+			return nil, fmt.Errorf("configure archives: %w", err)
+		}
 	}
 	registry, err := OpenRegistry(ctx, filepath.Join(cfg.StateDir, "registry.db"))
 	if err != nil {

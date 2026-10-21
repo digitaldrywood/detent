@@ -336,6 +336,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"autoFund":                          "Reserves funding before dispatching the billing operation.",
 		"changeDependency":                  "Applies a dependency mutation and its event atomically.",
 		"changeQueueOrder":                  "Applies a queue order mutation and its event atomically.",
+		"writeAttachmentArchive":            "Atomically charges an immutable archive reservation or publishes its verified work-item reference, with a readback of the owned row.",
 		"artifactReceipt":                   "Records an artifact receipt under its fenced upload grant.",
 		"authorizeArtifactUpload":           "Creates a fenced artifact upload grant.",
 		"artifactReadGrantCommand":          "Creates an artifact read grant as an explicit command.",

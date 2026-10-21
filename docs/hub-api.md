@@ -2470,6 +2470,61 @@ the squash message retains the source `-x` trailer. Ordinary source issues keep
 their normal base. A moved source needing a replacement PR requires a separate
 reviewed delivery; association does not adopt arbitrary new heads.
 
+## Hosted immutable archives
+
+Cloud's shared entry accepts raw archive bytes at
+`POST /api/v2/organizations/{organization}/projects/{project}/work-items/{item}/archives`.
+Use the normal project write credential or browser session and CSRF token, with
+`X-Detent-Archive-Schema` set to a positive integer. A request is bounded to
+16 MiB of uncompressed content. Repeating the same content and schema is
+idempotent; the work item must be readable and writable by the caller.
+
+The attachment owner compresses the bytes with deterministic gzip level 6,
+reserves the compressed byte budget atomically in the existing attachment
+catalog before uploading, then reads back the exact bytes before publishing any
+work-item reference. It never falls back to inline storage. The response contains
+`kind: archive`,
+`retention: organization`, `key`, `sha256` (of the compressed bytes),
+`compressed_size`, `uncompressed_size`, `codec: gzip`, and `schema_version`.
+Keys have the form `orgs/{organization}/blobs/sha256/{first-two-digest-characters}/{digest}`.
+The existing attachment catalog holds one immutable row per organization and
+object key, with separate work-item references. Identical bytes across projects
+in an organization share a blob; different organizations never share one.
+
+`GET /api/v2/organizations/{organization}/projects/{project}/work-items/{item}/archives/{digest}/access`
+checks the caller's normal work-item read authority, then returns the reference
+with `url` and `expires_at`. The URL signs GET for that exact key for five minutes;
+the expiry timestamp comes from the signature. The response is `private, no-store`.
+Clients fetch and verify the compressed digest before decoding the single gzip
+member. URLs are transient capabilities and must never be persisted or logged.
+The metadata endpoints under `/attachment-metadata/archives` are private to
+the signed entry-to-Hub boundary.
+
+Archives use the existing hosted attachment bucket and organization-deletion
+prefix. They survive source deletion and attachment expiry, remain charged once
+per blob in the organization's `collaboration_bytes` storage-tier usage, and are
+kept until organization deletion. Upload preflight commits the catalog's byte
+reservation under the current storage allowance before any object write; competing
+uploads cannot oversubscribe that allowance. Reservations grant no read access.
+Publication requires the existing reservation and records only the verified
+work-item reference. Failed or uncertain uploads and publication failures keep
+the reservation charged until a retry reuses it or the organization is deleted.
+The failed request never deletes a blob that another request may have published.
+An interrupted upload can be replayed with the same bytes: the owner verifies and
+reuses an existing blob and reservation without a second charge. The existing
+quota admission owns both phases; no additional catalog, retry loop or garbage
+collector is introduced.
+
+The entry configures bucket CORS for its exact application origin, GET/HEAD only,
+exposing Content-Length, Content-Type and ETag. Its bucket credential therefore
+needs lifecycle-read and CORS-write permissions in addition to attachment access.
+Startup refuses enabled expiration rules that can match an archive prefix;
+rules restricted to attachment prefixes remain permitted. Archive objects use
+`Content-Type: application/gzip`, `Cache-Control: private, no-store`, and no
+`Content-Encoding`. The archive path uses basic PUT/GET and Signature V4 presigning
+without conditional writes, object lock, mandatory versioning or AWS checksum
+extensions; see [Spaces compatibility](https://docs.digitalocean.com/products/spaces/reference/s3-compatibility/).
+
 ## Retention, export and deletion design
 
 Collaboration content, content versions, typed events, idempotency responses and
