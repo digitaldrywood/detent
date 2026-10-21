@@ -36,7 +36,7 @@ func runnerClaimRefusal(minimum, reported string) string {
 
 func runnerVersionError(minimum, reported string) error {
 	if reason := runnerClaimRefusal(minimum, reported); reason != "" {
-		return &nativeError{Code: "unavailable", Message: reason, status: http.StatusUpgradeRequired}
+		return &nativeError{Code: "unavailable", Message: reason, status: http.StatusUpgradeRequired, publicMessage: true}
 	}
 	return nil
 }

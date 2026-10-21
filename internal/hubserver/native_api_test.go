@@ -277,6 +277,7 @@ func TestNativeAPIError(t *testing.T) {
 		{"allowance", "allowance_exhausted", "Hosted active_runners allowance reached (2 of 2). Existing data, reading, export and billing remain available.", "WARN", &hostedLimitError{Resource: "active_runners", Allowance: 2, Consumption: 2}, http.StatusTooManyRequests},
 		{"request refusal", "invalid_request", "A project is required", "WARN", &operatortool.RequestError{Code: "invalid_request", Message: "A project is required"}, http.StatusUnprocessableEntity},
 		{"private validation", "invalid_request", "Unprocessable Entity: invalid request", "WARN", nativeInvalid("private-context"), http.StatusUnprocessableEntity},
+		{"runner version", "unavailable", "Too old to take work, needs 0.117.56", "WARN", runnerVersionError("0.117.56", "0.117.55"), http.StatusUpgradeRequired},
 		{"publication rejection", "invalid_request", "publication rejected: category=version_validation field=source [private error text omitted]", "WARN", nativeRejection(nativeInvalid("private-context"), "version_validation", "source"), http.StatusUnprocessableEntity},
 		{"lease conflict", "lease_conflict", "Work item is already leased", "WARN", tracker.ErrLeaseConflict, http.StatusConflict},
 		{"invalid claim", "invalid_request", "Request is invalid", "WARN", tracker.ErrInvalidClaimRequest, http.StatusUnprocessableEntity},
