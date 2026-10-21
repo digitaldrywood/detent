@@ -281,7 +281,7 @@ function FullIssuePage(): React.ReactElement {
   if (linked === undefined) {
     return <IssueSurface key={workItemId} workItemId={workItemId} issueState={issueState} conversation={null} />;
   }
-  if (issueState.data?.issue.archive_summary !== undefined) return <ArchivedLinkedIssue workItemId={workItemId} issueState={issueState} conversation={linked} />;
+  if (issueState.data?.issue.archive_summary !== undefined) return <ArchivedLinkedIssue key={linked.id} workItemId={workItemId} issueState={issueState} conversation={linked} />;
   return <LinkedIssue key={linked.id} workItemId={workItemId} issueState={issueState} conversation={linked} />;
 }
 
@@ -291,17 +291,32 @@ function ArchivedLinkedIssue({ workItemId, issueState, conversation }: {
   readonly conversation: Conversation;
 }): React.ReactElement {
   const client = useClient();
+  const [detail, setDetail] = React.useState<ConversationDetail>();
   const send = useAtomSet(client.sendMessage, { mode: "promise" });
   const setPreferences = useAtomSet(client.setPreferences, { mode: "promise" });
   const bridge: ConversationBridge = {
-    id: conversation.id, projectId: conversation.project_id, detail: undefined,
+    id: conversation.id, projectId: conversation.project_id, detail,
     execution: conversation.execution, streaming: false, preferences: turnPreferences(conversation),
     setPreferences: (preferences) => { void setPreferences({ projectId: conversation.project_id, conversationId: conversation.id, preferences }); },
     sendToRunner: async (text) => { await send({ projectId: conversation.project_id, conversationId: conversation.id, key: newCommandKey(), text, expected: expectedOwner(conversation.execution) }); },
     interrupt: null,
-    view: <ConversationView conversationId={conversation.id} projectId={conversation.project_id} header={false} />,
+    view: <ArchivedConversation conversation={conversation} onDetail={setDetail} />,
   };
   return <IssueSurface workItemId={workItemId} issueState={issueState} conversation={bridge} />;
+}
+
+function ArchivedConversation({ conversation, onDetail }: {
+  readonly conversation: Conversation;
+  readonly onDetail: (detail: ConversationDetail | undefined) => void;
+}): React.ReactElement {
+  const client = useClient();
+  const state = useAtomValue(client.conversations.stateAtom({
+    environmentId: HUB_ENVIRONMENT_ID, projectId: conversation.project_id, conversationId: conversation.id,
+  }));
+  const value = Option.getOrUndefined(AsyncResult.value(state));
+  const detail = value === undefined ? undefined : Option.getOrUndefined(value.data);
+  React.useEffect(() => { onDetail(detail); }, [detail, onDetail]);
+  return <ConversationView conversationId={conversation.id} projectId={conversation.project_id} header={false} />;
 }
 
 /** The issue page with a conversation behind it. Subscribes to its atoms. */
@@ -569,6 +584,7 @@ function IssueSurface({
       }}
       attempts={data?.attempts ?? []}
       history={data?.history ?? []}
+      archived={data?.issue.archive_summary !== undefined}
       askPanel={projectId === null ? null : <IssueAskPanel ask={ask} projectId={projectId} identifier={item === null ? workItemId : issueNumber(item.identifier, item.number)} title={item?.title ?? ""} canWrite={canWrite} />}
       conversationPanel={conversationPanel}
     >
