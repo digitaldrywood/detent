@@ -1,0 +1,8 @@
+{
+  "code": "stale_execution",
+  "message": "The attempt this control targeted is no longer current.",
+  "details": {
+    "expected_attempt_id": "att_18f4",
+    "current_attempt_id": "att_2b70"
+  }
+}
