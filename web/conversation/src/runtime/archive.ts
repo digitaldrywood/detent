@@ -35,7 +35,7 @@ export async function resolveArchivedResponse(value: unknown, target: string, fe
       if (signal?.aborted) throw new ArchiveUnavailable("cancelled");
       const response = await fetch(access.href, { credentials: "same-origin", cache: "no-store", signal: readSignal });
       if (!response.ok) {
-        if ([401, 403].includes(response.status)) clearQueryCache();
+        if ([401, 403, 404].includes(response.status)) clearQueryCache();
         throw new ArchiveUnavailable(`authorization HTTP ${response.status}`);
       }
       const grant = await response.json() as { url: string; sha256: string; expires_at: string };
