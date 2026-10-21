@@ -394,7 +394,7 @@ func runWorkflowGit(ctx context.Context, dir string, args ...string) ([]byte, er
 	cmd.WaitDelay = workflowGitWaitDelay
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("git -C %s %s: %w\n%s", dir, strings.Join(args, " "), err, output)
+		return nil, fmt.Errorf("git -C %s %s: %w\n%s", dir, strings.Join(args, " "), errors.Join(err, ctx.Err()), output)
 	}
 	return output, nil
 }

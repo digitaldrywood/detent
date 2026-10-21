@@ -2,14 +2,20 @@ package hubclient
 
 import (
 	"context"
+	"errors"
 	"net"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
@@ -121,19 +127,47 @@ func TestIsolationProbeCancellation(t *testing.T) {
 	for _, test := range []struct {
 		name             string
 		cached, complete bool
+		workflowFailure  bool
+		workflowLoad     bool
+		cancel, killGit  bool
 	}{
-		{"unobserved cancellation", false, false},
-		{"cached cancellation", true, false},
-		{"completed native only", false, true},
-		{"refresh native only", true, true},
+		{name: "unobserved cancellation"},
+		{name: "cached cancellation", cached: true},
+		{name: "cached cancellation preserves workflow failure", cached: true, workflowFailure: true},
+		{name: "cached expired workflow load", cached: true, workflowLoad: true},
+		{name: "cached canceled workflow load", cached: true, workflowLoad: true, cancel: true},
+		{name: "cached killed workflow load", cached: true, workflowLoad: true, killGit: true},
+		{name: "cached killed workflow load preserves earlier failure", cached: true, workflowFailure: true, workflowLoad: true, killGit: true},
+		{name: "completed native only", complete: true},
+		{name: "refresh native only", cached: true, complete: true},
 	} {
 		cached := test.cached
 		t.Run(test.name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
+			root := t.TempDir()
+			configured := globalconfig.Project{ID: "example-project", Workdir: root, Workflow: filepath.Join(root, "WORKFLOW.md"), WorkflowRef: "origin/HEAD"}
+			if test.killGit {
+				listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer listener.Close()
+				t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+				t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(root, "absent"))
+				t.Setenv("GIT_ALLOW_PROTOCOL", "git")
+				for _, args := range [][]string{{"init", "--quiet", "--template="}, {"remote", "add", "origin", "git://" + listener.Addr().String() + "/example.git"}} {
+					if output, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+						t.Fatalf("prepare workflow repository: %v\n%s", err, output)
+					}
+				}
+			}
+			run := func(t *testing.T) {
 				completed := time.Now()
+				now := completed
 				calls := 0
 				holds, releases := 0, 0
-				scheduler := &Scheduler{now: time.Now, leaseHold: func(context.Context) (func(), error) {
+				parent, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				scheduler := &Scheduler{now: func() time.Time { return now }, leaseHold: func(context.Context) (func(), error) {
 					holds++
 					return func() { releases++ }, nil
 				}, isolationReport: func(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
@@ -144,15 +178,40 @@ func TestIsolationProbeCancellation(t *testing.T) {
 					if test.complete {
 						return isolation.Report{"example-project/codex": {isolation.NativeTrusted}}, nil
 					}
+					problem := runnerauth.Problem{Code: "backend_probe_failed", Subject: "example-project/codex", Check: "codex login status", Message: "Probe incomplete", ErrorOutput: "context deadline exceeded", FixHint: "Check the runner probe", ReportedAt: time.Now()}
+					problems := []runnerauth.Problem{problem}
+					if test.workflowFailure {
+						problems = append(problems, runnerauth.WorkflowLoadProblems("example-project", errors.New("parse workflow: invalid settings (signal: killed)"))...)
+					}
+					if test.workflowLoad {
+						wantCause := context.DeadlineExceeded
+						if test.cancel {
+							cancel()
+							wantCause = context.Canceled
+						}
+						if !test.killGit {
+							<-ctx.Done()
+						}
+						_, err := project.LoadWorkflowContext(ctx, configured)
+						if !errors.Is(err, wantCause) {
+							t.Fatalf("workflow load lost probe cause %v: %v", wantCause, err)
+						}
+						if test.killGit {
+							var exitErr *exec.ExitError
+							if !errors.As(err, &exitErr) || runtime.GOOS != "windows" && exitErr.Exited() {
+								t.Fatalf("workflow git was not killed by the probe deadline: %v", err)
+							}
+						}
+						problems = append(problems, runnerauth.WorkflowLoadProblems(configured.ID, err)...)
+					}
 					<-ctx.Done()
-					problem := runnerauth.Problem{Code: "backend_probe_failed", Subject: "example-project/codex", Check: "codex login status", Message: "Probe incomplete", ErrorOutput: ctx.Err().Error(), FixHint: "Check the runner probe", ReportedAt: time.Now()}
-					return isolation.Report{"example-project/codex": {}}, []runnerauth.Problem{problem}
+					return isolation.Report{"example-project/codex": {}}, problems
 				}}
 				if cached {
-					scheduler.probeIsolation(t.Context())
-					time.Sleep(time.Minute)
+					scheduler.probeIsolation(parent)
+					now = now.Add(time.Minute)
 				}
-				report, problems := scheduler.probeIsolation(t.Context())
+				report, problems := scheduler.probeIsolation(parent)
 				if holds != calls || releases != holds {
 					t.Fatalf("probe hold leaked: calls=%d holds=%d releases=%d", calls, holds, releases)
 				}
@@ -160,7 +219,7 @@ func TestIsolationProbeCancellation(t *testing.T) {
 					if !report.Supports(isolation.NativeTrusted) || report.Supports(isolation.Sandbox) || len(problems) != 0 {
 						t.Fatalf("native result unavailable or manufactured sandbox: report=%+v problems=%+v", report, problems)
 					}
-					if !reflect.DeepEqual(scheduler.lastIsolation, report) || !scheduler.lastIsolationAt.Equal(time.Now()) {
+					if !reflect.DeepEqual(scheduler.lastIsolation, report) || !scheduler.lastIsolationAt.Equal(now) {
 						t.Fatalf("completed native result was not refreshed: %+v at %v", scheduler.lastIsolation, scheduler.lastIsolationAt)
 					}
 					return
@@ -168,11 +227,24 @@ func TestIsolationProbeCancellation(t *testing.T) {
 				if report.Supports(isolation.NativeTrusted) != cached {
 					t.Fatalf("cancelled probe changed cached capabilities: %+v", report)
 				}
-				if len(problems) != 2 || problems[0].Subject != "example-project/codex" || problems[0].Check != "codex login status" {
-					t.Fatalf("probe source lost: %+v", problems)
+				if cached && (!reflect.DeepEqual(report, isolation.Report{"example-project/codex": {isolation.NativeTrusted, isolation.Sandbox}}) || !scheduler.lastIsolationAt.Equal(completed)) {
+					t.Fatalf("cancelled workflow load changed the completed probe: report=%+v at %v", report, scheduler.lastIsolationAt)
 				}
-				observation := problems[1]
-				if observation.Code != "backend_probe_failed" || observation.Check != "runner isolation probe" || !observation.ReportedAt.Equal(time.Now()) || observation.FixCommand != "" {
+				wantProblems := 2
+				if cached && !test.workflowFailure {
+					wantProblems = 1
+				}
+				if len(problems) != wantProblems {
+					t.Fatalf("partial probe problems were not consolidated: %+v", problems)
+				}
+				if test.workflowFailure && (problems[0].Code != "settings_invalid" || problems[0].ErrorOutput != "parse workflow: invalid settings (signal: killed)") {
+					t.Fatalf("genuine workflow failure was dropped: %+v", problems)
+				}
+				observation := problems[len(problems)-1]
+				if observation.CachedCapabilities != cached {
+					t.Fatalf("cached capability provenance lost: %+v", observation)
+				}
+				if observation.Code != "backend_probe_failed" || observation.Check != "runner isolation probe" || !observation.ReportedAt.Equal(now) || observation.FixCommand != "" {
 					t.Fatalf("incomplete probe observation=%+v", observation)
 				}
 				if cached && !strings.Contains(observation.Message, completed.UTC().Format(time.RFC3339Nano)) {
@@ -181,7 +253,12 @@ func TestIsolationProbeCancellation(t *testing.T) {
 				if !cached && scheduler.lastIsolation != nil {
 					t.Fatal("incomplete capabilities were cached as completed")
 				}
-			})
+			}
+			if test.killGit {
+				run(t)
+			} else {
+				synctest.Test(t, run)
+			}
 		})
 	}
 }

@@ -322,3 +322,45 @@ func TestRunnerCodexSignInRefresh(t *testing.T) {
 		})
 	}
 }
+
+func TestProbeRunnerIsolationWorkflowFailures(t *testing.T) {
+	for _, test := range []struct {
+		name, content, ref            string
+		cancel, deadline, wantProblem bool
+	}{
+		{name: "canceled git load", ref: "origin/HEAD", cancel: true},
+		{name: "expired git load", ref: "origin/HEAD", deadline: true},
+		{name: "missing workflow", wantProblem: true},
+		{name: "parse error", content: "---\ntracker: [\n---\n", wantProblem: true},
+		{name: "parse error despite cancellation", content: "---\ntracker: [\n---\n", cancel: true, wantProblem: true},
+		{name: "missing workflow despite deadline", deadline: true, wantProblem: true},
+		{name: "git failure", ref: "HEAD^{invalid}", wantProblem: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			workflow := filepath.Join(root, "WORKFLOW.md")
+			if test.content != "" {
+				if err := os.WriteFile(workflow, []byte(test.content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if test.cancel {
+				cancel()
+			}
+			if test.deadline {
+				var stop context.CancelFunc
+				ctx, stop = context.WithDeadline(ctx, time.Now().Add(-time.Second))
+				defer stop()
+			}
+			report, problems := probeRunnerIsolation(ctx, globalconfig.Config{Projects: []globalconfig.Project{{ID: "example-project", Workdir: root, Workflow: workflow, WorkflowRef: test.ref}}})
+			if len(report) != 0 || (len(problems) != 0) != test.wantProblem {
+				t.Fatalf("report=%v problems=%+v", report, problems)
+			}
+			if test.wantProblem && (len(problems) != 1 || problems[0].Code != "settings_invalid" || problems[0].Check != "load workflow") {
+				t.Fatalf("workflow failure was lost: %+v", problems)
+			}
+		})
+	}
+}

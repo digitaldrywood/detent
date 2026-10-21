@@ -42,6 +42,8 @@ func TestMain(m *testing.M) {
 		os.Exit(runWorkflowGitParentHelper())
 	case "descendant":
 		os.Exit(runWorkflowGitDescendantHelper())
+	case "blocking":
+		os.Exit(runBlockingWorkflowGitHelper())
 	default:
 		os.Exit(m.Run())
 	}
@@ -1047,4 +1049,67 @@ func TestWorkflowLoadFailureClassification(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunWorkflowGitCancellation(t *testing.T) {
+	binDir := installWorkflowGitHelper(t)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(workflowGitHelperModeEnv, "blocking")
+	for _, cancelProbe := range []bool{false, true} {
+		t.Run(strconv.FormatBool(cancelProbe), func(t *testing.T) {
+			listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			if err := listener.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(workflowGitHelperAddressEnv, listener.Addr().String())
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			results := make(chan error, 1)
+			go func() {
+				_, err := runWorkflowGit(ctx, binDir, "ls-remote", "origin", "HEAD")
+				results <- err
+			}()
+			connection, err := listener.AcceptTCP()
+			if err != nil {
+				cancel()
+				<-results
+				t.Fatal(err)
+			}
+			if cancelProbe {
+				cancel()
+			}
+			if cancelProbe {
+				err = <-results
+			}
+			if closeErr := connection.Close(); closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			if !cancelProbe {
+				err = <-results
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || errors.Is(err, context.Canceled) != cancelProbe {
+				t.Fatalf("git cancellation=%v error=%v", cancelProbe, err)
+			}
+			if cancelProbe && runtime.GOOS != "windows" && exitErr.Exited() {
+				t.Fatalf("expected killed git process, got %v", exitErr)
+			}
+		})
+	}
+}
+
+func runBlockingWorkflowGitHelper() int {
+	connection, err := net.Dial("tcp", os.Getenv(workflowGitHelperAddressEnv))
+	if err != nil {
+		return 2
+	}
+	defer connection.Close()
+	if _, err := io.Copy(io.Discard, connection); err != nil {
+		return 3
+	}
+	return 23
 }

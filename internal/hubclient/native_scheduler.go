@@ -342,6 +342,10 @@ func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []run
 		problem.ErrorOutput = err.Error()
 		problem.ReportedAt = s.now().UTC()
 		if s.lastIsolation != nil {
+			problem.CachedCapabilities = true
+			problems = slices.DeleteFunc(problems, func(p runnerauth.Problem) bool {
+				return p.Code == "backend_probe_failed"
+			})
 			problem.Message += " Reported capabilities are cached from the last completed runner isolation probe at " + s.lastIsolationAt.UTC().Format(time.RFC3339Nano) + "."
 			report = s.lastIsolation
 		} else {

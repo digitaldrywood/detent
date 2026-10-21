@@ -332,3 +332,109 @@ func TestRunnerConfigurationChangesDoNotRequireApproval(t *testing.T) {
 		})
 	}
 }
+
+func TestRunnerCachedProbeProblemsHeartbeat(t *testing.T) {
+	for _, test := range []struct {
+		name, code             string
+		cached, backend, mixed bool
+		visible                bool
+	}{
+		{name: "cached probe", code: "backend_probe_failed", cached: true},
+		{name: "uncached probe", code: "backend_probe_failed", visible: true},
+		{name: "backend failure", code: "backend_probe_failed", cached: true, backend: true, visible: true},
+		{name: "settings failure", code: "settings_invalid", cached: true, visible: true},
+		{name: "cached probe with settings failure", code: "backend_probe_failed", cached: true, mixed: true, visible: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			now := f.service.config.now()
+			f.service.config.now = func() time.Time { return now }
+			f.service.database.now = f.service.config.now
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+			r.enroll(t)
+			problem := runnerauth.NewProblem(test.code)
+			problem.Subject = "backend_isolation"
+			problem.Check = "runner isolation probe"
+			problem.CachedCapabilities = test.cached
+			if test.backend {
+				problem.Subject = "example-project/codex"
+				problem.Check = "codex login status"
+			}
+			problems := []runnerauth.Problem{problem}
+			if test.mixed {
+				problems = append(problems, runnerauth.NewProblem("settings_invalid"))
+			}
+			heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": isolation.Report{"example-project/codex": {isolation.NativeTrusted}}, "problems": problems}
+			post := func() {
+				t.Helper()
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, heartbeat), http.StatusOK)
+			}
+			read := func() runnerauth.Runner {
+				t.Helper()
+				response := performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", testHubAdminToken, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var view runnerauth.Runner
+				decodeHubResponse(t, response, &view)
+				return view
+			}
+			first := now
+			for _, age := range []time.Duration{0, time.Minute, 2*time.Minute - time.Nanosecond, 2 * time.Minute, 3 * time.Minute} {
+				now = first.Add(age)
+				if age == 2*time.Minute && !test.visible {
+					if view := read(); view.Health != "needs_attention" || len(view.Problems) != 1 {
+						t.Fatalf("persistent failure did not age into visibility: %+v", view)
+					}
+				}
+				post()
+				if age == time.Minute {
+					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Rollback()
+					if err := refreshRunnerProblems(t.Context(), tx, f.project.OrganizationID, r.binding.RunnerID, now); err != nil {
+						t.Fatal(err)
+					}
+					if err := tx.Commit(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				view := read()
+				visible := test.visible || age >= 2*time.Minute
+				if (view.Health == "needs_attention") != visible || (len(view.Problems) > 0) != visible {
+					t.Fatalf("age=%v health=%s problems=%+v", age, view.Health, view.Problems)
+				}
+				fleet := hostedFleetRunnerView(view, "test", nil, now)
+				if (len(fleet.Problems) > 0) != visible || (fleet.Health == "needs_attention") != visible {
+					t.Fatalf("diagnostics and health differ at %v: %+v", age, fleet)
+				}
+				if test.mixed && age < 2*time.Minute && (len(fleet.Problems) != 1 || fleet.Problems[0].Code != "settings_invalid") {
+					t.Fatalf("genuine workflow error hidden: %+v", fleet.Problems)
+				}
+				var raw string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT problems_json FROM runner_identities WHERE id = ?", r.binding.RunnerID).Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				var stored []runnerauth.Problem
+				if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+					t.Fatal(err)
+				}
+				if len(stored) != len(problems) || !stored[0].FirstSeen.Equal(first) {
+					t.Fatalf("raw problem continuity lost at %v: %+v", age, stored)
+				}
+			}
+			delete(heartbeat, "problems")
+			post()
+			if view := read(); view.Health != "online" || len(view.Problems) != 0 {
+				t.Fatalf("completed probe did not clear failure: %+v", view)
+			}
+			now = now.Add(time.Second)
+			heartbeat["problems"] = problems
+			post()
+			view := read()
+			if (view.Health == "needs_attention") != test.visible {
+				t.Fatalf("new occurrence inherited prior persistence: %+v", view)
+			}
+		})
+	}
+}
