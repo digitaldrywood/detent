@@ -1239,6 +1239,21 @@ describe("plan usage meters", () => {
 
 
 describe("plan billing usage", () => {
+  it("reads comparison storage from the catalog and workspace storage from the entitlement", async () => {
+    const allowances = [25, 100, 250, 1];
+    mockPlanUsage({ ...usageFixture, comparison_plans: usageFixture.comparison_plans.map((plan, index) => ({
+      ...plan, allowances: { ...plan.allowances, collaboration_bytes: allowances[index]! * 2 ** 30 },
+    })) }, { ...planFixture, allowances: { ...planFixture.allowances, collaboration_bytes: 37 * 2 ** 30 } });
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    const comparison = await screen.findByRole("table", { name: "Compare plans" });
+    expect(within(comparison).getByRole("columnheader", { name: "Storage" })).toBeTruthy();
+    for (const [plan, storage] of [["Starter", "25 GB storage"], ["Team", "100 GB storage"], ["Growth", "250 GB storage"], ["Scale", "Custom storage"]]) {
+      const row = within(comparison).getByRole("heading", { name: new RegExp(plan!) }).closest<HTMLElement>('[role="row"]')!;
+      expect(within(row).getByRole("cell", { name: storage })).toBeTruthy();
+    }
+    expect(screen.getByRole("meter", { name: "Workspace data" }).getAttribute("aria-valuetext")).toBe("411.25 MB of 37 GB");
+  });
+
   it("keeps a newer version of the current tier selectable and recommended", async () => {
     const starter = usageFixture.comparison_plans[0]!;
     const nextStarter = {

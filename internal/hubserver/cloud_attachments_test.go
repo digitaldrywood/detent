@@ -149,16 +149,31 @@ func TestCloudAttachmentQuota(t *testing.T) {
 		name                      string
 		allowance, apiLimit, used int64
 		status                    int
+		plan                      string
+		retained                  int64
 	}{
-		{"allowed", 10000, 2, 0, http.StatusCreated},
-		{"exact preflight limit", 100, 100, 0, http.StatusCreated},
-		{"refused", 99, 100, 0, http.StatusTooManyRequests},
-		{"API exhausted", 10000, 1, 1, http.StatusTooManyRequests},
-		{"outer API limit", 10000, 1, 0, http.StatusTooManyRequests},
+		{"Starter above Free storage", 25 << 30, 100, 0, http.StatusCreated, "starter", 2 << 30},
+		{"Free over storage", 1 << 30, 100, 0, http.StatusTooManyRequests, "free", 2 << 30},
+		{"allowed", 10000, 2, 0, http.StatusCreated, "", 0},
+		{"exact preflight limit", 100, 100, 0, http.StatusCreated, "", 0},
+		{"refused", 99, 100, 0, http.StatusTooManyRequests, "", 0},
+		{"API exhausted", 10000, 1, 1, http.StatusTooManyRequests, "", 0},
+		{"outer API limit", 10000, 1, 0, http.StatusTooManyRequests, "", 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newHostedSharedFixture(t)
-			plans := hostedTestPlans(t, f.service, map[string]int64{"collaboration_bytes": test.allowance, "api_mutations": test.apiLimit})
+			var plans HostedPlansConfig
+			if test.plan == "" {
+				plans = hostedTestPlans(t, f.service, map[string]int64{"collaboration_bytes": test.allowance, "api_mutations": test.apiLimit})
+			} else {
+				plans = capacityHostedPlans()
+				if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_id=?,base_version=1", test.plan); err != nil {
+					t.Fatal(err)
+				}
+			}
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 			record := attachment.Metadata{ID: conversation.NewAttachmentID(), Name: "file.txt", ContentType: "text/plain", Size: 100, SHA256: artifact.Digest([]byte("hello"))}
 			body, err := json.Marshal(record)
@@ -176,9 +191,14 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO machines(id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at,organization_id,token_id) VALUES('unrelated','unrelated','unrelated',1,'test','invalid',?,?,'org_security',?)`, formatHubTime(now), formatHubTime(now), bootstrapTokenID); err != nil {
 				t.Fatal(err)
 			}
+			if test.retained > 0 {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_usage_counters SET value=? WHERE name='collaboration_bytes'", test.retained); err != nil {
+					t.Fatal(err)
+				}
+			}
 			preflight := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: f.base + "/attachment-metadata/check", body: `{"size":100}`, csrf: csrf})
 			wantPreflight := http.StatusOK
-			if test.allowance < record.Size {
+			if test.allowance < record.Size+test.retained {
 				wantPreflight = http.StatusTooManyRequests
 			}
 			if preflight.Code != wantPreflight {
@@ -219,7 +239,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if usage["collaboration_bytes"] != record.Size {
+			if usage["collaboration_bytes"] != record.Size+test.retained {
 				t.Fatalf("attachment bytes=%d", usage["collaboration_bytes"])
 			}
 			replay := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: f.base + "/attachment-metadata", body: string(body), csrf: csrf})

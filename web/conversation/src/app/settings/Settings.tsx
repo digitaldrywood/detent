@@ -712,11 +712,12 @@ export function PlanSettings(): React.ReactElement {
               <span role="columnheader">Concurrent work</span>
               <span role="columnheader">Hosted artifacts</span>
               <span role="columnheader">Projects</span>
+              <span role="columnheader">Storage</span>
               <span role="columnheader">Plan action or expiry</span>
             </div>
             <div
               aria-hidden="true"
-              className="hidden grid-rows-[110px_44px_44px_44px_64px] text-xs text-muted-foreground md:grid"
+              className="hidden grid-rows-[110px_44px_44px_44px_44px_64px] text-xs text-muted-foreground md:grid"
             >
               <div />
               <div className="flex items-center border-t border-border/50 px-3">
@@ -727,6 +728,9 @@ export function PlanSettings(): React.ReactElement {
               </div>
               <div className="flex items-center border-t border-border/50 px-3">
                 Projects
+              </div>
+              <div className="flex items-center border-t border-border/50 px-3">
+                Storage
               </div>
               <div className="border-t border-border/50" />
             </div>
@@ -755,7 +759,7 @@ export function PlanSettings(): React.ReactElement {
                   key={`${candidate.id}-${candidate.version}`}
                   aria-current={current ? "true" : undefined}
                   className={cn(
-                    "grid grid-cols-[1fr_auto] gap-2 p-3 md:grid-cols-1 md:grid-rows-[110px_44px_44px_44px_64px] md:gap-0 md:p-0",
+                    "grid grid-cols-[1fr_auto] gap-2 p-3 md:grid-cols-1 md:grid-rows-[110px_44px_44px_44px_44px_64px] md:gap-0 md:p-0",
                     current &&
                       "relative z-1 rounded-xl bg-info/8 ring-2 ring-info ring-inset",
                   )}
@@ -821,6 +825,17 @@ export function PlanSettings(): React.ReactElement {
                     >
                       {projects}
                       <span className="md:sr-only"> projects</span>
+                    </div>
+                    <div
+                      role="cell"
+                      className="text-xs text-muted-foreground md:flex md:items-center md:border-t md:border-border/50 md:px-3 md:text-foreground"
+                    >
+                      {custom
+                        ? "Custom"
+                        : candidate.allowances.collaboration_bytes === undefined
+                          ? "Unlimited"
+                          : formatUsageValue(candidate.allowances.collaboration_bytes, "bytes")}
+                      <span className="md:sr-only"> storage</span>
                     </div>
                   </div>
                   <div
