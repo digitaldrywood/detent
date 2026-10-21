@@ -71,6 +71,7 @@ func TestHealthFindingEmails(t *testing.T) {
 			}
 			now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 			finding := newHealthFinding("test_signal", "instance", "project", h.project, "Finding summary.", "The owner checks the runner.", []string{h.project}, healthEvidence{Counts: map[string]int{"leases": 2}})
+			finding.ConditionSince = now.Add(-48 * time.Hour)
 			finding.Severity = test.severity
 			if test.legacy || test.rollback {
 				if test.rollback {

@@ -66,6 +66,7 @@ type healthSlackFailure struct {
 }
 
 type healthFinding struct {
+	ConditionSince   time.Time            `json:"-"`
 	SlackUnavailable *healthSlackFailure  `json:"slack_unavailable,omitempty"`
 	ID               string               `json:"id"`
 	Fingerprint      string               `json:"fingerprint"`
@@ -277,7 +278,9 @@ func humanWaitFinding(now time.Time, w healthWait) (healthFinding, bool) {
 		action = w.Reason
 		evidence.Reason = "issue_contract_unsatisfied"
 	}
-	return newHealthFinding("unanswered_human_wait", "human", kind, id, summary, action, []string{w.Project}, evidence), w.Active && (w.Reason != "" || !w.Since.IsZero() && now.Sub(w.Since) > healthFlowWindow)
+	finding := newHealthFinding("unanswered_human_wait", "human", kind, id, summary, action, []string{w.Project}, evidence)
+	finding.ConditionSince = w.Since
+	return finding, w.Active && (w.Reason != "" || !w.Since.IsZero() && now.Sub(w.Since) > healthFlowWindow)
 }
 
 func lifetimeFinding(l healthLimit) (healthFinding, bool) {

@@ -443,6 +443,34 @@ it.each(["mount", "health event"])("retries the current health tick after a fail
   expect(mocks.listHealthFindings).toHaveBeenCalledTimes((attempts + 1) * 2);
 });
 
+it("renders human waits oldest first with ages from their starts", async () => {
+  vi.stubGlobal("EventSource", Source);
+  vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-20T12:00:00Z"));
+  const projects = [{ id: "p1", name: "Example project", can_write: true }];
+  const findings = [
+    { id: "hf_recent", subject: { kind: "work_item", id: "wi_recent" }, opened_at: "2026-10-20T10:00:00Z" },
+    { id: "hf_old", subject: { kind: "work_item", id: "wi_old" }, opened_at: "2026-10-17T12:00:00Z" },
+  ].map((finding) => ({ ...finding, signal: "unanswered_human_wait", class: "human", severity: "attention", summary: "Human attention", next_action: "Answer the question", resolved_at: null, last_seen_at: "2026-10-20T11:59:00Z" }));
+  mocks.listHealthFindings.mockResolvedValue({ items: findings, last_tick_at: "2026-10-20T11:59:00Z" });
+  mocks.getWorkItem.mockImplementation(async (_project, id) => ({ number: id === "wi_old" ? 1 : 2, title: "Waiting for an answer" }));
+  const { result } = renderHook(() => useSidebarFindings(projects), {
+    wrapper: ({ children }) => <HealthFindingsProvider projects={projects}>{children}</HealthFindingsProvider>,
+  });
+  await waitFor(() => expect(result.current.map((finding) => finding.id)).toEqual(["hf_old", "hf_recent"]));
+  await renderSidebar({ findings: result.current, conversations: [needsYou] });
+  const rows = within(screen.getByTestId("sidebar-needs-you")).getAllByRole("button");
+  expect(rows.map((row) => row.dataset.testid)).toEqual([
+    "sidebar-needs-you-shelf-toggle", "attention-issue-conv_needs", "finding-hf_old", "finding-hf_recent",
+  ]);
+  for (const [id, start, label] of [
+    ["hf_old", "2026-10-17T12:00:00Z", "3d"],
+    ["hf_recent", "2026-10-20T10:00:00Z", "2h"],
+  ] as const) {
+    const age = within(screen.getByTestId(`finding-${id}`)).getByText(label);
+    expect(age.getAttribute("datetime")).toBe(start);
+  }
+});
+
 it("shares project events while reading every page, filtering and resolving findings", async () => {
   vi.stubGlobal("EventSource", Source);
   const finding = (id: string, kind: string, subject: string, age: number, severity = "attention", resolved_at: string | null = null) => ({

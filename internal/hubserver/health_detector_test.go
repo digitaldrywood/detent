@@ -35,12 +35,55 @@ func applyTestHealth(t *testing.T, f nativeFixture, now time.Time, findings []he
 	}
 }
 
+func TestHealthFindingStartTime(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
+	start := now.Add(-48 * time.Hour)
+	for _, test := range []struct {
+		name         string
+		wait         healthWait
+		withoutStart bool
+		want         time.Time
+	}{
+		{name: "transition wait", wait: healthWait{Event: "transition", Since: start}, want: start},
+		{name: "attempt disposition wait", wait: healthWait{Attempt: "attempt", Since: start}, want: start},
+		{name: "question wait", wait: healthWait{Since: start}, want: start},
+		{name: "rule without start", withoutStart: true, want: now},
+		{name: "contract wait without start", wait: healthWait{Reason: "Complete the issue contract."}, want: now},
+		{name: "contract wait with future start", wait: healthWait{Reason: "Complete the issue contract.", Since: now.Add(time.Minute)}, want: now},
+		{name: "contract wait bypasses age gate", wait: healthWait{Reason: "Complete the issue contract.", Since: now.Add(-time.Minute)}, want: now.Add(-time.Minute)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newNativeFixture(t, nil, "", "health-start")
+			wait := test.wait
+			wait.Item, wait.Project, wait.Active = "item", string(f.project.ID), true
+			finding, active := humanWaitFinding(now, wait)
+			if test.withoutStart {
+				finding, active = lifetimeFinding(healthLimit{Item: "item", Project: string(f.project.ID), Active: true})
+			}
+			if !active {
+				t.Fatal("finding is inactive")
+			}
+			applyTestHealth(t, f, now, []healthFinding{finding})
+			var opened, seen string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT opened_at,last_seen_at FROM health_findings").Scan(&opened, &seen); err != nil {
+				t.Fatal(err)
+			}
+			if opened != formatHubTime(test.want) || seen != formatHubTime(now) {
+				t.Fatalf("opened=%s seen=%s want opened=%s seen=%s", opened, seen, formatHubTime(test.want), formatHubTime(now))
+			}
+		})
+	}
+}
+
 func TestHealthFindingLifecycle(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "health-lifecycle")
 	addHealthBacklog(t, f)
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
-	finding := newHealthFinding("every_candidate_refused", "instance", "project", string(f.project.ID), "Every candidate was refused with the same reason: runner_capacity_full.", "The runner operator corrects the reported capacity or policy refusal.", []string{string(f.project.ID)}, healthEvidence{Counts: map[string]int{"candidates": 1}})
+	start := now.Add(-48 * time.Hour)
+	finding, _ := humanWaitFinding(now, healthWait{Item: "item", Project: string(f.project.ID), Since: start, Active: true})
 	var original string
 	for _, test := range []struct {
 		name   string
@@ -49,15 +92,22 @@ func TestHealthFindingLifecycle(t *testing.T) {
 		rows   int
 		reused bool
 		seen   time.Duration
+		start  time.Duration
 	}{
-		{"opens", 0, true, 1, true, 0},
-		{"updates last seen", time.Minute, true, 1, true, time.Minute},
-		{"resolves", 2 * time.Minute, false, 1, true, time.Minute},
-		{"reopens same record at sixty minutes", 62 * time.Minute, true, 1, true, 62 * time.Minute},
-		{"resolves again", 63 * time.Minute, false, 1, true, 62 * time.Minute},
-		{"later recurrence opens new record", 124 * time.Minute, true, 2, false, 124 * time.Minute},
+		{"opens", 0, true, 1, true, 0, -48 * time.Hour},
+		{"updates last seen", time.Minute, true, 1, true, time.Minute, -48 * time.Hour},
+		{"resolves", 2 * time.Minute, false, 1, true, time.Minute, -48 * time.Hour},
+		{"reopens same record at sixty minutes", 62 * time.Minute, true, 1, true, 62 * time.Minute, -48 * time.Hour},
+		{"resolves again", 63 * time.Minute, false, 1, true, 62 * time.Minute, -48 * time.Hour},
+		{"later recurrence opens new record", 124 * time.Minute, true, 2, false, 124 * time.Minute, -48 * time.Hour},
+		{"resolves before new episode", 125 * time.Minute, false, 2, false, 124 * time.Minute, -48 * time.Hour},
+		{"new wait episode uses its own start", 187 * time.Minute, true, 3, false, 187 * time.Minute, 150 * time.Minute},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			finding.ConditionSince = now.Add(test.start)
+			if test.name == "updates last seen" {
+				finding.ConditionSince = now.Add(-time.Hour)
+			}
 			findings := evaluateHealth(now.Add(test.offset), healthSnapshot{Projects: []healthProject{{ID: string(f.project.ID), Candidates: 1, RefusalReasons: []string{"runner_capacity_full"}}}})
 			if test.active {
 				findings = append(findings, finding)
@@ -84,7 +134,7 @@ func TestHealthFindingLifecycle(t *testing.T) {
 			if seen != formatHubTime(now.Add(test.seen)) || resolved.Valid == test.active {
 				t.Fatalf("seen=%s resolved=%v", seen, resolved)
 			}
-			if test.reused && opened != formatHubTime(now) {
+			if opened != formatHubTime(now.Add(test.start)) {
 				t.Fatalf("opened_at changed: %s", opened)
 			}
 		})
@@ -501,6 +551,9 @@ func TestHealthSnapshotCurrentWaitAndLimitAuthority(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := evaluateHealth(now, snapshot)
+			if test.want == "unanswered_human_wait" && len(got) == 1 && !got[0].ConditionSince.Equal(at) {
+				t.Fatalf("attempt start=%s want %s", got[0].ConditionSince, at)
+			}
 			if test.want == "" && len(got) != 0 || test.want != "" && (len(got) != 1 || got[0].Signal != test.want) {
 				t.Fatalf("findings=%+v", got)
 			}
@@ -575,6 +628,9 @@ func TestHealthSnapshotConversationQuestions(t *testing.T) {
 			got := evaluateHealth(now, snapshot)
 			if len(got) != test.want {
 				t.Fatalf("findings=%+v", got)
+			}
+			if len(got) > 0 && !got[0].ConditionSince.Equal(at) {
+				t.Fatalf("question start=%s want %s", got[0].ConditionSince, at)
 			}
 			if test.unlinked && got[0].Subject.Kind != "project" {
 				t.Fatalf("subject=%+v", got[0].Subject)
@@ -793,6 +849,9 @@ func TestHealthSnapshotCloudTransitionDetailAndDependencyHolds(t *testing.T) {
 	got := map[string]string{}
 	for _, finding := range evaluateHealth(now, snapshot) {
 		got[finding.Subject.ID] = finding.Signal
+		if finding.Signal == "unanswered_human_wait" && !finding.ConditionSince.Equal(now.Add(-time.Hour)) {
+			t.Fatalf("transition start=%s", finding.ConditionSince)
+		}
 	}
 	want := map[string]string{string(waiting.WorkItemID): "unanswered_human_wait", string(limited.WorkItemID): "lifetime_limit_hit"}
 	if !reflect.DeepEqual(got, want) {

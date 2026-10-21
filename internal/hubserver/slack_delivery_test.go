@@ -57,6 +57,7 @@ func TestSlackFindingDelivery(t *testing.T) {
 			now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 			configureTestSlack(t, f, &now, !test.unset)
 			finding := newHealthFinding("runner_heartbeat_gap", "instance", kind, subject, "Runner heartbeat is behind.", "Check the runner connection.", []string{string(f.project.ID)}, healthEvidence{})
+			finding.ConditionSince = now.Add(-48 * time.Hour)
 			setSlugs := func(organization, project string) {
 				t.Helper()
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE organizations SET slug=? WHERE id=?", organization, f.project.OrganizationID); err != nil {
@@ -207,7 +208,7 @@ func TestSlackFindingDelivery(t *testing.T) {
 			if len(calls) != want {
 				t.Fatalf("later occurrence calls=%d want %d", len(calls), want)
 			}
-			if enabled && (!strings.Contains(calls[0], "Opened") || !strings.Contains(calls[1], "Resolved") || !strings.Contains(calls[1], "Duration: 2m0s")) {
+			if enabled && (!strings.Contains(calls[0], "Opened") || !strings.Contains(calls[0], "Age: 48h0m0s") || !strings.Contains(calls[1], "Resolved") || !strings.Contains(calls[1], "Duration: 48h2m0s")) {
 				t.Fatalf("messages=%v", calls)
 			}
 		})
