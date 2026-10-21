@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.digitaldrywood.detent.hub</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>set -eu
+umask 077
+DETENT_HUB_ADMIN_TOKEN="$(cat "$HOME/Library/Application Support/Detent Hub/admin-token")"
+export DETENT_HUB_ADMIN_TOKEN
+exec "$@"</string>
+    <string>detent-hub</string>
+    <string>/usr/local/bin/detent</string>
+    <string>hub</string>
+    <string>serve</string>
+    <string>--database</string>
+    <string>/Users/example/Library/Application Support/Detent Hub/hub.db</string>
+    <string>--listen</string>
+    <string>127.0.0.1:7777</string>
+    <string>--github-disabled</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/example/Library/Logs/Detent Hub/stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/example/Library/Logs/Detent Hub/stderr.log</string>
+</dict>
+</plist>
