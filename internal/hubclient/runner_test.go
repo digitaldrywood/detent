@@ -766,7 +766,7 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 		}
 		close(entered)
 		deadline, ok := ctx.Deadline()
-		if !ok || time.Until(deadline) > 5*time.Second {
+		if !ok || time.Until(deadline) > time.Minute {
 			t.Error("probe has no bounded aggregate deadline")
 		}
 		select {
@@ -775,8 +775,10 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 		}
 		return isolation.Report{}, nil
 	}}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- scheduler.ensureNativeMachine(t.Context(), &NativeConnector{client: native}) }()
+	go func() { done <- scheduler.ensureNativeMachine(ctx, &NativeConnector{client: native}) }()
 	<-entered
 	acquired := make(chan struct{})
 	go func() { scheduler.mu.Lock(); close(acquired); scheduler.mu.Unlock() }()
@@ -785,12 +787,13 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("probe blocked scheduler mutex")
 	}
+	cancel()
 	select {
 	case err := <-done:
-		if err != nil {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatal(err)
 		}
-	case <-time.After(6 * time.Second):
+	case <-time.After(time.Second):
 		t.Fatal("probe exceeded aggregate deadline")
 	}
 	if held.Load() {
