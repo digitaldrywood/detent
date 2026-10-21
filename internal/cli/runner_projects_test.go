@@ -263,6 +263,8 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 }
 
 func TestRunnerCloudProjects(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {
 		name               string
 		externalWorkspaces bool
