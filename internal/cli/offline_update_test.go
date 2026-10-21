@@ -226,6 +226,9 @@ func testOfflineBusyControllerConvergence(t *testing.T, configPath, binary strin
 	}
 	t.Setenv("DETENT_OFFLINE_UPDATE_PHASE", "preflight")
 	before := scheduler.EnrolledUpdate(ctx, scheduler.RunningBuild(), nil)
+	if before == nil {
+		t.Fatal("initial enrolled update observation is unavailable")
+	}
 	applied := scheduler.EnrolledUpdate(ctx, scheduler.RunningBuild(), &runnerauth.UpdateRequest{ID: "busy-update", Service: "detent", Version: offlineUpdateVersion, Release: true, FromRelease: true, FollowHub: true, ExpectedBuildRevision: before.Revision, RequestedAt: time.Now().UTC()})
 	if applied == nil || applied.Receipt == nil || applied.Receipt.Applied == nil || !applied.Receipt.Applied.VerifiedRelease || applied.Receipt.Status != "restart_requested" || applied.Running.Version != "1.2.2" || applied.Receipt.Applied.Version != offlineUpdateVersion || restart.Binary() != binary {
 		t.Fatalf("busy update did not apply and request convergence: %+v", applied)
