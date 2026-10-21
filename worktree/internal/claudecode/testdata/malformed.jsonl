@@ -1,0 +1,5 @@
+this is not json
+{"type":"unknown","value":"ignored"}
+{"type":"system","subtype":"init","session_id":"session-malformed","model":"fable"}
+{"type":"assistant","session_id":"session-malformed","message":{"id":"msg-malformed","type":"message","role":"assistant","model":"fable","content":[{"type":"text","text":"after malformed"}],"usage":{"input_tokens":3,"output_tokens":2}}}
+{"type":"result","subtype":"success","session_id":"session-malformed","usage":{"input_tokens":4,"output_tokens":3}}
