@@ -444,16 +444,26 @@ func (s *Service) cloudAttachmentExists(c echo.Context) error {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	var input struct {
-		ID string `json:"id"`
+		ID  string `json:"id"`
+		Key string `json:"key"`
 	}
 	if err := c.Bind(&input); err != nil {
 		return s.nativeAPIError(c, nativeInvalid("Invalid attachment id"))
 	}
-	var count int
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM attachments WHERE id=? AND object_deleted_at IS NULL", input.ID).Scan(&count); err != nil {
+	var exists bool
+	if input.Key != "" {
+		digest := input.Key[strings.LastIndex(input.Key, "/")+1:]
+		key, err := attachment.ArchiveKey(claims.Audience, digest)
+		if err != nil || key != input.Key {
+			return s.nativeAPIError(c, nativeInvalid("Invalid archive key"))
+		}
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM attachments WHERE organization_id=? AND object_key=? AND kind='archive' AND object_deleted_at IS NULL)", claims.Audience, key).Scan(&exists); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	} else if err := s.database.reader.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM attachments WHERE id=? AND object_deleted_at IS NULL)", input.ID).Scan(&exists); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, map[string]bool{"exists": count == 1})
+	return c.JSON(http.StatusOK, map[string]bool{"exists": exists})
 }
 
 func bindCloudAttachmentReferences(ctx context.Context, tx *sql.Tx, scope nativeScope, item, comment, body string) error {

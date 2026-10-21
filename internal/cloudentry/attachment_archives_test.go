@@ -273,19 +273,57 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		owner := tenantDetailStore{service: f.service, allocation: organization}
+		orphan, err := owner.StoreDetail(t.Context(), org, []byte("uncommitted detail"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		retried, err := owner.StoreDetail(t.Context(), org, []byte("retried detail"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fresh, err := owner.StoreDetail(t.Context(), org, []byte("in-flight detail"))
+		if err != nil {
+			t.Fatal(err)
+		}
 		store.mu.Lock()
-		object := store.objects[ref.Key]
-		object.created = time.Now().Add(-2 * attachment.OrphanTTL)
-		store.objects[ref.Key] = object
+		for _, archive := range []attachment.ArchiveReference{ref, orphan, retried} {
+			object := store.objects[archive.Key]
+			object.created = time.Now().Add(-2 * attachment.OrphanTTL)
+			store.objects[archive.Key] = object
+		}
 		store.mu.Unlock()
+		if _, err := owner.StoreDetail(t.Context(), org, []byte("retried detail")); err != nil {
+			t.Fatal(err)
+		}
 		if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err != nil {
 			t.Fatal(err)
 		}
 		store.mu.Lock()
 		_, exists := store.objects[ref.Key]
+		_, orphanExists := store.objects[orphan.Key]
+		_, retriedExists := store.objects[retried.Key]
+		_, freshExists := store.objects[fresh.Key]
 		store.mu.Unlock()
-		if !exists {
-			t.Fatal("unreferenced archive expired")
+		if !exists || orphanExists || !retriedExists || !freshExists {
+			t.Fatalf("archive retention: committed=%v orphan=%v retried=%v in-flight=%v", exists, orphanExists, retriedExists, freshExists)
+		}
+		store.mu.Lock()
+		for _, archive := range []attachment.ArchiveReference{retried, fresh} {
+			object := store.objects[archive.Key]
+			object.created = time.Now().Add(-2 * attachment.OrphanTTL)
+			store.objects[archive.Key] = object
+		}
+		store.mu.Unlock()
+		if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err != nil {
+			t.Fatal(err)
+		}
+		store.mu.Lock()
+		_, retriedExists = store.objects[retried.Key]
+		_, freshExists = store.objects[fresh.Key]
+		store.mu.Unlock()
+		if retriedExists || freshExists {
+			t.Fatal("uncommitted detail survived orphan retention")
 		}
 		if previous.Key != "" && (ref.Key == previous.Key || ref.SHA256 != previous.SHA256) {
 			t.Fatal("organization deduplication boundary failed")
