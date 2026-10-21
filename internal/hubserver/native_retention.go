@@ -16,6 +16,9 @@ const (
 )
 
 func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) error {
+	if err := s.database.populateTimeIndexes(ctx); err != nil {
+		return err
+	}
 	if err := s.expireNativeRecords(ctx, now); err != nil {
 		return err
 	}
@@ -34,8 +37,8 @@ func (s *Service) expireNativeRecords(ctx context.Context, now time.Time) error 
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM hosted_audit WHERE rowid IN (SELECT rowid FROM hosted_audit
-WHERE julianday(recorded_at)<julianday(?) ORDER BY julianday(recorded_at) LIMIT ?)`, formatHubTime(now.Add(-hostedAuditRetention)), commandReceiptPruneBatch); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM hosted_audit WHERE rowid IN (SELECT audit_id FROM hosted_audit_times
+WHERE recorded_at_ns<? ORDER BY recorded_at_ns,audit_id LIMIT ?)`, now.Add(-hostedAuditRetention).UnixNano(), commandReceiptPruneBatch); err != nil {
 		return fmt.Errorf("expire hosted audit: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM native_commands WHERE rowid IN (SELECT rowid FROM native_commands
