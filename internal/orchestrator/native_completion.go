@@ -41,7 +41,8 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
 	}
-	if o.handlePermissionWaitCompletion(ctx, state, event, running) {
+	report, reported := runpkg.NativeCompletionSignalFromMessage(event.Result.FinalMessage)
+	if (report == nil || report.Invalid == nil) && o.handlePermissionWaitCompletion(ctx, state, event, running) {
 		return true
 	}
 	mode := firstNonBlank(event.Request.Mode, running.Mode)
@@ -143,7 +144,6 @@ func (o *Orchestrator) completeNativeChangeRun(
 		o.recordCompletionUsage(ctx, state, event, issue)
 		return true
 	}
-	report, reported := runpkg.NativeCompletionSignalFromMessage(event.Result.FinalMessage)
 	if reported && report != nil && report.Invalid == nil && strings.TrimSpace(report.HumanAction) != "" {
 		issue.WorkpadSignal = report
 	}
@@ -228,7 +228,8 @@ func (o *Orchestrator) completeNativeChangeRun(
 			validatorRework = true
 		}
 	}
-	unfinished := publicationRefused || (reviewChangesRequested || auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "")
+	contractRefused := report != nil && report.Invalid != nil && strings.Contains(report.Invalid.Message, "decision_request")
+	unfinished := publicationRefused || (contractRefused || reviewChangesRequested || auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "")
 	start := running.CompletionSourceStart
 	headUnchanged := !changed || start.Captured && start.WorkspaceHeadAvailable && strings.TrimSpace(change.HeadSHA) != "" && strings.TrimSpace(start.Fingerprint.WorkspaceHead) == strings.TrimSpace(change.HeadSHA)
 	staleRework := unfinished && headUnchanged && !blocked && !clearedBlockers && !humanReview && normalizeState(issue.State) == normalizeState(cfg.ReworkState) &&
@@ -320,6 +321,8 @@ func (o *Orchestrator) completeNativeChangeRun(
 		disposition := "no valid complete detent-status disposition"
 		if report != nil && report.Invalid == nil {
 			disposition = "detent-status " + report.Status
+		} else if report != nil && report.Invalid != nil {
+			disposition += ": " + report.Invalid.Message
 		}
 		comment = fmt.Sprintf("The provider turn completed with %s. Moved from %s to %s; the completed turn and any genuine source version are preserved, but issue acceptance is not recorded.", disposition, displayStateName(issue.State), displayStateName(target))
 		if unfinished && normalizeState(target) == normalizeState(cfg.ReworkState) {

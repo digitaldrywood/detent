@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const SchemaVersion = 3
@@ -71,6 +72,7 @@ type Query struct {
 }
 
 type IssueExplanation struct {
+	DecisionRequest  *workpad.DecisionRequest       `json:"decision_request,omitempty"`
 	FailureSignature *FailureSignature              `json:"failure_signature,omitempty"`
 	NativeRuntime    *tracker.NativeRuntimeEvidence `json:"native_runtime,omitempty"`
 	Schema           int                            `json:"schema"`
