@@ -308,6 +308,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			drainTestNativeBoard(t, f.service)
 			var sequenceBefore, floorBefore int64
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence,replay_floor FROM native_board_sequences WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&sequenceBefore, &floorBefore); err != nil {
 				t.Fatal(err)

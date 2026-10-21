@@ -306,9 +306,6 @@ func TestNativeAPIError(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			for _, hosted := range []bool{false, true} {
-				if test.name == "private validation" && !hosted {
-					continue
-				}
 				t.Run(fmt.Sprintf("hosted=%t", hosted), func(t *testing.T) {
 					var logs bytes.Buffer
 					var handler slog.Handler = slog.NewJSONHandler(&logs, nil)
@@ -330,7 +327,11 @@ func TestNativeAPIError(t *testing.T) {
 						t.Fatal(err)
 					}
 					failure := requireNativeCode(t, recorded, test.status, test.code)
-					if failure.Message != test.reason {
+					wantReason := test.reason
+					if test.name == "private validation" && !hosted {
+						wantReason = "private-context"
+					}
+					if failure.Message != wantReason {
 						t.Fatalf("reason = %q, want %q", failure.Message, test.reason)
 					}
 					if test.name == "publication rejection" && failure.Details["rejection"] == nil {
@@ -356,7 +357,7 @@ func TestNativeAPIError(t *testing.T) {
 							}
 						}
 						for _, private := range []string{"private-context", "private-target", "query-secret", "header-secret", "body-secret"} {
-							if strings.Contains(logs.String(), private) || strings.Contains(recorded.Body.String(), private) {
+							if strings.Contains(logs.String(), private) || (test.name != "private validation" || hosted) && strings.Contains(recorded.Body.String(), private) {
 								t.Fatalf("private context escaped: %s", private)
 							}
 						}

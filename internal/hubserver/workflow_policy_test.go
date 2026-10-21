@@ -430,6 +430,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					} else if !reflect.DeepEqual(detail.Summary, before) {
 						t.Errorf("instruction-only adoption changed summary: before=%#v after=%#v", before, detail.Summary)
 					}
+					drainTestNativeBoard(t, f.service)
 					scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
 					page, err := f.service.readBoardIssues(t.Context(), scope, url.Values{"include": {"board"}, "limit": {"2000"}})
 					if err != nil {

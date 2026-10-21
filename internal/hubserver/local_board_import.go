@@ -24,7 +24,7 @@ func (s *Service) importLocalBoard(c echo.Context) error {
 		if !errors.As(err, &oversized) {
 			err = errors.New("invalid local board request")
 		}
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
 	if err := localboard.Validate(request.Record); err != nil {
@@ -123,7 +123,7 @@ func localBoardState(states []tracker.NativeState, source string) (string, bool,
 			}
 		}
 	}
-	return "", false, nativeInvalid("Local board import requires a nondispatchable nonterminal fallback state")
+	return "", false, nativePublicInvalid("Local board import requires a nondispatchable nonterminal fallback state")
 }
 
 func planLocalBoardItem(ctx context.Context, q nativeQueryer, scope nativeScope, record localboard.Record) (localboard.Result, tracker.NativeIssue, error) {
@@ -133,7 +133,7 @@ func planLocalBoardItem(ctx context.Context, q nativeQueryer, scope nativeScope,
 		return result, tracker.NativeIssue{}, err
 	}
 	if project.Profile != "native" {
-		return result, tracker.NativeIssue{}, nativeInvalid("Local board import requires a native project")
+		return result, tracker.NativeIssue{}, nativePublicInvalid("Local board import requires a native project")
 	}
 	result.State, result.UnknownLane, err = localBoardState(project.States, record.State)
 	if err != nil {
@@ -177,17 +177,17 @@ func planLocalBoardItem(ctx context.Context, q nativeQueryer, scope nativeScope,
 		return result, tracker.NativeIssue{}, err
 	}
 	if len(ids) != 1 {
-		return result, tracker.NativeIssue{}, nativeInvalid("GitHub local item requires exactly one existing onboarding intake match")
+		return result, tracker.NativeIssue{}, nativePublicInvalid("GitHub local item requires exactly one existing onboarding intake match")
 	}
 	issue, _, err := readNativeIssue(ctx, q, scope, ids[0])
 	if err != nil {
 		return result, issue, err
 	}
 	if issue.Archived {
-		return result, issue, nativeInvalid("Local board import cannot change an archived native item")
+		return result, issue, nativePublicInvalid("Local board import cannot change an archived native item")
 	}
 	if issue.State != "Triage" && (!issue.Terminal || issue.State != result.State) {
-		return result, issue, nativeInvalid("GitHub local lane restoration requires an intake item still in Triage")
+		return result, issue, nativePublicInvalid("GitHub local lane restoration requires an intake item still in Triage")
 	}
 	result.Action, result.WorkItemID = "updated", issue.WorkItemID
 	return result, issue, nil
@@ -203,7 +203,7 @@ func importLocalBoardItem(ctx context.Context, tx *sql.Tx, scope nativeScope, re
 		var id tracker.NativeWorkItemID
 		if err := tx.QueryRowContext(ctx, `SELECT work_item_id FROM local_board_imports WHERE organization_id=? AND project_id=? AND source_key=?`, scope.organization, scope.project, key).Scan(&id); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return result, nativeInvalid("Import prerequisite items before their dependents")
+				return result, nativePublicInvalid("Import prerequisite items before their dependents")
 			}
 			return result, err
 		}

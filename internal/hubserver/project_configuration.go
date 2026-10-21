@@ -272,7 +272,7 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 	path := "$." + jsonPathKey(string(scope.project))
 	if observation != nil {
 		if err := observation.Validate(); err != nil || observation.ProjectID != string(scope.project) {
-			return runnerauth.ProjectConfigurationRequest{}, nativeInvalid("Invalid project configuration observation")
+			return runnerauth.ProjectConfigurationRequest{}, nativePublicInvalid("Invalid project configuration observation")
 		}
 		if observation.Diagnostics != nil {
 			observation.Diagnostics.Redact()
@@ -335,13 +335,13 @@ AND NOT EXISTS (SELECT 1 FROM collaboration_events
 	var identity operatorChatIdentity
 	var credential apiCredential
 	if json.Unmarshal(command.Issuer, &identity) != nil {
-		return runnerauth.ProjectConfigurationRequest{}, nativeInvalid("Invalid project configuration request")
+		return runnerauth.ProjectConfigurationRequest{}, nativePublicInvalid("Invalid project configuration request")
 	}
 	entryIssuer := identity.Origin != "" || identity.Valid()
 	if entryIssuer {
 		credential.ID = identity.PrincipalID
 	} else if json.Unmarshal(command.Issuer, &credential) != nil {
-		return runnerauth.ProjectConfigurationRequest{}, nativeInvalid("Invalid project configuration request")
+		return runnerauth.ProjectConfigurationRequest{}, nativePublicInvalid("Invalid project configuration request")
 	}
 	finish := func(view runnerauth.ProjectConfiguration) (runnerauth.ProjectConfigurationRequest, error) {
 		view.RunnerID, view.RunnerRevision = r.RunnerID, command.RunnerRevision

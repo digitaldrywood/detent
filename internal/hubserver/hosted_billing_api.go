@@ -39,7 +39,7 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 	}
 	if api {
 		if err := decodeAPIJSON(c, &request); err != nil {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 		if err := request.validate(true); err != nil {
 			return s.nativeAPIError(c, err)
@@ -127,7 +127,7 @@ func (s *Service) hostedBillingPortal(c echo.Context) error {
 	var request struct{ hostedIdempotent }
 	if api {
 		if err := decodeAPIJSON(c, &request); err != nil {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 		if err := request.validate(true); err != nil {
 			return s.nativeAPIError(c, err)
@@ -257,7 +257,7 @@ func (s *Service) hostedBillingFailure(c echo.Context, api bool, status int, mes
 	if code == "" {
 		code = "billing_failed"
 	}
-	return c.JSON(status, apiErrorResponse{Code: code, Message: message})
+	return s.refusedAPIError(c, status, code, message, apiErrorResponse{Code: code, Message: message})
 }
 
 func (s *Service) hostedBillingDestination(c echo.Context, api bool, url string) error {

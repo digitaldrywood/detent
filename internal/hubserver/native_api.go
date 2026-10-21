@@ -49,6 +49,7 @@ type nativeError struct {
 	Details         map[string]any   `json:"details,omitempty"`
 	status          int
 	publicMessage   bool
+	logAttributes   []any
 }
 
 func (e *nativeError) Error() string {
@@ -136,8 +137,9 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 	}
 	var failure *nativeError
 	if errors.As(err, &failure) {
+		attributes = append(attributes, failure.logAttributes...)
 		message := failure.Message
-		if !failure.publicMessage && failure.Code != "checkout_unavailable" {
+		if failure.status >= http.StatusBadRequest && failure.status < http.StatusInternalServerError && !failure.publicMessage && failure.Code != "checkout_unavailable" {
 			message = http.StatusText(failure.status) + ": " + strings.ReplaceAll(failure.Code, "_", " ")
 			if rejection, ok := failure.Details["rejection"].(runnerauth.PublicationRejection); ok && rejection.Valid() {
 				message = rejection.DiagnosticError()
@@ -287,7 +289,7 @@ func (s *Service) requireInstanceAdmin() echo.MiddlewareFunc {
 		return s.requireAPIScope(apiScopeAdmin)(func(c echo.Context) error {
 			credential, ok := c.Get("hub_api_credential").(apiCredential)
 			if !ok || credential.NativeOnly {
-				return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "insufficient_scope", Message: "Instance administrator is required"})
+				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "Instance administrator is required", apiErrorResponse{Code: "insufficient_scope", Message: "Instance administrator is required"})
 			}
 			return next(c)
 		})
@@ -478,7 +480,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		ctx = mutation.WithContext(ctx, mutation.Metadata{PrincipalID: actor.PrincipalID, ActorKind: actor.Kind, ViaKey: actor.ViaKey, OrganizationID: string(scope.organization), ProjectID: string(scope.project), ResourceID: options.Item, Action: options.OperationID, Source: "api", Confirmation: "none", CorrelationID: newNativeID("api")})
 	}
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
-		return nil, nativeInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	requestHash, err := nativeCommandHash(input)
 	if err != nil {
@@ -640,7 +642,7 @@ func nativeCommandReceipt(ctx context.Context, query nativeQueryer, scope native
 		return "", false, err
 	}
 	if storedHash != hash {
-		return "", false, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict}
+		return "", false, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict, publicMessage: true}
 	}
 	return response, true, nil
 }
@@ -651,7 +653,7 @@ func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, op
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if strings.TrimSpace(key) == "" || len(key) > 128 {
-		return nil, false, nativeInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, false, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	hash, err := nativeCommandHash(input)
 	if err != nil {

@@ -158,21 +158,23 @@ func SharedEntryRequestBodyLimit(method, path string) int64 {
 	return cloudassert.MaxBodyBytes
 }
 
-func invalidAPIRequest(c echo.Context, err error) error {
+func (s *Service) invalidAPIRequest(c echo.Context, err error) error {
 	var maxBytesError *http.MaxBytesError
 	if errors.As(err, &maxBytesError) {
-		return c.JSON(http.StatusRequestEntityTooLarge, apiErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
+		return s.refusedAPIError(c, http.StatusRequestEntityTooLarge, "payload_too_large", "Request body is too large", apiErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
 	}
-	message := "Request body is invalid"
+	message, reason := "Request body is invalid", "Malformed JSON request body"
 	if strings.HasPrefix(err.Error(), "json: unknown field ") {
 		message += ": " + err.Error()
+		reason = "Request body contains an unknown field"
 	} else {
 		var typeError *json.UnmarshalTypeError
 		if errors.As(err, &typeError) && typeError.Field != "" {
 			message += ": invalid type for field " + typeError.Field
+			reason = "Request body contains an invalid field type"
 		}
 	}
-	return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_request", Message: message})
+	return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_request", reason, apiErrorResponse{Code: "invalid_request", Message: message})
 }
 
 func (s *Service) internalAPIError(c echo.Context, code string, message string, err error) error {
@@ -193,6 +195,9 @@ func (s *Service) refusedAPIError(c echo.Context, status int, code, reason strin
 		attributes = append([]any{"error", reason, "code", code, "refusal_code", code, "reason", reason,
 			"method", c.Request().Method, "route", c.Path(), "organization_id", organization, "project_id", project}, attributes...)
 		s.config.Logger.Warn("API request refused", attributes...)
+	}
+	if response == nil {
+		return c.NoContent(status)
 	}
 	return c.JSON(status, response)
 }
@@ -223,11 +228,11 @@ func apiTTL(seconds int64) (time.Duration, error) {
 func (s *Service) outboxHealth(c echo.Context) error {
 	limit, err := parsePageLimit(c.QueryParam("limit"))
 	if err != nil {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_query", Message: "limit must be between 1 and 200"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_query", "limit must be between 1 and 200", apiErrorResponse{Code: "invalid_query", Message: "limit must be between 1 and 200"})
 	}
 	cursor, err := decodeTimelineCursor(c.QueryParam("cursor"))
 	if err != nil {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_cursor", Message: "Outbox cursor is invalid"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_cursor", "Outbox cursor is invalid", apiErrorResponse{Code: "invalid_cursor", Message: "Outbox cursor is invalid"})
 	}
 	response, err := s.readOutboxHealthPage(c.Request().Context(), limit, cursor)
 	if err != nil {

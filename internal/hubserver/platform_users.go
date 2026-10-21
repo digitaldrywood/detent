@@ -21,7 +21,7 @@ func (s *Service) hostedPlatformUsers(c echo.Context) error {
 	}
 	var input platformusers.Query
 	if err := decodeAPIJSON(c, &input); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	query := platformusers.Parse(input.Text)
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)

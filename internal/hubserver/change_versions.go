@@ -21,30 +21,30 @@ import (
 
 func validateChangeVersion(input tracker.ChangeVersionInput) error {
 	if v := input.Validation; v != nil && (v.HeadSHA != input.HeadSHA || v.ExitCode != 0 || v.DurationNS <= 0 || strings.TrimSpace(v.Command) == "" || len(v.Command) > 4096 || len(v.Output) > 64*1024 || !validCommitID(v.TreeSHA) || !v.Evidence.Valid()) {
-		return nativeRejection(nativeInvalid("Validation receipt must cover the published head and identify a successful command"), "version_validation", "validation")
+		return nativeRejection(nativePublicInvalid("Validation receipt must cover the published head and identify a successful command"), "version_validation", "validation")
 	}
 	for _, commit := range []string{input.BaseSHA, input.HeadSHA, input.MergeBaseSHA} {
 		if !changerequest.ValidHash(commit, 40) && !changerequest.ValidHash(commit, 64) {
-			return nativeInvalid("Base, head and merge-base must be lowercase commit identities")
+			return nativePublicInvalid("Base, head and merge-base must be lowercase commit identities")
 		}
 	}
 	if !changerequest.ValidReference(input.Repository) || input.Code.Kind != "code" {
-		return nativeInvalid("Repository and code artifact references are required")
+		return nativePublicInvalid("Repository and code artifact references are required")
 	}
 	if err := changerequest.ValidateArtifacts(append([]tracker.ChangeArtifact{input.Code}, input.Artifacts...)); err != nil {
 		return nativeInvalid(err.Error())
 	}
 	if (input.RunID == "") != (input.AttemptID == "") || input.RunID != "" && (!validNativeID(input.RunID, "run") || !validNativeID(input.AttemptID, "attempt")) {
-		return nativeInvalid("Run and attempt identities must be supplied together")
+		return nativePublicInvalid("Run and attempt identities must be supplied together")
 	}
 	if input.External != nil {
 		u, err := url.Parse(input.External.URL)
 		if err != nil || u == nil || input.External.Provider != "github" || input.External.ID == "" || len(input.External.ID) > 128 || !changerequest.ValidReference(input.External.URL) || u.Scheme != "https" || u.Host != "github.com" {
-			return nativeInvalid("External PR reference must identify a GitHub pull request")
+			return nativePublicInvalid("External PR reference must identify a GitHub pull request")
 		}
 		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
 		if len(parts) != 4 || parts[2] != "pull" || parts[3] != input.External.ID {
-			return nativeInvalid("External PR identity and URL must agree")
+			return nativePublicInvalid("External PR identity and URL must agree")
 		}
 	}
 	return nil
@@ -53,7 +53,7 @@ func validateChangeVersion(input tracker.ChangeVersionInput) error {
 func requireChangeRun(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion) error {
 	if request.RunID == "" {
 		if scope.credential.Scope == apiScopeWorker {
-			return nativeInvalid("Worker versions must identify their fenced run and attempt")
+			return nativePublicInvalid("Worker versions must identify their fenced run and attempt")
 		}
 		return nil
 	}
@@ -75,7 +75,7 @@ func requireChangeRun(ctx context.Context, tx *sql.Tx, scope nativeScope, change
 func (s *Service) publishChangeVersion(c echo.Context) error {
 	var request tracker.PublishChangeVersion
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := s.prepareChangeSource(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("change"), c.Request().Method+" "+c.Request().URL.EscapedPath(), request); err != nil {
 		return s.nativeAPIError(c, err)
@@ -108,7 +108,7 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 		return nil, err
 	}
 	if change.WorkItemID != tracker.NativeWorkItemID(item) {
-		return nil, nativeInvalid("Publish through the Change Request's primary issue")
+		return nil, nativePublicInvalid("Publish through the Change Request's primary issue")
 	}
 	if validation := request.Validation; validation != nil && validation.EvidenceArtifact != nil {
 		ref := validation.EvidenceArtifact
@@ -125,11 +125,11 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	}
 	if associated {
 		if change.ID != delivery.ChangeID || request.Repository != delivery.Repository || request.HeadSHA != delivery.HeadSHA || request.BaseSHA != delivery.BaseSHA || request.MergeBaseSHA != delivery.BaseSHA || request.Source == nil {
-			return nil, nativeInvalid("Release publication must retain the exact associated PR source and base")
+			return nil, nativePublicInvalid("Release publication must retain the exact associated PR source and base")
 		}
 		external := tracker.ChangeExternalReference{Provider: "github", ID: strconv.Itoa(delivery.PRNumber), URL: fmt.Sprintf("%s/pull/%d", delivery.Repository, delivery.PRNumber)}
 		if request.External != nil && *request.External != external {
-			return nil, nativeInvalid("Release publication differs from the associated PR")
+			return nil, nativePublicInvalid("Release publication differs from the associated PR")
 		}
 		request.External = &external
 	}
@@ -141,12 +141,12 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 			return nil, nativeRejection(nativeInvalid(err.Error()), "version_validation", "source")
 		}
 	} else if len(request.SourceBundle) != 0 {
-		return nil, nativeRejection(nativeInvalid("Source bundle requires immutable source metadata"), "version_validation", "source")
+		return nil, nativeRejection(nativePublicInvalid("Source bundle requires immutable source metadata"), "version_validation", "source")
 	}
 	var configurationJSON string
 	if err := tx.QueryRowContext(ctx, "SELECT metadata_json FROM policy_revisions WHERE scope = ? AND policy_id = ?", string(scope.organization)+"/"+string(scope.project), request.PolicyID).Scan(&configurationJSON); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nativeRejection(nativeInvalid("Change configuration has not been reported for this project"), "version_validation", "policy_id")
+			return nil, nativeRejection(nativePublicInvalid("Change configuration has not been reported for this project"), "version_validation", "policy_id")
 		}
 		return nil, err
 	}

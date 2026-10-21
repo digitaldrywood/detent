@@ -136,7 +136,7 @@ func requireBatchRunner(ctx context.Context, tx *sql.Tx, scope nativeScope, runn
 func (s *Service) commandGitHubBatch(c echo.Context) error {
 	var request tracker.GitHubBatchCommand
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, s.commandGitHubBatchOperation(request))
 }
@@ -383,7 +383,7 @@ func batchRetryAllowed(raw string, now time.Time) error {
 	}
 	deadline, err := time.Parse(time.RFC3339Nano, raw)
 	if err != nil {
-		return nativeInvalid("Invalid source retry deadline")
+		return nativePublicInvalid("Invalid source retry deadline")
 	}
 	if now.Before(deadline) {
 		return nativeInvalid("Source rate limit has not reset; retry after " + raw)
@@ -450,7 +450,7 @@ func nextGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope, bat
 func (s *Service) reportGitHubBatch(c echo.Context) error {
 	var request tracker.GitHubBatchResult
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		batch, err := readGitHubBatch(ctx, tx, scope)
@@ -478,7 +478,7 @@ func (s *Service) applyGitHubBatchResult(ctx context.Context, tx *sql.Tx, scope 
 			batch.Status, batch.Error, batch.RetryAt = "discovery_failed", request.Error, request.RetryAt
 		} else {
 			if request.Page == nil || len(request.Page.Issues) > 100 || request.Page.Total < 0 {
-				return receipt, nativeInvalid("Invalid source discovery page or plan import limit exceeded")
+				return receipt, nativePublicInvalid("Invalid source discovery page or plan import limit exceeded")
 			}
 			if batch.Automatic && request.Page.Total > batchLimit(batch) {
 				batch.Status, batch.Error = "discovery_failed", "Repository exceeds the plan's per-job import limit; select a label filter or upgrade"
@@ -489,7 +489,7 @@ func (s *Service) applyGitHubBatchResult(ctx context.Context, tx *sql.Tx, scope 
 				return tracker.GitHubBatchReceipt{Revision: batch.Revision, Status: batch.Status}, nil
 			}
 			if len(batch.Page.Issues)+len(request.Page.Issues) > batchLimit(batch) {
-				return receipt, nativeInvalid("Plan import limit exceeded")
+				return receipt, nativePublicInvalid("Plan import limit exceeded")
 			}
 			seen, ids := map[int]bool{}, map[string]bool{}
 			for _, p := range batch.Page.Issues {
@@ -498,12 +498,12 @@ func (s *Service) applyGitHubBatchResult(ctx context.Context, tx *sql.Tx, scope 
 			for _, p := range request.Page.Issues {
 				canonical, repository, number, err := tracker.ParseGitHubIssueURL(p.URL)
 				if err != nil || repository != batch.Discovery.Repository || number != p.Number || canonical != p.URL || seen[number] || ids[p.ID] || p.ID == "" || p.Title == "" || len(p.Title) > 500 || len([]rune(p.Body)) > 1000 || p.Closed && !batch.Discovery.IncludeClosed {
-					return receipt, nativeInvalid("Mismatched or duplicate source preview")
+					return receipt, nativePublicInvalid("Mismatched or duplicate source preview")
 				}
 				seen[number], ids[p.ID] = true, true
 			}
 			if request.Page.NextCursor != "" && (request.Page.NextCursor == batch.Discovery.Cursor || len(request.Page.Issues) == 0) {
-				return receipt, nativeInvalid("Invalid source discovery cursor")
+				return receipt, nativePublicInvalid("Invalid source discovery cursor")
 			}
 			batch.Page.Issues = append(batch.Page.Issues, request.Page.Issues...)
 			batch.Page.Total, batch.Page.NextCursor = request.Page.Total, request.Page.NextCursor
@@ -532,7 +532,7 @@ func (s *Service) applyGitHubBatchResult(ctx context.Context, tx *sql.Tx, scope 
 			}
 		}
 		if len(results) > 100 {
-			return receipt, nativeInvalid("At most 100 intake results per page")
+			return receipt, nativePublicInvalid("At most 100 intake results per page")
 		}
 		seen := map[int]bool{}
 		for _, result := range results {
@@ -540,7 +540,7 @@ func (s *Service) applyGitHubBatchResult(ctx context.Context, tx *sql.Tx, scope 
 				return item.Number == result.Number && item.Status == "pending"
 			})
 			if index < 0 || seen[result.Number] {
-				return receipt, nativeInvalid("No pending selected issue")
+				return receipt, nativePublicInvalid("No pending selected issue")
 			}
 			seen[result.Number] = true
 			if err := validateBatchDiagnostic(result.Error, result.RetryAt); err != nil {
@@ -552,11 +552,11 @@ func (s *Service) applyGitHubBatchResult(ctx context.Context, tx *sql.Tx, scope 
 			} else {
 				previewIndex := slices.IndexFunc(batch.Page.Issues, func(p tracker.GitHubIssuePreview) bool { return p.Number == item.Number })
 				if previewIndex < 0 {
-					return receipt, nativeInvalid("Intake item missing preview")
+					return receipt, nativePublicInvalid("Intake item missing preview")
 				}
 				preview := batch.Page.Issues[previewIndex]
 				if result.Snapshot == nil || result.Snapshot.Provenance.Provider != "github" || result.Snapshot.Provenance.ExternalID != preview.ID {
-					return receipt, nativeInvalid("Snapshot stable source identity does not match preview")
+					return receipt, nativePublicInvalid("Snapshot stable source identity does not match preview")
 				}
 				if _, err := tx.ExecContext(ctx, "SAVEPOINT github_batch_item"); err != nil {
 					return receipt, err
@@ -587,7 +587,7 @@ func (s *Service) applyGitHubBatchResult(ctx context.Context, tx *sql.Tx, scope 
 			}
 		}
 	default:
-		return receipt, nativeInvalid("Intake has no outstanding source request")
+		return receipt, nativePublicInvalid("Intake has no outstanding source request")
 	}
 	if batch.Status == "importing" && !batchHasPending(batch) {
 		if batch.Automatic && batch.Page.NextCursor != "" && !slices.ContainsFunc(batch.Items, func(item tracker.GitHubBatchItem) bool { return item.Status == "failed" && item.RetryAt != "" }) {
@@ -614,11 +614,11 @@ func (s *Service) applyGitHubBatchResult(ctx context.Context, tx *sql.Tx, scope 
 
 func validateBatchDiagnostic(message, retry string) error {
 	if len(message) > 1000 {
-		return nativeInvalid("Source diagnostic exceeds 1000 bytes")
+		return nativePublicInvalid("Source diagnostic exceeds 1000 bytes")
 	}
 	if retry != "" {
 		if _, err := time.Parse(time.RFC3339Nano, retry); err != nil {
-			return nativeInvalid("Invalid source retry deadline")
+			return nativePublicInvalid("Invalid source retry deadline")
 		}
 	}
 	return nil

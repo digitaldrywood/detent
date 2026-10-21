@@ -46,14 +46,14 @@ FROM release_deliveries WHERE organization_id = ? AND project_id = ? AND work_it
 
 func validateReleasePick(r tracker.AssociateReleasePick) error {
 	if r.HeadSHA == r.BaseSHA || r.HeadRef == r.BaseRef || r.SourceMergeSHA == r.FrozenSHA {
-		return nativeInvalid("Release pick must identify a distinct source fix and PR head")
+		return nativePublicInvalid("Release pick must identify a distinct source fix and PR head")
 	}
 	if !validNativeID(string(r.SourceIssueID), "wi") || !validNativeID(r.SourceChangeID, "change") || r.ExpectedRevision < 1 || r.PRNumber < 1 || !releaseBranchPattern.MatchString(r.BaseRef) || !validReleaseHeadRef(r.HeadRef) {
-		return nativeInvalid("Release delivery requires a source issue and Change, revision, PR number, pick branch and frozen release branch")
+		return nativePublicInvalid("Release delivery requires a source issue and Change, revision, PR number, pick branch and frozen release branch")
 	}
 	for _, sha := range []string{r.SourceMergeSHA, r.HeadSHA, r.BaseSHA, r.FrozenSHA} {
 		if !validCommitID(sha) {
-			return nativeInvalid("Release delivery requires exact commit identities")
+			return nativePublicInvalid("Release delivery requires exact commit identities")
 		}
 	}
 	return nil
@@ -75,7 +75,7 @@ func (s *Service) prepareReleasePick(ctx context.Context, scope nativeScope, ite
 		return err
 	}
 	if connector == nil || r.Repository != "https://github.com/"+connector.Repository {
-		return nativeInvalid("Release PR repository must match the project's configured repository")
+		return nativePublicInvalid("Release PR repository must match the project's configured repository")
 	}
 	existing, found, err := readReleaseDelivery(ctx, s.database.reader, scope, item)
 	if err != nil {
@@ -90,7 +90,7 @@ func (s *Service) prepareReleasePick(ctx context.Context, scope nativeScope, ite
 	}
 	if err := verifier.VerifyReleasePick(ctx, r.ReleasePickInput); err != nil {
 		if errors.Is(err, ErrReleasePickMismatch) {
-			return nativeInvalid("Release PR provenance verification failed")
+			return nativePublicInvalid("Release PR provenance verification failed")
 		}
 		return fmt.Errorf("verify release PR: %w", err)
 	}
@@ -100,7 +100,7 @@ func (s *Service) prepareReleasePick(ctx context.Context, scope nativeScope, ite
 func (s *Service) associateReleasePick(c echo.Context) error {
 	var r tracker.AssociateReleasePick
 	if err := decodeAPIJSON(c, &r); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := s.prepareReleasePick(c.Request().Context(), nativeRequestScope(c), c.Param("item"), r); err != nil {
 		return s.nativeAPIError(c, err)
@@ -131,14 +131,14 @@ func (s *Service) associateReleasePickCommand(ctx context.Context, tx *sql.Tx, s
 		return nil, err
 	}
 	if issue.Terminal || issue.Archived || issue.IgnoreDependencies || !slices.Contains(issue.Dependencies, r.SourceIssueID) {
-		return nil, nativeInvalid("Delivery must be an unfinished dependent issue with dependency admission enabled")
+		return nil, nativePublicInvalid("Delivery must be an unfinished dependent issue with dependency admission enabled")
 	}
 	project, err := readNativeProject(ctx, tx, scope)
 	if err != nil {
 		return nil, err
 	}
 	if !project.RequireDependencies {
-		return nil, nativeInvalid("Release delivery requires project dependency admission")
+		return nil, nativePublicInvalid("Release delivery requires project dependency admission")
 	}
 	var active bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM leases WHERE issue_id = (SELECT id FROM issues WHERE native_id = ?) AND released_at IS NULL AND expires_at > ?)`, item, formatHubTime(now)).Scan(&active); err != nil {
@@ -157,7 +157,7 @@ func (s *Service) associateReleasePickCommand(ctx context.Context, tx *sql.Tx, s
 	}
 	landing := sourceChange.CurrentLanding()
 	if !source.Terminal || sourceChange.WorkItemID != r.SourceIssueID || landing == nil || landing.BaseRef != "develop" || landing.MergeSHA != r.SourceMergeSHA {
-		return nil, nativeInvalid("Source dependency must have a recorded merged develop Change")
+		return nil, nativePublicInvalid("Source dependency must have a recorded merged develop Change")
 	}
 	sourceVersion, err := readChangeVersion(ctx, tx, sourceChange.ID, landing.VersionID)
 	if err != nil {
@@ -168,7 +168,7 @@ func (s *Service) associateReleasePickCommand(ctx context.Context, tx *sql.Tx, s
 		return nil, err
 	}
 	if connector == nil || r.Repository != "https://github.com/"+connector.Repository || sourceVersion.Repository != r.Repository {
-		return nil, nativeInvalid("Source and release delivery must share the project's configured repository")
+		return nil, nativePublicInvalid("Source and release delivery must share the project's configured repository")
 	}
 	prior, found, err := readLatestNativeChangeRequest(ctx, tx, scope, item)
 	if err != nil {
@@ -201,7 +201,7 @@ func (s *Service) associateReleasePickCommand(ctx context.Context, tx *sql.Tx, s
 	}
 	independentReview := rules.RequireReview || approved.Policy.Gates.Validator || approved.Policy.Gates.SecurityAudit || approved.Policy.Gates.AutomatedReview == gate.AutomatedReviewRequired
 	if !independentReview {
-		return nil, nativeInvalid("Release delivery requires the project's independent review policy")
+		return nil, nativePublicInvalid("Release delivery requires the project's independent review policy")
 	}
 	if err := approveReleaseDeliveryContract(&issue, approved.Policy, now); err != nil {
 		return nil, err

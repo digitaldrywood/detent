@@ -117,7 +117,7 @@ func (s *Service) fetchLinkedSnapshot(ctx context.Context, scope nativeScope, so
 		return nil, err
 	}
 	if s.config.ImportBackend == nil {
-		return nil, nativeInvalid("GitHub App transport is unavailable for linked issue intake")
+		return nil, nativePublicInvalid("GitHub App transport is unavailable for linked issue intake")
 	}
 	request := GitHubImportRequest{Profile: "native", Repository: repository, IssueNumber: number, Stage: "issue"}
 	page, err := s.config.ImportBackend.FetchImportPage(ctx, request)
@@ -125,11 +125,11 @@ func (s *Service) fetchLinkedSnapshot(ctx context.Context, scope nativeScope, so
 		return nil, err
 	}
 	if page.Issue == nil {
-		return nil, nativeInvalid("GitHub intake returned no issue")
+		return nil, nativePublicInvalid("GitHub intake returned no issue")
 	}
 	fetchedURL, _, _, err := tracker.ParseGitHubIssueURL(page.Issue.URL)
 	if err != nil || fetchedURL != canonical {
-		return nil, nativeInvalid("GitHub intake returned a different issue")
+		return nil, nativePublicInvalid("GitHub intake returned a different issue")
 	}
 	snapshot := linkedSnapshotFromSource(*page.Issue, s.config.now())
 	snapshot.URL = canonical
@@ -137,7 +137,7 @@ func (s *Service) fetchLinkedSnapshot(ctx context.Context, scope nativeScope, so
 	seen := map[string]bool{}
 	for pages := 0; ; pages++ {
 		if pages == 500 {
-			return nil, nativeInvalid("Linked issue discussion exceeds the intake page bound")
+			return nil, nativePublicInvalid("Linked issue discussion exceeds the intake page bound")
 		}
 		page, err = s.config.ImportBackend.FetchImportPage(ctx, request)
 		if err != nil {
@@ -153,7 +153,7 @@ func (s *Service) fetchLinkedSnapshot(ctx context.Context, scope nativeScope, so
 			break
 		}
 		if len(snapshot.Comments) > 1000 || seen["cursor:"+page.NextCursor] {
-			return nil, nativeInvalid("Linked issue discussion exceeds the intake bound")
+			return nil, nativePublicInvalid("Linked issue discussion exceeds the intake bound")
 		}
 		seen["cursor:"+page.NextCursor] = true
 		request.Cursor = page.NextCursor
@@ -248,7 +248,7 @@ func applyNativeIssueWebhook(ctx context.Context, tx *sql.Tx, delivery storedWeb
 				return result, true, err
 			}
 			if len(comment.Body) > 64<<10 {
-				return result, true, nativeInvalid("GitHub comment is oversized")
+				return result, true, nativePublicInvalid("GitHub comment is oversized")
 			}
 			snapshot.Comments = []tracker.GitHubIssueComment{{Body: comment.Body, Provenance: provenance}}
 		}

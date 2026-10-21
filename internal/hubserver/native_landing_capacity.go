@@ -190,7 +190,7 @@ func reserveNativeLandingCapacity(ctx context.Context, tx *sql.Tx, scope nativeS
 		return err
 	}
 	if !allowed {
-		return &nativeError{Code: "runner_capacity", Message: "Project landing capacity is full", status: http.StatusConflict}
+		return &nativeError{Code: "runner_capacity", Message: "Project landing capacity is full", status: http.StatusConflict, publicMessage: true}
 	}
 	_, err = tx.ExecContext(ctx, "UPDATE leases SET landing_capacity=? WHERE lease_id=?", capacity, record.session.ID)
 	return err

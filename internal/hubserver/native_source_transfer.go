@@ -131,7 +131,7 @@ func (s *Service) getNativeSourceRecovery(c echo.Context) error {
 func (s *Service) transferNativeSource(c echo.Context) error {
 	var request sourceTransferRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.transferNativeSourceCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
 	if err != nil {

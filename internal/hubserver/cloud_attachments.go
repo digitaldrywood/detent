@@ -72,7 +72,7 @@ func (s *Service) checkCloudAttachment(c echo.Context) error {
 		Evidence *attachment.EvidenceRequest `json:"evidence,omitempty"`
 	}
 	if err := c.Bind(&input); err != nil || input.Size < 0 || input.Size > attachment.MaxBytes {
-		return s.nativeAPIError(c, nativeInvalid("Invalid attachment size"))
+		return s.nativeAPIError(c, nativePublicInvalid("Invalid attachment size"))
 	}
 	if input.Upload != nil {
 		return s.prepareCloudAttachment(c, *input.Upload)
@@ -105,7 +105,7 @@ func (s *Service) prepareCloudAttachment(c echo.Context, input attachment.Upload
 	}
 	input.ID = conversation.NewAttachmentID()
 	if input.Validate() != nil || strings.TrimSpace(input.RequestID) == "" || len(input.RequestID) > 128 || input.WorkItemID != "" || input.CommentID != "" || len(input.ReferencedBy) != 0 || input.DeletedAt != nil {
-		return s.nativeAPIError(c, nativeInvalid("Invalid attachment upload"))
+		return s.nativeAPIError(c, nativePublicInvalid("Invalid attachment upload"))
 	}
 	scope := nativeRequestScope(c)
 	scope.action = operatortool.UploadAttachment
@@ -116,7 +116,7 @@ func (s *Service) prepareCloudAttachment(c echo.Context, input attachment.Upload
 	var requestIdentity any = identity
 	if input.Evidence != nil {
 		if input.Evidence.IdempotencyKey != input.RequestID {
-			return s.nativeAPIError(c, nativeInvalid("Evidence retry identity does not match"))
+			return s.nativeAPIError(c, nativePublicInvalid("Evidence retry identity does not match"))
 		}
 		requestIdentity = struct {
 			Metadata attachment.Metadata
@@ -131,7 +131,7 @@ func (s *Service) prepareCloudAttachment(c echo.Context, input attachment.Upload
 	}
 	var prepared attachment.Metadata
 	if json.Unmarshal(result, &prepared) != nil {
-		return s.nativeAPIError(c, nativeInvalid("Invalid attachment receipt"))
+		return s.nativeAPIError(c, nativePublicInvalid("Invalid attachment receipt"))
 	}
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
@@ -140,7 +140,7 @@ func (s *Service) prepareCloudAttachment(c echo.Context, input attachment.Upload
 		return s.nativeAPIError(c, err)
 	}
 	if deleted {
-		return s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: "The uploaded attachment was deleted", status: http.StatusConflict})
+		return s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: "The uploaded attachment was deleted", status: http.StatusConflict, publicMessage: true})
 	}
 	return c.JSONBlob(http.StatusOK, result)
 }
@@ -148,7 +148,7 @@ func (s *Service) prepareCloudAttachment(c echo.Context, input attachment.Upload
 func (s *Service) recordCloudAttachment(c echo.Context) error {
 	var input attachment.UploadRequest
 	if err := c.Bind(&input); err != nil || input.Validate() != nil || input.WorkItemID != "" || input.CommentID != "" || len(input.ReferencedBy) != 0 || input.DeletedAt != nil {
-		return s.nativeAPIError(c, nativeInvalid("Invalid attachment metadata"))
+		return s.nativeAPIError(c, nativePublicInvalid("Invalid attachment metadata"))
 	}
 	if err := s.checkAttachmentEvidence(c, input.Evidence); err != nil {
 		return s.nativeAPIError(c, err)
@@ -164,7 +164,7 @@ func (s *Service) recordCloudAttachment(c echo.Context) error {
 	var requestIdentity any = input.Metadata
 	if input.Evidence != nil {
 		if input.Evidence.IdempotencyKey != input.RequestID {
-			return s.nativeAPIError(c, nativeInvalid("Evidence retry identity does not match"))
+			return s.nativeAPIError(c, nativePublicInvalid("Evidence retry identity does not match"))
 		}
 		requestIdentity = input
 	}
@@ -340,7 +340,7 @@ func (s *Service) referenceCloudAttachment(c echo.Context) error {
 		CommentID  string `json:"comment_id"`
 	}
 	if err := c.Bind(&input); err != nil || input.WorkItemID == "" {
-		return s.nativeAPIError(c, nativeInvalid("A work item is required"))
+		return s.nativeAPIError(c, nativePublicInvalid("A work item is required"))
 	}
 	if err := s.referenceCloudAttachmentCommand(c.Request().Context(), nativeRequestScope(c), c.Param("attachment"), attachment.SourceReference{WorkItemID: input.WorkItemID, CommentID: input.CommentID}); err != nil {
 		return s.nativeAPIError(c, err)
@@ -427,7 +427,7 @@ func (s *Service) finishCloudAttachmentDeletion(c echo.Context) error {
 		ID string `json:"id"`
 	}
 	if err := c.Bind(&input); err != nil {
-		return s.nativeAPIError(c, nativeInvalid("Invalid attachment id"))
+		return s.nativeAPIError(c, nativePublicInvalid("Invalid attachment id"))
 	}
 	_, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE attachments SET object_deleted_at=? WHERE id=? AND deleted_at IS NOT NULL", formatHubTime(s.config.now()), input.ID)
 	if err != nil {
@@ -447,7 +447,7 @@ func (s *Service) cloudAttachmentExists(c echo.Context) error {
 		ID string `json:"id"`
 	}
 	if err := c.Bind(&input); err != nil {
-		return s.nativeAPIError(c, nativeInvalid("Invalid attachment id"))
+		return s.nativeAPIError(c, nativePublicInvalid("Invalid attachment id"))
 	}
 	var count int
 	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM attachments WHERE id=? AND object_deleted_at IS NULL", input.ID).Scan(&count); err != nil {

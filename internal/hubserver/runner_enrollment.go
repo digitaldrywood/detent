@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -59,7 +58,7 @@ func runnerUnauthorized() error {
 }
 
 func runnerCollision() error {
-	return &nativeError{Code: "identity_collision", Message: "Identity is already registered; create a fresh host identity and enroll it explicitly", status: http.StatusConflict}
+	return &nativeError{Code: "identity_collision", Message: "Identity is already registered; create a fresh host identity and enroll it explicitly", status: http.StatusConflict, publicMessage: true}
 }
 
 func (s *Service) runnerTransaction(c echo.Context, status int, operation func(context.Context, *sql.Tx, time.Time) (any, error)) error {
@@ -206,19 +205,7 @@ func (s *Service) chargeRunnerRead(ctx context.Context, path string, now time.Ti
 func (s *Service) createRunnerEnrollment(c echo.Context) error {
 	var request runnerauth.EnrollmentRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		reason := "Malformed JSON request body"
-		var typeError *json.UnmarshalTypeError
-		var maxBytesError *http.MaxBytesError
-		switch {
-		case errors.As(err, &maxBytesError):
-			reason = "Request body is too large"
-		case errors.As(err, &typeError):
-			reason = "Request body contains an invalid field type"
-		case strings.HasPrefix(err.Error(), "json: unknown field "):
-			reason = "Request body contains an unknown field"
-		}
-		s.config.Logger.WarnContext(c.Request().Context(), "runner enrollment request rejected", "method", c.Request().Method, "route", c.Path(), "error", reason)
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok {
@@ -226,7 +213,6 @@ func (s *Service) createRunnerEnrollment(c echo.Context) error {
 	}
 	value, err := s.createRunnerEnrollmentCommand(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, request)
 	if err != nil {
-
 		return s.nativeAPIError(c, err)
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
@@ -352,13 +338,13 @@ func (s *Service) redeemRunnerEnrollment(c echo.Context) error {
 	}
 	var request runnerauth.Redemption
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if !request.Valid() || !runnerauth.ValidCredential(request.Credential) || token == request.Credential || strings.TrimSpace(request.Hostname) == "" || len(request.Hostname) > 200 || len(request.DisplayName) > 200 || request.Capacity < 0 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || !validRunnerPlatform(request.OS, request.Architecture) {
-		return s.nativeAPIError(c, nativeInvalid("Host identity, a separate generated credential, hostname, version and nonnegative capacity are required"))
+		return s.nativeAPIError(c, nativePublicInvalid("Host identity, a separate generated credential, hostname, version and nonnegative capacity are required"))
 	}
 	if request.SpriteName != "" && (request.SpriteName != request.Hostname || !validSpritesSlug(request.SpriteName)) {
-		return s.nativeAPIError(c, nativeInvalid("Sprite name must match the runner hostname"))
+		return s.nativeAPIError(c, nativePublicInvalid("Sprite name must match the runner hostname"))
 	}
 	if err := request.BackendIsolation.Validate(); err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
@@ -367,7 +353,7 @@ func (s *Service) redeemRunnerEnrollment(c echo.Context) error {
 		request.IsolationTier = isolation.Sandbox
 	}
 	if request.IsolationTier != isolation.Sandbox && request.IsolationTier != isolation.NativeTrusted {
-		return s.nativeAPIError(c, nativeInvalid("Isolation tier must be sandbox or native-trusted"))
+		return s.nativeAPIError(c, nativePublicInvalid("Isolation tier must be sandbox or native-trusted"))
 	}
 	return s.runnerTransaction(c, http.StatusCreated, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		var id, operations, created, expires, actor, enrollmentScope string
