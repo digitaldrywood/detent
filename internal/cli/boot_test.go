@@ -1217,15 +1217,19 @@ func TestStartRunningUsesWorkflowKanbanModeForFleetActions(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- startRunning(ctx, BootConfig{
-			Mode:   BootModeRunning,
-			Global: global,
-			Host:   "127.0.0.1",
-			Port:   &port,
-			Output: output,
+			Mode:       BootModeRunning,
+			Global:     global,
+			Host:       "127.0.0.1",
+			Port:       &port,
+			Output:     output,
+			Scheduling: &fakehubscheduling.Source{Connector: bootProvisioningConnector{}},
 		})
 	}()
 
 	baseURL := waitForBootDashboardURL(t, output, done)
+	waitForDashboardCondition(t, baseURL+"/health", done, "startup ready", func(body string) bool {
+		return strings.Contains(body, `"ready":true`)
+	})
 	waitForDashboard(t, baseURL+"/kanban", done)
 	status, body := postDashboardForm(t, baseURL+"/api/v1/kanban/move", done, url.Values{
 		"issue_id":      {"issue-1"},
