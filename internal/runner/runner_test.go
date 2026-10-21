@@ -1726,6 +1726,7 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 		wantScratch bool
 	}{
 		{name: "completed turn"},
+		{name: "completed turn with survivors", reapErr: errors.New("workspace processes remained after SIGKILL"), wantReap: true, wantScratch: true},
 		{name: "cancelled turn", runErr: context.Canceled, wantErr: context.Canceled, wantReap: true},
 		{name: "cancelled turn reap deadline", runErr: context.Canceled, wantErr: context.Canceled, reapErr: context.DeadlineExceeded, wantReap: true, wantScratch: true},
 	}
@@ -1736,6 +1737,9 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 
 			workspacePath := t.TempDir()
 			backend := &scratchWritingAgentBackend{runErr: tt.runErr}
+			if tt.name == "completed turn with survivors" {
+				backend.workerProcess = procgroup.Identity{PID: 2345}
+			}
 			t.Cleanup(func() {
 				if err := workspace.CleanupWorkerScratch(workspacePath, backend.tempDir); err != nil {
 					t.Errorf("fixture scratch cleanup: %v", err)
@@ -1782,13 +1786,13 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 			if reaped != tt.wantReap {
 				t.Fatalf("workspace reaped = %v, want %v", reaped, tt.wantReap)
 			}
-			if got := errors.Is(execution.err, ErrWorkerProcessReap); got != tt.wantScratch {
+			if got := errors.Is(execution.cleanupErr, ErrWorkerProcessReap); got != tt.wantScratch {
 				t.Fatalf("worker reap failure = %v, want %v: %v", got, tt.wantScratch, execution.err)
 			}
-			if tt.reapErr != nil && !errors.Is(execution.err, tt.reapErr) {
+			if tt.reapErr != nil && !errors.Is(execution.cleanupErr, tt.reapErr) {
 				t.Fatalf("turn error = %v, want reap cause %v", execution.err, tt.reapErr)
 			}
-			if execution.cleanupErr != nil {
+			if execution.cleanupErr != nil && !tt.wantScratch {
 				t.Fatalf("scratch removal error: %v (turn error: %v)", execution.cleanupErr, execution.err)
 			}
 			if scratchRoot := workspace.WorkerScratchRoot(workspacePath); backend.tempDir == "" || !strings.HasPrefix(backend.tempDir, scratchRoot+string(filepath.Separator)) {
@@ -1911,7 +1915,7 @@ func TestRunAgentTurnCleansWorkerScratchAfterProcessReap(t *testing.T) {
 			if !scratchPresentDuringReap {
 				t.Fatal("worker scratch was removed before process reaping")
 			}
-			if got := errors.Is(execution.err, ErrWorkerProcessReap); got != tt.wantScratch {
+			if got := errors.Is(execution.cleanupErr, ErrWorkerProcessReap); got != tt.wantScratch {
 				t.Fatalf("runAgentTurn() worker reap error = %v, want %v: %v", got, tt.wantScratch, execution.err)
 			}
 			if tt.wantScratch && len(sessionStore.reaps) != 0 {
@@ -2642,10 +2646,7 @@ func TestRunnerRunAdmissionPreservesScratchUntilDescendantsExit(t *testing.T) {
 				},
 			})
 			wantRetained := tt.processErr != nil || tt.workspaceErr != nil
-			if errors.Is(err, ErrWorkerProcessReap) != wantRetained {
-				t.Fatalf("Run error = %v, want reap failure %t", err, wantRetained)
-			}
-			if !wantRetained && err != nil {
+			if err != nil {
 				t.Fatal(err)
 			}
 			_, statErr := os.Stat(fixture)
@@ -6849,11 +6850,11 @@ func TestRunnerRunKeepsSuccessfulOutcomeAfterArtifactCleanupFailure(t *testing.T
 						t.Fatalf("workspace reaps = %d, want 1", workspaceReaps)
 					}
 					if reapTest.err != nil {
-						if !errors.Is(err, reapTest.err) || !strings.Contains(err.Error(), "worker process reap failed: reap orphaned workspace processes:") {
-							t.Fatalf("Run() error = %v, want wrapped workspace scan error", err)
+						if err != nil || result.FinalState != FinalStateCompleted || sessionStore.finished.FinalState != FinalStateCompleted {
+							t.Fatalf("cleanup failure changed successful work: error=%v result=%q session=%q", err, result.FinalState, sessionStore.finished.FinalState)
 						}
-						if result.FinalState == FinalStateCompleted || sessionStore.finished.FinalState == FinalStateCompleted {
-							t.Fatalf("scan failure completed: result %q, session %q", result.FinalState, sessionStore.finished.FinalState)
+						if !strings.Contains(logs.String(), "attribution=instance") || !strings.Contains(logs.String(), reapTest.err.Error()) {
+							t.Fatalf("cleanup failure lost instance evidence: %s", logs.String())
 						}
 						if cleanupCalls != 0 || len(sessionStore.reaps) != 0 {
 							t.Fatalf("scan failure cleanup calls = %d, reaps = %v, want no cleanup or recorded reaps", cleanupCalls, sessionStore.reaps)
