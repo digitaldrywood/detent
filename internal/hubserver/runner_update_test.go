@@ -489,7 +489,10 @@ func TestRunnerUpdateApplication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": report.Running.Version, "os": "linux", "architecture": "amd64", "protocol_major": 2, "update": json.RawMessage(raw)}), http.StatusUnprocessableEntity)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": report.Running.Version, "os": "linux", "architecture": "amd64", "protocol_major": 2, "update": json.RawMessage(raw)}), http.StatusOK)
+	if got := read(); got.Desired == nil || got.Desired.ID != view.Desired.ID {
+		t.Fatalf("foreign receipt replaced the desired update: %+v", got)
+	}
 	report.Receipt.Request.ID = view.Desired.ID
 	report.Running.Source = "private_patched_source"
 	report.Running.VerifiedRelease = false
