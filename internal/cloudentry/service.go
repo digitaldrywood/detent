@@ -174,7 +174,7 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 			return nil, errors.New("archive storage is unavailable")
 		}
 		if err := archives.ConfigureArchiveReads(ctx, []string{strings.TrimRight(cfg.PublicURL, "/")}); err != nil {
-			return nil, fmt.Errorf("configure archives: %w", err)
+			cfg.Logger.Error("archive reads unavailable", "error", fmt.Errorf("configure archives: %w", err))
 		}
 	}
 	registry, err := OpenRegistry(ctx, filepath.Join(cfg.StateDir, "registry.db"))
