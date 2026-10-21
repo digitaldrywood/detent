@@ -829,8 +829,8 @@ no worker token is handed off; SSH uses the host's SSH key. An explicitly handed
 off worker token remains the Git credential for HTTPS operations in that worker.
 `worker.github_token` controls agent GitHub access; it is not required for native
 landing. Agent GitHub CLI calls retain their private `GH_CONFIG_DIR` in both cases.
-`detent doctor` and runner enrollment/startup reports include a named landing push
-credential check that runs a noninteractive dry run without changing remote refs.
+`detent doctor` includes a named landing push credential check that runs a
+noninteractive dry run without changing remote refs.
 Set the worker override to `gh` to resolve `gh auth token` in the Detent process
 and copy only the resolved token into the worker's isolated `GH_CONFIG_DIR`. An environment
 reference remains available when permission or revocation isolation is useful:

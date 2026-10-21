@@ -590,10 +590,9 @@ when no worker token is handed off, or its SSH key for an SSH remote. Configure
 that login with repository write access. `worker.github_token` controls agent
 GitHub access; agents retain a private GitHub CLI configuration. An explicitly
 handed off worker token also authenticates that worker's HTTPS Git operations.
-For prepared checkouts, enrollment and startup reports run the same named
-landing push credential check as `detent doctor`: a noninteractive
-`git push --dry-run` that changes no remote refs. New checkouts are checked after
-startup prepares them; a successful clone alone does not prove push access.
+`detent doctor` runs a named landing push credential check: a noninteractive
+`git push --dry-run` that changes no remote refs. Runner startup readiness does
+not contact the remote.
 
 `detent start` and `detent status` default to the runner service when the
 configuration has a `client.hub_url`, including older configurations without

@@ -91,7 +91,7 @@ for (const width of [1440, 390]) {
         await expect(instructions).toContainText("bash sprite-runner-bootstrap.sh --version v0.9.1");
         await expect(instructions).toContainText("claude auth login");
         await expect(instructions).toContainText("codex login --device-auth");
-        await expect(instructions).toContainText("approve policy only if offered");
+        await expect(instructions).toContainText("reported repository configuration");
         await expect(dialog.getByRole("button", { name: "Show token" })).toHaveCount(0);
       }
       await copy.click();

@@ -102,9 +102,6 @@ func runDoctorStartupPreflight(ctx context.Context, cfg doctorConfig, opts optio
 			})
 			continue
 		}
-		if check, ok := checkDoctorLandingCredential(ctx, id, projectSourceRoot(configuredProject, workflow.Config), workflow.Config, deps); ok {
-			report.Add(check)
-		}
 		report.Add(doctorCheck{
 			Name:   "Project " + id + " startup",
 			Status: doctorOK,

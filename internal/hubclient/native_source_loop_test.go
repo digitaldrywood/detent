@@ -81,7 +81,7 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 		}
 		body := `{"verdict":"pass","summary":"Checked security","findings":[]}`
 		if a.writableCalls == 1 && a.auditRework {
-			body = `{"verdict":"fail","summary":"Checked authorization","findings":[{"id":"auth","severity":"p1","body":"Missing authorization","status":"unresolved"}]}`
+			body = `{"verdict":"fail","summary":"Checked authorization","findings":[{"id":"auth","certainty":"confirmed","severity":"p1","body":"Missing authorization","status":"unresolved"}]}`
 		}
 		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 1 << 30, GroupID: 1 << 30, StartedAt: time.Now()}}); err != nil {
 			return runner.AgentTurnResult{}, err
