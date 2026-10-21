@@ -11,7 +11,7 @@ const waitPollInterval = 5 * time.Millisecond
 // *testing.B satisfy it.
 type TB interface {
 	Helper()
-	Context() context.Context
+	Cleanup(func())
 	Fatalf(format string, args ...any)
 }
 
@@ -21,7 +21,8 @@ type deadliner interface {
 
 // WaitContext returns ctx bounded by the go test -timeout deadline, ending
 // shortly before the binary's timeout panic so a waiting test can still report
-// its own failure message. It never adds a fixed wall-clock budget.
+// its own failure message. It never adds a fixed wall-clock budget. A Cleanup
+// function passes context.Background(), because t.Context() has already ended.
 func WaitContext(t TB, ctx context.Context) context.Context {
 	t.Helper()
 	deadline, ok := testDeadline(t)
@@ -30,7 +31,7 @@ func WaitContext(t TB, ctx context.Context) context.Context {
 	}
 	deadline = deadline.Add(-time.Until(deadline) / 20)
 	bounded, cancel := context.WithDeadline(ctx, deadline)
-	context.AfterFunc(t.Context(), cancel)
+	t.Cleanup(cancel)
 	return bounded
 }
 
