@@ -72,30 +72,56 @@ func TestHostedAuditRetention(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
 	now := time.Date(2026, 10, 7, 22, 0, 0, 0, time.UTC)
-	cutoff := now.Add(-90 * 24 * time.Hour)
+	day := 24 * time.Hour
+	insert := func(event string, at time.Time) {
+		t.Helper()
+		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at) VALUES('org_security','session','actor','actor','',?,'','',200,?,?,?)`, event, formatHubTime(now), formatHubTime(now.Add(time.Hour)), formatHubTime(at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	readEvents := func() string {
+		t.Helper()
+		var events string
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT coalesce(group_concat(event, ','),'') FROM (SELECT event FROM hosted_audit WHERE event NOT LIKE 'backlog%' ORDER BY id)").Scan(&events); err != nil {
+			t.Fatal(err)
+		}
+		return events
+	}
 	for _, test := range []struct {
 		event string
 		at    time.Time
 	}{
-		{event: "expired", at: cutoff.Add(-time.Second)},
-		{event: "boundary", at: cutoff},
-		{event: "newer", at: cutoff.Add(time.Second)},
+		{event: "31 days", at: now.Add(-31 * day)},
+		{event: "just expired", at: now.Add(-30*day - time.Second)},
+		{event: "30 days", at: now.Add(-30 * day)},
+		{event: "29 days", at: now.Add(-29 * day)},
 		{event: "recent", at: now},
 	} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at) VALUES('org_security','session','actor','actor','',?,'','',200,?,?,?)`, test.event, formatHubTime(now), formatHubTime(now.Add(time.Hour)), formatHubTime(test.at)); err != nil {
-			t.Fatal(err)
-		}
+		insert(test.event, test.at)
 	}
-	for range 2 {
+	backlog := commandReceiptPruneBatch + 7
+	if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
+INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at)
+SELECT 'org_security','session','actor','actor','','backlog '||i,'','',200,?,?,? FROM n`, backlog, formatHubTime(now), formatHubTime(now.Add(time.Hour)), formatHubTime(now.Add(-45*day))); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct {
+		backlog int
+		events  string
+	}{
+		{7, "31 days,just expired,30 days,29 days,recent"},
+		{0, "30 days,29 days,recent"},
+		{0, "30 days,29 days,recent"},
+	} {
 		if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
 			t.Fatal(err)
 		}
-		var events string
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT group_concat(event, ',') FROM (SELECT event FROM hosted_audit ORDER BY id)").Scan(&events); err != nil {
+		var remaining int
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE event LIKE 'backlog%'").Scan(&remaining); err != nil {
 			t.Fatal(err)
 		}
-		if events != "boundary,newer,recent" {
-			t.Fatalf("retained events=%s", events)
+		if events := readEvents(); remaining != want.backlog || events != want.events {
+			t.Fatalf("retained events=%s backlog=%d want %+v", events, remaining, want)
 		}
 	}
 }

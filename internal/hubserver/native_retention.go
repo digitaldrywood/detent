@@ -12,16 +12,31 @@ import (
 const (
 	commandReceiptRetention  = 24 * time.Hour
 	commandReceiptPruneBatch = 5000
+	hostedAuditRetention     = 30 * 24 * time.Hour
 )
 
 func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) error {
+	if err := s.expireNativeRecords(ctx, now); err != nil {
+		return err
+	}
+	if err := s.compactRetainedEvents(ctx, now); err != nil {
+		return fmt.Errorf("compact retained events: %w", err)
+	}
+	if err := s.database.compactAnalyticsSamples(ctx, now); err != nil {
+		return fmt.Errorf("compact analytics samples: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) expireNativeRecords(ctx context.Context, now time.Time) error {
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "DELETE FROM hosted_audit WHERE julianday(recorded_at)<julianday(?)", formatHubTime(now.Add(-90*24*time.Hour))); err != nil {
-		return err
+	if _, err := tx.ExecContext(ctx, `DELETE FROM hosted_audit WHERE rowid IN (SELECT rowid FROM hosted_audit
+WHERE julianday(recorded_at)<julianday(?) ORDER BY julianday(recorded_at) LIMIT ?)`, formatHubTime(now.Add(-hostedAuditRetention)), commandReceiptPruneBatch); err != nil {
+		return fmt.Errorf("expire hosted audit: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM native_commands WHERE rowid IN (SELECT rowid FROM native_commands
 WHERE (operation LIKE 'POST /%' OR operation LIKE 'PUT /%' OR operation LIKE 'PATCH /%' OR operation LIKE 'DELETE /%')
@@ -87,7 +102,20 @@ ORDER BY i.id LIMIT 200`, formatHubTime(now), formatHubTime(now))
 			return err
 		}
 	}
-	conversations, removed, err := compactEvents(ctx, tx, now)
+	return s.database.commit(ctx, tx)
+}
+
+func (s *Service) compactRetainedEvents(ctx context.Context, now time.Time) error {
+	plans, err := planEventCompaction(ctx, s.database.reader, now)
+	if err != nil || len(plans) == 0 {
+		return err
+	}
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	conversations, removed, err := applyEventCompaction(ctx, tx, plans, now)
 	if err != nil {
 		return err
 	}

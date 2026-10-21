@@ -97,6 +97,9 @@ const (
 	analyticsBackfillBatch  = 20
 	analyticsBackfillBudget = 20 * time.Second
 	analyticsBackfillEvents = 5000
+
+	analyticsSampleRetention       = 90 * 24 * time.Hour
+	analyticsSampleCompactionBatch = 5000
 )
 
 type analyticsRollupReader struct {
@@ -466,11 +469,14 @@ func readAnalyticsCounter(ctx context.Context, q nativeQueryer, scope nativeScop
 	return count, nil
 }
 
-func readAnalyticsSkipRollups(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) (bool, error) {
+func readAnalyticsSkipRollups(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject, compacted bool) (bool, error) {
 	w := out.Window
 	fullFrom, fullTo := w.From.Truncate(time.Hour), w.To.Truncate(time.Hour)
 	if !fullFrom.Equal(w.From) {
 		fullFrom = fullFrom.Add(time.Hour)
+	}
+	if compacted && (!fullFrom.Equal(w.From) || !fullTo.Equal(w.To)) {
+		out.Partial = true
 	}
 	rows, err := q.QueryContext(ctx, `WITH samples AS (
  SELECT json_extract(data_json,'$.source') AS source,json_extract(data_json,'$.reason') AS reason,value,json_extract(data_json,'$.last_at') AS last_at,json_extract(data_json,'$.last_ns') AS last_ns FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='skipped' AND hour>=? AND hour<?
@@ -493,7 +499,10 @@ func readAnalyticsSkipRollups(ctx context.Context, q nativeQueryer, scope native
 		}
 		count += skip.Count
 		if count > maxAnalyticsPopulation {
-			return false, nil
+			if !compacted {
+				return false, nil
+			}
+			out.Partial = true
 		}
 		at, err := parseTimeValue(last)
 		if err != nil {
@@ -512,6 +521,70 @@ func readAnalyticsSkipRollups(ctx context.Context, q nativeQueryer, scope native
 		out.Unavailable = append(out.Unavailable, "recorded_skip_reasons")
 	}
 	return true, nil
+}
+
+func analyticsSkipSamplesCompacted(ctx context.Context, q nativeQueryer, scope nativeScope, from time.Time) (bool, error) {
+	var through int64
+	err := q.QueryRowContext(ctx, `SELECT CAST(value AS INTEGER) FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='skip_compacted' AND hour=0 AND dimension=''`, scope.organization, scope.project).Scan(&through)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read skip sample compaction: %w", err)
+	}
+	return from.Unix() < through, nil
+}
+
+func (d *database) compactAnalyticsSamples(ctx context.Context, now time.Time) error {
+	through := now.UTC().Truncate(time.Hour).Add(-analyticsSampleRetention).Unix()
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT organization_id,id FROM projects ORDER BY organization_id,id`)
+	if err != nil {
+		return fmt.Errorf("list analytics projects: %w", err)
+	}
+	defer rows.Close()
+	var scopes []nativeScope
+	for rows.Next() {
+		var scope nativeScope
+		if err := rows.Scan(&scope.organization, &scope.project); err != nil {
+			return err
+		}
+		scopes = append(scopes, scope)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	budget := int64(analyticsSampleCompactionBatch)
+	for _, scope := range scopes {
+		if budget <= 0 {
+			break
+		}
+		result, err := tx.ExecContext(ctx, `DELETE FROM analytics_hourly_rollups WHERE rowid IN (SELECT r.rowid FROM analytics_hourly_rollups r
+WHERE r.organization_id=? AND r.project_id=? AND r.metric='skip_sample' AND r.hour<?
+AND EXISTS (SELECT 1 FROM analytics_hourly_rollups a WHERE a.organization_id=r.organization_id AND a.project_id=r.project_id AND a.metric='skipped' AND a.hour=r.hour
+AND a.dimension=json_array(coalesce(json_extract(r.data_json,'$.Source'),''),coalesce(json_extract(r.data_json,'$.Reason'),'')))
+LIMIT ?)`, scope.organization, scope.project, through, budget)
+		if err != nil {
+			return fmt.Errorf("delete compacted skip samples: %w", err)
+		}
+		removed, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if removed == 0 {
+			continue
+		}
+		budget -= removed
+		if _, err := tx.ExecContext(ctx, `INSERT INTO analytics_hourly_rollups VALUES(?,?,0,'skip_compacted','',?,json_object('removed',?))
+ON CONFLICT(organization_id,project_id,metric,hour,dimension) DO UPDATE SET value=max(value,excluded.value),data_json=json_set(data_json,'$.removed',json_extract(data_json,'$.removed')+?)`, scope.organization, scope.project, through, removed, removed); err != nil {
+			return fmt.Errorf("record skip sample compaction: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 func refreshAnalyticsSlots(ctx context.Context, tx *sql.Tx, organization, project string, now time.Time) error {

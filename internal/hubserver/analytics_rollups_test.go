@@ -522,12 +522,12 @@ func TestAnalyticsRollupCompactionPreservesPredecessor(t *testing.T) {
 		t.Fatal(err)
 	}
 	drainTestAnalytics(t, f.service)
-	w := operatortool.AnalyticsWindow{From: start, To: start.Add(time.Hour), Bucket: time.Hour}
+	w := operatortool.AnalyticsWindow{From: start.Truncate(time.Hour), To: start.Truncate(time.Hour).Add(2 * time.Hour), Bucket: time.Hour}
 	before, err := readNativeAnalytics(t.Context(), analyticsRollupReader{f.service.database.reader}, scope, operatortool.AnalyticsRequest{Limit: 100}, w)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before.ProviderCapacityWait.ClaimsObserved != 1 || before.ProviderCapacityWait.IntervalsUnavailable != 1 {
+	if before.ProviderCapacityWait.ClaimsObserved != 1 || before.ProviderCapacityWait.IntervalsUnavailable != 1 || before.DecisionsObserved != 1 {
 		t.Fatalf("predecessor did not interrupt wait: %+v", before.ProviderCapacityWait)
 	}
 	tx, err = f.service.database.db.BeginTx(t.Context(), nil)
@@ -552,6 +552,42 @@ func TestAnalyticsRollupCompactionPreservesPredecessor(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertAnalyticsJSONEqual(t, before, after)
+	countSamples := func() int {
+		t.Helper()
+		var samples int
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_hourly_rollups WHERE metric='skip_sample'").Scan(&samples); err != nil {
+			t.Fatal(err)
+		}
+		return samples
+	}
+	for _, pass := range []struct {
+		name    string
+		now     time.Time
+		samples int
+	}{
+		{"inside the sample window", start.Add(analyticsSampleRetention - time.Hour), 1},
+		{"past the sample window", start.Add(analyticsSampleRetention + 2*time.Hour), 0},
+	} {
+		if err := f.service.database.compactAnalyticsSamples(t.Context(), pass.now); err != nil {
+			t.Fatal(err)
+		}
+		if samples := countSamples(); samples != pass.samples {
+			t.Fatalf("%s: skip samples=%d want %d", pass.name, samples, pass.samples)
+		}
+		compacted, err := readNativeAnalytics(t.Context(), analyticsRollupReader{f.service.database.reader}, scope, operatortool.AnalyticsRequest{Limit: 100}, w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertAnalyticsJSONEqual(t, before, compacted)
+	}
+	edge := operatortool.AnalyticsWindow{From: start.Add(-time.Minute), To: start.Add(time.Hour), Bucket: time.Hour}
+	partial, err := readNativeAnalytics(t.Context(), analyticsRollupReader{f.service.database.reader}, scope, operatortool.AnalyticsRequest{Limit: 100}, edge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !partial.Partial {
+		t.Fatal("a window edge inside compacted samples was reported as complete")
+	}
 }
 
 func TestAnalyticsRollupResponseEquivalence(t *testing.T) {

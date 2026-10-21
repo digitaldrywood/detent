@@ -864,7 +864,11 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 				if _, err := tx.ExecContext(t.Context(), "UPDATE leases SET released_at=? WHERE lease_id=?", formatHubTime(f.service.config.now()), lease.ID); err != nil {
 					t.Fatal(err)
 				}
-				if _, _, err := compactEvents(t.Context(), tx, f.service.config.now().Add(31*24*time.Hour)); err != nil {
+				plans, err := planEventCompaction(t.Context(), tx, f.service.config.now().Add(31*24*time.Hour))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err := applyEventCompaction(t.Context(), tx, plans, f.service.config.now().Add(31*24*time.Hour)); err != nil {
 					t.Fatal(err)
 				}
 			}

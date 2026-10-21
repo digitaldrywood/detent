@@ -496,10 +496,20 @@ ORDER BY json_extract(c.record_json,'$.landed.landed_at'),c.id LIMIT ? OFFSET ?`
 }
 
 func projectNativeAnalyticsSkips(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
-	if _, rolledUp := q.(analyticsRollupReader); rolledUp && analyticsPopulationOffset(ctx, "decisions") == 0 {
-		aggregated, err := readAnalyticsSkipRollups(ctx, q, scope, out)
-		if err != nil || aggregated {
+	if _, rolledUp := q.(analyticsRollupReader); rolledUp {
+		compacted, err := analyticsSkipSamplesCompacted(ctx, q, scope, out.Window.From)
+		if err != nil {
 			return err
+		}
+		offset := analyticsPopulationOffset(ctx, "decisions")
+		if compacted && offset != 0 {
+			return nil
+		}
+		if offset == 0 {
+			aggregated, err := readAnalyticsSkipRollups(ctx, q, scope, out, compacted)
+			if err != nil || aggregated {
+				return err
+			}
 		}
 	}
 	var rows *analyticsRows
