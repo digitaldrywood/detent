@@ -9,7 +9,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/tracker"
 
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -99,7 +98,7 @@ type analyticsAttemptLanding struct {
 }
 
 type analyticsAttemptRuntime struct {
-	Phases          []tracker.NativePhase            `json:"phases"`
+	Phases          json.RawMessage                  `json:"phases"`
 	PhasesDropped   int                              `json:"phases_dropped"`
 	Activity        *workflowmetrics.ActivityProfile `json:"activity,omitempty"`
 	Identity        agentidentity.Identity           `json:"identity,omitzero"`
