@@ -1345,6 +1345,32 @@ cannot skip or repeat those items. New items appear in a fresh query. Each page
 loads current item details, so this is not a transactional export snapshot;
 a consistent export still requires a quiescent owner backup.
 
+MCP `work_list` accepts `include: ["summary"]` for a compact lane scan. Each
+item contains exactly `identifier`, `number`, `state`, `priority`, `title`,
+`type`, `labels`, `last_activity_at`, `revision`, and `latest_transition_reason`.
+The reason is the latest workflow transition's `reason_detail`, falling back
+to its `reason`, or an empty string if no transition was recorded. Related
+items, contract hashes, dependency reason bases, actors and search snippets
+are omitted. The response retains project identity, freshness, total count and
+`next_cursor`; continue with the same filters and include. Default MCP and
+REST responses, including the REST body-free `include=summary` projection,
+are unchanged. The existing encoded byte budget still bounds pages; long
+titles, labels, identifiers and reasons can make a page larger than 8 KiB or
+require continuation before the requested limit.
+
+MCP `explain_item` also accepts `include: ["summary"]`. It keeps `schema`,
+`found`, `observed_at`, `identity`, `current_lane`, the latest transition's
+from/to/time and `reason`/`reason_detail`, current and latest eligibility
+outcomes and reasons, and required gate state, source state and reason.
+Available attempt details retain identity, selection, freshness, runner,
+role, start time and status; historical attempts retain their selection.
+`failure_signature` is included when available. Capacity reports, native
+runtime detail (including `current_version.validation.output`), coverage notes,
+sessions and full evidence are omitted. Missing optional evidence stays
+absent. The default explanation and `work_item` recovery view are unchanged.
+Both compact projections use the existing authorized reads and expose no
+additional credential or cross-project data.
+
 Comment creation sequences and aggregate history sequences provide increasing
 page order. Signed cursors bind protocol, principal, organization, project,
 resource and query; they expire after one hour. Reuse with a different scope or
