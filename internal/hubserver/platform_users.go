@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -26,14 +27,18 @@ func (s *Service) hostedPlatformUsers(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	result := platformusers.TenantResult{Members: []platformusers.TenantMember{}, Invitations: []platformusers.TenantInvitation{}}
-	rows, err := s.database.reader.QueryContext(ctx, `WITH users AS (
-SELECT 'm:' || user_id AS cursor,email,user_id AS subject,role,created_at AS at FROM hosted_members WHERE active=1
+	memberFrom, memberLimit := platformUserCursorRange(input.After, "m:")
+	invitationFrom, invitationLimit := platformUserCursorRange(input.After, "i:")
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT cursor,email,subject,role,at FROM (
+SELECT * FROM (SELECT 'm:' || user_id AS cursor,email,user_id AS subject,role,created_at AS at FROM hosted_members
+WHERE user_id>=? AND 'm:' || user_id>? AND active=1 AND CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 END ORDER BY user_id LIMIT ?)
 UNION ALL
-SELECT 'i:' || id,email,'','',expires_at FROM hosted_invitations WHERE organization_id=? AND accepted_user_id=''
-)
-SELECT cursor,email,subject,role,at FROM users
-WHERE cursor>? AND CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 END
-ORDER BY cursor LIMIT ?`, s.config.Hosted.OrganizationID, input.After, query.Exact, query.Text, query.Text, platformusers.Limit+1)
+SELECT * FROM (SELECT 'i:' || id,email,'','',expires_at FROM hosted_invitations
+WHERE id>=? AND 'i:' || id>? AND organization_id=? AND accepted_user_id='' AND CASE WHEN ? THEN lower(email)=? ELSE instr(lower(email),?)>0 END ORDER BY id LIMIT ?)
+) ORDER BY cursor LIMIT ?`,
+		memberFrom, input.After, query.Exact, query.Text, query.Text, memberLimit,
+		invitationFrom, input.After, s.config.Hosted.OrganizationID, query.Exact, query.Text, query.Text, invitationLimit,
+		platformusers.Limit+1)
 	if err != nil {
 		return err
 	}
@@ -90,4 +95,14 @@ ORDER BY cursor LIMIT ?`, s.config.Hosted.OrganizationID, input.After, query.Exa
 		result.NextCursor = ""
 	}
 	return c.JSON(http.StatusOK, result)
+}
+
+func platformUserCursorRange(after, prefix string) (string, int) {
+	if strings.HasPrefix(after, prefix) {
+		return after[len(prefix):], platformusers.Limit + 1
+	}
+	if after < prefix {
+		return "", platformusers.Limit + 1
+	}
+	return "", 0
 }
