@@ -190,13 +190,27 @@ keep their original workflow. Isolation-changing local binding operations still
 use their existing settled-work contract. Refused reloads record their complete
 error chain through the existing workflow reload diagnostics.
 
-The existing private worker protocol is version 5. It carries the captured claim
+The existing private worker protocol is version 6. It carries the captured claim
 isolation policy explicitly across the worker process boundary, alongside typed
 session process registration and cleanup scoped to one channel. Controllers and
 workers must both support this version; older peers cannot silently discard the
 claim policy and substitute backend defaults. A controller can launch
 any newer verified execution release advertising this protocol on its platform;
-its own build number is not a compatibility ceiling. Children never open the
+its own build number is not a compatibility ceiling. The bootstrap advertises
+source-iteration support; workers enable inline review fixes only when the
+controller supplies that capability. An older bootstrap retains controller-owned
+finalization without calling newer execution methods.
+
+After installing a verified release, the update owner requests graceful controller
+restart immediately. New dispatch stops while its existing attempts finish,
+including finalization and lease release. Update restarts never force active
+attempts at a shutdown drain deadline. POSIX services execute the verified
+installed binary directly, preserving their service process identity instead of
+relying on a launcher to select the release. Startup prepares the controller
+replacement again if an older launcher starts a superseded build. Until convergence,
+runner problems report `update_applied_not_running` with both builds.
+
+Children never open the
 controller's SQLite store, run migrations, claim work, renew leases or publish a
 competing completion. The controller performs these operations and all Hub
 communication under the captured lease and fence. Authentication, grants,

@@ -118,12 +118,25 @@ func TestRunnerHubProblems(t *testing.T) {
 	}{
 		{"version_unsupported", 3, false},
 		{"settings_rejected", 2, true},
+		{"update_applied_not_running", 2, false},
 	} {
 		t.Run(test.code, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 			r.enroll(t)
 			heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "protocol_major": test.protocol, "settings_rejected": test.rejected, "backend_isolation": isolation.Report{"codex": {isolation.NativeTrusted}}, "problems": []runnerauth.Problem{runnerauth.NewProblem("keep_awake_failed")}}
+			if test.code == "update_applied_not_running" {
+				now := f.service.config.now()
+				running := runnerauth.BuildEvidence{Version: "1.0.0", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
+				applied := running
+				applied.Version, applied.Commit, applied.SHA256, applied.VerifiedRelease = "1.0.1", strings.Repeat("c", 40), strings.Repeat("d", 64), true
+				report := &runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Supported: true, Running: running, ObservedAt: now,
+					Receipt: &runnerauth.UpdateReceipt{Status: "applied", ExecutionArtifact: true, Applied: &applied, ObservedAt: now,
+						Request: runnerauth.UpdateRequest{ID: "update-fixture", Service: "detent", Release: true, Version: "1.0.1", ExpectedBuildRevision: "build-fixture", RequestedAt: now}}}
+				report.Revision = report.BuildRevision()
+				heartbeat["update"] = report
+				heartbeat["version"], heartbeat["os"], heartbeat["architecture"] = "1.0.0", "linux", "amd64"
+			}
 			post := func() {
 				t.Helper()
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, heartbeat), http.StatusOK)
@@ -148,6 +161,13 @@ func TestRunnerHubProblems(t *testing.T) {
 			if !found {
 				t.Fatalf("missing %s: %+v", test.code, view.Problems)
 			}
+			if test.code == "update_applied_not_running" {
+				for _, problem := range view.Problems {
+					if problem.Code == test.code && (!strings.Contains(problem.Message, "1.0.0") || !strings.Contains(problem.Message, "1.0.1")) {
+						t.Fatalf("update skew lost build versions: %+v", problem)
+					}
+				}
+			}
 			if exclusions := view.Exclusions(f.project.ID, policy.Requirements{}, false); len(exclusions) != 0 {
 				t.Fatalf("diagnostics affected dispatch: %+v", exclusions)
 			}
@@ -162,6 +182,13 @@ func TestRunnerHubProblems(t *testing.T) {
 			heartbeat["settings_rejected"] = false
 			heartbeat["backend_isolation"] = isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}
 			delete(heartbeat, "problems")
+			if report, ok := heartbeat["update"].(*runnerauth.UpdateObservation); ok {
+				report.Running = *report.Receipt.Applied
+				heartbeat["version"] = report.Running.Version
+				report.Receipt.Status = "running"
+				report.Receipt.Running = &report.Running
+				report.Revision = report.BuildRevision()
+			}
 			post()
 			view = read()
 			if view.Health != "online" || len(view.Problems) != 0 {

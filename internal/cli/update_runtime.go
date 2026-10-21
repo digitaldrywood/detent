@@ -278,6 +278,7 @@ func requestUpdateRestart(controller *ShutdownController, restart *RestartReques
 	}
 	return controller.RequestDrainIfIdle(func() {
 		restart.set(binary)
+		controller.updateRestart.Store(true)
 	})
 }
 

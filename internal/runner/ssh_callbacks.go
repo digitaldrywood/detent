@@ -21,6 +21,7 @@ import (
 )
 
 type SSHRunRequest struct {
+	SourceIteration bool
 	IsolationPolicy *isolation.Policy
 	BatchedLanding  bool
 	ExecutionTools  []AgentTool
@@ -61,6 +62,7 @@ func NewSSHRunRequest(request RunRequest) SSHRunRequest {
 		}
 	}
 	if request.Execution != nil {
+		_, wire.SourceIteration = request.Execution.(NativeSourceIterationExecution)
 		recovery := request.Execution.Recovery()
 		wire.Recovery = &recovery
 		_, wire.Native = request.Execution.(ArtifactSourceExecution)
@@ -111,7 +113,11 @@ func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 			if sources == nil {
 				sources = &SSHExecutionSources{}
 			}
-			request.Execution = &sshNativeExecution{batchedLanding: wire.BatchedLanding, sshExecution: execution, sources: sources, capacity: wire.Capacity, tools: wire.ExecutionTools}
+			native := &sshNativeExecution{batchedLanding: wire.BatchedLanding, sshExecution: execution, sources: sources, capacity: wire.Capacity, tools: wire.ExecutionTools}
+			request.Execution = native
+			if wire.SourceIteration {
+				request.Execution = &sshSourceIterationExecution{sshNativeExecution: native}
+			}
 		}
 	}
 	return request

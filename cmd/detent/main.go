@@ -39,7 +39,7 @@ func main() {
 
 func finishCLI(exitCode int, restartBinary string, manager service.ManagerName, restart func(string, []string, []string) error) int {
 	if exitCode == cli.ExitSuccess && restartBinary != "" {
-		if manager == service.ManagerLaunchd || manager == service.ManagerSystemd || manager == service.ManagerScheduledTask {
+		if manager == service.ManagerScheduledTask {
 			return cli.ExitGeneral
 		}
 		if err := restart(restartBinary, os.Args, os.Environ()); err != nil {

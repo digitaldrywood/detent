@@ -44,6 +44,7 @@ type ShutdownController struct {
 	active                  atomic.Bool
 	shutdownRequested       atomic.Bool
 	forceRequested          atomic.Bool
+	updateRestart           atomic.Bool
 	shutdownStatus          atomic.Pointer[telemetry.Shutdown]
 	signalNoticesSuppressed atomic.Bool
 }
@@ -139,6 +140,7 @@ func (c *ShutdownController) activate() func() {
 	}
 	c.shutdownRequested.Store(false)
 	c.forceRequested.Store(false)
+	c.updateRestart.Store(false)
 	c.shutdownStatus.Store(nil)
 	c.active.Store(true)
 	return func() {
@@ -258,6 +260,10 @@ func runDrainShutdown(
 ) error {
 	startedAt := shutdownNow(cfg)
 	drainTimeout := shutdownDrainTimeoutForConfig(cfg)
+	updateRestart := cfg.Controller.updateRestart.Load()
+	if updateRestart {
+		drainTimeout = 0
+	}
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := time.Until(deadline)
 		if remaining < drainTimeout {
@@ -273,11 +279,13 @@ func runDrainShutdown(
 	err := quiesceProjects(quiesceCtx, cfg.Registry)
 	cancelQuiesce()
 	if err != nil {
-		sessions, _ := cachedShutdownRunningSessions(cfg)
-		machine = machine.Apply(shutdownstate.EventDrainTimedOut)
 		shutdownLogger(cfg).Warn("quiesce projects during shutdown failed", "error", err)
-		logShutdownDrainTimeout(cfg, sessions, drainTimeout)
-		return runForceShutdownWithDeadline(ctx, cfg, cancelServe, serveErrs, machine, "drain timeout", ErrShutdownTimeout, hardTimeout, sessions)
+		if !updateRestart {
+			sessions, _ := cachedShutdownRunningSessions(cfg)
+			machine = machine.Apply(shutdownstate.EventDrainTimedOut)
+			logShutdownDrainTimeout(cfg, sessions, drainTimeout)
+			return runForceShutdownWithDeadline(ctx, cfg, cancelServe, serveErrs, machine, "drain timeout", ErrShutdownTimeout, hardTimeout, sessions)
+		}
 	}
 	inventoryStarted := logShutdownBoundaryBegin(shutdownLogger(cfg), "initial_running_session_inventory")
 	sessions, inventoryKnown := initialShutdownRunningSessions(ctx, cfg, startedAt)

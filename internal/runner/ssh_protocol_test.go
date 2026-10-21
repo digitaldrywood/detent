@@ -384,3 +384,87 @@ func TestResolveSSHWorkflowPreservesHookShell(t *testing.T) {
 		})
 	}
 }
+
+type sshSourceIterationTestExecution struct {
+	*readToolTestExecution
+	iterations int
+}
+
+func (*sshSourceIterationTestExecution) SourceReview(context.Context) (NativeChange, error) {
+	return NativeChange{ChangeID: "change-fixture", VersionID: "version-fixture", HeadSHA: "head-fixture"}, nil
+}
+
+func (e *sshSourceIterationTestExecution) PrepareSourceIteration(_ context.Context, source tracker.NativeChangeReference) error {
+	if source.ChangeID != "change-fixture" || source.VersionID != "version-fixture" || source.HeadSHA != "head-fixture" {
+		return errors.New("source iteration lost its reviewed version")
+	}
+	e.iterations++
+	return nil
+}
+
+func TestSSHWorkerSourceIterationCompatibility(t *testing.T) {
+	t.Parallel()
+	for _, legacy := range []bool{true, false} {
+		t.Run(fmt.Sprintf("legacy controller=%t", legacy), func(t *testing.T) {
+			t.Parallel()
+			owner := &sshSourceIterationTestExecution{readToolTestExecution: &readToolTestExecution{}}
+			request := RunRequest{Execution: owner}
+			wire := NewSSHRunRequest(request)
+			wire.Native = true
+			data, err := json.Marshal(wire)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if legacy {
+				var bootstrap map[string]json.RawMessage
+				if err := json.Unmarshal(data, &bootstrap); err != nil {
+					t.Fatal(err)
+				}
+				delete(bootstrap, "SourceIteration")
+				data, err = json.Marshal(bootstrap)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			var transported SSHRunRequest
+			if err := json.Unmarshal(data, &transported); err != nil {
+				t.Fatal(err)
+			}
+			left, right := net.Pipe()
+			t.Cleanup(func() { left.Close(); right.Close() })
+			callback := NewSSHCallbackHandler(request, nil, nil, nil)
+			central := NewSSHPeer(t.Context(), left, left, func(ctx context.Context, method string, args []json.RawMessage) (any, error) {
+				if legacy && (method == "execution.SourceReview" || method == "execution.PrepareSourceIteration") {
+					return nil, errors.New("unsupported SSH execution method")
+				}
+				return callback(ctx, method, args)
+			})
+			t.Cleanup(central.Close)
+			remote := NewSSHPeer(t.Context(), right, right, nil)
+			t.Cleanup(remote.Close)
+			bound := transported.Bind(t.Context(), remote)
+			if err := bound.Execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: RoleCode, Backend: "codex", Model: "fixture"}); err != nil {
+				t.Fatal(err)
+			}
+			iteration, supported := bound.Execution.(NativeSourceIterationExecution)
+			if supported == legacy {
+				t.Fatalf("source iteration supported = %t for legacy controller = %t", supported, legacy)
+			}
+			if supported {
+				change, err := iteration.SourceReview(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := iteration.PrepareSourceIteration(t.Context(), tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: change.VersionID, HeadSHA: change.HeadSHA}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := bound.Execution.(CompletionExecution).PrepareFinish(t.Context(), "succeeded", "worker turn completed", nil); err != nil {
+				t.Fatal(err)
+			}
+			if !owner.started || owner.completionBody != "worker turn completed" || (!legacy && owner.iterations != 1) || (legacy && owner.iterations != 0) {
+				t.Fatalf("worker did not complete through compatible callbacks: %+v", owner)
+			}
+		})
+	}
+}

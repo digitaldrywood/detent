@@ -692,7 +692,9 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 				}
 				return opts, nil
 			}
-			if remote, ok := execution.(*sshNativeExecution); ok {
+			if remote, ok := execution.(interface {
+				setPublicationIdentity(func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error))
+			}); ok {
 				remote.setPublicationIdentity(func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
 					resolver, ok := backend.(interface {
 						GitHubPublicationIdentity(context.Context, workspace.Info, workspace.Issue, workspace.LandOptions) (workspace.GitHubPublication, error)

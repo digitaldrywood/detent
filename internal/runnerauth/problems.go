@@ -63,6 +63,9 @@ func NewProblem(code string) Problem {
 	case "version_unsupported":
 		p.Message = "The runner's protocol version is unsupported."
 		p.FixHint = "Upgrade the runner to a version compatible with this Hub."
+	case "update_applied_not_running":
+		p.Message = "The runner control process has not converged to its applied verified release."
+		p.FixHint = "Check the runner's update and restart logs; active attempts must finish before its control process restarts."
 	}
 	return p
 }

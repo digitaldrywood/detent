@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -1551,6 +1552,13 @@ type finalizingExecutionWorkspace struct {
 	finalized     bool
 }
 
+func (w *finalizingExecutionWorkspace) GitHubPublicationIdentity(_ context.Context, _ workspace.Info, issue workspace.Issue, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+	if !w.finalized || opts.GitHubClient == nil {
+		return workspace.GitHubPublication{}, errors.New("publication identity lost finalized source or selected client")
+	}
+	return workspace.GitHubPublication{Repository: opts.Repository, HeadSHA: opts.HeadSHA, Branch: "detent/fixture", BaseRef: issue.ProgressBaseRef}, nil
+}
+
 func (w *finalizingExecutionWorkspace) PrepareGitHubPublication(ctx context.Context, _ workspace.Info, issue workspace.Issue, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
 	if !w.finalized || opts.Repository != "https://github.com/example/repo" || opts.HeadSHA != strings.Repeat("c", 40) || opts.TargetBranch != issue.ProgressBaseRef || opts.GitHubClient == nil || opts.Authorize == nil {
 		return workspace.GitHubPublication{}, errors.New("publication hook lost finalized source, target, client or authority")
@@ -1558,7 +1566,13 @@ func (w *finalizingExecutionWorkspace) PrepareGitHubPublication(ctx context.Cont
 	if err := opts.Authorize(ctx); err != nil {
 		return workspace.GitHubPublication{}, err
 	}
-	return workspace.GitHubPublication{Repository: opts.Repository, HeadSHA: opts.HeadSHA, BaseRef: opts.TargetBranch}, nil
+	publication := workspace.GitHubPublication{Repository: opts.Repository, HeadSHA: opts.HeadSHA, Branch: "detent/fixture", BaseRef: opts.TargetBranch}
+	if opts.PublicationEffect != nil {
+		if err := opts.PublicationEffect(ctx, "git_push", "confirmed", publication); err != nil {
+			return workspace.GitHubPublication{}, err
+		}
+	}
+	return publication, nil
 }
 
 func (w *finalizingExecutionWorkspace) FinalizeNativeWork(ctx context.Context, _ workspace.Info, _ workspace.Issue, validate func(context.Context) error) (string, error) {
@@ -1602,9 +1616,13 @@ func TestNativeEpilogueStageContexts(t *testing.T) {
 		clean           bool
 		wantErr         error
 		publicationHook bool
+		remote          bool
+		sourceIteration bool
 	}{
 		{name: "slow finalization", finalDelay: 2 * time.Second},
 		{name: "required PR hook retains configured source and target", publicationHook: true},
+		{name: "SSH publication identity without source iteration", publicationHook: true, remote: true},
+		{name: "SSH publication identity with source iteration", publicationHook: true, remote: true, sourceIteration: true},
 		{name: "slow artifacts", artifactDelay: 2 * time.Second},
 		{name: "clean committed source cancelled during artifacts", finalDelay: 2 * time.Second, artifactDelay: 2 * time.Second, clean: true, cancel: true, wantErr: context.Canceled},
 		{name: "genuine parent deadline retains source without success", finalDelay: 2 * time.Second, artifactDelay: 2 * time.Second, parentDeadline: 3 * time.Second, clean: true, wantErr: context.DeadlineExceeded},
@@ -1640,23 +1658,48 @@ func TestNativeEpilogueStageContexts(t *testing.T) {
 				}
 				r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
 				issue := workspace.Issue{}
+				request := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}, finalizeNativeWork: true}
+				var client *github.Client
 				if test.publicationHook {
 					issue.ProgressBaseRef = "develop"
-				}
-				err := r.afterExecution(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}, finalizeNativeWork: true}, backend, workspace.Info{}, issue, AgentResume{}, true)
-				if test.publicationHook {
-					if err != nil || execution.publicationSource == nil || execution.checkpoint == nil {
-						t.Fatalf("host finalization omitted publication hook: %v", err)
-					}
-					client, clientErr := github.NewClient(github.ClientConfig{TokenSource: github.StaticTokenSource(t.Name()), HTTPClient: workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+					var clientErr error
+					client, clientErr = github.NewClient(github.ClientConfig{TokenSource: github.StaticTokenSource(t.Name()), HTTPClient: workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
 						return nil, errors.New("publication fixture must not reach GitHub")
 					})})
 					if clientErr != nil {
 						t.Fatal(clientErr)
 					}
-					publication, publicationErr := execution.publicationSource(ctx, tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{Repository: "https://github.com/example/repo", HeadSHA: strings.Repeat("c", 40)}}, workspace.LandOptions{GitHubClient: client, Authorize: execution.Validate})
-					if publicationErr != nil || publication.Repository != "https://github.com/example/repo" || publication.HeadSHA != strings.Repeat("c", 40) || publication.BaseRef != "develop" {
-						t.Fatalf("publication hook changed source binding: %+v, %v", publication, publicationErr)
+					issue.Landing = &workspace.LandOptions{GitHubClient: client}
+				}
+				if test.remote {
+					r.workflow.Config.Gate.Kind = gate.KindArtifact
+					left, right := net.Pipe()
+					defer left.Close()
+					defer right.Close()
+					callbacks := r.SSHRunCallbacks(request)
+					central := NewSSHPeer(ctx, left, left, callbacks.Handle)
+					defer central.Close()
+					callbacks.BindExecutionSources(central, t.TempDir())
+					sources := &SSHExecutionSources{}
+					remote := NewSSHPeer(ctx, right, right, sources.Handle)
+					defer remote.Close()
+					wire := NewSSHRunRequest(request)
+					wire.Native, wire.SourceIteration, wire.Sources = true, test.sourceIteration, sources
+					bound := wire.Bind(ctx, remote)
+					request.Execution = bound.Execution
+					if _, supported := request.Execution.(NativeSourceIterationExecution); supported != test.sourceIteration {
+						t.Fatalf("source iteration support = %t, want %t", supported, test.sourceIteration)
+					}
+				}
+				err := r.afterExecution(ctx, request, backend, workspace.Info{}, issue, AgentResume{}, true)
+				if test.publicationHook {
+					if err != nil || execution.publicationSource == nil || execution.checkpoint == nil {
+						t.Fatalf("host finalization omitted publication hook: %v", err)
+					}
+					effects := 0
+					publication, publicationErr := execution.publicationSource(ctx, tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{Repository: "https://github.com/example/repo", HeadSHA: strings.Repeat("c", 40)}}, workspace.LandOptions{GitHubClient: client, Authorize: execution.Validate, PublicationEffect: func(context.Context, string, string, workspace.GitHubPublication) error { effects++; return nil }})
+					if publicationErr != nil || publication.Repository != "https://github.com/example/repo" || publication.HeadSHA != strings.Repeat("c", 40) || publication.BaseRef != "develop" || publication.Branch != "detent/fixture" || effects != 1 {
+						t.Fatalf("publication hook changed source binding: %+v, effects=%d, %v", publication, effects, publicationErr)
 					}
 				}
 				preserved := test.preserveErr == nil && test.preserveDelay == 0

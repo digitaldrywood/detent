@@ -590,8 +590,8 @@ func TestFinishCLIUpdateRestart(t *testing.T) {
 		wantCode, wantCalls int
 	}{
 		{name: "scheduled task", manager: service.ManagerScheduledTask, binary: "detent.exe", wantCode: cli.ExitGeneral},
-		{name: "launchd", manager: service.ManagerLaunchd, binary: "detent", wantCode: cli.ExitGeneral},
-		{name: "systemd", manager: service.ManagerSystemd, binary: "detent", wantCode: cli.ExitGeneral},
+		{name: "launchd", manager: service.ManagerLaunchd, binary: "detent", wantCalls: 1},
+		{name: "systemd", manager: service.ManagerSystemd, binary: "detent", wantCalls: 1},
 		{name: "manual", manager: service.ManagerManual, binary: "detent", wantCalls: 1},
 		{name: "manual restart failure", binary: "detent", restartErr: errors.New("exec failed"), wantCode: cli.ExitGeneral, wantCalls: 1},
 		{name: "ordinary shutdown", manager: service.ManagerScheduledTask},

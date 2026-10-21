@@ -10,7 +10,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +27,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
+	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
@@ -103,14 +108,15 @@ func TestOfflineCLIUpdateReportsVerifiedController(t *testing.T) {
 	if err := os.WriteFile(os.Getenv("DETENT_INSTALL_LOCK"), []byte("binary="+binary+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	service := detentupdate.NewService(detentupdate.Config{CurrentVersion: offlineUpdateVersion, CurrentCommit: offlineUpdateCommit, ExecutablePath: binary, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Client: client,
+	serviceConfig := detentupdate.Config{CurrentVersion: offlineUpdateVersion, CurrentCommit: offlineUpdateCommit, ExecutablePath: binary, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Client: client,
 		ChecksumSignatureVerifier: func(_ context.Context, checksums, signature []byte) error {
 			return detentupdate.VerifyMinisignSignature(publicKey, checksums, signature)
 		},
 		BinaryVerifier: func(context.Context, string) (string, error) {
 			return "version: v" + offlineUpdateVersion + "\ncommit: " + offlineUpdateCommit + "\n", nil
 		},
-	})
+	}
+	service := detentupdate.NewService(serviceConfig)
 	options := detentupdate.ApplyOptions{AssumeYes: true, FromRelease: true, RecoveryStatePath: detentupdate.RecoveryStatePath(configPath),
 		Preflight: detentupdate.CommandPreflight("-test.run=^TestOfflineUpdateControllerProcess$"),
 	}
@@ -143,6 +149,135 @@ func TestOfflineCLIUpdateReportsVerifiedController(t *testing.T) {
 	sum := sha256.Sum256(payload)
 	if heartbeat.Validate() != nil || !heartbeat.Running.VerifiedRelease || heartbeat.Running.Source != "release" || heartbeat.Running.Version != offlineUpdateVersion || heartbeat.Running.Commit != offlineUpdateCommit || heartbeat.Running.SHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("offline evidence did not reach fresh heartbeat: %+v", heartbeat)
+	}
+	t.Run("busy slots converge to the applied controller", func(t *testing.T) {
+		testOfflineBusyControllerConvergence(t, configPath, binary, serviceConfig, options)
+	})
+}
+
+func testOfflineBusyControllerConvergence(t *testing.T, configPath, binary string, serviceConfig detentupdate.Config, options detentupdate.ApplyOptions) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	global, err := globalconfig.Read(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceConfig.CurrentVersion, serviceConfig.CurrentCommit = "1.2.2", strings.Repeat("b", 40)
+	service := detentupdate.NewService(serviceConfig)
+	artifacts, err := detentupdate.NewWorkerArtifacts(service, filepath.Join(t.TempDir(), "workers"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := make(chan struct{})
+	runner := &shutdownBlockingRunner{started: make(chan struct{}, 1), canceled: make(chan struct{}, 1), release: active}
+	project := newShutdownRuntimeProject(t, "selected", []connector.Issue{{ID: "active-issue", Identifier: "owner/repository#1", Title: "Active implementation", State: "Todo", AssignedToWorker: true}}, runner)
+	if err := project.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer project.Close()
+	<-runner.started
+	registry := projectpkg.NewRegistry()
+	mustSetProject(t, registry, project)
+	controller, restart := NewShutdownController(), NewRestartRequest()
+	started, finished := make(chan struct{}), make(chan struct{})
+	replaced := make(chan error, 1)
+	go func() {
+		defer close(finished)
+		if err := runWithShutdown(ctx, runningShutdownConfig{Controller: controller, Registry: registry, DrainTimeout: time.Minute, Logger: logger, Output: io.Discard}, func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		}); err != nil {
+			replaced <- err
+			return
+		}
+		child := exec.CommandContext(ctx, restart.Binary(), "-test.run=^TestOfflineUpdateControllerProcess$")
+		child.Env = append(os.Environ(), "DETENT_OFFLINE_UPDATE_PHASE=heartbeat")
+		output, err := child.CombinedOutput()
+		if err != nil {
+			err = fmt.Errorf("replacement controller: %w: %s", err, output)
+		}
+		replaced <- err
+	}()
+	defer func() { cancel(); <-finished }()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	scheduler, err := detentupdate.NewScheduler(detentupdate.SchedulerConfig{
+		WorkerArtifacts: artifacts, WorkerPreflight: options.Preflight, Updater: service, ApplyOptions: options, Logger: logger,
+		CheckInterval: time.Hour, StatePath: runtimeUpdateStatePath(BootConfig{Global: global}),
+		RunningBuild: runnerauth.BuildEvidence{Version: "1.2.2", Commit: strings.Repeat("b", 40), SHA256: strings.Repeat("c", 64), Source: "release", OS: runtime.GOOS, Architecture: runtime.GOARCH, ObservedAt: time.Now().UTC()},
+		ReserveIdle:  func(ctx context.Context) (func(), bool) { return func() {}, runtimeUpdateIdle(ctx, registry) },
+		ReserveDrain: func(context.Context) (func(), error) {
+			return nil, errors.New("routine update must preserve active attempts")
+		},
+		RequestRestart: func(path string) bool { return requestUpdateRestart(controller, restart, path) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportPath := os.Getenv("DETENT_OFFLINE_UPDATE_REPORT")
+	if err := os.Remove(reportPath); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DETENT_OFFLINE_UPDATE_PHASE", "preflight")
+	before := scheduler.EnrolledUpdate(ctx, scheduler.RunningBuild(), nil)
+	applied := scheduler.EnrolledUpdate(ctx, scheduler.RunningBuild(), &runnerauth.UpdateRequest{ID: "busy-update", Service: "detent", Version: offlineUpdateVersion, Release: true, FromRelease: true, FollowHub: true, ExpectedBuildRevision: before.Revision, RequestedAt: time.Now().UTC()})
+	if applied == nil || applied.Receipt == nil || applied.Receipt.Applied == nil || !applied.Receipt.Applied.VerifiedRelease || applied.Receipt.Status != "restart_requested" || applied.Running.Version != "1.2.2" || applied.Receipt.Applied.Version != offlineUpdateVersion || restart.Binary() != binary {
+		t.Fatalf("busy update did not apply and request convergence: %+v", applied)
+	}
+	state, err := project.Orchestrator().State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.Running["active-issue"]; !ok {
+		t.Fatal("update lost the active attempt")
+	}
+	if _, ok := state.Claimed["active-issue"]; !ok {
+		t.Fatal("update released the active claim before completion")
+	}
+	if _, err := os.Stat(reportPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement reported before the active attempt completed: %v", err)
+	}
+	select {
+	case err := <-replaced:
+		t.Fatalf("controller exited while its attempt was active: %v", err)
+	case <-runner.canceled:
+		t.Fatal("update canceled the active attempt")
+	default:
+	}
+	close(active)
+	convergence := time.NewTimer(15 * time.Second)
+	defer convergence.Stop()
+	select {
+	case err := <-replaced:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-convergence.C:
+		t.Fatal("replacement controller did not report within 15 seconds of attempt completion")
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	raw, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var running runnerauth.UpdateObservation
+	if err := json.Unmarshal(raw, &running); err != nil {
+		t.Fatal(err)
+	}
+	if running.Validate() != nil || !running.Running.VerifiedRelease || !running.Running.Matches(*applied.Receipt.Applied) || running.Receipt == nil || running.Receipt.Status != "running" || running.Receipt.Running == nil {
+		t.Fatalf("replacement controller did not converge to the applied release: %+v", running)
+	}
+	select {
+	case <-runner.canceled:
+		t.Fatal("controller convergence canceled the completed attempt")
+	default:
 	}
 }
 

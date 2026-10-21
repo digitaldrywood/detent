@@ -1650,8 +1650,10 @@ func TestShutdownDrainBudget(t *testing.T) {
 		name          string
 		parentTimeout time.Duration
 		wantShort     bool
+		updateRestart bool
 	}{
 		{name: "full drain budget"},
+		{name: "update preserves active attempt beyond drain budget", updateRestart: true},
 		{name: "short parent", parentTimeout: 10 * time.Second, wantShort: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1692,9 +1694,20 @@ func TestShutdownDrainBudget(t *testing.T) {
 					}, func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() })
 				}()
 				synctest.Wait()
-				controller.RequestDrain()
+				restart := NewRestartRequest()
+				if tc.updateRestart {
+					if !requestUpdateRestart(controller, restart, "verified-controller") {
+						t.Fatal("update restart request refused")
+					}
+				} else {
+					controller.RequestDrain()
+				}
 				synctest.Wait()
-				time.Sleep(6 * time.Second)
+				if tc.updateRestart {
+					time.Sleep(2 * time.Minute)
+				} else {
+					time.Sleep(6 * time.Second)
+				}
 				synctest.Wait()
 				select {
 				case err := <-done:
@@ -1706,6 +1719,16 @@ func TestShutdownDrainBudget(t *testing.T) {
 					t.Fatal("active work was cancelled before the drain budget")
 				default:
 				}
+				state, err := p.Orchestrator().State(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, running := state.Running["active-issue"]; !running {
+					t.Fatal("shutdown lost the active attempt")
+				}
+				if _, claimed := state.Claimed["active-issue"]; !claimed {
+					t.Fatal("shutdown released the active claim")
+				}
 				failedEarly := strings.Contains(logs.String(), "drain projects during shutdown failed")
 				close(release)
 				synctest.Wait()
@@ -1713,6 +1736,9 @@ func TestShutdownDrainBudget(t *testing.T) {
 				synctest.Wait()
 				if err := <-done; err != nil {
 					t.Fatal(err)
+				}
+				if tc.updateRestart && restart.Binary() != "verified-controller" {
+					t.Fatalf("restart selected %q, want the verified controller", restart.Binary())
 				}
 				if failedEarly {
 					t.Fatalf("drain expired at hard cleanup timeout: %s", logs.String())

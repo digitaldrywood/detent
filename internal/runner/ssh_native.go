@@ -432,11 +432,15 @@ func (e *sshNativeExecution) SetDependencyReasonGenerator(generate DependencyRea
 	e.sources.reasonGenerator = generate
 }
 
-func (e *sshNativeExecution) PrepareSourceIteration(ctx context.Context, source tracker.NativeChangeReference) error {
+type sshSourceIterationExecution struct {
+	*sshNativeExecution
+}
+
+func (e *sshSourceIterationExecution) PrepareSourceIteration(ctx context.Context, source tracker.NativeChangeReference) error {
 	return e.peer.Call(ctx, "execution.PrepareSourceIteration", nil, source)
 }
 
-func (e *sshNativeExecution) SourceReview(ctx context.Context) (NativeChange, error) {
+func (e *sshSourceIterationExecution) SourceReview(ctx context.Context) (NativeChange, error) {
 	var result NativeChange
 	err := e.peer.Call(ctx, "execution.SourceReview", &result)
 	return result, err

@@ -80,7 +80,6 @@ type Scheduler struct {
 
 type controlRestart struct {
 	installed Status
-	since     time.Time
 }
 
 func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
@@ -208,7 +207,16 @@ func (s *Scheduler) PrepareWorkers(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return artifact.Release()
+	if err := artifact.Release(); err != nil {
+		return err
+	}
+	if receipt := s.enrolledObservation(s.cfg.RunningBuild).Receipt; receipt != nil && receipt.Applied != nil && receipt.Applied.VerifiedRelease {
+		opts := s.cfg.ApplyOptions
+		opts.ExpectedVersion = receipt.Applied.Version
+		opts.FromRelease = receipt.Request.FromRelease
+		s.installControlLocked(ctx, opts, receipt.Applied.Version)
+	}
+	return nil
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
@@ -491,9 +499,9 @@ func (s *Scheduler) installControlLocked(ctx context.Context, opts ApplyOptions,
 		return Status{}, false
 	}
 	s.mu.Lock()
-	s.controlRestart = &controlRestart{installed: installed, since: s.cfg.Now()}
+	s.controlRestart = &controlRestart{installed: installed}
 	s.mu.Unlock()
-	s.cfg.Logger.Info("controller binary replaced; restart deferred until idle", "version", version)
+	s.cfg.Logger.Info("controller binary replaced; graceful restart pending", "version", version)
 	return installed, true
 }
 
@@ -513,9 +521,6 @@ func (s *Scheduler) restartBehindControlLocked(ctx context.Context) {
 		if releaseIdle != nil {
 			releaseIdle()
 			releaseIdle = nil
-		}
-		if s.cfg.Now().Before(pending.since.Add(s.cfg.MaxDeferral)) {
-			return
 		}
 	}
 	if !s.cfg.RequestRestart(pending.installed.Binary) {
@@ -655,7 +660,7 @@ func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func
 			status.LastError = "Update restart request was declined"
 		})
 		s.mu.Lock()
-		s.controlRestart = &controlRestart{installed: applied, since: s.cfg.Now()}
+		s.controlRestart = &controlRestart{installed: applied}
 		s.mu.Unlock()
 		s.cfg.Logger.Warn("Detent update applied; restart deferred because shutdown is already in progress or restart is unavailable", "version", applied.LatestVersion)
 		applied.FailureReason = "Update restart request was declined"

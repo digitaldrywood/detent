@@ -81,6 +81,9 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.T
 	if r.MachineUse == "" {
 		r.MachineUse = "shared"
 	}
+	if err := json.Unmarshal([]byte(updateRaw), &r.Update); err != nil {
+		return r, nil, time.Time{}, err
+	}
 	if err := applyRunnerProblems(&r, problems, isolationRaw, protocol, rejected, now); err != nil {
 		return r, nil, time.Time{}, err
 	}
@@ -91,9 +94,6 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.T
 				r.Problems[i].FixHint = "Ask an organization owner or admin to approve switching this runner to Full access. Projects requiring sandbox cannot use it with Full access."
 			}
 		}
-	}
-	if err := json.Unmarshal([]byte(updateRaw), &r.Update); err != nil {
-		return r, nil, time.Time{}, err
 	}
 	var urgent urgentRunnerUpdate
 	if err := json.Unmarshal([]byte(urgentRaw), &urgent); err != nil {

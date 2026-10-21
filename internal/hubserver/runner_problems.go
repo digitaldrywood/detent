@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"time"
 
@@ -36,6 +37,12 @@ func applyRunnerProblems(r *runnerauth.Runner, raw, isolationRaw string, protoco
 	}
 	r.BackendIsolation = report
 	r.Problems = mergeRunnerProblems(previous, previous, protocol, rejected, r.LastHeartbeatAt)
+	if update := r.Update; update != nil && update.Receipt != nil && update.Receipt.Applied != nil && update.Receipt.Applied.VerifiedRelease && !update.Running.Matches(*update.Receipt.Applied) {
+		problem := runnerauth.NewProblem("update_applied_not_running")
+		problem.Message = fmt.Sprintf("The runner control process is running %s while verified release %s is applied.", update.Running.Version, update.Receipt.Applied.Version)
+		problem.ReportedAt = update.ObservedAt
+		r.Problems = append(r.Problems, runnerauth.MergeProblems(nil, []runnerauth.Problem{problem}, update.Receipt.ObservedAt)...)
+	}
 	r.Problems = slices.DeleteFunc(r.Problems, func(p runnerauth.Problem) bool {
 		return p.Code == "backend_probe_failed" && p.CachedCapabilities && p.Subject == "backend_isolation" && p.Check == "runner isolation probe" && !p.FirstSeen.IsZero() && now.Before(p.FirstSeen.Add(cachedProbeProblemWindow))
 	})
