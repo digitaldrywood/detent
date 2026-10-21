@@ -1,0 +1,597 @@
+package orchestrator
+
+import (
+	"context"
+	"path/filepath"
+	"strings"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
+)
+
+func TestRecordedBlockerPredicateRegistry(t *testing.T) {
+	now := time.Date(2026, 8, 16, 18, 0, 0, 0, time.UTC)
+	present := true
+	absent := false
+	tests := []struct {
+		name             string
+		blocker          workpad.Blocker
+		prepare          func(*Orchestrator, *State, *connector.Issue, *blockerEvidenceTestConnector)
+		wantStatus       string
+		wantUnverifiable bool
+		wantOwner        string
+	}{
+		{
+			name: "issue state holds",
+			blocker: typedTestBlocker(workpad.Predicate{
+				Type:       workpad.PredicateIssueState,
+				Identifier: "digitaldrywood/detent#42",
+				States:     []string{"open"},
+			}),
+			prepare: func(_ *Orchestrator, _ *State, _ *connector.Issue, tracker *blockerEvidenceTestConnector) {
+				tracker.blockers = []connector.Issue{{Identifier: "digitaldrywood/detent#42", State: "In Progress"}}
+			},
+			wantStatus: blockerEvidenceStatusHolds,
+			wantOwner:  workpad.BlockerOwnerOrchestrator,
+		},
+		{
+			name: "issue state clears",
+			blocker: typedTestBlocker(workpad.Predicate{
+				Type:       workpad.PredicateIssueState,
+				Identifier: "digitaldrywood/detent#42",
+				States:     []string{"open"},
+			}),
+			prepare: func(_ *Orchestrator, _ *State, _ *connector.Issue, tracker *blockerEvidenceTestConnector) {
+				tracker.blockers = []connector.Issue{{Identifier: "digitaldrywood/detent#42", State: "Done", Closed: true}}
+			},
+			wantStatus: blockerEvidenceStatusCleared,
+			wantOwner:  workpad.BlockerOwnerOrchestrator,
+		},
+		{
+			name: "issue state rejects self reference",
+			blocker: typedTestBlocker(workpad.Predicate{
+				Type:       workpad.PredicateIssueState,
+				Identifier: "digitaldrywood/detent#evidence",
+				States:     []string{"open"},
+			}),
+			wantStatus:       blockerEvidenceStatusUnverifiable,
+			wantUnverifiable: true,
+			wantOwner:        workpad.BlockerOwnerOrchestrator,
+		},
+		{
+			name: "pull request state holds",
+			blocker: typedTestBlocker(workpad.Predicate{
+				Type:   workpad.PredicatePullRequestState,
+				States: []string{"open"},
+			}),
+			prepare: func(_ *Orchestrator, _ *State, issue *connector.Issue, _ *blockerEvidenceTestConnector) {
+				issue.PullRequest = &connector.PullRequest{Number: 42, State: "OPEN"}
+			},
+			wantStatus: blockerEvidenceStatusHolds,
+			wantOwner:  workpad.BlockerOwnerOrchestrator,
+		},
+		{
+			name: "pull request state clears",
+			blocker: typedTestBlocker(workpad.Predicate{
+				Type:   workpad.PredicatePullRequestState,
+				States: []string{"open"},
+			}),
+			prepare: func(_ *Orchestrator, _ *State, issue *connector.Issue, _ *blockerEvidenceTestConnector) {
+				issue.PullRequest = &connector.PullRequest{Number: 42, State: "MERGED"}
+			},
+			wantStatus: blockerEvidenceStatusCleared,
+			wantOwner:  workpad.BlockerOwnerOrchestrator,
+		},
+		{
+			name: "pull request state refresh clears stale state",
+			blocker: typedTestBlocker(workpad.Predicate{
+				Type:   workpad.PredicatePullRequestState,
+				States: []string{"open"},
+			}),
+			prepare: func(_ *Orchestrator, _ *State, issue *connector.Issue, tracker *blockerEvidenceTestConnector) {
+				issue.PullRequest = &connector.PullRequest{Number: 42, State: "OPEN"}
+				tracker.hydratedPullRequest = &connector.PullRequest{Number: 42, State: "MERGED"}
+			},
+			wantStatus: blockerEvidenceStatusCleared,
+			wantOwner:  workpad.BlockerOwnerOrchestrator,
+		},
+		{
+			name: "check absence holds",
+			blocker: typedTestBlocker(workpad.Predicate{
+				Type:    workpad.PredicateCheckPresence,
+				Check:   "Test",
+				Present: &absent,
+			}),
+			prepare: func(_ *Orchestrator, _ *State, issue *connector.Issue, _ *blockerEvidenceTestConnector) {
+				issue.PullRequest = &connector.PullRequest{Number: 42, State: "OPEN"}
+			},
+			wantStatus: blockerEvidenceStatusHolds,
+			wantOwner:  workpad.BlockerOwnerOrchestrator,
+		},
+		{
+			name: "check appearance clears",
+			blocker: typedTestBlocker(workpad.Predicate{
+				Type:    workpad.PredicateCheckPresence,
+				Check:   "Test",
+				Present: &absent,
+			}),
+			prepare: func(_ *Orchestrator, _ *State, issue *connector.Issue, _ *blockerEvidenceTestConnector) {
+				issue.PullRequest = &connector.PullRequest{Number: 42, State: "OPEN", Checks: []connector.PullRequestCheck{{Name: "Test"}}}
+			},
+			wantStatus: blockerEvidenceStatusCleared,
+			wantOwner:  workpad.BlockerOwnerOrchestrator,
+		},
+		{
+			name: "check presence condition holds",
+			blocker: typedTestBlocker(workpad.Predicate{
+				Type:    workpad.PredicateCheckPresence,
+				Check:   "Test",
+				Present: &present,
+			}),
+			prepare: func(_ *Orchestrator, _ *State, issue *connector.Issue, _ *blockerEvidenceTestConnector) {
+				issue.PullRequest = &connector.PullRequest{Number: 42, State: "OPEN", Checks: []connector.PullRequestCheck{{Name: "Test"}}}
+			},
+			wantStatus: blockerEvidenceStatusHolds,
+			wantOwner:  workpad.BlockerOwnerOrchestrator,
+		},
+		{
+			name: "budget exhaustion holds",
+			blocker: typedTestBlocker(workpad.Predicate{
+				Type:      workpad.PredicateBudgetCapacity,
+				Scope:     "daily_budget",
+				Condition: "exhausted",
+			}),
+			prepare: func(orch *Orchestrator, _ *State, _ *connector.Issue, _ *blockerEvidenceTestConnector) {
+				orch.dailyBudgetStatus = fakeDailyBudgetStatusProvider{status: DailyBudgetStatus{Active: true, CurrentSpendUSD: 10, MaxUSD: 10}}
+			},
+			wantStatus: blockerEvidenceStatusHolds,
+			wantOwner:  workpad.BlockerOwnerOrchestrator,
+		},
+		{
+			name: "budget recovery clears",
+			blocker: typedTestBlocker(workpad.Predicate{
+				Type:      workpad.PredicateBudgetCapacity,
+				Scope:     "daily_budget",
+				Condition: "exhausted",
+			}),
+			prepare: func(orch *Orchestrator, _ *State, _ *connector.Issue, _ *blockerEvidenceTestConnector) {
+				orch.dailyBudgetStatus = fakeDailyBudgetStatusProvider{status: DailyBudgetStatus{Active: true, CurrentSpendUSD: 4, MaxUSD: 10}}
+			},
+			wantStatus: blockerEvidenceStatusCleared,
+			wantOwner:  workpad.BlockerOwnerOrchestrator,
+		},
+		{
+			name: "config fingerprint holds",
+			blocker: typedTestBlocker(workpad.Predicate{
+				Type:        workpad.PredicateConfigFingerprint,
+				Fingerprint: "config-a",
+			}),
+			prepare: func(orch *Orchestrator, _ *State, _ *connector.Issue, _ *blockerEvidenceTestConnector) {
+				orch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: blockedRecoverySnapshotWithConfig("config-a")}
+			},
+			wantStatus: blockerEvidenceStatusHolds,
+			wantOwner:  workpad.BlockerOwnerOrchestrator,
+		},
+		{
+			name: "config fingerprint change clears",
+			blocker: typedTestBlocker(workpad.Predicate{
+				Type:        workpad.PredicateConfigFingerprint,
+				Fingerprint: "config-a",
+			}),
+			prepare: func(orch *Orchestrator, _ *State, _ *connector.Issue, _ *blockerEvidenceTestConnector) {
+				orch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: blockedRecoverySnapshotWithConfig("config-b")}
+			},
+			wantStatus: blockerEvidenceStatusCleared,
+			wantOwner:  workpad.BlockerOwnerOrchestrator,
+		},
+		{
+			name: "free text remains unverifiable",
+			blocker: workpad.Blocker{
+				Reason:       "waiting for an investigation",
+				Owner:        workpad.BlockerOwnerHuman,
+				Unverifiable: true,
+			},
+			wantStatus:       blockerEvidenceStatusUnverifiable,
+			wantUnverifiable: true,
+			wantOwner:        workpad.BlockerOwnerHuman,
+		},
+		{
+			name: "expired orchestrator predicate escalates",
+			blocker: func() workpad.Blocker {
+				blocker := typedTestBlocker(workpad.Predicate{Type: workpad.PredicateConfigFingerprint, Fingerprint: "config-a"})
+				expiresAt := now.Add(-time.Minute)
+				blocker.ExpiresAt = &expiresAt
+				return blocker
+			}(),
+			prepare: func(orch *Orchestrator, _ *State, _ *connector.Issue, _ *blockerEvidenceTestConnector) {
+				orch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: blockedRecoverySnapshotWithConfig("config-a")}
+			},
+			wantStatus:       blockerEvidenceStatusUnverifiable,
+			wantUnverifiable: true,
+			wantOwner:        workpad.BlockerOwnerOrchestrator,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker := &blockerEvidenceTestConnector{dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{}}
+			orch := blockedCauseTestOrchestrator(tracker.dependencyAutoUnblockConnector)
+			orch.connector = tracker
+			state := newState(orch.cfg)
+			issue := dependencyAutoUnblockIssue("issue-evidence", blockedStatusState)
+			recordedAt := now.Add(-time.Hour)
+			issue.WorkpadSignal = &workpad.Signal{
+				Source:     workpad.SourceStructured,
+				Status:     workpad.StatusBlocked,
+				RecordedAt: &recordedAt,
+				Blockers:   []workpad.Blocker{tt.blocker},
+			}
+			if tt.prepare != nil {
+				tt.prepare(orch, &state, &issue, tracker)
+			}
+
+			got := orch.evaluateRecordedBlockers(t.Context(), &state, issue, nil, now)
+			if !got.Found || len(got.Evidence) != 1 {
+				t.Fatalf("evaluation = %#v, want one recorded blocker", got)
+			}
+			evidence := got.Evidence[0]
+			if evidence.Status != tt.wantStatus || evidence.Unverifiable != tt.wantUnverifiable || evidence.Owner != tt.wantOwner {
+				t.Fatalf("evidence = %#v", evidence)
+			}
+			if evidence.AgeSeconds != int64(time.Hour/time.Second) {
+				t.Fatalf("AgeSeconds = %d, want %d", evidence.AgeSeconds, int64(time.Hour/time.Second))
+			}
+		})
+	}
+}
+
+func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
+	now := time.Date(2026, 8, 16, 18, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name              string
+		fingerprint       string
+		wantTransition    bool
+		wantStatus        string
+		priorReworkLimit  bool
+		dependencyState   string
+		nativeDisposition bool
+		instanceOnly      bool
+	}{
+		{name: "condition holds", fingerprint: "config-a", wantStatus: blockerEvidenceStatusHolds},
+		{name: "condition clears", fingerprint: "config-b", wantTransition: true},
+		{name: "other current causes preserve recorded recovery order", fingerprint: "config-b", wantTransition: true, priorReworkLimit: true},
+		{name: "stored native terminal prerequisite clears next tick", dependencyState: "Done", nativeDisposition: true, wantTransition: true},
+		{name: "stored native unfinished prerequisite holds", dependencyState: "In Progress", nativeDisposition: true, wantStatus: blockerEvidenceStatusHolds},
+		{name: "instance-only blocker releases the issue", instanceOnly: true, wantTransition: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker := &dependencyAutoUnblockConnector{}
+			orch := blockedCauseTestOrchestrator(tracker)
+			orch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: blockedRecoverySnapshotWithConfig(tt.fingerprint)}
+			issue := dependencyAutoUnblockIssue("issue-tick-evidence", blockedStatusState)
+			issue.WorkpadSignal = &workpad.Signal{
+				Source: workpad.SourceStructured,
+				Status: workpad.StatusBlocked,
+				Blockers: []workpad.Blocker{typedTestBlocker(workpad.Predicate{
+					Type:        workpad.PredicateConfigFingerprint,
+					Fingerprint: "config-a",
+				})},
+			}
+			if tt.instanceOnly {
+				issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: 'instance:check-barrier'\n    reason: barrier failed on the runner\n```"}}
+				issue.WorkpadSignal, _ = workpad.SignalFromComment(issue.Comments[0].Body, "", "")
+			}
+			if tt.dependencyState != "" {
+				dependency := connector.Issue{ID: "prerequisite", Identifier: "prj_test#517", State: tt.dependencyState, Closed: tt.dependencyState == "Done"}
+				tracker.blockers = []connector.Issue{dependency}
+				issue.Identifier = "prj_test#519"
+				issue.DependencySource = connector.BlockedRefSourceNative
+				issue.BlockedBy = []connector.BlockedRef{{ID: dependency.ID, Identifier: dependency.Identifier, State: dependency.State, Source: connector.BlockedRefSourceNative}}
+				issue.WorkpadSignal.Blockers = []workpad.Blocker{typedTestBlocker(workpad.Predicate{Type: workpad.PredicateIssueState, Identifier: dependency.Identifier, States: []string{"open"}})}
+			}
+			if tt.nativeDisposition {
+				issue.Metadata = map[string]string{"hub_profile": "native", "hub_disposition_attempt_id": "blocked-attempt", "hub_disposition_return_state": "Todo"}
+				observed := cloneIssue(issue)
+				observed.WorkpadSignal = nil
+				observed.Metadata = map[string]string{"hub_profile": "native"}
+				issue = mergeIssueTrackerFields(observed, issue)
+			}
+			state := newState(orch.cfg)
+			state.Blocked[issue.ID] = Blocked{Issue: issue, BlockedAt: now.Add(-time.Hour), Source: BlockedSourceProjectStatus}
+			if tt.priorReworkLimit {
+				orch.workflowMetrics = openWorkAttemptRecoveryStore(t, t.Context())
+				prior := cloneIssue(issue)
+				prior.State = "Rework"
+				prior.PullRequest = &connector.PullRequest{Number: 24, HeadSHA: "unchanged-head"}
+				orch.recordLaneTransition(t.Context(), prior, blockedStatusState, now.Add(-time.Hour), "rework_limit", workflowLaneMetadata{ReworkBreaker: &workflowLaneReworkBreakerMetadata{Reason: string(AutoPromoteReasonCINotGreen)}})
+				if _, found := orch.latestReworkBreakerPark(t.Context(), issue); !found {
+					t.Fatal("fixture must retain the unrelated Rework-limit owner")
+				}
+			}
+
+			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
+
+			_, didTransition := transitioned[issue.ID]
+			if didTransition != tt.wantTransition {
+				t.Fatalf("transitioned = %t, want %t", didTransition, tt.wantTransition)
+			}
+			if tt.wantTransition {
+				if len(tracker.updates) != 1 || tracker.updates[0].state != "Todo" {
+					t.Fatalf("updates = %#v, want Todo transition", tracker.updates)
+				}
+				if _, ok := state.Blocked[issue.ID]; ok {
+					t.Fatalf("Blocked[%q] remains after predicate cleared", issue.ID)
+				}
+				return
+			}
+			entry := state.Blocked[issue.ID]
+			if entry.RecoveryAction != "defer" || len(entry.BlockerEvidence) != 1 || entry.BlockerEvidence[0].Status != tt.wantStatus {
+				t.Fatalf("blocked entry = %#v", entry)
+			}
+			snapshot := state.Snapshot(now)
+			if len(snapshot.Blocked) != 1 || len(snapshot.Blocked[0].BlockerEvidence) != 1 || snapshot.Blocked[0].BlockerEvidence[0].Owner != workpad.BlockerOwnerOrchestrator {
+				t.Fatalf("snapshot blocker evidence = %#v", snapshot.Blocked)
+			}
+		})
+	}
+}
+
+func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
+	now := time.Date(2026, 9, 24, 3, 0, 0, 0, time.UTC)
+	parkedAt := now.Add(-time.Hour).Add(500 * time.Millisecond)
+	const source = "digitaldrywood/detent#685"
+	for _, tt := range []struct {
+		name           string
+		comments       []connector.IssueComment
+		body           string
+		authorized     bool
+		commentAt      time.Time
+		parkCause      string
+		legacyBlocker  bool
+		legacyLane     string
+		metadataAbsent bool
+		started        bool
+		wantState      string
+		wantTransition bool
+	}{
+		{name: "edited earlier clearance defeats stale later hold", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, wantState: "Todo", wantTransition: true,
+			comments: []connector.IssueComment{
+				{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", AuthorAuthorized: true, CreatedAt: new(parkedAt.Add(-time.Hour)), UpdatedAt: &now},
+				{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: approve release\n```", AuthorAuthorized: true, CreatedAt: &parkedAt, UpdatedAt: &parkedAt},
+			}},
+		{name: "edited earlier hold defeats stale later clearance", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason,
+			comments: []connector.IssueComment{
+				{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: approve release\n```", AuthorAuthorized: true, CreatedAt: new(parkedAt.Add(-time.Hour)), UpdatedAt: &now},
+				{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", AuthorAuthorized: true, CreatedAt: &parkedAt, UpdatedAt: &parkedAt},
+			}},
+		{name: "unknown project-status hold remains", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, metadataAbsent: true, started: true},
+		{name: "legacy Todo does not start fresh work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "Todo", started: true},
+		{name: "legacy clearance restores In Progress", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "In Progress", started: true, wantState: "In Progress", wantTransition: true},
+		{name: "legacy clearance restores Rework", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "Rework", started: true, wantState: "Rework", wantTransition: true},
+		{name: "legacy unauthorized answer holds", body: "status: in_progress\nblockers: []\nhuman_action: null", commentAt: now, legacyLane: "In Progress", started: true},
+		{name: "legacy stale answer holds", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: parkedAt.Add(-time.Minute), legacyLane: "In Progress", started: true},
+		{name: "legacy uncleared action holds", body: "status: blocked\nblockers: []\nhuman_action: approve rehearsal", authorized: true, commentAt: now, legacyLane: "In Progress", started: true},
+		{name: "legacy unresolved dependency holds", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "In Progress", started: true, legacyBlocker: true},
+		{name: "authorized clearance resumes existing work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, started: true, wantState: "Rework", wantTransition: true},
+		{name: "authorized clearance queues new work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, wantState: "Todo", wantTransition: true},
+		{name: "same-second clearance", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: parkedAt.Truncate(time.Second), parkCause: workpadBlockedUnactionedReason, wantState: "Todo", wantTransition: true},
+		{name: "unauthorized Workpad cannot clear", body: "status: in_progress\nblockers: []\nhuman_action: null", commentAt: now, parkCause: workpadBlockedUnactionedReason},
+		{name: "clearance predates park", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: parkedAt.Add(-time.Minute), parkCause: workpadBlockedUnactionedReason},
+		{name: "human action remains", body: "status: blocked\nblockers: []\nhuman_action: approve release", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason},
+		{name: "converted generated prerequisite stays human held", body: "status: blocked\nblockers: []\nhuman_action: decide whether to publish", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason},
+		{name: "unrelated human park", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: noProgressLimitReason},
+		{name: "unmigrated generated prerequisite remains", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, legacyBlocker: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker := &dependencyAutoUnblockConnector{}
+			orch := blockedCauseTestOrchestrator(tracker)
+			issue := dependencyAutoUnblockIssue("issue-human-clearance", blockedStatusState)
+			issue.StageUpdatedAt = &parkedAt
+			if tt.started {
+				issue.BranchName = "detent/human-clearance"
+			}
+			body := "## Codex Workpad\n\n```detent-status\nschema: 1\n" + tt.body + "\n```"
+			issue.Comments = []connector.IssueComment{{Body: body, AuthorAuthorized: tt.authorized, CreatedAt: &tt.commentAt}}
+			if tt.comments != nil {
+				issue.Comments = tt.comments
+			}
+			issue.WorkpadSignal, _ = workpad.SignalFromComment(body, "", "digitaldrywood/detent")
+			if tt.comments != nil {
+				issue.WorkpadSignal, _ = rawIssueWorkpadSignal(issue)
+			}
+			if tt.legacyBlocker {
+				issue.DependencySource = connector.BlockedRefSourceNative
+				issue.BlockedBy = []connector.BlockedRef{{Identifier: source, Source: connector.BlockedRefSourceNative}}
+				tracker.blockers = []connector.Issue{{Identifier: source, State: "Todo"}}
+			}
+			state := newState(orch.cfg)
+			state.Blocked[issue.ID] = Blocked{Issue: issue, BlockedAt: parkedAt, Source: BlockedSourceProjectStatus,
+				Recovery: &workflowLaneBlockedRecoveryMetadata{Owner: blockedRecoveryOwnerHuman, Cause: tt.parkCause, TargetState: "Rework"}}
+			if tt.metadataAbsent {
+				blocked := state.Blocked[issue.ID]
+				blocked.Recovery = nil
+				state.Blocked[issue.ID] = blocked
+			}
+			if tt.legacyLane != "" {
+				blocked := state.Blocked[issue.ID]
+				blocked.Recovery = nil
+				state.Blocked[issue.ID] = blocked
+				backend, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = backend.Close() })
+				orch.workflowMetrics = backend
+				_, err = backend.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+					ProjectID: orch.workflowMetricsProjectID(), IssueID: issue.ID, Identifier: issue.Identifier,
+					PhaseType: store.WorkflowPhaseTypeLane, PhaseName: blockedStatusState, PreviousPhaseName: tt.legacyLane,
+					Reason: string(AutoPromoteReasonWorkpadBlocker), Status: "entered", StartedAt: parkedAt, MetadataJSON: `{"tracker_mutation_at":"` + parkedAt.Format(time.RFC3339Nano) + `"}`,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if tt.parkCause != "" {
+				orch.workflowMetrics = openValidatorMemoStore(t)
+				prior := cloneIssue(issue)
+				prior.State = "In Progress"
+				orch.recordLaneTransition(t.Context(), prior, blockedStatusState, parkedAt, tt.parkCause, workflowLaneMetadata{BlockedRecovery: state.Blocked[issue.ID].Recovery})
+			}
+
+			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			_, ok := transitioned[issue.ID]
+			if ok != tt.wantTransition {
+				t.Fatalf("transitioned = %t, want %t; updates = %+v", ok, tt.wantTransition, tracker.updates)
+			}
+			if tt.wantTransition {
+				if len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantState {
+					t.Fatalf("updates = %+v, want %s", tracker.updates, tt.wantState)
+				}
+				if tt.parkCause != "" {
+					orch.cfg.ActiveStates = append(orch.cfg.ActiveStates, normalizeState(tt.wantState))
+					recovered := cloneIssue(issue)
+					recovered.State = tt.wantState
+					recovered.StageUpdatedAt = &now
+					for _, restarted := range []bool{false, true} {
+						if restarted {
+							state = newState(orch.cfg)
+						}
+						state.Blocked[issue.ID] = Blocked{Issue: recovered, Source: BlockedSourceProjectStatus, Reason: tt.parkCause, BlockedAt: parkedAt, RecoveryReason: "park_acknowledgement_required"}
+						orch.retainUnacknowledgedRecoveryParks(t.Context(), &state, []connector.Issue{recovered})
+						if blocked, held := state.Blocked[issue.ID]; held {
+							t.Fatalf("authorized recovery resurrected after restart=%t: %+v", restarted, blocked)
+						}
+					}
+				}
+			} else if len(tracker.updates) != 0 {
+				t.Fatalf("updates = %+v, want no transition", tracker.updates)
+			}
+		})
+	}
+}
+
+func TestExplicitIssueStatePredicateDoesNotBecomeLegacyDependency(t *testing.T) {
+	now := time.Date(2026, 8, 16, 18, 0, 0, 0, time.UTC)
+	referenced := dependencyAutoUnblockIssue("issue-reference-open", "In Progress")
+	referenced.Identifier = "digitaldrywood/detent#42"
+	tracker := &dependencyAutoUnblockConnector{blockers: []connector.Issue{referenced}}
+	orch := blockedCauseTestOrchestrator(tracker)
+	issue := dependencyAutoUnblockIssue("issue-explicit-state", blockedStatusState)
+	issue.WorkpadSignal = &workpad.Signal{
+		Source: workpad.SourceStructured,
+		Status: workpad.StatusBlocked,
+		Blockers: []workpad.Blocker{typedTestBlocker(workpad.Predicate{
+			Type:       workpad.PredicateIssueState,
+			Identifier: referenced.Identifier,
+			States:     []string{"closed"},
+		})},
+	}
+	state := newState(orch.cfg)
+	state.Blocked[issue.ID] = Blocked{Issue: issue, BlockedAt: now.Add(-time.Hour), Source: BlockedSourceProjectStatus}
+
+	transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing after explicit state stopped matching", issue.ID)
+	}
+	if len(tracker.updates) != 1 || tracker.updates[0].state != "Todo" {
+		t.Fatalf("updates = %#v, want Todo transition", tracker.updates)
+	}
+}
+
+func typedTestBlocker(predicate workpad.Predicate) workpad.Blocker {
+	return workpad.Blocker{
+		Owner:           workpad.BlockerOwnerOrchestrator,
+		Predicate:       &predicate,
+		RecheckInterval: "tick",
+	}
+}
+
+func blockedRecoverySnapshotWithConfig(fingerprint string) runpkg.BlockedRecoverySnapshot {
+	return runpkg.BlockedRecoverySnapshot{
+		ConfigFingerprint: fingerprint,
+		WorkspaceStatus:   "absent",
+		Health:            "ready",
+	}
+}
+
+type blockerEvidenceTestConnector struct {
+	*dependencyAutoUnblockConnector
+	hydratedPullRequest *connector.PullRequest
+}
+
+func (c *blockerEvidenceTestConnector) HydratePullRequest(_ context.Context, issue connector.Issue) (connector.Issue, error) {
+	if c.hydratedPullRequest != nil {
+		issue.PullRequest = c.hydratedPullRequest
+	}
+	return issue, nil
+}
+
+func TestSymbolicBlockerCompletion(t *testing.T) {
+	t.Parallel()
+	for _, ref := range []string{"instance:chrome-devtools", "go-workflow:ship-state-bootstrap"} {
+		t.Run(ref, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				now := time.Now()
+				issue := implementProgressIssue("head")
+				issue.State = "In Progress"
+				issue.AssignedToWorker = true
+				issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '" + ref + "'\n    reason: tool unavailable\n```"}}
+				tracker := &implementProgressConnector{refreshed: issue, hydrated: issue, relabelStarted: make(chan autoPromoteTickRelabel, 1)}
+				attempts := &implementProgressAttemptStore{}
+				cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}})
+				cfg.AutoPromote.Gate.CITriggerLabel = "run-ci"
+				cfg.AutoPromote.Gate.RequiredStatusChecks = []string{"new-check"}
+				o := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+				state := newState(cfg)
+				state.Claimed[issue.ID] = Claimed{Issue: issue}
+				state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: 1, TurnCount: 1}
+				tokens := TokenTotals{InputTokens: 100, OutputTokens: 20, TotalTokens: 120}
+				diff := DiffStats{FilesChanged: 2, AddedLines: 12}
+				o.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: FinalStateCompleted, PullRequestHeadPushed: true, Tokens: tokens, DiffStats: diff}})
+				synctest.Wait()
+				if len(tracker.relabelStarted) != 1 {
+					t.Error("pushed head did not schedule CI label")
+				}
+				if state.TokenTotals != tokens || state.DiffStats[issue.ID].FilesChanged != diff.FilesChanged {
+					t.Errorf("completion usage lost: tokens=%+v diff=%+v", state.TokenTotals, state.DiffStats[issue.ID])
+				}
+				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
+					t.Fatalf("completions = %#v", attempts.completions)
+				}
+				if _, retried := state.Retry[issue.ID]; !retried || len(tracker.updates) != 0 || len(state.Blocked) != 0 || len(state.Claimed) != 0 {
+					t.Fatalf("instance blocker did not retry in its lane: updates=%v blocked=%v retries=%v claims=%v", tracker.updates, state.Blocked, state.Retry, state.Claimed)
+				}
+				evidence := o.evaluateRecordedBlockers(t.Context(), &state, issue, nil, now)
+				if !evidence.Unverifiable || evidence.HumanOwned || len(evidence.Evidence) != 1 || evidence.Evidence[0].Owner != workpad.BlockerOwnerInstance || evidence.Evidence[0].Reference != ref || !strings.Contains(evidence.Evidence[0].Reason, "tool unavailable") {
+					t.Fatalf("evidence = %#v", evidence)
+				}
+				planner := o.liveDispatchPlanner(t.Context(), nil)
+				decision := planner.dispatchableIssueDecision(issue, &state, false, now, "")
+				if !decision.dispatchable && decision.reason != dispatchSkipRetryPending {
+					t.Fatalf("dispatch = %#v", decision)
+				}
+				tracker.refreshed.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\n```"}}
+				issue.Comments = tracker.refreshed.Comments
+				if got := o.evaluateRecordedBlockers(t.Context(), &state, issue, nil, now); got.Holds || got.Unverifiable {
+					t.Fatalf("cleared evidence = %#v", got)
+				}
+			})
+		})
+	}
+}
