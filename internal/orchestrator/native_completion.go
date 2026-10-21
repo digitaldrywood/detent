@@ -359,6 +359,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 			comment += "\n\nRecord equivalent pre-merge criteria and evidence through the existing Change outcome; do not wait for human verification:\n- " + strings.Join(criteria, "\n- ")
 		}
 	}
+	if event.Result.ReusedDispositionAttemptID != "" {
+		comment += fmt.Sprintf("\n\nDetent reused the completed disposition from attempt %s to resume review without rerunning implementation.", event.Result.ReusedDispositionAttemptID)
+	}
 	if normalizeState(issue.State) != normalizeState(target) {
 		metadata := workflowLaneMetadata{ReasonDetail: workpad.FinalSummary(comment)}
 		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, target, event.CompletedAt, reason, metadata); err != nil {

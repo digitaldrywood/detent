@@ -196,6 +196,7 @@ type reworkReviewExecution struct {
 	recordError     error
 	recoverError    error
 	activitySession int64
+	repairTree      string
 }
 
 func (*reworkReviewExecution) SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
@@ -210,6 +211,21 @@ func (e *reworkReviewExecution) NativeChange() *NativeChange {
 		change.ImplementationReview = &result
 	}
 	return change
+}
+func (e *reworkReviewExecution) FinalizeArtifacts(ctx context.Context, path string) error {
+	if err := e.reworkArtifactsExecution.FinalizeArtifacts(ctx, path); err != nil {
+		return err
+	}
+	if e.repairTree != "" {
+		diff, ok := e.diffSource(ctx)
+		if !ok {
+			return errors.New("repair diff unavailable")
+		}
+		e.source.Version.ID = "version_repaired"
+		e.source.Version.HeadSHA, e.source.Version.BaseSHA = diff.HeadSHA, diff.BaseSHA
+		e.source.Version.Validation = e.validation
+	}
+	return nil
 }
 func (e *reworkReviewExecution) ObserveRuntime(ctx context.Context, observation tracker.NativeRuntimeObservation) error {
 	if observation.Activity != nil {
@@ -229,9 +245,14 @@ func (e *reworkReviewExecution) ObserveRuntime(ctx context.Context, observation 
 	return e.testExecution.ObserveRuntime(ctx, observation)
 }
 func (e *reworkReviewExecution) RecordSourceValidation(_ context.Context, receipt gate.CommandResult) error {
-	if receipt.HeadSHA != e.source.Version.HeadSHA || receipt.TreeSHA != e.source.Version.Validation.TreeSHA {
+	if e.repairTree != "" {
+		if receipt.HeadSHA == "" || receipt.HeadSHA == e.source.Version.HeadSHA || receipt.TreeSHA != e.repairTree {
+			return errors.New("source validation lost the staged repair")
+		}
+	} else if receipt.HeadSHA != e.source.Version.HeadSHA || receipt.TreeSHA != e.source.Version.Validation.TreeSHA {
 		return errors.New("review source validation changed immutable source")
 	}
+	e.validation = &receipt
 	return nil
 }
 func (e *reworkReviewExecution) PrepareFinish(_ context.Context, _ string, body string, _ *tracker.NativeTerminalFailure) error {
@@ -283,6 +304,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		summaryFailure           bool
 		laterFinalizationSuccess bool
 		landingRepair            *tracker.NativeLandingReceipt
+		historyRefusal           bool
 		unresolved               bool
 		staged                   bool
 		normal                   bool
@@ -334,6 +356,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		{name: "failed landing CI after passing reviews still codes", reviewResume: "pass", staged: true, writableResume: true, landingRepair: &tracker.NativeLandingReceipt{CI: &tracker.NativeLandingCIReceipt{State: "failure"}}},
 		{name: "failed landing gate after passing reviews still codes", reviewResume: "pass", staged: true, writableResume: true, landingRepair: &tracker.NativeLandingReceipt{GateFailed: true}},
 		{name: "protected landing review conversations after passing reviews still code", reviewResume: "pass", staged: true, writableResume: true, landingRepair: &tracker.NativeLandingReceipt{RefusalKind: workspace.LandRefusalProtected, Refusal: workspace.ReviewConversationsRefusalText}},
+		{name: "protected landing review conversations retained in history still code", reviewResume: "pass", staged: true, writableResume: true, historyRefusal: true, landingRepair: &tracker.NativeLandingReceipt{RefusalKind: workspace.LandRefusalProtected}},
 		{name: "source version race refuses before coding", reviewResume: "pass", staged: true, sourceMismatch: true},
 		{name: "stale base refusal in code lane refreshes owned source", normal: true, staged: true, refusal: workspace.LandRefusalBaseMoved, baseRefresh: true, resume: true},
 		{name: "conflict refusal in code lane", normal: true, refusal: workspace.LandRefusalConflict},
@@ -593,6 +616,10 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 						landing.CI = &ci
 					}
 					owner.recovery.Attempts = append(owner.recovery.Attempts, tracker.NativeAttempt{Status: "succeeded", NativeRunData: tracker.NativeRunData{AttemptID: "attempt_landing", RunID: "run_landing", PolicyID: descriptor.ID, Runtime: &tracker.NativeRuntimeObservation{Landing: &landing}}, Checkpoint: &checkpoint})
+					if test.historyRefusal {
+						owner.recovery.Discussion = []tracker.NativeComment{{Body: "Fix the unresolved review finding before landing again.", Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, CreatedAt: time.Unix(300, 0)}}
+						owner.recovery.History = []tracker.CollaborationEvent{{Type: "workflow.transitioned", Data: tracker.CollaborationData{FromState: "Merging", ToState: "Rework", ReasonDetail: workspace.ReviewConversationsRefusalText}}}
+					}
 				}
 				if test.laterPartial {
 					later := owner.recovery.Attempts[0]
@@ -637,10 +664,27 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				}
 				request.Execution = owner
 				request.Issue.Description = "## Acceptance criteria\n- Preserve current source"
+				if test.landingRepair != nil {
+					agent.afterStage = func() {
+						owner.repairTree = strings.TrimSpace(runRunnerGit(t, agent.request.Workspace, "write-tree"))
+					}
+				}
 				result, err := r.Run(t.Context(), request)
 				if test.writableResume {
 					if agent.calls == 0 {
 						t.Fatalf("partial or genuine rework skipped coding: %v", err)
+					}
+					if test.landingRepair != nil {
+						if err != nil || result.ReusedDispositionAttemptID != "" || owner.head == "" || owner.head == original || owner.validation == nil || owner.validation.HeadSHA != owner.head || owner.diffHead != owner.head {
+							t.Fatalf("landing repair lost finalized source: head=%s original=%s validation=%+v result=%+v error=%v", owner.head, original, owner.validation, result, err)
+						}
+						repaired := false
+						for _, file := range owner.files {
+							repaired = repaired || file.Path == "repair.md"
+						}
+						if !repaired {
+							t.Fatalf("finalized diff omitted repair: %+v", owner.files)
+						}
 					}
 					return
 				}
@@ -665,7 +709,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				if agent.reviewCalls == 0 {
 					t.Fatal("source review never ran")
 				}
-				if owner.head != original || owner.body != disposition.FinalSummary || len(owner.reviews) != 1 || owner.reviews[0].Verdict != test.reviewResume {
+				if owner.head != original || owner.body != disposition.FinalSummary || result.ReusedDispositionAttemptID != "attempt_source" || len(owner.reviews) != 1 || owner.reviews[0].Verdict != test.reviewResume {
 					t.Fatalf("review recovery altered immutable source or provenance: head=%s body=%q reviews=%+v", owner.head, owner.body, owner.reviews)
 				}
 				if test.reviewResume != "pass" && len(owner.acceptance) != 0 {

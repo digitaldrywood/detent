@@ -2083,6 +2083,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 					return RunResult{}, err
 				}
 			}
+			result.ReusedDispositionAttemptID = reviewRecovery.AttemptID
 			result.FinalMessage = reviewRecovery.CompletionBody
 		}
 		afterRunPending = false
