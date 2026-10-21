@@ -255,7 +255,7 @@ WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence IN (SEL
 	}
 	scanned := int64(0)
 	if processed < budget && int64(len(plan.obsolete)+len(plan.spans)) <= budget {
-		if plan.full {
+		if plan.kind == "work_item" || plan.full {
 			scanned = plan.head
 		}
 	}

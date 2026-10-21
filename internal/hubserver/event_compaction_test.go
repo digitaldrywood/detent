@@ -21,6 +21,63 @@ import (
 
 func TestEventCompactionWorkHistory(t *testing.T) {
 	t.Parallel()
+	t.Run("progress beyond the first candidate batch", func(t *testing.T) {
+		t.Parallel()
+		now := time.Date(2026, 10, 7, 8, 0, 0, 0, time.UTC)
+		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+		var items []tracker.NativeWorkItemID
+		for index := range 6 {
+			issue := f.create(t, fmt.Sprintf("history %d", index))
+			items = append(items, issue.WorkItemID)
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = tx.Rollback() })
+			for range 10 - index {
+				if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt_" + string(issue.WorkItemID)}}, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			issue.Archived = true
+			if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "issue.edited", tracker.CollaborationData{Operation: "archive"}, now); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for pass, want := range []int{4, 6} {
+			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
+				t.Fatal(err)
+			}
+			compacted := 0
+			for index, item := range items {
+				summary, err := readEventCompaction(t.Context(), f.service.database.reader, scope.organization, scope.project, "work_item", string(item))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if summary.RemovedEvents == 0 {
+					continue
+				}
+				compacted++
+				if summary.RemovedEvents != int64(9-index) || summary.RemovedByType["run.observed"] != int64(9-index) {
+					t.Fatalf("item %s lost history: %+v", item, summary)
+				}
+			}
+			if compacted != want {
+				t.Fatalf("pass %d compacted %d work items, want %d", pass+1, compacted, want)
+			}
+		}
+		plans, err := planEventCompaction(t.Context(), f.service.database.reader, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plans) != 0 {
+			t.Fatalf("completed work remains eligible for compaction: %d plans", len(plans))
+		}
+	})
 	for _, test := range []struct {
 		name             string
 		archived, leased bool
