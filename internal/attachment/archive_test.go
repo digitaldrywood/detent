@@ -114,6 +114,14 @@ func TestArchiveStorageLifecycle(t *testing.T) {
 				if puts["/private/"+ref.Key] != 1 {
 					t.Fatal("identical content uploaded twice")
 				}
+				decodedDetail, readErr := ReadArchive(t.Context(), store, org, ref)
+				if readErr != nil || string(decodedDetail) != content {
+					t.Fatalf("read detail: %v", readErr)
+				}
+				foreign := "org_foreign"
+				if _, err := ReadArchive(t.Context(), store, foreign, ref); err == nil {
+					t.Fatal("foreign archive was readable")
+				}
 				refs = append(refs, ref)
 				access, err := store.(ArchiveStorage).PresignArchive(t.Context(), ref)
 				if err != nil {

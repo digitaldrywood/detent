@@ -743,6 +743,16 @@ func appendNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, wor
 		return err
 	}
 	payload, err := marshalNative(data)
+	if data.Run != nil {
+		run, encodeErr := encodeRunDetail(ctx, *data.Run, true)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		payload, err = marshalNative(struct {
+			tracker.CollaborationData
+			Run json.RawMessage `json:"run"`
+		}{CollaborationData: data, Run: json.RawMessage(run)})
+	}
 	if err != nil {
 		return err
 	}
