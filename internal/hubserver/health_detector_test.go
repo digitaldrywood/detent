@@ -430,11 +430,26 @@ func TestHealthSnapshotRecordedCyclesAndLandings(t *testing.T) {
 			{formatHubTime(now.Add(-healthInstanceWindow - time.Nanosecond))},
 			{"2026-10-21T12:00:00.000000001Z"},
 		}
-		for _, fixture := range []nativeFixture{f, other} {
+		reasons := []string{"policy_mismatch", "runner_heartbeat_stale"}
+		candidates := make(map[tracker.ProjectID]string)
+		for i, fixture := range []nativeFixture{f, other} {
 			item := fixture.create(t, "time windows")
+			candidates[fixture.project.ID] = string(item.WorkItemID)
 			appendTestHealthEvent(t, fixture, item, "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{Landed: true, ObservedAt: now.Add(-time.Minute)}}}}, now.Add(-time.Minute))
 			for index, test := range tests {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) VALUES(?,?,?,?,?,'scheduler.decision',1,'{}','{}',?)`, newNativeID("evt"), fixture.project.OrganizationID, fixture.project.ID, item.WorkItemID, index+100, test.at); err != nil {
+				at, err := parseTimeValue(test.at)
+				if err != nil {
+					t.Fatal(err)
+				}
+				decision := tracker.NativeSchedulerDecision{RunnerID: "runner-time", Source: "native_runner_routing", Outcome: "skipped", Reason: reasons[i], At: at}
+				if at.After(now) {
+					decision.Outcome, decision.Reason = "claimed", ""
+				}
+				raw, err := json.Marshal(tracker.CollaborationData{Decision: &decision})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) VALUES(?,?,?,?,?,'scheduler.decision',1,'{}',?,?)`, newNativeID("evt"), fixture.project.OrganizationID, fixture.project.ID, item.WorkItemID, index+100, string(raw), test.at); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -443,6 +458,7 @@ func TestHealthSnapshotRecordedCyclesAndLandings(t *testing.T) {
 			t.Fatal(err)
 		}
 		var before [][]healthTimeEvent
+		var beforeFindings [][]healthFinding
 		for _, phase := range []string{"legacy", "populated"} {
 			if phase == "populated" {
 				if err := f.service.database.populateTimeIndexes(t.Context()); err != nil {
@@ -468,17 +484,27 @@ func TestHealthSnapshotRecordedCyclesAndLandings(t *testing.T) {
 				if !events[0].at.Equal(now.Add(-healthInstanceWindow)) || !events[len(events)-1].at.Equal(now) {
 					t.Fatalf("cutoff equality lost: %+v", events)
 				}
-				snapshot := healthSnapshot{Projects: []healthProject{{ID: string(fixture.project.ID)}}}
+				snapshot := healthSnapshot{Projects: []healthProject{{ID: string(fixture.project.ID), Candidates: 1, CandidateIDs: map[string]bool{candidates[fixture.project.ID]: true}, FreeSlots: 1, CandidateSince: now.Add(-time.Hour)}}}
 				if err := readHealthEvents(t.Context(), f.service.database.reader, fixture.project.OrganizationID, now, &snapshot); err != nil {
 					t.Fatal(err)
 				}
 				if !snapshot.Projects[0].LastLanding.Equal(now.Add(-time.Minute)) {
 					t.Fatal("landing changed")
 				}
+				findings := evaluateHealth(now, snapshot)
+				if len(findings) != 1 || findings[0].Signal != "every_candidate_refused" || findings[0].Subject.ID != string(fixture.project.ID) || findings[0].Evidence.Reason != reasons[i] || findings[0].Evidence.Counts["candidates"] != 1 || findings[0].Evidence.Counts["claims"] != 0 || len(findings[0].Evidence.EventIDs) != 1 || findings[0].Evidence.EventIDs[0] != events[len(events)-1].id {
+					t.Fatalf("%s organization %s findings=%+v", phase, fixture.project.OrganizationID, findings)
+				}
 				if phase == "legacy" {
 					before = append(before, events)
-				} else if !reflect.DeepEqual(before[i], events) {
-					t.Fatalf("%s changed health events", phase)
+					beforeFindings = append(beforeFindings, findings)
+				} else {
+					if !reflect.DeepEqual(before[i], events) {
+						t.Fatalf("%s changed health events", phase)
+					}
+					if !reflect.DeepEqual(beforeFindings[i], findings) {
+						t.Fatalf("%s changed health findings: before=%+v after=%+v", phase, beforeFindings[i], findings)
+					}
 				}
 			}
 			if phase == "populated" {

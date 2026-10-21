@@ -75,29 +75,57 @@ func TestHostedAuditRetention(t *testing.T) {
 			t.Fatal(err)
 		}
 		now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
-		for _, org := range []string{string(f.project.OrganizationID), "org_other_time"} {
-			for _, test := range []struct {
-				name, at string
-			}{
-				{"rollover", "2026-09-21T11:59:59.9996Z"},
-				{"last nanosecond", "2026-09-21T11:59:59.999999999Z"},
-				{"equal", "2026-09-21T12:00:00Z"},
-				{"offset equal", "2026-09-21T07:00:00-05:00"},
-				{"retained nanosecond", "2026-09-21T12:00:00.000000001Z"},
-			} {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at) VALUES(?,'session','actor','actor','',?,'','',200,?,?,?)`, org, test.name, formatHubTime(now), formatHubTime(now), test.at); err != nil {
+
+		organizations := []string{string(f.project.OrganizationID), "org_other_time"}
+		before := make(map[string]string)
+		for _, phase := range []string{"legacy", "populated", "repeated"} {
+			if phase != "repeated" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM hosted_audit; DELETE FROM time_index_progress WHERE owner='audit'`); err != nil {
 					t.Fatal(err)
 				}
+				for _, org := range organizations {
+					for _, test := range []struct{ name, at string }{
+						{"rollover", "2026-09-21T11:59:59.9996Z"},
+						{"last nanosecond", "2026-09-21T11:59:59.999999999Z"},
+						{"equal", "2026-09-21T12:00:00Z"},
+						{"offset equal", "2026-09-21T07:00:00-05:00"},
+						{"retained nanosecond", "2026-09-21T12:00:00.000000001Z"},
+					} {
+						var ns *int64
+						if phase == "populated" {
+							at, err := parseTimeValue(test.at)
+							if err != nil {
+								t.Fatal(err)
+							}
+							value := at.UnixNano()
+							ns = &value
+						}
+						if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,recorded_at_ns) VALUES(?,'session','actor','actor','',?,'','',200,?,?,?,?)`, org, test.name, formatHubTime(now), formatHubTime(now), test.at, ns); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				var rows, typed int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM hosted_audit),(SELECT count(*) FROM hosted_audit_times)`).Scan(&rows, &typed); err != nil {
+					t.Fatal(err)
+				}
+				wantTyped := 0
+				if phase == "populated" {
+					wantTyped = 10
+				}
+				if rows != 10 || typed != wantTyped {
+					t.Fatalf("%s input rows=%d typed=%d want 10/%d", phase, rows, typed, wantTyped)
+				}
+				if phase == "populated" {
+					if err := f.service.database.populateTimeIndexes(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM time_index_progress WHERE owner='audit'`); err != nil {
-			t.Fatal(err)
-		}
-		for _, phase := range []string{"populated", "repeated"} {
 			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
 				t.Fatal(err)
 			}
-			for _, org := range []string{string(f.project.OrganizationID), "org_other_time"} {
+			for _, org := range organizations {
 				var events string
 				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT group_concat(event,',') FROM (SELECT event FROM hosted_audit WHERE organization_id=? ORDER BY id)`, org).Scan(&events); err != nil {
 					t.Fatal(err)
@@ -105,12 +133,18 @@ func TestHostedAuditRetention(t *testing.T) {
 				if events != "equal,offset equal,retained nanosecond" {
 					t.Fatalf("%s %s retained %s", phase, org, events)
 				}
+				if phase == "legacy" {
+					before[org] = events
+				} else if events != before[org] {
+					t.Fatalf("%s %s changed retention: before=%s after=%s", phase, org, before[org], events)
+				}
 				var text string
 				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT recorded_at FROM hosted_audit WHERE organization_id=? AND event='offset equal'`, org).Scan(&text); err != nil || text != "2026-09-21T07:00:00-05:00" {
 					t.Fatalf("timestamp text changed: %s err=%v", text, err)
 				}
 			}
 		}
+
 		var dangling int
 		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_audit_times t LEFT JOIN hosted_audit a ON a.id=t.audit_id WHERE a.id IS NULL`).Scan(&dangling); err != nil || dangling != 0 {
 			t.Fatalf("dangling indexes=%d err=%v", dangling, err)
