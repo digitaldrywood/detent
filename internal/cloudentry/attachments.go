@@ -54,6 +54,7 @@ func attachmentEvidenceRequest(c echo.Context) (*attachment.EvidenceRequest, boo
 
 func (s *Service) registerAttachmentRoutes(e *echo.Echo) {
 	for _, base := range []string{"/organizations/:organization/api/v2/projects/:project/attachments", "/api/v2/organizations/:organization/projects/:project/attachments"} {
+		s.registerArchiveRoutes(e, base)
 		e.POST(base, s.uploadAttachment)
 		e.POST(strings.TrimSuffix(base, "/attachments")+"/attempts/:attempt/evidence", s.uploadAttachment)
 		e.GET(base+"/:attachment", s.readAttachment)
