@@ -1,0 +1,105 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - containedctx
+    - contextcheck
+    - errcheck
+    - errorlint
+    - fatcontext
+    - gosec
+    - govet
+    - ineffassign
+    - intrange
+    - misspell
+    - nilnil
+    - noctx
+    - perfsprint
+    - sqlclosecheck
+    - staticcheck
+    - unconvert
+    - unused
+    - wastedassign
+
+  settings:
+    errcheck:
+      check-blank: true
+      check-type-assertions: true
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Print
+        - fmt.Printf
+        - fmt.Println
+        - (net/http.ResponseWriter).Write
+        - (github.com/labstack/echo/v4.Context).String
+        - (github.com/labstack/echo/v4.Context).NoContent
+        - (*encoding/json.Encoder).Encode
+        - (io.ReadCloser).Close
+        - (*net/http.Response.Body).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+        - (*database/sql.Tx).Rollback
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+
+    gosec:
+      severity: medium
+      confidence: medium
+      excludes:
+        - G115
+        # Keep G304 excluded until read-only workspace paths such as
+        # internal/workspace/diffstat.go are migrated or separately justified.
+        # Issue #825 scopes os.Root enforcement to write/mutate paths.
+        - G304
+        - G703
+        - G306
+        - G301
+        - G107
+        - G704
+
+  exclusions:
+    generated: strict
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+          - noctx
+      - path: _templ\.go$
+        linters:
+          - all
+      - path: internal/store/sqlc/
+        linters:
+          - all
+      - linters:
+          - contextcheck
+        text: "Non-inherited new context"
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/digitaldrywood/detent
+  exclusions:
+    generated: strict
