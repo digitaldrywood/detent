@@ -139,8 +139,11 @@ func projectAnalyticsCapacityRollups(ctx context.Context, q nativeQueryer, scope
 		return err
 	}
 	out.ProviderCapacityWait = queue
-	out.SourceAt = maxTime(out.SourceAt, queue.SourceAt)
-	if queue.IntervalsObserved == 0 {
+	if err := addAnalyticsCapacityHours(ctx, q, scope, out); err != nil {
+		return err
+	}
+	out.SourceAt = maxTime(out.SourceAt, out.ProviderCapacityWait.SourceAt)
+	if out.ProviderCapacityWait.IntervalsObserved == 0 {
 		out.Unavailable = append(out.Unavailable, "provider_capacity_wait")
 	}
 	return nil

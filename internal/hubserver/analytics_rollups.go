@@ -30,7 +30,8 @@ json_object('work_item_id',e.work_item_id,'sequence',e.sequence,'type',e.type,'r
 FROM collaboration_events e WHERE e.type IN ('workflow.transitioned','scheduler.decision','issue.created'))` + "\n"
 	analyticsSourceLeases = "WITH analytics_source_leases AS " + `(SELECT i.organization_id,i.project_id,unixepoch(l.acquired_at)/3600*3600 AS hour,'lease' AS metric,l.lease_id AS dimension,1 AS value,
 json_object('lease_id',l.lease_id,'issue_id',l.issue_id,'acquired_at',l.acquired_at,'released_at',l.released_at,'expires_at',l.expires_at) AS data_json,l.issue_id
-FROM leases l JOIN issues i ON i.id=l.issue_id WHERE i.native_id IS NOT NULL)` + "\n"
+FROM leases l JOIN issues i ON i.id=l.issue_id WHERE i.native_id IS NOT NULL
+AND NOT EXISTS(SELECT 1 FROM analytics_slot_retention p WHERE p.organization_id=i.organization_id AND p.project_id=i.project_id AND unixepoch(coalesce(l.released_at,l.expires_at))<=p.through_hour))` + "\n"
 )
 
 const (
@@ -98,7 +99,7 @@ const (
 	analyticsBackfillBudget = 20 * time.Second
 	analyticsBackfillEvents = 5000
 
-	analyticsSampleRetention       = 90 * 24 * time.Hour
+	analyticsSampleRetention       = 30 * 24 * time.Hour
 	analyticsSampleCompactionBatch = 5000
 )
 
@@ -388,6 +389,15 @@ func refreshAnalyticsIssue(ctx context.Context, tx *sql.Tx, statements analytics
 }
 
 func rebuildAnalyticsRollups(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
+	for _, statement := range []string{
+		"DELETE FROM analytics_sample_hours WHERE organization_id=? AND project_id=?",
+		"DELETE FROM analytics_residence_retention WHERE organization_id=? AND project_id=?",
+		"DELETE FROM analytics_slot_retention WHERE organization_id=? AND project_id=?",
+	} {
+		if _, err := tx.ExecContext(ctx, statement, scope.organization, scope.project); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=?", scope.organization, scope.project); err != nil {
 		return err
 	}
@@ -535,58 +545,6 @@ func analyticsSkipSamplesCompacted(ctx context.Context, q nativeQueryer, scope n
 	return from.Unix() < through, nil
 }
 
-func (d *database) compactAnalyticsSamples(ctx context.Context, now time.Time) error {
-	through := now.UTC().Truncate(time.Hour).Add(-analyticsSampleRetention).Unix()
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT organization_id,id FROM projects ORDER BY organization_id,id`)
-	if err != nil {
-		return fmt.Errorf("list analytics projects: %w", err)
-	}
-	defer rows.Close()
-	var scopes []nativeScope
-	for rows.Next() {
-		var scope nativeScope
-		if err := rows.Scan(&scope.organization, &scope.project); err != nil {
-			return err
-		}
-		scopes = append(scopes, scope)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
-	}
-	budget := int64(analyticsSampleCompactionBatch)
-	for _, scope := range scopes {
-		if budget <= 0 {
-			break
-		}
-		result, err := tx.ExecContext(ctx, `DELETE FROM analytics_hourly_rollups WHERE rowid IN (SELECT r.rowid FROM analytics_hourly_rollups r
-WHERE r.organization_id=? AND r.project_id=? AND r.metric='skip_sample' AND r.hour<?
-AND EXISTS (SELECT 1 FROM analytics_hourly_rollups a WHERE a.organization_id=r.organization_id AND a.project_id=r.project_id AND a.metric='skipped' AND a.hour=r.hour
-AND a.dimension=json_array(coalesce(json_extract(r.data_json,'$.Source'),''),coalesce(json_extract(r.data_json,'$.Reason'),'')))
-LIMIT ?)`, scope.organization, scope.project, through, budget)
-		if err != nil {
-			return fmt.Errorf("delete compacted skip samples: %w", err)
-		}
-		removed, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if removed == 0 {
-			continue
-		}
-		budget -= removed
-		if _, err := tx.ExecContext(ctx, `INSERT INTO analytics_hourly_rollups VALUES(?,?,0,'skip_compacted','',?,json_object('removed',?))
-ON CONFLICT(organization_id,project_id,metric,hour,dimension) DO UPDATE SET value=max(value,excluded.value),data_json=json_set(data_json,'$.removed',json_extract(data_json,'$.removed')+?)`, scope.organization, scope.project, through, removed, removed); err != nil {
-			return fmt.Errorf("record skip sample compaction: %w", err)
-		}
-	}
-	return tx.Commit()
-}
-
 func refreshAnalyticsSlots(ctx context.Context, tx *sql.Tx, organization, project string, now time.Time) error {
 	rows, err := tx.QueryContext(ctx, `SELECT dimension,data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='lease'`, organization, project)
 	if err != nil {
@@ -616,6 +574,10 @@ func writeAnalyticsSlotRows(ctx context.Context, tx *sql.Tx, organization, proje
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
+	var retained sql.NullInt64
+	if err := tx.QueryRowContext(ctx, "SELECT max(through_hour) FROM analytics_slot_retention WHERE organization_id=? AND project_id=?", organization, project).Scan(&retained); err != nil {
+		return err
+	}
 	for _, l := range leases {
 		var data struct {
 			Acquired string  `json:"acquired_at"`
@@ -640,11 +602,11 @@ func writeAnalyticsSlotRows(ctx context.Context, tx *sql.Tx, organization, proje
 			}
 			finish = minTime(finish, released)
 		}
-		if _, err := tx.ExecContext(ctx, "DELETE FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='slots' AND dimension=?", organization, project, l.id); err != nil {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='slots' AND dimension=? AND hour>=?", organization, project, l.id, retained.Int64); err != nil {
 			return err
 		}
 		horizon := now.Truncate(time.Hour).Add(analyticsSlotHorizon)
-		for hour := start.Truncate(time.Hour); hour.Before(finish) && hour.Before(horizon); hour = hour.Add(time.Hour) {
+		for hour := maxTime(start.Truncate(time.Hour), time.Unix(retained.Int64, 0)); hour.Before(finish) && hour.Before(horizon); hour = hour.Add(time.Hour) {
 			seconds := minTime(finish, hour.Add(time.Hour)).Sub(maxTime(start, hour)).Seconds()
 			if seconds <= 0 {
 				continue

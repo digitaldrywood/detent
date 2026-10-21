@@ -132,6 +132,9 @@ func mergeReportsUnavailable[T any](items []T, keys func(T) []string) []string {
 func mergeDurations(durations ...operatortool.AnalyticsDuration) operatortool.AnalyticsDuration {
 	var samples []float64
 	for _, d := range durations {
+		if len(d.Histogram) > 0 {
+			return mergeHistogramDurations(durations...)
+		}
 		samples = append(samples, d.Samples...)
 	}
 	return sampledDuration(samples)
