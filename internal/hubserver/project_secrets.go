@@ -256,58 +256,6 @@ func (s *Service) secretMutation(ctx context.Context, scope nativeScope, operati
 	return tx.Commit()
 }
 
-// RotateProjectSecrets is an offline operation protected by the database's
-// existing ownership lock. Data keys are rewrapped atomically; values stay sealed.
-func RotateProjectSecrets(ctx context.Context, cfg Config, actor string) (count int, err error) {
-	if cfg.SecretKeys == nil || actor == "" {
-		return 0, hubsecrets.ErrUnavailable
-	}
-	cfg = cfg.normalized()
-	db, err := openDatabase(ctx, cfg)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { err = errors.Join(err, db.Close()) }()
-	tx, err := db.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer func() {
-		if rollback := tx.Rollback(); rollback != nil && !errors.Is(rollback, sql.ErrTxDone) {
-			err = errors.Join(err, rollback)
-		}
-	}()
-	rows, err := readSecretRows(ctx, tx)
-	if err != nil {
-		return 0, err
-	}
-	for _, row := range rows {
-		if row.envelope.Version == cfg.SecretKeys.Version() {
-			if err := cfg.SecretKeys.Check(row.envelope, secretAAD(row.organization, row.project, row.kind)); err != nil {
-				return 0, err
-			}
-			continue
-		}
-		wrapped, err := cfg.SecretKeys.Rewrap(row.envelope, secretAAD(row.organization, row.project, row.kind))
-		if err != nil {
-			return 0, err
-		}
-		if row.project == "" {
-			_, err = tx.ExecContext(ctx, `UPDATE organization_secrets SET wrapped_data_key=?,master_key_version=? WHERE organization_id=? AND kind=?`, wrapped.WrappedKey, wrapped.Version, row.organization, row.kind)
-		} else {
-			_, err = tx.ExecContext(ctx, `UPDATE project_secrets SET wrapped_data_key=?, master_key_version=? WHERE organization_id=? AND project_id=? AND kind=?`, wrapped.WrappedKey, wrapped.Version, row.organization, row.project, row.kind)
-		}
-		if err != nil {
-			return 0, err
-		}
-		if err := secretAudit(ctx, tx, row.organization, row.project, actor, row.kind, "rotate", wrapped.Version, formatHubTime(cfg.now())); err != nil {
-			return 0, err
-		}
-		count++
-	}
-	return count, tx.Commit()
-}
-
 func removeProjectSecretInTx(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
 	old, err := readSecretStatus(ctx, tx, scope)
 	if err != nil || !old.Present {

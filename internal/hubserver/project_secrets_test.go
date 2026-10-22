@@ -402,23 +402,10 @@ func TestProjectSecretLifecycle(t *testing.T) {
 	}
 }
 
-func TestProjectSecretStartupAndRotation(t *testing.T) {
-	f := newBrowserHostedOrganizationFixture(t, true, "org_secret_rotation", func(cfg *Config) {
-		cfg.SecretKeys = secretTestKeys(t, "1", "1")
-		cfg.SpritesHTTPClient = &http.Client{Transport: spritesTestTransport(func(*http.Request) (*http.Response, error) { return spritesTestResponse(`{"sprites":[]}`, 200), nil })}
-	})
-	f.project = f.createProject(t, "Secrets test project")
-	base := "/api/v2/organizations/" + f.service.config.Hosted.OrganizationID + "/projects/" + f.project + "/secrets/" + flySpritesToken
-	f.api(t, "owner", http.MethodPut, base, map[string]any{"token": spritesSecretSentinel}, http.StatusOK)
-	f.api(t, "owner", http.MethodPut, strings.Replace(base, f.project, f.privateProject, 1), map[string]any{"token": spritesSecretSentinel}, http.StatusOK)
-	original, err := readSecretRows(t.Context(), f.service.database.db)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestProjectSecretStartupKeys(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{SecretKeys: secretTestKeys(t, "1", "1")})
+	storeSpriteWakeSecret(t, f, spritesSecretSentinel)
 	cfg := f.service.config
-	if _, err := RotateProjectSecrets(t.Context(), cfg, "operator:test"); err == nil {
-		t.Fatal("rotation ignored running Hub ownership")
-	}
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -444,78 +431,18 @@ func TestProjectSecretStartupAndRotation(t *testing.T) {
 			}
 		})
 	}
-	cfg.SecretKeys = secretTestKeys(t, "2", "1", "2")
-	// A bad later row must roll back the earlier row's wrapping and audit.
 	db, err := openDatabase(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bad := original[1]
-	if _, err := db.db.ExecContext(t.Context(), "UPDATE project_secrets SET wrapped_data_key=? WHERE project_id=?", []byte("tampered"), bad.project); err != nil {
+	if _, err := db.db.ExecContext(t.Context(), "UPDATE project_secrets SET wrapped_data_key=?", []byte("tampered")); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RotateProjectSecrets(t.Context(), cfg, "operator:test"); err == nil {
-		t.Fatal("rotation accepted bad data key")
-	}
-	db, err = openDatabase(t.Context(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	failed, err := readSecretRows(t.Context(), db.db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if failed[0].envelope.Version != 1 || !bytes.Equal(failed[0].envelope.WrappedKey, original[0].envelope.WrappedKey) {
-		t.Fatal("failed rotation partially committed")
-	}
-	var auditCount int
-	if err := db.db.QueryRowContext(t.Context(), "SELECT count(*) FROM project_secret_audit WHERE event='rotate'").Scan(&auditCount); err != nil {
-		t.Fatal(err)
-	}
-	if auditCount != 0 {
-		t.Fatal("failed rotation committed audit")
-	}
-	if _, err := db.db.ExecContext(t.Context(), "UPDATE project_secrets SET wrapped_data_key=? WHERE project_id=?", bad.envelope.WrappedKey, bad.project); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	count, err := RotateProjectSecrets(t.Context(), cfg, "operator:test")
-	if err != nil || count != 2 {
-		t.Fatalf("rotate count=%d error=%v", count, err)
-	}
-	count, err = RotateProjectSecrets(t.Context(), cfg, "operator:test")
-	if err != nil || count != 0 {
-		t.Fatalf("repeat rotation=%d %v", count, err)
-	}
-	cfg.SecretKeys = secretTestKeys(t, "2", "2")
-	service, err := Open(t.Context(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer service.Close()
-	rotated, err := readSecretRows(t.Context(), service.database.db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rotated[0].envelope.Version != 2 || !bytes.Equal(rotated[0].envelope.Ciphertext, original[0].envelope.Ciphertext) || !bytes.Equal(rotated[0].envelope.Nonce, original[0].envelope.Nonce) {
-		t.Fatal("rotation reencrypted value")
-	}
-	value, err := cfg.SecretKeys.Open(rotated[0].envelope, secretAAD(rotated[0].organization, rotated[0].project, flySpritesToken))
-	if err != nil || string(value) != spritesSecretSentinel {
-		t.Fatalf("rotated secret unavailable: %v", err)
-	}
-	clear(value)
-	var actor, event string
-	var version int
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT actor,event,key_version FROM project_secret_audit ORDER BY id DESC LIMIT 1").Scan(&actor, &event, &version); err != nil {
-		t.Fatal(err)
-	}
-	if actor != "operator:test" || event != "rotate" || version != 2 {
-		t.Fatal("rotation audit incorrect")
+	if service, err := Open(t.Context(), cfg); err == nil {
+		service.Close()
+		t.Fatal("startup accepted a tampered data key")
 	}
 }

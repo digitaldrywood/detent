@@ -68,6 +68,9 @@ type Service struct {
 	spriteWakeMu            sync.Mutex
 	spriteWakes             map[spriteWakeKey]*spriteLifecyclePass
 	spriteWakeWork          sync.WaitGroup
+	secretRewrapOnce        sync.Once
+	secretRewrapReady       chan struct{}
+	secretRewrapDone        chan struct{}
 	workerCancel            context.CancelFunc
 	workerDone              chan struct{}
 	boardRefresh            chan struct{}
@@ -149,6 +152,8 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		spriteWakes:        make(map[spriteWakeKey]*spriteLifecyclePass),
 		workerCancel:       workerCancel,
 		workerDone:         make(chan struct{}),
+		secretRewrapReady:  make(chan struct{}),
+		secretRewrapDone:   make(chan struct{}),
 		boardRefresh:       make(chan struct{}, 1),
 		reconcileCancel:    reconcileCancel,
 		reconcileDone:      make(chan struct{}),
@@ -217,6 +222,11 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 			}
 			return nil, errors.Join(err, mcpErr, database.Close())
 		}
+	}
+	if cfg.SecretKeys != nil && !cfg.CredentialMaintenance {
+		go service.runSecretRewrap(workerContext)
+	} else {
+		close(service.secretRewrapDone)
 	}
 	if cfg.CredentialMaintenance {
 		workerCancel()
@@ -354,7 +364,10 @@ func listenerAddressLoopback(address string) bool {
 }
 
 func (s *Service) Handler() http.Handler {
-	return s.echo
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.signalSecretRewrap()
+		s.echo.ServeHTTP(w, r)
+	})
 }
 
 func (s *Service) Serve(listener net.Listener) error {
@@ -364,7 +377,7 @@ func (s *Service) Serve(listener net.Listener) error {
 	if listener == nil {
 		return errors.New("hub listener is required")
 	}
-	err := s.echo.Server.Serve(listener)
+	err := s.echo.Server.Serve(secretRewrapListener{Listener: listener, serving: s.signalSecretRewrap})
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
@@ -381,7 +394,7 @@ func (s *Service) ServeTLS(listener net.Listener, certificateFile string, keyFil
 	if listener == nil {
 		return errors.New("hub listener is required")
 	}
-	err := s.echo.Server.ServeTLS(listener, strings.TrimSpace(certificateFile), strings.TrimSpace(keyFile))
+	err := s.echo.Server.ServeTLS(secretRewrapListener{Listener: listener, serving: s.signalSecretRewrap}, strings.TrimSpace(certificateFile), strings.TrimSpace(keyFile))
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
@@ -528,6 +541,7 @@ func (s *Service) stopGitHubWebhookMaintenance() error {
 	s.workerStopOnce.Do(func() {
 		s.workerCancel()
 		<-s.workerDone
+		<-s.secretRewrapDone
 	})
 	return nil
 }

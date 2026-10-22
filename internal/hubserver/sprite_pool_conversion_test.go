@@ -212,10 +212,10 @@ func TestPromoteSpritesToken(t *testing.T) {
 		t.Skip("durable SQLite integration")
 	}
 	for _, test := range []struct {
-		name                               string
-		changed, existing, ranked, revoked bool
+		name                                       string
+		changed, existing, ranked, revoked, rewrap bool
 	}{
-		{name: "confirmed token"}, {name: "changed source", changed: true}, {name: "existing organization token", existing: true},
+		{name: "confirmed token"}, {name: "rewrapped after preview", rewrap: true}, {name: "changed source", changed: true}, {name: "existing organization token", existing: true},
 		{name: "first token follows project rank", ranked: true},
 		{name: "authority revoked after preview", revoked: true},
 	} {
@@ -249,6 +249,16 @@ func TestPromoteSpritesToken(t *testing.T) {
 			}
 			if strings.Contains(string(raw), spritesSecretSentinel) {
 				t.Fatal("preview exposed token")
+			}
+			if test.rewrap {
+				f.service.signalSecretRewrap()
+				<-f.service.secretRewrapDone
+				f.service.config.SecretKeys = secretTestKeys(t, "2", "1", "2")
+				f.service.rewrapSecrets(t.Context())
+				current, _, envelope, err := firstProjectSpritesToken(t.Context(), f.service.database.reader, scope)
+				if err != nil || current.Fingerprint != change.Fingerprint || envelope.Version != 2 {
+					t.Fatalf("preview changed after rewrap: %v", err)
+				}
 			}
 			if test.changed {
 				storeSpriteWakeSecret(t, f, "replacement")

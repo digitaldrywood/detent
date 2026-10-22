@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/user"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,47 +14,26 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
+const hubSecretsRewrapProcedure = "the Hub rewraps provider secrets automatically after restart. Add the new key while retaining old versions, set it active, restart the Hub, then run detent hub secrets status until exit 0 before retiring old keys. See docs/hub-self-hosting.md"
+
 func newHubSecretsCommand(lookupEnv func(string) string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "secrets",
 		Short:   "Maintain encrypted Hub provider secrets",
-		Example: "detent hub secrets rotate --database /var/lib/detent/hub.db",
-		Args:    NoArgs,
-	}
-	var databasePath string
-	rotate := &cobra.Command{
-		Use:          "rotate",
-		Short:        "Rewrap data keys in a stopped Hub using the active environment key version",
-		Example:      "detent hub secrets rotate --database /var/lib/detent/hub.db",
-		Args:         NoArgs,
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			if strings.TrimSpace(databasePath) == "" {
-				return errors.New("hub secrets rotate requires --database")
+		Example: "detent hub secrets status --database /var/lib/detent/hub.db",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 0 {
+				return errors.New(hubSecretsRewrapProcedure)
 			}
-			keys, err := hubsecrets.FromEnvironment(lookupEnv)
-			if err != nil {
-				return err
-			}
-			if keys == nil {
-				return hubsecrets.ErrUnavailable
-			}
-			actor, err := user.Current()
-			if err != nil {
-				return errors.New("resolve operator identity for secret rotation audit")
-			}
-			count, err := hubserver.RotateProjectSecrets(cmd.Context(), hubserver.Config{DatabasePath: databasePath, SecretKeys: keys}, "operator:"+actor.Username)
-			if err != nil {
-				return err
-			}
-			return json.NewEncoder(cmd.OutOrStdout()).Encode(struct {
-				Rotated    int `json:"rotated"`
-				KeyVersion int `json:"key_version"`
-			}{count, keys.Version()})
+			return nil
 		},
 	}
-	rotate.Flags().StringVar(&databasePath, "database", "", "stopped Hub database to rotate")
-	cmd.AddCommand(rotate, newHubSecretsStatusCommand(lookupEnv))
+	cmd.FParseErrWhitelist.UnknownFlags = true
+	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		_, err := cmd.OutOrStdout().Write([]byte(hubSecretsRewrapProcedure + "\n"))
+		return err
+	}
+	cmd.AddCommand(newHubSecretsStatusCommand(lookupEnv))
 	return cmd
 }
 

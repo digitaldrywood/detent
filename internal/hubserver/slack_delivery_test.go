@@ -320,16 +320,12 @@ func TestSlackSecretRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.SecretKeys = secretTestKeys(t, "2", "1", "2")
-	count, err := RotateProjectSecrets(t.Context(), cfg, "operator:test")
-	if err != nil || count != 1 {
-		t.Fatalf("rotation=%d %v", count, err)
-	}
-	cfg.SecretKeys = secretTestKeys(t, "2", "2")
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer service.Close()
+	service.rewrapSecrets(t.Context())
 	value, err := service.readSlackWebhook(t.Context(), f.project.OrganizationID, "test")
 	if err != nil || string(value) != slackTestWebhook {
 		t.Fatalf("rotated secret unavailable: %v", err)
@@ -347,7 +343,7 @@ func TestSlackSecretRotation(t *testing.T) {
 	if err := service.database.db.QueryRowContext(t.Context(), "SELECT actor,event,key_version FROM organization_secret_audit WHERE event='rotate'").Scan(&actor, &event, &version); err != nil {
 		t.Fatal(err)
 	}
-	if actor != "operator:test" || event != "rotate" || version != 2 {
+	if actor != "system:rewrap" || event != "rotate" || version != 2 {
 		t.Fatal("incorrect rotation audit")
 	}
 }

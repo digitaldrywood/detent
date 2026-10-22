@@ -879,21 +879,27 @@ databases or secret tables. Database failures do not stop the remaining scans;
 `retirable` is withheld if any database cannot be scanned. Without configured
 keys, an empty inventory exits 0 and any stored secret causes exit 2.
 
-After a successful preflight (exit 0 or 3), stop the Hub and run
-`detent hub secrets rotate --database /var/lib/detent/hub.db` with the proposed
-environment. The existing database ownership lock refuses rotation against a
-running Hub. Rotation atomically re-wraps data keys and records the local
-operator identity; ciphertext and value nonces remain unchanged. Repeating
-rotation at that version is a no-op. A failed rotation rolls back every row.
-No master key is written to disk by this command.
+After a successful preflight (exit 0 or 3), keep the old key versions in the
+keyring, add the new version and set `DETENT_HUB_SECRET_KEY_VERSION` to it, then
+restart the Hub with that environment. Once serving, each Hub runs one background
+pass to rewrap its provider secret data keys to the active version. Each row and
+its `system:rewrap` rotation audit commit in one short transaction; ciphertext
+and value nonces remain unchanged. Concurrent secret changes win over the pass.
+Failures leave the affected row readable at its old version and are logged
+without secret values. The pass does not retry; restarting repeats it and skips
+rows already at the active version. `detent hub secrets rotate` is retired.
 
-**Run status again before restarting with the changed keyring**, expecting exit 0
-after rotation. **Before removing any key version**, run status across every
-relevant database and require exit 0 with that version listed as `retirable`.
-For Cloud, scan the entire tenant root; an unreferenced version in one database
-may still be needed by another tenant. Retain retired keys in separate archival
-storage for old backups. Status is a snapshot: keep the proposed environment
-consistent across Hubs so concurrent writers cannot reintroduce retired versions.
+Run `detent hub secrets status --database /var/lib/detent/hub.db` until exit 0.
+**Before removing any key version**, require exit 0 across every relevant
+database with that version listed as `retirable`. For Cloud, scan the entire
+tenant root; an unreferenced version in one database may still be needed by
+another tenant. Retain retired keys in separate archival storage for restoring
+old backups. Status is a snapshot: keep the proposed environment consistent
+across Hubs so concurrent writers cannot reintroduce retired versions.
+
+To roll back while both versions remain configured, set the old version active
+and restart. The same background pass rewraps back to that version. The stored
+format is unchanged, so older binaries can read any version in their keyring.
 
 Setting a token validates `GET https://api.sprites.dev/v1/sprites` with Bearer
 authentication. Redirects are refused and provider errors/bodies are never echoed.
