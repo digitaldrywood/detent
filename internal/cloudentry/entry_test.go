@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,6 +14,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -91,6 +90,17 @@ type fakeAccess struct {
 var hubDatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
 	return hubserver.Open(ctx, hubserver.Config{DatabasePath: path, GitHubDisabled: true, Logger: slog.New(slog.DiscardHandler)})
 })
+
+func copyTenantDatabaseTemplate(template, path string) error {
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	image, err := os.ReadFile(template)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, image, 0o600)
+}
 
 func newFakeProvider() *fakeProvider {
 	return &fakeProvider{users: map[string]string{}, sessions: map[string]auth.HostedIdentity{}, memberships: map[string]auth.Membership{}, invitations: map[string]auth.Invitation{}, invitationRoles: map[string]string{}, access: map[string]fakeAccess{}, refresh: map[string]string{}}
@@ -419,72 +429,52 @@ type tenantFixture struct {
 	service      *hubserver.Service
 }
 
-func originLogin(t *testing.T, handler http.Handler, provider *fakeProvider, user, organization string) string {
-	t.Helper()
-	start := httptest.NewRecorder()
-	handler.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "/auth/oidc/start", nil))
-	location, _ := url.Parse(start.Header().Get("Location"))
-	request := httptest.NewRequest(http.MethodGet, "/auth/oidc/callback?"+url.Values{"code": {user + ":" + organization}, "state": {location.Query().Get("state")}}.Encode(), nil)
-	for _, cookie := range start.Result().Cookies() {
-		request.AddCookie(cookie)
-	}
-	callback := httptest.NewRecorder()
-	handler.ServeHTTP(callback, request)
-	for _, cookie := range callback.Result().Cookies() {
-		if cookie.Name == "detent_hosted_session" && cookie.Value != "" {
-			return cookie.Value
-		}
-	}
-	t.Fatalf("origin login failed: %d %s", callback.Code, callback.Body.String())
-	return ""
-}
-
-func originPost(t *testing.T, handler http.Handler, token, target string, form url.Values) {
-	t.Helper()
-	sum := sha256.Sum256([]byte("detent-hosted-csrf:" + token))
-	form.Set("csrf", hex.EncodeToString(sum[:]))
-	request := httptest.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.AddCookie(&http.Cookie{Name: "detent_hosted_session", Value: token})
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusSeeOther {
-		t.Fatalf("origin POST %s status = %d: %s", target, recorder.Code, recorder.Body.String())
-	}
-}
-
 func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id, providerID, owner, project string) (tenantFixture, http.Handler) {
 	t.Helper()
 	path := hubDatabasePath(t)
-	hosted := func(shared bool) *hubserver.HostedConfig {
-		plans := pilotPlans()
-		plans.Plans[0].Allowances["projects"] = 10
-		config := &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: map[string]string{"org_alpha": "http://127.0.0.1:19001", "org_beta": "http://127.0.0.1:19002"}[id], Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}}
-		if shared {
-			config.PublicURL = testPublicURL
-			config.SharedEntry = &hubserver.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
-		}
-		return config
-	}
+	plans := pilotPlans()
+	plans.Plans[0].Allowances["projects"] = 10
 	logger := slog.New(slog.DiscardHandler)
-	origin, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: path, GitHubDisabled: true, Hosted: hosted(false), Logger: logger, InitialAdminToken: []byte(testAdminKey)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	token := originLogin(t, origin.Handler(), provider, owner, providerID)
-	originPost(t, origin.Handler(), token, "/projects", url.Values{"name": {project}, "grant_access": {"true"}})
-	if err := origin.Close(); err != nil {
-		t.Fatal(err)
-	}
-	fixture := tenantFixture{id: id, provider: providerID, path: path, config: hubserver.Config{DatabasePath: path, GitHubDisabled: true, Hosted: hosted(true), Logger: logger, Conversation: &hubserver.ConversationConfig{Enabled: true}}}
-	if _, err := hubserver.MigrateHostedSharedOrigin(t.Context(), fixture.config); err != nil {
-		t.Fatal(err)
-	}
+	fixture := tenantFixture{id: id, provider: providerID, path: path, config: hubserver.Config{DatabasePath: path, GitHubDisabled: true, InitialAdminToken: []byte(testAdminKey), Logger: logger, Conversation: &hubserver.ConversationConfig{Enabled: true},
+		Hosted: &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: testPublicURL, Provider: provider,
+			StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
+			SharedEntry: &hubserver.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}},
+	}}
 	shared, err := hubserver.Open(t.Context(), fixture.config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = shared.Close() })
+	setup := &Service{config: Config{Issuer: "entry", SigningKey: key, now: time.Now,
+		transport: func(Organization) (http.RoundTripper, error) { return handlerTransport{shared.Handler()}, nil },
+	}}
+	organization := Organization{ID: id, ProviderID: providerID, Name: providerID, Generation: 1}
+	status, err := setup.serviceRequest(t.Context(), organization, "/internal/v1/owner/bootstrap", map[string]string{"organization_name": providerID}, func(claims *cloudassert.Claims) {
+		claims.Subject, claims.Email = owner, provider.users[owner]
+	})
+	if err != nil || status != http.StatusNoContent {
+		t.Fatalf("bootstrap owner: status=%d error=%v", status, err)
+	}
+	identity, err := provider.Exchange(t.Context(), owner+":"+providerID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{"idempotency_key": "fixture-project", "name": project, "grant_access": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := setup.claims(organization, cloudassert.KindBrowser, http.MethodPost, "/api/v2/organizations/"+id+"/projects", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims.Subject, claims.Email, claims.ProviderOrganization, claims.ProviderSession = owner, identity.Email, providerID, identity.Hosted.SessionID
+	claims.SessionCreatedAt, claims.SessionExpiresAt = identity.Hosted.CreatedAt, identity.Hosted.ExpiresAt
+	claims.Role, claims.AccessExpiresAt = "owner", identity.Hosted.ExpiresAt
+	claims.Binding, claims.CSRF = cloudassert.AuthorizationBinding("fixture-session", id, identity.Hosted.SessionID), cloudassert.CSRFToken("fixture-csrf", id)
+	status, response, err := setup.signedCallCSRF(t.Context(), organization, claims, body, "", claims.CSRF)
+	if err != nil || status != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s error=%v", status, response, err)
+	}
 	fixture.service = shared
 	return fixture, shared.Handler()
 }
@@ -520,7 +510,7 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
 	service, err := Open(t.Context(), Config{
 		Platform:  PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"},
 		PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, StateDir: t.TempDir(),
-		Logger: logger, clientFS: fstest.MapFS{},
+		LookupEnv: func(string) string { return "" }, Logger: logger, clientFS: fstest.MapFS{},
 		transport: func(organization Organization) (http.RoundTripper, error) {
 			return handlerTransport{tenants[organization.Endpoint]}, nil
 		},

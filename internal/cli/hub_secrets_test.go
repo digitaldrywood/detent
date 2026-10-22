@@ -357,3 +357,153 @@ func TestHubSecretsRetiredRotation(t *testing.T) {
 		})
 	}
 }
+
+func TestHubSecretsStatusAuthDatabase(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, format, active string
+		versions             []string
+		exit                 int
+		problem              string
+	}{
+		{"legacy", "legacy", "2", []string{"1", "2"}, 3, "legacy"},
+		{"old key", "1", "2", []string{"1", "2"}, 3, "not_active_version"},
+		{"active key", "2", "2", []string{"1", "2"}, 0, ""},
+		{"empty", "empty", "2", []string{"2"}, 0, ""},
+		{"missing key", "1", "2", []string{"2"}, 2, "missing_key"},
+		{"disabled legacy", "legacy", "", nil, 3, "legacy"},
+		{"disabled versioned", "2", "", nil, 2, "missing_key"},
+		{"malformed", "malformed", "2", []string{"2"}, 2, "unwrap_failed"},
+		{"wrong AAD", "wrong aad", "2", []string{"2"}, 2, "unwrap_failed"},
+		{"wrapping only", "ciphertext corrupt", "2", []string{"2"}, 0, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "auth #?.db")
+			db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := db.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
+			for _, q := range []string{
+				`CREATE TABLE authorizations(binding TEXT PRIMARY KEY,access_token TEXT NOT NULL,refresh_token TEXT NOT NULL)`,
+				`CREATE TABLE oauth_clients(id TEXT PRIMARY KEY)`,
+				`CREATE TABLE oauth_client_redirect_uris(client_id TEXT,position INTEGER,uri TEXT,PRIMARY KEY(client_id,position))`,
+			} {
+				if _, err := db.ExecContext(t.Context(), q); err != nil {
+					t.Fatal(err)
+				}
+			}
+			forbidden := []string{"known-auth-token", "legacy-auth-token", "auth-binding-one", "auth-binding-two", "oauth_client_example_one", "https://assistant.example.test/callback"}
+			for _, binding := range []string{"auth-binding-one", "auth-binding-two"} {
+				values := []string{}
+				for _, kind := range []string{"provider-access", "provider-refresh"} {
+					value := ""
+					switch test.format {
+					case "empty":
+					case "legacy":
+						value = "legacy-auth-token"
+					case "malformed":
+						value = "hk1.invalid-envelope"
+					default:
+						version := test.format
+						if version != "1" {
+							version = "2"
+						}
+						keys := mustStatusKeyring(t, secretStatusEnvironment(version, "1", "2"))
+						aad := []byte("detent-cloud-entry\x00" + kind + "\x00" + binding)
+						if test.format == "wrong aad" {
+							aad = []byte("another-purpose")
+						}
+						e, err := keys.Seal([]byte("known-auth-token"), aad)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if test.format == "ciphertext corrupt" {
+							e.Ciphertext = []byte{0}
+							e.Nonce = []byte{0}
+						}
+						value = strings.Join([]string{"hk1", version, base64.RawURLEncoding.EncodeToString(e.Nonce), base64.RawURLEncoding.EncodeToString(e.WrappedKey), base64.RawURLEncoding.EncodeToString(e.Ciphertext)}, ".")
+						forbidden = append(forbidden, value, base64.RawURLEncoding.EncodeToString(e.WrappedKey))
+					}
+					values = append(values, value)
+				}
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO authorizations VALUES(?,?,?)`, binding, values[0], values[1]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, client := range []string{"oauth_client_example_one", "oauth_client_example_two"} {
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO oauth_clients VALUES(?)`, client); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for position := range 2 {
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO oauth_client_redirect_uris VALUES(?,?,?)`, "oauth_client_example_one", position, "https://assistant.example.test/callback"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lookup := secretStatusEnvironment(test.active, test.versions...)
+			report, output := runSecretStatus(t, lookup, test.exit, "--auth-database", path)
+			status := report.AuthDatabase
+			if status == nil || status.Problem != "" || status.ClientsWithRedirectURIs != 1 || status.ClientsWithoutRedirectURIs != 1 {
+				t.Fatalf("auth status=%+v", status)
+			}
+			format, version := "hk1", 2
+			switch test.format {
+			case "empty", "legacy":
+				format = test.format
+				version = 0
+			case "1":
+				version = 1
+			case "malformed":
+				version = 0
+			}
+			if len(status.Counts) != 2 {
+				t.Fatalf("counts=%+v", status.Counts)
+			}
+			for _, count := range status.Counts {
+				if count.Format != format || count.Version != version || count.Count != 2 || !slices.Contains([]string{"provider-access", "provider-refresh"}, count.Kind) {
+					t.Fatalf("count=%+v", count)
+				}
+			}
+			wantProblems := 0
+			if test.problem != "" {
+				wantProblems = 4
+			}
+			if len(status.Problems) != wantProblems {
+				t.Fatalf("problems=%+v", status.Problems)
+			}
+			for _, problem := range status.Problems {
+				if problem.Problem != test.problem {
+					t.Fatalf("problem=%+v", problem)
+				}
+			}
+			for _, secret := range forbidden {
+				if strings.Contains(output, secret) {
+					t.Fatal("auth inventory exposed secret material")
+				}
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("auth database changed", err)
+			}
+			if _, err := os.Stat(path + ".lock"); !os.IsNotExist(err) {
+				t.Fatal("status created ownership lock", err)
+			}
+			hubPath := filepath.Join(t.TempDir(), "hub.db")
+			secretStatusFixture(t, hubPath, false, true)
+			combined, _ := runSecretStatus(t, lookup, test.exit, "--database", hubPath, "--auth-database", path)
+			if len(combined.Databases) != 1 || combined.AuthDatabase == nil {
+				t.Fatal("combined inventory omitted a database")
+			}
+		})
+	}
+}

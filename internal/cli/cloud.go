@@ -274,6 +274,7 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		}
 	}
 	result := cloudentry.Config{
+		LookupEnv:           lookupEnv,
 		GitHubWebhookSecret: []byte(strings.TrimSpace(lookupEnv("DETENT_HUB_GITHUB_WEBHOOK_SECRET"))),
 		Platform:            config.Platform,
 		PublicURL:           config.PublicURL, Issuer: config.Assertion.Issuer, SigningKey: key, Provider: provider,

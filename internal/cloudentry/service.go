@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -54,6 +55,7 @@ type Config struct {
 	StateDir                  string
 	ListenAddress             string
 	Logger                    *slog.Logger
+	LookupEnv                 func(string) string
 	Allocation                *AllocationConfig
 	Billing                   *BillingConfig
 	ConfigPath                string
@@ -129,6 +131,8 @@ type Service struct {
 	diffBodySweepAt   time.Time
 	githubRoutes      githubRoutes
 
+	stopAuthReseal    context.CancelFunc
+	authResealDone    chan struct{}
 	stopOAuthBackfill context.CancelFunc
 	oauthBackfillDone chan struct{}
 	stopAllocator     context.CancelFunc
@@ -144,8 +148,18 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	if cfg.LookupEnv == nil {
+		cfg.LookupEnv = os.Getenv
+	}
+	keys, err := hubsecrets.FromEnvironment(cfg.LookupEnv)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	if keys == nil {
+		cfg.Logger.Warn("Cloud entry uses legacy sealing: DETENT_HUB_SECRET_KEYS and DETENT_HUB_SECRET_KEY_VERSION are not configured")
 	}
 	if cfg.now == nil {
 		cfg.now = time.Now
@@ -199,7 +213,7 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	if err != nil {
 		return nil, errors.Join(err, authStorage.Close(), registry.Close())
 	}
-	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now, seal: seal}, secure: strings.HasPrefix(cfg.PublicURL, "https://"), closeDevelopState: closeDevelopState}
+	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now, seal: seal, keys: keys}, secure: strings.HasPrefix(cfg.PublicURL, "https://"), closeDevelopState: closeDevelopState}
 	service.configureRuntimeLauncher()
 	service.attachments = attachments
 	if cfg.transport == nil {
@@ -222,6 +236,7 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 		return nil, errors.Join(err, service.CloseContext(ctx))
 	}
 	service.startOAuthClientBackfill(ctx)
+	service.startAuthReseal(ctx)
 	return service, nil
 }
 
@@ -243,6 +258,10 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		keyErr = s.keyMCP.Shutdown(ctx)
 		cancel()
+	}
+	if s.stopAuthReseal != nil {
+		s.stopAuthReseal()
+		<-s.authResealDone
 	}
 	if s.stopOAuthBackfill != nil {
 		s.stopOAuthBackfill()

@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
 )
 
 var errNoSession = errors.New("shared session is missing, expired or revoked")
@@ -82,6 +83,7 @@ type authStore struct {
 	store *store
 	now   func() time.Time
 	seal  cipher.AEAD
+	keys  *hubsecrets.Keyring
 }
 
 func newTokenSeal(signingKey ed25519.PrivateKey) (cipher.AEAD, error) {
@@ -94,9 +96,16 @@ func newTokenSeal(signingKey ed25519.PrivateKey) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-func (a *authStore) sealToken(binding, token string) (string, error) {
+func (a *authStore) sealToken(purpose, binding, token string) (string, error) {
 	if token == "" {
 		return "", nil
+	}
+	if a.keys != nil {
+		envelope, err := a.keys.Seal([]byte(token), entrySecretAAD(purpose, binding))
+		if err != nil {
+			return "", err
+		}
+		return encodeEntrySecret(envelope), nil
 	}
 	nonce := make([]byte, a.seal.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
@@ -105,7 +114,18 @@ func (a *authStore) sealToken(binding, token string) (string, error) {
 	return base64.RawStdEncoding.EncodeToString(a.seal.Seal(nonce, nonce, []byte(token), []byte(binding))), nil
 }
 
-func (a *authStore) openToken(binding, sealed string) (string, error) {
+func (a *authStore) openToken(purpose, binding, sealed string) (string, error) {
+	if strings.HasPrefix(sealed, "hk1.") {
+		envelope, err := decodeEntrySecret(sealed)
+		if err != nil {
+			return "", errNoSession
+		}
+		plain, err := a.keys.Open(envelope, entrySecretAAD(purpose, binding))
+		if err != nil {
+			return "", errNoSession
+		}
+		return string(plain), nil
+	}
 	raw, err := base64.RawStdEncoding.DecodeString(sealed)
 	if err != nil || len(raw) <= a.seal.NonceSize() {
 		return "", errNoSession
@@ -120,11 +140,11 @@ func (a *authStore) openToken(binding, sealed string) (string, error) {
 // tokens opens an authorization's provider tokens. An authorization stored
 // before tokens were kept, or sealed under another key, has none.
 func (a *authStore) tokens(item authorization) (auth.HostedTokens, error) {
-	access, err := a.openToken(item.Binding, item.sealedAccess)
+	access, err := a.openToken("provider-access", item.Binding, item.sealedAccess)
 	if err != nil {
 		return auth.HostedTokens{}, err
 	}
-	refresh, err := a.openToken(item.Binding, item.sealedRefresh)
+	refresh, err := a.openToken("provider-refresh", item.Binding, item.sealedRefresh)
 	if err != nil {
 		return auth.HostedTokens{}, err
 	}
@@ -132,11 +152,11 @@ func (a *authStore) tokens(item authorization) (auth.HostedTokens, error) {
 }
 
 func (a *authStore) storeTokens(ctx context.Context, binding string, tokens auth.HostedTokens) error {
-	access, err := a.sealToken(binding, tokens.AccessToken)
+	access, err := a.sealToken("provider-access", binding, tokens.AccessToken)
 	if err != nil {
 		return err
 	}
-	refresh, err := a.sealToken(binding, tokens.RefreshToken)
+	refresh, err := a.sealToken("provider-refresh", binding, tokens.RefreshToken)
 	if err != nil {
 		return err
 	}
@@ -235,10 +255,10 @@ func (a *authStore) authorize(ctx context.Context, session accountSession, organ
 		return authorization{}, nil, err
 	}
 	result := authorization{Binding: cloudassert.AuthorizationBinding(session.Hash, organization, identity.SessionID), Organization: organization, Identity: identity, Support: identity.SupportActor != "", EffectiveEmail: effectiveEmail}
-	if result.sealedAccess, err = a.sealToken(result.Binding, tokens.AccessToken); err != nil {
+	if result.sealedAccess, err = a.sealToken("provider-access", result.Binding, tokens.AccessToken); err != nil {
 		return authorization{}, nil, err
 	}
-	if result.sealedRefresh, err = a.sealToken(result.Binding, tokens.RefreshToken); err != nil {
+	if result.sealedRefresh, err = a.sealToken("provider-refresh", result.Binding, tokens.RefreshToken); err != nil {
 		return authorization{}, nil, err
 	}
 	tx, err := a.store.db.BeginTx(ctx, nil)

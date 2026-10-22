@@ -99,7 +99,7 @@ func (s *Service) sealOAuth(purpose string, value any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sealed, err := s.auth.sealToken(s.config.PublicURL+":"+purpose, string(raw))
+	sealed, err := s.auth.sealToken(purpose, s.config.PublicURL+":"+purpose, string(raw))
 	if err != nil {
 		return "", err
 	}
@@ -110,8 +110,11 @@ func (s *Service) openOAuth(purpose, value string, target any) error {
 	if value == "" || len(value) > 3800 {
 		return errNoSession
 	}
-	sealed := strings.NewReplacer("-", "+", "_", "/").Replace(value)
-	raw, err := s.auth.openToken(s.config.PublicURL+":"+purpose, sealed)
+	sealed := value
+	if !strings.HasPrefix(value, "hk1.") {
+		sealed = strings.NewReplacer("-", "+", "_", "/").Replace(value)
+	}
+	raw, err := s.auth.openToken(purpose, s.config.PublicURL+":"+purpose, sealed)
 	if err != nil {
 		return err
 	}
