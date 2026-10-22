@@ -2256,7 +2256,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	checkpoint := r.prepareWorkerCheckpoint(ctx, req, workflow.Config.Tracker.Kind, runWorkspace, info, workspaceIssue)
-	r.startCheckpointRefs(ctx, req.checkpointRefs, req, runWorkspace)
 	sessionID, sessionStarted, err := r.startSession(ctx, req, startedAt, runtimeIdentity, resumeState, orphanRecoveryOutcome, orphanRecoveryFallbackReason)
 	if err != nil {
 		return RunResult{}, err
@@ -2376,6 +2375,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	var priorSource *agentTurnExecution
 	sourceCostOffsetUSD := 0.0
 	for {
+		r.startCheckpointRefs(ctx, req.checkpointRefs, req, runWorkspace)
 		execution := runWithCheckpoint(turnRequest, req, runtimeIdentity, sourceCostOffsetUSD)
 		if priorSource != nil {
 			execution = mergeAgentTurnExecutions(*priorSource, execution)
