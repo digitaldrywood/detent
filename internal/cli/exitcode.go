@@ -218,6 +218,14 @@ func classifyError(err error) errorClass {
 		return successErrorClass
 	}
 
+	var secretStatus *hubSecretsStatusError
+	if errors.As(err, &secretStatus) {
+		return errorClass{
+			ErrorClass: ErrorClass{Slug: "hub_secrets_status", ExitCode: secretStatus.code},
+			Title:      "Hub secret preflight",
+		}
+	}
+
 	var classified *ClassifiedError
 	if errors.As(err, &classified) && classified.Code != "" {
 		if class, ok := errorClassForSlug(classified.Code); ok {
