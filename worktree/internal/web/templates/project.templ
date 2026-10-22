@@ -1,0 +1,288 @@
+package templates
+
+import (
+	"net/url"
+	"strconv"
+
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
+)
+
+// projectFrame wraps every project tab: the shared shell, the repo slug in
+// the topbar, the tab sub-nav, then tab content via children (which owns
+// #snapshot). Tabs live outside the live region.
+templ projectFrame(data DashboardData, activeTab string) {
+	@AppShell(ProjectShellDataFromDashboard(data, activeTab), projectSlugBadge(data)) {
+		<nav class="flex flex-none gap-5.5 overflow-x-auto border-b border-line px-5" aria-label="Project views">
+			for _, tab := range projectTabs(data, activeTab) {
+				<a href={ templ.SafeURL(tab.Href) } class={ projectTabClass(tab) } { sidebarAriaCurrent(tab.Active)... }>{ tab.Label }</a>
+			}
+			<div class="ml-auto flex flex-none items-center gap-2 py-1.5">
+				if data.RunnerFleetEnabled {
+					<a class="text-xs text-accent" href={ templ.SafeURL("/fleet/runners?project="+url.QueryEscape(data.ProjectID)) }>Runner eligibility</a>
+				}
+				@aiDebugCopyButton(aiDebugProjectPath(data.ProjectID), "inline-flex min-h-9 items-center gap-1.5 rounded-card border border-line px-2.5 text-xs font-medium text-text hover:border-accent hover:text-accent")
+			</div>
+		</nav>
+		{ children... }
+	}
+}
+
+templ projectSlugBadge(data DashboardData) {
+	if projectRepoURL(data) != "" {
+		<a
+			href={ projectRepoURL(data) }
+			target="_blank"
+			rel="noopener noreferrer"
+			class="min-w-0 truncate font-mono text-xs text-dim hover:text-accent"
+			aria-label={ projectExternalLinkLabel(data) }
+		>{ projectSlugLabel(data) }</a>
+	} else {
+		<span class="min-w-0 truncate font-mono text-xs text-dim">{ projectSlugLabel(data) }</span>
+	}
+}
+
+// ProjectOverviewPage is the project home: the Fleet layout system scoped
+// to one project, plus the recent-runs table.
+templ ProjectOverviewPage(data DashboardData) {
+	@projectFrame(data, "overview") {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col gap-4.5 overflow-y-auto overflow-x-hidden px-5 py-4.5"
+				sse-swap="snapshot"
+				hx-swap="morph:innerHTML"
+				data-preserve-scroll="project-overview-scroll"
+			>
+				@ProjectOverviewSnapshotV2(data)
+			</div>
+		</main>
+	}
+}
+
+templ ProjectOverviewSnapshotV2(data DashboardData) {
+	@updatePendingBanner(data.Snapshot, "")
+	if !snapshotCarriesData(data) {
+		if snapshotDegraded(data.Snapshot) {
+			<div class="flex-none px-5 pt-4">
+				@snapshotReadiness(data.Snapshot)
+			</div>
+		} else {
+			@primitives.SkeletonPanel(2)
+			@primitives.SkeletonPanel(4)
+		}
+	} else {
+		@projectOverviewSnapshotBody(data)
+	}
+}
+
+templ projectOverviewSnapshotBody(data DashboardData) {
+	{{ view := fleetViewFromDashboard(data) }}
+	@projectPauseBanner(data)
+	if len(view.Exceptions) > 0 {
+		<div id="project-exceptions" class="flex-none">
+			@primitives.ExceptionStrip(view.Exceptions)
+		</div>
+	} else {
+		<div id="project-all-clear" class="flex-none">
+			@primitives.AllClear(projectAllClearLabel(data))
+		</div>
+	}
+	@ProjectBudgetPanel(data)
+	@AgentActivityPanel(view.Agents, view.AgentCount, view.AgentPools, runtimeCountComplete(data.Snapshot))
+	<div id="project-figures" class="flex-none">
+		@primitives.FigureRow(view.Figures) {
+			@primitives.MonoFigure("fig-tps", view.TPS)
+			@primitives.MonoFigure("fig-spend", view.Spend)
+		}
+	</div>
+	<div class="flex flex-none flex-col gap-2.5">
+		<h2 class="text-sm font-semibold text-text">Recent runs</h2>
+		@projectRunsTable("project-recent-runs", projectRunRowsWithReceipts(data.Snapshot, data.EfficiencyReceipts, 10))
+	</div>
+	@fleetMetricCards(view.Metrics)
+}
+
+templ ProjectBudgetPanel(data DashboardData) {
+	if budgetEnrichmentPending(data) {
+		<section id="project-budget" class="flex flex-none flex-col gap-3 rounded-card border border-line bg-surface p-4" aria-busy="true">
+			<h2 class="text-sm font-semibold text-text">Daily budget</h2>
+			<p class="text-xs text-sec">Loading budget data…</p>
+		</section>
+	} else {
+		@projectBudgetPanel(data)
+	}
+}
+
+templ projectBudgetPanel(data DashboardData) {
+	{{ budget := projectBudget(data) }}
+	<section id="project-budget" class="flex flex-none flex-col gap-4 rounded-card border border-line bg-surface p-4">
+		<div class="flex flex-wrap items-start justify-between gap-3">
+			<div>
+				<h2 class="text-sm font-semibold text-text">Daily budget</h2>
+				if budget.Enabled {
+					<p class="mt-1 text-xs text-sec">
+						<span class="font-mono tabular-nums">{ budget.Current } / { budget.Cap }</span>
+						<span> · { strconv.Itoa(budget.Percent) }% used · resets </span>
+						<span class="font-mono tabular-nums">@LocalTime(budget.ResetAt, LocalTimeOptions{})</span>
+					</p>
+				} else {
+					<p class="mt-1 text-xs text-sec">Budget guardrails are disabled for this project.</p>
+				}
+			</div>
+			if budget.Override != nil {
+				<div class={ "rounded-chip border px-2.5 py-1 text-xs " + boardExtraTextClass(primitives.KindWarn) }>
+					Override active · { budget.OverrideLabel } · { budget.Remaining } · { budget.Override.Reason }
+				</div>
+			}
+		</div>
+		if budget.Enabled {
+			<div class="h-1.5 overflow-hidden rounded-xs bg-line" aria-label="Daily budget usage">
+				<span class={ "block h-full " + healthQuotaBarKindClass(budget.Kind, budget.Percent >= 80) } style={ fleetProgressStyle(budget.Percent) }></span>
+			</div>
+			<form class="grid gap-3 md:grid-cols-[1fr_1fr_120px_minmax(180px,1.5fr)_auto]" hx-post={ projectBudgetOverridePath(data) } hx-target="#project-budget" hx-swap="outerHTML">
+				<label class="grid gap-1 text-2xs font-semibold uppercase text-dim">Daily cap
+					<input class="rounded-md border border-line bg-bg px-2.5 py-2 font-mono text-xs text-text" type="number" name="per_day_max_usd" min="0.01" step="0.01" placeholder={ budget.PerDayValue }/>
+				</label>
+				<label class="grid gap-1 text-2xs font-semibold uppercase text-dim">Issue cap
+					<input class="rounded-md border border-line bg-bg px-2.5 py-2 font-mono text-xs text-text" type="number" name="per_issue_max_usd" min="0.01" step="0.01" placeholder={ budget.PerIssueValue }/>
+				</label>
+				<label class="grid gap-1 text-2xs font-semibold uppercase text-dim">Duration
+					<input class="rounded-md border border-line bg-bg px-2.5 py-2 font-mono text-xs text-text" type="text" name="duration" value="4h" required/>
+				</label>
+				<label class="grid gap-1 text-2xs font-semibold uppercase text-dim">Reason
+					<input class="rounded-md border border-line bg-bg px-2.5 py-2 text-xs text-text" type="text" name="reason" required/>
+				</label>
+				<button class="self-end rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white" type="submit">Set override</button>
+			</form>
+			if budget.Override != nil {
+				<button class="self-start text-xs font-medium text-err hover:underline" type="button" hx-delete={ projectBudgetOverridePath(data) } hx-target="#project-budget" hx-swap="outerHTML" hx-confirm="Clear this temporary budget override?">Clear override early</button>
+			}
+		}
+	</section>
+}
+
+// ProjectBoardPage is the Kanban tab: the shared Board component scoped to
+// this project.
+templ ProjectBoardPage(data DashboardData) {
+	@projectFrame(data, "kanban") {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col"
+				sse-swap="snapshot"
+				hx-swap="morph:innerHTML"
+			>
+				@BoardSnapshot(data)
+			</div>
+		</main>
+		@boardAlertScript()
+		@boardLaneScript()
+		@boardKanbanDragScript()
+		@workViewScript()
+	}
+}
+
+// ProjectDiagnosticsPageV2 keeps the dense diagnostics debugging surface
+// inside the redesigned project tab frame instead of dropping the user out
+// to the legacy shell. The diagnostics content is server-rendered, so it
+// needs no Chart.js.
+templ ProjectDiagnosticsPageV2(data DashboardData) {
+	@projectFrame(data, "diagnostics") {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden px-5 py-4.5"
+				sse-swap="snapshot"
+				hx-swap="morph:innerHTML"
+				data-preserve-scroll="project-diagnostics-scroll"
+			>
+				@ProjectDiagnosticsSnapshot(data)
+			</div>
+		</main>
+		@diagnosticsTabsScript()
+	}
+}
+
+// ProjectRunsPageV2 is the full runs table.
+templ ProjectRunsPageV2(data DashboardData) {
+	@projectFrame(data, "runs") {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col gap-4.5 overflow-y-auto overflow-x-hidden px-5 py-4.5"
+				sse-swap="snapshot"
+				hx-swap="morph:innerHTML"
+				data-preserve-scroll="project-runs-scroll"
+			>
+				@ProjectRunsSnapshotV2(data)
+			</div>
+		</main>
+	}
+}
+
+templ ProjectRunsSnapshotV2(data DashboardData) {
+	@updatePendingBanner(data.Snapshot, "")
+	if !snapshotCarriesData(data) {
+		if snapshotDegraded(data.Snapshot) {
+			<div class="flex-none px-5 pt-4">
+				@snapshotReadiness(data.Snapshot)
+			</div>
+		} else {
+			@primitives.SkeletonPanel(6)
+		}
+	} else {
+		@projectRunsSnapshotBody(data)
+	}
+}
+
+templ projectRunsSnapshotBody(data DashboardData) {
+	{{ view := fleetViewFromDashboard(data) }}
+	<div id="project-figures" class="flex-none">
+		@primitives.FigureRow(view.Figures) {
+			@primitives.MonoFigure("fig-tps", view.TPS)
+			@primitives.MonoFigure("fig-spend", view.Spend)
+		}
+	</div>
+	@projectRunsTable("project-runs", projectRunRowsWithReceipts(data.Snapshot, data.EfficiencyReceipts, 0))
+}
+
+// projectRunsTable never clips columns: TITLE is the only flexible column
+// and it ellipsizes. Machine values are mono with tabular numerals; state
+// is a dot plus text, never color alone.
+templ projectRunsTable(id string, rows []projectRunRow) {
+	<section id={ id } class="flex flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
+		<div class="grid grid-cols-[70px_minmax(0,1fr)_90px] items-center gap-3 border-b border-line px-4 py-2 lg:grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_220px_110px] lg:gap-3.5">
+			<span class="text-2xs font-semibold uppercase text-dim">Issue</span>
+			<span class="hidden text-2xs font-semibold uppercase text-dim lg:inline">Title</span>
+			<span class="text-2xs font-semibold uppercase text-dim">State</span>
+			<span class="text-2xs font-semibold uppercase text-dim">Runtime · Turns</span>
+			<span class="hidden text-right text-2xs font-semibold uppercase text-dim lg:inline">Tokens</span>
+			<span class="hidden text-right text-2xs font-semibold uppercase text-dim lg:inline">Context</span>
+			<span class="hidden text-2xs font-semibold uppercase text-dim lg:inline">Efficiency receipt</span>
+			<span class="hidden text-right text-2xs font-semibold uppercase text-dim lg:inline">Finished</span>
+		</div>
+		if len(rows) == 0 {
+			@primitives.EmptyLine("No runs recorded")
+		}
+		for i, row := range rows {
+			<div id={ row.DomID } class={ projectRunRowClass(i == len(rows)-1) }>
+				@primitives.TrackerReferenceLink(row.Ref, row.URL, "min-w-0 truncate font-mono text-xs font-medium text-text tabular-nums")
+				<span class="hidden min-w-0 truncate text-sm text-text lg:inline">{ row.Title }</span>
+				<span class={ "flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-xs " + boardExtraTextClass(row.StateKind) }>
+					@primitives.StatusDot(row.StateKind, row.StateLive)
+					{ row.StateText }
+				</span>
+				<span class="whitespace-nowrap font-mono text-xs text-sec tabular-nums">{ row.Runtime }</span>
+				<span class="hidden whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums lg:inline">{ row.Tokens }</span>
+				<span
+					class={ "hidden whitespace-nowrap text-right font-mono text-xs tabular-nums lg:inline " + boardExtraTextClass(row.ContextKind) }
+					if row.ContextTitle != "" {
+						title={ row.ContextTitle }
+					}
+				>{ row.Context }</span>
+				<span class={ "hidden truncate font-mono text-xs tabular-nums lg:inline " + anomalyTextClass(row.Anomaly) } title={ row.ReceiptTitle }>{ row.Receipt }</span>
+				<span class="hidden whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums lg:inline">@LocalTime(row.FinishedAt, LocalTimeOptions{Style: LocalDateTime, Fallback: "—"})</span>
+			</div>
+		}
+	</section>
+}

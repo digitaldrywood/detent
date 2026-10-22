@@ -1,0 +1,83 @@
+[
+  {
+    "id": "chg_8f21c0c94a7b4a2f9d61e7c2b3a50f14",
+    "change_id": "chg_8f21c0c94a7b4a2f9d61e7c2b3a50f14",
+    "number": 4211,
+    "title": "feat(diff): store attempt diffs with producer fencing",
+    "state": "open",
+    "draft": false,
+    "url": "https://github.com/digitaldrywood/detent/pull/4211",
+    "head": {
+      "ref": "detent/digitaldrywood_detent_4180",
+      "sha": "9c1f4b1f0a7d4d2b8e6a3c5d7f9b0e2a4c6d8f10",
+      "repository": "digitaldrywood/detent"
+    },
+    "base": {
+      "ref": "main",
+      "sha": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
+    },
+    "author": "tok_2f6b1d0c8e3a4f5b9c7d1e2a3b4c5d6e",
+    "from_fork": false,
+    "mergeable": true,
+    "checks": [
+      {
+        "name": "ci.yml",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "s3://customer/change/test",
+        "completed_at": "2026-09-11T11:42:00Z"
+      },
+      {
+        "name": "coverage.yml",
+        "status": "in_progress",
+        "conclusion": "",
+        "url": "",
+        "completed_at": null
+      }
+    ],
+    "reviews": [
+      {
+        "author": "tok_7a1c9e0b2d3f4a5b6c7d8e9f0a1b2c3d",
+        "state": "approved",
+        "submitted_at": "2026-09-11T11:50:00Z"
+      }
+    ],
+    "review_decision": "approved",
+    "labels": [],
+    "updated_at": "2026-09-11T11:52:00Z",
+    "fetched_at": "2026-09-11T11:55:00Z",
+    "connector": {
+      "provider": "github",
+      "repository": "digitaldrywood/detent",
+      "synchronized_at": "2026-09-11T11:55:00Z"
+    }
+  },
+  {
+    "id": "chg_b73e5d1a0c8f4e6b9a2d3c4f5e6a7b80",
+    "change_id": "chg_b73e5d1a0c8f4e6b9a2d3c4f5e6a7b80",
+    "number": 0,
+    "title": "Native change without a connector",
+    "state": "open",
+    "draft": false,
+    "url": "",
+    "head": {
+      "ref": "",
+      "sha": "5d4c3b2a1908f7e6d5c4b3a2918070f6e5d4c3b2",
+      "repository": "https://github.com/example/repo"
+    },
+    "base": {
+      "ref": "",
+      "sha": "0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6"
+    },
+    "author": "tok_2f6b1d0c8e3a4f5b9c7d1e2a3b4c5d6e",
+    "from_fork": false,
+    "mergeable": "unknown",
+    "checks": [],
+    "reviews": [],
+    "review_decision": "pending",
+    "labels": [],
+    "updated_at": "2026-09-11T10:05:00Z",
+    "fetched_at": "2026-09-11T10:05:00Z",
+    "connector": null
+  }
+]
