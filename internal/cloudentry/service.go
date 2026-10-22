@@ -350,6 +350,14 @@ func (s *Service) routes() {
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(detent.StaticFS()))))
 	e.GET("/health", s.health)
 	e.GET("/", s.home)
+	e.HEAD("/", s.home)
+	e.GET("/login", func(c echo.Context) error {
+		target := "/"
+		if query := c.Request().URL.RawQuery; query != "" {
+			target += "?" + query
+		}
+		return c.Redirect(http.StatusSeeOther, target)
+	})
 	e.GET("/auth/oidc/start", s.startLogin)
 	e.GET("/auth/oidc/callback", s.completeLogin)
 	e.GET("/organizations", s.chooser)
