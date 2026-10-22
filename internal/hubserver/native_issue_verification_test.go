@@ -305,6 +305,7 @@ func TestNativeIssueVerificationListAndEmail(t *testing.T) {
 			t.Fatalf("%s verification emails for #%d=%d, want %d: %+v", test.user, test.issue.Number, got, test.want, messages)
 		}
 	}
+	drainTestNativeBoard(t, v.service)
 	for _, path := range []string{"/work-items?created_by=me&verification=pending", "/work-items?include=board&created_by=me&verification=pending"} {
 		t.Run(path, func(t *testing.T) {
 			var page tracker.NativeIssuePage

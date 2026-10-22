@@ -298,6 +298,9 @@ func TestRunnerHostSummaryWriteCost(t *testing.T) {
 		t.Skip("ten-runner heartbeat write measurement")
 	}
 	f := newWriteLoadFixture(t, 0, 10, 0)
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
 	for _, r := range f.runners {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 8, "version": "test", "backend_isolation": r.redemption.BackendIsolation}), http.StatusOK)

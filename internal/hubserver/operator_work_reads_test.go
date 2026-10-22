@@ -32,6 +32,9 @@ import (
 
 func TestOperatorNativeWorkReadErrors(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "read-errors")
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	fault := f.create(t, "fault item")
 	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-errors")
 	hidden := foreign.create(t, "hidden content")

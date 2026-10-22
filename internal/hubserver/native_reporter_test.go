@@ -43,6 +43,7 @@ func TestReporterReadIsolation(t *testing.T) {
 		v.users[role] = v.user(t, role, role, role+"@example.test", "read", "")
 		v.grant(t, v.users[role], true, false)
 	}
+	drainTestNativeBoard(t, v.service)
 	for _, user := range []string{"reporter", "tester", "member", "owner", "admin", "viewer"} {
 		for _, suffix := range []string{"", "?include=work", "?include=summary", "?include=board", "?fields=picker", "?q=Shared", "?include=board&q=Shared", "?created_by=me"} {
 			t.Run(user+suffix, func(t *testing.T) {
@@ -243,6 +244,7 @@ func TestReporterLinksAttachmentsAndBoardStream(t *testing.T) {
 	requireNativeStatus(t, v.request(t, v.users["reporter"], http.MethodGet, v.base+"/reporter-board-scope", nil), http.StatusOK)
 	scope := <-contexts
 	scope.organization, scope.project = "org_security", v.project
+	drainTestNativeBoard(t, v.service)
 	frame, err := readNativeBoardFrame(t.Context(), v.service.database.reader, scope, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -365,6 +367,7 @@ func TestReporterIdentityAcrossEntryPoints(t *testing.T) {
 				}
 			}
 			if deployment == "dedicated" {
+				drainTestNativeBoard(t, f.service)
 				scanner := openHostedTestStream(t, f.hostedSecurityFixture, f.user, "?board=true")
 				kind, data := readHostedEvent(t, scanner)
 				if kind != "activity" || strings.Contains(data, string(other.WorkItemID)) || !strings.Contains(data, string(own.WorkItemID)) {

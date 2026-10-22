@@ -359,10 +359,19 @@ func kanbanDemoIssues() []connector.Issue {
 	}
 	return []connector.Issue{
 		{
-			ID:             "kanban-demo-backlog",
-			Identifier:     "example-org/example-project#9511",
-			Title:          "Kanban demo backlog intake",
-			Description:    "Issue-only card for evaluating Backlog to Todo moves.",
+			ID:         "kanban-demo-backlog",
+			Identifier: "example-org/example-project#9511",
+			Title:      "Kanban demo backlog intake",
+			Description: `Issue-only card for evaluating Backlog to Todo moves.
+
+## Acceptance criteria
+The card can move from Backlog to Todo, receive a comment, and be removed from the project.
+
+## Must not break
+Preserve the other demo cards and dashboard authentication.
+
+## How we know it worked
+The dashboard-auth browser journey completes each card action.`,
 			State:          "Backlog",
 			URL:            "https://github.test/example-org/example-project/issues/9511",
 			Labels:         []string{"enhancement", "operator-demo"},

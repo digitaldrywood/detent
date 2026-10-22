@@ -27,6 +27,9 @@ func TestProjectOnboardingBatch(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "first")
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
 			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organizations(id,name,local,created_at) VALUES ('org_foreign','Foreign',0,?)", formatHubTime(f.service.config.now())); err != nil {
 				t.Fatal(err)
