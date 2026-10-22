@@ -1,4 +1,4 @@
-import { BookmarkIcon, LayoutListIcon } from "lucide-react";
+import { CircleDashedIcon, BookmarkIcon, LayoutListIcon } from "lucide-react";
 import { ViewActions } from "../work/SavedViewActions.tsx";
 import { useSavedViews, savedViewPath } from "../work/lib/savedViews.tsx";
 import {
@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import React from "react";
 
+import { ProjectSetupContext } from "../account/projectSetup.tsx";
+import { firstUnreadyStep, orderedSteps } from "../account/setupSteps.ts";
 import { Badge } from "../../components/ui/badge.tsx";
 import { relativeTimeLabel } from "../lib/sidebarLogic.ts";
 import { cn } from "../../lib/utils.ts";
@@ -173,6 +175,7 @@ function SectionHeader({
 
 export function SidebarDestinations(): React.ReactElement | null {
   const data = useSidebarData();
+  const setup = React.useContext(ProjectSetupContext);
   const saved = useSavedViews();
   const { isMobile, setOpenMobile } = useSidebar();
   const [browseExpanded, setBrowseExpanded] = React.useState(true);
@@ -182,6 +185,9 @@ export function SidebarDestinations(): React.ReactElement | null {
   const [needsExpanded, setNeedsExpanded] = React.useState(true);
   const [favoritesExpanded, setFavoritesExpanded] = React.useState(true);
   const activeProjectId = data?.activeProjectId ?? null;
+  const setupSteps = orderedSteps(setup?.onboarding.value, setup?.integration.value);
+  const setupPath = `/projects/${activeProjectId}/setup`;
+  const needsSetup = setup?.projectId === activeProjectId && setup?.onboarding.value?.ready === false;
 
   const navigate = React.useCallback(
     (to: string) => {
@@ -198,6 +204,13 @@ export function SidebarDestinations(): React.ReactElement | null {
       {/* The artifact's primary destination (A.1). It sits directly above the
           thread list because Work is the other half of the same question. */}
       <SidebarMenu className="gap-px pb-1">
+        {needsSetup ? <NavRow
+          icon={<CircleDashedIcon />}
+          label="Setup"
+          active={navigation.activePath === setupPath}
+          onClick={() => navigate(setupPath)}
+          trailing={<span className="text-xs text-muted-foreground">{firstUnreadyStep(setupSteps) + 1} of {setupSteps.length}</span>}
+        /> : null}
         <NavRow
           testId="nav-work"
           icon={<KanbanIcon />}
