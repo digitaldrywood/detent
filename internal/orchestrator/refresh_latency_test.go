@@ -1,9 +1,11 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -274,13 +276,14 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 		t.Skip("loopback network listener integration")
 	}
 
-	for _, mode := range []string{"id-only", "inline", "fresh", "missing", "failure", "partial failure", "independent failure", "independent forbidden", "discovery failure", "missing identity", "human", "budget", "reserve", "cancelled"} {
+	for _, mode := range []string{"id-only", "inline", "fresh", "expired", "missing", "failure", "partial failure", "independent failure", "independent forbidden", "discovery failure", "missing identity", "human", "budget", "reserve", "cancelled"} {
 		t.Run(mode, func(t *testing.T) {
 			paths := map[string]int{}
 			graphQLRequests := 0
 			var requestMu sync.Mutex
 			independentFailure := mode == "independent failure" || mode == "independent forbidden"
 			closed := independentFailure
+			readRecovered := false
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requestMu.Lock()
 				defer requestMu.Unlock()
@@ -323,7 +326,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 						fmt.Fprint(w, `{}`)
 						return
 					}
-					if mode == "failure" || (mode == "partial failure" || independentFailure) && strings.HasSuffix(r.URL.Path, "/issues/2") {
+					if mode == "failure" && !readRecovered || (mode == "partial failure" || independentFailure) && strings.HasSuffix(r.URL.Path, "/issues/2") {
 						status := http.StatusInternalServerError
 						if mode == "independent forbidden" {
 							status = http.StatusForbidden
@@ -363,7 +366,8 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 			}
 			tracker := &phaseReferenceConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}, resolver: github}
 			cfg := normalizeConfig(Config{TerminalStates: []string{"Done"}})
-			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			var evidenceLog bytes.Buffer
+			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewJSONHandler(&evidenceLog, nil))}
 			if mode == "id-only" || mode == "inline" {
 				ref := connector.BlockedRef{ID: "native-id", State: "Done", TrackerState: connector.BlockedRefTrackerStateClosed, HumanOwned: true, HumanCompletionReady: true, Source: connector.BlockedRefSourceNative}
 				if mode == "inline" {
@@ -395,6 +399,10 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				roots = append(roots, issue)
 			}
 			roots[0].WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Identifier: "owner/repo#1", Owner: workpad.BlockerOwnerOrchestrator, Predicate: &workpad.Predicate{Type: workpad.PredicateIssueState, Identifier: "owner/repo#1", States: []string{"open"}}}}}
+			if mode == "expired" {
+				expired := time.Now().Add(-time.Hour)
+				roots[0].WorkpadSignal.Blockers[0].ExpiresAt = &expired
+			}
 			roots[2].WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Identifier: "owner/repo#2", Owner: workpad.BlockerOwnerOrchestrator, Predicate: &workpad.Predicate{Type: workpad.PredicatePullRequestState, Identifier: "owner/repo#2", States: []string{"missing"}}}}}
 			ctx := t.Context()
 			if mode == "cancelled" {
@@ -405,13 +413,49 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 			state := newState(cfg)
 			got := orch.operatorReturnRetiredParks(ctx, &state, roots, time.Now())
 			_, dependencyRecovered := got[roots[0].ID]
-			if dependencyRecovered != independentFailure {
-				t.Fatalf("dependency recovery = %t, want %t", dependencyRecovered, independentFailure)
+			unverifiable := mode == "missing" || mode == "failure" || mode == "budget" || mode == "discovery failure" || mode == "cancelled" || mode == "expired"
+			if dependencyRecovered != (independentFailure || unverifiable) {
+				t.Fatalf("dependency recovery = %t, unavailable = %t", dependencyRecovered, unverifiable)
 			}
 			if !dependencyRecovered {
 				held := state.Blocked[roots[0].ID]
-				if len(held.BlockerEvidence) != 1 || (held.BlockerEvidence[0].Status == blockerEvidenceStatusCleared) != (mode == "human") {
-					t.Fatalf("unmet dependency lost evaluated evidence: %+v", held)
+				want := blockerEvidenceStatusHolds
+				if mode == "human" {
+					want = blockerEvidenceStatusCleared
+				}
+				if len(held.BlockerEvidence) != 1 || held.BlockerEvidence[0].Status != want {
+					t.Fatalf("dependency evidence = %+v, want %s", held.BlockerEvidence, want)
+				}
+			}
+			if unverifiable {
+				if !strings.Contains(evidenceLog.String(), `"blocker_evidence":[`) || !strings.Contains(evidenceLog.String(), `"status":"unverifiable"`) {
+					t.Fatalf("unavailable evaluation evidence was not recorded: %s", evidenceLog.String())
+				}
+				retry, ok := state.Retry[roots[0].ID]
+				if !ok || !stateIn(retry.Issue.State, cfg.ActiveStates) || len(retry.Issue.BlockedBy) != len(roots[0].BlockedBy) || retry.Issue.WorkpadSignal == nil {
+					t.Fatalf("unavailable dependency did not retain references in dispatchable retry: %+v", retry)
+				}
+				if _, parked := state.Blocked[roots[0].ID]; parked {
+					t.Fatal("unavailable dependency retained a blocked park")
+				}
+			}
+			if mode == "failure" {
+				requestMu.Lock()
+				readRecovered = true
+				requestMu.Unlock()
+				later := orch.operatorReturnRetiredParks(ctx, &state, roots[:1], time.Now())
+				if _, recovered := later[roots[0].ID]; recovered {
+					t.Fatal("successful read released an unfinished dependency")
+				}
+				held := state.Blocked[roots[0].ID]
+				if len(held.BlockerEvidence) != 1 || held.BlockerEvidence[0].Status != blockerEvidenceStatusHolds {
+					t.Fatalf("successful read did not recompute evidence: %+v", held.BlockerEvidence)
+				}
+			}
+			if mode == "missing" {
+				again := orch.operatorReturnRetiredParks(ctx, &state, roots[:1], time.Now())
+				if _, recovered := again[roots[0].ID]; !recovered || state.Retry[roots[0].ID].Attempt != 2 {
+					t.Fatal("repeated unresolvable reference did not continue machine retry")
 				}
 			}
 			for _, root := range roots[1:] {

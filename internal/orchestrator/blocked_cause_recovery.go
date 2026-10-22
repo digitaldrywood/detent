@@ -350,12 +350,17 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		if recorded.Found {
 			o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", string(BlockedRecoveryReasonDependencyBlocker), nil, "")
 			setBlockedEvidence(state, issue.ID, recorded.Evidence)
-			if recorded.Holds || recorded.Unverifiable {
+			if recorded.Holds {
 				return false
 			}
-			withDependencies, _, _ := o.issueWithCurrentWorkpadDependencyRefs(ctx, o.issueWithDependencyRefs(issue))
-			blockers := o.resolveDependencyBlockers(ctx, withDependencies)
-			return o.applyRecordedBlockerRecovery(ctx, state, withDependencies, blockers, recorded.Evidence, now)
+			if !recorded.Unverifiable {
+				withDependencies, _, _ := o.issueWithCurrentWorkpadDependencyRefs(ctx, o.issueWithDependencyRefs(issue))
+				blockers := o.resolveDependencyBlockers(ctx, withDependencies)
+				return o.applyRecordedBlockerRecovery(ctx, state, withDependencies, blockers, recorded.Evidence, now)
+			}
+			if o.logger != nil {
+				o.logger.Info("retry unverifiable dependency evaluation", "issue_id", issue.ID, "blocker_evidence", recorded.Evidence)
+			}
 		}
 	}
 	if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(state.Retry[issue.ID].Attempt), now, issue.BlockerReason, ""); err != nil {
