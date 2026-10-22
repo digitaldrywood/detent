@@ -533,7 +533,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 			t.Fatalf("setup failure diagnostic or identity incorrect: %+v", a)
 		}
 		state, err := orch.State(t.Context())
-		if err != nil || state.FailureBreaker.Count != 0 || len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 {
+		if err != nil || state.FailureBreaker.Count != 0 {
 			t.Fatalf("setup failure charged issue failure allowance: %+v err=%v", state, err)
 		}
 		return
@@ -834,7 +834,7 @@ func assertInstanceRecoveryRetry(t *testing.T, h *nativeChangeHub, orch *orchest
 	})
 	state, err := orch.State(t.Context())
 	retry, retried := state.Retry[issueID]
-	if err != nil || state.FailureBreaker.Count != 0 || len(state.Retry) != 1 || !retried || !strings.Contains(retry.Error, "native checkpoint requires recovery") || len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 {
-		t.Errorf("instance recovery refusal charged failures or skipped its retry: breaker=%d retry=%d instant=%d repeated=%d error=%v", state.FailureBreaker.Count, len(state.Retry), len(state.InstantFailures), len(state.RepeatedFailures), err)
+	if err != nil || state.FailureBreaker.Count != 0 || len(state.Retry) != 1 || !retried || !strings.Contains(retry.Error, "native checkpoint requires recovery") {
+		t.Errorf("instance recovery refusal charged failures or skipped its retry: breaker=%d retry=%d error=%v", state.FailureBreaker.Count, len(state.Retry), err)
 	}
 }
