@@ -15,8 +15,7 @@ import (
 
 func (s *Service) uploadArchive(c echo.Context) error {
 	c.Response().Header().Set("Cache-Control", "private, no-store")
-	storage, ok := s.attachments.(attachment.ArchiveStorage)
-	if !ok {
+	if s.attachments == nil && s.config.ArchiveCredentials == nil {
 		return attachmentError(c, http.StatusServiceUnavailable, "archives_not_configured", "Archives not configured")
 	}
 	organization, err := s.readyOrganization(c.Request().Context(), c.Param("organization"))
@@ -43,11 +42,20 @@ func (s *Service) uploadArchive(c echo.Context) error {
 	if err != nil {
 		return attachmentUploadError(c, err)
 	}
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(organization.ID, false)
+	defer unlock()
 	current, err := s.readyOrganization(c.Request().Context(), organization.ID)
 	if err != nil || current.Generation != organization.Generation {
 		return attachmentNotFound(c)
+	}
+	binding, err := s.currentArchiveBinding(c.Request().Context(), organization.ID)
+	if err != nil {
+		return attachmentError(c, http.StatusServiceUnavailable, "archive_storage_unavailable", "Archive storage is unavailable")
+	}
+	ref.BindingID, ref.CustomerOwned = binding.ID, binding.Backend == "s3"
+	storage, err := s.bindingStorage(c.Request().Context(), binding)
+	if err != nil {
+		return attachmentError(c, http.StatusBadGateway, "archive_storage_unavailable", "Archive storage is unavailable")
 	}
 	status, raw, err = s.attachmentCall(c, organization, http.MethodPost, suffix+"/check", struct {
 		Reference attachment.ArchiveReference `json:"reference"`
@@ -75,19 +83,11 @@ func (s *Service) uploadArchive(c echo.Context) error {
 
 func (s *Service) readArchive(c echo.Context) error {
 	c.Response().Header().Set("Cache-Control", "private, no-store")
-	storage, ok := s.attachments.(attachment.ArchiveStorage)
-	if !ok {
-		return attachmentNotFound(c)
-	}
 	organization, err := s.readyOrganization(c.Request().Context(), c.Param("organization"))
 	if err != nil || !safeID(c.Param("item")) || !artifact.ValidHash(c.Param("digest"), 64) {
 		return attachmentNotFound(c)
 	}
-	suffix := "/archives/" + c.Param("item") + "/" + c.Param("digest")
-	if c.QueryParam("section") != "" {
-		suffix += "?" + url.Values{"section": {c.QueryParam("section")}, "revision": {c.QueryParam("revision")}}.Encode()
-	}
-	status, raw, err := s.attachmentCall(c, organization, http.MethodGet, suffix, nil)
+	status, raw, err := s.attachmentCall(c, organization, http.MethodGet, "/archives/"+c.Param("item")+"/"+c.Param("digest")+archiveBindingQuery(c), nil)
 	if err != nil || status != http.StatusOK {
 		return attachmentCallError(c, status, raw, err, false)
 	}
@@ -95,14 +95,18 @@ func (s *Service) readArchive(c echo.Context) error {
 	if json.Unmarshal(raw, &ref) != nil || ref.Validate(organization.ID) != nil || ref.SHA256 != c.Param("digest") {
 		return attachmentError(c, http.StatusBadGateway, "tenant_unavailable", "Archive reference is invalid")
 	}
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(organization.ID, false)
+	defer unlock()
 	current, err := s.readyOrganization(c.Request().Context(), organization.ID)
 	if err != nil || current.Generation != organization.Generation {
 		return attachmentNotFound(c)
 	}
 	if err := s.auth.audit(c.Request().Context(), "entry", organization.ID, "archive_read"); err != nil {
 		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Archive audit is unavailable")
+	}
+	storage, err := s.archiveStorageForReference(c.Request().Context(), organization.ID, ref)
+	if err != nil {
+		return attachmentError(c, http.StatusBadGateway, "archive_storage_unavailable", "Archive storage is unavailable")
 	}
 	access, err := storage.PresignArchive(c.Request().Context(), ref)
 	if err != nil {
@@ -123,4 +127,19 @@ func archiveStorage(storage attachment.Storage) attachment.ArchiveStorage {
 		return nil
 	}
 	return result
+}
+
+func archiveBindingQuery(c echo.Context) string {
+	query := url.Values{}
+	if c.QueryParams().Has("binding") {
+		query.Set("binding", c.QueryParam("binding"))
+	}
+	if c.QueryParam("section") != "" {
+		query.Set("section", c.QueryParam("section"))
+		query.Set("revision", c.QueryParam("revision"))
+	}
+	if len(query) == 0 {
+		return ""
+	}
+	return "?" + query.Encode()
 }

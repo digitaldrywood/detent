@@ -28,8 +28,8 @@ func (d tenantDetailStore) StoreDetail(ctx context.Context, organization string,
 	if organization != d.allocation.ID {
 		return attachment.ArchiveReference{}, attachment.ErrInvalid
 	}
-	d.service.attachmentMu.RLock()
-	defer d.service.attachmentMu.RUnlock()
+	unlock := d.service.attachmentLocks.lock(organization, false)
+	defer unlock()
 	storage, err := d.current(ctx)
 	if err != nil {
 		return attachment.ArchiveReference{}, err
@@ -57,8 +57,8 @@ func (d tenantDetailStore) ReadDetail(ctx context.Context, organization string, 
 	if organization != d.allocation.ID {
 		return nil, attachment.ErrInvalid
 	}
-	d.service.attachmentMu.RLock()
-	defer d.service.attachmentMu.RUnlock()
+	unlock := d.service.attachmentLocks.lock(organization, false)
+	defer unlock()
 	storage, err := d.current(ctx)
 	if err != nil {
 		return nil, err

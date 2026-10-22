@@ -136,8 +136,8 @@ func (s *Service) uploadAttemptDiff(c echo.Context, organization Organization, c
 	if err != nil || status != http.StatusNoContent {
 		return nil, status, result, err
 	}
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(organization.ID, false)
+	defer unlock()
 	for i, file := range files {
 		if file.PatchBody == nil {
 			continue
@@ -194,8 +194,8 @@ func (s *Service) attemptDiffResponse(c echo.Context, organization Organization,
 	if err = errors.Join(err, response.Body.Close()); err != nil {
 		return err
 	}
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(organization.ID, false)
+	defer unlock()
 	if isMCP {
 		var frame map[string]json.RawMessage
 		var result struct {
@@ -294,8 +294,8 @@ func (s *Service) maintainAttemptDiffBodies(ctx context.Context, organization Or
 	if err := json.Unmarshal(raw, &batch); err != nil {
 		return false, err
 	}
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(organization.ID, false)
+	defer unlock()
 	for _, file := range batch.Files {
 		if file.Organization != organization.ID {
 			return false, errors.New("diff body batch organization mismatch")

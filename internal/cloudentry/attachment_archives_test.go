@@ -2,13 +2,16 @@ package cloudentry
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,23 +32,430 @@ func (f archiveFailureTransport) RoundTrip(r *http.Request) (*http.Response, err
 	return f.next.RoundTrip(r)
 }
 
+type archiveValidationTransport struct {
+	next  http.RoundTripper
+	check func(*http.Request) error
+}
+
+func (f archiveValidationTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if err := f.check(r); err != nil {
+		return nil, err
+	}
+	return f.next.RoundTrip(r)
+}
+
+func TestArchiveContentSecurityBounds(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		origins int
+		suffix  string
+	}{
+		{name: "origin count", origins: 16, suffix: "example.test"},
+		{name: "origin bytes", origins: 15, suffix: strings.Repeat(strings.Repeat("a", 60)+".", 4) + "test:443"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			browser := newBrowser(t, f.service.Handler())
+			for _, organization := range []string{"org_alpha", "org_beta"} {
+				browser.login("/organizations/"+organization+"/organization", "user_alice:p"+organization)
+				binding := attachment.StorageBinding{Organization: organization, Backend: "s3", Region: "region", Bucket: "private", CredentialReference: "reference"}
+				var first attachment.StorageBinding
+				for index := range test.origins {
+					binding.Endpoint = "https://a" + strconv.Itoa(index) + "." + test.suffix
+					stored, err := f.service.saveArchiveBinding(t.Context(), binding, int64(index))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if index == 0 {
+						first = stored
+					}
+				}
+				binding.Endpoint = "https://overflow." + test.suffix
+				if _, err := f.service.saveArchiveBinding(t.Context(), binding, int64(test.origins)); !errors.Is(err, attachment.ErrInvalid) {
+					t.Fatalf("excess origin accepted: %v", err)
+				}
+				binding.Endpoint = strings.Replace(first.Endpoint, "a0.", "A0.", 1)
+				for revision := test.origins; revision < test.origins+2; revision++ {
+					if _, err := f.service.saveArchiveBinding(t.Context(), binding, int64(revision)); err != nil {
+						t.Fatalf("same origin could not be reused: %v", err)
+					}
+				}
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), `INSERT INTO archive_storage_bindings
+ SELECT organization_id,?,?,backend,upper(endpoint),region,bucket,prefix,credential_reference,versioned
+ FROM archive_storage_bindings WHERE organization_id=? AND id=?`, "legacy_case", test.origins+3, organization, first.ID); err != nil {
+					t.Fatal(err)
+				}
+				anonymous := newBrowser(t, f.service.Handler())
+				response := attachmentRequest(t, anonymous, http.MethodGet, "/organizations/"+organization+"/organization", nil, nil)
+				if response.Header().Get("Content-Security-Policy") != contentSecurity {
+					t.Fatal("anonymous response expanded archive origins")
+				}
+				response = attachmentRequest(t, browser, http.MethodGet, "/organizations/"+organization+"/organization", nil, nil)
+				policy := response.Header().Get("Content-Security-Policy")
+				if len(policy) > len(contentSecurity)+4096 || strings.Count(policy, first.Endpoint) != 1 {
+					t.Fatalf("unbounded or duplicated origins: %q", policy)
+				}
+				for index := range test.origins {
+					if !strings.Contains(policy, "https://a"+strconv.Itoa(index)+"."+test.suffix) {
+						t.Fatal("historical origin was lost")
+					}
+				}
+				ref, _, err := attachment.PrepareArchive(organization, 1, strings.NewReader("archive"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				ref.BindingID, ref.CustomerOwned = first.ID, true
+				f.service.config.ArchiveCredentials = func(context.Context, string, string) (attachment.Credentials, error) {
+					return attachment.Credentials{AccessKeyID: "fixture-access", SecretAccessKey: "fixture-secret"}, nil
+				}
+				f.service.config.attachmentTransport = newSpacesFixture(t, false).transport
+				storage, err := f.service.archiveStorageForReference(t.Context(), organization, ref)
+				if err != nil {
+					t.Fatal(err)
+				}
+				read, err := storage.PresignArchive(t.Context(), ref)
+				if err != nil || !strings.HasPrefix(read.URL, first.Endpoint+"/") {
+					t.Fatalf("historical reference moved: %v", err)
+				}
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), `INSERT INTO archive_storage_bindings(organization_id,id,revision,backend,endpoint,region,bucket,prefix,credential_reference)
+ VALUES(?,?,?,'s3',?,'region','private','','reference')`, organization, "legacy_overflow", test.origins+4, "https://overflow."+test.suffix); err != nil {
+					t.Fatal(err)
+				}
+				response = attachmentRequest(t, browser, http.MethodGet, "/organizations/"+organization+"/organization", nil, nil)
+				if response.Header().Get("Content-Security-Policy") != contentSecurity {
+					t.Fatal("oversized historical policy did not fail closed")
+				}
+			}
+		})
+	}
+}
+
+func TestArchiveBindingValidationIsolation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, stage, mutation string
+		status, bindings      int
+	}{
+		{name: "lifecycle discovery", stage: "lifecycle", status: http.StatusOK, bindings: 1},
+		{name: "versioning discovery", stage: "versioning", status: http.StatusOK, bindings: 1},
+		{name: "organization deleted during discovery", stage: "versioning", mutation: "deleting", status: http.StatusServiceUnavailable},
+		{name: "binding replaced during discovery", stage: "versioning", mutation: "rebind", status: http.StatusConflict, bindings: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			store := newSpacesFixture(t, false)
+			f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
+			f.service.config.ArchiveCredentials = func(context.Context, string, string) (attachment.Credentials, error) {
+				return attachment.Credentials{AccessKeyID: store.config().AccessKeyID, SecretAccessKey: store.config().SecretAccessKey}, nil
+			}
+			alice := newBrowser(t, f.service.Handler())
+			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			_, page := alice.get("/organizations/org_alpha/organization")
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleting' WHERE id='org_beta'"); err != nil {
+				t.Fatal(err)
+			}
+			checks := 0
+			f.service.config.attachmentTransport = archiveValidationTransport{next: store.transport, check: func(r *http.Request) error {
+				if !r.URL.Query().Has(test.stage) {
+					return nil
+				}
+				checks++
+				if err := f.service.finishDeletion(r.Context(), "org_beta"); err != nil {
+					return err
+				}
+				switch test.mutation {
+				case "deleting":
+					_, err := f.service.registry.store.db.ExecContext(r.Context(), "UPDATE organizations SET state='deleting' WHERE id='org_alpha'")
+					return err
+				case "rebind":
+					_, err := f.service.saveArchiveBinding(r.Context(), attachment.StorageBinding{Organization: "org_alpha", Backend: "s3", Endpoint: "https://8.8.8.8", Region: "region", Bucket: "private", Prefix: "winner/", CredentialReference: "reference"}, 0)
+					return err
+				}
+				return nil
+			}}
+			raw := `{"backend":"s3","endpoint":"https://1.1.1.1","region":"region","bucket":"private","credential_reference":"reference","expected_revision":0}`
+			response := attachmentRequest(t, alice, http.MethodPut, "/api/cloud/organizations/org_alpha/archive-storage", strings.NewReader(raw), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrfFrom(t, page)})
+			if response.Code != test.status || checks != 1 {
+				t.Fatalf("binding=%d checks=%d %s", response.Code, checks, response.Body.String())
+			}
+			organization, err := f.service.registry.Organization(t.Context(), "org_beta")
+			if err != nil || organization.State != "deleted" {
+				t.Fatalf("other organization deletion stalled: organization=%+v error=%v", organization, err)
+			}
+			var bindings int
+			if err := f.service.registry.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM archive_storage_bindings WHERE organization_id='org_alpha'").Scan(&bindings); err != nil || bindings != test.bindings {
+				t.Fatalf("bindings=%d error=%v", bindings, err)
+			}
+			if test.mutation == "rebind" {
+				binding, err := f.service.currentArchiveBinding(t.Context(), "org_alpha")
+				if err != nil || binding.Prefix != "winner/" {
+					t.Fatal("stale discovery replaced the newer binding")
+				}
+			}
+		})
+	}
+}
+
+func TestArchiveDeletionIsolation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, method, query string
+		ready               bool
+	}{
+		{name: "versioning", method: http.MethodGet, query: "versioning"},
+		{name: "listing", method: http.MethodGet, query: "list-type"},
+		{name: "object deletion", method: http.MethodDelete},
+		{name: "ready organization is fenced", ready: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			store := newSpacesFixture(t, false)
+			f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
+			f.service.config.ArchiveCredentials = func(context.Context, string, string) (attachment.Credentials, error) {
+				return attachment.Credentials{AccessKeyID: store.config().AccessKeyID, SecretAccessKey: store.config().SecretAccessKey}, nil
+			}
+			if _, err := f.service.saveArchiveBinding(t.Context(), attachment.StorageBinding{Organization: "org_alpha", Backend: "s3", Endpoint: "https://1.1.1.1", Region: "region", Bucket: "private", CredentialReference: "reference"}, 0); err != nil {
+				t.Fatal(err)
+			}
+			key := "orgs/org_alpha/blobs/sha256/aa/object"
+			store.objects[key] = spacesObject{content: []byte("archive"), created: time.Now()}
+			if !test.ready {
+				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleting' WHERE id IN ('org_alpha','org_beta')"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			checks := 0
+			f.service.config.attachmentTransport = archiveValidationTransport{next: store.transport, check: func(r *http.Request) error {
+				if test.ready {
+					t.Error("ready organization contacted object storage")
+					return errors.New("organization still ready")
+				}
+				if r.Method != test.method || test.query != "" && !r.URL.Query().Has(test.query) {
+					return nil
+				}
+				checks++
+				if _, err := f.service.readyOrganization(r.Context(), "org_alpha"); err == nil {
+					return errors.New("deleting organization accepts writes")
+				}
+				return f.service.finishDeletion(r.Context(), "org_beta")
+			}}
+			err := f.service.finishDeletion(t.Context(), "org_alpha")
+			if test.ready {
+				if err == nil {
+					t.Fatal("ready organization deletion succeeded")
+				}
+				if _, exists := store.objects[key]; !exists {
+					t.Fatal("ready organization archive was removed")
+				}
+				return
+			}
+			if err != nil || checks != 1 {
+				t.Fatalf("deletion error=%v checks=%d", err, checks)
+			}
+			for _, id := range []string{"org_alpha", "org_beta"} {
+				organization, err := f.service.registry.Organization(t.Context(), id)
+				if err != nil || organization.State != "deleted" {
+					t.Fatalf("organization=%+v error=%v", organization, err)
+				}
+			}
+			if _, exists := store.objects[key]; exists {
+				t.Fatal("archive was not erased")
+			}
+		})
+	}
+}
+
+func TestArchiveUploadIsolation(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"initial read", "upload", "verification"} {
+		t.Run(stage, func(t *testing.T) {
+			f := newEntryFixture(t)
+			store := newSpacesFixture(t, false)
+			f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
+			f.service.config.ArchiveCredentials = func(context.Context, string, string) (attachment.Credentials, error) {
+				return attachment.Credentials{AccessKeyID: store.config().AccessKeyID, SecretAccessKey: store.config().SecretAccessKey}, nil
+			}
+			if _, err := f.service.saveArchiveBinding(t.Context(), attachment.StorageBinding{Organization: "org_alpha", Backend: "s3", Endpoint: "https://1.1.1.1", Region: "region", Bucket: "private", CredentialReference: "reference"}, 0); err != nil {
+				t.Fatal(err)
+			}
+			alice := newBrowser(t, f.service.Handler())
+			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			_, page := alice.get("/organizations/org_alpha/organization")
+			project := attachmentProject(t, alice, "org_alpha")
+			base := "/api/v2/organizations/org_alpha/projects/" + project
+			headers := map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrfFrom(t, page), "X-Detent-Archive-Schema": "1"}
+			raw, err := json.Marshal(tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "upload_isolation"}, Title: "Archived detail", State: "Backlog"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			created := attachmentRequest(t, alice, http.MethodPost, base+"/work-items", bytes.NewReader(raw), headers)
+			var item tracker.NativeIssue
+			if created.Code != http.StatusOK || json.Unmarshal(created.Body.Bytes(), &item) != nil {
+				t.Fatalf("create item=%d %s", created.Code, created.Body.String())
+			}
+			entered, release := make(chan struct{}), make(chan struct{})
+			releaseUpload := sync.OnceFunc(func() { close(release) })
+			reads := 0
+			f.service.config.attachmentTransport = archiveValidationTransport{next: store.transport, check: func(r *http.Request) error {
+				if !strings.Contains(r.URL.Path, "/orgs/org_alpha/blobs/") {
+					return nil
+				}
+				if r.Method == http.MethodGet {
+					reads++
+				}
+				stall := stage == "initial read" && r.Method == http.MethodGet && reads == 1 || stage == "upload" && r.Method == http.MethodPut || stage == "verification" && r.Method == http.MethodGet && reads == 2
+				if stall {
+					close(entered)
+					select {
+					case <-release:
+					case <-r.Context().Done():
+						return r.Context().Err()
+					}
+				}
+				return nil
+			}}
+			uploadFinished := make(chan struct{})
+			var uploadStatus int
+			target := base + "/work-items/" + string(item.WorkItemID) + "/archives"
+			go func() {
+				defer close(uploadFinished)
+				uploadStatus = attachmentRequest(t, alice, http.MethodPost, target, strings.NewReader("archive content"), headers).Code
+			}()
+			defer func() { releaseUpload(); <-uploadFinished }()
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal("upload did not reach storage")
+			}
+			if _, err := f.service.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state='deleting' WHERE id IN ('org_alpha','org_beta')"); err != nil {
+				t.Fatal(err)
+			}
+			alphaFinished, betaFinished := make(chan struct{}), make(chan struct{})
+			var alphaError, betaError error
+			go func() { defer close(alphaFinished); alphaError = f.service.finishDeletion(t.Context(), "org_alpha") }()
+			go func() { defer close(betaFinished); betaError = f.service.finishDeletion(t.Context(), "org_beta") }()
+			defer func() { releaseUpload(); <-alphaFinished; <-betaFinished }()
+			select {
+			case <-betaFinished:
+			case <-ctx.Done():
+				t.Fatal("another organization's deletion stalled behind the upload")
+			}
+			if betaError != nil {
+				t.Fatal(betaError)
+			}
+			if rejected := attachmentRequest(t, alice, http.MethodPost, target, strings.NewReader("late archive"), headers); rejected.Code != http.StatusNotFound {
+				t.Fatalf("deleting organization accepted upload: %d", rejected.Code)
+			}
+			select {
+			case <-alphaFinished:
+				t.Fatal("same organization deletion did not drain its upload")
+			default:
+			}
+			releaseUpload()
+			<-uploadFinished
+			<-alphaFinished
+			if uploadStatus != http.StatusCreated || alphaError != nil {
+				t.Fatalf("upload=%d deletion error=%v", uploadStatus, alphaError)
+			}
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			for key := range store.objects {
+				if strings.HasPrefix(key, "orgs/org_alpha/") {
+					t.Fatalf("deletion retained completed upload %s", key)
+				}
+			}
+		})
+	}
+}
+
+func TestArchiveLegacyBindingSnapshot(t *testing.T) {
+	t.Parallel()
+	f := newEntryFixture(t)
+	store := newSpacesFixture(t, false)
+	f.service.config.attachmentTransport = store.transport
+	for _, organization := range []string{"org_alpha", "org_beta"} {
+		cfg := store.config()
+		cfg.Endpoint = "https://1.1.1.1"
+		f.service.config.Attachments = &cfg
+		initial, err := f.service.currentArchiveBinding(t.Context(), organization)
+		if err != nil || initial.ID != "" || initial.Revision != 0 {
+			t.Fatalf("legacy binding=%+v error=%v", initial, err)
+		}
+		ref, _, err := attachment.PrepareArchive(organization, 1, strings.NewReader("legacy archive"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Endpoint, cfg.Bucket = "https://8.8.8.8", "replacement"
+		current, err := f.service.currentArchiveBinding(t.Context(), organization)
+		if err != nil || current.Endpoint != "https://1.1.1.1" || current.Bucket != "private" {
+			t.Fatal("legacy binding reinterpreted hosted configuration")
+		}
+		legacy, err := f.service.archiveStorageForReference(t.Context(), organization, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		read, err := legacy.PresignArchive(t.Context(), ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := url.Parse(read.URL)
+		if err != nil || parsed.Host != "1.1.1.1" || parsed.Path != "/private/"+ref.Key {
+			t.Fatal("legacy reference moved to the replacement bucket")
+		}
+		next, err := f.service.saveArchiveBinding(t.Context(), attachment.StorageBinding{Organization: organization, Backend: "hosted", Endpoint: cfg.Endpoint, Region: cfg.Region, Bucket: cfg.Bucket, CredentialReference: "hosted"}, 0)
+		if err != nil || next.ID == "" || next.Revision != 1 {
+			t.Fatal("hosted rebinding failed")
+		}
+		ref.BindingID = next.ID
+		replacement, err := f.service.archiveStorageForReference(t.Context(), organization, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		read, err = replacement.PresignArchive(t.Context(), ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err = url.Parse(read.URL)
+		if err != nil || parsed.Host != "8.8.8.8" || parsed.Path != "/replacement/"+ref.Key {
+			t.Fatal("new reference did not use its binding")
+		}
+	}
+}
+
 func TestArchiveRoutesLifecycle(t *testing.T) {
 	t.Parallel()
 	var logs bytes.Buffer
 	f := newEntryFixtureWithLogger(t, slog.New(slog.NewTextHandler(&logs, nil)))
 	store := newSpacesFixture(t, false)
-	storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
+	storageConfig := store.config()
+	storageConfig.Endpoint = "https://objects.example.test"
+	storage, err := attachment.NewStorage(t.Context(), storageConfig, store.transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.service.attachments = storage
-	storageConfig := store.config()
 	f.service.config.Attachments = &storageConfig
 	if policy := f.service.contentSecurity(); !strings.Contains(policy, "connect-src 'self' "+storageConfig.Endpoint+" ") || strings.Contains(policy, "connect-src *") {
 		t.Fatal("archive CSP does not restrict storage to its configured endpoint")
 	}
+	f.service.config.attachmentTransport = store.transport
+	revoked := false
+	f.service.config.ArchiveCredentials = func(_ context.Context, org, reference string) (attachment.Credentials, error) {
+		if revoked && org == "org_alpha" {
+			return attachment.Credentials{}, errors.New("fixture-revoked-secret")
+		}
+		if reference != "fixture-reference-secret" {
+			return attachment.Credentials{}, errors.New("unexpected reference")
+		}
+		return attachment.Credentials{AccessKeyID: store.config().AccessKeyID, SecretAccessKey: store.config().SecretAccessKey}, nil
+	}
+
 	alice := newBrowser(t, f.service.Handler())
 	content := strings.Repeat("fixture-content-secret archived detail\n", 1000)
+	var alphaArchiveAccess string
 	var previous attachment.ArchiveReference
 	for _, org := range []string{"org_alpha", "org_beta"} {
 		alice.login("/organizations/"+org+"/organization", "user_alice:p"+org)
@@ -257,7 +667,10 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 				status int
 			}{
 				{"?section=issue&revision=1", http.StatusOK},
+				{"?section=issue&revision=1&binding=", http.StatusOK},
 				{"?section=issue&revision=2", http.StatusNotFound},
+				{"?section=issue&revision=2&binding=", http.StatusNotFound},
+				{"?binding=", http.StatusNotFound},
 				{"", http.StatusNotFound},
 			} {
 				read := attachmentRequest(t, alice, http.MethodGet, access+test.query, nil, nil)
@@ -329,32 +742,121 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 			t.Fatal("organization deduplication boundary failed")
 		}
 		previous = ref
+
+		originalUsage := usage()
+		references := []attachment.ArchiveReference{ref}
+		bindingTarget := "/api/cloud/organizations/" + org + "/archive-storage"
+		archiveTarget := base + "/work-items/" + string(items[1].WorkItemID) + "/archives"
+		for revision, endpoint := range []string{"https://1.1.1.1", "https://8.8.8.8"} {
+			raw, err := json.Marshal(map[string]any{"backend": "s3", "endpoint": endpoint, "region": "region", "bucket": "private", "prefix": "revision_" + strconv.Itoa(revision+1) + "/", "credential_reference": "fixture-reference-secret", "expected_revision": revision})
+			if err != nil {
+				t.Fatal(err)
+			}
+			bound := attachmentRequest(t, alice, http.MethodPut, bindingTarget, bytes.NewReader(raw), headers)
+			var binding attachment.StorageBinding
+			if bound.Code != http.StatusOK || json.Unmarshal(bound.Body.Bytes(), &binding) != nil || binding.Revision != int64(revision+1) || binding.Organization != org {
+				t.Fatalf("bind=%d %s", bound.Code, bound.Body.String())
+			}
+			if strings.Contains(bound.Body.String(), "fixture-reference-secret") || strings.Contains(bound.Body.String(), store.config().SecretAccessKey) {
+				t.Fatal("binding response leaked credentials")
+			}
+			stale := attachmentRequest(t, alice, http.MethodPut, bindingTarget, bytes.NewReader(raw), headers)
+			if stale.Code != http.StatusConflict {
+				t.Fatalf("stale binding=%d %s", stale.Code, stale.Body.String())
+			}
+			uploaded := attachmentRequest(t, alice, http.MethodPost, archiveTarget, strings.NewReader(content), headers)
+			var current attachment.ArchiveReference
+			if uploaded.Code != http.StatusCreated || json.Unmarshal(uploaded.Body.Bytes(), &current) != nil || current.BindingID != binding.ID || !current.CustomerOwned {
+				t.Fatalf("bound upload=%d %s", uploaded.Code, uploaded.Body.String())
+			}
+			references = append(references, current)
+			if org == "org_alpha" {
+				alphaArchiveAccess = archiveTarget + "/" + current.SHA256 + "/access?section=issue&revision=1&binding=" + current.BindingID
+			}
+			for index, old := range references {
+				read := attachmentRequest(t, alice, http.MethodGet, archiveTarget+"/"+old.SHA256+"/access?section=issue&revision=1&binding="+url.QueryEscape(old.BindingID), nil, nil)
+				var access attachment.ArchiveRead
+				if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &access) != nil || access.ArchiveReference != old {
+					t.Fatalf("old binding lost: %d %s", read.Code, read.Body.String())
+				}
+				parsed, err := url.Parse(access.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				prefix := ""
+				if index > 0 {
+					prefix = "revision_" + strconv.Itoa(index) + "/"
+				}
+				if parsed.Path != "/private/"+prefix+old.Key {
+					t.Fatalf("old reference reinterpreted: %s", parsed.Path)
+				}
+				if index > 0 && parsed.Scheme+"://"+parsed.Host != []string{"https://1.1.1.1", "https://8.8.8.8"}[index-1] {
+					t.Fatal("old reference moved endpoint")
+				}
+				store.mu.Lock()
+				_, exists := store.objects[prefix+old.Key]
+				store.mu.Unlock()
+				if !exists {
+					t.Fatal("bound object is missing")
+				}
+			}
+			if usage() != originalUsage {
+				t.Fatalf("customer bytes charged: before=%d after=%d", originalUsage, usage())
+			}
+			page := attachmentRequest(t, alice, http.MethodGet, "/organizations/"+org+"/organization", nil, nil)
+			if !strings.Contains(page.Header().Get("Content-Security-Policy"), endpoint) {
+				t.Fatalf("validated archive endpoint missing from CSP: status=%d policy=%q location=%q", page.Code, page.Header().Get("Content-Security-Policy"), page.Header().Get("Location"))
+			}
+		}
 	}
 	store.mu.Lock()
 	n := len(store.objects)
 	store.mu.Unlock()
-	if n != 3 {
-		t.Fatalf("stored blobs=%d, want three tenant-scoped blobs", n)
+	if n != 7 {
+		t.Fatalf("stored blobs=%d, want seven tenant-scoped blobs", n)
 	}
-	for _, secret := range []string{"fixture-content-secret", "fixture-transport-secret", "X-Amz-Signature", store.config().SecretAccessKey} {
+	for _, secret := range []string{"fixture-content-secret", "fixture-transport-secret", "fixture-reference-secret", "fixture-revoked-secret", "X-Amz-Signature", store.config().SecretAccessKey} {
 		if strings.Contains(logs.String(), secret) {
 			t.Fatalf("secret leaked into logs: %s", secret)
 		}
 	}
+	revoked = true
+	unavailable := attachmentRequest(t, alice, http.MethodGet, alphaArchiveAccess, nil, nil)
+	if unavailable.Code != http.StatusBadGateway || !strings.Contains(unavailable.Body.String(), "archive_storage_unavailable") {
+		t.Fatalf("archive failure lost history availability: %d %s", unavailable.Code, unavailable.Body.String())
+	}
+	revoked = false
 	f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleting' WHERE id='org_alpha'"); err != nil {
 		t.Fatal(err)
 	}
+	revoked = true
+	if err := f.service.finishDeletion(t.Context(), "org_alpha"); err == nil {
+		t.Fatal("revoked customer storage completed deletion")
+	}
+	organization, err := f.service.registry.Organization(t.Context(), "org_alpha")
+	if err != nil || organization.State != "deleting" {
+		t.Fatal("failed deletion lost pending state")
+	}
+	var pending int
+	if err := f.service.registry.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM archive_deletion_failures WHERE organization_id='org_alpha' AND error_code='credentials_or_endpoint_unavailable'").Scan(&pending); err != nil || pending != 2 {
+		t.Fatalf("revoked receipts=%d error=%v", pending, err)
+	}
+	receipt := attachmentRequest(t, alice, http.MethodGet, "/api/cloud/organizations/org_alpha/archive-deletion", nil, nil)
+	if receipt.Code != http.StatusOK || !strings.Contains(receipt.Body.String(), "credentials_or_endpoint_unavailable") || strings.Contains(receipt.Body.String(), "fixture-reference-secret") || !strings.Contains(receipt.Body.String(), `"bucket":"private"`) {
+		t.Fatalf("receipt=%d %s", receipt.Code, receipt.Body.String())
+	}
+	revoked = false
 	if err := f.service.finishDeletion(t.Context(), "org_alpha"); err != nil {
 		t.Fatal(err)
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if len(store.objects) != 1 {
+	if len(store.objects) != 3 {
 		t.Fatal("organization deletion failed to remove its archive prefix")
 	}
 	for key := range store.objects {
-		if !strings.HasPrefix(key, "orgs/org_beta/") {
+		if !strings.HasPrefix(key, "orgs/org_beta/") && !strings.HasPrefix(key, "revision_1/orgs/org_beta/") && !strings.HasPrefix(key, "revision_2/orgs/org_beta/") {
 			t.Fatal("organization deletion crossed tenant boundary")
 		}
 	}
@@ -368,6 +870,10 @@ func TestTenantArchiveSectionReader(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.service.attachments = storage
+	f.service.config.attachmentTransport = store.transport
+	f.service.config.ArchiveCredentials = func(context.Context, string, string) (attachment.Credentials, error) {
+		return attachment.Credentials{AccessKeyID: store.config().AccessKeyID, SecretAccessKey: store.config().SecretAccessKey}, nil
+	}
 	organization, err := f.service.readyOrganization(t.Context(), "org_alpha")
 	if err != nil {
 		t.Fatal(err)
@@ -385,13 +891,41 @@ func TestTenantArchiveSectionReader(t *testing.T) {
 		t.Fatal(err)
 	}
 	reader := f.service.tenantArchiveReader(organization)
-	for _, presign := range []bool{false, true} {
-		result, err := reader(t.Context(), ref, presign)
-		if err != nil || !bytes.Equal(result.Data, data) || (result.Access != nil) != presign {
-			t.Fatalf("tenant section read presign=%v: %v", presign, err)
+	references := []attachment.ArchiveReference{ref}
+	for revision := range 3 {
+		if revision > 0 {
+			binding, err := f.service.saveArchiveBinding(t.Context(), attachment.StorageBinding{Organization: organization.ID, Backend: "s3", Endpoint: "https://objects.example.test", Region: "region", Bucket: "private", Prefix: "revision_" + strconv.Itoa(revision) + "/", CredentialReference: "reference"}, int64(revision-1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			bound := ref
+			bound.BindingID, bound.CustomerOwned = binding.ID, true
+			storage, err := f.service.bindingStorage(t.Context(), binding)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := attachment.StoreArchive(t.Context(), storage, organization.ID, bound, data); err != nil {
+				t.Fatal(err)
+			}
+			references = append(references, bound)
 		}
-		if result.Access != nil && (result.Access.ArchiveReference != ref || result.Access.ExpiresAt.After(time.Now().Add(attachment.ArchiveReadLifetime))) {
-			t.Fatal("archive URL exceeds its reference or lifetime")
+		for index, reference := range references {
+			for _, presign := range []bool{false, true} {
+				result, err := reader(t.Context(), reference, presign)
+				if err != nil || !bytes.Equal(result.Data, data) || (result.Access != nil) != presign {
+					t.Fatalf("tenant section read revision=%d presign=%v: %v", index, presign, err)
+				}
+				if result.Access != nil {
+					prefix := ""
+					if index > 0 {
+						prefix = "revision_" + strconv.Itoa(index) + "/"
+					}
+					target, err := url.Parse(result.Access.URL)
+					if err != nil || target.Path != "/private/"+prefix+reference.Key || result.Access.ArchiveReference != reference || result.Access.ExpiresAt.After(time.Now().Add(attachment.ArchiveReadLifetime)) {
+						t.Fatal("archive URL lost its binding, reference or lifetime")
+					}
+				}
+			}
 		}
 	}
 	foreign := ref
@@ -417,6 +951,10 @@ func TestTenantContentStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.service.attachments = storage
+	f.service.config.attachmentTransport = spaces.transport
+	f.service.config.ArchiveCredentials = func(context.Context, string, string) (attachment.Credentials, error) {
+		return attachment.Credentials{AccessKeyID: spaces.config().AccessKeyID, SecretAccessKey: spaces.config().SecretAccessKey}, nil
+	}
 	content := strings.Repeat("immutable source and review output\n", 10000)
 	for _, org := range []string{"org_alpha", "org_beta"} {
 		organization, err := f.service.readyOrganization(t.Context(), org)
@@ -427,32 +965,54 @@ func TestTenantContentStorage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		request := entryauthority.ContentRequest{Organization: org, Reference: ref, Write: true, Data: data}
-		for range 2 {
-			if _, err := f.service.tenantContent(t.Context(), organization, request); err != nil {
+		references := []attachment.ArchiveReference{ref}
+		for revision := range 2 {
+			binding, err := f.service.saveArchiveBinding(t.Context(), attachment.StorageBinding{Organization: org, Backend: "s3", Endpoint: "https://objects.example.test", Region: "region", Bucket: "private", Prefix: "revision_" + strconv.Itoa(revision+1) + "/", CredentialReference: "reference"}, int64(revision))
+			if err != nil {
 				t.Fatal(err)
 			}
+			bound := ref
+			bound.BindingID, bound.CustomerOwned = binding.ID, true
+			references = append(references, bound)
 		}
-		request.Write = false
-		request.Data = nil
-		restored, err := f.service.tenantContent(t.Context(), organization, request)
-		if err != nil || !bytes.Equal(restored, data) {
-			t.Fatalf("immutable tenant content changed: %v", err)
-		}
-		foreign := organization
-		foreign.ID = "org_other"
-		if _, err := f.service.tenantContent(t.Context(), foreign, request); err == nil {
-			t.Fatal("cross-org content access accepted")
-		}
-		stale := organization
-		stale.Generation++
-		if _, err := f.service.tenantContent(t.Context(), stale, request); err == nil {
-			t.Fatal("stale allocation read accepted")
+		for index, ref := range references {
+			request := entryauthority.ContentRequest{Organization: org, Reference: ref, Write: true, Data: data}
+			for range 2 {
+				if _, err := f.service.tenantContent(t.Context(), organization, request); err != nil {
+					t.Fatal(err)
+				}
+			}
+			request.Write = false
+			request.Data = nil
+			restored, err := f.service.tenantContent(t.Context(), organization, request)
+			if err != nil || !bytes.Equal(restored, data) {
+				t.Fatalf("immutable tenant content changed: %v", err)
+			}
+			prefix := ""
+			if index > 0 {
+				prefix = "revision_" + strconv.Itoa(index) + "/"
+			}
+			spaces.mu.Lock()
+			_, exists := spaces.objects[prefix+ref.Key]
+			spaces.mu.Unlock()
+			if !exists {
+				t.Fatal("tenant content was written to another binding")
+			}
+			foreign := organization
+			foreign.ID = "org_other"
+			if _, err := f.service.tenantContent(t.Context(), foreign, request); err == nil {
+				t.Fatal("cross-org content access accepted")
+			}
+			stale := organization
+			stale.Generation++
+			if _, err := f.service.tenantContent(t.Context(), stale, request); err == nil {
+				t.Fatal("stale allocation read accepted")
+			}
 		}
 	}
 	spaces.mu.Lock()
 	defer spaces.mu.Unlock()
-	if len(spaces.objects) != 2 {
-		t.Fatalf("stored %d objects, want one per org", len(spaces.objects))
+	if len(spaces.objects) != 6 {
+		t.Fatalf("stored %d objects, want three bindings per org", len(spaces.objects))
 	}
 }

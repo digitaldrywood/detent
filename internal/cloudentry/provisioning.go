@@ -722,25 +722,22 @@ func (s *Service) deleteOrganization(c echo.Context) error {
 }
 
 func (s *Service) finishDeletion(ctx context.Context, id string) error {
-	s.attachmentMu.Lock()
-	defer s.attachmentMu.Unlock()
-	if s.attachments != nil {
-		prefix, err := attachment.OrganizationPrefix(id)
-		if err != nil {
-			return err
-		}
-		if err := s.attachments.Walk(ctx, prefix, func(object attachment.Object) error {
-			if !strings.HasPrefix(object.Key, prefix) {
-				return attachment.ErrInvalid
-			}
-			if err := s.auth.audit(ctx, "entry", id, "attachment_deleted"); err != nil {
-				return err
-			}
-			return s.attachments.Delete(ctx, object.Key)
-		}); err != nil {
-			return err
-		}
+	unlock := s.attachmentLocks.lock(id, true)
+	organization, err := s.registry.Organization(ctx, id)
+	unlock()
+	if err != nil {
+		return err
 	}
+	if organization.State == "deleted" {
+		return nil
+	}
+	if organization.State != "deleting" {
+		return ErrOrganizationConflict
+	}
+	if err := s.eraseOrganizationStorage(ctx, id); err != nil {
+		return err
+	}
+
 	revoked, err := s.auth.revokeOrganization(ctx, id)
 	if err != nil {
 		return err

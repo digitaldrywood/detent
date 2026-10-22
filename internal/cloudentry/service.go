@@ -61,6 +61,7 @@ type Config struct {
 	ConfigureRuntime          func(hubserver.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error)
 	Runtime                   *hubserver.HostedRuntimeUpdate
 	RestartSettings           []byte
+	ArchiveCredentials        func(context.Context, string, string) (attachment.Credentials, error)
 	Attachments               *attachment.Config
 	GitHubWebhookSecret       []byte
 	GitHubApp                 *github.InstallationTokenConfig
@@ -123,7 +124,7 @@ type Service struct {
 	verified          sessionVerifications
 	refreshes         refreshLocks
 	attachments       attachment.Storage
-	attachmentMu      sync.RWMutex
+	attachmentLocks   attachmentLocks
 	attachmentSweepAt time.Time
 	diffBodySweepAt   time.Time
 	githubRoutes      githubRoutes
@@ -358,6 +359,9 @@ func (s *Service) routes() {
 	e.POST("/api/v1/webhooks/github", s.githubWebhook)
 	e.GET("/invite", s.startInvitation)
 	s.registerAttachmentRoutes(e)
+	e.GET("/api/cloud/organizations/:organization/archive-storage", s.archiveStorageBinding)
+	e.PUT("/api/cloud/organizations/:organization/archive-storage", s.archiveStorageBinding)
+	e.GET("/api/cloud/organizations/:organization/archive-deletion", s.archiveDeletionReceipt)
 	e.GET("/api/cloud/organizations/:organization/slug", s.organizationSlug)
 	e.PUT("/api/cloud/organizations/:organization/slug", s.organizationSlug)
 	e.Any("/*", s.readableProxy)
@@ -373,7 +377,7 @@ func (s *Service) boundary(next echo.HandlerFunc) echo.HandlerFunc {
 		header.Set("Cache-Control", "no-store")
 		header.Set("Referrer-Policy", "no-referrer")
 		header.Set("X-Content-Type-Options", "nosniff")
-		header.Set("Content-Security-Policy", s.contentSecurity())
+		header.Set("Content-Security-Policy", contentSecurity)
 		if s.secure {
 			header.Set("Strict-Transport-Security", "max-age=31536000")
 		}

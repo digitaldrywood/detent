@@ -101,6 +101,13 @@ func newSpacesFixture(t *testing.T, public bool) *spacesFixture {
 			}
 			return
 		}
+		if r.Method == http.MethodGet && r.URL.Query().Has("versioning") {
+			w.Header().Set("Content-Type", "application/xml")
+			if _, err := io.WriteString(w, `<VersioningConfiguration/>`); err != nil {
+				t.Error(err)
+			}
+			return
+		}
 		f.keys = append(f.keys, r.Method+" "+key)
 		switch r.Method {
 		case http.MethodPut:

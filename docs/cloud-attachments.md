@@ -3,8 +3,9 @@
 Cloud entry owns the private attachment store. Each environment needs its own
 dedicated DigitalOcean Spaces bucket and a key limited to that bucket. Disable
 public ACLs and anonymous bucket policies. Do not configure a CDN. Entry serves
-authenticated bytes itself; clients never receive bucket URLs, credentials or
-presigned URLs. Tenant Hubs store metadata in `attachments`, with no object
+authenticated attachment bytes itself; attachment clients never receive bucket
+URLs, credentials or presigned URLs. Archive reads use the short-lived signed
+access described below. Tenant Hubs store metadata in `attachments`, with no object
 bytes or Spaces settings in their database, configuration or environment.
 
 Configure the entry's `cloud.yaml` after the operator creates the bucket:
@@ -13,7 +14,7 @@ Configure the entry's `cloud.yaml` after the operator creates the bucket:
 attachments:
   endpoint: https://nyc3.digitaloceanspaces.com
   region: nyc3
-  bucket: detent-production-attachments
+  bucket: example-private-attachments
 ```
 
 Set `DETENT_ATTACHMENTS_ACCESS_KEY_ID` and
@@ -234,3 +235,76 @@ deprovisioning removes the entire `orgs/<organization_id>/` prefix before markin
 the tenant deleted, serialized with active object writes. Every upload,
 read and delete attempt has an entry hosted audit record; maintenance uses the
 entry actor. Bucket creation and production credentials are operator work.
+
+## Organization archive storage
+
+Archives use the existing attachment owner, with organization retention and
+short-lived presigned GET access. Attachments and attempt diffs continue using
+the hosted bucket. Archive references carry an immutable `binding_id`; a
+binding records the backend, endpoint, region, bucket, prefix, credential
+reference and observed versioning capability when known. Existing references retain their
+original binding after a new revision is selected. Rebinding performs no copy
+or migration. Schema downgrade is refused to preserve recorded storage locations. Legacy references without a binding resolve through a frozen revision-zero
+hosted binding. Keep that original bucket available until an explicit
+copy-and-verify migration has moved those references.
+
+An organization owner can read or replace its current binding through
+`GET` or `PUT /api/cloud/organizations/:organization/archive-storage`. Browser
+mutations require the organization CSRF token and same origin. A replacement
+supplies `expected_revision` (zero for the initial binding), `backend: "s3"`,
+`endpoint`, `region`, `bucket`, `prefix` and `credential_reference`. Selecting
+`backend: "hosted"` uses the entry's hosted settings. The returned revision and
+binding ID identify the new configuration; credential references and secret
+values are omitted from responses. Concurrent replacements reject a stale
+revision. Prefixes are optional relative directory segments with a trailing
+slash. Physical keys append `orgs/:organization/` beneath that prefix.
+
+The entry resolves customer credentials from its injected secret resolver.
+The service executable resolves a reference from two environment variables:
+`DETENT_ARCHIVE_<DIGEST>_ACCESS_KEY_ID` and
+`DETENT_ARCHIVE_<DIGEST>_SECRET_ACCESS_KEY`, where `DIGEST` is the uppercase
+hex SHA-256 of the exact organization ID, a newline and the exact credential
+reference. The organization is part of the lookup identity, so another
+organization cannot reuse a reference to obtain those credentials. Provision
+these secrets in the service environment; never send secret values to the
+binding API. Removing them revokes Detent's access without altering references.
+
+Customer endpoints must be HTTPS origins. The entry refuses local, private,
+link-local and metadata addresses, validates all DNS answers and pins a public
+address on each connection. It disables environment proxies and refuses HTTP
+redirects. CORS permits only the exact application origin for GET and HEAD;
+bucket lifecycle rules that expire archive content are refused. Organization
+pages permit validated current and historical endpoints in `connect-src`. Binding
+revisions can reuse an endpoint without a limit; each organization can retain
+at most 16 distinct origins totaling 4,096 bytes, including separators. Hostname
+case variants share one origin. A binding that exceeds either limit is refused
+without changing existing references. Preexisting history exceeding these limits
+receives the base CSP without archive origins rather than an oversized header.
+Bucket, region, network and CORS failures represent unavailable archive detail;
+they do not erase archive metadata or history. Customer-bucket archive bytes
+are excluded from the hosted storage allowance. Hosted archive bytes remain
+charged through the attachment counter.
+
+Archive access accepts `?binding=:binding_id` to read the exact recorded
+binding when the same digest was stored under multiple revisions. An explicit
+empty binding selects a legacy hosted reference. Responses remain private and
+no-store; signed access expires after five minutes.
+
+Organization deletion uses the existing deletion retry cycle for the hosted
+prefix and every binding revision. Versioned buckets require permission to
+inspect bucket versioning, list object versions and delete specific versions,
+including delete markers. Unversioned buckets require object listing and
+deletion. Each binding attempt deletes at most 1,000 objects and retains up to
+100 failure entries plus a truncation indicator. Object work happens outside
+SQLite write transactions. Other organizations' prefixes are never deleted.
+Deletion stays pending when access is revoked or storage refuses the request.
+
+An owner can read the retained receipt through
+`GET /api/cloud/organizations/:organization/archive-deletion`, including while
+deleting or after deletion. Receipts identify the binding, remaining key or
+prefix, version ID when known, failure category, attempt count and completion.
+A prefix failure means enumeration or credential access failed and the whole
+prefix still needs inspection. Truncated receipts require another deletion
+pass. Successful retries replace pending entries with completion receipts.
+Customers remain responsible for removing objects in their own bucket when
+they revoke Detent's credentials or their bucket refuses deletion.

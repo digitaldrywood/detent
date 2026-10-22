@@ -427,7 +427,8 @@ func (s *Service) proxy(c echo.Context) error {
 			if !static || !tenantCachePolicy(response) {
 				response.Header.Set("Cache-Control", "no-store")
 			}
-			response.Header.Set("Content-Security-Policy", s.contentSecurity())
+			c.Response().Header().Set("Content-Security-Policy", s.archiveContentSecurity(c))
+			response.Header.Del("Content-Security-Policy")
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {

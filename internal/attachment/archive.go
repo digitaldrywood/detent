@@ -17,6 +17,8 @@ const ArchiveReadLifetime = 5 * time.Minute
 const MaxArchiveBytes = 32 << 20
 
 type ArchiveReference struct {
+	BindingID        string `json:"binding_id,omitempty"`
+	CustomerOwned    bool   `json:"customer_owned,omitempty"`
 	Key              string `json:"key"`
 	SHA256           string `json:"sha256"`
 	CompressedSize   int64  `json:"compressed_size"`
@@ -42,6 +44,7 @@ type ArchiveStorage interface {
 	PutArchive(context.Context, ArchiveReference, []byte) error
 	PresignArchive(context.Context, ArchiveReference) (ArchiveRead, error)
 	ConfigureArchiveReads(context.Context, []string) error
+	ArchiveVersioning(context.Context) (bool, error)
 }
 
 func ArchiveKey(organization, digest string) (string, error) {
@@ -53,7 +56,7 @@ func ArchiveKey(organization, digest string) (string, error) {
 
 func (r ArchiveReference) Validate(organization string) error {
 	key, err := ArchiveKey(organization, r.SHA256)
-	if err != nil || key != r.Key || r.CompressedSize <= 0 || r.CompressedSize > MaxArchiveBytes || r.UncompressedSize <= 0 || r.UncompressedSize > MaxArchiveBytes || r.Codec != "gzip" || r.SchemaVersion < 1 || r.Kind != "archive" || r.Retention != ArchiveRetention {
+	if (r.BindingID != "" && !validOrganization(r.BindingID)) || (r.CustomerOwned && r.BindingID == "") || err != nil || key != r.Key || r.CompressedSize <= 0 || r.CompressedSize > MaxArchiveBytes || r.UncompressedSize <= 0 || r.UncompressedSize > MaxArchiveBytes || r.Codec != "gzip" || r.SchemaVersion < 1 || r.Kind != "archive" || r.Retention != ArchiveRetention {
 		return ErrInvalid
 	}
 	return nil
