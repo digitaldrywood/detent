@@ -29,25 +29,29 @@ func (r *recordingTB) Fatalf(format string, args ...any) {
 
 func TestWaitUntil(t *testing.T) {
 	t.Parallel()
-	canceled, cancel := context.WithCancel(t.Context())
-	cancel()
 	tests := []struct {
 		name        string
-		ctx         context.Context
+		canceled    bool
 		passAfter   int
 		wantCalls   int
 		wantFailure string
 	}{
-		{name: "condition already holds", ctx: t.Context(), passAfter: 1, wantCalls: 1},
-		{name: "condition holds after polling", ctx: t.Context(), passAfter: 3, wantCalls: 3},
-		{name: "context ends first", ctx: canceled, passAfter: 100, wantCalls: 1, wantFailure: "not yet 1"},
+		{name: "condition already holds", passAfter: 1, wantCalls: 1},
+		{name: "condition holds after polling", passAfter: 3, wantCalls: 3},
+		{name: "context ends first", canceled: true, passAfter: 100, wantCalls: 1, wantFailure: "not yet 1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			ctx := t.Context()
+			if tt.canceled {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
 			tb := &recordingTB{}
 			calls := 0
-			WaitUntil(tb, tt.ctx, func() error {
+			WaitUntil(tb, ctx, func() error {
 				calls++
 				if calls >= tt.passAfter {
 					return nil
