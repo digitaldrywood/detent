@@ -26,6 +26,7 @@ func TestRenameProject(t *testing.T) {
 		{name: "multibyte overlong", value: strings.Repeat("界", 67), revision: "1", status: 400},
 		{name: "stale", value: "stale-sentinel", revision: "2", status: 409},
 		{name: "zero revision", value: "zero-sentinel", revision: "0", status: 400},
+		{name: "invalid revision encoding", value: "invalid-revision-sentinel", revision: "invalid", status: 422},
 		{name: "operator", value: "denied-sentinel", revision: "1", operator: true, status: 403},
 		{name: "unknown", value: "unknown-sentinel", revision: "1", target: "unknown", status: 404},
 		{name: "other organization", value: "foreign-sentinel", revision: "1", target: "foreign", status: 404},
