@@ -58,7 +58,7 @@
     "internal/orchestrator/run_completion.go:blockExhaustedMergeWorker": "8bc4e0d9fc3e51fdbfa0a58f207c6086e57238ba3ae6d9de9854e7cecfdaa1cf",
     "internal/orchestrator/run_completion.go:commentObservedLaneTransition": "54fa914f9a030bc27f892d931186ca6f949d6ae2aac8430c233046ff9672769c",
     "internal/orchestrator/run_completion.go:reworkMergeWorkerResult": "4029b7e7046926e1de133946340d177982b071f99999580edf97e4172bfb2de3",
-    "internal/orchestrator/session_brake.go:handleSessionBrake": "4633e02de2a088eb717040aa9c5b4fe77c9e71aa97880690bde83a2c3ee80b8f",
+    "internal/orchestrator/session_brake.go:handleSessionBrake": "13da6e2b5b07e84240d9875f43f316f20d7be5761d8fd2654d7bb0b19d483793",
     "internal/orchestrator/workflow_metrics.go:updateIssueState": "d295ff8d7e86737e7c477c2cee5277f32d0e5821094a0dcbce188878f136bb30",
     "internal/orchestrator/workflow_metrics.go:updateIssueStateByID": "072e7213f3009b9d2bea4458af718434a8f7f9497b306490e51ad4d20b26c8fd",
     "internal/orchestrator/workflow_metrics.go:updateIssueStateByIDStrictWithMetadata": "656ee6ae67664fb30ab795a18a9fd010758063d68944674b69c9c1b603f63b13",

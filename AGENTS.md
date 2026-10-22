@@ -153,7 +153,10 @@ interactions are the main source of incidents, so the set may not grow.
   continuations (generic and native) reset to attempt 1 only for a host-observed
   changed PR head or committed tree against the dispatch baseline. Unchanged or
   unavailable source evidence and rejected completions retain growing retries.
-  Merge-worker waits grow attempts, including after source refreshes. Accepted
+  Productive merge and session-brake continuations also reset on verified changed
+  committed/published source with custody and rejection checks intact. Resumable
+  assertions and dirty-only changes do not qualify. Successful CI wait clearance
+  preserves the attempt; unproductive waits and repeated breaches grow. Accepted
   stage and deliverable completions advance or finish without a new commit or a
   continuation reset; arbitrary Workpad changes do not establish source progress. Historical brake metadata never parks work or vetoes dispatch.
   Budgets, usage checks, provider capacity and session ceilings remain existing

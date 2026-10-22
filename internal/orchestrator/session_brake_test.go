@@ -22,6 +22,8 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 
 	tests := []struct {
 		name         string
+		landing      *runpkg.NativeLanding
+		productive   bool
 		resumable    bool
 		diff         DiffStats
 		activeStates []string
@@ -30,6 +32,10 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 		finalState   string
 		wantTerminal store.WorkAttemptTerminalState
 	}{
+		{name: "dirty source does not reset", resumable: true, diff: DiffStats{HeadSHA: "committed-head", TreeSHA: "after", FilesChanged: 1}, wantState: "Rework", finalState: runpkg.FinalStateSessionDurationExceeded, wantTerminal: store.WorkAttemptTerminalTimedOut},
+		{name: "missing custody does not reset", resumable: true, diff: DiffStats{HeadSHA: "committed-head", TreeSHA: "after", RecoveryStateExpected: true}, wantState: "Rework", finalState: runpkg.FinalStateSessionDurationExceeded, wantTerminal: store.WorkAttemptTerminalTimedOut},
+		{name: "rejected publication does not reset", resumable: true, landing: &runpkg.NativeLanding{Refusal: "publication refused"}, diff: DiffStats{HeadSHA: "committed-head", TreeSHA: "after"}, wantState: "Rework", finalState: runpkg.FinalStateSessionDurationExceeded, wantTerminal: store.WorkAttemptTerminalTimedOut},
+		{name: "verified committed progress", productive: true, resumable: true, diff: DiffStats{HeadSHA: "committed-head", TreeSHA: "after"}, wantState: "Rework", finalState: runpkg.FinalStateSessionDurationExceeded, wantTerminal: store.WorkAttemptTerminalTimedOut},
 		{
 			name:         "no work product returns to todo",
 			wantState:    "Todo",
@@ -121,7 +127,8 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 						TotalTokens:    brake.Tokens,
 						RuntimeSeconds: brake.Elapsed.Seconds(),
 					},
-					DiffStats: tt.diff,
+					DiffStats:     tt.diff,
+					NativeLanding: tt.landing,
 				},
 				err: brake,
 			}
@@ -181,8 +188,17 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			}
 			scheduling := &nativeCompletionScheduling{hubSchedulingSource: &hubSchedulingSource{}}
 			orch.scheduling = scheduling
+			running := state.Running[issue.ID].withProgress()
+			running.progress = nil
+			running.DispatchLoopStart.Captured = true
+			running.DispatchLoopStart.Fingerprint.WorkspaceTree = "before"
+			state.Running[issue.ID] = running
 			orch.handleRunResult(t.Context(), &state, completion)
-			assertCompletionMachineRetry(t, orch, state, issue.ID, completedAt, 4, 80*time.Second)
+			wantAttempt, upper := 4, 80*time.Second
+			if tt.productive {
+				wantAttempt, upper = 1, 10*time.Second
+			}
+			assertCompletionMachineRetry(t, orch, state, issue.ID, completedAt, wantAttempt, upper)
 			if scheduling.releases != 1 {
 				t.Fatalf("lease releases = %d, want 1", scheduling.releases)
 			}
@@ -265,6 +281,32 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 					t.Fatalf("logs = %q, want %q", logs.String(), want)
 				}
 			}
+			attempt := wantAttempt
+			for cycle, changed := range []bool{true, true, false, false, true} {
+				running.Attempt = attempt
+				running.Issue = issue
+				running.DiffStats = tt.diff
+				repeated := completion
+				repeated.Result.DiffStats = tt.diff
+				if tt.productive && !changed {
+					repeated.Result.DiffStats.TreeSHA = "before"
+				}
+				want := attempt + 1
+				if tt.productive && changed {
+					want = 1
+				}
+				state.Claimed[issue.ID] = Claimed{Issue: issue}
+				beforeReleases := scheduling.releases
+				if !orch.handleSessionBrake(t.Context(), &state, repeated, running) {
+					t.Fatal("session brake not handled")
+				}
+				assertCompletionMachineRetry(t, orch, state, issue.ID, completedAt, want, min(10*time.Second<<(want-1), cfg.MaxRetryBackoff))
+				if scheduling.releases != beforeReleases+1 {
+					t.Fatalf("cycle %d releases = %d, want %d", cycle, scheduling.releases, beforeReleases+1)
+				}
+				attempt = want
+			}
+
 		})
 	}
 }

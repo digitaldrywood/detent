@@ -1760,6 +1760,38 @@ func TestMachineFailuresUseRetryOwner(t *testing.T) {
 					assertCompletionMachineRetry(t, o, state, issue.ID, now, attempt+1, upper)
 				}
 			}
+			if tt.name == "merge current head CI wait" || tt.name == "merge hydration wait" || tt.name == "merge base refresh" {
+				attempt := 9
+				for cycle, want := range []int{1, 1, 2, 3, 1} {
+					running := Running{Issue: issue, Attempt: attempt}
+					running.DispatchLoopStart.Captured = true
+					running.DispatchLoopStart.Fingerprint.PRNumber = 1
+					running.DispatchLoopStart.Fingerprint.PRHeadSHA = "head"
+					running.DispatchLoopStart.Fingerprint.WorkspaceTree = "before"
+					running.DiffStats = DiffStats{TreeSHA: "before"}
+					if cycle == 0 || cycle == 1 || cycle == 4 {
+						running.DiffStats.TreeSHA = "after"
+					}
+					state.Claimed[issue.ID] = Claimed{Issue: issue}
+					beforeReleases := scheduling.releases
+					tt.apply(o, &state, running)
+					retry := state.Retry[issue.ID]
+					o.releaseClaim(&state, issue.ID)
+					if scheduling.releases != beforeReleases+1 {
+						t.Fatalf("cycle %d releases = %d, want %d", cycle, scheduling.releases, beforeReleases+1)
+					}
+					state.Retry[issue.ID] = retry
+					assertCompletionMachineRetry(t, o, state, issue.ID, now, want, time.Second<<(want-1))
+					if tt.name == "merge current head CI wait" {
+						cleared, handled, _ := o.pollMergeWorkerCurrentHeadCI(t.Context(), &state, issue, retry, now)
+						if handled || cleared.Attempt != want || cleared.Wait.Kind != "" {
+							t.Fatalf("cleared wait = %#v, handled=%v", cleared, handled)
+						}
+					}
+					attempt = want
+				}
+			}
+
 		})
 	}
 }

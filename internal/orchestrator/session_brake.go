@@ -159,7 +159,7 @@ func (o *Orchestrator) handleSessionBrake(
 
 	running.Issue = issue
 	event.CompletedAt = completedAt
-	o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), brake.Reason)
+	o.retryMachineCompletion(ctx, state, event, running, sourceContinuationAttempt(running, issue, event.Result, !strings.EqualFold(strings.TrimSpace(event.Result.FinalState), runpkg.FinalStateFailed)), brake.Reason)
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
 	releaseProjectFailureBreakerCanary(state, event.IssueID)
 	recordStateEvent(state, telemetry.ActivityEvent{

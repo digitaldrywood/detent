@@ -477,8 +477,8 @@ func TestDispatchReadyIssuesRevisitsDeferredMergeWhenCurrentHeadBecomesReady(t *
 	if running.Issue.PullRequest == nil || running.Issue.PullRequest.CIStatus != "success" {
 		t.Fatalf("Running[%q].Issue.PullRequest = %#v, want refreshed green head", deferred.ID, running.Issue.PullRequest)
 	}
-	if running.Attempt != 2 {
-		t.Fatalf("Running[%q].Attempt = %d, want 2 after CI wait ended", deferred.ID, running.Attempt)
+	if running.Attempt != 1 {
+		t.Fatalf("Running[%q].Attempt = %d, want 1 after CI wait ended", deferred.ID, running.Attempt)
 	}
 	if _, ok := state.Running[queueHead.ID]; ok {
 		t.Fatalf("Running[%q] present while refreshed deferred head was ready", queueHead.ID)

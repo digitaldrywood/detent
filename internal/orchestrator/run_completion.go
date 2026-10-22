@@ -1233,11 +1233,12 @@ func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
 		retryError = fmt.Sprintf("current-head CI wait exceeded %s: %s", mergeWorkerCurrentHeadCIWaitTimeout, retryError)
 	}
 	reservation := o.recordMergeReservationWait(state, issue, event.CompletedAt)
+	attempt := sourceContinuationAttempt(running, issue, event.Result, mergeWorkerTurnSucceeded(event))
 	running.Issue = issue
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError,
 		map[string]any{mergeReservationMetadataKey: reservation})
-	if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(running.Attempt), event.CompletedAt, retryError, running.WorkerHost); err != nil {
+	if err := o.retryMachineFailure(ctx, state, issue, attempt, event.CompletedAt, retryError, running.WorkerHost); err != nil {
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		return
 	}
@@ -1266,7 +1267,6 @@ func (o *Orchestrator) pollMergeWorkerCurrentHeadCI(
 	}
 	if !mergeWorkerProgrammaticMergeWaiting(issue) {
 		finishMergeWorkerCurrentHeadCIWait(state, issue, now)
-		retry.Attempt = nextAttempt(retry.Attempt)
 		retry.Wait = RetryWait{}
 		state.Retry[issue.ID] = retry
 		return retry, false, ""
@@ -1441,11 +1441,11 @@ func (o *Orchestrator) waitForMergeWorkerRetry(
 	eventName string,
 	eventMessage string,
 ) {
+	attempt = sourceContinuationAttempt(running, issue, event.Result, mergeWorkerTurnSucceeded(event))
 	running.Issue = issue
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError,
 		mergeWorkAttemptMetadata(map[string]any{mergeReservationMetadataKey: state.mergeReservations[issue.ID]}, nativeLandingMetadata(event.Result.NativeLanding)))
-	attempt = nextAttempt(running.Attempt)
 	o.retryMachineCompletion(ctx, state, event, running, attempt, retryError)
 	if o.logger != nil {
 		o.logger.Info(eventName, mergeWorkerLogAttrs(issue, "attempt", attempt, "reason", retryError)...)
@@ -1510,10 +1510,11 @@ func (o *Orchestrator) refreshMergeWorkerBase(
 		reservation.RefreshHeadSHA = ""
 	}
 	state.mergeReservations[reservation.IssueID] = reservation
+	attempt := sourceContinuationAttempt(running, issue, event.Result, mergeWorkerTurnSucceeded(event))
 	running.Issue = issue
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess,
 		"", "", "waiting", "base refresh required before merge", map[string]any{mergeReservationMetadataKey: reservation})
-	o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), "base refresh required before merge")
+	o.retryMachineCompletion(ctx, state, event, running, attempt, "base refresh required before merge")
 	if o.logger != nil {
 		o.logger.Info("merge_base_refresh_required", mergeWorkerLogAttrs(issue,
 			"reason", reason, "prior_validation_invalidated", true, "reservation_expires_at", reservation.ExpiresAt)...)
@@ -1544,6 +1545,38 @@ func (o *Orchestrator) failProgrammaticMergeWorkerResult(
 		Event:   "merge_worker_programmatic_merge_failed",
 		Message: "programmatic merge failed for " + issueLabel(running.Issue) + ": " + errorString(err),
 	})
+}
+
+func sourceContinuationAttempt(running Running, issue connector.Issue, result runpkg.RunResult, accepted bool) int {
+	attempt := nextAttempt(running.Attempt)
+	if !accepted {
+		return attempt
+	}
+	if diffStatsPresent(result.DiffStats) {
+		running.DiffStats = result.DiffStats
+	}
+	evidence := implementProgressReconcilePullRequestEvidence(running.DiffStats, issue.PullRequest)
+	if completionCleanlinessDirty(evidence) || evidence.RecoveryStateExpected && !evidence.RecoveryStateAvailable {
+		return attempt
+	}
+	if stranded, unavailable := implementProgressUnpushedClassification(evidence, issue.PullRequest); stranded || unavailable != "" {
+		return attempt
+	}
+	if landing := result.NativeLanding; landing != nil && (landing.RequiresRework() || landing.Refusal != "" || landing.RefusalKind != "") {
+		return attempt
+	}
+	if change := result.NativeChange; change != nil {
+		if change.Error != "" || change.VersionError != "" || change.VersionID == "" ||
+			change.Validator != nil && change.Validator.Verdict == "rework" ||
+			change.ImplementationReview != nil && change.ImplementationReview.Verdict == "rework" ||
+			change.SecurityAudit != nil && change.SecurityAudit.Verdict == "rework" {
+			return attempt
+		}
+	}
+	if len(implementProgressSourceKinds(running, issue)) > 0 {
+		return 1
+	}
+	return attempt
 }
 
 func mergeWorkerTurnSucceeded(event runpkg.Completion) bool {
