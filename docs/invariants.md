@@ -80,7 +80,7 @@ an unrelated hook failure cannot inherit that classification.
 
 Native landing conflicts and failed landing commands are source refusals, not
 infrastructure failures or shipped work. Landing refusal destinations belong
-to the workflow owner: conflicts and command gate failures prefer configured
+to the workflow owner: conflicts, moved heads and command gate failures prefer configured
 Rework, other refusals prefer the configured review lane, and terminal,
 operator-only and self-transitions are excluded. Recovery and Rework resume
 only from a verified preserved source checkpoint; unknown changes and

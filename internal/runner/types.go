@@ -913,7 +913,7 @@ type NativeLanding struct {
 }
 
 func (l NativeLanding) RequiresRework() bool {
-	return !l.Landed && (l.CI != nil && l.CI.State == "failure" || l.GateFailed || l.RefusalKind == workspace.LandRefusalConflict || l.RefusalKind == workspace.LandRefusalProtected && workspace.ReviewConversationsRefusal(l.Refusal))
+	return !l.Landed && (l.CI != nil && l.CI.State == "failure" || l.GateFailed || l.RefusalKind == workspace.LandRefusalConflict || l.RefusalKind == workspace.LandRefusalHeadMoved || l.RefusalKind == workspace.LandRefusalProtected && workspace.ReviewConversationsRefusal(l.Refusal))
 }
 
 // NativeChange describes a successful hub-native work run's change. A hub

@@ -123,7 +123,7 @@ func (l *LocalGit) GitHubPublicationIdentity(ctx context.Context, info Info, iss
 	return l.gitHubPublicationIdentity(ctx, info, issue, &opts)
 }
 
-func (l *LocalGit) gitHubPublicationIdentity(ctx context.Context, info Info, issue Issue, opts *LandOptions) (GitHubPublication, error) {
+func (l *LocalGit) gitHubPublicationIdentity(ctx context.Context, info Info, issue Issue, opts *LandOptions) (publication GitHubPublication, returnErr error) {
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {
 		return GitHubPublication{}, err
@@ -150,6 +150,9 @@ func (l *LocalGit) gitHubPublicationIdentity(ctx context.Context, info Info, iss
 		}
 	}
 	branch := strings.TrimSpace(normalized.Branch)
+	defer func() {
+		returnErr = reconcilePublicationRefusal(ctx, normalized.Path, remote, branch, base, *opts, returnErr)
+	}()
 	if opts.External != nil {
 		pull, err := readExternalGitHubPull(ctx, opts.GitHubClient, opts.Repository, opts.External, base)
 		if err != nil {
@@ -167,7 +170,7 @@ func (l *LocalGit) gitHubPublicationIdentity(ctx context.Context, info Info, iss
 		if !validLandingHead(pull.Head.SHA) || pull.Head.SHA != opts.HeadSHA && pull.Head.SHA != opts.ExternalHeadSHA || pull.State != "open" || pull.Merged || pull.MergedAt != "" {
 			return GitHubPublication{}, githubPublicationRefusal(pull, pull.Head.Repo.FullName, branch, opts.HeadSHA, base)
 		}
-		published, exists, err := remoteBranchHead(ctx, normalized.Path, remote, branch)
+		published, exists, err := githubPublicationBranchHead(ctx, normalized.Path, remote, branch)
 		if err != nil {
 			return GitHubPublication{}, fmt.Errorf("inspect retained PR branch: %w", err)
 		}
@@ -221,7 +224,39 @@ func githubPublicationRefusal(pull githubLandingPull, repository, branch, head, 
 	return refuse(LandRefusalHeadMoved, fmt.Sprintf("PR publication identity mismatch: expected repository=%s branch=%s target=%s head=%s; observed head_repository=%s base_repository=%s branch=%s target=%s head=%s state=%s merged=%t; preserve source and reconcile the recorded PR before retrying", repository, branch, base, head, pull.Head.Repo.FullName, pull.Base.Repo.FullName, pull.Head.Ref, pull.Base.Ref, pull.Head.SHA, pull.State, pull.Merged || pull.MergedAt != ""))
 }
 
-func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue, opts LandOptions, repository, owner, remote, branch, head, base string) (githubLandingPull, bool, bool, error) {
+func githubPublicationBranchHead(ctx context.Context, path, remote, branch string) (string, bool, error) {
+	head, exists, err := remoteBranchHead(ctx, path, remote, branch)
+	if err != nil {
+		return "", false, forgeavailability.NewError(forgeavailability.Scope{Host: "github.com"}, forgeavailability.ClassTransport, err)
+	}
+	return head, exists, nil
+}
+
+func reconcilePublicationRefusal(ctx context.Context, path, remote, branch, base string, opts LandOptions, err error) error {
+	var refusal *LandRefusal
+	if !opts.UnresolvedEffect || opts.PublicationEffect == nil || !errors.As(err, &refusal) {
+		return err
+	}
+	if opts.Authorize == nil {
+		return err
+	}
+	if authorityErr := opts.Authorize(ctx); authorityErr != nil {
+		return authorityErr
+	}
+	if remoteErr := verifyGitHubPublicationRemote(ctx, path, remote, opts.Repository); remoteErr != nil {
+		return remoteErr
+	}
+	if _, _, readErr := githubPublicationBranchHead(ctx, path, remote, branch); readErr != nil {
+		return readErr
+	}
+	publication := GitHubPublication{Repository: opts.Repository, BaseRef: base, Branch: branch, HeadSHA: opts.HeadSHA}
+	return errors.Join(err, opts.PublicationEffect(ctx, "git_push", "none", publication))
+}
+
+func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue, opts LandOptions, repository, owner, remote, branch, head, base string) (result githubLandingPull, createdResult, changedResult bool, returnErr error) {
+	defer func() {
+		returnErr = reconcilePublicationRefusal(ctx, info.Path, remote, branch, base, opts, returnErr)
+	}()
 	authorize := func() error {
 		if opts.Authorize != nil {
 			if err := opts.Authorize(ctx); err != nil {
@@ -233,7 +268,7 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 	if err := verifyGitHubPublicationRemote(ctx, info.Path, remote, opts.Repository); err != nil {
 		return githubLandingPull{}, false, false, err
 	}
-	previous, exists, err := remoteBranchHead(ctx, info.Path, remote, branch)
+	previous, exists, err := githubPublicationBranchHead(ctx, info.Path, remote, branch)
 	if err != nil {
 		return githubLandingPull{}, false, false, fmt.Errorf("inspect published attempt branch: %w", err)
 	}
@@ -245,7 +280,11 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 		if kind == "git_push" && state == "pending" {
 			publication.ExpectedHeadSHA = previous
 		}
-		return opts.PublicationEffect(ctx, kind, state, publication)
+		err := opts.PublicationEffect(ctx, kind, state, publication)
+		if err == nil && state == "none" {
+			opts.UnresolvedEffect = false
+		}
+		return err
 	}
 	expected := opts.ExpectedPublicationHead
 	if expected == "" && opts.External != nil {
@@ -316,11 +355,14 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 			return githubLandingPull{}, false, headChanged, err
 		}
 		if _, err := runGitAt(ctx, info.Path, push...); err != nil {
-			observed, _, readErr := remoteBranchHead(ctx, info.Path, remote, branch)
+			observed, _, readErr := githubPublicationBranchHead(ctx, info.Path, remote, branch)
 			if readErr == nil && observed != head && observed != previous {
 				return githubLandingPull{}, false, headChanged, errors.Join(refuse(LandRefusalHeadMoved, "the publication branch moved during push; rebase before retrying publication"), effect("git_push", "none"))
 			}
-			if readErr != nil || observed != head {
+			if readErr != nil {
+				return githubLandingPull{}, false, headChanged, errors.Join(readErr, effect("git_push", "ambiguous"))
+			}
+			if observed != head {
 				var refusal *LandRefusal
 				if classified := classifyLandingPush(err, branch); errors.As(classified, &refusal) && refusal.Kind == LandRefusalProtected {
 					return githubLandingPull{}, false, headChanged, errors.Join(refuse(LandRefusalProtected, "the runner cannot publish the reviewed attempt branch "+branch+": "+strings.TrimSpace(commandErrorOutput(err))), effect("git_push", "none"))

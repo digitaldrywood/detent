@@ -314,6 +314,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		publicationPrior     bool
 		unknownPrior         bool
 		lostPushReceipt      bool
+		publicationReadFault string
 		publicationLostReply bool
 		publicationExpected  bool
 		publicationRace      bool
@@ -361,6 +362,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "prepare refuses a different push repository", prepareOnly: true, wrongRemote: "pushurl", method: "squash", wantRefusal: LandRefusalProtected},
 		{name: "prepare repeats an unresolved write over the recorded PR head", prepareOnly: true, external: true, publicationBranch: "manual/recovery", publicationPrior: true, unresolvedEffect: true, method: "squash"},
 		{name: "prepare refuses an unresolved write over a different branch head", prepareOnly: true, reworked: true, unresolvedEffect: true, preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
+		{name: "prepare retains uncertainty on initial ref read failure", prepareOnly: true, unresolvedEffect: true, publicationReadFault: "initial", method: "squash"},
+		{name: "prepare retains uncertainty on post push ref read failure", prepareOnly: true, unresolvedEffect: true, publicationReadFault: "post-push", publicationLostReply: true, method: "squash"},
+		{name: "prepare settles ambiguous effect before duplicate PR refusal", prepareOnly: true, unresolvedEffect: true, checkpointState: "ambiguous", duplicatePull: true, preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
 		{name: "prepare reconciles a successful push with a lost reply", prepareOnly: true, publicationLostReply: true, method: "squash"},
 		{name: "prepare retries an unchanged recorded branch", prepareOnly: true, reworked: true, unresolvedEffect: true, publicationExpected: true, method: "squash"},
 		{name: "prepare fences concurrent creation of an absent branch", prepareOnly: true, unresolvedEffect: true, publicationRace: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
@@ -1011,13 +1015,21 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					}
 					return nil
 				}
-				if test.publicationLostReply {
+				if test.publicationLostReply || test.publicationReadFault != "" {
 					realGit, err := exec.LookPath("git")
 					if err != nil {
 						t.Fatal(err)
 					}
 					wrapper := t.TempDir()
 					script := "#!/bin/sh\n" + shellQuote(realGit) + " \"$@\"\nresult=$?\nif [ \"$1\" = \"-C\" ] && [ \"$3\" = \"push\" ] && [ \"$result\" = \"0\" ]; then exit 1; fi\nexit \"$result\"\n"
+					if test.publicationReadFault != "" {
+						marker := filepath.Join(wrapper, "pushed")
+						condition := "true"
+						if test.publicationReadFault == "post-push" {
+							condition = "test -f " + shellQuote(marker)
+						}
+						script = "#!/bin/sh\nread_ref=0\nfor arg in \"$@\"; do if [ \"$arg\" = ls-remote ]; then read_ref=1; fi; if [ \"$read_ref\" = 1 ] && [ \"${arg#refs/heads/}\" != \"$arg\" ] && " + condition + "; then exit 1; fi; done\n" + shellQuote(realGit) + " \"$@\"\nresult=$?\nif [ \"$3\" = push ]; then touch " + shellQuote(marker) + "; exit 1; fi\nexit \"$result\"\n"
+					}
 					if err := os.WriteFile(filepath.Join(wrapper, "git"), []byte(script), 0o700); err != nil {
 						t.Fatal(err)
 					}
@@ -1081,7 +1093,24 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				case "pushurl":
 					runGit(t, fixture.source, "config", "remote.origin.pushurl", "https://github.com/other/repo.git")
 				}
+				uncertain := test.unresolvedEffect
+				if test.publicationReadFault != "" {
+					opts.PublicationEffect = func(_ context.Context, _, state string, _ GitHubPublication) error {
+						uncertain = state == "pending" || state == "ambiguous"
+						return nil
+					}
+				}
 				publication, err := fixture.backend.PrepareGitHubPublication(t.Context(), landingInfo, landingIssue, opts)
+				if test.publicationReadFault != "" {
+					if !errors.Is(err, forgeavailability.ErrUnavailable) || !uncertain || createCalls != 0 || mergeCalls != 0 {
+						t.Fatalf("unavailable ref evidence lost retry or uncertainty: uncertain=%t creates=%d error=%v", uncertain, createCalls, err)
+					}
+					remoteHead := runGit(t, fixture.remote, "for-each-ref", "--format=%(objectname)", "refs/heads/"+publicationBranch)
+					if test.publicationReadFault == "initial" && remoteHead != "" || test.publicationReadFault == "post-push" && strings.TrimSpace(remoteHead) != fixture.head {
+						t.Fatalf("unavailable evidence caused an unsafe write: %s", remoteHead)
+					}
+					return
+				}
 				if test.checkpointState != "" && (!clearedPublication || test.wantRefusal != "" && createCalls != 0) {
 					t.Fatalf("publication absence was not reconciled before another write: cleared=%t creates=%d error=%v", clearedPublication, createCalls, err)
 				}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -347,7 +348,7 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 		publication, err := e.publicationSource(ctx, version, workspace.LandOptions{Authorize: authorizeStart, PublicationEffect: effect, External: external, ExternalHeadSHA: externalHead, PublicationPushes: pushes, SourceIssues: detail.SourceIssues, UnresolvedEffect: unresolvedAtStart, ExpectedPublicationHead: expectedHead})
 		if err != nil {
 			var refusal *workspace.LandRefusal
-			if !unresolvedAtStart && !errors.As(err, &refusal) && e.data.Handoff != nil && e.data.Handoff.EffectState == "ambiguous" {
+			if errors.Is(err, forgeavailability.ErrUnavailable) || !errors.As(err, &refusal) && e.data.Handoff.UncertainForgeEffect() {
 				return fmt.Errorf("%w: required GitHub PR has an ambiguous publication response; the completion retry reconciles it against the forge before another write: %w", ErrUnavailable, err)
 			}
 			return fmt.Errorf("required GitHub PR is not ready; preserve source and resolve publication blocker: %w", err)
