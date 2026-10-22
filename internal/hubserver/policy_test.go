@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -12,8 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -39,6 +43,19 @@ func TestCompatibilityPolicyUpgradeAndRevocation(t *testing.T) {
 				if state == "revoked" {
 					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, "/api/v1/repositories/digitaldrywood/detent/policy", testHubAdminToken, map[string]string{"expected_policy_id": descriptor.ID}), http.StatusGone)
 				}
+			}
+			response := performHubAPIRequest(t, service, http.MethodGet, "/api/v1/repositories/digitaldrywood/detent/policy", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var current struct {
+				Policy *policy.Descriptor `json:"policy"`
+			}
+			decodeHubResponse(t, response, &current)
+			if state != "legacy" {
+				if current.Policy == nil || !reflect.DeepEqual(*current.Policy, hubTestPolicy()) {
+					t.Fatalf("approved repository policy: %s", response.Body)
+				}
+			} else if current.Policy != nil || !strings.Contains(response.Body.String(), `"policy":null`) {
+				t.Fatalf("absent repository policy: %s", response.Body)
 			}
 			wantRenew, wantEvent := http.StatusOK, http.StatusCreated
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, "/api/v1/leases/"+string(lease.ID)+"/renew", testHubAdminToken, map[string]any{"fencing_token": lease.FencingToken, "ttl_seconds": 90}), wantRenew)
@@ -336,7 +353,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 			if succeeded && test.mutation == "" {
 				wantPolicy = next.ID
 			}
-			approval, err := readProjectPolicy(t.Context(), f.service.database.db, string(scope.organization)+"/"+string(scope.project))
+			approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, string(scope.organization)+"/"+string(scope.project))
 			if err != nil || approval.Policy.ID != wantPolicy {
 				t.Fatalf("configuration = %+v, error = %v, want %s", approval, err, wantPolicy)
 			}
@@ -711,8 +728,8 @@ func TestApprovedPolicyClaimExposure(t *testing.T) {
 			if err != nil || snapshot.resolver == nil || !reflect.DeepEqual(snapshot.Requirements, policy.Requirements{RequiredTags: []string{"linux"}}) || strings.Contains(strings.ToLower(snapshot.Reason), "approval") {
 				t.Fatalf("placement = %+v, error = %v", snapshot, err)
 			}
-			approved, err := readProjectPolicy(t.Context(), db, policyScope)
-			if err != nil || !reflect.DeepEqual(approved.Policy, descriptor) {
+			approved, found, err := readProjectPolicy(t.Context(), db, policyScope)
+			if err != nil || !found || !reflect.DeepEqual(approved.Policy, descriptor) {
 				t.Fatalf("stored policy changed: %+v, error = %v", approved, err)
 			}
 		})
@@ -736,8 +753,8 @@ func TestNativePolicySubmissionConsistency(t *testing.T) {
 			t.Parallel()
 			f := newDefaultNativeFixture(t, Config{})
 			path := string(f.project.OrganizationID) + "/" + string(f.project.ID)
-			before, err := readProjectPolicy(t.Context(), f.service.database.db, path)
-			if err != nil {
+			before, found, err := readProjectPolicy(t.Context(), f.service.database.db, path)
+			if err != nil || !found {
 				t.Fatal(err)
 			}
 			cfg := config.Default()
@@ -764,8 +781,8 @@ func TestNativePolicySubmissionConsistency(t *testing.T) {
 					t.Fatalf("submission refused for unrelated reason: %s", response.Body.String())
 				}
 			}
-			after, err := readProjectPolicy(t.Context(), f.service.database.db, path)
-			if err != nil || !reflect.DeepEqual(before, after) {
+			after, found, err := readProjectPolicy(t.Context(), f.service.database.db, path)
+			if err != nil || !found || !reflect.DeepEqual(before, after) {
 				t.Fatalf("inconsistent submission changed approval: %+v, error = %v", after, err)
 			}
 			var observations int
@@ -774,6 +791,120 @@ func TestNativePolicySubmissionConsistency(t *testing.T) {
 			}
 			if observations != 0 {
 				t.Fatalf("inconsistent observations stored: %d", observations)
+			}
+		})
+	}
+}
+
+func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		approved bool
+		large    bool
+	}{
+		{name: "no approval"},
+		{name: "approved", approved: true},
+		{name: "no approval with large observation", large: true},
+		{name: "approved with large observation", approved: true, large: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			approved := test.approved
+			t.Parallel()
+			f := newNativeFixture(t, nil, "", "policy-read")
+			scope := string(f.project.OrganizationID) + "/" + string(f.project.ID)
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", scope); err != nil {
+				t.Fatal(err)
+			}
+			descriptor := hubTestPolicy()
+			if approved {
+				approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+			}
+			candidate := descriptor
+			candidate.Gates.AutoPromote = true
+			if test.large {
+				workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{
+					ConfigPath: "detent.yaml", HasConfig: true,
+					Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\ngate:\n  run: true\n  required_status_checks: []\n"),
+					WorkflowPath: "WORKFLOW.md", Workflow: []byte(strings.Repeat("Implement the assigned issue.\n", operatortool.MaxResultBytes/28)),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				candidate, err = config.ResolvePolicy(workflow)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			candidate = candidate.WithID()
+			worker := f.worker(t, "policy-reader")
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", worker, policy.Observation{Descriptor: candidate}), http.StatusNoContent)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "policy_read_machine", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
+			_, err := monthlyClaimExposure(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, "policy_read_machine", false)
+			if approved && err != nil {
+				t.Fatal(err)
+			}
+			if !approved {
+				var refusal *nativeError
+				if !errors.As(err, &refusal) || refusal.Code != "policy_not_approved" {
+					t.Fatalf("unapproved claim exposure: %v", err)
+				}
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/policy", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var rest struct {
+				Policy     *policy.Descriptor      `json:"policy"`
+				ApprovedBy string                  `json:"approved_by"`
+				ApprovedAt string                  `json:"approved_at"`
+				Observed   []policy.ObservedPolicy `json:"observed_policies"`
+				History    []policy.WorkflowApply  `json:"history"`
+			}
+			decodeHubResponse(t, response, &rest)
+			if approved {
+				if rest.Policy == nil || !reflect.DeepEqual(*rest.Policy, descriptor) || rest.ApprovedBy == "" || rest.ApprovedAt == "" {
+					t.Fatalf("approved payload changed: %s", response.Body)
+				}
+			} else if rest.Policy != nil || !strings.Contains(response.Body.String(), `"policy":null`) || rest.ApprovedBy != "" || rest.ApprovedAt != "" || len(rest.History) != 0 {
+				t.Fatalf("missing approval: %s", response.Body)
+			}
+			if len(rest.Observed) != 1 || !reflect.DeepEqual(rest.Observed[0].Policy, candidate) {
+				t.Fatalf("observed candidates: %s", response.Body)
+			}
+			captured := make(chan context.Context, 1)
+			f.service.echo.GET("/api/v2/organizations/:organization/policy-read-test", func(c echo.Context) error { captured <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/policy-read-test", testHubAdminToken, nil), http.StatusOK)
+			ctx := operatortool.BindConnection(<-captured, "policy-read", "policy fixture")
+			executor := hubProjectExecutor{f.service}
+			if err := executor.OpenConnection(ctx); err != nil {
+				t.Fatal(err)
+			}
+			for _, transport := range []string{"stdio", "http"} {
+				call := hostedContextProtocol(t, f.service, ctx, transport)
+				reply := call("tools/call", "get_project_policy", map[string]any{"project_id": string(f.project.ID)})
+				var result struct {
+					IsError    bool `json:"isError"`
+					Structured struct {
+						Data json.RawMessage `json:"data"`
+					} `json:"structuredContent"`
+				}
+				if err := json.Unmarshal(reply.Result, &result); err != nil {
+					t.Fatal(err)
+				}
+				if test.large {
+					var data projectPolicyRead
+					if result.IsError || json.Unmarshal(result.Structured.Data, &data) != nil || !data.ObservedPolicyDetailsOmitted || len(data.ObservedPolicies) != 1 || data.ObservedPolicies[0].Policy.ID != candidate.ID || len(result.Structured.Data) > operatortool.MaxResultBytes {
+						t.Fatalf("%s large policy read failed: %s", transport, reply.Result)
+					}
+					if !reflect.DeepEqual(data.Policy, rest.Policy) || !reflect.DeepEqual(data.History, rest.History) {
+						t.Fatalf("%s large observation changed approval or history", transport)
+					}
+					continue
+				}
+				var data any
+				var expected any
+				if result.IsError || json.Unmarshal(result.Structured.Data, &data) != nil || json.Unmarshal(response.Body.Bytes(), &expected) != nil || !reflect.DeepEqual(data, expected) {
+					t.Fatalf("%s policy differs from REST: %s; REST %s", transport, reply.Result, response.Body)
+				}
 			}
 		})
 	}

@@ -569,12 +569,9 @@ type changeSummaryPolicy struct {
 }
 
 func readChangeSummaryPolicy(ctx context.Context, query nativeQueryer, scope nativeScope) (changeSummaryPolicy, error) {
-	approval, err := readProjectPolicy(ctx, query, string(scope.organization)+"/"+string(scope.project))
+	approval, _, err := readProjectPolicy(ctx, query, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
-		var failure *nativeError
-		if !errors.As(err, &failure) || failure.Code != "policy_mismatch" {
-			return changeSummaryPolicy{}, err
-		}
+		return changeSummaryPolicy{}, err
 	}
 	rules, err := readChangePolicy(ctx, query, scope)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -672,7 +669,7 @@ func (s *Service) createChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 }
 
 func (s *Service) approveChangeReviewPolicyCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.ApproveChangeReviewPolicy) (any, error) {
-	approved, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
+	approved, err := requireProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
 		return nil, err
 	}

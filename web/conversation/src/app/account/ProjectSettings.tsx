@@ -79,10 +79,6 @@ export function conflictingPolicies(observed: readonly ObservedPolicy[]): boolea
   return observed.some((entry) => entry.conflict || entry.previously_approved) || new Set(observed.map((entry) => entry.policy.policy_id)).size > 1;
 }
 
-export function noApprovedPolicy(error: AccountError): boolean {
-  return error.status === 404 || error.code === "policy_mismatch";
-}
-
 export function saveMessage(error: AccountError | null): string | null {
   if (error === null) return null;
   if (error.isConflict) {
@@ -257,7 +253,7 @@ export function PolicyRow({
     <SettingsRow
       title="Repository configuration"
       className="[&>div]:grid [&>div]:grid-cols-[minmax(0,1fr)_auto] [&>div]:items-center"
-      control={<span className="inline-flex items-center gap-2 text-xs text-muted-foreground"><StatusDot tone={policy === null && observed.length === 0 ? "idle" : "ok"} />{policy === null && observed.length === 0 ? "Waiting for runner" : "Reported"}</span>}
+      control={<span className="inline-flex items-center gap-2 text-xs text-muted-foreground"><StatusDot tone={policy?.policy == null && observed.length === 0 ? "idle" : "ok"} />{policy?.policy == null && observed.length === 0 ? "Waiting for runner" : "Reported"}</span>}
     />
   );
 }
@@ -438,14 +434,7 @@ export function ProjectSettingsRoute({ projectId, tab, onboarding, onNavigate }:
     () => api.integration(projectId),
     [api, projectId],
   );
-  const policy = useResource<PolicyApproval | null>(
-    () =>
-      api.policy(projectId).catch((cause: unknown) => {
-        if (cause instanceof AccountError && noApprovedPolicy(cause)) return null;
-        throw cause;
-      }),
-    [api, projectId],
-  );
+  const policy = useResource(() => api.policy(projectId), [api, projectId]);
 
   const [draft, setDraft] = React.useState<IntegrationDraft | null>(null);
   React.useEffect(() => {
@@ -504,7 +493,7 @@ export function ProjectSettingsRoute({ projectId, tab, onboarding, onNavigate }:
     }
   });
 
-  const observed = onboarding?.observed_policies ?? [];
+  const observed = policy.value?.observed_policies ?? onboarding?.observed_policies ?? [];
   // A runner reports a changed policy whenever the repository changes, so the
   // page looks again while it is open instead of only on the next visit.
   React.useEffect(() => {

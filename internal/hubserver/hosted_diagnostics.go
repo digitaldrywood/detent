@@ -375,13 +375,12 @@ func diagnosticsTodoDepth(issues []analyticsResidenceIssue, states map[string]tr
 
 func diagnosticsPolicyValues(ctx context.Context, q policyQuerier, scope nativeScope) (map[string]string, error) {
 	values := map[string]string{"Plan gate": "", "Validator gate": "", "Gate kind": "", "Merge method": "", "Lifetime limit": ""}
-	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	approval, found, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
-		var unavailable *nativeError
-		if errors.As(err, &unavailable) && unavailable.Code == "policy_mismatch" {
-			return values, nil
-		}
 		return nil, err
+	}
+	if !found {
+		return values, nil
 	}
 	values["Plan gate"] = strconv.FormatBool(approval.Policy.Gates.PlanEnabled)
 	values["Validator gate"] = strconv.FormatBool(approval.Policy.Gates.Validator)

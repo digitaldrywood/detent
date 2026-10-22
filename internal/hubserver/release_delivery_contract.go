@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"errors"
 	"slices"
 	"strings"
 	"time"
@@ -56,7 +55,7 @@ func releaseDeliveryContractCurrent(ctx context.Context, q nativeQueryer, scope 
 		return true, nil
 	}
 	delegated := issue.IssueContract.ReleaseDelivery
-	approved, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	approved, err := requireProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
 		return false, err
 	}
@@ -92,14 +91,11 @@ type nativeReleaseDeliveryDelegation struct {
 }
 
 func readReleaseDeliveryDelegation(ctx context.Context, q nativeQueryer, scope nativeScope) (nativeReleaseDeliveryDelegation, error) {
-	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
-	if errors.Is(err, errNoApprovedRepositoryPolicy) {
-		return nativeReleaseDeliveryDelegation{}, nil
-	}
+	approval, found, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
 		return nativeReleaseDeliveryDelegation{}, err
 	}
-	if approval.Policy.Authored == nil {
+	if !found || approval.Policy.Authored == nil {
 		return nativeReleaseDeliveryDelegation{}, nil
 	}
 	contract, err := config.ResolvePolicyIssueContract(approval.Policy)

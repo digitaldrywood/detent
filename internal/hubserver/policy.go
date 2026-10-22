@@ -19,7 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-var errNoApprovedRepositoryPolicy = policyMismatch("No approved repository policy; resolve the customer definition and ask an administrator to approve its descriptor")
+var errNoApprovedRepositoryPolicy = &nativeError{Code: "policy_not_approved", Message: "No approved repository policy; resolve the customer definition and ask an administrator to approve its descriptor", status: http.StatusConflict}
 
 func policyMismatch(message string) error {
 	return &nativeError{Code: "policy_mismatch", Message: message, status: http.StatusConflict}
@@ -64,14 +64,18 @@ func (s *Service) getProjectPolicy(c echo.Context) error {
 	var approval policy.Approval
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if ok && credential.Runner.Valid() {
-		approval, err = readProjectPolicy(ctx, s.database.reader, scope)
+		approval, _, err = readProjectPolicy(ctx, s.database.reader, scope)
 	} else {
 		approval, err = readProjectPolicyWithHistory(ctx, s.database.reader, scope, limit, c.QueryParam("after"))
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, approval)
+	view, err := s.projectPolicyRead(ctx, s.database.reader, scope, approval, !ok || !credential.Runner.Valid())
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, view)
 }
 
 func (s *Service) approveProjectPolicy(c echo.Context) error {
@@ -284,7 +288,7 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 	}
 	carryover := false
 	if current != "" && current != change.Policy.ID {
-		previous, err := readProjectPolicy(ctx, tx, scope)
+		previous, err := requireProjectPolicy(ctx, tx, scope)
 		if err != nil {
 			return result, err
 		}
@@ -341,7 +345,7 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 			return result, err
 		}
 	}
-	result, err = readProjectPolicy(ctx, tx, scope)
+	result, err = requireProjectPolicy(ctx, tx, scope)
 	if err != nil {
 		return result, err
 	}
@@ -405,7 +409,7 @@ func backfillChangeReviewPolicies(ctx context.Context, tx *sql.Tx) error {
 		return err
 	}
 	for _, scope := range scopes {
-		approval, err := readProjectPolicy(ctx, tx, scope)
+		approval, err := requireProjectPolicy(ctx, tx, scope)
 		if err != nil {
 			continue
 		}
@@ -436,18 +440,53 @@ type policyQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func readProjectPolicy(ctx context.Context, db policyQuerier, scope string) (policy.Approval, error) {
+func readProjectPolicy(ctx context.Context, db policyQuerier, scope string) (policy.Approval, bool, error) {
 	var result policy.Approval
 	var raw string
 	err := db.QueryRowContext(ctx, `SELECT r.metadata_json, r.approved_by, r.approved_at
 FROM project_policies p JOIN policy_revisions r ON r.scope = p.scope AND r.policy_id = p.policy_id WHERE p.scope = ?`, scope).Scan(&raw, &result.ApprovedBy, &result.ApprovedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return result, errNoApprovedRepositoryPolicy
+		return result, false, nil
 	}
 	if err != nil {
-		return result, err
+		return result, false, err
 	}
-	return decodeProjectPolicy(raw, result)
+	result, err = decodeProjectPolicy(raw, result)
+	return result, err == nil, err
+}
+
+func requireProjectPolicy(ctx context.Context, db policyQuerier, scope string) (policy.Approval, error) {
+	approval, found, err := readProjectPolicy(ctx, db, scope)
+	if err != nil {
+		return approval, err
+	}
+	if !found {
+		return approval, errNoApprovedRepositoryPolicy
+	}
+	return approval, nil
+}
+
+type projectPolicyRead struct {
+	policy.Approval
+	Policy                       *policy.Descriptor      `json:"policy"`
+	ObservedPolicies             []policy.ObservedPolicy `json:"observed_policies,omitempty"`
+	ObservedPolicyDetailsOmitted bool                    `json:"observed_policy_details_omitted,omitempty"`
+	ObservedPoliciesOmitted      int                     `json:"observed_policies_omitted,omitempty"`
+}
+
+func (s *Service) projectPolicyRead(ctx context.Context, query nativeQueryer, scope string, approval policy.Approval, observations bool) (projectPolicyRead, error) {
+	result := projectPolicyRead{Approval: approval}
+	if approval.Policy.ID != "" {
+		result.Policy = &result.Approval.Policy
+	}
+	if observations {
+		var err error
+		result.ObservedPolicies, err = readObservedPolicies(ctx, query, scope, approval.Policy, s.config.now())
+		if err != nil {
+			return result, err
+		}
+	}
+	return result, nil
 }
 
 func decodeProjectPolicy(raw string, result policy.Approval) (policy.Approval, error) {

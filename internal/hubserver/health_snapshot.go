@@ -75,10 +75,6 @@ func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization track
 			}
 			evaluation, err := evaluateNativeIssueContract(ctx, q, scope, issue)
 			if err != nil {
-				var failure *nativeError
-				if errors.As(err, &failure) && failure.Code == "policy_mismatch" {
-					continue
-				}
 				return snapshot, err
 			}
 			if evaluation.ReasonCode == "issue_contract_unsatisfied" {

@@ -414,12 +414,11 @@ UNION SELECT subject_id FROM native_archive_sections WHERE organization_id=? AND
 		e.Scheduling.Outcome = "claimed"
 		e.Scheduling.Reason = "A current fenced lease owns this item"
 	}
-	approval, err := readProjectPolicy(ctx, query, string(scope.organization)+"/"+string(scope.project))
+	approval, found, err := readProjectPolicy(ctx, query, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
-		var failure *nativeError
-		if !errors.As(err, &failure) {
-			return e, err
-		}
+		return e, err
+	}
+	if !found {
 		e.Unavailable = append(e.Unavailable, "approved_dispatch_policy")
 		return e, nil
 	}

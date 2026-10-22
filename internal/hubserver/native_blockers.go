@@ -154,7 +154,7 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 	if _, err := validateClaimPolicy(ctx, tx, claimCandidateQuery{NativeScope: &scope, PolicyID: request.PolicyID}, attempt.MachineID); err != nil {
 		return err
 	}
-	approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
+	approval, err := requireProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
 		return err
 	}
