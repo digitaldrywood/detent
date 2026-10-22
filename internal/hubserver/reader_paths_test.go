@@ -395,7 +395,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"projectConfigurationCommand":       "Writes runner configuration commands; inspection and preview use the reader.",
 		"rewrapSecret":                      "Rewraps one provider secret and records its audit using a compare-and-swap update.",
 		"secretMutation":                    "Applies the supplied secret mutation under current authority.",
-		"createPoolSprite":                  "Reserves and records a new pool sprite and its enrollment.",
+		"createPoolSpriteNamed":             "Reserves and records a new pool sprite and its enrollment.",
 		"deletePoolSprite":                  "Records removal of the pool sprite and its enrollment.",
 		"bootstrapPoolSprite":               "Enrolls the bootstrapped member only while current intent still wants it.",
 		"cancelPoolSpriteReservation":       "Cancels a stale reservation and its enrollment before paid creation.",
