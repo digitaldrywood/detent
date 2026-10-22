@@ -15,12 +15,17 @@
 import React from "react";
 import { GitHubIssueIntake } from "./IssueIntake.tsx";
 
+import { Avatar } from "../../components/ui/avatar.tsx";
+import { useSidebar } from "../../components/ui/sidebar.tsx";
+import { useSidebarData } from "../adapters/sidebarData.tsx";
+import { useClient } from "../client.ts";
+import { formatPageTitle } from "../pageTitle.ts";
+import { ProjectSetupContext, ProjectSetupProvider } from "./projectSetup.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { Checkbox } from "../../components/ui/checkbox.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import type { Onboarding, OnboardingStep, ProjectIntegration } from "../../contracts/account.ts";
-import { ONBOARDING_STEPS } from "../../contracts/account.ts";
 import { cn } from "../../lib/utils.ts";
 import { AccountError } from "./api.ts";
 import { ContextHelp } from "../components/ContextHelp.tsx";
@@ -31,55 +36,35 @@ import { DetentCloudLogo } from "./Login.tsx";
 import { retireKey, setupKey } from "./idempotency.ts";
 import { useMutation, useResource } from "./useResource.ts";
 
-/** The step the wizard opens on: the first one that still needs something. */
-export function firstUnreadyStep(steps: readonly OnboardingStep[]): number {
-  const index = steps.findIndex((step) => step.state !== "ready");
-  return index === -1 ? Math.max(steps.length - 1, 0) : index;
-}
-
-export function orderedSteps(onboarding: Onboarding | undefined, integration?: ProjectIntegration): readonly OnboardingStep[] {
-  const sent = onboarding?.steps ?? [];
-  const evaluated = ONBOARDING_STEPS.map(
-    (name) =>
-      sent.find((step) => step.name === name) ?? {
-        name,
-        state: "action_required" as const,
-        detail: "",
-      },
-  );
-  return [{
-    name: "Repository",
-    state: integration?.checkout_repository || integration?.repository ? "ready" : "action_required",
-    detail: "Bind the project repository before enrolling a runner. The runner uses its own Git credentials to prepare the checkout.",
-  }, ...evaluated];
-}
+import { firstUnreadyStep, orderedSteps } from "./setupSteps.ts";
+export { firstUnreadyStep, orderedSteps } from "./setupSteps.ts";
 
 export function Stepper({
   steps,
   activeIndex,
   onSelect,
+  summaries = {},
 }: {
   readonly steps: readonly OnboardingStep[];
   readonly activeIndex: number;
   readonly onSelect: (index: number) => void;
+  readonly summaries?: Readonly<Record<string, string>>;
 }): React.ReactElement {
   return (
     <ol
       aria-label="Setup steps"
-      className="mt-[18px] flex gap-1.5 rounded-[10px] border border-border/60 bg-muted p-1"
+      className="mt-[18px] grid grid-cols-2 gap-1.5 sm:grid-cols-5 rounded-[10px] border border-border/60 bg-muted p-1"
     >
       {steps.map((step, index) => {
         const active = index === activeIndex;
         return (
-          // `min-w-0` lets the tabs shrink to the card: without it each keeps
-          // its full label's width and the row runs past the card's edge.
-          <li key={step.name} className={cn("min-w-0", active ? "flex-[2_1_0%]" : "flex-1")}>
+          <li key={step.name} className="min-w-0">
             <button
               type="button"
               aria-current={active ? "step" : undefined}
               onClick={() => onSelect(index)}
               className={cn(
-                "flex h-10 w-full min-w-0 items-center justify-center gap-2.5 rounded-lg px-2 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring sm:justify-start sm:px-3",
+                "flex h-full min-h-14 w-full min-w-0 items-start gap-1.5 rounded-lg px-2 py-2 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 active
                   ? "bg-background text-foreground shadow-[0_0_0_1px_var(--contrast-border)]"
                   : "text-muted-foreground hover:text-foreground",
@@ -97,7 +82,10 @@ export function Stepper({
               >
                 {step.state === "ready" ? "✓" : index + 1}
               </span>
-              <span className={cn("min-w-0 flex-1 truncate", active ? null : "max-sm:sr-only")}>{step.name}</span>
+              <span className="min-w-0 flex-1 break-words">
+                <span className="block font-medium">{step.name}</span>
+                {summaries[step.name] ? <span className="mt-0.5 block text-xs text-muted-foreground">{summaries[step.name]}</span> : null}
+              </span>
               <span className="sr-only">
                 {step.state === "ready" ? "ready" : "action required"}
               </span>
@@ -262,6 +250,9 @@ export function WizardCard({
   lede,
   children,
   footer,
+  projectName,
+  organizationName,
+  summaries,
 }: {
   readonly steps: readonly OnboardingStep[];
   readonly activeIndex: number;
@@ -270,6 +261,9 @@ export function WizardCard({
   readonly lede: string;
   readonly children: React.ReactNode;
   readonly footer: React.ReactNode;
+  readonly projectName?: string;
+  readonly organizationName?: string;
+  readonly summaries?: Readonly<Record<string, string>>;
 }): React.ReactElement {
   return (
     // Not `place-items-center`: centring a card taller or wider than the
@@ -279,7 +273,17 @@ export function WizardCard({
       <div className="my-auto w-full min-w-0 max-w-[640px] rounded-2xl border border-border bg-card shadow-[0_30px_80px_rgb(0_0_0/45%)]">
         <div className="border-b border-border/60 px-5 pt-[26px] pb-[18px] sm:px-7">
           <DetentCloudLogo />
-          <Stepper steps={steps} activeIndex={activeIndex} onSelect={onSelectStep} />
+          {projectName ? (
+            <section aria-label="Project setup context" className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-border/60 bg-muted px-3 py-3">
+              <Avatar name={projectName} size="md" />
+              <div className="min-w-0 flex-1 break-words">
+                <p className="text-xs text-muted-foreground">Setting up a project in {organizationName}</p>
+                <p className="text-sm font-semibold">{projectName}</p>
+              </div>
+              <SwitchProject />
+            </section>
+          ) : null}
+          <Stepper steps={steps} activeIndex={activeIndex} onSelect={onSelectStep} summaries={summaries} />
         </div>
         <div className="px-5 pt-6 pb-[26px] sm:px-7">
           <h1 className="mb-2 text-2xl font-semibold tracking-[-0.02em] text-balance">{title}</h1>
@@ -308,33 +312,63 @@ async function withSetupKey<A>(
   return result;
 }
 
-export function SetupRoute({
-  projectId,
-  onNavigate,
-}: {
+function SwitchProject(): React.ReactElement | null {
+  const sidebar = useSidebarData();
+  return sidebar?.projectSwitcher ? <SwitchProjectButton open={sidebar.projectSwitcher.setOpen} /> : null;
+}
+
+function SwitchProjectButton({ open }: { readonly open: (open: boolean) => void }): React.ReactElement {
+  const { isMobile, setOpenMobile, setOpen } = useSidebar();
+  return <Button variant="link" size="sm" onClick={() => {
+    if (isMobile) setOpenMobile(true);
+    else setOpen(true);
+    open(true);
+  }}>Switch project</Button>;
+}
+
+export function SetupRoute(props: {
+  readonly projectId: string;
+  readonly onNavigate?: (to: string) => void;
+}): React.ReactElement {
+  const setup = React.useContext(ProjectSetupContext);
+  return setup?.projectId === props.projectId
+    ? <SetupContent key={props.projectId} {...props} />
+    : <ProjectSetupProvider key={props.projectId} projectId={props.projectId}><SetupContent {...props} /></ProjectSetupProvider>;
+}
+
+function SetupContent({ projectId, onNavigate }: {
   readonly projectId: string;
   readonly onNavigate?: (to: string) => void;
 }): React.ReactElement {
   const api = useAccountApi();
-  const onboarding = useResource<Onboarding>(() => api.onboarding(projectId), [api, projectId]);
-  const integration = useResource<ProjectIntegration>(() => api.integration(projectId), [api, projectId]);
-
-  const waitingForSetup = (onboarding.value !== undefined && !onboarding.value.ready)
-    || (Boolean(integration.value?.checkout_repository) && (
-      integration.value?.checkout_verified !== true
-      || (!onboarding.value?.policy && (onboarding.value?.observed_policies?.length ?? 0) === 0)
-    ));
+  const client = useClient();
+  const { onboarding, integration } = React.useContext(ProjectSetupContext)!;
+  const projectName = client.bootstrap.projects.find((project) => project.id === projectId)?.name;
+  const organizationName = client.bootstrap.organization.name;
   React.useEffect(() => {
-    if (!waitingForSetup) return;
-    const timer = window.setInterval(() => {
-      void onboarding.refresh();
-      void integration.refresh();
-    }, 5_000);
-    return () => window.clearInterval(timer);
-  }, [waitingForSetup, onboarding.refresh, integration.refresh]);
+    document.title = formatPageTitle(projectName ? `${projectName} setup` : "Project setup");
+  }, [projectName]);
 
   const steps = orderedSteps(onboarding.value, integration.value);
+  const runner = onboarding.value?.runners?.find((entry) => (entry.exclusions ?? []).length === 0);
+  const readySummaries: Record<string, string> = {
+    Repository: integration.value?.checkout_repository || integration.value?.repository || "Repository connected",
+    "Execution runner": runner?.runner.display_name ?? "Runner connected",
+    "Local validation": runner?.local_checks ? `Checkout ${runner.local_checks.checkout} · Doctor ${runner.local_checks.doctor} · Provider ${runner.local_checks.provider}` : "Checks passed",
+    "Repository configuration": onboarding.value?.policy ? "Configuration approved" : "Configuration ready",
+    "Artifact history": onboarding.value?.progress.artifacts === "customer" ? "Your bucket and gateway" : "Your runner (local history)",
+  };
+  const prompts: Record<string, string> = {
+    Repository: "Pick a repository",
+    "Execution runner": "Connect a runner",
+    "Local validation": "Check your runner",
+    "Repository configuration": "Prepare configuration",
+    "Artifact history": "Choose history storage",
+  };
   const [activeIndex, setActiveIndex] = React.useState(0);
+  const summaries = Object.fromEntries(steps.map((step, index) => [step.name,
+    step.state === "ready" ? readySummaries[step.name] ?? "Ready" : index === activeIndex ? prompts[step.name] ?? "Complete this step" : "—",
+  ]));
   const [settled, setSettled] = React.useState(false);
   React.useEffect(() => {
     if (onboarding.value === undefined || integration.value === undefined || settled) return;
@@ -472,6 +506,9 @@ export function SetupRoute({
   if (onboarding.error !== null && onboarding.error.isAccessError) {
     return (
       <WizardCard
+        projectName={projectName}
+        organizationName={organizationName}
+        summaries={summaries}
         steps={steps}
         activeIndex={0}
         onSelectStep={() => undefined}
@@ -794,6 +831,9 @@ export function SetupRoute({
 
   return (
     <WizardCard
+      projectName={projectName}
+      organizationName={organizationName}
+      summaries={summaries}
       steps={steps}
       activeIndex={activeIndex}
       onSelectStep={setActiveIndex}
