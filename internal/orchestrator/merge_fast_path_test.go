@@ -1073,22 +1073,17 @@ func TestMergeWorkerCurrentHeadCIRetryBound(t *testing.T) {
 				}
 				return
 			}
-			if _, ok := state.Retry[issue.ID]; ok {
-				t.Fatalf("Retry[%q] present after terminal disposition", issue.ID)
-			}
 			if tt.wantBlocked {
-				blocked, ok := state.Blocked[issue.ID]
-				if !ok {
-					t.Fatalf("Blocked[%q] missing", issue.ID)
-				}
-				if !strings.Contains(blocked.Reason, pendingCheck) {
-					t.Fatalf("Blocked[%q].Reason = %q, want pending check %q", issue.ID, blocked.Reason, pendingCheck)
-				}
-				if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, pendingCheck) {
-					t.Fatalf("comments = %#v, want pending check %q", tracker.comments, pendingCheck)
+				retry, ok := state.Retry[issue.ID]
+				if !ok || !strings.Contains(retry.Error, pendingCheck) || len(state.Blocked) != 0 {
+					t.Fatalf("CI deadline did not retry with check evidence: %+v", retry)
 				}
 				return
 			}
+			if _, ok := state.Retry[issue.ID]; ok {
+				t.Fatal("terminal disposition retained retry")
+			}
+
 			if tt.wantMerged && len(tracker.merges) != 1 {
 				t.Fatalf("merges = %#v, want one merge", tracker.merges)
 			}

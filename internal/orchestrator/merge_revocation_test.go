@@ -459,7 +459,7 @@ func (c *mergeRevocationCommentConnector) SetField(context.Context, string, stri
 	return nil
 }
 
-func TestAutoPromoteParksIssueAfterRepeatedIdenticalMergeRevocations(t *testing.T) {
+func TestAutoPromoteRetriesRepeatedIdenticalMergeRevocations(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 14, 0, 0, 0, time.UTC)
@@ -512,33 +512,14 @@ func TestAutoPromoteParksIssueAfterRepeatedIdenticalMergeRevocations(t *testing.
 	if len(result.dispatchCandidates) != 0 {
 		t.Fatalf("dispatch candidates = %#v, want none", result.dispatchCandidates)
 	}
-	if len(tracker.updates) != 1 || tracker.updates[0] != (autoPromoteTickUpdate{issueID: issue.ID, state: blockedStatusState}) {
-		t.Fatalf("updates = %#v, want Blocked transition", tracker.updates)
+	if len(tracker.updates) != 1 || tracker.updates[0].state != "Rework" || len(state.Blocked) != 0 {
+		t.Fatalf("revocation did not return to Rework: %+v", tracker.updates)
 	}
-	if len(tracker.comments) != 1 {
-		t.Fatalf("comments = %#v, want one explanation without park markers", tracker.comments)
+	retry, ok := state.Retry[issue.ID]
+	if !ok || !retry.DueAt.After(now) || retry.DueAt.After(now.Add(cfg.MaxRetryBackoff)) {
+		t.Fatalf("revocation lost bounded retry: %+v", retry)
 	}
-	for _, fragment := range []string{
-		"reason: merge_revocation_limit",
-		"revocation_reason: draft_pull_request",
-		"consecutive_revocations: 2",
-		"human_action:",
-	} {
-		if !strings.Contains(tracker.comments[0].body, fragment) {
-			t.Fatalf("comment = %q, missing %q", tracker.comments[0].body, fragment)
-		}
-	}
-	for _, fragment := range []string{
-		"auto promote decision",
-		"action=skip",
-		"reason=merge_revocation_limit",
-		"merge_worker_revocation_limit",
-		"revocation_reason=draft_pull_request",
-	} {
-		if !strings.Contains(logs.String(), fragment) {
-			t.Fatalf("logs = %q, missing %q", logs.String(), fragment)
-		}
-	}
+
 	if len(attempts.historyQueries) != 1 ||
 		attempts.historyQueries[0].WorkerType != "" ||
 		attempts.historyQueries[0].Limit != maxIdenticalMergeRevocations+1 {

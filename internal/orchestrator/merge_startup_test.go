@@ -192,7 +192,7 @@ func TestHandleMergeWorkerStartupTimeoutOutcomes(t *testing.T) {
 		wantBlocked bool
 	}{
 		{name: "retry available", attempt: 0, wantRetry: true},
-		{name: "retry cap exhausted", attempt: maxMergeWorkerRunnerFailures, wantBlocked: true},
+		{name: "retry cap exhausted", attempt: maxMergeWorkerRunnerFailures, wantRetry: true},
 	}
 
 	for _, tt := range tests {

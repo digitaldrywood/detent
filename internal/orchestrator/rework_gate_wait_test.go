@@ -789,12 +789,22 @@ func TestReworkCapabilityBlockerIsBoundedWithDependentTodo(t *testing.T) {
 			}
 			attempts.history = append([]store.WorkAttempt{attempt}, attempts.history...)
 
-			if len(tracker.updates) == 0 || tracker.updates[len(tracker.updates)-1].state != blockedStatusState {
-				t.Fatalf("updates = %#v", tracker.updates)
+			if humanAction {
+				if len(tracker.updates) == 0 || tracker.updates[len(tracker.updates)-1].state != blockedStatusState {
+					t.Fatalf("typed human action lost Blocked: %+v", tracker.updates)
+				}
+				if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, action) {
+					t.Fatal("human action lost")
+				}
+			} else {
+				if len(state.Blocked) != 0 {
+					t.Fatal("untyped blocker created human hold")
+				}
+				if _, ok := state.Retry[issue.ID]; !ok {
+					t.Fatal("untyped blocker lost retry")
+				}
 			}
-			if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, action) {
-				t.Fatal("park lost recovery requirement")
-			}
+
 			child := dispatchTestIssue("child", "Todo")
 			child.BlockedBy = []connector.BlockedRef{{Identifier: issue.Identifier, State: "Blocked"}}
 			decision := orch.dispatchPlanner().dispatchableIssueDecision(child, &state, false, time.Now(), "")

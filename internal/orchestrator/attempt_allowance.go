@@ -221,11 +221,13 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 			return err
 		}
 	}
-	targetState := o.nonReviewDecisionTargetState(issue, normalizeAutoPromoteConfig(o.cfg.AutoPromote).reviewTargetState())
-	if metadata.PreserveLane || normalizeState(issue.State) == normalizeState(targetState) {
+	if metadata.PreserveLane {
 		return nil
 	}
-	return o.updateIssueState(ctx, state, issue, targetState, now, attemptAllowanceExhaustedReason)
+	if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(state.Retry[issue.ID].Attempt), now, attemptAllowanceExhaustedReason, ""); err != nil {
+		return err
+	}
+	return nil
 }
 
 func attemptTriageCIPending(pr *connector.PullRequest) bool {

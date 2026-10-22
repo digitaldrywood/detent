@@ -189,7 +189,7 @@ func TestDurableRecoveryPreservesCurrentPredicates(t *testing.T) {
 				if condition == "multiple causes" && len(response.Blockers) < 3 {
 					t.Fatalf("response omitted current blockers: %v", response.Blockers)
 				}
-				if _, queued := state.Retry[issue.ID]; queued {
+				if retry, queued := state.Retry[issue.ID]; queued && (condition != "new invalid override" || !retry.DueAt.After(now)) {
 					t.Fatal("queued worker despite an independent predicate")
 				}
 				host.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
@@ -311,7 +311,7 @@ func TestRecoveryIntentDoesNotReviveHistoricalPark(t *testing.T) {
 	}
 
 	t.Parallel()
-	for _, cause := range []string{repeatedFailureCircuitBreakerCause, "operator_investigation"} {
+	for _, cause := range []string{"human_action", workpadBlockedUnactionedReason} {
 		t.Run(cause, func(t *testing.T) {
 			db := openWorkAttemptRecoveryStore(t, t.Context())
 			host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
@@ -491,14 +491,16 @@ func TestConfigurationCompletionDoesNotRetryOrPoisonProject(t *testing.T) {
 			}
 			host.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: failure, CompletedAt: now})
 			attempt, err := db.WorkAttempt(t.Context(), attemptID)
-			if err != nil || attempt.ErrorClass != "issue_configuration" || len(state.Retry) != 0 || state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
+			if err != nil || attempt.ErrorClass != "issue_configuration" || state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
 				t.Fatalf("completion class=%s retry=%v breaker=%v err=%v", attempt.ErrorClass, state.Retry, state.FailureBreaker, err)
 			}
-			if form == "observed lane" && len(state.Blocked) != 0 {
-				t.Fatalf("configuration failure replaced the observed lane: %v", state.Blocked)
+			if len(state.Blocked) != 0 {
+				t.Fatal("configuration failure created a human hold")
 			}
-			if form != "observed lane" && state.Blocked[issue.ID].Reason != "issue_configuration" {
-				t.Fatalf("missing actionable configuration hold: %v", state.Blocked)
+			if form != "observed lane" {
+				if _, ok := state.Retry[issue.ID]; !ok {
+					t.Fatal("configuration failure lost retry")
+				}
 			}
 		})
 	}
@@ -528,7 +530,7 @@ func TestInvalidConfigurationPreflightDoesNotSpendLaunchAttempts(t *testing.T) {
 	for range 6 {
 		host.dispatchReadyIssues(ctx, &state, []connector.Issue{issue}, now)
 	}
-	if len(state.Running) != 0 || len(state.WorkAttempts) != 0 || state.FailureBreaker.Active() || state.Blocked[issue.ID].Reason != "issue_configuration" {
+	if len(state.Running) != 0 || len(state.WorkAttempts) != 0 || state.FailureBreaker.Active() || len(state.Blocked) != 0 || len(state.Retry) != 1 {
 		t.Fatalf("invalid override consumed attempts: running=%v attempts=%v breaker=%v blocked=%v", state.Running, state.WorkAttempts, state.FailureBreaker, state.Blocked)
 	}
 	issue.Description = "```detent-agent\nschema: 1\neffort: low\n```"
@@ -538,13 +540,13 @@ func TestInvalidConfigurationPreflightDoesNotSpendLaunchAttempts(t *testing.T) {
 	host.dispatchReadyIssues(ctx, &state, []connector.Issue{issue}, now.Add(time.Second))
 	select {
 	case <-runner.started:
-	case <-time.After(5 * time.Second):
+	case <-t.Context().Done():
 		t.Fatalf("corrected override did not dispatch: %v", state.Blocked)
 	}
 	cancel()
 	select {
 	case <-runner.canceled:
-	case <-time.After(5 * time.Second):
+	case <-t.Context().Done():
 		t.Fatal("worker did not stop")
 	}
 }

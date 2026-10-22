@@ -155,6 +155,12 @@ func checkSources(pkg *packages.Package, root string, policy sourcePolicy) []str
 				if !checked || len(call.Args) <= index {
 					return true
 				}
+				if index >= 2 {
+					target := pkg.TypesInfo.Types[call.Args[index-2]].Value
+					if target != nil && target.Kind() == constant.String && strings.EqualFold(constant.StringVal(target), "Blocked") && fn.Name.Name != "blockHumanOwnedWorkerFailure" {
+						report(call.Pos(), "INV-1 machine writer cannot target Blocked")
+					}
+				}
 				value := pkg.TypesInfo.Types[call.Args[index]].Value
 				if value == nil {
 					dynamic = true

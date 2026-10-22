@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const (
@@ -312,101 +313,7 @@ func (o *Orchestrator) blockDeliverableRecoveryFailure(
 	if state == nil || recoveryErr == nil {
 		return false
 	}
-	branch := lookup.Branch
-	if branch == "" {
-		branch = deliverableRecoveryBranch(recoveryErr, running)
-		lookup.Branch = branch
-	}
-	reason, humanAction := deliverableRecoveryParkReason(lookup)
-	issue := cloneIssue(running.Issue)
-	if lookup.PullRequest != nil {
-		issue = deliverableRecoveryIssue(running, lookup)
-	} else if strings.HasPrefix(strings.TrimSpace(lookup.LookupResult), "no exact-head pull request") {
-		issue.PullRequest = nil
-		issue.PRNumber = nil
-	}
-	metadata := o.newBlockedRecoveryMetadata(
-		ctx,
-		issue,
-		running.Mode,
-		reason,
-		blockedRecoveryPredicateManaged,
-		autoPromoteReworkState,
-		running.DiffStats,
-	)
-	metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
-	reasonCode := deliverableRecoveryReasonCode(lookup)
-	metadata.BlockedRecovery.HoldReason = reasonCode
-	metadata.BlockedRecovery.OperatorRemedy = humanAction
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, event.CompletedAt, reason, metadata); err != nil {
-		if o.logger != nil {
-			o.logger.Warn(
-				"deliverable recovery block transition failed",
-				"issue_id", issue.ID,
-				"identifier", issue.Identifier,
-				"workspace_branch", branch,
-				"error", err,
-			)
-		}
-		return false
-	}
-	issue.State = blockedStatusState
-	issue.BlockerReason = reason
-	blockedAt := event.CompletedAt.UTC()
-	issue.StageUpdatedAt = &blockedAt
-	if o.connector != nil {
-		comment := "Pull request delivery remains unrecoverable and needs human attention.\n\n" +
-			"- reason: `" + reason + "`\n" +
-			"- branch: `" + branch + "`\n" +
-			"- workspace head: `" + lookup.HeadSHA + "`\n" +
-			"- local commits ahead: " + deliverableRecoveryCommitsAheadText(lookup) + "\n" +
-			"- remote branch exists: " + deliverableRecoveryRemoteBranchText(lookup) + "\n" +
-			"- hydration state: " + lookup.HydrationState + "\n" +
-			"- lookup result: " + lookup.LookupResult + "\n" +
-			"- lookup attempts: " + strconv.Itoa(lookup.Attempts) + "\n" +
-			"- failing command: `" + deliverableRecoveryCommand(recoveryErr) + "`\n" +
-			"- recovery: " + humanAction + "\n" +
-			"- error: " + o.operatorText(recoveryErr.Error())
-		if err := o.connector.CreateComment(ctx, issue.ID, comment); err != nil && o.logger != nil {
-			o.logger.Warn("deliverable recovery block comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		}
-	}
-	delete(state.Claimed, issue.ID)
-	delete(state.Retry, issue.ID)
-	delete(state.BudgetRefusals, issue.ID)
-	delete(state.PriorAttempts, issue.ID)
-	delete(state.InstantFailures, issue.ID)
-	delete(state.RepeatedFailures, issue.ID)
-	if state.Blocked == nil {
-		state.Blocked = map[string]Blocked{}
-	}
-	state.Blocked[issue.ID] = Blocked{
-		Issue:                issue,
-		Reason:               reason,
-		RecoveryAction:       "hold",
-		RecoveryReason:       reasonCode,
-		RecoveryRemedy:       humanAction,
-		RecoveryTarget:       autoPromoteReworkState,
-		RecoveryReachability: blockedRecoveryReachability("hold"),
-		NeedsHumanAttention:  true,
-		BlockedAt:            event.CompletedAt,
-		Source:               BlockedSourceProjectStatus,
-		Recovery:             metadata.BlockedRecovery,
-	}
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      event.CompletedAt,
-		Event:   reasonCode,
-		Message: "parked " + issueLabel(issue) + ": " + reason,
-	})
-	telemetry.LogLifecycle(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, reasonCode, o.runningLifecycleCorrelation(issue, running),
-		"workspace_branch", branch,
-		"local_commits_ahead", lookup.CommitsAhead,
-		"remote_branch_exists", lookup.RemoteBranchExists,
-		"delivery_state_checked", lookup.DeliveryStateChecked,
-		"deliverable_command", deliverableRecoveryCommand(recoveryErr),
-		"error", recoveryErr,
-	)
-	return true
+	return o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), recoveryErr.Error())
 }
 
 func (o *Orchestrator) blockHumanOwnedWorkerFailure(
@@ -423,6 +330,9 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 	if state == nil || event.Err == nil || strings.TrimSpace(cause) == "" {
 		return false
 	}
+	if cause != permissionWaitReason && cause != "human_action" && explicitHumanAction(running.Issue) == "" {
+		return o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), detail)
+	}
 	issue := cloneIssue(running.Issue)
 	metadata := o.newBlockedRecoveryMetadata(
 		ctx,
@@ -436,6 +346,7 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 	metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
 	metadata.BlockedRecovery.HoldReason = cause
 	metadata.BlockedRecovery.OperatorRemedy = humanAction
+	metadata.ReasonDetail = fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: %q\n```", humanAction)
 	metadata.BlockedRecovery.WorkAttemptID = running.WorkAttemptID
 	metadata.BlockedRecovery.AttemptNumber = running.Attempt
 	metadata.BlockedRecovery.AttemptError = detail
@@ -449,11 +360,12 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 	issue.BlockerReason = cause
 	blockedAt := event.CompletedAt.UTC()
 	issue.StageUpdatedAt = &blockedAt
+	issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: humanAction, RecordedAt: &blockedAt}
 	if o.connector != nil {
 		comment := "Detent parked this issue after a non-retryable worker safety failure.\n\n" +
 			"- cause: `" + cause + "`\n" +
 			"- detail: " + detail + "\n" +
-			"- human_action: " + humanAction
+			"- human_action: " + humanAction + "\n\n" + metadata.ReasonDetail
 		if err := o.connector.CreateComment(ctx, issue.ID, comment); err != nil && o.logger != nil {
 			o.logger.Warn(eventName+" comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
 		}
@@ -475,7 +387,7 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 		Reason:              cause,
 		AttemptError:        detail,
 		WorkAttemptID:       running.WorkAttemptID,
-		RecoveryReason:      "human acknowledgement required",
+		RecoveryReason:      humanAction,
 		RecoveryTarget:      autoPromoteReworkState,
 		RecoveryRemedy:      humanAction,
 		NeedsHumanAttention: true,

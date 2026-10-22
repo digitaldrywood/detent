@@ -209,7 +209,7 @@ func (o *Orchestrator) handleOperatorMove(state *State, request OperatorMoveRequ
 		delete(state.Blocked, issueID)
 		result.BlockedCleared = true
 	}
-	if result.BlockedCleared {
+	if _, held := state.Blocked[issueID]; result.BlockedCleared || !held {
 		if claimed, ok := state.Claimed[issueID]; ok {
 			if _, running := state.Running[issueID]; running {
 				applyIssueStateSnapshot(&claimed.Issue, toState, at)

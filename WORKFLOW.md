@@ -405,7 +405,10 @@ interactions are the main source of incidents, so the set may not grow.
 - INV-3: a change that adds or expands a mechanism removes or consolidates an
   existing one in the same change. "Add a guard for the new case" is not a fix.
 - Infrastructure failures (backend startup, protocol errors, workspace hooks)
-  are attributed to the instance, never to the issue.
+  are attributed to the instance, never to the issue. Pre-provider checkpoint
+  and recovery refusals retry through the same instance owner with capped
+  backoff; they never move an item to Blocked. Execution fencing and source
+  verification remain authoritative.
 - Claim eligibility is recomputed from current workflow intent, typed dependency
   edges, source, review, access, lease and instance-capacity facts. Historical
   failure answers, recovery signatures, reason strings and cross-host park
@@ -416,6 +419,15 @@ interactions are the main source of incidents, so the set may not grow.
   push (including an absent ref), and a moved ref returns to Rework/rebase.
   Historical `manual_recovery` checkpoint judgments never hold an item; verify
   current source and lease authority through the existing publication owner.
+- Blocked is a closed list: only an explicit human question or permission request
+  with a typed `human_action`, or an explicit operator stop, may enter it.
+  Every machine failure uses the existing capped-backoff retry owner in a
+  dispatchable lane; infrastructure remains instance-attributed. Terminal-attempt
+  and workspace retry limits never park work or synthesize operator review.
+  Existing machine-written Blocked lanes are recovered from current intent on
+  every recovery read, without fingerprint, retry-limit or consumed-signature vetoes.
+  Stored derived hold metadata requires an owner, source revision and expiry;
+  deleting derived holds must not change recomputed dispatch decisions.
 - The orchestrator is the only writer of tracker lane state; workers report
   outcomes and never write lane labels.
 - Do not add configuration keys, CLI subcommands, or dashboard surfaces to work

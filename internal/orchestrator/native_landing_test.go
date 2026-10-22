@@ -103,9 +103,9 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "absorbed Rework uses the existing landing completion owner", absorbed: true, landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
 		{name: "a landed version is finished by the hub", landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
 		{name: "failed configured CI returns to Rework", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalProtected, Refusal: "Full CI failed", CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, State: "failure", FailedChecks: []string{"Full CI"}}}, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "Full CI failed", wantMoves: 1},
-		{name: "trigger permission refusal overrides pending CI", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalProtected, Refusal: "Resource not accessible", CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, State: "pending"}}, hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "Resource not accessible", wantMoves: 1},
+		{name: "trigger permission refusal overrides pending CI", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalProtected, Refusal: "Resource not accessible", CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, State: "pending"}}, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "Resource not accessible", wantMoves: 1},
 		{name: "a red gate returns to Rework with failing output", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, GateFailed: true, Refusal: "short-test-failure-sentinel"}, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "short-test-failure-sentinel", wantMoves: 1},
-		{name: "a refused landing returns to review with the reason", landing: refused, hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "enable GitHub pull request mode", wantMoves: 1},
+		{name: "a refused landing returns to review with the reason", landing: refused, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "enable GitHub pull request mode", wantMoves: 1},
 		{name: "unresolved review conversations enter Rework with the findings", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalProtected, Refusal: workspace.ReviewConversationsRefusalText + " review-thread-finding-sentinel"}, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "review-thread-finding-sentinel", wantMoves: 1},
 		{name: "a conflict enters rework without human review", landing: conflict, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
 		{name: "a conflict enters configured rework with human review", landing: conflict, hubState: "Merging", states: workflow, reworkState: "Refresh", wantState: "Refresh", wantComment: "was not landed", wantMoves: 1},
@@ -115,14 +115,14 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "a conflict skips non-dispatchable configured rework", landing: conflict, hubState: "Merging", states: undispatchedRework, wantState: "In Progress", wantComment: "was not landed", wantMoves: 1},
 		{name: "a conflict skips operator-only configured rework", landing: conflict, hubState: "Merging", states: fallback, reworkState: "Private", wantState: "Working", wantComment: "was not landed", wantMoves: 1},
 		{name: "a conflict uses the workflow coding lane", landing: conflict, hubState: "Merging", states: fallback, wantState: "Working", wantComment: "was not landed", wantMoves: 1},
-		{name: "a refusal uses the workflow review lane", landing: refused, hubState: "Merging", states: fallback, wantState: "Awaiting Review", wantComment: "was not landed", wantMoves: 1},
-		{name: "a refusal uses the workflow review lane without human review", landing: refused, hubState: "Merging", states: fallback, noHumanReview: true, wantState: "Awaiting Review", wantComment: "was not landed", wantMoves: 1},
-		{name: "a protected refusal prefers Blocked without human review", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "was not landed", wantMoves: 1},
-		{name: "a moved head enters Rework without human action", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalHeadMoved, Refusal: "Head branch was modified"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "Head branch was modified", wantMoves: 1},
-		{name: "a missing head prefers Blocked without human review", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalMissingHead, Refusal: "the reviewed head is missing"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "the reviewed head is missing", wantMoves: 1},
-		{name: "an already landed head prefers Blocked without human review", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing, Refusal: "the base branch already contains everything"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "already contains everything", wantMoves: 1},
-		{name: "a refusal falls back to Human Review without Blocked", landing: refused, hubState: "Merging", states: noBlocked, noHumanReview: true, wantState: "Human Review", wantComment: "was not landed", wantMoves: 1},
-		{name: "an opted out refusal prefers Human Review over Blocked", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, optout: true, wantState: "Human Review", wantComment: "was not landed", wantMoves: 1},
+		{name: "a refusal uses the workflow review lane", landing: refused, hubState: "Merging", states: fallback, wantState: "Working", wantComment: "was not landed", wantMoves: 1},
+		{name: "a refusal uses the workflow review lane without human review", landing: refused, hubState: "Merging", states: fallback, noHumanReview: true, wantState: "Working", wantComment: "was not landed", wantMoves: 1},
+		{name: "a protected refusal prefers Blocked without human review", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
+		{name: "a moved head prefers Blocked without human review", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalHeadMoved, Refusal: "Head branch was modified"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "Head branch was modified", wantMoves: 1},
+		{name: "a missing head prefers Blocked without human review", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalMissingHead, Refusal: "the reviewed head is missing"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "the reviewed head is missing", wantMoves: 1},
+		{name: "an already landed head prefers Blocked without human review", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing, Refusal: "the base branch already contains everything"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "already contains everything", wantMoves: 1},
+		{name: "a refusal falls back to Human Review without Blocked", landing: refused, hubState: "Merging", states: noBlocked, noHumanReview: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
+		{name: "an opted out refusal prefers Human Review over Blocked", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, optout: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
 		{name: "red barrier retains Merging without Rework", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Waiting: true, Refusal: "waiting for rolling barrier repair"}, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "direct capacity wait retains source and automatic merge retry", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Waiting: true, Refusal: "Project landing capacity is full"}, hubState: "In Progress", states: []connector.WorkflowState{{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true}}, noHumanReview: true, wantLandingWait: true, codingLane: true},
 		{name: "pending configured CI retains the existing landing retry", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Refusal: "waiting for Full CI", CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, State: "pending", Triggered: true}}, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
@@ -140,18 +140,18 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "stale base lands without rework with human review", mergeMessage: "Base branch was modified. Review and try the merge again.", hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed", wantRecovered: true},
 		{name: "conflicted landing rebases cleanly without a rework session", mergeMessage: "Pull Request has merge conflicts", hubState: "Done", states: hosted, noHumanReview: true, wantState: "Done", wantComment: "Landed", wantRecovered: true},
 		{name: "genuine server outage retains native version and host backoff", mergeMessage: "Service Unavailable", mergeStatus: http.StatusServiceUnavailable, landing: unproven, hubState: "Merging", states: workflow, wantInfrastructure: true},
-		{name: "strict head protection returns to review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "Head branch is out of date", wantMoves: 1},
-		{name: "strict head protection blocks without human review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "Head branch is out of date", wantMoves: 1},
+		{name: "strict head protection returns to review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "Head branch is out of date", wantMoves: 1},
+		{name: "strict head protection blocks without human review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "Head branch is out of date", wantMoves: 1},
 		{name: "a conflict with absent configured rework uses reachable rework", landing: conflict, hubState: "Merging", states: workflow, reworkState: "Missing", wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
 		{name: "a conflict with neither coding lane is handed off", landing: conflict, hubState: "Merging", states: []connector.WorkflowState{{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true}}, wantDeferred: true, wantError: "native workflow allows no move from Merging to the landing refusal lane Rework"},
 		{name: "a conflict with disallowed rework is handed off", landing: conflict, hubState: "Merging", states: []connector.WorkflowState{{Name: "Merging", Dispatchable: true, Transitions: []string{"Human Review", "Done"}}, {Name: "Human Review"}, {Name: "Rework", Dispatchable: true}, {Name: "Done", Terminal: true}}, wantDeferred: true},
 		{name: "a conflict cannot enter operator-only rework", landing: conflict, hubState: "Merging", states: []connector.WorkflowState{{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework"}}, {Name: "Rework", Dispatchable: true, OperatorOnly: true}}, wantDeferred: true},
 		{name: "a conflict cannot complete through terminal rework", landing: conflict, hubState: "Merging", states: []connector.WorkflowState{{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework"}}, {Name: "Rework", Terminal: true}}, wantDeferred: true},
 		{name: "typed success retains landing authority over final question", landing: landed, hubState: "Done", states: workflow, finalMessage: "May I merge?", wantState: "Done", wantComment: "Landed Change Request change_1"},
-		{name: "typed refusal retains review destination over final question", landing: refused, hubState: "Merging", states: workflow, finalMessage: "May I merge?", wantState: "Human Review", wantComment: "enable GitHub pull request mode", wantMoves: 1},
-		{name: "typed refusal is not replaced by prose success", landing: refused, hubState: "Merging", states: workflow, finalMessage: "Landed the change successfully.", wantState: "Human Review", wantComment: "was not landed", wantMoves: 1},
+		{name: "typed refusal retains review destination over final question", landing: refused, hubState: "Merging", states: workflow, finalMessage: "May I merge?", wantState: "Rework", wantComment: "enable GitHub pull request mode", wantMoves: 1},
+		{name: "typed refusal is not replaced by prose success", landing: refused, hubState: "Merging", states: workflow, finalMessage: "Landed the change successfully.", wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
 		{name: "prose landing without typed evidence never lands", hubState: "Merging", states: workflow, finalMessage: "Landed the change successfully.", wantContinue: true},
-		{name: "a refused landing with no review lane is handed off", landing: refused, hubState: "Merging", states: []connector.WorkflowState{{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true}}, wantDeferred: true, wantError: "native workflow allows no move from Merging to the landing refusal lane Human Review"},
+		{name: "a refused landing with no review lane is handed off", landing: refused, hubState: "Merging", states: []connector.WorkflowState{{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true}}, wantDeferred: true, wantError: "native workflow allows no move from Merging to the landing refusal lane Rework"},
 		{name: "an unreadable workflow is handed off", landing: refused, hubState: "Merging", statesErr: errors.New("hub unavailable"), wantDeferred: true},
 		{name: "a refused lane write is handed off", landing: refused, hubState: "Merging", states: workflow, updateErr: errors.New("stale fencing token"), wantDeferred: true},
 		{name: "no landing keeps the ordinary path", hubState: "Merging", states: workflow, wantContinue: true},
@@ -226,7 +226,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 					}
 				} else {
 					wantRefusal := workspace.LandRefusalProtected
-					if test.wantLandingWait || !test.sourceConflict && (test.wantState == "Rework" || test.wantState == "In Progress") {
+					if test.wantLandingWait || !test.sourceConflict && test.mergeMessage == "Pull Request has merge conflicts" && (test.wantState == "Rework" || test.wantState == "In Progress") {
 						wantRefusal = workspace.LandRefusalBaseMoved
 						base := nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main")
 						if (!test.currentBase && base == journey.base) || (result.NativeLanding.BaseSHA != "") == test.wantLandingWait || !test.wantLandingWait && result.NativeLanding.BaseSHA != base || !strings.Contains(result.NativeLanding.Refusal, base) || !strings.Contains(result.NativeLanding.Refusal, landingHead) {
@@ -454,7 +454,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				}
 				return
 			}
-			if journey != nil && !test.wantRecovered && (retried || len(state.ForgeUnavailable) != 0 || nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main") == journey.merge) {
+			if journey != nil && !test.wantRecovered && (len(state.ForgeUnavailable) != 0 || nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main") == journey.merge) {
 				t.Fatalf("strict protection retained a base wait or landed without a receipt: retry %#v, state %#v", retry, state)
 			}
 			if len(tick.updates) != test.wantMoves || test.wantMoves == 1 && tick.updates[0].state != test.wantState {
@@ -474,8 +474,12 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				t.Fatalf("claim retained = %t, releases = %d", claimed, scheduling.releases)
 			}
 			completed, ok := state.Completed[issue.ID]
-			if !ok || completed.Issue.State != test.wantState {
-				t.Fatalf("completed = %#v, present = %t", completed, ok)
+			if test.landing.Landed {
+				if !ok || completed.Issue.State != test.wantState || retried {
+					t.Fatalf("completed = %#v, present = %t, retried = %t", completed, ok, retried)
+				}
+			} else if ok || !retried || retry.Issue.State != test.wantState || !retry.DueAt.After(now) || retry.DueAt.After(now.Add(orch.cfg.MaxRetryBackoff)) {
+				t.Fatalf("landing refusal lost capped retry: completed=%t retry=%+v", ok, retry)
 			}
 			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
 				t.Fatalf("attempt completions = %#v", attempts.completions)

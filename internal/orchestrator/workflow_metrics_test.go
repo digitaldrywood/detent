@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestTickPreservesOrchestratorTransitionSnapshot(t *testing.T) {
@@ -610,7 +612,8 @@ func TestUpdateIssueStateRecordsTrackerMutationConfirmation(t *testing.T) {
 	}
 	state := newState(orch.cfg)
 	state.BoardIssues = []connector.Issue{cloneIssue(issue)}
-	metadata := workflowLaneMetadata{BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Cause: "rework_limit"}}
+	issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "Approve the requested scope"}
+	metadata := workflowLaneMetadata{BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Owner: "human", Cause: "human_action", SourceRevision: holdSourceRevision(issue), ExpiresAt: time.Now().Add(time.Hour)}}
 
 	if err := orch.updateIssueStateByIDWithMetadata(
 		t.Context(),
@@ -666,6 +669,9 @@ func TestDetentLaneWriteEchoKeepsWriter(t *testing.T) {
 			requestedAt := time.Date(2026, 9, 4, 4, 11, 0, 0, time.UTC)
 			trackerAt := requestedAt.Add(2 * time.Second)
 			issue := laneRevocationIssue("echo", "digitaldrywood/detent#2138", "In Progress")
+			if target == blockedStatusState {
+				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "Approve requested scope"}
+			}
 			metrics := &autoPromoteWorkflowMetricsRecorder{}
 			confirmed := cloneIssue(issue)
 			confirmed.State = target
@@ -953,6 +959,43 @@ func TestRecordLaneTransitionArtifactOutcome(t *testing.T) {
 			metadata, ok := workflowLaneMetadataFromJSON(events[1].MetadataJSON)
 			if !ok || metadata.TerminalOutcome != tt.want {
 				t.Fatalf("outcome=%q, want %q", metadata.TerminalOutcome, tt.want)
+			}
+		})
+	}
+}
+
+func TestLaneWriterClosedList(t *testing.T) {
+	for _, tt := range []struct {
+		name, target, action, reason string
+		wantError                    bool
+	}{
+		{name: "machine", target: "Blocked", wantError: true},
+		{name: "normalized machine", target: "Human Review", wantError: true},
+		{name: "typed human", target: "Blocked", action: "Approve the requested scope"},
+		{name: "normalized human", target: "Human Review", action: "Approve the requested scope"},
+		{name: "operator stop", target: "Blocked", reason: "operator_stopped"},
+		{name: "normalized operator stop", target: "Human Review", reason: "operator_stopped"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := terminalRetryTestIssue("closed-list")
+			if tt.action != "" {
+				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: tt.action}
+			}
+			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: issue}}
+			cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{HumanReview: new(false), SourceState: "Human Review", ReworkState: "Blocked"}})
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			o := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: metrics}
+			state := newState(cfg)
+			err := o.updateIssueState(t.Context(), &state, issue, tt.target, time.Now(), tt.reason)
+			if (err != nil) != tt.wantError {
+				t.Fatalf("write error = %v", err)
+			}
+			if tt.wantError {
+				if len(tracker.transitions) != 0 || len(metrics.snapshot()) != 0 {
+					t.Fatal("rejected target caused side effects")
+				}
+			} else if !slices.Equal(tracker.transitions, []string{"Blocked"}) {
+				t.Fatalf("transitions = %v", tracker.transitions)
 			}
 		})
 	}

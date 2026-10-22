@@ -43,6 +43,27 @@ its controller or worker cleanup still owns finalization. The existing bounded
 finalization context owns that timeout. Completed executions without a live
 local owner still expire and release their fenced claim.
 
+Blocked has a closed list of causes: an explicit human question or permission
+request with a typed `human_action`, or an explicit operator stop. Machine
+failures, including validation, missing checks, delivery and retry exhaustion,
+retry in a dispatchable lane through the existing capped-backoff owner. They
+never synthesize a human prerequisite. Current source and execution fences,
+dependencies, gate requirements and budget admission remain authoritative.
+
+The existing Blocked recovery read derives this decision from current human
+intent and the current operator-stop entry on every read. Historical machine
+parks, retry counts, fingerprints and consumed recovery signatures do not own
+the lane. No migration or new recovery sweep clears them.
+
+Derived hold metadata requires an owner, source revision and expiry when
+written. It cannot replace current intent: wiping it and recomputing must
+produce the same dispatch decision. Expiry of derived metadata does not expire
+an unanswered human action or an explicit operator stop.
+
+**Closed-list enforcement:** `TestBlockedRecoveryRecomputesDispatchWithoutDerivedHolds`
+and `TestStoredHoldRequiresProvenance` in `internal/orchestrator`, plus the
+lane writer's typed-intent and metadata validation.
+
 The lane ledger owns `UpdateIssueState` and state-field `SetIssueField` calls.
 Enumerated connector adapters implement or forward those operations without
 deciding transitions. Admission uses the injected orchestrator writer. Raw
@@ -90,7 +111,11 @@ Rework, other refusals prefer the configured review lane, and terminal,
 operator-only and self-transitions are excluded. Recovery and Rework resume
 only from a verified preserved source checkpoint; unknown changes and
 unavailable authority are refusals, never checkpoint rewrites or relaxed
-comparisons. Human and permission holds retain their authority.
+comparisons. Human and permission holds retain their authority. Pre-provider checkpoint
+and recovery refusals, including changed local checkpoints and policy mismatches,
+retry through the existing instance owner with capped backoff. They never
+write Blocked or consume an issue failure allowance. Unavailable execution
+authority still forbids lane writes; retry never relaxes source verification.
 
 **Enforcement:** `TestPreTurnFailuresRetryWithoutPausingProject`,
 `TestObservedLanePreTurnFailureRemainsInstanceOwned`,

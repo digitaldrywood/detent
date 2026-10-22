@@ -59,7 +59,7 @@ func (o *Orchestrator) handleMergeWorkerStartupTimeout(
 	)
 	attempt := nextAttempt(running.Attempt)
 	if attempt > maxMergeWorkerRunnerFailures &&
-		o.blockExhaustedMergeWorker(ctx, state, running, completedAt, mergeWorkerRetryExhaustedReason, attempt, err) {
+		o.blockExhaustedMergeWorker(ctx, state, running, event, mergeWorkerRetryExhaustedReason, attempt, err) {
 		return true
 	}
 	o.scheduleRetry(

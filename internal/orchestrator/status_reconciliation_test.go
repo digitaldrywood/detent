@@ -339,11 +339,11 @@ func TestTickKeepsObservedBlockedIssueWhenMergedPullRequestHydrationUnavailable(
 
 	orch.tick(context.Background(), &state, now)
 
-	if len(tracker.updates) != 0 {
-		t.Fatalf("updates = %#v, want none for observed Blocked issue with stale merged PR hydration", tracker.updates)
+	if len(tracker.updates) != 1 || tracker.updates[0].state == "Done" || tracker.updates[0].state == "Blocked" {
+		t.Fatalf("stale merged PR must retry without fabricating delivery: %+v", tracker.updates)
 	}
-	if len(tracker.comments) != 0 {
-		t.Fatalf("comments = %#v, want none", tracker.comments)
+	if _, ok := state.Retry[issue.ID]; !ok {
+		t.Fatal("stale merged PR lost retry")
 	}
 }
 

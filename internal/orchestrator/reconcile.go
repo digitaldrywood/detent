@@ -536,6 +536,10 @@ func (o *Orchestrator) trackCandidateBlockedStatusIssues(ctx context.Context, st
 			clearBlockedStatusIssue(state, issue)
 			continue
 		}
+		if !o.currentBlockedHumanIntent(ctx, state, issue) && !o.currentBlockedOperatorStop(ctx, state, issue) {
+			delete(state.Blocked, issue.ID)
+			continue
+		}
 		o.setBlockedStatusIssue(ctx, state, issue, now)
 	}
 }

@@ -38,7 +38,7 @@ func (cfg AutoPromoteConfig) humanReviewEnabled() bool {
 
 func (cfg AutoPromoteConfig) reviewTargetState() string {
 	if !cfg.humanReviewEnabled() {
-		return "Blocked"
+		return cfg.ReworkState
 	}
 	return cfg.SourceState
 }

@@ -223,32 +223,18 @@ func TestHandleRunResultParksThirdUnchangedArtifactGateSuccess(t *testing.T) {
 		Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
 	})
 
-	wantUpdates := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Blocked"}}
-	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
-		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
+	if len(tracker.updates) != 0 || len(state.Blocked) != 0 || len(state.Completed) != 0 {
+		t.Fatal("artifact failure retained a hold or completed result")
 	}
-	if blocked, ok := state.Blocked[issue.ID]; !ok || blocked.Issue.State != "Blocked" {
-		t.Fatalf("Blocked[%q] = %#v, want parked Blocked issue", issue.ID, blocked)
+	if retry, ok := state.Retry[issue.ID]; !ok || retry.Error != artifactGateConvergenceReason {
+		t.Fatalf("artifact convergence lost retry: %+v", retry)
 	}
-	if _, ok := state.Completed[issue.ID]; ok {
-		t.Fatalf("Completed[%q] present after convergence breaker", issue.ID)
-	}
-	if _, ok := state.Retry[issue.ID]; ok {
-		t.Fatalf("Retry[%q] present after convergence breaker", issue.ID)
-	}
+
 	if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalNoProgress {
 		t.Fatalf("completions = %#v, want one durable no-progress worker success", attempts.completions)
 	}
 	if !strings.Contains(attempts.completions[0].WorkerMetadataJSON, `"tripped":true`) {
 		t.Fatalf("worker metadata = %q, want durable convergence trip", attempts.completions[0].WorkerMetadataJSON)
-	}
-	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "stopped redispatching") {
-		t.Fatalf("comments = %#v, want convergence breaker handoff", tracker.comments)
-	}
-	for _, fragment := range []string{"artifact gate convergence breaker tripped", "consecutive_unchanged=3"} {
-		if !strings.Contains(logs.String(), fragment) {
-			t.Fatalf("logs %q missing %q", logs.String(), fragment)
-		}
 	}
 }
 

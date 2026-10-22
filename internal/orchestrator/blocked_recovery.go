@@ -186,77 +186,12 @@ func (o *Orchestrator) recoverBlockedIssues(
 	now time.Time,
 ) map[string]struct{} {
 	transitioned := map[string]struct{}{}
-	autoPromoteCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
-	recoveryCfg := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery)
-	sourceStates := mergeStateLists([]string{blockedStatusState, o.cfg.StopRunTargetState}, recoveryCfg.SourceStates)
-	issues = issuesInStates(issues, sourceStates)
-	dependencies := o.resolveBlockedRecoveryDependencies(ctx, state, issues)
 	for _, issue := range issues {
-		issueID := strings.TrimSpace(issue.ID)
-		if issueID == "" {
-			continue
+		if issue.ID != "" && o.recoverCauseBlockedIssue(ctx, state, issue, now) {
+			transitioned[issue.ID] = struct{}{}
 		}
-		if (normalizeState(issue.State) == normalizeState(blockedStatusState) || issue.IssueContract != nil && issue.IssueContract.ReturnState != "") &&
-			o.recoverCauseBlockedIssue(ctx, state, issue, now, dependencies[issue.ID]) {
-			transitioned[issueID] = struct{}{}
-			dependencies = nil
-			continue
-		}
-		if normalizeState(issue.State) == normalizeState(blockedStatusState) && o.currentBlockedOperatorStop(ctx, state, issue) {
-			continue
-		}
-		if evidence := dependencies[issue.ID]; evidence != nil {
-			issue = evidence.issue
-			issue.BlockedBy = dependencyResolvedBlockerRefs(evidence.blockers)
-		}
-		if normalizeState(issue.State) == normalizeState(blockedStatusState) && autoPromoteCfg.Enabled {
-			if park, ok := o.latestReworkBreakerPark(ctx, issue); ok {
-				if !reworkBreakerAutoUnparkReady(issue, park, o.cfg.TerminalStates) ||
-					!o.reworkBreakerAutoPromoteGateReady(ctx, state, issue, autoPromoteCfg, now) {
-					continue
-				}
-				if !o.applyReworkBreakerAutoUnpark(ctx, state, issue, park, autoPromoteCfg.PassState, now) {
-					continue
-				}
-				transitioned[issueID] = struct{}{}
-				dependencies = nil
-				continue
-			}
-		}
-		if !recoveryCfg.Enabled || !stateIn(issue.State, recoveryCfg.SourceStates) {
-			continue
-		}
-		reasonCode, ok := o.latestWorkflowLaneReason(ctx, issue, issue.State)
-		if !ok || !blockedRecoveryReasonAllowed(recoveryCfg, reasonCode) {
-			continue
-		}
-		decision := evaluateBlockedRecovery(issue, recoveryCfg, o.cfg.TerminalStates)
-		if decision.Action != BlockedRecoveryActionRework {
-			continue
-		}
-		if !blockedRecoveryConditionMatches(reasonCode, decision.Reason) {
-			continue
-		}
-		signature, _ := blockedRecoverySignature(issue)
-		if !o.applyBlockedRecovery(ctx, state, issue, decision, signature, now) {
-			continue
-		}
-		transitioned[issueID] = struct{}{}
-		dependencies = nil
-	}
-	attributeHeldBlockedRecoveryRoots(state)
-	if len(transitioned) == 0 {
-		return nil
 	}
 	return transitioned
-}
-
-type blockedRecoveryDependencyEvidence struct {
-	issue          connector.Issue
-	workpadRefs    []connector.BlockedRef
-	workpadCurrent bool
-	blockers       []dependencyBlocker
-	references     map[string]connector.Issue
 }
 
 func (o *Orchestrator) resolveBlockedRecoveryDependencies(ctx context.Context, state *State, issues []connector.Issue) map[string]*blockedRecoveryDependencyEvidence {
@@ -775,4 +710,12 @@ func blockedRecoveryNoCurrentHeadCI(pr *connector.PullRequest) bool {
 
 func blockedRecoveryReasonText(issue connector.Issue) string {
 	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(issue.BlockerReason)), " "))
+}
+
+type blockedRecoveryDependencyEvidence struct {
+	issue          connector.Issue
+	workpadRefs    []connector.BlockedRef
+	workpadCurrent bool
+	blockers       []dependencyBlocker
+	references     map[string]connector.Issue
 }

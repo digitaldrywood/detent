@@ -29,7 +29,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestRunningWorkAttemptMetadataJSONPersistsPullRequestFingerprint(t *testing.T) {
@@ -4459,160 +4458,11 @@ func TestTimedOutWorkerProbeDoesNotHoldDispatch(t *testing.T) {
 	}
 }
 
-func TestDispatchPlannerHoldsUnchangedRework(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name         string
-		resume       string
-		version      string
-		head         string
-		base         string
-		findingPath  string
-		findingBody  string
-		inspectBase  string
-		humanAction  string
-		readError    bool
-		reviewHold   bool
-		signal       func(*workpad.Signal)
-		wantReleased bool
-	}{
-		{name: "human moves to Todo", resume: "Todo", wantReleased: true},
-		{name: "human moves to Rework", resume: "Rework", wantReleased: true},
-		{name: "unchanged evidence stays held"},
-		{name: "new version alone stays held", version: "version-2"},
-		{name: "reworded findings stay held", version: "version-2", findingBody: "Rephrased request"},
-		{name: "new findings on same version stay held", findingPath: "other.go"},
-		{name: "new findings on new version release", version: "version-2", findingPath: "other.go", wantReleased: true},
-		{name: "new source version releases", version: "version-2", head: "head-2", wantReleased: true},
-		{name: "new version with moved base releases", version: "version-2", base: "base-2", wantReleased: true},
-		{name: "relevant moved base releases", inspectBase: "base-2", wantReleased: true},
-		{name: "missing base evidence stays held", inspectBase: "unavailable"},
-		{name: "unavailable source evidence stays held", version: "version-2", head: "head-2", readError: true},
-		{name: "new source preserves review hold", version: "version-2", head: "head-2", reviewHold: true},
-		{name: "new source preserves human hold", version: "version-2", head: "head-2", humanAction: "Approve rollout"},
-		{name: "new source preserves recorded blocker", version: "version-2", head: "head-2", signal: func(signal *workpad.Signal) {
-			signal.Blockers = []workpad.Blocker{{Reason: "Approve rollout", Unverifiable: true}}
-		}},
-		{name: "new source preserves invalid signal", version: "version-2", head: "head-2", signal: func(signal *workpad.Signal) {
-			signal.Invalid = &workpad.Invalid{Message: "Invalid blocker"}
-		}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
-			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}})
-			issue := terminalRetryTestIssue("unchanged-rework")
-			issue.State = "Rework"
-			issue.Identifier = "owner/repository#42"
-			tracker := &staleReworkConnector{terminalRetryConnector: &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: issue}}, detail: tracker.ChangeDetail{
-				Change:   tracker.ChangeRequest{ID: "change-1", CurrentVersion: "version-1"},
-				Versions: []tracker.ChangeVersion{{ID: "version-1", ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head-1", BaseSHA: "base-1"}}},
-				Reviews:  []tracker.ChangeReview{{ID: "finding-1", VersionID: "version-1", Decision: "changes_requested", Validator: &gate.ValidatorResult{Verdict: gate.ValidatorVerdictRework, Findings: []gate.Finding{{Severity: "p2", Path: "source.go", Line: 12, Body: "Fix source"}}}}},
-			}}
-			attempts := &recordingWorkAttemptStore{}
-			var logs strings.Builder
-			o := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
-			o.recoveryInspector = staticBlockedRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{BaseFingerprint: "base-1"}}
-			state := newState(cfg)
-			current := telemetry.WorkAttempt{AttemptID: 42, IssueID: issue.ID, Status: string(store.WorkAttemptStatusTerminal), TerminalState: string(store.WorkAttemptTerminalSuccess), ErrorClass: terminalAttemptWithoutWorkProductReason, CompletedAt: timePointer(now)}
-			parked, ok := o.terminalAttemptRetryLimitReached(t.Context(), &state, issue, terminalAttemptRetryLimitCause, true, RunModeImplement, DiffStats{HeadSHA: "head-1"}, now, "Review finding-1 on unchanged head head-1", current)
-			if !ok {
-				t.Fatal("first unchanged Rework did not park")
-			}
-			parked.WorkpadSignal, ok = workpad.SignalFromComment(tracker.comments[len(tracker.comments)-1], "", "")
-			if !ok || parked.WorkpadSignal == nil || parked.WorkpadSignal.Status != workpad.StatusBlocked || parked.WorkpadSignal.HumanAction != "Review finding-1 on unchanged head head-1" {
-				t.Fatalf("park did not publish its structured remedy: %+v", parked.WorkpadSignal)
-			}
-			raw, err := json.Marshal(state.Blocked[issue.ID])
-			if err != nil {
-				t.Fatal(err)
-			}
-			var restored Blocked
-			if err := json.Unmarshal(raw, &restored); err != nil {
-				t.Fatal(err)
-			}
-			state.Blocked[issue.ID] = restored
-			planAttempt := current
-			planAttempt.AttemptID++
-			planAttempt.WorkerMetadataJSON = `{"run_mode":"plan"}`
-			if _, parkedAgain := o.terminalAttemptRetryLimitReached(t.Context(), &state, parked, terminalAttemptRetryLimitCause, true, RunModePlan, DiffStats{}, now.Add(time.Hour), "", planAttempt); parkedAgain {
-				t.Fatal("planning consumed the retry allowance")
-			}
-			if o.recoverCauseBlockedIssue(t.Context(), &state, parked, now.Add(24*time.Hour)) {
-				t.Fatal("cooldown resumed the unchanged head without authorization")
-			}
-			planner := newDispatchPlanner(cfg)
-			var refusal dispatchPlanDecision
-			plan := planner.plan(&state, []connector.Issue{issue}, now.Add(24*time.Hour), dispatchPlanHooks{decision: func(decision dispatchPlanDecision) {
-				refusal = decision
-				o.logDispatchPlanDecision(t.Context(), &state, now.Add(24*time.Hour), decision)
-			}})
-			if len(plan.Dispatches) != 0 || len(state.Claimed) != 0 || len(attempts.decisions) != 1 || attempts.decisions[0].Reason != dispatchSkipBlocked || attempts.decisions[0].Result != store.SchedulerDecisionResultSkipped {
-				t.Fatalf("parked head admitted another claim or lost its scheduler refusal: plan=%+v claims=%v decisions=%+v", plan, state.Claimed, attempts.decisions)
-			}
-			if !strings.Contains(logs.String(), "scheduler_dispatch_decision") || !strings.Contains(logs.String(), "skip_reason=blocked") {
-				t.Fatalf("scheduler.decision refusal missing: %s", logs.String())
-			}
-			for _, evidence := range []string{terminalAttemptRetryLimitCause, "finding-1", "head-1"} {
-				if !strings.Contains(refusal.SkipDetail, evidence) {
-					t.Fatalf("scheduler refusal omitted %q: %+v", evidence, refusal)
-				}
-			}
-			issue = parked
-			if tt.resume != "" {
-				issue.State = tt.resume
-			} else {
-				tracker.detail.Change.CurrentVersion = firstNonBlank(tt.version, "version-1")
-				tracker.detail.Versions[0].ID = tracker.detail.Change.CurrentVersion
-				tracker.detail.Versions[0].HeadSHA = firstNonBlank(tt.head, "head-1")
-				tracker.detail.Versions[0].BaseSHA = firstNonBlank(tt.base, "base-1")
-				tracker.detail.Reviews[0].VersionID = tracker.detail.Change.CurrentVersion
-				tracker.detail.Reviews[0].Validator.Findings[0].Path = firstNonBlank(tt.findingPath, "source.go")
-				tracker.detail.Reviews[0].Validator.Findings[0].Body = firstNonBlank(tt.findingBody, "Fix source")
-				base := firstNonBlank(tt.inspectBase, "base-1")
-				if base == "unavailable" {
-					base = ""
-				}
-				o.recoveryInspector = staticBlockedRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{BaseFingerprint: base}}
-				if tt.readError {
-					tracker.readErr = errors.New("source evidence unavailable")
-				}
-				if tt.reviewHold {
-					issue.Labels = []string{"requires-human-review"}
-				}
-				if tt.humanAction != "" {
-					issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: tt.humanAction}
-				}
-				if tt.signal != nil {
-					issue.WorkpadSignal = workpad.CloneSignal(issue.WorkpadSignal)
-					tt.signal(issue.WorkpadSignal)
-				}
-				if released := o.recoverCauseBlockedIssue(t.Context(), &state, issue, now.Add(25*time.Hour)); released != tt.wantReleased {
-					t.Fatalf("recovery released = %t, want %t: %+v", released, tt.wantReleased, state.Blocked[issue.ID])
-				}
-				if tt.humanAction != "" && o.recoverCauseBlockedIssue(t.Context(), &state, issue, now.Add(26*time.Hour)) {
-					t.Fatal("repeated recovery adopted an unrelated human hold as its own")
-				}
-				if parked.WorkpadSignal.HumanAction != "Review finding-1 on unchanged head head-1" {
-					t.Fatal("recovery mutated the observed park signal")
-				}
-				if tt.wantReleased {
-					issue.WorkpadSignal, ok = workpad.SignalFromComment(tracker.comments[len(tracker.comments)-1], "", "")
-					if !ok || issue.WorkpadSignal == nil || issue.WorkpadSignal.Status != workpad.StatusInProgress || issue.WorkpadSignal.HumanAction != "" || len(issue.WorkpadSignal.Blockers) != 0 {
-						t.Fatalf("recovery did not clear its own structured remedy: %+v", issue.WorkpadSignal)
-					}
-				}
-				issue.State = tracker.issues[issue.ID].State
-			}
-			issue.UpdatedAt = timePointer(now.Add(25 * time.Hour))
-			o.trackCandidateBlockedStatusIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(25*time.Hour))
-			plan = planner.plan(&state, []connector.Issue{issue}, now.Add(25*time.Hour), dispatchPlanHooks{})
-			if (len(plan.Dispatches) == 1) != tt.wantReleased {
-				t.Fatalf("dispatchable = %t, want %t: %+v", len(plan.Dispatches) == 1, tt.wantReleased, plan)
-			}
-		})
-	}
+func (c *staleReworkConnector) FetchChanges(context.Context, tracker.NativeWorkItemID) ([]tracker.ChangeRequest, error) {
+	return []tracker.ChangeRequest{c.detail.Change}, nil
+}
+func (c *staleReworkConnector) FetchChange(context.Context, tracker.NativeWorkItemID, string) (tracker.ChangeDetail, error) {
+	return c.detail, c.readErr
 }
 
 type staleReworkConnector struct {
@@ -4620,11 +4470,4 @@ type staleReworkConnector struct {
 	tracker.ChangeReader
 	detail  tracker.ChangeDetail
 	readErr error
-}
-
-func (c *staleReworkConnector) FetchChanges(context.Context, tracker.NativeWorkItemID) ([]tracker.ChangeRequest, error) {
-	return []tracker.ChangeRequest{c.detail.Change}, nil
-}
-func (c *staleReworkConnector) FetchChange(context.Context, tracker.NativeWorkItemID, string) (tracker.ChangeDetail, error) {
-	return c.detail, c.readErr
 }

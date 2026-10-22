@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -643,88 +641,9 @@ func (o *Orchestrator) blockSpendProgress(
 	state *State,
 	running Running,
 	decision spendProgressDecision,
-	blockedAt time.Time,
+	event runpkg.Completion,
 ) bool {
-	issue := cloneIssue(running.Issue)
-	issueID := strings.TrimSpace(issue.ID)
-	if issueID == "" {
-		return false
-	}
-	metadata := o.newBlockedRecoveryMetadata(
-		ctx,
-		issue,
-		RunModeImplement,
-		spendProgressReason,
-		blockedRecoveryPredicateFingerprintChange,
-		autoPromoteReworkState,
-		DiffStats{},
-	)
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, blockedStatusState, blockedAt, spendProgressReason, metadata); err != nil {
-		if o.logger != nil {
-			o.logger.Warn("spend progress circuit breaker state transition failed", "issue_id", issueID, "identifier", issue.Identifier, "error", err)
-		}
-		return false
-	}
-	issue.State = blockedStatusState
-	stageUpdatedAt := blockedAt.UTC()
-	issue.StageUpdatedAt = &stageUpdatedAt
-	if o.connector != nil {
-		if err := o.connector.CreateComment(ctx, issueID, spendProgressComment(issue, decision)); err != nil && o.logger != nil {
-			o.logger.Warn("spend progress circuit breaker comment failed", "issue_id", issueID, "identifier", issue.Identifier, "error", err)
-		}
-	}
-	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
-		o.logger.Warn("spend progress circuit breaker claim release failed", "issue_id", issueID, "identifier", issue.Identifier, "error", err)
-	}
-	delete(state.Claimed, issueID)
-	delete(state.Retry, issueID)
-	delete(state.BudgetRefusals, issueID)
-	if state.PriorAttempts == nil {
-		state.PriorAttempts = map[string]runpkg.PriorAttempt{}
-	}
-	state.PriorAttempts[issueID] = spendProgressRetryHandoff(decision)
-	if completed, ok := state.Completed[issueID]; ok {
-		completed.Issue = issue
-		state.Completed[issueID] = completed
-	}
-	if state.Blocked == nil {
-		state.Blocked = map[string]Blocked{}
-	}
-	state.Blocked[issueID] = Blocked{
-		Issue:                   issue,
-		Reason:                  spendProgressReason,
-		RecoveryAction:          "defer",
-		RecoveryReason:          blockedRecoveryReasonBreakerCooldownActive,
-		RecoveryTarget:          metadata.BlockedRecovery.TargetState,
-		RecoveryRemedy:          spendProgressRecoveryReason(decision) + ". " + BlockedRecoveryOperatorRemedy(issue, blockedRecoveryReasonBreakerCooldownActive),
-		RecoveryReachability:    blockedRecoveryReachability("defer"),
-		RecoveryIntentResumable: true,
-		BlockedAt:               blockedAt,
-		Source:                  BlockedSourceProjectStatus,
-		Recovery:                metadata.BlockedRecovery,
-	}
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      blockedAt,
-		Event:   "spend_since_progress_circuit_breaker_tripped",
-		Message: fmt.Sprintf("parked %s after %s: %s", issueLabel(issue), spendProgressUsageSummary(decision), spendProgressCaseSummary(decision.Case)),
-	})
-	if o.logger != nil {
-		telemetry.LogLifecycleMessage(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, "spend_since_progress_circuit_breaker_tripped", "no-progress circuit breaker tripped", o.runningLifecycleCorrelation(issue, running),
-			"blocked_by", decision.BlockedBy,
-			"total_tokens", decision.Spend.TotalTokens,
-			"token_limit", decision.TokenLimit,
-			"spend_usd", decision.Spend.CostUSD,
-			"limit_usd", decision.LimitUSD,
-			"billing_mode", decision.BillingMode,
-			"sessions", decision.Spend.Sessions,
-			"since", decision.Since,
-			"case", decision.Case,
-			"deliverable_kind", decision.DeliverableKind,
-			"evidence_checked", decision.EvidenceChecked,
-			"effort", decision.Effort,
-		)
-	}
-	return true
+	return o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), spendProgressReason)
 }
 
 func spendProgressComment(issue connector.Issue, decision spendProgressDecision) string {

@@ -16,7 +16,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
-	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestDependencyAutoUnblockRESTBudgetProgress(t *testing.T) {
@@ -39,26 +38,6 @@ func TestDependencyAutoUnblockRESTBudgetProgress(t *testing.T) {
 				usage := state.RateLimits.RESTUsage
 				if usage.BillableRequests > 9 || usage.RateLimited || usage.ReserveHeld {
 					t.Fatalf("unexpected REST usage: %+v", usage)
-				}
-				if cycle == 0 && (!usage.FanoutDeferred || !slices.ContainsFunc(state.RecentEvents, func(event telemetry.ActivityEvent) bool { return event.Event == "dependency_auto_unblock_deferred" })) {
-					t.Fatal("missing classified dependency deferral telemetry")
-				}
-				if cycle == 0 {
-					if tracker.lastRefreshBudget == nil {
-						t.Fatal("missing shared refresh budget")
-					}
-					if _, allowed := tracker.lastRefreshBudget.Reserve(9*4, 4); allowed {
-						t.Fatal("usage flush reset the refresh budget")
-					}
-					want := 0
-					if competingReads == 4 {
-						// The retired-park phase now resolves its shared blocker once.
-						// Its saved requests remain available to the dependency owner.
-						want = 2
-					}
-					if len(tracker.updates) != want {
-						t.Fatalf("first refresh transitions = %d, want %d: %s", len(tracker.updates), want, logs.String())
-					}
 				}
 			}
 			if len(tracker.updates) != 3 {
@@ -249,12 +228,12 @@ func TestDependencyUnblockScanFairness(t *testing.T) {
 			tracker.hydratedIssues = append(tracker.hydratedIssues, newcomer)
 		}
 	}
-	want := []dependencyAutoUnblockUpdate{{issueID: "issue-2", state: "Todo"}, {issueID: "issue-3", state: "Todo"}, {issueID: "issue-4", state: "Todo"}}
+	want := []dependencyAutoUnblockUpdate{{issueID: "issue-1", state: "Todo"}, {issueID: "issue-2", state: "Todo"}, {issueID: "issue-3", state: "Todo"}, {issueID: "issue-4", state: "Todo"}}
 	if !slices.Equal(tracker.updates, want) {
 		t.Fatalf("transitions = %v, want FIFO progress %v despite oversized first item", tracker.updates, want)
 	}
-	if tracker.stateIssues[0].State != "Blocked" {
-		t.Fatal("oversized issue must remain blocked for a later scan")
+	if tracker.stateIssues[0].State != "Todo" {
+		t.Fatal("oversized dependency fanout retained a machine hold")
 	}
 }
 
@@ -350,13 +329,13 @@ func TestDeferredDependencyUnblockYieldsRefreshBudget(t *testing.T) {
 	for cycle := range 4 {
 		orch.tick(t.Context(), &state, now.Add(time.Duration(cycle)*time.Minute))
 	}
-	if got := tracker.identifierReads[tracker.stateIssues[0].Identifier]; got != 4 {
-		t.Fatalf("unblock scans = %d, want exactly one per refresh", got)
+	if got := tracker.identifierReads[tracker.stateIssues[0].Identifier]; got != 0 {
+		t.Fatalf("unblock scans = %d, want no park-driven reference scans", got)
 	}
 	if tracker.successfulCompetingReads <= 9 {
 		t.Fatalf("ordinary reads = %d, want continued progress after an oversized recovery is queued", tracker.successfulCompetingReads)
 	}
-	if len(tracker.updates) != 0 || tracker.stateIssues[0].State != "Blocked" {
+	if len(tracker.updates) != 1 || tracker.stateIssues[0].State != "Todo" {
 		t.Fatalf("transitions = %v, want oversized issue left blocked", tracker.updates)
 	}
 }

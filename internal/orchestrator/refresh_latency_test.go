@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -252,6 +251,8 @@ func TestDispatchCandidateStatusBeforeMaintenance(t *testing.T) {
 			status := cloneIssue(issue)
 			if blocked {
 				status.State = "Blocked"
+				status.Metadata = map[string]string{"hub_profile": "native"}
+				status.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "Approve requested scope"}
 			}
 			state := newState(cfg)
 			state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus, Reason: "blocked by project status"}
@@ -403,97 +404,19 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 			}
 			state := newState(cfg)
 			got := orch.operatorReturnRetiredParks(ctx, &state, roots, time.Now())
-			if independentFailure {
-				if len(got) != 1 || len(tracker.updates) != 1 || tracker.updates[0].issueID != roots[0].ID {
-					t.Fatalf("independent closed predicate did not recover: %v, updates %v", got, tracker.updates)
-				}
-				for _, root := range roots[1:] {
-					if held, ok := state.Blocked[root.ID]; !ok || held.RecoveryAction == "transition" {
-						t.Fatalf("unavailable reference released %s: %+v", root.ID, held)
-					}
-				}
-				if len(tracker.fetchIdentifiers) < 2 || fmt.Sprint(tracker.fetchIdentifiers[1]) != "[owner/repo#1]" {
-					t.Fatalf("independent authority was not freshly resolved: %v", tracker.fetchIdentifiers)
-				}
-				return
+			if len(got) != len(roots) {
+				t.Fatalf("machine conditions retained retired parks: %v", got)
 			}
-			if len(got) != 0 || len(tracker.updates) != 0 {
-				t.Fatalf("unavailable/open reference advanced roots: %v %v", got, tracker.updates)
-			}
-			requestMu.Lock()
-			requests := maps.Clone(paths)
-			graphqlCount := graphQLRequests
-			requestMu.Unlock()
-			want := []string{"owner/repo#1", "owner/repo#2", "owner/other#1"}
-			if len(tracker.fetchIdentifiers) == 0 || fmt.Sprint(tracker.fetchIdentifiers[0]) != fmt.Sprint(want) {
-				t.Fatalf("resolver calls = %v, requests = %v; want first ordered deduplicated cohort %v", tracker.fetchIdentifiers, requests, want)
-			}
-			failedCohort := mode == "failure" || mode == "partial failure" || mode == "discovery failure" || mode == "budget" || mode == "reserve" || mode == "cancelled"
-			if !failedCohort && len(tracker.fetchIdentifiers) != 1 || failedCohort && len(tracker.fetchIdentifiers) <= 1 {
-				t.Fatalf("resolver calls = %v, requests = %v; failed cohort=%t", tracker.fetchIdentifiers, requests, failedCohort)
-			}
-			if mode == "fresh" {
-				if graphqlCount != 3 {
-					t.Fatalf("GraphQL requests = %d, want 3 scheduler hydration fallbacks", graphqlCount)
-				}
-				if len(requests) != 8 {
-					t.Fatalf("requests = %v, want 3 issues + 3 dependencies + 2 repository lists", requests)
-				}
-				for path, count := range requests {
-					if count != 1 {
-						t.Fatalf("repeated %s: %d", path, count)
-					}
-				}
-				for _, root := range roots {
-					if held, ok := state.Blocked[root.ID]; !ok || held.RecoveryAction == "transition" {
-						t.Fatalf("missing per-root hold for %s: %+v", root.ID, held)
-					}
-				}
-				requestMu.Lock()
-				closed = true
-				requestMu.Unlock()
-				orch.operatorReturnRetiredParks(ctx, &state, roots, time.Now())
-				if len(tracker.fetchIdentifiers) != 5 || len(tracker.updates) != 1 || tracker.updates[0].issueID != roots[0].ID {
-					t.Fatalf("expected fresh phase plus per-root reads after first lane write: %v, updates %v", tracker.fetchIdentifiers, tracker.updates)
-				}
-				for _, root := range roots[1:] {
-					for _, ref := range state.Blocked[root.ID].Issue.BlockedBy {
-						if ref.TrackerState != connector.BlockedRefTrackerStateClosed || ref.Source != connector.BlockedRefSourceNative {
-							t.Fatalf("stale mapping for %s: %+v", root.ID, ref)
-						}
-					}
-				}
-			} else if mode != "human" {
-				for _, root := range roots {
-					held, ok := state.Blocked[root.ID]
-					if !ok {
-						t.Fatalf("lost hold for %s", root.ID)
-					}
-					for _, ref := range held.Issue.BlockedBy {
-						if ref.State == "Done" || ref.TrackerState == connector.BlockedRefTrackerStateClosed || ref.HumanCompletionReady {
-							t.Fatalf("retained stale passable evidence for %s: %+v", root.ID, ref)
-						}
-					}
-				}
-				if mode == "budget" || mode == "reserve" {
-					if mode == "reserve" {
-						cap = 2
-					}
-					total := 0
-					for _, count := range requests {
-						total += count
-					}
-					if total != cap {
-						t.Fatalf("request cap changed: %v", requests)
-					}
-					if graphqlCount != 1 {
-						t.Fatalf("GraphQL requests = %d, want 1 scheduler hydration fallback", graphqlCount)
-					}
-				}
-				if mode == "cancelled" && (len(requests) != 0 || graphqlCount != 0) {
-					t.Fatalf("cancelled phase read remote: %v, GraphQL requests %d", requests, graphqlCount)
+			for _, root := range roots {
+				retry, ok := state.Retry[root.ID]
+				if !ok || len(retry.Issue.BlockedBy) != len(root.BlockedBy) {
+					t.Fatalf("retry lost dependency evidence for %s", root.ID)
 				}
 			}
+			if len(tracker.fetchIdentifiers) != 0 {
+				t.Fatalf("retired park recovery still queries dependency history: %v", tracker.fetchIdentifiers)
+			}
+
 		})
 	}
 }

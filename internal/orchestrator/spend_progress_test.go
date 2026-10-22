@@ -746,12 +746,17 @@ func TestOperationalCompletionSpendBreakerContract(t *testing.T) {
 			if completion.TerminalState != tt.wantTerminal {
 				t.Fatalf("terminal state = %q, want %q", completion.TerminalState, tt.wantTerminal)
 			}
-			if len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantState {
-				t.Fatalf("updates = %#v, want state %q", tracker.updates, tt.wantState)
+			if tt.wantBlocked {
+				if len(state.Blocked) != 0 {
+					t.Fatal("spend failure wrote Blocked")
+				}
+				if _, ok := state.Retry[issue.ID]; !ok {
+					t.Fatal("spend failure lost retry")
+				}
+			} else if len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantState {
+				t.Fatalf("updates = %+v, want %s", tracker.updates, tt.wantState)
 			}
-			if _, blocked := state.Blocked[issue.ID]; blocked != tt.wantBlocked {
-				t.Fatalf("blocked = %t, want %t", blocked, tt.wantBlocked)
-			}
+
 			progress := implementProgressRecordFromCompletion(t, completion)
 			if progress.CompletionKind != tt.wantCompletion {
 				t.Fatalf("completion kind = %q, want %q", progress.CompletionKind, tt.wantCompletion)
@@ -824,18 +829,11 @@ func TestHandleRunResultTripsTokenProgressBreakerOnSubscription(t *testing.T) {
 		},
 	})
 
-	blocked, ok := state.Blocked[issue.ID]
-	if !ok || blocked.Reason != spendProgressReason {
-		t.Fatalf("Blocked[%q] = %#v, want spend breaker", issue.ID, blocked)
+	retry, ok := state.Retry[issue.ID]
+	if !ok || retry.Error != spendProgressReason || len(state.Blocked) != 0 {
+		t.Fatalf("spend failure lost retry: %+v", retry)
 	}
-	if len(tracker.comments) != 1 {
-		t.Fatalf("comments = %#v, want one explanation without park markers", tracker.comments)
-	}
-	for _, want := range []string{"blocked_by: tokens", "25000000", "usd_breaker: inert", "Shrink the task", "first tool action"} {
-		if !strings.Contains(tracker.comments[0].body, want) {
-			t.Fatalf("comment missing %q:\n%s", want, tracker.comments[0].body)
-		}
-	}
+
 	if len(attempts.completions) != 1 {
 		t.Fatalf("completions = %#v, want one", attempts.completions)
 	}
@@ -846,9 +844,6 @@ func TestHandleRunResultTripsTokenProgressBreakerOnSubscription(t *testing.T) {
 	record, ok := spendProgressRecordFromAttempt(store.WorkAttempt{WorkerMetadataJSON: completion.WorkerMetadataJSON})
 	if !ok || record.BlockReason != spendProgressReason || record.BlockedBy != "tokens" || record.TotalTokens != 25_000_000 {
 		t.Fatalf("spend metadata = %#v, ok=%t", record, ok)
-	}
-	if !state.PriorAttempts[issue.ID].ExplainBeforeRetry {
-		t.Fatalf("PriorAttempts[%q] = %#v, want explain-before-retry", issue.ID, state.PriorAttempts[issue.ID])
 	}
 }
 

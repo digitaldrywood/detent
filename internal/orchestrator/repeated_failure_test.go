@@ -3,12 +3,12 @@ package orchestrator_test
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 // tokenCeilingRunner fails every attempt with an error whose text varies per
@@ -45,12 +45,12 @@ func (r *tokenCeilingRunner) Run(_ context.Context, _ orchestrator.RunRequest) (
 	)
 }
 
-func TestRunParksIssueAfterRepeatedCostlyWorkerFailures(t *testing.T) {
+func TestRunRetriesRepeatedCostlyWorkerFailures(t *testing.T) {
 	t.Parallel()
 
 	issue := testIssue("issue-repeated-fail", "wi-011cd179bc7ecf36b7197e4b", "Todo")
 	tracker := newFakeConnector(issue)
-	runner := &tokenCeilingRunner{}
+	runner := &tokenCeilingRunner{failureCount: 6}
 
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:           time.Millisecond,
@@ -71,41 +71,31 @@ func TestRunParksIssueAfterRepeatedCostlyWorkerFailures(t *testing.T) {
 	stop := runOrchestrator(t, orch)
 	defer stop()
 
-	// Multiple worker completions may exceed one second under aggregate-suite load.
-	// This timeout is a deadlock guard, not an assertion about failure latency.
-	state := waitForStateWithin(t, orch, slowCIIntegrationWaitTimeout, func(state orchestrator.State) bool {
-		_, ok := state.Blocked[issue.ID]
-		return ok
+	var state orchestrator.State
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var err error
+		state, err = orch.State(t.Context())
+		if err != nil {
+			return err
+		}
+		if _, ok := state.Completed[issue.ID]; !ok {
+			return fmt.Errorf("awaiting successful completion")
+		}
+		return nil
 	})
-
-	if got := runner.calls.Load(); got != 5 {
-		t.Fatalf("runner calls = %d, want 5", got)
+	if runner.calls.Load() < 7 {
+		t.Fatal("repeated failures stopped before success")
 	}
-	// Recovery refresh replaces the descriptive Reason with the persisted cause.
-	// Assert the stable cause here; the comment below retains the worker error.
-	blocked := state.Blocked[issue.ID]
-	if blocked.Recovery == nil || blocked.Recovery.Cause != "repeated_failure_circuit_breaker" {
-		t.Fatalf("Blocked[%q].Recovery = %#v, want repeated failure cause", issue.ID, blocked.Recovery)
+	if len(state.Blocked) != 0 {
+		t.Fatal("machine failure created a hold")
 	}
-	if _, ok := state.Retry[issue.ID]; ok {
-		t.Fatalf("Retry[%q] present after circuit breaker", issue.ID)
+	if retry, ok := state.Retry[issue.ID]; ok && retry.Attempt > 1 {
+		t.Fatalf("successful completion retained failure backoff: %+v", retry)
 	}
-	if _, ok := state.Claimed[issue.ID]; ok {
-		t.Fatalf("Claimed[%q] present after circuit breaker", issue.ID)
-	}
-	if _, ok := state.RepeatedFailures[issue.ID]; ok {
-		t.Fatalf("RepeatedFailures[%q] present after park", issue.ID)
-	}
-	updates := tracker.stateUpdateCalls()
-	if len(updates) == 0 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Blocked"}) {
-		t.Fatalf("state updates = %#v, want final Blocked transition", updates)
-	}
-	comments := tracker.commentCalls()
-	if len(comments) != 1 {
-		t.Fatalf("comments = %#v, want one circuit breaker comment", comments)
-	}
-	if !strings.Contains(comments[0].body, "consecutive failed attempts") || !strings.Contains(comments[0].body, "session token ceiling exceeded") {
-		t.Fatalf("comment body missing repeated failure details:\n%s", comments[0].body)
+	for _, update := range tracker.stateUpdateCalls() {
+		if update.state == "Blocked" {
+			t.Fatal("machine failure wrote Blocked")
+		}
 	}
 }
 

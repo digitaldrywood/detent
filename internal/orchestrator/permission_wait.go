@@ -102,14 +102,6 @@ func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state
 		return false
 	}
 	wait, ok := terminalPermissionWait(event.Result.FinalMessage)
-	if !ok && event.Result.FinalState == runpkg.FinalStateNeedsHumanAttention {
-		question := strings.TrimSpace(event.Result.FinalMessage)
-		if question == "" {
-			question = "Worker needs human attention"
-		}
-		wait = permissionWaitRecord{Question: question, Kind: "approval_or_input", Source: "terminal_final_state"}
-		ok = true
-	}
 	if !ok {
 		return false
 	}

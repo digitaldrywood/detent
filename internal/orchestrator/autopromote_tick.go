@@ -102,7 +102,6 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			if handled, transitioned := o.parkRepeatedMergeRevocations(ctx, state, issue, now); handled {
 				if transitioned {
 					result.transitioned[issueID] = struct{}{}
-					o.clearAutoPromotedIssueDispatchMemory(state, issueID)
 				}
 				continue
 			}
@@ -3500,17 +3499,15 @@ func autoPromoteCheckFailed(check connector.PullRequestCheck) bool {
 	}
 }
 
-// Non-review decisions use the configured Blocked lane unless the project or
-// issue explicitly requests human review. Preserve legacy routing without it.
 func (o *Orchestrator) nonReviewDecisionTargetState(issue connector.Issue, fallback string) string {
+	if explicitHumanAction(issue) != "" {
+		return blockedStatusState
+	}
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	if cfg.humanReviewEnabled() && (gate.Effective(cfg.Gate).Kind == gate.KindHumanReview || autoPromoteOptoutLabel(issue, cfg)) {
 		return fallback
 	}
-	if stateIn(blockedStatusState, o.cfg.ActiveStates) || stateIn(blockedStatusState, o.cfg.ObservedStates) {
-		return blockedStatusState
-	}
-	return fallback
+	return cfg.ReworkState
 }
 
 func autoPromoteTargetState(action AutoPromoteAction, cfg AutoPromoteConfig) string {

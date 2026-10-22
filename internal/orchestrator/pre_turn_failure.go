@@ -71,7 +71,7 @@ func preTurnFailureClass(event runpkg.Completion, running Running) string {
 		return workAttemptErrorWorkspace
 	}
 	nativeRecovery := errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired)
-	if nativeRecovery && (errors.Is(event.Err, runpkg.ErrExecutionAuthorityUnavailable) || strings.Contains(event.Err.Error(), ": policy_mismatch") || strings.Contains(event.Err.Error(), ": local_checkpoint_changed")) {
+	if nativeRecovery && errors.Is(event.Err, runpkg.ErrExecutionAuthorityUnavailable) {
 		return ""
 	}
 	if issueConfigurationFailure(event.Err, "", "") || event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 || running.WorkProductPushed || running.Tokens.TotalTokens > 0 || event.Result.Tokens.TotalTokens > 0 {

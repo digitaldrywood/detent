@@ -85,15 +85,22 @@ func (o *Orchestrator) completeNativeLandingRun(
 			return handoff(fmt.Errorf("read native workflow states: %w", err))
 		}
 		cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
-		destination := cfg.reviewTargetState()
-		if autoPromoteOptoutLabel(issue, cfg) {
-			destination = cfg.SourceState
+		destination := cfg.ReworkState
+		lane, ok := nativeRetryLane(states, issue.State, destination)
+		if !ok && destination != autoPromoteReworkState {
+			lane, ok = nativeRetryLane(states, issue.State, autoPromoteReworkState)
 		}
-		rework := landing.RequiresRework()
-		if rework {
-			destination = cfg.ReworkState
+		if !ok {
+			for _, candidate := range states {
+				if candidate.Terminal || candidate.OperatorOnly || !candidate.Dispatchable || normalizeState(candidate.Name) == normalizeState(issue.State) || normalizeState(candidate.Name) == normalizeState(blockedStatusState) {
+					continue
+				}
+				lane, ok = nativeRetryLane(states, issue.State, candidate.Name)
+				if ok {
+					break
+				}
+			}
 		}
-		lane, ok := connector.LandingRefusalLane(states, issue.State, destination, rework)
 		if !ok {
 			return handoff(fmt.Errorf("native workflow allows no move from %s to the landing refusal lane %s", strings.TrimSpace(issue.State), destination))
 		}
@@ -121,6 +128,12 @@ func (o *Orchestrator) completeNativeLandingRun(
 	}
 	o.recordCompletionUsage(ctx, state, event, issue)
 	o.recordCompletedActiveReviewTransition(state, issue, completed, target)
+	if !landing.Landed {
+		issue.State = target
+		delete(state.Completed, issueID)
+		attempt := nextAttempt(running.Attempt)
+		o.scheduleRetryAfter(state, issue, attempt, event.CompletedAt, o.machineRetryDelay(attempt), landing.Refusal, running.WorkerHost)
+	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
 		Event:   "completed_native_landing",

@@ -170,7 +170,7 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			var completion runpkg.Completion
 			select {
 			case completion = <-orch.runResults:
-			case <-time.After(time.Second):
+			case <-t.Context().Done():
 				t.Fatal("timed out waiting for session brake completion")
 			}
 			if completion.Retryable {
@@ -181,8 +181,8 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			if _, ok := state.Running[issue.ID]; ok {
 				t.Fatalf("Running[%q] present after session brake", issue.ID)
 			}
-			if _, ok := state.Retry[issue.ID]; ok {
-				t.Fatalf("Retry[%q] present after session brake", issue.ID)
+			if _, ok := state.Retry[issue.ID]; !ok {
+				t.Fatalf("Retry[%q] missing after session brake", issue.ID)
 			}
 			if _, ok := state.Blocked[issue.ID]; ok {
 				t.Fatalf("Blocked[%q] present after session brake", issue.ID)

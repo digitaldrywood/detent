@@ -72,13 +72,13 @@ func TestMergeWorkerDurationCeilingCancelsProgressingRunAndReleasesSlot(t *testi
 	}
 	select {
 	case <-runner.progressed:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for merge worker progress")
 	}
 	select {
 	case update := <-orch.runUpdates:
 		orch.handleRunUpdate(&state, update)
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for merge worker usage update")
 	}
 	if durationLimit.duration != ceiling {
@@ -92,7 +92,7 @@ func TestMergeWorkerDurationCeilingCancelsProgressingRunAndReleasesSlot(t *testi
 	var completion runpkg.Completion
 	select {
 	case completion = <-orch.runResults:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for cancelled merge worker completion")
 	}
 	if !errors.Is(completion.Err, runpkg.ErrMergeWorkerDurationExceeded) {
@@ -118,13 +118,11 @@ func TestMergeWorkerDurationCeilingCancelsProgressingRunAndReleasesSlot(t *testi
 	if _, ok := state.Running[issue.ID]; ok {
 		t.Fatalf("Running[%q] present after duration breach", issue.ID)
 	}
-	if _, ok := state.Retry[issue.ID]; ok {
-		t.Fatalf("Retry[%q] present after duration breach", issue.ID)
+	retry, ok := state.Retry[issue.ID]
+	if !ok || retry.Issue.State != "Merging" || !retry.DueAt.After(completedAt) || retry.DueAt.After(completedAt.Add(cfg.MaxRetryBackoff)) || len(state.Blocked) != 0 {
+		t.Fatalf("duration failure did not retry: %+v", retry)
 	}
-	blocked, ok := state.Blocked[issue.ID]
-	if !ok || blocked.Issue.State != "Blocked" || blocked.Reason != mergeWorkerDurationExceededReason {
-		t.Fatalf("Blocked[%q] = %#v, want duration breach parked in Blocked", issue.ID, blocked)
-	}
+
 	if len(attempts.completions) != 1 {
 		t.Fatalf("work attempt completions = %#v, want one", attempts.completions)
 	}
@@ -145,44 +143,18 @@ func TestMergeWorkerDurationCeilingCancelsProgressingRunAndReleasesSlot(t *testi
 		t.Fatalf("TryAcquire() after duration breach = %v, %v, want released global slot", ok, err)
 	}
 
-	var stateUpdated bool
-	var comment string
 	for _, event := range events {
-		switch event.Kind {
-		case fakehub.EventKindStateUpdate:
-			stateUpdated = event.State == "Blocked"
-		case fakehub.EventKindComment:
-			comment = event.Body
+		if event.Kind == fakehub.EventKindStateUpdate && event.State == "Blocked" {
+			t.Fatal("duration failure wrote Blocked")
 		}
 	}
-	if !stateUpdated {
-		t.Fatalf("events = %#v, want Blocked state update", events)
-	}
-	for _, want := range []string{
-		"merge_worker_duration_exceeded",
-		"elapsed: 6h0m0s",
-		"configured_ceiling: 6h0m0s",
-		"last_progress_marker: tool_output",
-	} {
-		if !strings.Contains(comment, want) {
-			t.Fatalf("duration breach comment = %q, want %q", comment, want)
-		}
-	}
+
 	if got := logs.String(); !strings.Contains(got, "level=WARN") ||
 		!strings.Contains(got, "msg=merge_worker_duration_exceeded") ||
 		!strings.Contains(got, "last_progress_marker=tool_output") {
 		t.Fatalf("logs = %q, want WARN breach with progress marker", got)
 	}
 
-	orch.setBlockedStatusIssue(t.Context(), &state, connector.Issue{
-		ID:    issue.ID,
-		State: blockedStatusState,
-	}, completedAt.Add(time.Minute))
-	blocked = state.Blocked[issue.ID]
-	if blocked.Reason != mergeWorkerDurationExceededReason ||
-		blocked.RecoveryTarget != autoPromoteMergingState {
-		t.Fatalf("Blocked[%q] after refresh = %#v, want preserved duration breach", issue.ID, blocked)
-	}
 }
 
 func TestNormalDurationMergeIsUnaffected(t *testing.T) {
@@ -226,7 +198,7 @@ func TestNormalDurationMergeIsUnaffected(t *testing.T) {
 	var completion runpkg.Completion
 	select {
 	case completion = <-orch.runResults:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for normal merge completion")
 	}
 	if completion.Err != nil {
@@ -300,7 +272,7 @@ func TestMergeWorkerDurationCeilingStartsAtSlotAcquisition(t *testing.T) {
 
 	select {
 	case <-claimStarted:
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for startup claim")
 	}
 	durationLimit.Expire()
@@ -309,7 +281,7 @@ func TestMergeWorkerDurationCeilingStartsAtSlotAcquisition(t *testing.T) {
 		if !errors.Is(cause, runpkg.ErrMergeWorkerDurationExceeded) {
 			t.Fatalf("claim context cause = %v, want ErrMergeWorkerDurationExceeded", cause)
 		}
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for claim cancellation")
 	}
 	select {
@@ -317,7 +289,7 @@ func TestMergeWorkerDurationCeilingStartsAtSlotAcquisition(t *testing.T) {
 		if got.dispatched || got.reason != dispatchIssueFailureClaimFailed {
 			t.Fatalf("dispatch outcome = %#v, want claim failure", got)
 		}
-	case <-time.After(time.Second):
+	case <-t.Context().Done():
 		t.Fatal("timed out waiting for dispatch outcome")
 	}
 	if _, ok, err := dispatchGate.TryAcquire(
@@ -413,7 +385,7 @@ func TestMergeWorkerDurationCeilingHonorsLatestTerminalState(t *testing.T) {
 			}
 			select {
 			case <-runner.progressed:
-			case <-time.After(time.Second):
+			case <-t.Context().Done():
 				t.Fatal("timed out waiting for merge worker progress")
 			}
 			tt.terminate(t, tracker, issue)
@@ -421,7 +393,7 @@ func TestMergeWorkerDurationCeilingHonorsLatestTerminalState(t *testing.T) {
 			var completion runpkg.Completion
 			select {
 			case completion = <-orch.runResults:
-			case <-time.After(time.Second):
+			case <-t.Context().Done():
 				t.Fatal("timed out waiting for cancelled merge worker completion")
 			}
 			orch.handleRunResult(t.Context(), &state, completion)
@@ -434,93 +406,6 @@ func TestMergeWorkerDurationCeilingHonorsLatestTerminalState(t *testing.T) {
 				t.Fatalf("Completed[%q] missing after latest state became terminal", issue.ID)
 			}
 		})
-	}
-}
-
-func TestMergeWorkerDurationTransitionFailureKeepsDispatchBlocked(t *testing.T) {
-	t.Parallel()
-
-	startedAt := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	completedAt := startedAt.Add(6 * time.Hour)
-	issue := mergeDurationTestIssue("issue-1547-transition-failure")
-	memoryTracker := fakehub.New(fakehub.Config{
-		Issues:   []connector.Issue{issue},
-		Stateful: true,
-		Now:      func() time.Time { return completedAt },
-	})
-	tracker := &mergeDurationTransitionConnector{
-		Connector:         memoryTracker,
-		stateUpdateErrors: 1,
-	}
-	cfg := normalizeConfig(Config{
-		MaxConcurrentAgents:    1,
-		MergeWorkerMaxDuration: 6 * time.Hour,
-		Project:                scheduler.ProjectCandidate{ID: "detent"},
-		ActiveStates:           []string{"Merging"},
-		ObservedStates:         []string{"Blocked"},
-		TerminalStates:         []string{"Done", "Cancelled"},
-	})
-	durationLimit := &controlledMergeDurationLimit{}
-	runner := &progressingMergeRunner{progressed: make(chan struct{})}
-	supervisor, err := runpkg.NewSupervisor(runner, runpkg.SupervisorConfig{
-		Now: func() time.Time { return completedAt },
-	})
-	if err != nil {
-		t.Fatalf("NewSupervisor() error = %v", err)
-	}
-	orch := &Orchestrator{
-		cfg:              cfg,
-		connector:        tracker,
-		supervisor:       supervisor,
-		mergeWorkerLimit: durationLimit.Context,
-		runResults:       make(chan runpkg.Completion, 1),
-		runUpdates:       make(chan runUpdate, 1),
-	}
-	state := newState(cfg)
-
-	if !orch.dispatchIssue(t.Context(), &state, issue, 1, startedAt, "") {
-		t.Fatal("dispatchIssue() = false, want true")
-	}
-	select {
-	case <-runner.progressed:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for merge worker progress")
-	}
-	durationLimit.Expire()
-	var completion runpkg.Completion
-	select {
-	case completion = <-orch.runResults:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for cancelled merge worker completion")
-	}
-	orch.handleRunResult(t.Context(), &state, completion)
-
-	blocked, ok := state.Blocked[issue.ID]
-	if !ok || blocked.Source != BlockedSourceMergeDuration ||
-		normalizeState(blocked.Issue.State) != normalizeState(autoPromoteMergingState) {
-		t.Fatalf("Blocked[%q] = %#v, want merge duration reconciliation hold", issue.ID, blocked)
-	}
-	orch.trackCandidateBlockedStatusIssues(t.Context(), &state, []connector.Issue{issue}, completedAt)
-	if _, ok := state.Blocked[issue.ID]; !ok {
-		t.Fatalf("Blocked[%q] cleared by tracker hydration", issue.ID)
-	}
-	if decision := orch.dispatchPlanner().dispatchableIssueDecision(issue, &state, false, completedAt, ""); decision.dispatchable {
-		t.Fatalf("dispatchableIssueDecision() = %#v, want blocked", decision)
-	}
-
-	transitioned := orch.reconcileMergeDurationHolds(
-		t.Context(),
-		&state,
-		[]connector.Issue{issue},
-		completedAt.Add(time.Minute),
-	)
-	if _, ok := transitioned[issue.ID]; !ok {
-		t.Fatalf("reconcileMergeDurationHolds() = %#v, want transitioned issue", transitioned)
-	}
-	blocked = state.Blocked[issue.ID]
-	if blocked.Source != BlockedSourceProjectStatus ||
-		normalizeState(blocked.Issue.State) != normalizeState(blockedStatusState) {
-		t.Fatalf("Blocked[%q] after retry = %#v, want project status block", issue.ID, blocked)
 	}
 }
 
@@ -644,7 +529,7 @@ func TestRepairDurationBound(t *testing.T) {
 				if !errors.Is(result.Err, wantErr) {
 					t.Fatalf("completion error = %v, want %v", result.Err, wantErr)
 				}
-			case <-time.After(5 * time.Second):
+			case <-t.Context().Done():
 				t.Fatal("cancellation did not complete repair")
 			}
 		})

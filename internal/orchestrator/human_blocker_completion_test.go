@@ -65,6 +65,16 @@ func TestFirstHumanBlockerCompletionReachesBlocked(t *testing.T) {
 				Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement},
 				Result:  runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: diff},
 			})
+			if tt.action == "" {
+				if len(state.Blocked) != 0 {
+					t.Fatal("untyped human owner wrote Blocked")
+				}
+				if _, ok := state.Retry[issue.ID]; !ok {
+					t.Fatal("untyped blocker lost retry")
+				}
+				return
+			}
+
 			if len(tracker.updates) != 1 || tracker.updates[0].state != "Blocked" {
 				t.Fatalf("first completion lane writes = %+v; next dispatch is suppressed, so no second completion can repair the lane", tracker.updates)
 			}

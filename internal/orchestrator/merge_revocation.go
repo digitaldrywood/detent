@@ -373,83 +373,10 @@ func (o *Orchestrator) parkRepeatedMergeRevocations(
 	now time.Time,
 ) (bool, bool) {
 	streak, err := o.consecutiveMergeRevocations(ctx, state, issue)
-	if err != nil {
-		if o.logger != nil {
-			o.logger.Warn(
-				"merge revocation backoff check failed",
-				"issue_id", strings.TrimSpace(issue.ID),
-				"identifier", issue.Identifier,
-				"error", err,
-			)
-		}
+	if err != nil || streak.count < maxIdenticalMergeRevocations {
 		return false, false
 	}
-	if streak.count < maxIdenticalMergeRevocations {
-		return false, false
-	}
-
-	decision := autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonMergeRevocationLimit)
-	metadata := o.newBlockedRecoveryMetadata(
-		ctx,
-		issue,
-		RunModeMerge,
-		string(AutoPromoteReasonMergeRevocationLimit),
-		blockedRecoveryPredicateManaged,
-		autoPromoteReworkState,
-		DiffStats{},
-	)
-	metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
-	if err := o.updateIssueStateByIDStrictWithMetadata(
-		ctx,
-		state,
-		issue.ID,
-		issue,
-		blockedStatusState,
-		now,
-		string(AutoPromoteReasonMergeRevocationLimit),
-		metadata,
-	); err != nil {
-		if o.logger != nil {
-			o.logger.Warn(
-				"merge revocation backoff park failed",
-				"issue_id", strings.TrimSpace(issue.ID),
-				"identifier", issue.Identifier,
-				"revocation_reason", streak.reason,
-				"consecutive_revocations", streak.count,
-				"limit", maxIdenticalMergeRevocations,
-				"error", err,
-			)
-		}
-		o.logAutoPromoteDecision(issue, decision, "")
-		return true, false
-	}
-
-	if err := o.connector.CreateComment(ctx, issue.ID, mergeRevocationLimitComment(issue, streak)); err != nil && o.logger != nil {
-		o.logger.Warn(
-			"merge revocation backoff comment failed",
-			"issue_id", strings.TrimSpace(issue.ID),
-			"identifier", issue.Identifier,
-			"error", err,
-		)
-	}
-	o.logAutoPromoteDecision(issue, decision, blockedStatusState)
-	if o.logger != nil {
-		o.logger.Warn(
-			"merge_worker_revocation_limit",
-			mergeWorkerLogAttrs(issue,
-				"revocation_reason", streak.reason,
-				"consecutive_revocations", streak.count,
-				"limit", maxIdenticalMergeRevocations,
-				"target_state", blockedStatusState,
-			)...,
-		)
-	}
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      now,
-		Event:   "merge_worker_revocation_limit",
-		Message: fmt.Sprintf("parked %s after %d consecutive %s merge revocations", issueLabel(issue), streak.count, streak.reason),
-	})
-	return true, true
+	return true, o.retryMachineFailure(ctx, state, issue, nextAttempt(state.Retry[issue.ID].Attempt), now, streak.reason, "") == nil
 }
 
 func (o *Orchestrator) consecutiveMergeRevocations(

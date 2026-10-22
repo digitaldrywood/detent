@@ -14,6 +14,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -109,6 +110,8 @@ func (o *Orchestrator) newBlockedRecoveryMetadata(
 	return workflowLaneMetadata{
 		BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{
 			Owner:                   blockedRecoveryOwnerOrchestrator,
+			SourceRevision:          holdSourceRevision(issue),
+			ExpiresAt:               time.Now().UTC().Add(o.cfg.MaxRetryBackoff),
 			Cause:                   cause,
 			Predicate:               predicate,
 			CauseFingerprint:        blockedCauseFingerprint(cause, signals),
@@ -313,277 +316,36 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	if normalizeState(issue.State) != normalizeState(blockedStatusState) && (issue.IssueContract == nil || issue.IssueContract.ReturnState == "" || normalizeState(issue.State) != normalizeState(o.cfg.StopRunTargetState)) {
 		return false
 	}
-	if issue.IssueContract != nil && issue.IssueContract.ReturnState != "" && o.cfg.IssueContract != nil {
-		if issue.IssueContract.HumanAction != "" || !o.cfg.IssueContract.Evaluate(issue).Satisfied() {
-			return false
-		}
-		parkedAt, found := o.currentBlockedRecoveryParkedAt(ctx, state, issue)
-		if found {
-			if evidence := clearedHumanActionEvidence(issue, parkedAt, now); evidence != nil {
-				return o.applyRecordedBlockerRecovery(ctx, state, issue, nil, []telemetry.BlockerEvidence{*evidence}, now)
-			}
-		}
-		return false
-	}
-	dependencyCfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
+	issue = issue.WithNativeWorkpadAuthority()
 	if o.currentBlockedOperatorStop(ctx, state, issue) {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "operator_stop", nil, "")
 		return false
 	}
-	park, currentParkFound := o.currentBlockedRecoveryPark(ctx, state, issue)
-	if currentParkFound {
-		park = o.normalizeCurrentBreakerRecoveryPark(ctx, state, issue, park)
-		if handled, transitioned := o.reconcileLegacyDeliverableCredentialPark(ctx, state, issue, park, now); handled {
-			return transitioned
-		}
-	}
-	derivedLaneReason := ""
-	derivationFailure := ""
-	if !currentParkFound || park.Cause == "" {
-		park, currentParkFound, derivedLaneReason, derivationFailure = o.deriveCurrentBreakerRecoveryPark(ctx, state, issue)
-	}
-	parkOwnsSignal := currentParkFound && staleReworkParkOwnsSignal(park, issue.WorkpadSignal)
-	if parkOwnsSignal {
-		signal := *issue.WorkpadSignal
-		signal.HumanAction = ""
-		issue.WorkpadSignal = &signal
-	}
-	var evidence *blockedRecoveryDependencyEvidence
-	if len(cohort) > 0 {
-		evidence = cohort[0]
-	}
-	if evidence == nil {
-		withDependencies, workpadRefs, current := o.issueWithCurrentWorkpadDependencyRefs(ctx, o.issueWithDependencyRefs(issue))
-		blockers := o.resolveDependencyBlockers(ctx, withDependencies)
-		references := make(map[string]connector.Issue, len(blockers))
-		for _, blocker := range blockers {
-			if blocker.Resolved {
-				references[normalizedIssueIdentifier(blocker.Issue.Identifier)] = blocker.Issue
-			}
-		}
-		evidence = &blockedRecoveryDependencyEvidence{issue: withDependencies, workpadRefs: workpadRefs, workpadCurrent: current, blockers: blockers, references: references}
-	}
-	withDependencies, workpadRefs, workpadCurrent := evidence.issue, evidence.workpadRefs, evidence.workpadCurrent
-	if parkOwnsSignal {
-		withDependencies.WorkpadSignal = issue.WorkpadSignal
-	}
-	blockers := evidence.blockers
-	withDependencies.BlockedBy = dependencyResolvedBlockerRefs(blockers)
-	recorded := recordedBlockerEvaluation{}
-	if issue.WorkpadSignal == nil || len(issue.WorkpadSignal.Blockers) == 0 || workpadCurrent {
-		recorded = o.evaluateRecordedBlockers(ctx, state, issue, evidence.references, now, len(cohort) > 0 && cohort[0] != nil)
-	}
-	instanceOnly := recorded.instanceOnly() && (issue.WorkpadSignal == nil || issue.WorkpadSignal.Invalid == nil && strings.TrimSpace(issue.WorkpadSignal.HumanAction) == "")
-	if recorded.Found {
-		if recorded.Unverifiable && !instanceOnly {
-			reason := "unverifiable_blocker"
-			if issue.WorkpadSignal != nil {
-				switch {
-				case issue.WorkpadSignal.Invalid != nil:
-					reason = BlockedRecoveryHumanHoldReason(issue, o.cfg.AutoPromote.OptoutLabel)
-					if reason == "invalid_workpad_signal" && len(dependencyBlockersNotReady(blockers, dependencyCfg, o.cfg.TerminalStates)) == 0 {
-						if handled, transitioned := o.reconcileInvalidWorkpadPark(ctx, state, issue, now); handled {
-							return transitioned
-						}
-					}
-				case strings.TrimSpace(issue.WorkpadSignal.HumanAction) != "":
-					reason = "human_action"
-				}
-			}
-			o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "hold", reason, nil, "")
-			setBlockedEvidence(state, issue.ID, recorded.Evidence)
-			return false
-		}
-		if recorded.Holds {
-			action := "defer"
-			if recorded.HumanOwned {
-				action = "hold"
-			}
-			o.recordBlockedRecoveryDecision(ctx, state, withDependencies, action, "recorded_blocker_holds", nil, "")
-			setBlockedEvidence(state, issue.ID, recorded.Evidence)
-			return false
-		}
-		if len(blockers) > 0 && !dependencyBlockersReady(blockers, dependencyCfg, o.cfg.TerminalStates) {
-			o.recordBlockedRecoveryDecision(
-				ctx,
-				state,
-				withDependencies,
-				"defer",
-				"dependency_recovery",
-				nil,
-				"",
-				dependencyBlockersNotReady(blockers, dependencyCfg, o.cfg.TerminalStates)...,
-			)
-			setBlockedEvidence(state, issue.ID, recorded.Evidence)
-			return false
-		}
-		if !currentParkFound {
-			if handled, transitioned := o.reconcileAttemptTriagePark(ctx, state, withDependencies, now); handled {
-				return transitioned
-			}
-			if o.applyRecordedBlockerRecovery(ctx, state, withDependencies, blockers, recorded.Evidence, now) {
-				return true
-			}
-			o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "hold", "transition_failed", nil, "")
-			setBlockedEvidence(state, issue.ID, recorded.Evidence)
-			return false
-		}
-		setBlockedEvidence(state, issue.ID, recorded.Evidence)
-	}
-	workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
-	holdReason := o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg, workpadCurrent)
-	if holdReason != "" && holdReason != "invalid_workpad_signal" {
-		o.recordBlockedRecoveryDecision(
-			ctx,
-			state,
-			withDependencies,
-			"hold",
-			holdReason,
-			nil,
-			"",
-			dependencyBlockersNotReady(workpadBlockers, dependencyCfg, o.cfg.TerminalStates)...,
-		)
+	if explicitHumanAction(issue) != "" {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "human_action", nil, "")
 		return false
 	}
-	unresolvedBlockers := dependencyBlockersNotReady(blockers, dependencyCfg, o.cfg.TerminalStates)
-	if len(unresolvedBlockers) > 0 {
-		o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "defer", "dependency_recovery", nil, "", unresolvedBlockers...)
-		return false
-	}
-	if holdReason == "invalid_workpad_signal" {
-		if handled, transitioned := o.reconcileInvalidWorkpadPark(ctx, state, issue, now); handled {
-			return transitioned
-		}
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", holdReason, nil, "")
-		return false
-	}
-	if park, ok := o.latestReworkBreakerPark(ctx, issue); ok {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "rework_breaker_recovery", nil, park.Signature)
-		return false
-	}
-	if !currentParkFound {
-		park, currentParkFound = o.currentBlockedRecoveryParkWithLegacyRESTBudget(ctx, state, issue)
-	}
-	if !currentParkFound {
-		if derivationFailure != "" {
-			o.logSchedulerBreakerRecoveryDerivationFailure(issue, derivedLaneReason, derivationFailure)
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", schedulerParkRecoveryUnavailableReason, nil, "")
-			return false
-		}
-		if handled, transitioned := o.reconcileAttemptTriagePark(ctx, state, issue, now); handled {
-			return transitioned
-		}
-		recoveryCfg := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery)
-		reasonCode, reasonFound := o.latestWorkflowLaneReason(ctx, issue, issue.State)
-		if recoveryCfg.Enabled && reasonFound && blockedRecoveryReasonAllowed(recoveryCfg, reasonCode) {
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "pr_maintenance_recovery", nil, "")
-		} else {
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "no_recovery_predicate", nil, "")
-		}
-		return false
-	}
-	if handled, transitioned := o.reconcileObsoleteArtifactSpendProgressPark(ctx, state, issue, park, now); handled {
-		return transitioned
-	}
-	if handled, transitioned := o.reconcilePersistentlyMissingRequiredCheckPark(ctx, state, issue, park, now); handled {
-		return transitioned
-	}
-	if handled, transitioned := o.reconcileBlockedReadyPullRequest(ctx, state, issue, park, now); handled {
-		return transitioned
-	}
-	if park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason {
-		parkedAt, ok := o.currentBlockedRecoveryParkedAt(ctx, state, issue)
-		if ok {
-			if evidence := clearedHumanActionEvidence(issue, parkedAt, now); evidence != nil {
-				if o.applyRecordedBlockerRecovery(ctx, state, issue, blockers, []telemetry.BlockerEvidence{*evidence}, now) {
-					return true
-				}
-				o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "transition_failed", &park, park.CauseFingerprint)
-				return false
-			}
-		}
-	}
-	staleRework := staleReworkPark(park)
-	if park.Owner == blockedRecoveryOwnerOperator && !staleRework || park.Owner == blockedRecoveryOwnerHuman &&
-		(park.Cause == "human_action" || park.Cause == permissionWaitReason || park.Cause == workpadBlockedUnactionedReason) {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "human_action", &park, park.CauseFingerprint)
-		return false
-	}
-	if handled, transitioned := o.reconcileRepeatedFailureGitHubRESTBudgetPark(ctx, state, issue, park, now); handled {
-		return transitioned
-	}
-	if handled, transitioned := o.reconcileLifetimeLimitPark(ctx, state, issue, park, now); handled {
-		return transitioned
-	}
-	breakerPark := breakerParkCause(park.Cause) && !staleRework
-	signals := blockedCauseSignals{}
-	currentFingerprint := ""
-	if staleRework {
-		current := o.currentStaleReworkEvidence(ctx, issue, park.StaleRework.ChangeID)
-		if !staleReworkEvidenceChanged(park.StaleRework, current) {
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "cause_unchanged", &park, park.CauseFingerprint)
-			return false
-		}
-		data, err := json.Marshal(current)
-		if err != nil {
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", schedulerParkRecoveryUnavailableReason, &park, park.CauseFingerprint)
-			return false
-		}
-		currentFingerprint = blockedCauseHash(string(data))
-	}
-	var breakerParkedAt time.Time
-	if breakerPark {
+	if o.currentBlockedHumanIntent(ctx, state, issue) {
 		parkedAt, found := o.currentBlockedRecoveryParkedAt(ctx, state, issue)
 		if !found {
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "breaker_cooldown_unavailable", &park, park.CauseFingerprint)
 			return false
 		}
-		cooldown := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery).BreakerCooldown
-		causeActive := true
-		if park.Cause == terminalAttemptRetryLimitCause {
-			count, _, known := o.consecutiveRetryCycleCount(ctx, state, issue, park.Cause, now)
-			if !known {
-				o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", schedulerParkRecoveryUnavailableReason, &park, park.CauseFingerprint)
-				return false
-			}
-			causeActive = count >= o.retryCycleFailureLimit(park.Cause)
-		}
-		if causeActive && now.Before(parkedAt.Add(cooldown)) {
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", blockedRecoveryReasonBreakerCooldownActive, &park, park.CauseFingerprint)
+		evidence := clearedHumanActionEvidence(issue, parkedAt, now)
+		if evidence == nil {
+			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "human_action", nil, "")
 			return false
 		}
-		breakerParkedAt = parkedAt
+		return o.applyRecordedBlockerRecovery(ctx, state, issue, nil, []telemetry.BlockerEvidence{*evidence}, now)
 	}
-	if currentFingerprint == "" {
-		signals = o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
-		currentFingerprint = blockedCauseFingerprint(park.Cause, signals)
-	}
-	signature := blockedCauseRecoverySignature(park.Cause, currentFingerprint)
-	if breakerPark {
-		signature = blockedCauseRecoverySignature(park.Cause, breakerParkedAt.UTC().Format(time.RFC3339Nano))
-	}
-	targetState := strings.TrimSpace(park.TargetState)
-	if !breakerPark || targetState == "" {
-		targetState = blockedCauseTargetState(issue, signals, targetState)
-	}
-	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionCauseBlockedRecovery, signature)
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, now, "cause_blocked_recovery", metadata); err != nil {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "transition_failed", &park, currentFingerprint)
+	if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(state.Retry[issue.ID].Attempt), now, issue.BlockerReason, ""); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("blocked recovery retry failed", "issue_id", issue.ID, "error", err)
+		}
 		return false
 	}
-	if o.connector != nil {
-		if err := o.connector.CreateComment(ctx, issue.ID, blockedCauseRecoveryComment(issue, park, targetState, currentFingerprint)); err != nil && o.logger != nil {
-			o.logger.Warn("blocked recovery comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		}
-	}
-	delete(state.Blocked, issue.ID)
-	o.logBlockedRecoveryDecision(issue, "transition", "recovery_predicate_satisfied", &park, currentFingerprint)
 	return true
 }
 
-// A historical allowance park has no blocked-cause metadata. Its lane entry
-// still records the triage reason and PR head, so use the existing promotion
-// gate to reconcile it once Detent-owned waits have cleared.
 func (o *Orchestrator) reconcileAttemptTriagePark(ctx context.Context, state *State, issue connector.Issue, now time.Time) (bool, bool) {
 	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
 	if !ok || entry.Event.Reason != attemptAllowanceExhaustedReason ||
@@ -1218,9 +980,8 @@ func BlockedRecoveryHumanHoldReason(issue connector.Issue, optoutLabel string) s
 }
 
 func (o *Orchestrator) currentBlockedOperatorStop(ctx context.Context, state *State, issue connector.Issue) bool {
-	issueID := strings.TrimSpace(issue.ID)
-	if state != nil && issueID != "" {
-		if blocked, ok := state.Blocked[issueID]; ok && blocked.Source == BlockedSourceOperatorStop {
+	if state != nil {
+		if intent, ok := state.Blocked[issue.ID]; ok && intent.Source == BlockedSourceOperatorStop {
 			return true
 		}
 	}
@@ -1228,7 +989,7 @@ func (o *Orchestrator) currentBlockedOperatorStop(ctx context.Context, state *St
 	return ok &&
 		normalizeState(entry.Event.PhaseName) == normalizeState(blockedStatusState) &&
 		workflowLaneEntryMatchesCurrent(issue, entry.Event) &&
-		strings.EqualFold(strings.TrimSpace(entry.Event.Reason), string(store.WorkAttemptTerminalOperatorStopped))
+		(strings.EqualFold(strings.TrimSpace(entry.Event.Reason), string(store.WorkAttemptTerminalOperatorStopped)) || strings.TrimSpace(entry.Event.Reason) == "operator_move" && entry.Metadata.Provenance.Basis == provenance.BasisAuthenticatedHuman)
 }
 
 func breakerParkCauseFromLaneReason(reason string) (string, bool) {
@@ -1357,7 +1118,7 @@ func (o *Orchestrator) currentBlockedRecoveryPark(
 	if state != nil && issueID != "" {
 		if blocked, ok := state.Blocked[issueID]; ok &&
 			blocked.Recovery != nil &&
-			blockedEntryMatchesCurrent(issue, blocked.BlockedAt) {
+			blockedEntryMatchesCurrent(issue, blocked.BlockedAt) && blocked.Recovery.validate(issue, time.Now()) == nil {
 			return *blocked.Recovery, true
 		}
 	}
@@ -1367,20 +1128,33 @@ func (o *Orchestrator) currentBlockedRecoveryPark(
 		!workflowLaneEntryMatchesCurrent(issue, entry.Event) {
 		return workflowLaneBlockedRecoveryMetadata{}, false
 	}
-	if entry.Metadata.BlockedRecovery != nil {
+	if entry.Metadata.BlockedRecovery != nil && entry.Metadata.BlockedRecovery.validate(issue, time.Now()) == nil {
 		return *entry.Metadata.BlockedRecovery, true
 	}
-	previousState := strings.TrimSpace(entry.Event.PreviousPhaseName)
-	parkedAt := workflowLaneTransitionAt(entry.Event)
-	if entry.Event.Reason != string(AutoPromoteReasonWorkpadBlocker) || !stateIn(previousState, normalizedStates([]string{"In Progress", autoPromoteReworkState})) ||
-		clearedHumanActionRecordedAt(issue, parkedAt, false) == nil {
-		return workflowLaneBlockedRecoveryMetadata{}, false
+	return workflowLaneBlockedRecoveryMetadata{}, false
+}
+
+func (o *Orchestrator) currentBlockedHumanIntent(ctx context.Context, state *State, issue connector.Issue) bool {
+	if explicitHumanAction(issue) != "" {
+		return true
 	}
-	return workflowLaneBlockedRecoveryMetadata{
-		Owner:       blockedRecoveryOwnerHuman,
-		Cause:       workpadBlockedUnactionedReason,
-		TargetState: previousState,
-	}, true
+	if state != nil {
+		if blocked, ok := state.Blocked[issue.ID]; ok && blockedEntryMatchesCurrent(issue, blocked.BlockedAt) && explicitHumanAction(blocked.Issue) != "" {
+			return true
+		}
+	}
+	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
+	if !ok || normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) || !workflowLaneEntryMatchesCurrent(issue, entry.Event) {
+		return false
+	}
+	if strings.TrimSpace(entry.Metadata.HumanAction) != "" {
+		return true
+	}
+	signal, parsed := workpad.SignalFromComment(entry.Metadata.ReasonDetail, "", "")
+	if parsed && signal != nil && signal.Invalid == nil && strings.TrimSpace(signal.HumanAction) != "" {
+		return true
+	}
+	return false
 }
 
 func (o *Orchestrator) currentBlockedRecoveryParkedAt(
@@ -1644,4 +1418,27 @@ func (o *Orchestrator) logBlockedRecoveryDecision(
 		attrs = append(attrs, "unresolved_workpad_blockers", dependencyAutoUnblockBlockerLabels(unresolvedWorkpadBlockers))
 	}
 	o.logger.Info("blocked recovery decision", attrs...)
+}
+
+func explicitHumanAction(issue connector.Issue) string {
+	if issue.IssueContract != nil && strings.TrimSpace(issue.IssueContract.HumanAction) != "" {
+		return issue.IssueContract.HumanAction
+	}
+	signal, _ := rawIssueWorkpadSignal(issue)
+	if current := issue.WorkpadSignal; current != nil && current.RecordedAt != nil && (signal == nil || signal.RecordedAt == nil || signal.RecordedAt.Before(*current.RecordedAt)) {
+		signal = current
+	}
+	if signal != nil && signal.Invalid == nil && signal.Source == workpad.SourceStructured && strings.TrimSpace(signal.HumanAction) != "" {
+		return strings.TrimSpace(signal.HumanAction)
+	}
+	index := currentWorkpadCommentIndex(issue.Comments)
+	if index >= 0 && !(signal != nil && signal.Invalid == nil && signal.Source == workpad.SourceStructured && signal.Status == workpad.StatusInProgress && issue.Comments[index].AuthorAuthorized) {
+		for _, comment := range issue.Comments {
+			prior, ok := workpad.SignalFromComment(comment.Body, comment.URL, dependencyIssueRepo(issue.Identifier))
+			if ok && prior != nil && prior.Invalid == nil && prior.Source == workpad.SourceStructured && strings.TrimSpace(prior.HumanAction) != "" {
+				return strings.TrimSpace(prior.HumanAction)
+			}
+		}
+	}
+	return ""
 }

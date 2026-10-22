@@ -4,28 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
+	"math/rand/v2"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 const (
-	terminalAttemptWithoutWorkProductReason     = "terminal_attempt_without_work_product"
-	terminalAttemptRetryLimitCause              = "terminal_attempt_retry_limit"
-	workspacePreparationRetryLimitCause         = "workspace_preparation_retry_limit"
-	consecutiveRetryCycleLimit                  = 3
-	terminalAttemptRetryLimitEvent              = "terminal_attempt_retry_limit_reached"
-	workspacePreparationRetryLimitEvent         = "workspace_preparation_retry_limit_reached"
-	terminalAttemptRetryHistoryUnavailableEvent = "terminal_attempt_retry_history_unavailable"
-	workspaceRetryHistoryUnavailableEvent       = "workspace_preparation_retry_history_unavailable"
-	retryCycleAttemptErrorMaxBytes              = 4096
+	terminalAttemptWithoutWorkProductReason = "terminal_attempt_without_work_product"
+	terminalAttemptRetryLimitCause          = "terminal_attempt_retry_limit"
+	workspacePreparationRetryLimitCause     = "workspace_preparation_retry_limit"
 )
 
 func (o *Orchestrator) demoteTerminalAttemptRetry(
@@ -46,9 +39,6 @@ func (o *Orchestrator) demoteTerminalAttemptRetry(
 		pullRequestHydrationBlocksProgress(issue.PullRequest) ||
 		o.terminalAttemptClaimBlocksDemotion(ctx, issue, at) {
 		return issue, false, false
-	}
-	if parked, ok := o.terminalAttemptRetryLimitReached(ctx, state, issue, retryCause, durable, runMode, diffStats, at, "", currentAttempts...); ok {
-		return parked, true, true
 	}
 	targetState := terminalAttemptTodoState(o.cfg.ActiveStates)
 	if targetState == "" {
@@ -101,56 +91,6 @@ func (o *Orchestrator) demoteTerminalAttemptRetry(
 	return issue, true, false
 }
 
-// terminalAttemptRetryLimitReached parks the issue when its latest terminal
-// attempts reach the retry cycle limit for retryCause.
-func (o *Orchestrator) terminalAttemptRetryLimitReached(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	retryCause string,
-	durable bool,
-	runMode string,
-	diffStats DiffStats,
-	at time.Time,
-	humanAction string,
-	currentAttempts ...telemetry.WorkAttempt,
-) (connector.Issue, bool) {
-	if durable && humanAction != "" && len(currentAttempts) > 0 {
-		current := currentAttempts[0]
-		if current.TerminalState == string(store.WorkAttemptTerminalSuccess) && current.ErrorClass == terminalAttemptWithoutWorkProductReason && !planOnlyAttempt(current) && retryCycleAttemptMatches(current, retryCause) {
-			return o.parkRetryCycleLimit(ctx, state, issue, runMode, diffStats, retryCause, 1, current, at, humanAction)
-		}
-	}
-	operatorReview := retryCause == terminalAttemptRetryLimitCause && o.cfg.Recovery.EffectiveTerminalAttemptRetryLimit() == 0
-	if !durable && operatorReview && state != nil && len(currentAttempts) > 0 {
-		current := currentAttempts[0]
-		if current.AttemptID > 0 {
-			o.upsertWorkAttemptSnapshot(state, current)
-		} else {
-			state.WorkAttempts = append([]telemetry.WorkAttempt{current}, state.WorkAttempts...)
-		}
-	}
-	if !durable && (!operatorReview || len(currentAttempts) == 0) {
-		return issue, false
-	}
-	historyReader, history := o, state
-	if operatorReview {
-		historyReader = &Orchestrator{cfg: o.cfg}
-	} else if durable && state != nil && len(currentAttempts) > 0 {
-		view := *state
-		view.WorkAttempts = append([]telemetry.WorkAttempt{currentAttempts[0]}, state.WorkAttempts...)
-		history = &view
-	}
-	count, latest, known := historyReader.consecutiveRetryCycleCount(ctx, history, issue, retryCause, at)
-	switch {
-	case !known:
-		o.recordRetryCycleHistoryUnavailable(state, issue, retryCause, at)
-	case count >= o.retryCycleFailureLimit(retryCause):
-		return o.parkRetryCycleLimit(ctx, state, issue, runMode, diffStats, retryCause, count, latest, at, "")
-	}
-	return issue, false
-}
-
 func terminalAttemptFailureEvidence(running Running, terminalState store.WorkAttemptTerminalState, errorClass, errorMessage string, at time.Time) telemetry.WorkAttempt {
 	return telemetry.WorkAttempt{
 		AttemptID:          running.WorkAttemptID,
@@ -163,55 +103,6 @@ func terminalAttemptFailureEvidence(running Running, terminalState store.WorkAtt
 		ErrorMessage:       errorMessage,
 		CompletedAt:        &at,
 		WorkerMetadataJSON: runningWorkAttemptMetadataJSON(running, nil),
-	}
-}
-
-func (o *Orchestrator) retryCycleFailureLimit(cause string) int {
-	if strings.TrimSpace(cause) == terminalAttemptRetryLimitCause {
-		return o.cfg.Recovery.TerminalAttemptFailureLimit()
-	}
-	return consecutiveRetryCycleLimit
-}
-
-func (o *Orchestrator) consecutiveRetryCycleCount(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	cause string,
-	at time.Time,
-) (int, telemetry.WorkAttempt, bool) {
-	failureLimit := o.retryCycleFailureLimit(cause)
-	for limit := failureLimit; ; limit *= 2 {
-		attempts, ok := o.recentIssueTerminalAttempts(ctx, state, issue, limit, at)
-		if !ok {
-			return 0, telemetry.WorkAttempt{}, false
-		}
-		count := 0
-		latest := telemetry.WorkAttempt{}
-		for _, attempt := range attempts {
-			if allowanceInfrastructureAttempt(store.WorkAttempt{
-				TerminalState: store.WorkAttemptTerminalState(attempt.TerminalState), ErrorClass: attempt.ErrorClass,
-				Phase: attempt.Phase, MetricsJSON: attempt.MetricsJSON, WorkerMetadataJSON: attempt.WorkerMetadataJSON,
-			}) && !workAttemptHasPushedProduct(attempt) {
-				continue
-			}
-			if cause == terminalAttemptRetryLimitCause && planOnlyAttempt(attempt) {
-				continue
-			}
-			if !retryCycleAttemptMatches(attempt, cause) {
-				return count, latest, true
-			}
-			if count == 0 {
-				latest = attempt
-			}
-			count++
-			if count >= failureLimit {
-				return count, latest, true
-			}
-		}
-		if len(attempts) < limit {
-			return count, latest, true
-		}
 	}
 }
 
@@ -283,228 +174,11 @@ func workAttemptMatchesIssue(attempt telemetry.WorkAttempt, issue connector.Issu
 	return issueURL != "" && strings.TrimSpace(attempt.IssueURL) == issueURL
 }
 
-func retryCycleAttemptMatches(attempt telemetry.WorkAttempt, cause string) bool {
-	if allowanceInfrastructureAttempt(store.WorkAttempt{
-		TerminalState:      store.WorkAttemptTerminalState(strings.ToLower(strings.TrimSpace(attempt.TerminalState))),
-		ErrorClass:         attempt.ErrorClass,
-		ErrorMessage:       attempt.ErrorMessage,
-		Phase:              attempt.Phase,
-		MetricsJSON:        attempt.MetricsJSON,
-		WorkerMetadataJSON: attempt.WorkerMetadataJSON,
-	}) {
-		return false
-	}
-	switch strings.TrimSpace(cause) {
-	case workspacePreparationRetryLimitCause:
-		return false
-	case terminalAttemptRetryLimitCause:
-		return strings.TrimSpace(attempt.ErrorClass) != workAttemptErrorWorkspace &&
-			strings.TrimSpace(attempt.ErrorClass) != "service_restart" &&
-			(terminalAttemptRetryableFailure(attempt) || strings.TrimSpace(attempt.ErrorClass) == terminalAttemptWithoutWorkProductReason) &&
-			!workAttemptHasPushedProduct(attempt)
-	default:
-		return false
-	}
-}
-
-// planOnlyAttempt reports a completed planning attempt. A plan is not source
-// work product, so it neither extends nor resets a no-work-product cycle.
-func planOnlyAttempt(attempt telemetry.WorkAttempt) bool {
-	return workAttemptRunMode(attempt) == RunModePlan &&
-		strings.EqualFold(strings.TrimSpace(attempt.TerminalState), string(store.WorkAttemptTerminalSuccess)) &&
-		!workAttemptHasPushedProduct(attempt)
-}
-
 func retryCycleCauseForAttempt(attempt telemetry.WorkAttempt) string {
 	if strings.TrimSpace(attempt.ErrorClass) == workAttemptErrorWorkspace {
 		return workspacePreparationRetryLimitCause
 	}
 	return terminalAttemptRetryLimitCause
-}
-
-func (o *Orchestrator) parkRetryCycleLimit(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	runMode string,
-	diffStats DiffStats,
-	cause string,
-	count int,
-	latest telemetry.WorkAttempt,
-	at time.Time,
-	humanAction string,
-) (connector.Issue, bool) {
-	if o == nil || o.connector == nil || state == nil {
-		return issue, false
-	}
-	targetState := blockedStatusState
-	metadata := o.newBlockedRecoveryMetadata(
-		ctx,
-		issue,
-		runMode,
-		cause,
-		blockedRecoveryPredicateFingerprintChange,
-		"Todo",
-		diffStats,
-	)
-	attemptError := retryCycleAttemptError(o, latest)
-	operatorReview := cause == terminalAttemptRetryLimitCause && (humanAction != "" || o.cfg.Recovery.EffectiveTerminalAttemptRetryLimit() == 0)
-	if operatorReview {
-		metadata.BlockedRecovery.Owner = blockedRecoveryOwnerOperator
-		metadata.BlockedRecovery.HoldReason = "terminal_attempt_external_review"
-		metadata.BlockedRecovery.IntentResumable = false
-		metadata.BlockedRecovery.OperatorRemedy = firstNonBlank(humanAction, "Review the terminal attempt, then move the issue to Todo to authorize another worker session.")
-		if humanAction != "" {
-			metadata.BlockedRecovery.StaleRework = o.currentStaleReworkEvidence(ctx, issue, "")
-			if evidence := metadata.BlockedRecovery.StaleRework; evidence != nil && diffStats.HeadSHA != "" && evidence.HeadSHA != diffStats.HeadSHA {
-				metadata.BlockedRecovery.StaleRework = nil
-			}
-			metadata.BlockedRecovery.Predicate = blockedRecoveryPredicateFingerprintChange
-		}
-	}
-	metadata.BlockedRecovery.WorkAttemptID = latest.AttemptID
-	metadata.BlockedRecovery.AttemptNumber = latest.AttemptNumber
-	metadata.BlockedRecovery.AttemptError = attemptError
-	transitionErr := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, at, cause, metadata)
-	if transitionErr != nil {
-		if o.logger != nil {
-			o.logger.Error("retry cycle limit state transition failed", "issue_id", issue.ID, "identifier", issue.Identifier, "cause", cause, "target_state", targetState, "error", transitionErr)
-		}
-		if !operatorReview {
-			return issue, false
-		}
-	}
-	issue.State = targetState
-	if err := o.abandonClaim(ctx, issue.ID); err != nil && o.logger != nil {
-		o.logger.Warn("retry cycle limit claim release failed", "issue_id", issue.ID, "identifier", issue.Identifier, "cause", cause, "error", err)
-	}
-	delete(state.Claimed, issue.ID)
-	delete(state.Retry, issue.ID)
-	delete(state.BudgetRefusals, issue.ID)
-	delete(state.PriorAttempts, issue.ID)
-	if state.Blocked == nil {
-		state.Blocked = map[string]Blocked{}
-	}
-	state.Blocked[issue.ID] = Blocked{
-		Issue:                   cloneIssue(issue),
-		Reason:                  cause,
-		RecoveryAction:          "defer",
-		RecoveryReason:          blockedRecoveryReasonBreakerCooldownActive,
-		RecoveryTarget:          metadata.BlockedRecovery.TargetState,
-		RecoveryRemedy:          BlockedRecoveryOperatorRemedy(issue, blockedRecoveryReasonBreakerCooldownActive),
-		RecoveryReachability:    blockedRecoveryReachability("defer"),
-		RecoveryIntentResumable: true,
-		BlockedAt:               at,
-		Source:                  BlockedSourceProjectStatus,
-		AttemptError:            attemptError,
-		WorkAttemptID:           latest.AttemptID,
-		Recovery:                metadata.BlockedRecovery,
-	}
-	if operatorReview {
-		blocked := state.Blocked[issue.ID]
-		blocked.RecoveryAction = "hold"
-		blocked.RecoveryReason = metadata.BlockedRecovery.HoldReason
-		blocked.RecoveryRemedy = metadata.BlockedRecovery.OperatorRemedy
-		blocked.RecoveryReachability = blockedRecoveryReachability("hold")
-		blocked.RecoveryIntentResumable = false
-		blocked.NeedsHumanAttention = true
-		state.Blocked[issue.ID] = blocked
-	}
-	if o.connector != nil && transitionErr == nil {
-		comment := retryCycleLimitComment(issue, cause, count, targetState, latest, attemptError, operatorReview, humanAction)
-		if err := o.connector.CreateComment(ctx, issue.ID, comment); err != nil && o.logger != nil {
-			o.logger.Warn("retry cycle limit comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "cause", cause, "error", err)
-		}
-	}
-	event := retryCycleLimitEvent(cause)
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      at,
-		Event:   event,
-		Message: fmt.Sprintf("parked %s after %d consecutive %s attempts", issueLabel(issue), count, retryCycleDescription(cause)),
-	})
-	if o.logger != nil {
-		telemetry.LogLifecycleMessage(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, event, "retry cycle limit reached", o.issueLifecycleCorrelation(issue),
-			"cause", cause,
-			"consecutive_attempts", count,
-			"limit", min(count, o.retryCycleFailureLimit(cause)),
-			"target_state", targetState,
-		)
-	}
-	return issue, true
-}
-
-func retryCycleAttemptError(o *Orchestrator, attempt telemetry.WorkAttempt) string {
-	value := strings.TrimSpace(attempt.ErrorMessage)
-	if o != nil {
-		value = o.operatorText(value)
-	}
-	return runtimeoutput.Truncate(value, retryCycleAttemptErrorMaxBytes).Value
-}
-
-func retryCycleLimitComment(
-	issue connector.Issue,
-	cause string,
-	count int,
-	targetState string,
-	attempt telemetry.WorkAttempt,
-	attemptError string,
-	operatorReview bool,
-	humanAction string,
-) string {
-	recovery := "until the configured breaker cooldown ends, then Detent returns it to its prior lane automatically."
-	if operatorReview {
-		recovery = "for external review because recovery.terminal_attempt_retry_limit is 0. Review the terminal attempt, then move the issue to Todo to authorize another worker session."
-	}
-	if humanAction != "" {
-		recovery = "until an operator authorizes further work. " + humanAction
-	}
-	comment := fmt.Sprintf(
-		"Detent stopped retrying %s after %d consecutive %s attempts. The issue is parked in `%s` %s",
-		issueLabel(issue),
-		count,
-		retryCycleDescription(cause),
-		targetState,
-		recovery,
-	)
-	if humanAction != "" {
-		if quoted, err := json.Marshal(humanAction); err == nil {
-			comment += "\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: " + string(quoted) + "\n```"
-		}
-	}
-	if attemptError == "" {
-		return comment
-	}
-	attemptNumber := attempt.AttemptNumber
-	if attemptNumber <= 0 && attempt.AttemptID > 0 {
-		attemptNumber = int(attempt.AttemptID)
-	}
-	return fmt.Sprintf("%s\n\n- latest_attempt: %d\n- last_error:\n\n```text\n%s\n```", comment, attemptNumber, attemptError)
-}
-
-func retryCycleDescription(cause string) string {
-	if strings.TrimSpace(cause) == workspacePreparationRetryLimitCause {
-		return "workspace-preparation"
-	}
-	return "terminal-without-work-product"
-}
-
-func retryCycleLimitEvent(cause string) string {
-	if strings.TrimSpace(cause) == workspacePreparationRetryLimitCause {
-		return workspacePreparationRetryLimitEvent
-	}
-	return terminalAttemptRetryLimitEvent
-}
-
-func (o *Orchestrator) recordRetryCycleHistoryUnavailable(state *State, issue connector.Issue, cause string, at time.Time) {
-	event := terminalAttemptRetryHistoryUnavailableEvent
-	if strings.TrimSpace(cause) == workspacePreparationRetryLimitCause {
-		event = workspaceRetryHistoryUnavailableEvent
-	}
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      at,
-		Event:   event,
-		Message: "continued retrying " + issueLabel(issue) + " because durable retry history was unavailable",
-	})
 }
 
 func (o *Orchestrator) releaseTerminalAttemptClaim(ctx context.Context, state *State, issue connector.Issue, at time.Time) {
@@ -709,4 +383,134 @@ func workAttemptMetadataHasPushedProduct(raw string) bool {
 		WorkProductPushed bool `json:"work_product_pushed"`
 	}
 	return json.Unmarshal([]byte(raw), &metadata) == nil && metadata.WorkProductPushed
+}
+
+func (o *Orchestrator) retryMachineFailure(ctx context.Context, state *State, issue connector.Issue, attempt int, at time.Time, detail, host string) error {
+	if state == nil || o.connector == nil {
+		return fmt.Errorf("retry machine failure requires state and connector")
+	}
+	if o.terminalAttemptClaimBlocksDemotion(ctx, issue, at) {
+		return fmt.Errorf("current lease owns the retry transition")
+	}
+	target := issue.State
+	if normalizeState(target) == normalizeState(blockedStatusState) || !stateIn(target, o.cfg.ActiveStates) {
+		target = normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState
+		if normalizeState(issue.State) == normalizeState(blockedStatusState) && !dependencyAutoUnblockStartedSignal(issue) {
+			target = terminalAttemptTodoState(o.cfg.ActiveStates)
+		}
+		if !stateIn(target, o.cfg.ActiveStates) {
+			target = terminalAttemptTodoState(o.cfg.ActiveStates)
+		}
+	}
+	if reader, ok := o.connector.(connector.WorkflowStateReader); ok {
+		states, err := reader.WorkflowStates(ctx)
+		if err != nil {
+			return fmt.Errorf("read retry workflow: %w", err)
+		}
+		var allowed bool
+		preferred := target
+		target, allowed = nativeRetryLane(states, issue.State, issue.State)
+		if !allowed {
+			target, allowed = nativeRetryLane(states, issue.State, preferred)
+		}
+		if !allowed {
+			for _, candidate := range states {
+				target, allowed = nativeRetryLane(states, issue.State, candidate.Name)
+				if allowed {
+					break
+				}
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("no dispatchable retry lane is reachable")
+		}
+	}
+	if target == "" {
+		return fmt.Errorf("no dispatchable retry lane is configured")
+	}
+	if normalizeState(target) != normalizeState(issue.State) {
+		if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, target, at, terminalAttemptWithoutWorkProductReason, workflowLaneMetadata{}); err != nil {
+			return fmt.Errorf("write retry lane: %w", err)
+		}
+	}
+	issue.State = target
+	retry := Retry{Issue: cloneIssue(issue), Attempt: max(attempt, 1), DueAt: at.Add(o.machineRetryDelay(attempt)), Error: o.operatorText(detail), WorkerHost: host}
+	if o.workflowMetrics != nil {
+		data, err := json.Marshal(retry)
+		if err != nil {
+			return fmt.Errorf("encode machine retry: %w", err)
+		}
+		if _, err := o.workflowMetrics.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+			ProjectID: o.workflowMetricsProjectID(), IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL,
+			PhaseType: store.WorkflowPhaseTypeRecovery, PhaseName: "machine_retry", Status: "queued", StartedAt: at, FinishedAt: at, MetadataJSON: string(data),
+		}); err != nil {
+			return fmt.Errorf("persist machine retry: %w", err)
+		}
+	}
+	o.releaseTerminalAttemptClaim(ctx, state, issue, at)
+	delete(state.Blocked, issue.ID)
+	delete(state.Completed, issue.ID)
+	if state.Retry == nil {
+		state.Retry = make(map[string]Retry)
+	}
+	state.Retry[issue.ID] = retry
+	return nil
+}
+
+func (o *Orchestrator) machineRetryDelay(attempt int) time.Duration {
+	delay := o.retryDelay(attempt, false)
+	if delay > 0 {
+		delay -= time.Duration(rand.Int64N(int64(delay/8) + 1))
+	}
+	return delay
+}
+
+func (o *Orchestrator) restoreMachineRetry(ctx context.Context, state *State, issue connector.Issue) {
+	if _, exists := state.Retry[issue.ID]; exists {
+		return
+	}
+	if _, running := state.Running[issue.ID]; running {
+		return
+	}
+	if explicitHumanAction(issue) != "" || state.Blocked[issue.ID].Source == BlockedSourceOperatorStop {
+		return
+	}
+	timeline, ok := o.issueWorkflowTimeline(ctx, issue)
+	if !ok {
+		return
+	}
+	for i := len(timeline.Events) - 1; i >= 0; i-- {
+		event := timeline.Events[i]
+		if event.PhaseType == store.WorkflowPhaseTypeLane {
+			return
+		}
+		if event.PhaseType != store.WorkflowPhaseTypeRecovery || event.PhaseName != "machine_retry" {
+			continue
+		}
+		var retry Retry
+		if json.Unmarshal([]byte(event.MetadataJSON), &retry) != nil || retry.Issue.ID != issue.ID || normalizeState(retry.Issue.State) != normalizeState(issue.State) || retry.Attempt < 1 || retry.DueAt.IsZero() {
+			return
+		}
+		if o.workAttempts != nil {
+			active, err := o.workAttempts.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: o.cfg.Project.ID})
+			if err != nil {
+				return
+			}
+			for _, attempt := range active {
+				if attempt.IssueID == issue.ID {
+					return
+				}
+			}
+			latest, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{ProjectID: o.cfg.Project.ID, IssueID: issue.ID, Limit: 1})
+			if err != nil {
+				return
+			}
+			if len(latest) > 0 && !latest[0].StartedAt.Before(event.StartedAt) {
+				return
+			}
+		}
+		retry.Issue = cloneIssue(issue)
+		state.Retry[issue.ID] = retry
+		return
+	}
 }

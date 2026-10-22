@@ -138,9 +138,6 @@ func (o *Orchestrator) prepareWorkAttemptRetryIntent(ctx context.Context, issue 
 		intent.Park = &park
 		intent.ParkedAt, _ = o.currentBlockedRecoveryParkedAt(ctx, nil, issue)
 	}
-	if intent.Configuration && normalizeState(issue.State) == normalizeState(blockedStatusState) && intent.Park == nil {
-		return intent, recoveryError(WorkAttemptRecoveryUnavailable, "current configuration park evidence is unavailable; refresh the issue and retry")
-	}
 	data, err := json.Marshal(intent)
 	if err != nil {
 		return intent, err
@@ -184,20 +181,13 @@ func (o *Orchestrator) applyWorkAttemptRetryIntent(ctx context.Context, state *S
 	}
 	if len(receipt.Blockers) == 0 && intent.Configuration {
 		o.clearConfigurationFailureEvidence(state, issue.ID, intent.RecordedAt)
-		if normalizeState(issue.State) == normalizeState(blockedStatusState) && intent.Park != nil && configurationRecoveryParkCause(intent.Park.Cause) {
-			current, found := o.currentBlockedRecoveryPark(ctx, state, issue)
-			parkedAt, dated := o.currentBlockedRecoveryParkedAt(ctx, state, issue)
-			if found && dated && parkedAt.Equal(intent.ParkedAt) && sameBlockedRecoveryPark(current, *intent.Park) {
-				target := terminalAttemptTodoState(o.cfg.ActiveStates)
-				metadata := workflowLaneMetadata{BlockedRecovery: intent.Park}
-				if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, target, now, "operator_configuration_recovery", metadata); err != nil {
-					return receipt, err
-				}
-				issue.State = target
-				if blocked, held := state.Blocked[issue.ID]; held && blocked.Source == BlockedSourceProjectStatus && blocked.Reason == current.Cause && !blocked.BlockedAt.After(intent.RecordedAt) {
-					delete(state.Blocked, issue.ID)
-				}
+		if normalizeState(issue.State) == normalizeState(blockedStatusState) && !o.currentBlockedHumanIntent(ctx, state, issue) && !o.currentBlockedOperatorStop(ctx, state, issue) {
+			target := terminalAttemptTodoState(o.cfg.ActiveStates)
+			if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, target, now, "operator_configuration_recovery", workflowLaneMetadata{}); err != nil {
+				return receipt, err
 			}
+			issue.State = target
+			delete(state.Blocked, issue.ID)
 		}
 		if blocked, held := state.Blocked[issue.ID]; held && blocked.Source == BlockedSourceProjectStatus && blocked.Reason == "issue_configuration" && !blocked.BlockedAt.After(intent.RecordedAt) {
 			delete(state.Blocked, issue.ID)
@@ -207,9 +197,6 @@ func (o *Orchestrator) applyWorkAttemptRetryIntent(ctx context.Context, state *S
 	if len(receipt.Blockers) > 0 {
 		receipt.Status = "blocked"
 		receipt.Message = "recovery intent recorded; blocked: " + strings.Join(receipt.Blockers, "; ")
-		if _, held := state.Blocked[issue.ID]; !held {
-			state.Blocked[issue.ID] = Blocked{Issue: cloneIssue(issue), Source: BlockedSourceProjectStatus, Reason: "operator_recovery_pending", RecoveryRemedy: receipt.Message}
-		}
 		return receipt, nil
 	}
 	if retry, queued := state.Retry[issue.ID]; !queued || retry.RecoveryAttemptID != intent.Request.AttemptID {
@@ -317,11 +304,15 @@ func (o *Orchestrator) reconcileIssueConfigurationHolds(ctx context.Context, sta
 		}
 		err := o.validateRecoveryConfiguration(ctx, issue, o.dispatchMode(ctx, state, issue))
 		if err != nil && issueConfigurationFailure(err, "", "") {
-			if blocked, held := state.Blocked[issue.ID]; !held || blocked.Source == BlockedSourceProjectStatus && blocked.Reason == "issue_configuration" {
-				state.Blocked[issue.ID] = Blocked{Issue: cloneIssue(issue), Source: BlockedSourceProjectStatus, Reason: "issue_configuration", BlockedAt: now,
-					AttemptError: err.Error(), RecoveryRemedy: "correct the issue detent-agent override", NeedsHumanAttention: true}
+			if retry, ok := state.Retry[issue.ID]; ok && retry.DueAt.After(now) {
+				continue
 			}
+			attempt := nextAttempt(state.Retry[issue.ID].Attempt)
+			o.scheduleRetryAfter(state, issue, attempt, now, o.machineRetryDelay(attempt), err.Error(), "")
 		} else if err == nil {
+			if retry, ok := state.Retry[issue.ID]; ok && issueConfigurationFailure(errors.New(retry.Error), "", "") {
+				delete(state.Retry, issue.ID)
+			}
 			if blocked, held := state.Blocked[issue.ID]; held && blocked.Source == BlockedSourceProjectStatus && blocked.Reason == "issue_configuration" && blocked.Recovery == nil {
 				delete(state.Blocked, issue.ID)
 			}
@@ -378,6 +369,9 @@ func (o *Orchestrator) clearConfigurationFailureEvidence(state *State, issueID s
 }
 
 func (o *Orchestrator) restoreWorkAttemptRetryIntents(ctx context.Context, state *State, issues []connector.Issue, now time.Time) []connector.Issue {
+	for _, issue := range issues {
+		o.restoreMachineRetry(ctx, state, issue)
+	}
 	if o.workAttempts == nil || o.workflowMetrics == nil {
 		return nil
 	}

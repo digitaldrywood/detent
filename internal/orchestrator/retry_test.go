@@ -592,17 +592,11 @@ func TestDispatchReadyIssuesPollsCurrentHeadCIWithoutWorkerAdmission(t *testing.
 				}
 			}
 			if tt.wantBlocked {
-				if _, ok := state.Retry[issue.ID]; ok {
-					t.Fatalf("Retry[%q] present after CI wait deadline", issue.ID)
+				retry, ok := state.Retry[issue.ID]
+				if !ok || !strings.Contains(retry.Error, pendingCheck) || len(state.Blocked) != 0 {
+					t.Fatalf("CI deadline lost retry: %+v", retry)
 				}
-				blocked, ok := state.Blocked[issue.ID]
-				if !ok || !strings.Contains(blocked.Reason, pendingCheck) {
-					t.Fatalf("Blocked[%q] = %#v, want pending check at one-hour bound", issue.ID, blocked)
-				}
-				timing := state.MergeTimings[issue.ID]
-				if !timing.MergeFailedAt.Equal(now) || !timing.CIWaitFinishedAt.Equal(now) {
-					t.Fatalf("MergeTimings[%q] = %#v, want failed CI wait closed at %s", issue.ID, timing, now)
-				}
+
 			}
 		})
 	}

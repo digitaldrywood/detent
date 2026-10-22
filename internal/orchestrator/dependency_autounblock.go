@@ -325,7 +325,7 @@ func (o *Orchestrator) applyBlockerAutoPromote(
 	if connector.NonExecutableReason(blocker) != "" || o.currentBlockedOperatorStop(ctx, state, blocker) {
 		return false
 	}
-	if park, ok := o.currentBlockedRecoveryPark(ctx, state, blocker); ok && strings.TrimSpace(park.Cause) != "" {
+	if o.currentBlockedHumanIntent(ctx, state, blocker) {
 		return false
 	}
 	issueID := strings.TrimSpace(blocker.ID)

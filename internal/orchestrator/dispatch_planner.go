@@ -1379,11 +1379,12 @@ func (p dispatchPlanner) retryDelay(attempt int, continuation bool) time.Duratio
 	if attempt < 1 {
 		attempt = 1
 	}
-	exponent := min(attempt-1, 30)
-
-	delay := p.cfg.FailureRetryBaseDelay * time.Duration(math.Pow(2, float64(exponent)))
-	if delay > p.cfg.MaxRetryBackoff {
-		return p.cfg.MaxRetryBackoff
+	delay := min(p.cfg.FailureRetryBaseDelay, p.cfg.MaxRetryBackoff)
+	for range min(attempt-1, 30) {
+		if delay >= p.cfg.MaxRetryBackoff-delay {
+			return p.cfg.MaxRetryBackoff
+		}
+		delay *= 2
 	}
 	return delay
 }

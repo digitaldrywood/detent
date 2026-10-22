@@ -1626,20 +1626,11 @@ func TestTickAutoPromoteHydratesWorkpadBlockerBeforeTransition(t *testing.T) {
 
 	orch.tick(context.Background(), &state, now)
 
-	if len(tracker.updates) != 0 {
+	if len(tracker.updates) != 1 || tracker.updates[0].state != "Rework" {
 		t.Fatalf("updates = %#v, want no transition while Workpad blocker is present", tracker.updates)
 	}
 	if got, want := tracker.fetchComments, []string{issue.ID}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("FetchIssueComments issue IDs = %#v, want %#v", got, want)
-	}
-	for _, fragment := range []string{
-		"action=await_review",
-		"reason=workpad_blocker",
-		"workpad_blocker=\"no generated seasonal MP3s were copied into `assets/audio/`; Gate A/B/C owner listening approval is still required before approved audio assets are copied and committed\"",
-	} {
-		if !strings.Contains(logs.String(), fragment) {
-			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
-		}
 	}
 }
 
@@ -2066,16 +2057,9 @@ func TestTickAutoUnparksClearedReworkBreaker(t *testing.T) {
 
 	orch.tick(context.Background(), &state, now)
 
-	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: autoPromoteMergingState}}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("updates = %#v, want %#v", got, want)
-	}
-	if len(tracker.comments) != 1 {
-		t.Fatalf("comments = %#v, want one breaker recovery audit comment", tracker.comments)
-	}
-	for _, fragment := range []string{"Auto-unparked", "Blocked to Merging", "ci_not_green", "parked-head"} {
-		if !strings.Contains(tracker.comments[0].body, fragment) {
-			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
-		}
+	assertMachineRecoveryRetry(t, orch, &state, issue)
+	if len(tracker.updates) != 1 || tracker.updates[0].state != "Rework" {
+		t.Fatalf("updates = %#v, want Rework retry", tracker.updates)
 	}
 }
 
@@ -2980,33 +2964,15 @@ func TestTickReconcilesStaleTodoHydratesWorkpadBlockerBeforePromotion(t *testing
 	state := newState(cfg)
 	orch.tick(context.Background(), &state, now)
 
-	wantUpdates := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Human Review"}}
+	wantUpdates := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}
 	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
 		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
 	}
 	if got, want := tracker.fetchComments, []string{issue.ID}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("FetchIssueComments issue IDs = %#v, want %#v", got, want)
 	}
-	if len(tracker.comments) != 1 {
-		t.Fatalf("comments = %#v, want one stale Todo reconciliation comment", tracker.comments)
-	}
-	for _, fragment := range []string{
-		"Reconciled this issue from Todo to Human Review because it already has a linked PR.",
-		"reason: workpad_blocker",
-		"https://github.test/digitaldrywood/creswoodcorners-phone/pull/180",
-	} {
-		if !strings.Contains(tracker.comments[0].body, fragment) {
-			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
-		}
-	}
-	for _, fragment := range []string{
-		"reason=workpad_blocker",
-		"target_state=\"Human Review\"",
-		"workpad_blocker=\"Gate A/B/C owner listening approval is still required before approved audio assets are copied and committed.\"",
-	} {
-		if !strings.Contains(logs.String(), fragment) {
-			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
-		}
+	if len(state.Blocked) != 0 {
+		t.Fatal("prose-only blocker created a human hold")
 	}
 }
 
@@ -6027,35 +5993,17 @@ func TestHandleRunResultBlocksMergeWorkerAfterRepeatedInterruptedSessions(t *tes
 		Err:         errors.New("codex turn failed: status interrupted: null"),
 	})
 
-	if _, ok := state.Retry[issue.ID]; ok {
-		t.Fatalf("Retry[%q] present after exhausted merge runner failures", issue.ID)
+	retry, ok := state.Retry[issue.ID]
+	if !ok || !retry.DueAt.After(now) || retry.DueAt.After(now.Add(cfg.MaxRetryBackoff)) || retry.Error == "" {
+		t.Fatalf("exhausted merge lost bounded retry: %+v", retry)
 	}
-	if got := tracker.updates; !reflect.DeepEqual(got, []autoPromoteTickUpdate{{issueID: issue.ID, state: blockedStatusState}}) {
-		t.Fatalf("updates = %#v, want Blocked transition", got)
+	if len(state.Blocked) != 0 {
+		t.Fatal("merge failure entered Blocked")
 	}
-	blocked, ok := state.Blocked[issue.ID]
-	if !ok || blocked.Issue.State != blockedStatusState {
-		t.Fatalf("Blocked[%q] = %#v, want Blocked issue", issue.ID, blocked)
-	}
-	orch.setBlockedStatusIssue(t.Context(), &state, connector.Issue{
-		ID:         issue.ID,
-		Identifier: issue.Identifier,
-		Title:      issue.Title,
-		State:      blockedStatusState,
-	}, now.Add(time.Minute))
-	if got := state.Blocked[issue.ID].Reason; got != blocked.Reason {
-		t.Fatalf("Blocked[%q].Reason after status refresh = %q, want preserved %q", issue.ID, got, blocked.Reason)
-	}
-	if len(tracker.comments) != 1 {
-		t.Fatalf("comments = %#v, want one exhausted retry comment", tracker.comments)
-	}
-	for _, fragment := range []string{mergeWorkerRetryExhaustedReason, "status interrupted: null", "pull request"} {
-		if !strings.Contains(tracker.comments[0].body, fragment) {
-			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+	for _, update := range tracker.updates {
+		if update.state == blockedStatusState {
+			t.Fatal("merge failure wrote Blocked")
 		}
-	}
-	if !strings.Contains(logs.String(), "merge_worker_failure") {
-		t.Fatalf("logs %q missing merge_worker_failure", logs.String())
 	}
 }
 
@@ -6582,22 +6530,17 @@ func TestHandleRunResultBlocksMergeWorkerAfterRepeatedIncompleteResults(t *testi
 		Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
 	})
 
-	if _, ok := state.Retry[issue.ID]; ok {
-		t.Fatalf("Retry[%q] present after repeated incomplete merge results", issue.ID)
+	retry, ok := state.Retry[issue.ID]
+	if !ok || !retry.DueAt.After(now) || retry.DueAt.After(now.Add(cfg.MaxRetryBackoff)) || retry.Error == "" {
+		t.Fatalf("exhausted merge lost bounded retry: %+v", retry)
 	}
-	if got := tracker.updates; !reflect.DeepEqual(got, []autoPromoteTickUpdate{{issueID: issue.ID, state: blockedStatusState}}) {
-		t.Fatalf("updates = %#v, want Blocked transition", got)
+	if len(state.Blocked) != 0 {
+		t.Fatal("merge failure entered Blocked")
 	}
-	if len(tracker.comments) != 1 {
-		t.Fatalf("comments = %#v, want one exhausted retry comment", tracker.comments)
-	}
-	for _, fragment := range []string{mergeWorkerRetryExhaustedReason, "terminal issue or pull request state", "pull request"} {
-		if !strings.Contains(tracker.comments[0].body, fragment) {
-			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+	for _, update := range tracker.updates {
+		if update.state == blockedStatusState {
+			t.Fatal("merge failure wrote Blocked")
 		}
-	}
-	if !strings.Contains(logs.String(), "reason=terminal_state_missing") {
-		t.Fatalf("logs %q missing terminal_state_missing", logs.String())
 	}
 }
 
@@ -7429,11 +7372,11 @@ func TestTickWorkpadHumanDecisionLane(t *testing.T) {
 		name, kind, source, want string
 		optout, noBlocked        bool
 	}{
-		{name: "command todo", kind: gate.KindCommand, source: "Todo", want: "Blocked"},
-		{name: "command review", kind: gate.KindCommand, source: "Human Review", want: "Blocked"},
+		{name: "command todo", kind: gate.KindCommand, source: "Todo", want: "Rework"},
+		{name: "command review", kind: gate.KindCommand, source: "Human Review", want: "Rework"},
 		{name: "human gate", kind: gate.KindHumanReview, source: "Todo", want: "Human Review"},
 		{name: "opt out", kind: gate.KindCommand, source: "Todo", optout: true, want: "Human Review"},
-		{name: "no blocked lane", kind: gate.KindCommand, source: "Todo", noBlocked: true, want: "Human Review"},
+		{name: "no blocked lane", kind: gate.KindCommand, source: "Todo", noBlocked: true, want: "Rework"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)

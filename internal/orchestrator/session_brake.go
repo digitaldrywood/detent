@@ -102,17 +102,7 @@ func (o *Orchestrator) handleSessionBrake(
 	)
 
 	issue := cloneIssue(running.Issue)
-	metadata := workflowLaneMetadata{
-		BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{
-			Owner:            blockedRecoveryOwnerOrchestrator,
-			Cause:            brake.Reason,
-			Predicate:        blockedRecoveryPredicateManaged,
-			CauseFingerprint: brake.CauseFingerprint,
-			TargetState:      targetState,
-			RunMode:          running.Mode,
-			IntentResumable:  resumable,
-		},
-	}
+	metadata := workflowLaneMetadata{}
 	if err := o.updateIssueStateByIDStrictWithMetadata(
 		ctx,
 		state,
@@ -169,6 +159,7 @@ func (o *Orchestrator) handleSessionBrake(
 	delete(state.PriorAttempts, event.IssueID)
 	delete(state.InstantFailures, event.IssueID)
 	delete(state.RepeatedFailures, event.IssueID)
+	o.scheduleRetry(state, issue, nextAttempt(running.Attempt), completedAt, brake.Reason, false, running.WorkerHost)
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
 	releaseProjectFailureBreakerCanary(state, event.IssueID)
 	recordStateEvent(state, telemetry.ActivityEvent{

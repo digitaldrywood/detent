@@ -778,29 +778,25 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			if tracker.hydrations != tt.wantHydrations {
 				t.Fatalf("hydrations = %d, want %d", tracker.hydrations, tt.wantHydrations)
 			}
-			if _, ok := state.Blocked[tt.runningIssue.ID]; ok != tt.wantBlocked {
-				t.Fatalf("blocked present = %v, want %v", ok, tt.wantBlocked)
+			wantsHuman := tt.wantBlocked && tt.workpadHumanAction != ""
+			if _, ok := state.Blocked[tt.runningIssue.ID]; ok != wantsHuman {
+				t.Fatalf("blocked=%v, want typed human=%v", ok, wantsHuman)
 			}
 			if tt.wantBlocked {
-				if len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
-					t.Fatalf("updates = %#v, want one Blocked update", tracker.updates)
-				}
-				blocked := state.Blocked[tt.runningIssue.ID]
-				if tt.wantBlockReason == noProgressLimitReason || tt.wantBlockReason == dispatchLoopDetectedReason {
-					if blocked.Recovery == nil || blocked.Recovery.Owner != blockedRecoveryOwnerHuman || blocked.Recovery.Predicate != blockedRecoveryPredicateManaged {
-						t.Fatalf("Blocked[%q].Recovery = %#v, want durable human acknowledgement", tt.runningIssue.ID, blocked.Recovery)
+				if wantsHuman {
+					if len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
+						t.Fatalf("human lane updates: %+v", tracker.updates)
 					}
+					if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, tt.workpadHumanAction) {
+						t.Fatal("human action lost from comment")
+					}
+					if _, ok := state.Retry[tt.runningIssue.ID]; ok {
+						t.Fatal("typed human action retained retry")
+					}
+				} else if _, ok := state.Retry[tt.runningIssue.ID]; !ok {
+					t.Fatal("machine progress failure lost retry")
 				}
-				wantComments := 1
-				if tt.refreshedState != "" && tt.refreshedState != tt.runningIssue.State {
-					wantComments++
-				}
-				if len(tracker.comments) != wantComments || !strings.Contains(tracker.comments[wantComments-1].body, tt.wantComment) {
-					t.Fatalf("comments = %#v, want comment containing %q", tracker.comments, tt.wantComment)
-				}
-				if _, ok := state.Retry[tt.runningIssue.ID]; ok {
-					t.Fatalf("Retry[%q] present after block", tt.runningIssue.ID)
-				}
+
 			} else if tt.wantReview {
 				if len(tracker.updates) != 1 || tracker.updates[0].state != autoPromoteSourceState {
 					t.Fatalf("updates = %#v, want one Human Review update", tracker.updates)
@@ -1721,39 +1717,6 @@ func TestHandleRunResultRefreshesStalePullRequestAfterHydrationFailure(t *testin
 	}
 	if tracker.hydrations != 3 {
 		t.Fatalf("hydrations = %d, want completion hydration, push refresh, and trigger refresh", tracker.hydrations)
-	}
-}
-
-func TestBlockImplementProgressRequiresHumanAcknowledgement(t *testing.T) {
-	t.Parallel()
-
-	for _, reason := range []string{noProgressLimitReason, dispatchLoopDetectedReason} {
-		t.Run(reason, func(t *testing.T) {
-			t.Parallel()
-
-			tracker := &implementProgressConnector{}
-			orch := &Orchestrator{connector: tracker}
-			state := newState(normalizeConfig(Config{}))
-			issue := connector.Issue{ID: "issue-" + reason, Identifier: "digitaldrywood/detent#1943", State: "Rework"}
-			state.Claimed[issue.ID] = Claimed{Issue: issue}
-			blockedAt := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
-
-			if !orch.blockImplementProgress(t.Context(), &state, Running{Issue: issue, Mode: runpkg.RunModeImplement}, implementCompletionProgressDecision{
-				Issue:                 issue,
-				BlockReason:           reason,
-				NoProgressLimit:       3,
-				ConsecutiveNoProgress: 3,
-			}, blockedAt) {
-				t.Fatal("blockImplementProgress() = false, want true")
-			}
-			blocked := state.Blocked[issue.ID]
-			if blocked.Recovery == nil || blocked.Recovery.Owner != blockedRecoveryOwnerHuman || blocked.Recovery.Predicate != blockedRecoveryPredicateManaged {
-				t.Fatalf("Blocked[%q].Recovery = %#v, want human-owned managed park", issue.ID, blocked.Recovery)
-			}
-			if blocked.RecoveryReason == "" || !strings.Contains(blocked.RecoveryReason, "human") {
-				t.Fatalf("Blocked[%q].RecoveryReason = %q, want human acknowledgement", issue.ID, blocked.RecoveryReason)
-			}
-		})
 	}
 }
 

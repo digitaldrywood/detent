@@ -158,77 +158,10 @@ func (o *Orchestrator) blockPersistentlyMissingRequiredChecks(
 	issue connector.Issue,
 	streaks []store.MergeRequiredCheckStreak,
 ) {
-	issueID := strings.TrimSpace(event.IssueID)
 	running.Issue = issue
 	reason := persistentMissingRequiredCheckReason(streaks)
-	metadata := o.newBlockedRecoveryMetadata(
-		ctx,
-		issue,
-		RunModeMerge,
-		reason,
-		blockedRecoveryPredicateManaged,
-		autoPromoteMergingState,
-		running.DiffStats,
-	)
-	metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
-	if err := o.updateIssueStateByIDStrictWithMetadata(
-		ctx,
-		state,
-		issueID,
-		issue,
-		blockedStatusState,
-		event.CompletedAt,
-		reason,
-		metadata,
-	); err != nil {
-		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "merge_worker_persistent_missing_required_check_block_failed", err)
-		return
-	}
-	o.clearMergeRequiredCheckStreaks(ctx, issue)
-
-	if comment := persistentMissingRequiredCheckComment(issue, streaks); comment != "" {
-		if err := o.connector.CreateComment(ctx, issueID, comment); err != nil && o.logger != nil {
-			o.logger.Warn("persistent missing required check comment failed", "issue_id", issueID, "reason", reason, "error", err)
-		}
-	}
-	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
-	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "blocked", "required checks persistently missing")
-	o.logMergeWorkerFailure(issue, reason, nil)
-	o.recordMergeFailed(state, issue, event.CompletedAt, reason, nil)
-	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
-		o.logger.Warn("abandon persistent missing required check claim failed", "issue_id", issueID, "error", err)
-	}
-	delete(state.Claimed, issueID)
-	delete(state.Retry, issueID)
-	delete(state.BudgetRefusals, issueID)
-	delete(state.PriorAttempts, issueID)
-	delete(state.Completed, issueID)
-	delete(state.AutoPromoteDecisions, issueID)
-	delete(state.InstantFailures, issueID)
-	delete(state.RepeatedFailures, issueID)
-
-	blockedIssue := cloneIssue(issue)
-	blockedIssue.State = blockedStatusState
-	blockedIssue.BlockerReason = reason
-	blockedAt := event.CompletedAt.UTC()
-	blockedIssue.StageUpdatedAt = &blockedAt
-	if state.Blocked == nil {
-		state.Blocked = map[string]Blocked{}
-	}
-	state.Blocked[issueID] = Blocked{
-		Issue:          blockedIssue,
-		Reason:         reason,
-		RecoveryReason: string(BlockedRecoveryReasonHumanBlocker),
-		RecoveryTarget: autoPromoteMergingState,
-		BlockedAt:      event.CompletedAt,
-		Source:         BlockedSourceProjectStatus,
-		Recovery:       metadata.BlockedRecovery,
-	}
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      event.CompletedAt,
-		Event:   mergeWorkerPersistentMissingRequiredCheckReason,
-		Message: "parked " + issueLabel(issue) + " after required checks remained missing: " + persistentMissingRequiredCheckNames(streaks),
-	})
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", reason)
+	o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), reason)
 }
 
 func persistentMissingRequiredCheckReason(streaks []store.MergeRequiredCheckStreak) string {

@@ -3,14 +3,12 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 const (
@@ -62,6 +60,9 @@ func (o *Orchestrator) enforceLifetimeLimits(ctx context.Context, state *State, 
 			continue
 		}
 		if _, blocked := state.Blocked[issue.ID]; blocked {
+			continue
+		}
+		if retry, queued := state.Retry[issue.ID]; queued && retry.DueAt.After(now) {
 			continue
 		}
 		usage, err := o.issueLifetimeUsage(ctx, issue)
@@ -136,74 +137,11 @@ func (o *Orchestrator) parkLifetimeLimit(
 	decision lifetimeLimitDecision,
 	now time.Time,
 ) {
-	runMode := o.dispatchMode(ctx, state, issue)
-	metadata := o.newBlockedRecoveryMetadata(
-		ctx,
-		issue,
-		runMode,
-		lifetimeLimitReason,
-		blockedRecoveryPredicateLifetimeLimit,
-		issue.State,
-		DiffStats{},
-	)
-	metadata.BlockedRecovery.LifetimeSessions = decision.Usage.Sessions
-	metadata.BlockedRecovery.LifetimeTokens = decision.Usage.TotalTokens
-	metadata.BlockedRecovery.LifetimeSessionLimit = decision.SessionLimit
-	metadata.BlockedRecovery.LifetimeTokenLimit = decision.TokenLimit
-
-	transitioned := false
-	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, now, lifetimeLimitReason, metadata); err != nil {
+	if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(state.Retry[issue.ID].Attempt), now, lifetimeLimitReason, ""); err != nil {
 		if o.logger != nil {
-			o.logger.Error("lifetime issue limit state transition failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+			o.logger.Warn("machine retry routing failed", "issue_id", issue.ID, "error", err)
 		}
-	} else {
-		transitioned = true
-		issue.State = blockedStatusState
-	}
-	if transitioned && o.connector != nil {
-		if err := o.connector.CreateComment(ctx, issue.ID, o.lifetimeLimitComment(issue, decision)); err != nil && o.logger != nil {
-			o.logger.Warn("lifetime issue limit comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		}
-	}
-	if err := o.abandonClaim(ctx, issue.ID); err != nil && o.logger != nil {
-		o.logger.Warn("lifetime issue limit claim release failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-	}
-	delete(state.Claimed, issue.ID)
-	delete(state.Retry, issue.ID)
-	delete(state.BudgetRefusals, issue.ID)
-	delete(state.PriorAttempts, issue.ID)
-	state.Blocked[issue.ID] = Blocked{
-		Issue:                   cloneIssue(issue),
-		Reason:                  lifetimeLimitBlockedReason(decision),
-		RecoveryAction:          "hold",
-		NeedsHumanAttention:     true,
-		RecoveryReason:          lifetimeLimitReason,
-		RecoveryTarget:          metadata.BlockedRecovery.TargetState,
-		RecoveryRemedy:          lifetimeLimitRecoveryRemedy(o.cfg.LifetimeLimitOverrideLabel),
-		RecoveryReachability:    blockedRecoveryReachability("hold"),
-		RecoveryIntentResumable: true,
-		BlockedAt:               now,
-		Source:                  BlockedSourceProjectStatus,
-		Recovery:                metadata.BlockedRecovery,
-	}
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      now,
-		Event:   "lifetime_issue_limit_reached",
-		Message: "parked " + issueLabel(issue) + " after " + lifetimeLimitBlockedReason(decision),
-	})
-	if o.logger != nil {
-		telemetry.LogLifecycleMessage(
-			o.logger,
-			slog.LevelWarn,
-			telemetry.LifecycleSafetyControl,
-			"lifetime_issue_limit_reached",
-			"lifetime issue limit reached",
-			o.issueLifecycleCorrelation(issue),
-			"sessions", decision.Usage.Sessions,
-			"session_limit", decision.SessionLimit,
-			"total_tokens", decision.Usage.TotalTokens,
-			"token_limit", decision.TokenLimit,
-		)
+		return
 	}
 }
 

@@ -390,6 +390,9 @@ func completedActiveReviewTargetState(
 		return ""
 	}
 	targetState := cfg.reviewTargetState()
+	if explicitHumanAction(issue) != "" {
+		targetState = blockedStatusState
+	}
 	if autoPromoteOptoutLabel(issue, cfg) {
 		targetState = reviewState
 	}
@@ -531,6 +534,9 @@ func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
 		return true, promoted
 	}
 	targetState := cfg.reviewTargetState()
+	if explicitHumanAction(issue) != "" {
+		targetState = blockedStatusState
+	}
 	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "auto_promote_gate_wait_timeout"); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(

@@ -734,10 +734,8 @@ func (o *Orchestrator) applyRecordedBlockerRecovery(
 		signature := dependencyAutoUnblockBlockerSignature(dependencies, cfg, o.cfg.TerminalStates)
 		return o.applyDependencyAutoUnblock(ctx, state, issue, dependencies, signature, targetState, now)
 	}
-	if entry, ok := o.latestWorkflowLaneEntry(ctx, issue); ok && entry.Metadata.BlockedRecovery == nil {
-		if park, found := o.currentBlockedRecoveryPark(ctx, state, issue); found && park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason {
-			targetState = park.TargetState
-		}
+	if entry, ok := o.latestWorkflowLaneEntry(ctx, issue); ok && entry.Metadata.BlockedRecovery == nil && o.currentBlockedHumanIntent(ctx, state, issue) && stateIn(entry.Event.PreviousPhaseName, normalizedStates([]string{"In Progress", "Rework"})) {
+		targetState = entry.Event.PreviousPhaseName
 	}
 	encoded, err := json.Marshal(evidence)
 	if err != nil {
@@ -749,8 +747,11 @@ func (o *Orchestrator) applyRecordedBlockerRecovery(
 	signature := workpad.ContentHash(strings.TrimSpace(issue.Identifier) + "\n" + string(encoded))
 	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionRecordedBlockerRecovery, signature)
 	if park, found := o.currentBlockedRecoveryPark(ctx, state, issue); found && park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason {
+		park.SourceRevision = holdSourceRevision(issue)
+		park.ExpiresAt = now.Add(o.cfg.MaxRetryBackoff)
 		metadata.BlockedRecovery = &park
 	}
+
 	if err := o.updateIssueStateByIDStrictWithMetadata(
 		ctx,
 		state,

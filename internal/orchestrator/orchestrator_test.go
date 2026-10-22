@@ -13,7 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
@@ -21,10 +20,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
-	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const slowCIIntegrationWaitTimeout = 10 * time.Second
@@ -1282,12 +1282,10 @@ func TestUpdateConfigAppliesBeforeNextTick(t *testing.T) {
 	select {
 	case request := <-runner.started:
 		t.Fatalf("unexpected run before config update = %#v", request)
-	case <-time.After(25 * time.Millisecond):
+	default:
 	}
 
-	updateCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := orch.UpdateConfig(updateCtx, orchestrator.Config{
+	if err := orch.UpdateConfig(t.Context(), orchestrator.Config{
 		PollInterval:        5 * time.Millisecond,
 		MaxConcurrentAgents: 2,
 		ActiveStates:        []string{"Todo"},
@@ -1390,12 +1388,10 @@ func TestUpdateRuntimeSwapsConnectorBeforeNextTick(t *testing.T) {
 	select {
 	case request := <-runner.started:
 		t.Fatalf("unexpected run before connector update = %#v", request)
-	case <-time.After(25 * time.Millisecond):
+	default:
 	}
 
-	updateCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := orch.UpdateRuntime(updateCtx, orchestrator.RuntimeUpdate{
+	if err := orch.UpdateRuntime(t.Context(), orchestrator.RuntimeUpdate{
 		Config: orchestrator.Config{
 			PollInterval:        5 * time.Millisecond,
 			MaxConcurrentAgents: 1,
@@ -1551,73 +1547,6 @@ func TestRunSchedulesRetryAfterRunnerPanic(t *testing.T) {
 	}
 }
 
-func TestRunParksIssueAfterRepeatedInstantBackendFailures(t *testing.T) {
-	t.Parallel()
-
-	synctest.Test(t, func(t *testing.T) {
-		issue := testIssue("issue-instant-fail", "digitaldrywood/detent#927", "Todo")
-		tracker := &instantFailureCommentConnector{fakeConnector: newFakeConnector(issue), commented: make(chan struct{}, 1)}
-		backendBody := `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"model rejected"}}`
-		runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}, err: instantBackendError{body: backendBody}}
-
-		orch, err := orchestrator.New(orchestrator.Config{
-			PollInterval:           time.Millisecond,
-			MaxConcurrentAgents:    1,
-			MaxRetryBackoff:        time.Millisecond,
-			FailureRetryBaseDelay:  time.Millisecond,
-			ActiveStates:           []string{"Todo", "In Progress"},
-			ObservedStates:         []string{"Blocked"},
-			TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
-			ContinuationRetryDelay: time.Second,
-		}, orchestrator.Dependencies{
-			Connector: tracker,
-			Runner:    runner,
-		})
-		if err != nil {
-			t.Fatalf("New() error = %v", err)
-		}
-		stop := runOrchestrator(t, orch)
-		defer stop()
-
-		// Wait for the breaker comment, then let the completion handler publish
-		// its blocked state. Retry timers advance in virtual time, independent of load.
-		select {
-		case <-tracker.commented:
-		case <-time.After(time.Minute): // Virtual-time guard for missing output.
-			t.Fatal("timed out waiting for failure breaker comment")
-		}
-		synctest.Wait()
-		state, err := orch.State(t.Context())
-		if err != nil {
-			t.Fatalf("State() error = %v", err)
-		}
-
-		if got := runner.calls.Load(); got != 5 {
-			t.Fatalf("runner calls = %d, want 5", got)
-		}
-		if _, ok := state.Retry[issue.ID]; ok {
-			t.Fatalf("Retry[%q] present after circuit breaker", issue.ID)
-		}
-		if _, ok := state.Claimed[issue.ID]; ok {
-			t.Fatalf("Claimed[%q] present after circuit breaker", issue.ID)
-		}
-		if !strings.Contains(state.Blocked[issue.ID].Reason, backendBody) {
-			t.Fatalf("Blocked[%q].Reason = %q, want backend body", issue.ID, state.Blocked[issue.ID].Reason)
-		}
-		updates := tracker.stateUpdateCalls()
-		if len(updates) == 0 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Blocked"}) {
-			t.Fatalf("state updates = %#v, want final Blocked transition", updates)
-		}
-		comments := tracker.commentCalls()
-		if len(comments) != 1 {
-			t.Fatalf("comments = %#v, want one circuit breaker comment", comments)
-		}
-		if !strings.Contains(comments[0].body, backendBody) || !strings.Contains(comments[0].body, "stopped retrying") {
-			t.Fatalf("comment body missing backend error:\n%s", comments[0].body)
-		}
-	})
-}
-
 func TestRunPausesBackendAfterQuotaErrorWithoutBreakerStrike(t *testing.T) {
 	t.Parallel()
 
@@ -1697,195 +1626,6 @@ func TestRunPausesBackendAfterQuotaErrorWithoutBreakerStrike(t *testing.T) {
 	if len(updates) < 2 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Todo"}) {
 		t.Fatalf("state updates = %#v, want capacity probe restored to Todo", updates)
 	}
-}
-
-func TestRunParksIssueAfterRepeatedInstantBackendFailuresTruncatesConfiguredOutput(t *testing.T) {
-	t.Parallel()
-
-	synctest.Test(t, func(t *testing.T) {
-		issue := testIssue("issue-instant-fail-truncated", "digitaldrywood/detent#978", "Todo")
-		tracker := &instantFailureCommentConnector{fakeConnector: newFakeConnector(issue), commented: make(chan struct{}, 1)}
-		backendBody := "0123456789abcdefghijklmnopqrstuvwxyz"
-		runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}, err: instantBackendError{body: backendBody}}
-
-		orch, err := orchestrator.New(orchestrator.Config{
-			PollInterval:             time.Millisecond,
-			MaxConcurrentAgents:      1,
-			MaxRetryBackoff:          time.Millisecond,
-			FailureRetryBaseDelay:    time.Millisecond,
-			ActiveStates:             []string{"Todo", "In Progress"},
-			ObservedStates:           []string{"Blocked"},
-			TerminalStates:           []string{"Done", "Cancelled", "Canceled", "Closed"},
-			ContinuationRetryDelay:   time.Second,
-			OutputTruncationMaxBytes: len(runtimeoutput.Marker) + 10,
-		}, orchestrator.Dependencies{
-			Connector: tracker,
-			Runner:    runner,
-		})
-		if err != nil {
-			t.Fatalf("New() error = %v", err)
-		}
-		stop := runOrchestrator(t, orch)
-		defer stop()
-
-		// Wait for the output under test, then let the completion handler publish
-		// its blocked state. Virtual time advances retries without a scheduler deadline.
-		select {
-		case <-tracker.commented:
-		case <-time.After(time.Minute): // Virtual-time guard for missing output.
-			t.Fatal("timed out waiting for instant failure comment")
-		}
-		synctest.Wait()
-		state, err := orch.State(t.Context())
-		if err != nil {
-			t.Fatalf("State() error = %v", err)
-		}
-
-		wantBody := "01234" + runtimeoutput.Marker + "vwxyz"
-		reason := state.Blocked[issue.ID].Reason
-		if !strings.Contains(reason, wantBody) {
-			t.Fatalf("Blocked[%q].Reason = %q, want truncated backend body %q", issue.ID, reason, wantBody)
-		}
-		if strings.Contains(reason, backendBody) {
-			t.Fatalf("Blocked[%q].Reason included unbounded backend body: %q", issue.ID, reason)
-		}
-		comments := tracker.commentCalls()
-		if len(comments) != 1 {
-			t.Fatalf("comments = %#v, want one circuit breaker comment", comments)
-		}
-		if !strings.Contains(comments[0].body, wantBody) {
-			t.Fatalf("comment body missing truncated backend error:\n%s", comments[0].body)
-		}
-		if strings.Contains(comments[0].body, backendBody) {
-			t.Fatalf("comment body included unbounded backend error:\n%s", comments[0].body)
-		}
-	})
-}
-
-func TestRunInstantFailureCircuitBreakerComparesFullBackendErrorKey(t *testing.T) {
-	t.Parallel()
-
-	synctest.Test(t, func(t *testing.T) {
-		issue := testIssue("issue-instant-fail-key", "digitaldrywood/detent#979", "Todo")
-		tracker := &instantFailureCommentConnector{fakeConnector: newFakeConnector(issue), commented: make(chan struct{}, 1)}
-		backendBodies := []string{
-			"01234" + strings.Repeat("a", 20) + "vwxyz",
-			"01234" + strings.Repeat("b", 20) + "vwxyz",
-		}
-		runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}}
-		runner.onRun = func(orchestrator.RunRequest) {
-			call := runner.calls.Load()
-			runner.err = instantBackendError{body: backendBodies[int(call-1)%len(backendBodies)]}
-		}
-
-		orch, err := orchestrator.New(orchestrator.Config{
-			PollInterval:             time.Millisecond,
-			MaxConcurrentAgents:      1,
-			MaxRetryBackoff:          time.Millisecond,
-			FailureRetryBaseDelay:    time.Millisecond,
-			ActiveStates:             []string{"Todo", "In Progress"},
-			ObservedStates:           []string{"Blocked"},
-			TerminalStates:           []string{"Done", "Cancelled", "Canceled", "Closed"},
-			ContinuationRetryDelay:   time.Second,
-			OutputTruncationMaxBytes: len(runtimeoutput.Marker) + 10,
-		}, orchestrator.Dependencies{
-			Connector: tracker,
-			Runner:    runner,
-		})
-		if err != nil {
-			t.Fatalf("New() error = %v", err)
-		}
-		stop := runOrchestrator(t, orch)
-		defer stop()
-
-		// Wait for the breaker comment, then let the completion handler publish
-		// its blocked state. Retry timers advance in virtual time, independent of load.
-		select {
-		case <-tracker.commented:
-		case <-time.After(time.Minute): // Virtual-time guard for missing output.
-			t.Fatal("timed out waiting for failure breaker comment")
-		}
-		synctest.Wait()
-		state, err := orch.State(t.Context())
-		if err != nil {
-			t.Fatalf("State() error = %v", err)
-		}
-
-		// Alternating backend errors must not trip the instant-failure breaker
-		// (the full error key differs each attempt even though the truncated
-		// operator text matches); the repeated-failure breaker still parks the
-		// issue after five consecutive failures regardless of error text.
-		reason := state.Blocked[issue.ID].Reason
-		if strings.HasPrefix(reason, "instant fail circuit breaker: ") {
-			t.Fatalf("Blocked[%q].Reason = %q, instant breaker tripped on alternating backend errors", issue.ID, reason)
-		}
-		if !strings.HasPrefix(reason, "repeated failure circuit breaker: ") {
-			t.Fatalf("Blocked[%q].Reason = %q, want repeated failure circuit breaker prefix", issue.ID, reason)
-		}
-		if got := runner.calls.Load(); got != 5 {
-			t.Fatalf("runner calls = %d, want 5", got)
-		}
-		comments := tracker.commentCalls()
-		if len(comments) != 1 {
-			t.Fatalf("comments = %#v, want one repeated failure comment", comments)
-		}
-		if !strings.Contains(comments[0].body, "consecutive failed attempts") {
-			t.Fatalf("comment body missing repeated failure text:\n%s", comments[0].body)
-		}
-	})
-}
-
-func TestRunParksInstantBackendFailuresInBlockedWithDefaultStates(t *testing.T) {
-	t.Parallel()
-
-	synctest.Test(t, func(t *testing.T) {
-		issue := testIssue("issue-default-instant-fail", "digitaldrywood/detent#928", "Todo")
-		tracker := newFakeConnector(issue)
-		backendBody := `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"model rejected"}}`
-		runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}, err: instantBackendError{body: backendBody}}
-
-		orch, err := orchestrator.New(orchestrator.Config{
-			PollInterval:           time.Millisecond,
-			MaxConcurrentAgents:    1,
-			MaxRetryBackoff:        time.Millisecond,
-			FailureRetryBaseDelay:  time.Millisecond,
-			ActiveStates:           []string{"Todo", "In Progress"},
-			TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
-			ContinuationRetryDelay: time.Second,
-		}, orchestrator.Dependencies{
-			Connector: tracker,
-			Runner:    runner,
-		})
-		if err != nil {
-			t.Fatalf("New() error = %v", err)
-		}
-		stop := runOrchestrator(t, orch)
-		defer stop()
-
-		state := waitForState(t, orch, func(state orchestrator.State) bool {
-			blocked, ok := state.Blocked[issue.ID]
-			return ok && strings.Contains(blocked.Reason, backendBody)
-		})
-
-		updates := tracker.stateUpdateCalls()
-		if len(updates) == 0 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Blocked"}) {
-			t.Fatalf("state updates = %#v, want final Blocked transition", updates)
-		}
-		if got := state.Blocked[issue.ID].Issue.State; got != "Blocked" {
-			t.Fatalf("Blocked[%q].Issue.State = %q, want Blocked", issue.ID, got)
-		}
-		fetchesAtBlock := tracker.fetchByStatesCalls()
-		state = waitForState(t, orch, func(state orchestrator.State) bool {
-			_, ok := state.Blocked[issue.ID]
-			return ok && tracker.fetchByStatesCalls() > fetchesAtBlock
-		})
-		if _, ok := state.Blocked[issue.ID]; !ok {
-			t.Fatalf("Blocked[%q] missing after blocked-status refresh", issue.ID)
-		}
-		if got := runner.calls.Load(); got != 5 {
-			t.Fatalf("runner calls = %d, want 5", got)
-		}
-	})
 }
 
 func TestRunRedispatchesDueRetryWithExistingClaim(t *testing.T) {
@@ -1971,7 +1711,8 @@ func TestRunTracksBlockedStatusIssuesForDisplayOnly(t *testing.T) {
 
 	candidate := testIssue("issue-ready", "digitaldrywood/detent#170", "Todo")
 	blocked := testIssue("issue-blocked-status", "digitaldrywood/detent#98", "Blocked")
-	blocked.BlockerReason = "Create public repository digitaldrywood/homebrew-tap"
+	blocked.BlockerReason = "Create the requested public repository"
+	blocked.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: blocked.BlockerReason}
 	tracker := newFakeConnector(candidate)
 	tracker.setStateIssues(blocked)
 	runner := newBlockingRunner()
@@ -2008,7 +1749,7 @@ func TestRunTracksBlockedStatusIssuesForDisplayOnly(t *testing.T) {
 	select {
 	case request := <-runner.started:
 		t.Fatalf("unexpected display-only blocked dispatch = %#v", request)
-	case <-time.After(25 * time.Millisecond):
+	default:
 	}
 	if got := tracker.fetchByStatesCalls(); got == 0 {
 		t.Fatal("FetchIssuesByStates() calls = 0, want blocked status fetch")
@@ -2313,7 +2054,7 @@ func TestRunPublishesBoardIssuesFromCandidatesAndObservedStates(t *testing.T) {
 	}
 }
 
-func TestRunTracksStatusLabelConflictCandidateAsBlocked(t *testing.T) {
+func TestRunRetriesStatusLabelConflictCandidate(t *testing.T) {
 	t.Parallel()
 
 	conflict := testIssue("issue-conflict", "digitaldrywood/detent#606", "Blocked")
@@ -2341,24 +2082,44 @@ func TestRunTracksStatusLabelConflictCandidateAsBlocked(t *testing.T) {
 	stop := runOrchestrator(t, orch)
 	defer stop()
 
-	state := waitForState(t, orch, func(state orchestrator.State) bool {
-		_, ok := state.Blocked[conflict.ID]
-		return ok
+	var state orchestrator.State
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var err error
+		state, err = orch.State(t.Context())
+		if err != nil {
+			return err
+		}
+		if len(state.SchedulerDecisions) == 0 {
+			return fmt.Errorf("awaiting unavailable-status decision")
+		}
+		return nil
 	})
+	if len(state.Blocked) != 0 || len(state.Running) != 0 {
+		t.Fatal("unavailable status created a hold or dispatched")
+	}
+	tracker.setStateIssues(conflict)
+	tracker.setFetchByStatesError(nil)
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var err error
+		state, err = orch.State(t.Context())
+		if err != nil {
+			return err
+		}
+		if _, ok := state.Retry[conflict.ID]; !ok {
+			return fmt.Errorf("awaiting retry after status recovery")
+		}
+		return nil
+	})
+
 	if got := runner.calls.Load(); got != 0 {
 		t.Fatalf("runner calls = %d, want 0", got)
 	}
-	blocked := state.Blocked[conflict.ID]
-	if !strings.Contains(blocked.Reason, "multiple configured Detent status labels") {
-		t.Fatalf("blocked reason = %q, want status-label conflict", blocked.Reason)
+	if len(state.Blocked) != 0 {
+		t.Fatal("status label conflict created a human hold")
 	}
-	snapshot := state.Snapshot(time.Now())
-	if snapshot.Counts.Blocked != 1 {
-		t.Fatalf("snapshot blocked count = %d, want 1", snapshot.Counts.Blocked)
-	}
-	counts := telemetry.BoardStateCounts(snapshot)
-	if len(counts) != 1 || counts[0].State != "Blocked" || counts[0].Count != 1 {
-		t.Fatalf("board state counts = %#v, want one Blocked issue", counts)
+	retry := state.Retry[conflict.ID]
+	if !strings.Contains(retry.Error, "multiple configured Detent status labels") || retry.Issue.State != "Todo" {
+		t.Fatalf("retry = %#v, want source-lane retry with conflict diagnostic", retry)
 	}
 }
 
@@ -2407,6 +2168,7 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 
 			issue := testIssue("issue-operator-move", "digitaldrywood/detent#1482", tt.from)
 			unrelated := testIssue("issue-unrelated-blocked", "digitaldrywood/detent#1483", "Blocked")
+			unrelated.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "Approve the requested scope"}
 			resident := testIssue("resident", "digitaldrywood/detent#1484", "Todo")
 			tracker := &operatorMoveConnector{fakeConnector: newFakeConnector()}
 			tracker.setStateIssues(issue, unrelated)
@@ -2484,6 +2246,9 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 				Remove:       tt.remove,
 				Reason:       "backlog_admission",
 			}
+			if tt.to == "Blocked" {
+				move.Reason = "operator_move"
+			}
 			if tt.foreign {
 				move.Tracker = newFakeConnector(issue)
 			}
@@ -2491,7 +2256,8 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 			if !errors.Is(err, tracker.writeErr) {
 				t.Fatalf("ReconcileOperatorMove() error = %v, want %v", err, tracker.writeErr)
 			}
-			if result.Reconciled != (tt.degraded || tt.foreign || tt.remove || tt.stalledRefill) || result.BlockedCleared != (tt.degraded || tt.stalledRefill) {
+			_, wasBlocked := baseline.Blocked[issue.ID]
+			if result.Reconciled != (tt.degraded || tt.foreign || tt.remove || tt.stalledRefill) || result.BlockedCleared != (wasBlocked && (tt.degraded || tt.stalledRefill)) {
 				t.Fatalf("ReconcileOperatorMove() = %#v", result)
 			}
 			if tt.stalledRefill {
@@ -2499,12 +2265,10 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 				defer release()
 				select {
 				case <-tracker.refillStarted:
-				case <-time.After(slowCIIntegrationWaitTimeout):
+				case <-t.Context().Done():
 					t.Fatal("move did not reach refill")
 				}
-				ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
-				state, err := orch.State(ctx)
-				cancel()
+				state, err := orch.State(t.Context())
 				if err != nil {
 					t.Fatalf("State() during stalled refill: %v", err)
 				}

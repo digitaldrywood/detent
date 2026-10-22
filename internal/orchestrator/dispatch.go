@@ -167,6 +167,11 @@ func normalizeWorkerHosts(hosts []string) []string {
 }
 
 func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time, maintenanceIssues ...connector.Issue) {
+	for _, issue := range issues {
+		if stateIn(issue.State, o.cfg.ActiveStates) && !o.currentBlockedHumanIntent(ctx, state, issue) && !o.currentBlockedOperatorStop(ctx, state, issue) {
+			clearBlockedStatusIssue(state, issue)
+		}
+	}
 	o.beginGlobalProjectCycle()
 	defer o.endGlobalProjectCycle()
 	if state.Draining || o.dispatchQuiesced() {

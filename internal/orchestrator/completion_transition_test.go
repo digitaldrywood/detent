@@ -1679,7 +1679,7 @@ func TestCompletedReviewTransitionUsesExistingPromotionOwner(t *testing.T) {
 			}
 			if tc.want == "" {
 				for _, update := range tracker.updates {
-					if update.state != "Blocked" {
+					if update.state != "Rework" {
 						t.Fatalf("unsafe transition: %+v", update)
 					}
 				}

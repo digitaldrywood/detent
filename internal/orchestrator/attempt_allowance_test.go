@@ -39,13 +39,13 @@ func TestAttemptAllowanceTriagePublication(t *testing.T) {
 		humanReview                    *bool
 		want                           string
 	}{
-		{name: "command gate", kind: gate.KindCommand, want: "Blocked"},
-		{name: "interrupted command gate", kind: gate.KindCommand, interrupted: true, want: "Blocked"},
-		{name: "human review gate", kind: gate.KindHumanReview, want: "Human Review"},
-		{name: "explicit opt out", kind: gate.KindCommand, optout: true, want: "Human Review"},
-		{name: "review disabled human gate", kind: gate.KindHumanReview, humanReview: new(false), want: "Blocked"},
-		{name: "review disabled opt out", kind: gate.KindCommand, optout: true, humanReview: new(false), want: "Blocked"},
-		{name: "no blocked lane", kind: gate.KindCommand, noBlocked: true, want: "Human Review"},
+		{name: "command gate", kind: gate.KindCommand, want: "In Progress"},
+		{name: "interrupted command gate", kind: gate.KindCommand, interrupted: true, want: "In Progress"},
+		{name: "human review gate", kind: gate.KindHumanReview, want: "In Progress"},
+		{name: "explicit opt out", kind: gate.KindCommand, optout: true, want: "In Progress"},
+		{name: "review disabled human gate", kind: gate.KindHumanReview, humanReview: new(false), want: "In Progress"},
+		{name: "review disabled opt out", kind: gate.KindCommand, optout: true, humanReview: new(false), want: "In Progress"},
+		{name: "no blocked lane", kind: gate.KindCommand, noBlocked: true, want: "In Progress"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
@@ -87,20 +87,13 @@ func TestAttemptAllowanceTriagePublication(t *testing.T) {
 			if !validAttemptTriageNote(body) {
 				t.Fatalf("invalid note: %s", body)
 			}
-			if len(tracker.updates) != 1 || tracker.updates[0].state != tt.want {
-				t.Fatalf("updates = %#v", tracker.updates)
+			if len(tracker.updates) != 0 || len(state.Blocked) != 0 {
+				t.Fatalf("triage changed executable lane: %+v", tracker.updates)
 			}
-			timeline, err := db.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{ProjectID: cfg.Project.ID, IssueID: issue.ID})
-			if err != nil {
-				t.Fatal(err)
+			if retry, ok := state.Retry[issue.ID]; !ok || retry.Issue.State != tt.want {
+				t.Fatalf("triage lost retry: %+v", retry)
 			}
-			found := false
-			for _, event := range timeline.Events {
-				found = found || event.Reason == attemptAllowanceExhaustedReason
-			}
-			if !found {
-				t.Fatal("missing allowance transition reason")
-			}
+
 		})
 	}
 }
@@ -367,14 +360,14 @@ func TestAttemptAllowanceTriageFallbackCompletion(t *testing.T) {
 			state := newState(cfg)
 			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: id, Mode: runpkg.RunModeTriage}
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: tt.result, Err: tt.err})
-			if len(tracker.comments) != 1 || len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
+			if len(tracker.comments) != 1 || len(tracker.updates) != 0 {
 				t.Fatalf("writes: comments=%+v updates=%+v", tracker.comments, tracker.updates)
 			}
 			note := strings.Split(tracker.comments[0].body, "<!--")[0]
 			if !validAttemptTriageNote(note) || !strings.Contains(note, tt.detail) {
 				t.Fatalf("note = %s", note)
 			}
-			if len(state.Retry) != 0 || len(state.Blocked) != 0 {
+			if len(state.Retry) != 1 || len(state.Blocked) != 0 {
 				t.Fatalf("terminal triage scheduled more work: retry=%+v blocked=%+v", state.Retry, state.Blocked)
 			}
 		})
@@ -400,24 +393,24 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 		{name: "merge discovered during hydration", merged: true, ci: "green", mergeable: "clean", want: "Done"},
 		{name: "fresh corrected merged receipt", receipt: "valid", ci: "green", mergeable: "clean", want: "Done"},
 		{name: "merged receipt preserves observed lane", receipt: "valid", preserve: true, ci: "green", mergeable: "clean"},
-		{name: "wrong receipt integration branch remains held", receipt: "wrong branch", ci: "green", mergeable: "clean", want: "Blocked"},
-		{name: "missing merged reference remains held", receipt: "missing reference", ci: "green", mergeable: "clean", want: "Blocked"},
-		{name: "current human action remains held", receipt: "human action", ci: "green", mergeable: "clean", want: "Blocked"},
+		{name: "wrong receipt integration branch remains held", receipt: "wrong branch", ci: "green", mergeable: "clean", want: "Rework"},
+		{name: "missing merged reference remains held", receipt: "missing reference", ci: "green", mergeable: "clean", want: "Rework"},
+		{name: "current human action remains held", receipt: "human action", ci: "green", mergeable: "clean", want: "Rework"},
 		{name: "validator pending", validator: true, pending: true, ci: "green", mergeable: "clean"},
 		{name: "audit missing starts before merging", audit: true, pending: true, ci: "green", mergeable: "clean"},
 		{name: "audit missing for non-merging destination", audit: true, pending: true, ci: "green", mergeable: "clean", passState: "Done"},
 		{name: "audit running", audit: true, auditRunning: true, pending: true, ci: "green", mergeable: "clean"},
 		{name: "green replacement head promotes", newHead: true, ci: "green", mergeable: "clean", want: "Merging"},
-		{name: "disabled promotion parks", disabled: true, ci: "green", mergeable: "clean", want: "Blocked"},
+		{name: "disabled promotion parks", disabled: true, ci: "green", mergeable: "clean", want: "Rework"},
 		{name: "observed lane is preserved", preserve: true, ci: "green", mergeable: "clean", want: ""},
 		{name: "green head promotes", ci: "green", mergeable: "clean", want: "Merging"},
 		{name: "pending CI waits", ci: "pending", mergeable: "blocked", pending: true},
 		{name: "pending CI and missing audit wait", ci: "pending", mergeable: "blocked", audit: true, pending: true},
-		{name: "missing required check parks despite running CI", ci: "pending", mergeable: "blocked", requiredChecks: []connector.PullRequestCheck{{Name: "Required", Status: "missing", Conclusion: "missing"}}, want: "Blocked"},
+		{name: "missing required check parks despite running CI", ci: "pending", mergeable: "blocked", requiredChecks: []connector.PullRequestCheck{{Name: "Required", Status: "missing", Conclusion: "missing"}}, want: "Rework"},
 		{name: "queued required check waits", ci: "pending", mergeable: "blocked", requiredChecks: []connector.PullRequestCheck{{Name: "Required", Status: "queued"}}, pending: true},
-		{name: "failing head parks", ci: "failure", mergeable: "blocked", want: "Blocked"},
-		{name: "conflicting head parks", ci: "green", mergeable: "dirty", want: "Blocked"},
-		{name: "unresolved thread parks", ci: "green", mergeable: "clean", threads: []connector.PullRequestReviewThread{{Body: "thread"}}, want: "Blocked"},
+		{name: "failing head parks", ci: "failure", mergeable: "blocked", want: "Rework"},
+		{name: "conflicting head parks", ci: "green", mergeable: "dirty", want: "Rework"},
+		{name: "unresolved thread parks", ci: "green", mergeable: "clean", threads: []connector.PullRequestReviewThread{{Body: "thread"}}, want: "Rework"},
 		{name: "unavailable evidence waits", unavailable: "checks_unavailable", wantErr: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -504,7 +497,11 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 				}
 				return
 			}
-			if len(tracker.updates) != 1 || tracker.updates[0].state != tt.want {
+			wantUpdates := 1
+			if tt.want == issue.State {
+				wantUpdates = 0
+			}
+			if len(tracker.updates) != wantUpdates || wantUpdates > 0 && tracker.updates[0].state != tt.want {
 				t.Fatalf("updates = %#v, want %s", tracker.updates, tt.want)
 			}
 			// Replay the durable triage after the lane transition, as on restart.
@@ -513,7 +510,7 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 			if err := orch.publishAttemptTriage(t.Context(), &state, issue, attempt, now.Add(time.Minute)); err != nil {
 				t.Fatal(err)
 			}
-			if len(tracker.updates) != 1 {
+			if len(tracker.updates) != wantUpdates {
 				t.Fatalf("replay moved lane again: %#v", tracker.updates)
 			}
 			if tt.want == "Merging" || tt.want == "Done" {

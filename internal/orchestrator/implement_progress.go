@@ -3,13 +3,14 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -1017,97 +1018,15 @@ func (o *Orchestrator) blockImplementProgress(
 	state *State,
 	running Running,
 	decision implementCompletionProgressDecision,
-	blockedAt time.Time,
+	event runpkg.Completion,
 ) bool {
-	issue := cloneIssue(decision.Issue)
-	issueID := strings.TrimSpace(issue.ID)
-	if issueID == "" {
-		return false
+	if action := explicitHumanAction(decision.Issue); action != "" {
+		running.Issue = decision.Issue
+		event.Err = errors.New(action)
+		return o.blockHumanOwnedWorkerFailure(ctx, state, event, running, workpadBlockedUnactionedReason, action, action, "worker_permission_wait")
 	}
-	blockReason := strings.TrimSpace(decision.BlockReason)
-	if blockReason == "" {
-		blockReason = noProgressLimitReason
-	}
-	predicate := blockedRecoveryPredicateFingerprintChange
-	switch blockReason {
-	case strandedUnpushedWorkReason:
-		predicate = blockedRecoveryPredicateOncePerFingerprint
-	case noProgressLimitReason, dispatchLoopDetectedReason:
-		predicate = blockedRecoveryPredicateManaged
-	}
-	if strings.TrimSpace(decision.HumanAction) != "" || blockReason == workpadBlockedUnactionedReason {
-		predicate = blockedRecoveryPredicateManaged
-	}
-	metadata := o.newBlockedRecoveryMetadata(
-		ctx,
-		issue,
-		RunModeImplement,
-		blockReason,
-		predicate,
-		autoPromoteReworkState,
-		decision.WorkspaceDiffStats,
-	)
-	if predicate == blockedRecoveryPredicateManaged {
-		metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
-	}
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, blockedStatusState, blockedAt, blockReason, metadata); err != nil {
-		if o.logger != nil {
-			o.logger.Warn(
-				"no progress limit state transition failed",
-				"issue_id", issueID,
-				"identifier", issue.Identifier,
-				"target_state", blockedStatusState,
-				"error", err,
-			)
-		}
-		return false
-	}
-	issue.State = blockedStatusState
-	stageUpdatedAt := blockedAt.UTC()
-	issue.StageUpdatedAt = &stageUpdatedAt
-	if o.connector != nil {
-		if err := o.connector.CreateComment(ctx, issueID, implementProgressBlockComment(issue, decision)); err != nil && o.logger != nil {
-			o.logger.Warn("no progress limit comment failed", "issue_id", issueID, "identifier", issue.Identifier, "error", err)
-		}
-	}
-	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
-		o.logger.Warn("no progress limit claim release failed", "issue_id", issueID, "identifier", issue.Identifier, "error", err)
-	}
-	delete(state.Claimed, issueID)
-	delete(state.Retry, issueID)
-	delete(state.BudgetRefusals, issueID)
-	delete(state.PriorAttempts, issueID)
-	if completed, ok := state.Completed[issueID]; ok {
-		completed.Issue = issue
-		state.Completed[issueID] = completed
-	}
-	if state.Blocked == nil {
-		state.Blocked = map[string]Blocked{}
-	}
-	state.Blocked[issueID] = Blocked{
-		Issue:          issue,
-		Reason:         blockReason,
-		RecoveryReason: implementProgressRecoveryReason(decision),
-		RecoveryTarget: "Rework",
-		BlockedAt:      blockedAt,
-		Source:         BlockedSourceProjectStatus,
-		Recovery:       metadata.BlockedRecovery,
-	}
-	eventName := "implement_worker_no_progress_limit"
-	if blockReason == dispatchLoopDetectedReason {
-		eventName = "implement_worker_dispatch_loop_detected"
-	}
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      blockedAt,
-		Event:   eventName,
-		Message: "parked " + issueLabel(issue) + " after implement progress breaker " + blockReason,
-	})
-	telemetry.LogLifecycle(o.logger, slog.LevelError, telemetry.LifecycleSafetyControl, eventName, o.runningLifecycleCorrelation(issue, running),
-		"block_reason", blockReason,
-		"consecutive_no_progress", decision.ConsecutiveNoProgress,
-		"no_progress_limit", decision.NoProgressLimit,
-	)
-	return true
+	running.Issue = decision.Issue
+	return o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), noProgressLimitReason)
 }
 
 func (o *Orchestrator) finishImplementDependencyDeferral(

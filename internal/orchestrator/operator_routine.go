@@ -57,9 +57,7 @@ func (o *Orchestrator) runOperatorAction(kind string, run func() map[string]stru
 }
 
 func (o *Orchestrator) operatorReturnRetiredParks(ctx context.Context, state *State, issues []connector.Issue, now time.Time) map[string]struct{} {
-	return o.runOperatorAction(workflowconfig.OperatorActionReturnRetiredParks, func() map[string]struct{} {
-		return o.recoverBlockedIssues(ctx, state, issues, now)
-	})
+	return o.recoverBlockedIssues(ctx, state, issues, now)
 }
 
 func (o *Orchestrator) operatorClearClosedDependencies(ctx context.Context, state *State, issues []connector.Issue, now time.Time) map[string]struct{} {

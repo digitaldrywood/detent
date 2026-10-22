@@ -176,10 +176,10 @@ func TestEventAndTickDispatchEligibilityParity(t *testing.T) {
 			issue.State = "Rework"
 			issue.PullRequest = &connector.PullRequest{Number: 10, State: "open", CIStatus: "pending"}
 		}},
-		{name: "lifetime hold", prepare: func(_ *Config, state *State, issue *connector.Issue) {
+		{name: "lifetime hold", wantRunning: true, prepare: func(_ *Config, state *State, issue *connector.Issue) {
 			state.Blocked[issue.ID] = Blocked{Issue: *issue, Reason: lifetimeLimitReason, Source: BlockedSourceProjectStatus}
 		}},
-		{name: "recovery park", prepare: func(_ *Config, state *State, issue *connector.Issue) {
+		{name: "recovery park", wantRunning: true, prepare: func(_ *Config, state *State, issue *connector.Issue) {
 			state.Blocked[issue.ID] = Blocked{Issue: *issue, Reason: "recovery pending", Source: BlockedSourceProjectStatus}
 		}},
 		{name: "failure breaker", prepare: func(_ *Config, state *State, _ *connector.Issue) {

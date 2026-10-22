@@ -348,7 +348,7 @@ func TestHandleRunResultRejectsDirtyCompletionAndEscalates(t *testing.T) {
 		intentional  bool
 	}{
 		{name: "first rejection returns to agent", wantTerminal: store.WorkAttemptTerminalSuccess, wantRetry: true},
-		{name: "second rejection parks", history: []store.WorkAttempt{previousRejected}, wantTerminal: store.WorkAttemptTerminalNoProgress, wantBlocked: true},
+		{name: "second rejection parks", history: []store.WorkAttempt{previousRejected}, wantTerminal: store.WorkAttemptTerminalNoProgress, wantRetry: true},
 		{name: "intentional remainder parks", history: []store.WorkAttempt{previousRejected}, wantTerminal: store.WorkAttemptTerminalNoProgress, wantBlocked: true, intentional: true},
 	}
 
@@ -426,6 +426,15 @@ func TestHandleRunResultRejectsDirtyCompletionAndEscalates(t *testing.T) {
 			_, blocked := state.Blocked[issue.ID]
 			if retrying != tt.wantRetry || blocked != tt.wantBlocked {
 				t.Fatalf("state = retry %t blocked %t, want retry %t blocked %t", retrying, blocked, tt.wantRetry, tt.wantBlocked)
+			}
+			if tt.wantTerminal == store.WorkAttemptTerminalNoProgress && !tt.intentional {
+				retry := state.Retry[issue.ID]
+				for _, want := range []string{"2 files, +9/-3", "internal/worker.go", "debug.log"} {
+					if !strings.Contains(retry.Error, want) {
+						t.Fatalf("retry lost workspace evidence: %s", retry.Error)
+					}
+				}
+				return
 			}
 			if len(tracker.comments) == 0 {
 				t.Fatal("expected a completion rejection or escalation comment")
