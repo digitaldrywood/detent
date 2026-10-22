@@ -88,6 +88,8 @@
       "TestNativeExecutionSettlesFinishedRun"
     ],
     "./internal/runner": [
+      "TestNativeRecoveryWipeDerivedHold",
+      "TestNativePublicationRecoveryOnAnyRunner",
       "TestNativeInterruptedCodeRecoversPersistedSession",
       "TestNativeReworkFinalizesBeforeImmutableEvidence",
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline",

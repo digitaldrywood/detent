@@ -320,11 +320,14 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			if state == "confirmed" && kind == "git_push" && checkpoint.ExternalEffect == "pr_create" {
 				return nil
 			}
+			if kind == "git_push" && state == "pending" {
+				checkpoint.ExpectedHeadSHA = publication.ExpectedHeadSHA
+			}
 			checkpoint.ExternalEffect, checkpoint.EffectState = kind, state
 			checkpoint.EffectID = binding.EffectID(kind)
 			checkpoint.Change = &tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
 			if state == "none" {
-				checkpoint.ExternalEffect, checkpoint.EffectID = "none", ""
+				checkpoint.ExternalEffect, checkpoint.EffectID, checkpoint.ExpectedHeadSHA = "none", "", ""
 			}
 			if err := e.append(ctx, "run.checkpointed", "", &checkpoint); err != nil {
 				return err
@@ -337,7 +340,11 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			}
 			return nil
 		}
-		publication, err := e.publicationSource(ctx, version, workspace.LandOptions{Authorize: authorizeStart, PublicationEffect: effect, External: external, ExternalHeadSHA: externalHead, PublicationPushes: pushes, SourceIssues: detail.SourceIssues, UnresolvedEffect: unresolvedAtStart})
+		expectedHead := ""
+		if e.data.Handoff != nil {
+			expectedHead = e.data.Handoff.ExpectedHeadSHA
+		}
+		publication, err := e.publicationSource(ctx, version, workspace.LandOptions{Authorize: authorizeStart, PublicationEffect: effect, External: external, ExternalHeadSHA: externalHead, PublicationPushes: pushes, SourceIssues: detail.SourceIssues, UnresolvedEffect: unresolvedAtStart, ExpectedPublicationHead: expectedHead})
 		if err != nil {
 			var refusal *workspace.LandRefusal
 			if !unresolvedAtStart && !errors.As(err, &refusal) && e.data.Handoff != nil && e.data.Handoff.EffectState == "ambiguous" {

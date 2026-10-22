@@ -392,8 +392,11 @@ passed. Dependency operations are `add`/`remove`. Review decisions are `approve`
 `request_changes`, and `dismiss`; check conclusions are `passed`, `failed`,
 `cancelled`, or `skipped`, with pending checks represented separately. Only the
 configured accepted conclusion can satisfy a required check. Checkpoint resumption
-is `resume_session`, `fresh_checkout`, or `manual_recovery`, accompanied by scoped
-artifact references and the reason when required. New enum values require schema
+is `resume_session` or `fresh_checkout`, accompanied by scoped artifact references
+and the reason when required. Historical `manual_recovery` values remain readable
+but never veto execution. Publication uncertainty is reconciled against current
+remote refs before execution: matching intended SHA confirms publication,
+unchanged refs permit compare-and-swap retries, and moved refs require Rework/rebase. New enum values require schema
 negotiation; unknown values cannot be interpreted as success or permission.
 
 Schemas reject unexpected content fields and enforce negotiated byte/count limits.

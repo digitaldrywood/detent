@@ -314,6 +314,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		publicationPrior     bool
 		unknownPrior         bool
 		lostPushReceipt      bool
+		publicationLostReply bool
+		publicationExpected  bool
+		publicationRace      bool
 		unresolvedEffect     bool
 		checkpointState      string
 		review               string
@@ -358,10 +361,13 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "prepare refuses a different push repository", prepareOnly: true, wrongRemote: "pushurl", method: "squash", wantRefusal: LandRefusalProtected},
 		{name: "prepare repeats an unresolved write over the recorded PR head", prepareOnly: true, external: true, publicationBranch: "manual/recovery", publicationPrior: true, unresolvedEffect: true, method: "squash"},
 		{name: "prepare refuses an unresolved write over a different branch head", prepareOnly: true, reworked: true, unresolvedEffect: true, preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
+		{name: "prepare reconciles a successful push with a lost reply", prepareOnly: true, publicationLostReply: true, method: "squash"},
+		{name: "prepare retries an unchanged recorded branch", prepareOnly: true, reworked: true, unresolvedEffect: true, publicationExpected: true, method: "squash"},
+		{name: "prepare fences concurrent creation of an absent branch", prepareOnly: true, unresolvedEffect: true, publicationRace: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
 		{name: "prepare clears pending publication when branch and PR are absent", prepareOnly: true, unresolvedEffect: true, checkpointState: "pending", method: "squash"},
 		{name: "prepare clears ambiguous publication when branch and PR are absent", prepareOnly: true, unresolvedEffect: true, checkpointState: "ambiguous", method: "squash"},
-		{name: "prepare preserves pending publication when a different branch head exists", prepareOnly: true, reworked: true, unresolvedEffect: true, checkpointState: "pending", preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
-		{name: "prepare preserves ambiguous publication when a different branch head exists", prepareOnly: true, reworked: true, unresolvedEffect: true, checkpointState: "ambiguous", preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
+		{name: "prepare resolves pending publication when a different branch head exists", prepareOnly: true, reworked: true, unresolvedEffect: true, checkpointState: "pending", preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
+		{name: "prepare resolves ambiguous publication when a different branch head exists", prepareOnly: true, reworked: true, unresolvedEffect: true, checkpointState: "ambiguous", preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
 		{name: "prepare refuses duplicate matching PRs", prepareOnly: true, duplicatePull: true, preservePublication: true, method: "squash", wantRefusal: LandRefusalHeadMoved},
 		{name: "landing refuses newer published head", remoteNewer: true, preservePublication: true, pullState: "open", method: "squash", wantRefusal: LandRefusalHeadMoved},
 		{name: "prepare refuses newer remote-only published head", prepareOnly: true, remoteNewer: true, remoteOnlyHead: true, preservePublication: true, pullState: "open", method: "squash", wantRefusal: LandRefusalHeadMoved},
@@ -990,6 +996,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			}
 			if test.prepareOnly {
 				opts.UnresolvedEffect = test.unresolvedEffect
+				if test.publicationExpected {
+					opts.ExpectedPublicationHead = previous
+				}
 				authorityCalls := 0
 				authorityErr := errors.New("publication authority lost; resume under the current source owner")
 				if test.ambiguousEffect {
@@ -1001,6 +1010,27 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 						return authorityErr
 					}
 					return nil
+				}
+				if test.publicationLostReply {
+					realGit, err := exec.LookPath("git")
+					if err != nil {
+						t.Fatal(err)
+					}
+					wrapper := t.TempDir()
+					script := "#!/bin/sh\n" + shellQuote(realGit) + " \"$@\"\nresult=$?\nif [ \"$1\" = \"-C\" ] && [ \"$3\" = \"push\" ] && [ \"$result\" = \"0\" ]; then exit 1; fi\nexit \"$result\"\n"
+					if err := os.WriteFile(filepath.Join(wrapper, "git"), []byte(script), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					t.Setenv("PATH", wrapper+string(os.PathListSeparator)+os.Getenv("PATH"))
+				}
+				if test.publicationRace {
+					opts.PublicationEffect = func(ctx context.Context, kind, state string, _ GitHubPublication) error {
+						if kind == "git_push" && state == "pending" {
+							_, err := runGitAt(ctx, fixture.remote, "update-ref", "refs/heads/"+publicationBranch, base)
+							return err
+						}
+						return nil
+					}
 				}
 				lostPushReceipt := false
 				clearedPublication := false
@@ -1053,7 +1083,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					runGit(t, fixture.source, "config", "remote.origin.pushurl", "https://github.com/other/repo.git")
 				}
 				publication, err := fixture.backend.PrepareGitHubPublication(t.Context(), landingInfo, landingIssue, opts)
-				if test.checkpointState != "" && (clearedPublication != (test.wantRefusal == "") || test.wantRefusal != "" && createCalls != 0) {
+				if test.checkpointState != "" && (!clearedPublication || test.wantRefusal != "" && createCalls != 0) {
 					t.Fatalf("publication absence was not reconciled before another write: cleared=%t creates=%d error=%v", clearedPublication, createCalls, err)
 				}
 				if test.lostPushReceipt {
@@ -1088,6 +1118,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					return
 				}
 				if test.wantRefusal != "" {
+					if test.publicationRace && (createCalls != 0 || strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+publicationBranch)) != base) {
+						t.Fatal("publication overwrote a concurrently created ref")
+					}
 					if test.publicationBranch != "" && (createCalls != 0 || strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+publicationBranch)) != externalHead || preservedBranch != runGit(t, fixture.remote, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"+fixture.info.Branch)) {
 						t.Fatal("refused publication changed the retained PR or assigned branch")
 					}

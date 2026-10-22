@@ -401,6 +401,11 @@ interactions are the main source of incidents, so the set may not grow.
   existing one in the same change. "Add a guard for the new case" is not a fix.
 - Infrastructure failures (backend startup, protocol errors, workspace hooks)
   are attributed to the instance, never to the issue.
+- Uncertain publication is reconciled against the remote ref before execution:
+  an intended SHA match is published, an unchanged ref permits a compare-and-swap
+  push (including an absent ref), and a moved ref returns to Rework/rebase.
+  Historical `manual_recovery` checkpoint judgments never hold an item; verify
+  current source and lease authority through the existing publication owner.
 - The orchestrator is the only writer of tracker lane state; workers report
   outcomes and never write lane labels.
 - Do not add configuration keys, CLI subcommands, or dashboard surfaces to work
