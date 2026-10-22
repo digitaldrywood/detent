@@ -1041,9 +1041,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					t.Setenv("PATH", wrapper+string(os.PathListSeparator)+os.Getenv("PATH"))
 				}
 				if test.publicationRace {
-					opts.PublicationEffect = func(_ context.Context, kind, state string, _ GitHubPublication) error {
+					opts.PublicationEffect = func(ctx context.Context, kind, state string, _ GitHubPublication) error {
 						if kind == "git_push" && state == "pending" {
-							runGit(t, fixture.remote, "update-ref", "refs/heads/"+publicationBranch, base)
+							_, err := runGitAt(ctx, fixture.remote, "update-ref", "refs/heads/"+publicationBranch, base)
+							return err
 						}
 						return nil
 					}
