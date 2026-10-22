@@ -526,7 +526,8 @@ func (o *Orchestrator) recoverDeferredCompletions(ctx context.Context, state *St
 		if claim.Issue.ID != "" {
 			state.Claimed[issueID] = claim
 		}
-		if record.AuthorityRestored && o.captureDeferredExecution(&record) {
+		if record.AuthorityRestored {
+			o.captureDeferredExecution(&record)
 			record.DeferredAt = now
 			record.Persisted = o.persistDeferredCompletion(ctx, state, record)
 			state.deferredCompletions[issueID] = record
@@ -611,10 +612,9 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 			if claim.Issue.ID != "" {
 				state.Claimed[issueID] = claim
 			}
-			if o.captureDeferredExecution(&record) {
-				record.DeferredAt = now
-				record.Persisted = false
-			}
+			o.captureDeferredExecution(&record)
+			record.DeferredAt = now
+			record.Persisted = false
 		}
 		if !record.Persisted {
 			record.DeferredAt = now

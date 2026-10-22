@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
@@ -214,7 +215,7 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := runtimeStore.RecordWorkAttemptHeartbeat(t.Context(), store.WorkAttemptHeartbeat{AttemptID: attemptID, HeartbeatAt: now, Phase: "completion_deferred", WorkerMetadataJSON: string(metadata)}); err != nil {
+		if err := runtimeStore.RecordWorkAttemptHeartbeat(t.Context(), store.WorkAttemptHeartbeat{AttemptID: attemptID, HeartbeatAt: now, LeaseExpiresAt: now.Add(time.Hour), Phase: "completion_deferred", WorkerMetadataJSON: string(metadata)}); err != nil {
 			t.Fatal(err)
 		}
 		cfg := workflowconfig.Default()
@@ -237,20 +238,18 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 		if err := registry.Set(tracked); err != nil {
 			t.Fatal(err)
 		}
-		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-		defer cancel()
+		ctx := t.Context()
 		var state orchestrator.State
-		for {
+		testenv.WaitUntil(t, ctx, func() error {
 			state, err = tracked.Orchestrator().State(ctx)
-			if err != nil || state.UnsettledWork() > 0 {
-				break
+			if err != nil {
+				return err
 			}
-			select {
-			case <-ctx.Done():
-				t.Fatal("completion owner was not restored")
-			case <-time.After(time.Millisecond):
+			if state.UnsettledWork() == 0 {
+				return errors.New("completion owner was not restored")
 			}
-		}
+			return nil
+		})
 		if err != nil || len(state.Snapshot(now).Running) != 0 || state.UnsettledWork() != 1 {
 			t.Fatalf("completion owner unavailable: unsettled=%d err=%v", state.UnsettledWork(), err)
 		}

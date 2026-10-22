@@ -191,7 +191,9 @@ func reapWorkerProcessesWithCleanup(
 	if strings.TrimSpace(reason) == "startup" && !terminationFailed && hasAttempts {
 		gone := make([]int64, 0, len(attempts))
 		for _, attempt := range attempts {
-			gone = append(gone, attempt.ID)
+			if !strings.EqualFold(strings.TrimSpace(attempt.Phase), "completion_deferred") {
+				gone = append(gone, attempt.ID)
+			}
 		}
 		if _, err := attemptStore.TimeoutExpiredWorkAttempts(ctx, store.WorkAttemptTimeout{
 			Now: now().UTC(), ConfirmedGoneAttemptIDs: gone,

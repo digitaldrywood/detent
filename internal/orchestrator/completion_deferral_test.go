@@ -169,9 +169,13 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 		restoreError       error
 		restoreTransient   bool
 		wantRestores       int
+		longRetry          bool
+		expired            bool
 	}{
 		{name: "native final checkpoint authority survives restart", nativeAuthority: true, wantRestores: 1, recoveredState: "In Progress", retryCount: 2, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
-		{name: "native completion waits for restoration transport", nativeAuthority: true, wantRestores: 2, restoreTransient: true, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
+		{name: "expired completion cannot publish", expired: true},
+		{name: "non-native renewal outlasts original lease", longRetry: true, recoveredState: "In Progress", retryCount: 2, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
+		{name: "native completion waits for restoration transport", longRetry: true, nativeAuthority: true, wantRestores: 2, restoreTransient: true, recoveredState: "In Progress", retryCount: 2, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
 		{name: "invalid restored authority cannot release another claim", nativeAuthority: true, wantRestores: 2, restoreError: runpkg.ErrExecutionAuthorityUnavailable, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalAbandoned},
 		{name: "intake off preserves deferred completion through restart", intakeOff: true, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
 		{
@@ -282,17 +286,28 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 				nativeTracker.stateIssues = []connector.Issue{recoveredIssue}
 			}
 			restartAt := now.Add(2 * time.Minute)
+			if tt.expired {
+				restartAt = now.Add(time.Hour)
+			}
 			restartedOrch := Orchestrator{cfg: cfg, connector: trackerOwner, workAttempts: restartedStore, now: func() time.Time { return restartAt }}
 			var restoredAuthority *completionRestartScheduling
 			if tt.nativeAuthority {
 				restoredAuthority = &completionRestartScheduling{hubSchedulingSource: &hubSchedulingSource{}, restoreError: tt.restoreError, restoreTransient: tt.restoreTransient}
 				restoredAuthority.execution = &completionRestartExecution{owner: restoredAuthority}
 				restartedOrch.scheduling = restoredAuthority
-				restartedOrch.heartbeats = newHeartbeatManager(cfg, trackerOwner, restartedStore, restartedOrch.now, nil, restoredAuthority)
 			}
+			restartedOrch.heartbeats = newHeartbeatManager(cfg, trackerOwner, restartedStore, restartedOrch.now, nil, restartedOrch.scheduling)
 			restartedOrch.localIntakeDisabled.Store(tt.intakeOff)
 			restartedState := newState(cfg)
 			restartedOrch.recoverDurableWorkAttempts(t.Context(), &restartedState, restartAt)
+
+			if tt.expired {
+				restartedOrch.retryDeferredCompletions(t.Context(), &restartedState, restartAt)
+				if len(restartedState.deferredCompletions) != 0 || len(restartedOrch.heartbeats.targets) != 0 || restartedState.TokenTotals.TotalTokens != 0 {
+					t.Fatal("expired authority renewed or published")
+				}
+				return
+			}
 
 			if _, ok := restartedState.deferredCompletions[issue.ID]; !ok {
 				t.Fatalf("deferred completion missing after restart: %#v", restartedState.deferredCompletions)
@@ -300,7 +315,7 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			if restartedState.UnsettledWork() != 1 || len(restartedState.Snapshot(restartAt).Running) != 0 {
 				t.Fatal("restored completion must remain unsettled without running a provider")
 			}
-			if tt.nativeAuthority && tt.restoreError == nil && !tt.restoreTransient {
+			if tt.restoreError == nil && !tt.restoreTransient {
 				if target, ok := restartedOrch.heartbeats.targets[issue.ID]; !ok || target.workAttemptHeartbeat.Phase != deferredCompletionPhase {
 					t.Fatal("restored completion lost its existing lease heartbeat owner")
 				}
@@ -339,6 +354,36 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 				}
 				if receipt.Status != store.WorkAttemptStatusActive || receipt.Phase != deferredCompletionPhase {
 					t.Fatalf("duplicate delivery changed deferred receipt = %#v", receipt)
+				}
+			}
+
+			if tt.restoreError != nil && len(restartedOrch.heartbeats.targets) != 0 {
+				t.Fatal("invalid authority registered heartbeat renewal")
+			}
+			if tt.longRetry {
+				if tt.restoreTransient {
+					tracker.firstErr = completionDeferralAvailabilityError()
+					if restartedOrch.retryDeferredCompletions(t.Context(), &restartedState, restartAt) {
+						t.Fatal("publication unexpectedly settled during tracker outage")
+					}
+				}
+				for range 3 {
+					restartAt = restartAt.Add(4 * time.Minute)
+					targets := restartedOrch.heartbeats.due(restartAt)
+					if len(targets) != 1 {
+						t.Fatalf("heartbeat targets = %d, want one verified completion", len(targets))
+					}
+					for _, target := range targets {
+						restartedOrch.heartbeats.execute(t.Context(), target)
+					}
+					restartedOrch.expireOrphanedWorkAttempts(t.Context(), &restartedState, restartAt)
+				}
+				if tt.nativeAuthority && restoredAuthority.renewals != 3 {
+					t.Fatalf("native authority renewals = %d, want 3", restoredAuthority.renewals)
+				}
+				receipt, err := restartedStore.WorkAttempt(t.Context(), attemptID)
+				if err != nil || !receipt.LeaseExpiresAt.After(restartAt) || receipt.Status != store.WorkAttemptStatusActive {
+					t.Fatalf("deferred lease did not survive original expiry: %+v, %v", receipt, err)
 				}
 			}
 
@@ -409,8 +454,17 @@ type completionRestartScheduling struct {
 	restored         bool
 	restores         int
 	prepared         int
+	renewals         int
 	restoreError     error
 	restoreTransient bool
+}
+
+func (s *completionRestartScheduling) RenewClaim(_ context.Context, _ string, _ time.Time) (Claimed, error) {
+	if !s.restored {
+		return Claimed{}, ErrSchedulingClaimLost
+	}
+	s.renewals++
+	return Claimed{}, nil
 }
 
 func (s *completionRestartScheduling) RestoreCompletion(_ context.Context, _ SchedulingRequest, issue connector.Issue, saved json.RawMessage) (Claimed, error) {

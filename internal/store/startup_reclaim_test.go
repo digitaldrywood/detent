@@ -67,6 +67,8 @@ func TestTimeoutWorkAttemptsProcessEvidence(t *testing.T) {
 		{name: "pool confirmed gone", host: "pool-a", gone: true, terminal: true},
 		{name: "running exclusion wins", host: "local", expired: true, gone: true, excluded: true},
 		{name: "expired deferred completion", host: "local", phase: "completion_deferred", expired: true, terminal: true},
+		{name: "live deferred completion with gone worker", host: "local", phase: "completion_deferred", gone: true},
+		{name: "expired deferred completion with gone worker", host: "local", phase: "completion_deferred", gone: true, expired: true, terminal: true},
 		{name: "live deferred completion", host: "local", phase: "completion_deferred"},
 		{name: "legacy completion without lease", host: "local", phase: "completion_deferred", missingLease: true, terminal: true},
 	} {
