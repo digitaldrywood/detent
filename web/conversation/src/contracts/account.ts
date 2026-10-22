@@ -287,6 +287,7 @@ export type SupportResponse = typeof SupportResponse.Type;
  * so recovering means re-reading, never guessing.
  */
 export const ProjectIntegration = Schema.Struct({
+  name: Schema.optional(Schema.String),
   duplicate_challenge: Schema.optional(Schema.Boolean),
   archive_completed_after_days: Schema.NullOr(Schema.Number),
   archive_cancelled_after_days: Schema.NullOr(Schema.Number),

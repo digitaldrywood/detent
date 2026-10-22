@@ -33,7 +33,7 @@ func projectToolScope(name string, read bool) apikey.Scope {
 		return apikey.ScopeRead
 	}
 	switch name {
-	case "apply_local_project_policy", "resume_local_project", "drain_local_project", "detach_local_project", "command_git_hub_batch", "create_native_project", "create_hosted_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret", "import_sprite_usage", operatortool.UpdateSpritePool, operatortool.UpdateProjectSpriteAllocation:
+	case "apply_local_project_policy", "resume_local_project", "drain_local_project", "detach_local_project", "command_git_hub_batch", "create_native_project", "create_hosted_project", "rename_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret", "import_sprite_usage", operatortool.UpdateSpritePool, operatortool.UpdateProjectSpriteAllocation:
 		return apikey.ScopeAdmin
 	}
 	return apikey.ScopeWrite
@@ -138,6 +138,20 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 		}
 		e.AuditAction(ctx, chatpkg.Action{Mutation: m}, outcome)
 	}()
+	if call.Name == "rename_project" {
+		var args operatortool.RenameProjectArguments
+		if err := operatortool.DecodeProjectArguments(call.Arguments, &args); err != nil {
+			return result, err
+		}
+		if args.OrganizationID != connection.Identity.OrganizationID {
+			return result, operatortool.ErrAccessDenied
+		}
+		raw, err := json.Marshal(operatortool.ProjectRequest[operatortool.RenameProjectInput]{ProjectID: args.ProjectID, RequestID: args.RequestID, Input: operatortool.RenameProjectInput{Name: args.Name, ExpectedRevision: args.ExpectedRevision}})
+		if err != nil {
+			return result, err
+		}
+		call.Arguments = raw
+	}
 	var selector struct {
 		ProjectID string          `json:"project_id"`
 		RequestID string          `json:"request_id"`
@@ -244,6 +258,11 @@ func (e hubProjectExecutor) ExecuteAction(ctx context.Context, action chatpkg.Ac
 	ctx = mutation.WithContext(ctx, action.Mutation)
 	result, err := e.command(ctx, operatortool.Call{Name: string(action.Kind), Arguments: action.Arguments}, projectCommandExecute)
 	if err != nil {
+		if action.Kind == "rename_project" {
+			if conflict := operatorNativeConflict(err); conflict != nil {
+				return chatpkg.ActionExecution{}, conflict
+			}
+		}
 		return chatpkg.ActionExecution{}, projectToolError(err)
 	}
 	if err := e.authorizeCreatedProjectResult(ctx, string(action.Kind), result, chatpkg.ActionSucceeded); err != nil {
@@ -462,6 +481,15 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		}
 		input = request
 		operation = s.saveOnboardingOperation(request)
+	case "rename_project":
+		r, err := projectCommandInput[operatortool.RenameProjectInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		projectID, requestID = r.ProjectID, r.RequestID
+		request := renameProjectRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Name: r.Input.Name, ExpectedRevision: r.Input.ExpectedRevision}
+		input = request
+		operation = s.renameProjectOperation(request)
 	case "update_project_integration":
 		r, err := projectCommandInput[operatortool.IntegrationInput](call.Arguments)
 		if err != nil {
@@ -619,6 +647,8 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 	suffix := map[string]string{"command_git_hub_batch": "/onboarding/issue-intake", "create_native_project": "", "create_hosted_project": "", "save_onboarding": "/onboarding", "update_project_integration": "/integration", "start_git_hub_import": "/imports", "cutover_project": "/integration/cutover", "approve_project_policy": "/policy", "revoke_project_policy": "/policy", "remove_project_secret": "/secrets/" + flySpritesToken, "project_native_summary": "/work-items/" + resourceID + "/projection"}[call.Name]
 	method := "POST"
 	switch call.Name {
+	case "rename_project":
+		method = "PATCH"
 	case "save_onboarding", "update_project_integration", "approve_project_policy":
 		method = "PUT"
 	case "revoke_project_policy", "remove_project_secret":

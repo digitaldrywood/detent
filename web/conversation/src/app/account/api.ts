@@ -358,6 +358,8 @@ export function makeAccountApi(options: AccountApiOptions) {
       send(ProjectSecretStatus, "DELETE", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`),
     integration: (projectId: string) =>
       send(ProjectIntegration, "GET", `${project(projectId)}/integration`),
+    renameProject: (input: { projectId: string; name: string; revision: string; key: string }) =>
+      send(ProjectIntegration, "PATCH", project(input.projectId), { name: input.name, expected_revision: input.revision, idempotency_key: input.key }),
     deleteProject: (input: { projectId: string; name: string; key: string }) =>
       send(null, "DELETE", project(input.projectId), { idempotency_key: input.key, confirm_name: input.name }),
     /**

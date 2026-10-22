@@ -17,11 +17,12 @@ import policy from "../../src/contracts/fixtures/account-policy.json";
 
 let destroyHistory: (() => void) | undefined;
 
-const api = vi.hoisted(() => ({ integration: vi.fn(), policy: vi.fn(), onboarding: vi.fn(), slug: vi.fn(), saveSlug: vi.fn(), saveIntegration: vi.fn(), modelSelection: vi.fn(), spritesSecret: vi.fn() }));
+const api = vi.hoisted(() => ({ integration: vi.fn(), policy: vi.fn(), onboarding: vi.fn(), slug: vi.fn(), saveSlug: vi.fn(), saveIntegration: vi.fn(), modelSelection: vi.fn(), spritesSecret: vi.fn(), renameProject: vi.fn() }));
 const account = { ...accountFixture, projects: [
   { ...accountFixture.projects[0]!, slug: "example-project" },
   { ...accountFixture.projects[0]!, id: "proj_second", slug: "second-project", name: "Second project" },
 ] };
+vi.mock("../../src/app/client.ts", async (importOriginal) => ({ ...await importOriginal<typeof import("../../src/app/client.ts")>(), useRefreshBootstrap: () => async () => undefined }));
 vi.mock("../../src/app/account/context.ts", () => ({ useAccountApi: () => api, useAccountBootstrap: () => account }));
 
 beforeEach(() => {
@@ -29,7 +30,9 @@ beforeEach(() => {
   vi.stubGlobal("PointerEvent", MouseEvent);
   const matches = Element.prototype.matches;
   vi.spyOn(Element.prototype, "matches").mockImplementation(function (this: Element, selector) { return selector === ":fullscreen" ? false : matches.call(this, selector); });
+  account.actor = accountFixture.actor;
   api.integration.mockResolvedValue(integration);
+  api.renameProject.mockResolvedValue({ ...integration, name: "Renamed project", revision: "2" });
   api.policy.mockResolvedValue(policy);
   api.onboarding.mockResolvedValue({ ...onboarding, ready: true });
   api.slug.mockResolvedValue({ slug: "example-project" });
@@ -205,9 +208,9 @@ describe("unsaved project settings navigation", () => {
     api.saveIntegration.mockResolvedValue({ ...integration, duplicate_challenge: false });
     const { user } = await mount("/settings/projects/example-project/general");
     await dirtyGeneral();
-    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(api.saveIntegration).toHaveBeenCalledWith(expect.objectContaining({ projectId: "proj_example_project", duplicateChallenge: false, archiveCompletedAfterDays: 30 })));
-    await waitFor(() => expect((screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement).disabled).toBe(true));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Save" })).toBeNull());
     await user.click(screen.getByRole("tab", { name: "Workflow" }));
     expect(await screen.findByText("Lanes")).toBeTruthy();
     expect(screen.queryByRole("alertdialog")).toBeNull();
@@ -219,4 +222,85 @@ it("finds each project's settings on its matching tab", () => {
   for (const [query, tab] of [["repository", "repository"], ["routing", "runners"], ["workflow", "workflow"], ["models", "models"], ["archive", "general"], ["delete", "danger"]]) {
     expect(searchSettings(query!, items).map((item) => item.to)).toContain(`/settings/projects/second-project/${tab}`);
   }
+});
+
+
+describe("project General and Repository section saves", () => {
+  it("enables Save name only for a changed nonempty name and preserves pending Issues edits", async () => {
+    const { user } = await mount("/settings/projects/example-project/general");
+    const name = await screen.findByRole("textbox", { name: "Project name" });
+    const save = screen.getByRole("button", { name: "Save name" }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.change(name, { target: { value: "   " } });
+    expect(save.disabled).toBe(true);
+    await dirtyGeneral();
+    fireEvent.change(name, { target: { value: "Renamed project" } });
+    expect(save.disabled).toBe(false);
+    await user.click(save);
+    await waitFor(() => expect(api.renameProject).toHaveBeenCalledWith(expect.objectContaining({ name: "Renamed project", revision: integration.revision })));
+    await waitFor(() => expect(save.disabled).toBe(true));
+    expect(screen.getByRole("switch", { name: "Check for duplicate issues" }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+    expect(api.saveIntegration).not.toHaveBeenCalled();
+  });
+
+  it.each(["Saved elsewhere", account.projects[0]!.name])("reloads the name and settings after a conflict (%s)", async (currentName) => {
+    api.renameProject.mockRejectedValue(new AccountError({ status: 409, code: "revision_conflict", message: "Conflict" }));
+    const { user } = await mount("/settings/projects/example-project/general");
+    const field = await screen.findByRole("textbox", { name: "Project name" }) as HTMLInputElement;
+    await dirtyGeneral();
+    fireEvent.change(field, { target: { value: "My edit" } });
+    const concurrent = { ...integration, name: currentName, revision: "9", archive_completed_after_days: 60, archive_cancelled_after_days: 90, projection: "disabled", repository_enabled: false };
+    api.integration.mockResolvedValue(concurrent);
+    await user.click(screen.getByRole("button", { name: "Save name" }));
+    expect(await screen.findByText("Changed by someone else. Reloaded; save again.")).toBeTruthy();
+    expect(field.value).toBe(currentName);
+    expect(screen.getByRole("combobox", { name: "Archive completed issues" }).textContent).toContain("After 60 days");
+    expect(screen.getByRole("combobox", { name: "Archive cancelled issues" }).textContent).toContain("After 90 days");
+    expect(screen.getByRole("switch", { name: "Check for duplicate issues" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    await dirtyGeneral();
+    api.saveIntegration.mockResolvedValue({ ...concurrent, duplicate_challenge: false, revision: "10" });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.saveIntegration).toHaveBeenLastCalledWith(expect.objectContaining({ revision: "9", duplicateChallenge: false, archiveCompletedAfterDays: 60, archiveCancelledAfterDays: 90, projection: "disabled", repositoryEnabled: false })));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Save" })).toBeNull());
+    fireEvent.change(field, { target: { value: "My edit again" } });
+    api.renameProject.mockResolvedValue({ ...concurrent, name: "My edit again", revision: "11" });
+    await user.click(screen.getByRole("button", { name: "Save name" }));
+    await waitFor(() => expect(api.renameProject).toHaveBeenLastCalledWith(expect.objectContaining({ revision: "10" })));
+  });
+
+  it("shows Issues actions only while dirty and discards the section", async () => {
+    const { user } = await mount("/settings/projects/example-project/general");
+    await screen.findByRole("switch", { name: "Check for duplicate issues" });
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+    await dirtyGeneral();
+    await user.click(screen.getByRole("button", { name: "Discard" }));
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.getByRole("switch", { name: "Check for duplicate issues" }).getAttribute("aria-checked")).toBe("true");
+    expect(api.saveIntegration).not.toHaveBeenCalled();
+  });
+
+  it("re-reads Repository settings on a section conflict", async () => {
+    const { user } = await mount("/settings/projects/example-project/repository");
+    const toggle = await screen.findByRole("switch", { name: "Work summaries" });
+    await user.click(toggle);
+    api.saveIntegration.mockRejectedValue(new AccountError({ status: 409, code: "revision_conflict", message: "Conflict" }));
+    api.integration.mockResolvedValue({ ...integration, projection: "summary", revision: "8" });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Not saved. Somebody else changed these settings. Values re-read; check and save again.")).toBeTruthy();
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  });
+
+  it.each(["general", "repository"])("shows read-only %s values with no Save actions", async (tab) => {
+    account.actor = { ...accountFixture.actor, can_manage: false };
+    await mount(`/settings/projects/example-project/${tab}`);
+    await screen.findByRole("heading", { name: tab === "general" ? "Identity" : "Repository & GitHub" });
+    expect(screen.queryByRole("button", { name: /^Save/ })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Project name" })).toBeNull();
+    for (const toggle of screen.getAllByRole("switch")) expect(toggle.getAttribute("aria-disabled")).toBe("true");
+    if (tab === "general") expect(screen.queryByRole("combobox", { name: "Archive completed issues" })).toBeNull();
+  });
 });

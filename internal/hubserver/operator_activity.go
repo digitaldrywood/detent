@@ -190,7 +190,9 @@ func readActivityAttempts(ctx context.Context, q nativeQueryer, organization str
 		if err != nil {
 			return nil, err
 		}
-		var stored storedRun
+		var stored struct {
+			Detail *runDetailReference `json:"detail"`
+		}
 		if err := json.Unmarshal([]byte(runRaw), &stored); err != nil {
 			return nil, err
 		}
