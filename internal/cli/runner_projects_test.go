@@ -690,6 +690,7 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 				if test.blockedCheckout {
 					checkout(t, files.workdirPath)
 					runDoctorWorkflowSourceGit(t, files.workdirPath, "remote", "set-url", "origin", "https://github.com/example-org/orders.git")
+					runDoctorWorkflowSourceGit(t, files.workdirPath, "config", "url."+files.workdirPath+".insteadOf", "https://github.com/example-org/orders.git")
 				}
 				running := globalconfig.Project{ID: "orders", Workflow: files.workflowPath, Workdir: files.workdirPath, Weight: 1}
 				current.Projects = []globalconfig.Project{running}

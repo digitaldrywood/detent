@@ -120,7 +120,9 @@ func (s *Service) spritePoolResponse(ctx context.Context, scope nativeScope) (sp
 	if err := s.describeSpritePoolMembers(ctx, scope, view.Members); err != nil {
 		return view, err
 	}
-	view.RunnerSetupDeclared, err = s.projectRunnerSetupDeclaration(ctx, scope)
+	if scope.project != "" {
+		view.RunnerSetupDeclared, err = s.projectRunnerSetupDeclaration(ctx, scope)
+	}
 	return view, err
 }
 
