@@ -251,12 +251,12 @@ UNION ALL SELECT n.id,julianday(` + finish + `) AS sort_at,` + finish + ` AS fin
 	statement := `WITH selected AS MATERIALIZED (` + candidates + order + `),
 linked AS MATERIALIZED (
  SELECT a.*,selected.finished_at AS effective_finished_at,selected.sort_at,
- coalesce(lr.runner_id,json_extract(a.data_json,'$.runner_id'),'') AS runner_id,
+ coalesce(lr.runner_id,json_extract(a.data_json,'$.runner_id'),'') AS resolved_runner_id,
  coalesce(json_extract(a.data_json,'$.finalization.change_id'),json_extract(a.checkpoint_json,'$.change.change_id'),
  (SELECT c.id FROM change_requests c WHERE c.organization_id=a.organization_id AND c.project_id=a.project_id AND c.work_item_id=a.work_item_id ORDER BY julianday(json_extract(c.record_json,'$.created_at')) DESC,c.id DESC LIMIT 1),'') AS change_id
  FROM selected JOIN native_attempts a ON a.id=selected.id LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id
 )
-SELECT a.id,a.work_item_id,i.number,i.title,a.project_id,p.name,a.runner_id,
+SELECT a.id,a.work_item_id,i.number,i.title,a.project_id,p.name,a.resolved_runner_id,
  coalesce(nullif(a.role,''),json_extract(a.data_json,'$.identity.role'),''),
  coalesce(json_extract(a.data_json,'$.runtime.phase'),''),coalesce(json_extract(a.data_json,'$.runtime.phases'),'[]'),coalesce(json_extract(a.data_json,'$.runtime.phases_dropped'),0),a.started_at,
  coalesce(json_extract(a.data_json,'$.session_id'),l.session_id,''),a.change_id,
