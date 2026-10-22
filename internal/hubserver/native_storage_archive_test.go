@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -571,7 +572,31 @@ func TestNativeStorageArchiveRunTimeline(t *testing.T) {
 	for index, path := range paths {
 		response := performHubAPIRequest(t, a.service, http.MethodGet, path, a.token, nil)
 		requireNativeStatus(t, response, http.StatusOK)
-		assertArchiveGolden(t, before[index], response.Body.Bytes())
+		if index == 0 {
+			assertArchiveGolden(t, before[index], response.Body.Bytes())
+			continue
+		}
+		var history tracker.Page[tracker.CollaborationEvent]
+		decodeHubResponse(t, response, &history)
+		seen := map[string]bool{}
+		for cursor := history.NextCursor; cursor != ""; {
+			if seen[cursor] {
+				t.Fatal("history cursor did not advance")
+			}
+			seen[cursor] = true
+			response := performHubAPIRequest(t, a.service, http.MethodGet, path+"&cursor="+url.QueryEscape(cursor), a.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page tracker.Page[tracker.CollaborationEvent]
+			decodeHubResponse(t, response, &page)
+			history.Items = append(history.Items, page.Items...)
+			cursor = page.NextCursor
+		}
+		history.NextCursor = ""
+		raw, err := json.Marshal(history)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertArchiveGolden(t, before[index], raw)
 	}
 	var checkpoints int
 	if err := a.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempt_events WHERE attempt_id=?", a.start.Data.AttemptID).Scan(&checkpoints); err != nil {
