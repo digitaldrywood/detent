@@ -16,6 +16,7 @@ import {
   ReleaseNotesPage,
   CreatedOperatorAPIKey,
   OperatorAPIKeys,
+  AICredits,
   BillingReport,
   BillingUsageReport,
   CheckoutResponse,
@@ -607,6 +608,9 @@ export function makeAccountApi(options: AccountApiOptions) {
       send(Schema.Array(RunnerHostHour), "GET", `${base}/fleet?include=host_metrics&runner_id=${encodeURIComponent(runner)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
     plan: () => send(PlanReport, "GET", `${base}/plan`),
     billing: () => send(BillingReport, "GET", `${base}/billing`),
+    creditTransactions: (input: { cursor?: string; from: string; to: string }) =>
+      send(AICredits, "GET", `${base}/billing/credits/transactions?${new URLSearchParams({ limit: "10", ...input })}`),
+    creditExportURL: (from: string, to: string) => `${base}/billing/credits/transactions?${new URLSearchParams({ format: "csv", from, to })}`,
     billingUsage: () => send(BillingUsageReport, "GET", `${base}/billing?view=usage`),
     checkout: (input: { price: string; key: string }) =>
       send(CheckoutResponse, "POST", `${base}/billing/checkout`, {

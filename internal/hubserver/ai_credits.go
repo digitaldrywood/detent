@@ -21,6 +21,7 @@ type aiCreditTransaction struct {
 	Actor        string    `json:"actor,omitempty"`
 	Reason       string    `json:"reason,omitempty"`
 	At           time.Time `json:"at"`
+	Turns        int64     `json:"turns"`
 }
 
 type aiCreditView struct {
@@ -33,9 +34,11 @@ type aiCreditView struct {
 	CanAutoFund    bool                  `json:"can_auto_fund"`
 	Packs          []HostedCreditPack    `json:"packs"`
 	History        []aiCreditTransaction `json:"history"`
+	NextCursor     string                `json:"next_cursor"`
+	TotalRows      int64                 `json:"total_rows"`
 }
 
-func (s *Service) readAICredits(ctx context.Context) (*aiCreditView, error) {
+func (s *Service) readAICredits(ctx context.Context, pages ...creditPageRequest) (*aiCreditView, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	d := s.database
@@ -51,21 +54,14 @@ func (s *Service) readAICredits(ctx context.Context) (*aiCreditView, error) {
 	if cfg := s.hostedBillingConfig(); cfg != nil {
 		view.Packs = append(view.Packs, cfg.CreditPacks...)
 	}
-	rows, err := d.reader.QueryContext(ctx, "SELECT amount_micros,kind,actor,reason,recorded_at FROM ai_credit_transactions WHERE organization_id=? AND mode=? ORDER BY id DESC LIMIT 50", d.hostedOrganization, d.aiCreditMode)
-	if err != nil {
+	page := creditPageRequest{}
+	if len(pages) > 0 {
+		page = pages[0]
+	}
+	if err := s.readCreditHistory(ctx, view, page); err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var item aiCreditTransaction
-		var at int64
-		if err := rows.Scan(&item.AmountMicros, &item.Kind, &item.Actor, &item.Reason, &at); err != nil {
-			return nil, err
-		}
-		item.At = time.UnixMicro(at).UTC()
-		view.History = append(view.History, item)
-	}
-	return view, rows.Err()
+	return view, nil
 }
 
 func (s *Service) creditPack(id string) (HostedCreditPack, bool) {

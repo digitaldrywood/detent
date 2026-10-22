@@ -2,11 +2,13 @@ package hubserver
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -506,5 +508,158 @@ func TestAICreditUsageDebit(t *testing.T) {
 				t.Fatalf("own-provider credits=%+v err=%v", view, err)
 			}
 		})
+	}
+}
+
+func TestAICreditGroupedHistory(t *testing.T) {
+	t.Parallel()
+	for _, limit := range []int{1, 10, 100} {
+		t.Run(fmt.Sprintf("limit_%d", limit), func(t *testing.T) {
+			f, base := newHostedBillingFixture(t)
+			configureTestCredits(t, f, base)
+			d := f.service.database
+			start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+			for day := range 35 {
+				for turn := range 2 {
+					if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,'test',?,-123,'usage',?)`, d.hostedOrganization, fmt.Sprintf("usage:day-%d-turn-%d", day, turn), start.AddDate(0, 0, day).Add(time.Duration(turn)*time.Hour).UnixMicro()); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			for _, kind := range []string{"purchase", "auto_fund", "complimentary"} {
+				for n := range 2 {
+					if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,'test',?,?,?,?)`, d.hostedOrganization, fmt.Sprintf("%s-%d", kind, n), 5000000+n, kind, start.AddDate(0, 0, 34).Add(2*time.Hour).UnixMicro()); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'live',0)`, d.hostedOrganization); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,'live','other-mode',999,'complimentary',?)`, d.hostedOrganization, start.UnixMicro()); err != nil {
+				t.Fatal(err)
+			}
+			page := creditPageRequest{Limit: limit, From: start.Format(time.RFC3339), To: start.AddDate(0, 2, 0).Format(time.RFC3339)}
+			seen := map[string]bool{}
+			counts := map[string]int{}
+			for index := 0; ; index++ {
+				view, err := f.service.readAICredits(t.Context(), page)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(view.History) == 0 || len(view.History) > limit || view.TotalRows != 41 || view.BalanceMicros != 0 {
+					t.Fatalf("page=%+v", view)
+				}
+				for _, row := range view.History {
+					counts[row.Kind]++
+					if row.Kind == "usage" {
+						day := row.At.Format("2006-01-02")
+						if seen[day] || row.Turns != 2 || row.AmountMicros != -246 {
+							t.Fatalf("duplicate or ungrouped usage=%+v", row)
+						}
+						seen[day] = true
+					} else {
+						key := fmt.Sprintf("%s-%d", row.Kind, row.AmountMicros)
+						if row.AmountMicros < 5000000 || row.AmountMicros > 5000001 || row.Turns != 0 || seen[key] {
+							t.Fatalf("duplicate or merged credit=%+v", row)
+						}
+						seen[key] = true
+					}
+				}
+				if view.NextCursor == "" {
+					break
+				}
+				if index == 0 {
+					if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,'test','usage:later',-999,'usage',?)`, d.hostedOrganization, start.AddDate(0, 0, 1).UnixMicro()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				page.Cursor = view.NextCursor
+				if index > 41 {
+					t.Fatal("cursor did not end")
+				}
+			}
+			if counts["usage"] != 35 || counts["purchase"] != 2 || counts["auto_fund"] != 2 || counts["complimentary"] != 2 {
+				t.Fatalf("counts=%v", counts)
+			}
+			for _, query := range []string{"?limit=0", "?limit=101", "?cursor=bad", "?from=bad", "?from=2026-02-01T00:00:00Z&to=2026-01-01T00:00:00Z"} {
+				requireNativeStatus(t, f.billingAPI(t, "owner", http.MethodGet, "/billing/credits/transactions"+query, ""), http.StatusUnprocessableEntity)
+			}
+			response := f.billingAPI(t, "owner", http.MethodGet, "/billing/credits/transactions?limit=1", "")
+			requireNativeStatus(t, response, http.StatusOK)
+			var first aiCreditView
+			if err := json.Unmarshal(response.Body.Bytes(), &first); err != nil {
+				t.Fatal(err)
+			}
+			response = f.billingAPI(t, "owner", http.MethodGet, "/billing/credits/transactions?limit=1&cursor="+url.QueryEscape(first.NextCursor), "")
+			requireNativeStatus(t, response, http.StatusOK)
+			var second aiCreditView
+			if err := json.Unmarshal(response.Body.Bytes(), &second); err != nil {
+				t.Fatal(err)
+			}
+			if len(second.History) != 1 || second.NextCursor == first.NextCursor {
+				t.Fatalf("second page=%+v", second)
+			}
+		})
+	}
+}
+
+func TestAICreditCSVExport(t *testing.T) {
+	t.Parallel()
+	f, base := newHostedBillingFixture(t)
+	configureTestCredits(t, f, base)
+	d := f.service.database
+	at := time.Date(2026, 10, 10, 12, 0, 0, 123456, time.UTC)
+	if _, err := d.db.ExecContext(t.Context(), `INSERT INTO conversation_usage(organization_id,project_id,conversation_id,turn_id,provider,model,occurred_at,input,cached_input,output,reasoning_output,outcome,cost_usd) VALUES(?,?,?,'turn-0','openai','example-model',?,100,20,50,10,'completed',999)`, d.hostedOrganization, "project_a", "conversation_a", at.UnixMicro()); err != nil {
+		t.Fatal(err)
+	}
+	for index, kind := range []string{"usage", "purchase", "auto_fund", "complimentary"} {
+		source := fmt.Sprintf("%s:turn-%d", kind, index)
+		if _, err := d.db.ExecContext(t.Context(), `INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,'test',?,-1234567,?,?)`, d.hostedOrganization, source, kind, at.UnixMicro()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		role string
+		want int
+	}{{"owner", http.StatusOK}, {"viewer", http.StatusForbidden}, {"support-viewer", http.StatusForbidden}, {"wrong-organization", http.StatusForbidden}} {
+		t.Run(test.role, func(t *testing.T) {
+			response := f.billingAPI(t, test.role, http.MethodGet, "/billing/credits/transactions?format=csv&from=2026-10-01T00:00:00Z&to=2026-11-01T00:00:00Z", "")
+			requireNativeStatus(t, response, test.want)
+			if test.want != http.StatusOK {
+				return
+			}
+			records, err := csv.NewReader(strings.NewReader(response.Body.String())).ReadAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(records) != 5 || strings.Join(records[0], ",") != "recorded_at,kind,turn_id,tokens,charged_amount_usd" {
+				t.Fatalf("records=%v", records)
+			}
+			for _, row := range records[1:] {
+				if row[0] != "2026-10-10T12:00:00.000123Z" || row[4] != "-1.234567" {
+					t.Fatalf("row=%v", row)
+				}
+				if row[1] == "usage" && (row[2] != "turn-0" || row[3] != "150") || row[1] != "usage" && (row[2] != "" || row[3] != "") {
+					t.Fatalf("turn=%v", row)
+				}
+			}
+			if !strings.HasPrefix(response.Header().Get("Content-Type"), "text/csv") || !strings.Contains(response.Header().Get("Content-Disposition"), "credit-transactions.csv") {
+				t.Fatalf("headers=%v", response.Header())
+			}
+		})
+	}
+	var audits int
+	if err := d.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_audit WHERE event='billing_exported'`).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if audits != 1 {
+		t.Fatalf("export audits=%d", audits)
+	}
+	response := f.billingAPI(t, "owner", http.MethodGet, "/billing/credits/transactions?format=csv&from=2026-11-01T00:00:00Z", "")
+	requireNativeStatus(t, response, http.StatusOK)
+	records, err := csv.NewReader(strings.NewReader(response.Body.String())).ReadAll()
+	if err != nil || len(records) != 1 {
+		t.Fatalf("period rows=%v err=%v", records, err)
 	}
 }

@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { SHELL_SHORTCUTS } from "../lib/shortcuts.ts";
 import {
   ArrowRightIcon,
@@ -44,7 +45,7 @@ import {
   settingsNavItems,
   type SettingsSectionId,
 } from "./sections.tsx";
-import { CreditSettings } from "./CreditSettings.tsx";
+import { BillingPlanStatus, CreditSettings } from "./CreditSettings.tsx";
 import { approachingPlanLimits, nextFittingPlan, planUsageRows, planStatus } from "./planUsage.ts";
 import { Skeleton } from "../../components/ui/skeleton.tsx";
 import { SettingsHelp } from "./SettingsHelp.tsx";
@@ -833,64 +834,19 @@ export function BillingSettings(): React.ReactElement {
           />
         ) : billing.value === undefined || status === null ? null : (
           <>
-            <SettingsRow title={billing.value.entitlement.name ?? billing.value.entitlement.effective_base.id} status={planPriceText(billing.value.entitlement)} description="Detent subscriptions cover hosting. Model-provider charges remain separate; no AI-dollar allowance is included." />
-            <SettingsRow title="Capacity" description="Work beyond the concurrent limit waits for a free slot; existing data, reading and exports remain available.">
-              <AllowanceList rows={allowanceRows(billing.value.entitlement).filter((row) => row.name === "concurrent_work" || row.name === "unarchived_issues")} />
-            </SettingsRow>
-            <SettingsRow
-              title={status.title}
-              description={status.description}
-              status={`Reconciled ${billing.value.reconciled_at || "never"}`}
-              control={
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={portal.pending || billing.value.can_manage === false}
-                  onClick={() => void portal.call()}
-                >
-                  {portal.pending ? "Opening…" : "Billing portal"}
-                </Button>
-              }
-            />
-            {billing.value.checkout_pending === true ? (
-              <SettingsRow
-                title="Checkout in progress"
-                description="A checkout is still open. Finish it, or wait for it to expire before choosing another plan."
-              />
-            ) : null}
-            {billing.value.prices.map((price) => (
-              <SettingsRow
-                key={price.id}
-                title={price.label}
-                description="Per organization; manage plan changes in the billing portal."
-                control={
-                  <Button
-                    size="sm"
-                    disabled={checkout.pending || billing.value?.can_checkout === false}
-                    onClick={() => void checkout.call(price.id)}
-                  >
-                    {checkout.pending ? "Opening…" : "Upgrade"}
-                  </Button>
-                }
-              />
-            ))}
-            {billing.value.chat_usage === undefined ? null : (
-              <SettingsRow
-                title="AI usage this billing period"
-                description={`${billing.value.chat_usage.range.from.slice(0, 10)} – ${billing.value.chat_usage.range.to.slice(0, 10)} · ${billing.value.chat_usage.turns.toLocaleString()} ${billing.value.chat_usage.turns === 1 ? "turn" : "turns"}${billing.value.chat_usage.unpriced_turns > 0 ? ` · ${billing.value.chat_usage.unpriced_turns} ${billing.value.chat_usage.unpriced_turns === 1 ? "turn" : "turns"} awaiting pricing` : ""}`}
-                status={`${billing.value.chat_usage.tokens.toLocaleString()} tokens · $${billing.value.chat_usage.cost_usd.toFixed(6)} USD`}
-              />
-            )}
-            <SettingsRow title="">
-              <div className="pb-3">
-                <ControlError message={checkout.error?.message ?? portal.error?.message ?? null} />
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-4 py-3 sm:flex sm:justify-between">
+              <BillingPlanStatus report={billing.value} />
+              <div className="contents sm:flex sm:items-center sm:gap-3">
+                <Link to="/settings/$section" params={{ section: "plan" }} className="text-sm text-foreground hover:underline">Change plan →</Link>
+                <Button size="sm" className="col-span-2 w-full sm:w-auto" variant="outline" disabled={portal.pending || billing.value.can_manage === false} onClick={() => void portal.call()}>{portal.pending ? "Opening…" : "Billing portal"}</Button>
               </div>
-            </SettingsRow>
+            </div>
+            {checkout.error !== null || portal.error !== null ? <div className="px-4 py-3"><ControlError message={checkout.error?.message ?? portal.error?.message ?? null} /></div> : null}
           </>
         )}
       </SettingsSection>
-      {billing.value?.ai_credits === undefined ? null : (
-        <CreditSettings credits={billing.value.ai_credits} refresh={billing.refresh} />
+      {billing.error !== null || billing.value?.ai_credits === undefined ? null : (
+        <CreditSettings credits={billing.value.ai_credits} report={billing.value} refresh={billing.refresh} />
       )}
     </SettingsPageContainer>
   );

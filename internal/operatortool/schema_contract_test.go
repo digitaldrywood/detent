@@ -64,7 +64,7 @@ func TestCatalogDecoderContract(t *testing.T) {
 		"get_operator_chat":   reflect.TypeFor[OperatorChatReadArguments](),
 		"post_operator_chat":  reflect.TypeFor[OperatorChatArguments](),
 		"monthly_usage_costs": reflect.TypeFor[MonthlyUsageArguments](),
-		BillingStatus:         reflect.TypeFor[struct{}](),
+		BillingStatus:         reflect.TypeFor[BillingStatusArguments](),
 		BillingUsage:          reflect.TypeFor[struct{}](),
 		BillingExport:         reflect.TypeFor[struct{}](),
 		HostedPlan:            reflect.TypeFor[struct{}](),

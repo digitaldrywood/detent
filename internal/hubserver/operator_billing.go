@@ -280,9 +280,14 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	case operatortool.BillingStatus, operatortool.BillingUsage, operatortool.BillingExport, operatortool.HostedPlan, operatortool.HostedUsage:
 		kind := "billing"
 		var request operatortool.HostedUsageArguments
+		var creditPage creditPageRequest
 		if call.Name == operatortool.HostedUsage {
 			kind = ""
 			if operatortool.DecodeArguments(call.Arguments, &request) != nil || len(request.ProjectID) > 256 {
+				return result, operatortool.ErrInvalidArguments
+			}
+		} else if call.Name == operatortool.BillingStatus {
+			if operatortool.DecodeArguments(call.Arguments, &creditPage) != nil {
 				return result, operatortool.ErrInvalidArguments
 			}
 		} else if operatortool.DecodeArguments(call.Arguments, &struct{}{}) != nil {
@@ -355,7 +360,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 				Report      hostedBillingReport `json:"report"`
 			}{hex.EncodeToString(digest[:]), s.operatorDashboardURL() + s.hostedPath("/api/cloud/billing/subscription"), now, data})
 		default:
-			data, err := s.readBillingView(ctx)
+			data, err := s.readBillingView(ctx, creditPage)
 			if err != nil {
 				return result, err
 			}

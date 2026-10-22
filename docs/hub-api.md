@@ -3084,3 +3084,31 @@ Issue/comment search retains its existing FTS index and bounded matched snippets
 its external-content view reads canonical issue and comment bodies. The document
 identity table contains no second body copy. Archived tool output and logs are
 not indexed.
+
+## AI credit transaction reads
+
+`GET /api/v2/organizations/:organization/billing/credits/transactions` requires
+an organization owner and refuses support impersonation. It returns the credit
+account's existing fields and `history`, `total_rows`, and `next_cursor`.
+`limit` defaults to 10 and accepts 1–100. Usage entries are summed per UTC day
+with `turns`; purchases, automatic top-ups, and complimentary adjustments each
+retain their own row. Rows sort by recorded time descending, then ledger ID.
+A cursor anchors the ledger snapshot and period so inserts do not shift later
+pages. Pass `next_cursor` as `cursor` with the same period for the next page.
+
+Optional RFC3339 `from` (inclusive) and `to` (exclusive) parameters restrict the
+period. Without them, the read includes all history. The Billing page uses the
+current billing period from its report. The existing
+`billing_usage.hosted_billing_page` MCP read accepts the same `limit`, `cursor`,
+`from`, and `to` parameters and exposes paging in `billing.ai_credits`.
+
+Adding `format=csv` exports every ledger entry in the period, independently of
+paging, and records `billing_exported` in the access audit. The CSV columns are
+`recorded_at` (UTC RFC3339), `kind`, `turn_id`, `tokens`, and
+`charged_amount_usd` (signed ledger amount with six decimal places). Turn ID
+and tokens are empty for non-usage entries; tokens are also empty when the
+usage record is unavailable. Tokens count input plus output, with cached input
+and reasoning output already included in those totals. The export excludes
+model cost, conversation titles, and message content. Spreadsheet formula
+prefixes in turn IDs are escaped. The existing subscription JSON export is
+unchanged.

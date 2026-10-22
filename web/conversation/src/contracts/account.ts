@@ -835,6 +835,8 @@ export const BillingPrice = Schema.Struct({
 export type BillingPrice = typeof BillingPrice.Type;
 
 export const AICredits = Schema.Struct({
+  next_cursor: Schema.optional(Schema.String),
+  total_rows: Schema.optional(Schema.Number),
   balance_micros: Schema.Number,
   auto_enabled: Schema.Boolean,
   threshold_cents: Schema.Number,
@@ -846,7 +848,7 @@ export const AICredits = Schema.Struct({
     price_id: Schema.String, label: Schema.String, usd_cents: Schema.Number,
   })),
   history: Schema.Array(Schema.Struct({
-    amount_micros: Schema.Number, kind: Schema.String, at: Schema.String,
+    amount_micros: Schema.Number, kind: Schema.String, at: Schema.String, turns: Schema.optional(Schema.Number),
   })),
 });
 export type AICredits = typeof AICredits.Type;

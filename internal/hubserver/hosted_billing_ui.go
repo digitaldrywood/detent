@@ -29,7 +29,7 @@ type hostedBillingReport struct {
 	Audit           []templates.HostedBillingAudit `json:"recent_audit"`
 }
 
-func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport, error) {
+func (s *Service) hostedBillingReport(ctx context.Context, pages ...creditPageRequest) (hostedBillingReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	report := hostedBillingReport{OrganizationID: s.config.Hosted.OrganizationID, Audit: []templates.HostedBillingAudit{}}
@@ -47,7 +47,11 @@ func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport,
 		return report, err
 	}
 	if s.database.aiCreditMode != "" {
-		report.AICredits, err = s.readAICredits(ctx)
+		page := creditPageRequest{From: report.ChatUsage.Range.From.Format(time.RFC3339), To: report.ChatUsage.Range.To.Format(time.RFC3339)}
+		if len(pages) > 0 {
+			page = pages[0]
+		}
+		report.AICredits, err = s.readAICredits(ctx, page)
 		if err != nil {
 			return report, err
 		}
@@ -357,10 +361,10 @@ func (s *Service) hostedPriceLabel(ctx context.Context, price HostedBillingPrice
 	return plan.Name + " · " + hostedPlanPrice(plan.MonthlyUSDCents)
 }
 
-func (s *Service) readBillingView(ctx context.Context) (hostedBillingView, error) {
+func (s *Service) readBillingView(ctx context.Context, pages ...creditPageRequest) (hostedBillingView, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	report, err := s.hostedBillingReport(ctx)
+	report, err := s.hostedBillingReport(ctx, pages...)
 	if err != nil {
 		return hostedBillingView{}, err
 	}
