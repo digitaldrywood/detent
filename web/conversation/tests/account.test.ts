@@ -371,10 +371,10 @@ describe("the first-run wizard", () => {
     const project = bootstrap.projects[0]!;
     const opened = await api.onboarding(project.id);
     expect(opened.steps.map((step) => step.name)).toEqual([
-      "Execution runner",
-      "Local validation",
-      "Repository configuration",
-      "Artifact history",
+      "Runner",
+      "Repository",
+      "Checkout",
+      "Run files",
     ]);
 
     // Legacy browser attestations do not become observed local evidence.
@@ -390,7 +390,7 @@ describe("the first-run wizard", () => {
     expect(progress.revision).not.toBe(opened.progress.revision);
     const afterValidation = await api.onboarding(project.id);
     expect(
-      afterValidation.steps.find((step) => step.name === "Local validation")?.state,
+      afterValidation.steps.find((step) => step.name === "Checkout")?.state,
     ).toBe("action_required");
 
     // Step four: local history needs no service.
@@ -405,7 +405,7 @@ describe("the first-run wizard", () => {
     });
     const afterArtifacts = await api.onboarding(project.id);
     expect(
-      afterArtifacts.steps.find((step) => step.name === "Artifact history")?.state,
+      afterArtifacts.steps.find((step) => step.name === "Run files")?.state,
     ).toBe("ready");
     expect(afterArtifacts.ready).toBe(
       afterArtifacts.steps.every((step) => step.state === "ready"),

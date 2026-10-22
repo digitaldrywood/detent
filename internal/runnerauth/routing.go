@@ -148,9 +148,10 @@ type Exclusion struct {
 }
 
 type Eligibility struct {
-	LocalChecks *LocalChecks `json:"local_checks,omitempty"`
-	Runner      Runner       `json:"runner"`
-	Exclusions  []Exclusion  `json:"exclusions"`
+	OtherProjectCount int          `json:"other_project_count,omitempty"`
+	LocalChecks       *LocalChecks `json:"local_checks,omitempty"`
+	Runner            Runner       `json:"runner"`
+	Exclusions        []Exclusion  `json:"exclusions"`
 }
 
 type Fleet struct {

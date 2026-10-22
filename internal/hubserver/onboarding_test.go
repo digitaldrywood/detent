@@ -60,7 +60,7 @@ func TestOnboardingProgressRetryAndProjectIsolation(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var setup onboarding.Project
 	decodeHubResponse(t, response, &setup)
-	if setup.Progress.Revision != 1 || !setup.Progress.Doctor || setup.Ready {
+	if setup.Progress.Revision != 1 || !setup.Progress.Doctor || setup.Progress.Repository != "existing" || setup.Progress.Artifacts != "local" || setup.Steps[3].Name != "Run files" || setup.Steps[3].State != "ready" || setup.Ready {
 		t.Fatalf("saved state = %+v", setup)
 	}
 	response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", other.token, nil)
@@ -109,7 +109,7 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var setup onboarding.Project
 			decodeHubResponse(t, response, &setup)
-			if len(setup.Runners) != 1 || setup.Runners[0].Runner.RunnerID != r.binding.RunnerID {
+			if len(setup.Runners) != 1 || setup.Runners[0].Runner.RunnerID != r.binding.RunnerID || setup.Runners[0].OtherProjectCount != 0 {
 				t.Fatalf("project-scoped runner missing from its routed project: %+v", setup.Runners)
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", adminToken, nil)
@@ -146,7 +146,7 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 				return
 			}
 			if tt.admin || tt.scope == "organization" {
-				if len(setup.Runners) != 1 || setup.Runners[0].Runner.RunnerID != r.binding.RunnerID {
+				if len(setup.Runners) != 1 || setup.Runners[0].Runner.RunnerID != r.binding.RunnerID || setup.Runners[0].OtherProjectCount != 1 {
 					t.Fatalf("administrable or organization runner missing from ungranted project: %+v", setup.Runners)
 				}
 			} else if len(setup.Runners) != 0 {
@@ -183,7 +183,7 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 			if len(setup.Runners) != 1 || slices.ContainsFunc(setup.Runners[0].Exclusions, func(e runnerauth.Exclusion) bool { return e.Code == "project_access_denied" }) {
 				t.Fatalf("routed runner remains unavailable: %+v", setup.Runners)
 			}
-			if setup.Runners[0].LocalChecks != nil || setup.Steps[1].State == "ready" {
+			if setup.Runners[0].LocalChecks != nil || setup.Steps[2].State == "ready" {
 				t.Fatalf("routing forged local validation evidence: %+v", setup)
 			}
 			for _, doctor := range []string{"failed", "passed"} {
@@ -197,7 +197,7 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 					t.Fatalf("newly routed runner lost local checks: %+v", setup.Runners)
 				}
 				reported := setup.Runners[0].LocalChecks
-				if reported.Checkout != "passed" || reported.Doctor != doctor || reported.Provider != "passed" || reported.ObservedAt.IsZero() || (setup.Steps[1].State == "ready") != (doctor == "passed") {
+				if reported.Checkout != "passed" || reported.Doctor != doctor || reported.Provider != "passed" || reported.ObservedAt.IsZero() || (setup.Steps[2].State == "ready") != (doctor == "passed" && setup.Policy != nil) {
 					t.Fatalf("newly routed runner validation did not follow its report: %+v", setup)
 				}
 			}
@@ -924,7 +924,6 @@ func TestOnboardingRunnerLocalChecks(t *testing.T) {
 			decodeHubResponse(t, response, &setup)
 			executionState := "ready"
 			if tt.cause != "" {
-				executionState = "action_required"
 				if setup.Runners[0].Runner.ConnectionHealth != "online" {
 					t.Fatalf("checkout failure took runner offline: %+v", setup.Runners[0])
 				}
@@ -935,7 +934,7 @@ func TestOnboardingRunnerLocalChecks(t *testing.T) {
 			if tt.valid && tt.checkout != "" && (setup.Runners[0].LocalChecks == nil || setup.Runners[0].LocalChecks.Doctor != tt.doctor || setup.Runners[0].LocalChecks.Setup != tt.setup || setup.Runners[0].LocalChecks.ObservedAt.IsZero()) {
 				t.Fatalf("report=%+v", setup)
 			}
-			if tt.valid && (setup.Steps[1].State == "ready") != (tt.checkout != "" && checks.Passed()) {
+			if tt.valid && (setup.Steps[2].State == "ready") != (tt.checkout != "" && checks.Passed() && setup.Policy != nil) {
 				t.Fatalf("local validation forged success or lost passed evidence: %+v", setup)
 			}
 			if tt.cause != "" {
@@ -1105,5 +1104,64 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(os.TempDir(), "native-policy-evidence.json"), raw, 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestRunnerFirstOnboardingSteps(t *testing.T) {
+	for _, test := range []struct {
+		name                                      string
+		runner, repository, checks, config, files bool
+		states                                    []string
+	}{
+		{name: "no runner", states: []string{"action_required", "action_required", "action_required", "action_required"}},
+		{name: "routed runner without checkout", runner: true, states: []string{"ready", "action_required", "action_required", "action_required"}},
+		{name: "verified checkout without config", runner: true, repository: true, checks: true, states: []string{"ready", "ready", "action_required", "action_required"}},
+		{name: "all checks passed", runner: true, repository: true, checks: true, config: true, states: []string{"ready", "ready", "ready", "action_required"}},
+		{name: "run files saved", runner: true, repository: true, checks: true, config: true, files: true, states: []string{"ready", "ready", "ready", "ready"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newNativeFixture(t, nil, "", "runner-first")
+			if !test.config {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", string(f.project.OrganizationID)+"/"+string(f.project.ID)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.repository {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository=? WHERE id=?", "example-org/example-project", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.runner {
+				r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+				r.enroll(t)
+				if test.checks {
+					raw, err := json.Marshal(map[tracker.ProjectID]runnerauth.LocalChecks{f.project.ID: {Checkout: "passed", Doctor: "passed", Provider: "passed"}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET local_checks_json=? WHERE id=?", string(raw), r.binding.RunnerID); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if test.files {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/onboarding", f.token, map[string]any{"idempotency_key": "run-files", "progress": onboarding.Progress{Repository: "existing", Doctor: true, Provider: true, Artifacts: "local"}}), http.StatusOK)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var setup onboarding.Project
+			decodeHubResponse(t, response, &setup)
+			if len(setup.Steps) != 4 {
+				t.Fatalf("steps = %+v", setup.Steps)
+			}
+			for index, name := range []string{"Runner", "Repository", "Checkout", "Run files"} {
+				if setup.Steps[index].Name != name || setup.Steps[index].State != test.states[index] {
+					t.Fatalf("steps = %+v", setup.Steps)
+				}
+			}
+			if setup.Ready != test.files {
+				t.Fatalf("ready = %t", setup.Ready)
+			}
+		})
 	}
 }

@@ -16,9 +16,7 @@ export function orderedSteps(onboarding: Onboarding | undefined, integration?: P
         detail: "",
       },
   );
-  return [{
-    name: "Repository",
-    state: integration?.checkout_repository || integration?.repository ? "ready" : "action_required",
-    detail: "Bind the project repository before enrolling a runner. The runner uses its own Git credentials to prepare the checkout.",
-  }, ...evaluated];
+  return evaluated.map((step) => step.name === "Repository" && (integration?.checkout_repository || integration?.repository)
+    ? { ...step, state: "ready" as const }
+    : step);
 }

@@ -35,9 +35,9 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 		return nil, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT p.id, coalesce(o.progress_json,'{}'),
+	rows, err := tx.QueryContext(ctx, `SELECT p.id, coalesce(nullif(p.checkout_repository,''),r.github_owner||'/'||r.github_name,''), coalesce(o.progress_json,'{}'),
  coalesce((SELECT json_group_array(json(binding_json)) FROM artifact_services a WHERE a.organization_id=p.organization_id AND a.project_id=p.id),'[]')
- FROM projects p LEFT JOIN project_onboarding o ON o.organization_id=p.organization_id AND o.project_id=p.id
+ FROM projects p LEFT JOIN repositories r ON r.id=p.repository_id LEFT JOIN project_onboarding o ON o.organization_id=p.organization_id AND o.project_id=p.id
  WHERE p.organization_id=? AND p.deleted_at IS NULL AND p.id IN (SELECT value FROM json_each(?))`, organization, string(encoded))
 	if err != nil {
 		return nil, err
@@ -47,7 +47,7 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 		var id tracker.ProjectID
 		var progress, artifacts string
 		value := onboarding.Project{Runners: []runnerauth.Eligibility{}, Artifacts: []artifact.Binding{}}
-		if err := rows.Scan(&id, &progress, &artifacts); err != nil {
+		if err := rows.Scan(&id, &value.Repository, &progress, &artifacts); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
 		if err := json.Unmarshal([]byte(progress), &value.Progress); err != nil {
