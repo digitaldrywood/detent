@@ -26,7 +26,7 @@ import (
 
 const nativeContractTestBody = "## Acceptance criteria\nThe change works.\n## Must not break\nExisting behavior.\n## How we know it worked\nThe focused tests pass."
 
-func TestNativeIssueContractPolicyMismatchReadRecovery(t *testing.T) {
+func TestNativeIssueContractPolicyDriftKeepsCurrentAuthority(t *testing.T) {
 	f := newConversationAPIFixture(t, nil)
 	issue := f.nativeFixture.create(t, "policy recovery")
 	workflow := config.Workflow{Config: config.Default()}
@@ -62,14 +62,17 @@ func TestNativeIssueContractPolicyMismatchReadRecovery(t *testing.T) {
 		var result struct {
 			IsError bool `json:"isError"`
 		}
-		if err := json.Unmarshal(reply.Result, &result); err != nil || result.IsError || !strings.Contains(string(reply.Result), "approved_dispatch_policy") {
-			t.Errorf("%s lost unavailable policy evidence: %s, %v", tool, reply.Result, err)
+		if err := json.Unmarshal(reply.Result, &result); err != nil || result.IsError || strings.Contains(string(reply.Result), "approved_dispatch_policy") {
+			t.Errorf("%s reported a retired policy veto: %s, %v", tool, reply.Result, err)
 		}
 	}
 	worker := f.worker(t, "policy-recovery")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "policy-machine", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
 	claim := tracker.NativeClaim{WorkItemID: issue.WorkItemID, PolicyID: drifted.ID, MachineID: "policy-machine", SessionID: "policy-recovery", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusConflict)
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim)
+	requireNativeStatus(t, response, http.StatusOK)
+	var lease tracker.NativeLease
+	decodeHubResponse(t, response, &lease)
 	onboarding, err := f.service.projectOnboarding(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
 	if err != nil || onboarding.Policy == nil || onboarding.Policy.Policy.ID != drifted.ID {
 		t.Fatalf("onboarding lost replacement approval identity: %+v, %v", onboarding.Policy, err)
@@ -81,6 +84,9 @@ func TestNativeIssueContractPolicyMismatchReadRecovery(t *testing.T) {
 		t.Fatalf("runtime did not recover after policy approval: %+v, %v", evidence, err)
 	}
 	claim.PolicyID = descriptor.ID
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusConflict)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+	claim.SessionID = "policy-replacement"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusOK)
 }
 
@@ -677,11 +683,7 @@ func TestNativeIssueContractWriteBoundaries(t *testing.T) {
 				}
 				return
 			}
-			expected := http.StatusUnprocessableEntity
-			if test.configError {
-				expected = http.StatusConflict
-			}
-			requireNativeStatus(t, response, expected)
+			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 			if !test.configError {
 				for _, text := range []string{"Acceptance criteria", "Must not break", "How we know it worked", "Backlog"} {
 					if !strings.Contains(response.Body.String(), text) {
