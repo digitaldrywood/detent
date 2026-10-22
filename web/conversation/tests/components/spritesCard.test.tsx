@@ -15,7 +15,7 @@ let poolStatus = 200;
 let poolWriteStatus = 200;
 let account: { organization: { name: string }; projects: { id: string; name: string }[]; base_path: string } | null = null;
 const writes: RequestInit[] = [];
-let pool = { min_runners: 0, max_runners: 0, idle_seconds: 300, bootstrap: "", revision: 0, members: [] };
+let pool = { min_runners: 0, max_runners: 0, idle_seconds: 300, bootstrap: "", revision: 0, share_idle_capacity: false, members: [] };
 const api = makeAccountApi({
   origin: "", apiBase: "/api/v2/organizations/test", csrfToken: "csrf-sentinel",
   fetch: async (url, init) => {
@@ -90,7 +90,7 @@ describe("Sprite pool settings", () => {
   it.each(["project", "other-project"])("uses organization settings and token from %s", async (projectId) => {
     present = false;
     account = { organization: { name: "Example Organization" }, projects: [{ id: "project", name: "First project" }, { id: "other-project", name: "Second project" }], base_path: "/organizations/test" };
-    pool = { min_runners: 1, max_runners: 3, idle_seconds: 600, bootstrap: "printf saved", revision: 7, members: [] };
+    pool = { min_runners: 1, max_runners: 3, idle_seconds: 600, bootstrap: "printf saved", revision: 7, share_idle_capacity: projectId === "other-project", members: [] };
     render(<SpritePoolCard projectId={projectId} canManage={false} />);
     await waitFor(() => expect(screen.getByRole("status").textContent).toContain("No organization Sprites token is set"));
     expect(screen.getByText(/Example Organization shares this pool across all projects/).textContent).toContain(projectId === "project" ? "First project" : "Second project");
@@ -100,11 +100,14 @@ describe("Sprite pool settings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reload pool" }));
     await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
     expect((screen.getByLabelText("Maximum runners") as HTMLInputElement).value).toBe("3");
+    const sharing = screen.getByRole("checkbox", { name: "Share idle Sprites with other projects" });
+    expect(sharing.getAttribute("aria-disabled")).toBe("true");
+    expect(sharing.getAttribute("aria-checked")).toBe(String(pool.share_idle_capacity));
   });
 
   it.each([409, 503])("reloads saved settings after a failed PUT returning %s", async (status) => {
     writes.length = 0;
-    pool = { min_runners: 1, max_runners: 3, idle_seconds: 600, bootstrap: "printf saved", revision: 7, members: [] };
+    pool = { min_runners: 1, max_runners: 3, idle_seconds: 600, bootstrap: "printf saved", revision: 7, share_idle_capacity: false, members: [] };
     render(<SpritePoolCard projectId="project" canManage />);
     await waitFor(() => expect((screen.getByLabelText("Maximum runners") as HTMLInputElement).value).toBe("3"));
     poolWriteStatus = status;
@@ -118,12 +121,12 @@ describe("Sprite pool settings", () => {
     await waitFor(() => expect((screen.getByLabelText("Maximum runners") as HTMLInputElement).value).toBe("3"));
     fireEvent.click(screen.getByRole("button", { name: "Save pool" }));
     await waitFor(() => expect(writes.length).toBe(2));
-    expect(JSON.parse(String(writes[1]!.body))).toEqual({ min_runners: 1, max_runners: 3, idle_seconds: 600, bootstrap: "printf saved", revision: 7 });
+    expect(JSON.parse(String(writes[1]!.body))).toEqual({ min_runners: 1, max_runners: 3, idle_seconds: 600, bootstrap: "printf saved", revision: 7, share_idle_capacity: false, idempotency_key: expect.any(String) });
     await waitFor(() => expect(screen.getByRole("button", { name: "Save pool" }).hasAttribute("disabled")).toBe(false));
   });
 
   it.each([403, 404, 503])("recovers an organization pool GET returning %s", async (status) => {
-    pool = { min_runners: 1, max_runners: 3, idle_seconds: 600, bootstrap: "printf saved", revision: 7, members: [] };
+    pool = { min_runners: 1, max_runners: 3, idle_seconds: 600, bootstrap: "printf saved", revision: 7, share_idle_capacity: false, members: [] };
     poolStatus = status;
     render(<SpritePoolCard projectId="project" canManage />);
     const alert = await screen.findByRole("alert");
@@ -138,7 +141,7 @@ describe("Sprite pool settings", () => {
 
   it.each([false, true])("keeps saved settings read-only when write permission is missing after save %s", async (afterSave) => {
     writes.length = 0;
-    pool = { min_runners: 1, max_runners: 3, idle_seconds: 600, bootstrap: "printf saved", revision: 7, members: [] };
+    pool = { min_runners: 1, max_runners: 3, idle_seconds: 600, bootstrap: "printf saved", revision: 7, share_idle_capacity: false, members: [] };
     render(<SpritePoolCard projectId="project" canManage={afterSave} />);
     await waitFor(() => expect((screen.getByLabelText("Maximum runners") as HTMLInputElement).value).toBe("3"));
     if (afterSave) {
@@ -161,7 +164,7 @@ describe("Sprite pool settings", () => {
   });
 
   it("restores saved settings on reload even when the revision is unchanged", async () => {
-    pool = { min_runners: 1, max_runners: 3, idle_seconds: 600, bootstrap: "printf saved", revision: 7, members: [] };
+    pool = { min_runners: 1, max_runners: 3, idle_seconds: 600, bootstrap: "printf saved", revision: 7, share_idle_capacity: false, members: [] };
     render(<SpritePoolCard projectId="project" canManage />);
     await waitFor(() => expect((screen.getByLabelText("Maximum runners") as HTMLInputElement).value).toBe("3"));
     fireEvent.change(screen.getByLabelText("Maximum runners"), { target: { value: "5" } });
@@ -172,7 +175,7 @@ describe("Sprite pool settings", () => {
 
   it.each(["", "printf setup"])("enables a pool with bootstrap %j", async (bootstrap) => {
     writes.length = 0;
-    pool = { min_runners: 0, max_runners: 0, idle_seconds: 300, bootstrap, revision: 0, members: [] };
+    pool = { min_runners: 0, max_runners: 0, idle_seconds: 300, bootstrap, revision: 0, share_idle_capacity: false, members: [] };
     render(<SpritePoolCard projectId="project" canManage />);
     await screen.findByRole("button", { name: "Save pool" });
     await waitFor(() => expect((screen.getByLabelText("Extra bootstrap (optional)") as HTMLTextAreaElement).value).toBe(bootstrap));
@@ -181,7 +184,7 @@ describe("Sprite pool settings", () => {
     expect((screen.getByLabelText("Extra bootstrap (optional)") as HTMLTextAreaElement).required).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Save pool" }));
     await waitFor(() => expect(writes.length).toBe(1));
-    expect(JSON.parse(String(writes[0]!.body))).toEqual({ min_runners: 2, max_runners: 2, idle_seconds: 300, bootstrap, revision: 0 });
+    expect(JSON.parse(String(writes[0]!.body))).toEqual({ min_runners: 2, max_runners: 2, idle_seconds: 300, bootstrap, revision: 0, share_idle_capacity: false, idempotency_key: expect.any(String) });
     await waitFor(() => expect(screen.getByRole("button", { name: "Save pool" }).hasAttribute("disabled")).toBe(false));
   });
 });

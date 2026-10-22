@@ -524,7 +524,7 @@ func TestNativeStorageArchiveRetention(t *testing.T) {
 				t.Fatalf("storage archival changed board issue: %+v", got)
 			}
 			if test.want {
-				ref, err := scanAttachmentArchive(f.service.database.reader.QueryRowContext(t.Context(), `SELECT a.object_key,a.sha256,a.size,a.uncompressed_size,a.codec,a.schema_version,a.kind,a.retention_class FROM issue_storage_archives p JOIN attachments a ON a.id=p.attachment_id WHERE p.work_item_id=?`, issue.WorkItemID))
+				ref, err := scanAttachmentArchive(f.service.database.reader.QueryRowContext(t.Context(), `SELECT a.object_key,a.sha256,a.size,a.uncompressed_size,a.codec,a.schema_version,a.kind,a.retention_class,a.storage_binding_id,a.customer_owned FROM issue_storage_archives p JOIN attachments a ON a.id=p.attachment_id WHERE p.work_item_id=?`, issue.WorkItemID))
 				if err != nil {
 					t.Fatal(err)
 				}

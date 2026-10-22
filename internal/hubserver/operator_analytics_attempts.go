@@ -53,7 +53,9 @@ FROM `+analyticsAttemptsInStartedOrder(q)+` a LEFT JOIN lease_runners lr ON lr.l
 		if err := rows.Scan(&a.AttemptID, &a.WorkItemID, &a.Status, &from, &to, &raw, &dropped, &activityRaw, &identityRaw, &landingRaw, &pipelineRaw, &a.PipelineDropped, &validationRaw, &a.UsageRowsObserved, &runRaw); err != nil {
 			return nativeAnalyticsAttemptPopulation{}, err
 		}
-		var stored storedRun
+		var stored struct {
+			Detail *runDetailReference `json:"detail"`
+		}
 		if err := json.Unmarshal([]byte(runRaw), &stored); err != nil {
 			return nativeAnalyticsAttemptPopulation{}, err
 		}

@@ -837,6 +837,7 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET blocked_reason=?,blocked_reason_basis=? WHERE native_id=?", "Private dependency details.", dependencyBasis([]string{string(blocker.WorkItemID)}), issue.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
+	drainTestNativeBoard(t, f.service)
 	for _, test := range []struct {
 		name, suffix string
 	}{

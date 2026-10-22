@@ -11,9 +11,14 @@ import type { SpritePool, ProjectSpriteAllocation } from "../../src/contracts/ac
 import { ProjectSpriteControls } from "../../src/app/account/ProjectSpriteControls.tsx";
 import fleet from "../../src/contracts/fixtures/account-fleet.json";
 
+if (typeof globalThis.PointerEvent === "undefined") {
+  globalThis.PointerEvent = globalThis.MouseEvent as unknown as typeof PointerEvent;
+}
+
 afterEach(() => {
   cleanup();
   window.history.replaceState(null, "", "/");
+  window.sessionStorage.clear();
   vi.unstubAllGlobals();
 });
 
@@ -272,6 +277,28 @@ describe("Sprite pool setup and attention", () => {
     }
     fireEvent.click(screen.getByRole("link", { name: `Needs attention ${warning ? 1 : 0}` }));
     await waitFor(() => expect(screen.queryByTestId("sprite-pool-row") !== null).toBe(warning));
+  });
+
+  it.each([false, true])("saves explicit idle sharing from %s", async (initial) => {
+    mountPool({ ...emptyPool, share_idle_capacity: initial }, true);
+    fireEvent.click(await screen.findByRole("button", { name: "Set up Sprites" }));
+    const checkbox = await screen.findByRole("checkbox", { name: "Share idle Sprites with other projects" });
+    expect(checkbox.getAttribute("aria-checked")).toBe(String(initial));
+    expect(screen.queryByText(/Off by default. When on, a project Sprite/)).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Help for Share idle Sprites with other projects" }));
+    expect(await screen.findByText(/Off by default. When on, a project Sprite/)).toBeDefined();
+    expect(checkbox.getAttribute("aria-checked")).toBe(String(initial));
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(checkbox);
+    fireEvent.click(screen.getByRole("button", { name: "Save pool" }));
+    await waitFor(() => {
+      const calls = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PUT");
+      expect(calls).toHaveLength(1);
+      expect(JSON.parse(String(calls[0]?.[1]?.body))).toMatchObject({ share_idle_capacity: !initial, revision: 1, idempotency_key: expect.any(String) });
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save pool" }).hasAttribute("disabled")).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Reload pool" }));
+    await waitFor(() => expect(checkbox.getAttribute("aria-checked")).toBe(String(!initial)));
   });
 
   it("updates attention after disabling an enabled pool", async () => {

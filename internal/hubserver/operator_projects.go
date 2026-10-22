@@ -367,14 +367,21 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if !canManageProjectSecrets(scope.credential) {
 			return nil, operatortool.ErrAccessDenied
 		}
-		if mode != projectCommandExecute {
+		if mode == projectCommandPreview {
 			return nil, nil
 		}
 		scope.project = tracker.ProjectID(r.ProjectID)
-		view, err := s.setSpritePoolCommand(ctx, scope, spritePoolChange{
+		command := spritePoolCommand{
+			Mutation:           tracker.Mutation{IdempotencyKey: r.RequestID},
 			spritePoolSettings: spritePoolSettings{Placement: r.Input.Placement, MinRunners: r.Input.MinRunners, MaxRunners: r.Input.MaxRunners, IdleSeconds: r.Input.IdleSeconds, Revision: r.Input.Revision},
-			Bootstrap:          r.Input.Bootstrap, IsolationTier: r.Input.IsolationTier,
-		})
+			Bootstrap:          r.Input.Bootstrap, IsolationTier: r.Input.IsolationTier, ShareIdleCapacity: r.Input.ShareIdleCapacity,
+		}
+		if mode == projectCommandReplay {
+			scope.project, scope.requireHostedAdmin = "", true
+			raw, _, err := s.nativeCommandReplay(ctx, scope, "set_sprite_pool", r.RequestID, command)
+			return raw, err
+		}
+		view, err := s.setSpritePoolCommand(ctx, scope, command)
 		if err != nil {
 			return nil, err
 		}

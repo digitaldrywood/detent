@@ -403,6 +403,14 @@ READY request; if higher-ranked projects have nothing ready, dispatch whatever
 is ready. The system never cancels, stops or preempts running work; only a user
 cancels work.
 
+Paid project Sprite capacity is the exception: project grants authorize which
+projects a Sprite may serve, and project allocations keep paid capacity with
+its configured project by default. The pool's `share_idle_capacity` opt-in
+explicitly authorizes idle project Sprites to take other granted projects'
+highest-ranked ready work. Eligible work from the Sprite's own project takes
+precedence on its next claim; running work is never preempted. Allocation
+ownership and desired counts do not change when idle capacity is shared.
+
 Compatible execution releases and ordinary policy changes do not drain a
 runner or withhold its free slots. Each new attempt captures its verified
 execution release and effective policy; continuations keep that identity.

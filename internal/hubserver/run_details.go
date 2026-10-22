@@ -433,7 +433,7 @@ func readRunDetailSegment(ctx context.Context, detail *runDetailReference) (map[
 	if runs := owner.cache[detail.AttachmentID]; runs != nil {
 		return runs, nil
 	}
-	ref, err := scanAttachmentArchive(owner.query.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, detail.AttachmentID, detail.Organization))
+	ref, err := scanAttachmentArchive(owner.query.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class,storage_binding_id,customer_owned FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, detail.AttachmentID, detail.Organization))
 	if err != nil || ref.Validate(detail.Organization) != nil {
 		return nil, artifact.ErrIntegrity
 	}

@@ -513,14 +513,18 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 							continue
 						}
 						var refusal operatortool.RequestError
+						wantCode := "invalid_request"
 						if !test.moveGuidance {
-							if err := json.Unmarshal(raw, &refusal); err != nil || refusal.Code != "transition_not_allowed" || refusal.Message != "Workflow transition is not allowed" {
-								t.Fatalf("%s refusal changed: %s %s", move.name, reply.Result, reply.Error)
+							wantCode = "transition_not_allowed"
+						}
+						if err := json.Unmarshal(raw, &refusal); err != nil || refusal.Code != wantCode {
+							t.Fatalf("%s refusal=%s result=%s rpc_error=%s err=%v", move.name, raw, reply.Result, reply.Error, err)
+						}
+						if !test.moveGuidance {
+							if refusal.Message != "Workflow transition is not allowed" {
+								t.Fatalf("%s refusal changed: %s", move.name, raw)
 							}
 							continue
-						}
-						if err := json.Unmarshal(raw, &refusal); err != nil || refusal.Code != "invalid_request" {
-							t.Fatalf("%s refusal=%s result=%s rpc_error=%s err=%v", move.name, raw, reply.Result, reply.Error, err)
 						}
 						for _, direction := range []string{"linked issue conversation", "continue", "/conversations/{conversation}/commands", "expected.attempt_id", "explain_item", "snapshot", "recorded owners", "external prerequisite", "resume_local_project"} {
 							if !strings.Contains(refusal.Message, direction) {

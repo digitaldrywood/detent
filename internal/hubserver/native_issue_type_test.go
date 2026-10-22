@@ -68,6 +68,7 @@ func TestNativeIssueTypes(t *testing.T) {
 			}
 		})
 	}
+	drainTestNativeBoard(t, f.service)
 	for _, issueType := range []string{"bug", "change_request"} {
 		result := call(operatortool.WorkList, map[string]any{"project_id": f.project.ID, "type": issueType})
 		var page operatortool.WorkReadResult[tracker.Page[operatortool.NativeItem]]

@@ -93,6 +93,7 @@ No safety-critical path is touched; onboarding repository binding and runner che
 		t.Fatal(err)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, numberFixture.service, http.MethodPost, numberFixture.base+"/work-items/"+string(archived.WorkItemID)+"/comments", numberFixture.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "archived-search-comment"}, Body: strings.Repeat("Unrelated comment. ", 2000) + "archivecommenttoken"}), http.StatusOK)
+	drainTestNativeBoard(t, numberFixture.service)
 	numberContext := changeOperatorContext(t, numberFixture.service, numberFixture.token, string(numberFixture.project.OrganizationID))
 	numberProtocols := map[string]func(string, string, any) hostedContextReply{}
 	for _, transport := range []string{"stdio", "http"} {

@@ -241,13 +241,8 @@ func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, sco
 		return result, nil
 	}
 	result.Requirements = approval.Policy.Requirements
-	selection, err := readCloudModelSelection(ctx, q, scope)
-	if err != nil {
-		return result, err
-	}
-	workflow.Config.Agents.ModelSelection = selection.Effective
 	workflow.Config.Plan.Enabled = approval.Policy.Gates.PlanEnabled
-	resolver, err := runner.NewBoardIdentityResolver(workflow.Config, selector.Context{})
+	resolver, err := readProjectIdentityResolver(ctx, q, scope, workflow.Config)
 	if err != nil {
 		return result, err
 	}
@@ -574,7 +569,7 @@ func readOrganizationPlacementSnapshot(ctx context.Context, q nativeQueryer, sco
 		return result, err
 	}
 	result.Policy = placement
-	rows, err := q.QueryContext(ctx, `SELECT id FROM projects WHERE organization_id=? AND profile='native' ORDER BY scheduling_rank,id`, scope.organization)
+	rows, err := q.QueryContext(ctx, `SELECT id FROM projects p WHERE organization_id=? AND profile='native' ORDER BY EXISTS(SELECT 1 FROM project_sprite_allocations a WHERE a.organization_id=p.organization_id AND a.project_id=p.id) DESC,scheduling_rank,id`, scope.organization)
 	if err != nil {
 		return result, err
 	}
@@ -634,4 +629,13 @@ func readOrganizationPlacementSnapshot(ctx context.Context, q nativeQueryer, sco
 	}
 	result.Provisionable = max(result.SpriteTarget-result.SpriteFree-result.Pending, 0)
 	return result, nil
+}
+
+func readProjectIdentityResolver(ctx context.Context, q nativeQueryer, scope nativeScope, cfg config.Config) (*runner.BoardIdentityResolver, error) {
+	selection, err := readCloudModelSelection(ctx, q, scope)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Agents.ModelSelection = selection.Effective
+	return runner.NewBoardIdentityResolver(cfg, selector.Context{})
 }
