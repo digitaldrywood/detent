@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 
@@ -41,7 +41,7 @@ it("preserves unsaved setup choices and fields through refresh, then saves and s
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const response = await fetch(input, init);
     if (String(input).endsWith("/integration") && response.ok) {
-      return Response.json({ ...await response.json(), checkout_repository: "example-org/example-project", checkout_verified: true });
+      return Response.json({ ...await response.json(), checkout_repository: String(input).includes("proj_alpha") ? "example-org/another-project" : "example-org/example-project", checkout_verified: true });
     }
     if (deferRefresh && String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
       deferRefresh = false;
@@ -60,6 +60,16 @@ it("preserves unsaved setup choices and fields through refresh, then saves and s
     return timer as unknown as ReturnType<typeof window.setInterval>;
   });
   const view = mount();
+  const context = await screen.findByRole("region", { name: "Project setup context" });
+  expect(within(context).getByText("Setting up a project in Mock organization")).toBeTruthy();
+  expect(within(context).getByText("beta", { exact: true })).toBeTruthy();
+  expect(document.title).toBe("beta setup · Detent");
+  const stepper = await screen.findByRole("list", { name: "Setup steps" });
+  await waitFor(() => expect(within(stepper).getByText("example-org/example-project")).toBeTruthy());
+  expect(within(stepper).getByText("Execution runner", { exact: true })).toBeTruthy();
+  expect(within(stepper).getByText("Local validation", { exact: true })).toBeTruthy();
+  expect(within(stepper).getByText("Repository configuration", { exact: true })).toBeTruthy();
+  expect(within(stepper).getByText("Artifact history", { exact: true })).toBeTruthy();
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /Repository configuration/ }));
   deferRefresh = true;
@@ -102,6 +112,9 @@ it("preserves unsaved setup choices and fields through refresh, then saves and s
       <SetupRoute projectId="proj_alpha" />
     </ClientContext.Provider>,
   );
+  expect(document.title).toBe("alpha setup · Detent");
+  expect(screen.queryByText("example-org/example-project")).toBeNull();
+  await waitFor(() => expect(within(screen.getByRole("list", { name: "Setup steps" })).getByText("example-org/another-project")).toBeTruthy());
   await waitFor(() => expect((screen.getByRole("radio", { name: "Your runner (local history)" }) as HTMLInputElement).checked).toBe(true));
   expect((screen.getByRole("radio", { name: "Your bucket and gateway" }) as HTMLInputElement).checked).toBe(false);
   expect(screen.queryByRole("textbox", { name: "Publisher token id" })).toBeNull();

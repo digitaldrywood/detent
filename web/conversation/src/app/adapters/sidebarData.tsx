@@ -20,6 +20,7 @@ export interface SidebarNavigation {
 }
 
 export interface SidebarShellData {
+  readonly projectSwitcher?: { readonly open: boolean; readonly setOpen: (open: boolean) => void };
   readonly organizationName: string;
   readonly projects: readonly BootstrapProject[];
   readonly activeProjectId: string | null;
