@@ -281,7 +281,7 @@ it.each([["projects", false], ["projects", true], ["organization", false]] as co
   expect(routed).toMatchObject({ expected_revision: 4, project_ids: scope === "organization" ? [] : ["proj_alpha", "proj_beta"], project_ranks: { proj_alpha: 7 }, scope });
 });
 
-it("enrolls inline when there are no runners and advances when a connected runner appears", async () => {
+it.each([false, true])("enrolls inline when there are no runners and advances when a connected runner appears (return to enrollment: %s)", async (returnToEnrollment) => {
   const mount = await mountSetup();
   const fetch = globalThis.fetch;
   let connected = false;
@@ -305,8 +305,10 @@ it("enrolls inline when there are no runners and advances when a connected runne
   expect(screen.getByLabelText("Name")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Create command" })).toBeTruthy();
   expect(screen.queryByRole("dialog")).toBeNull();
-  await userEvent.setup().click(screen.getByRole("button", { name: "Use an existing runner" }));
-  await userEvent.setup().click(screen.getByRole("button", { name: "Enroll a runner" }));
+  if (returnToEnrollment) {
+    await userEvent.setup().click(screen.getByRole("button", { name: "Use an existing runner" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Enroll a runner" }));
+  }
   connected = true;
   await act(async () => poll!());
   expect(await screen.findByRole("heading", { level: 1, name: "Repository" })).toBeTruthy();

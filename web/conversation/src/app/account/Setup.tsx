@@ -392,6 +392,7 @@ function SetupContent({ projectId, onNavigate }: {
     if (onboarding.value === undefined) return;
     if (enrollmentBaseline.current === null) {
       enrollmentBaseline.current = new Set(runners.map((entry) => entry.runner.runner_id));
+      setEnrolling(true);
       return;
     }
     const connected = runners.find((entry) => !enrollmentBaseline.current!.has(entry.runner.runner_id)
