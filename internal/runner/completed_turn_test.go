@@ -202,6 +202,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 		revoked            bool
 		validationDelay    time.Duration
 		publicationDelay   time.Duration
+		workBudget         time.Duration
 		publicationTimeout bool
 		validatorDelay     time.Duration
 		publicationRevoked bool
@@ -235,6 +236,8 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 		{name: "publication exceeds cleanup deadline", publicationDelay: 2 * time.Minute},
 		{name: "publication inherits backend budget", publicationDelay: 2 * time.Minute, backendBudget: true},
 		{name: "long validator preserves landing and finish receipts", validatorDelay: 2 * time.Minute},
+		{name: "publication and review outlive the lease heartbeat", publicationDelay: 11 * time.Minute, validatorDelay: 11 * time.Minute, workBudget: 30 * time.Minute},
+		{name: "long publication stops at its work budget", publicationDelay: 31 * time.Minute, workBudget: 30 * time.Minute, publicationTimeout: true},
 		{name: "publication exceeds work budget", publicationDelay: 6 * time.Minute, publicationTimeout: true},
 		{name: "publication respects revoked authority", publicationDelay: 2 * time.Minute, publicationRevoked: true},
 		{name: "validation exceeds cleanup deadline", validationDelay: 2 * time.Minute},
@@ -283,15 +286,19 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 					execution.audit = &tracker.SecurityAuditReview{Verdict: "wait", Run: securityaudit.Run{Findings: []securityaudit.Finding{{ID: "auth", Certainty: securityaudit.CertaintyUndetermined, Body: "Potential p2 access", UnresolvedFact: "Whether caller authenticates"}}}}
 				}
 				cfg := config.Config{}
+				workBudget := test.workBudget
+				if workBudget == 0 {
+					workBudget = 5 * time.Minute
+				}
 				if test.validatorDelay > 0 {
 					cfg.Gate.Validator.Enabled = true
-					cfg.Codex.TurnTimeoutMS = int((5 * time.Minute) / time.Millisecond)
+					cfg.Codex.TurnTimeoutMS = int(workBudget / time.Millisecond)
 				}
 				if test.publicationDelay > 0 {
 					if test.backendBudget {
-						cfg.Codex.TurnTimeoutMS = int((5 * time.Minute) / time.Millisecond)
+						cfg.Codex.TurnTimeoutMS = int(workBudget / time.Millisecond)
 					} else {
-						cfg.Agent.MaxTurnDurationMS = int((5 * time.Minute) / time.Millisecond)
+						cfg.Agent.MaxTurnDurationMS = int(workBudget / time.Millisecond)
 					}
 				}
 				if test.validationDelay > 0 {
