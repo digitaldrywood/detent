@@ -850,56 +850,10 @@ and public organization metadata. Backups must keep the corresponding master
 keys separately. Losing the keys loses access to stored credentials; possession
 of both a database backup and its keys exposes those credentials.
 
-Before changing the deployed keyring, add a new version to the proposed
-`DETENT_HUB_SECRET_KEYS` while retaining all old versions, and select the new
-`DETENT_HUB_SECRET_KEY_VERSION`. Version names must be canonical positive
-integers, with no duplicate names or identical key material across versions.
-Never replace the key material assigned to an existing version.
-
-With that proposed environment, **run the read-only preflight before restarting**:
-
-```sh
-detent hub secrets status --database /var/lib/detent/hub.db
-```
-
-For Cloud, use `detent hub secrets status --tenant-root /var/lib/detent/tenants`
-to scan every `*/hub.db` under the tenant root in sorted order. Exactly one of
-`--database` and `--tenant-root` is required. Status can run against live Hubs:
-it reads current SQLite WAL state, takes no ownership lock, runs no migrations,
-and never decrypts secret values. It prints one JSON document containing the
-active and configured versions, counts by database/table/kind/key version,
-`missing_versions`, `retirable` versions, and problem-row metadata. No token,
-organization slug, ciphertext, nonce, wrapped key or master key is printed.
-
-Exit 0 means all rows unwrap and use the active version. Exit 3 means all rows
-unwrap but rotation is incomplete (`not_active_version`); the proposed keyring
-is safe to run. Exit 2 means the preflight failed: missing keys (`missing_key`),
-authentication failure (`unwrap_failed`), invalid configuration, or unreadable
-databases or secret tables. Database failures do not stop the remaining scans;
-`retirable` is withheld if any database cannot be scanned. Without configured
-keys, an empty inventory exits 0 and any stored secret causes exit 2.
-
-After a successful preflight (exit 0 or 3), keep the old key versions in the
-keyring, add the new version and set `DETENT_HUB_SECRET_KEY_VERSION` to it, then
-restart the Hub with that environment. Once serving, each Hub runs one background
-pass to rewrap its provider secret data keys to the active version. Each row and
-its `system:rewrap` rotation audit commit in one short transaction; ciphertext
-and value nonces remain unchanged. Concurrent secret changes win over the pass.
-Failures leave the affected row readable at its old version and are logged
-without secret values. The pass does not retry; restarting repeats it and skips
-rows already at the active version. `detent hub secrets rotate` is retired.
-
-Run `detent hub secrets status --database /var/lib/detent/hub.db` until exit 0.
-**Before removing any key version**, require exit 0 across every relevant
-database with that version listed as `retirable`. For Cloud, scan the entire
-tenant root; an unreferenced version in one database may still be needed by
-another tenant. Retain retired keys in separate archival storage for restoring
-old backups. Status is a snapshot: keep the proposed environment consistent
-across Hubs so concurrent writers cannot reintroduce retired versions.
-
-To roll back while both versions remain configured, set the old version active
-and restart. The same background pass rewraps back to that version. The stored
-format is unchanged, so older binaries can read any version in their keyring.
+For routine rotation and compromise response, follow [Key rotation and compromise
+response](key-rotation.md): preflight the proposed keyring, restart with old keys
+retained, verify rewrap/reseal completion, then retire old keys separately from
+replacing exposed credentials at their sources.
 
 Setting a token validates `GET https://api.sprites.dev/v1/sprites` with Bearer
 authentication. Redirects are refused and provider errors/bodies are never echoed.
