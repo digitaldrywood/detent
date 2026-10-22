@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 )
@@ -127,11 +128,14 @@ func TestEnforceLifetimeLimits(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			runner := newWorkerHostRunner()
 			tracker := &backendCapacityTestConnector{}
 			usage := &lifetimeUsageStoreStub{spend: test.usage, history: test.history, err: test.usageErr}
 			metrics := &lifetimeWorkflowMetricsStub{}
 			orch := &Orchestrator{
 				cfg:             cfg,
+				supervisor:      newTestSupervisor(t, runner, cfg),
+				runResults:      make(chan runpkg.Completion),
 				connector:       tracker,
 				lifetimeUsage:   usage,
 				workflowMetrics: metrics,
@@ -139,6 +143,7 @@ func TestEnforceLifetimeLimits(t *testing.T) {
 			state := newState(cfg)
 			issue := lifetimeLimitTestIssue()
 			issue.Labels = test.labels
+			issue.Fields = map[string]string{"Status": issue.State}
 			now := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 
 			orch.enforceLifetimeLimits(t.Context(), &state, []connector.Issue{issue}, now)
@@ -160,6 +165,17 @@ func TestEnforceLifetimeLimits(t *testing.T) {
 				orch.enforceLifetimeLimits(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Nanosecond))
 				if next := state.Retry[issue.ID]; next.Attempt != retry.Attempt || !next.DueAt.Equal(retry.DueAt) {
 					t.Fatal("refresh postponed an existing retry")
+				}
+				orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, retry.DueAt)
+				if _, running := state.Running[issue.ID]; !running {
+					t.Fatalf("over-limit issue did not dispatch at DueAt: retry=%+v", state.Retry[issue.ID])
+				}
+				if _, queued := state.Retry[issue.ID]; queued {
+					t.Fatal("dispatch did not consume the due retry")
+				}
+				request := <-runner.started
+				if request.Issue.ID != issue.ID {
+					t.Fatalf("dispatched issue = %q, want %q", request.Issue.ID, issue.ID)
 				}
 			}
 

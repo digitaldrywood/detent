@@ -62,7 +62,7 @@ func (o *Orchestrator) enforceLifetimeLimits(ctx context.Context, state *State, 
 		if _, blocked := state.Blocked[issue.ID]; blocked {
 			continue
 		}
-		if retry, queued := state.Retry[issue.ID]; queued && retry.DueAt.After(now) {
+		if _, queued := state.Retry[issue.ID]; queued {
 			continue
 		}
 		usage, err := o.issueLifetimeUsage(ctx, issue)
