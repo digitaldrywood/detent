@@ -47,7 +47,10 @@ import { GeneralSettings, PlanSettings, SettingsRoute } from "../../src/app/sett
 import { organizationMCPEndpoint } from "../../src/app/settings/MCPSettings.tsx";
 import { applyHubPaths, resetHubPaths } from "../../src/runtime/basePath.ts";
 
+const widgetState = vi.hoisted(() => ({ actual: null as "profile" | "security" | null }));
+
 vi.mock("@workos-inc/widgets", async () => {
+  const actual = await vi.importActual<typeof import("@workos-inc/widgets")>("@workos-inc/widgets");
   const React = await import("react");
   function Widget({ authToken, label }: { authToken: string | (() => Promise<string>); label: string }) {
     const [token, setToken] = React.useState("");
@@ -57,14 +60,15 @@ vi.mock("@workos-inc/widgets", async () => {
     return <div data-token={token}>{label}</div>;
   }
   return {
-    WorkOsWidgets: ({ children, theme }: { children: React.ReactNode; theme: { appearance: string } }) => <div data-widget-theme={theme.appearance}>{children}</div>,
-    UserProfile: (props: { authToken: string | (() => Promise<string>) }) => <Widget {...props} label="Profile widget" />,
-    UserSecurity: (props: { authToken: string | (() => Promise<string>) }) => <Widget {...props} label="Security widget" />,
+    WorkOsWidgets: ({ children, theme, queryClient }: React.ComponentProps<typeof actual.WorkOsWidgets>) => widgetState.actual ? <actual.WorkOsWidgets queryClient={queryClient} theme={theme}>{children}</actual.WorkOsWidgets> : <div data-widget-theme={theme?.appearance}>{children}</div>,
+    UserProfile: (props: { authToken: string | (() => Promise<string>) }) => widgetState.actual === "profile" ? <actual.UserProfile {...props} /> : <Widget {...props} label="Profile widget" />,
+    UserSecurity: (props: { authToken: string | (() => Promise<string>) }) => widgetState.actual === "security" ? <actual.UserSecurity {...props} /> : <Widget {...props} label="Security widget" />,
   };
 });
 
 afterEach(() => {
   cleanup();
+  widgetState.actual = null;
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -232,15 +236,36 @@ describe("personal account settings", () => {
     expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("widget-token") && init?.method === "POST" && init.body === "{}" && (init.headers as Record<string, string>)["X-CSRF-Token"] === accountFixture.csrf_token)).toBe(true);
   });
 
-  it("shows safe inline errors in both widget cards when token minting fails", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => String(url).endsWith("widget-token")
-      ? new Response(JSON.stringify({ code: "unavailable", message: "private-customer-token-sentinel" }), { status: 503 })
-      : new Response(JSON.stringify({ enabled: true })));
+  it.each(["token", "profile", "security"] as const)("shows one compact unavailable row after a %s failure without more widget requests", async (failure) => {
+    widgetState.actual = failure === "token" ? null : failure;
+    const token = `header.${btoa(JSON.stringify({ permissions: [], exp: Math.floor(Date.now() / 1000) + 3600 }))}.signature`;
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).startsWith("https://api.workos.com/")) throw new TypeError("private-customer-fetch-sentinel");
+      if (String(url).endsWith("widget-token")) return failure === "token"
+        ? new Response(JSON.stringify({ code: "unavailable", message: "private-customer-token-sentinel" }), { status: 503 })
+        : new Response(JSON.stringify({ token }));
+      return new Response(JSON.stringify({ enabled: true }));
+    });
     renderSidebarNav("/settings/general", OWNER_ACCOUNT, <GeneralSettings />);
-    await screen.findByText("Profile settings are temporarily unavailable. Please try again.");
-    expect(screen.getByText("Security settings are temporarily unavailable. Please try again.")).toBeTruthy();
-    expect(screen.queryByText(/private-customer-token-sentinel/)).toBeNull();
+    await screen.findByRole("alert");
+    expect(screen.getAllByRole("alert").map((row) => row.textContent)).toEqual(["Profile and security settings are unavailable right now."]);
+    expect(screen.queryByText(/private-customer/)).toBeNull();
+    expect(screen.queryByText("Error fetching data")).toBeNull();
     expect(screen.queryByText("Profile widget")).toBeNull();
+    expect(screen.queryByText("Security widget")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Profile" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Security" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
+    const widgetRequests = () => fetch.mock.calls.filter(([url]) => String(url).endsWith("widget-token") || String(url).startsWith("https://api.workos.com/"));
+    if (failure !== "token") expect(widgetRequests().some(([url]) => String(url) === "https://api.workos.com/client/graphql")).toBe(true);
+    const requests = widgetRequests().length;
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event("online"));
+    });
+    fireEvent.click(screen.getByRole("switch", { name: "Notify me about issues I filed or commented on" }));
+    await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(true));
+    expect(widgetRequests()).toHaveLength(requests);
   });
 });
 
