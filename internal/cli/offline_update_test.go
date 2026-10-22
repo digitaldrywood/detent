@@ -31,6 +31,7 @@ import (
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -230,8 +231,14 @@ func testOfflineBusyControllerConvergence(t *testing.T, configPath, binary strin
 		t.Fatal("enrolled update observation is missing before the busy update")
 	}
 	applied := scheduler.EnrolledUpdate(ctx, scheduler.RunningBuild(), &runnerauth.UpdateRequest{ID: "busy-update", Service: "detent", Version: offlineUpdateVersion, Release: true, FromRelease: true, FollowHub: true, ExpectedBuildRevision: before.Revision, RequestedAt: time.Now().UTC()})
-	if applied == nil || applied.Receipt == nil || applied.Receipt.Applied == nil || !applied.Receipt.Applied.VerifiedRelease || applied.Receipt.Status != "restart_requested" || applied.Running.Version != "1.2.2" || applied.Receipt.Applied.Version != offlineUpdateVersion || restart.Binary() != binary {
-		t.Fatalf("busy update did not apply and request convergence: %+v", applied)
+	if applied == nil || applied.Receipt == nil || applied.Receipt.Applied == nil || !applied.Receipt.Applied.VerifiedRelease || !applied.Receipt.ExecutionReady() || applied.Running.Version != "1.2.2" || applied.Receipt.Applied.Version != offlineUpdateVersion {
+		t.Fatalf("busy update did not apply the release: %+v", applied)
+	}
+	if restart.Binary() != "" || controller.shutdownRequested.Load() {
+		t.Fatalf("busy update requested a draining restart into %q", restart.Binary())
+	}
+	if status, ok := controller.currentShutdownStatus(); ok && status.Draining {
+		t.Fatalf("busy update left the controller draining: %+v", status)
 	}
 	state, err := project.Orchestrator().State(ctx)
 	if err != nil {
@@ -254,15 +261,21 @@ func testOfflineBusyControllerConvergence(t *testing.T, configPath, binary strin
 	default:
 	}
 	close(active)
-	convergence := time.NewTimer(15 * time.Second)
-	defer convergence.Stop()
+	testenv.WaitUntil(t, ctx, func() error {
+		if !runtimeUpdateIdle(ctx, registry) {
+			return errors.New("active attempt still running")
+		}
+		return nil
+	})
+	scheduler.EnrolledUpdate(ctx, scheduler.RunningBuild(), nil)
+	if restart.Binary() != binary {
+		t.Fatalf("idle controller restart selected %q, want %q", restart.Binary(), binary)
+	}
 	select {
 	case err := <-replaced:
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-convergence.C:
-		t.Fatal("replacement controller did not report within 15 seconds of attempt completion")
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}

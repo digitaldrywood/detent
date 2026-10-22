@@ -201,10 +201,12 @@ source-iteration support; workers enable inline review fixes only when the
 controller supplies that capability. An older bootstrap retains controller-owned
 finalization without calling newer execution methods.
 
-After installing a verified release, the update owner requests graceful controller
-restart immediately. New dispatch stops while its existing attempts finish,
-including finalization and lease release. Update restarts never force active
-attempts at a shutdown drain deadline. POSIX services execute the verified
+After installing a verified release, the update owner restarts the controller
+only under an idle reservation. A busy controller keeps claiming and launching
+new attempts on the newer execution release, and every heartbeat retries the
+idle reservation; an applied update never drains the runner or withholds its
+free slots. Update restarts never force active attempts at a shutdown drain
+deadline. POSIX services execute the verified
 installed binary directly, preserving their service process identity instead of
 relying on a launcher to select the release. Startup prepares the controller
 replacement again if an older launcher starts a superseded build. Until convergence,

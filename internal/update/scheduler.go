@@ -501,7 +501,7 @@ func (s *Scheduler) installControlLocked(ctx context.Context, opts ApplyOptions,
 	s.mu.Lock()
 	s.controlRestart = &controlRestart{installed: installed}
 	s.mu.Unlock()
-	s.cfg.Logger.Info("controller binary replaced; graceful restart pending", "version", version)
+	s.cfg.Logger.Info("controller binary replaced; restart pending until idle", "version", version)
 	return installed, true
 }
 
@@ -512,16 +512,15 @@ func (s *Scheduler) restartBehindControlLocked(ctx context.Context) {
 	if pending == nil || s.cfg.RequestRestart == nil {
 		return
 	}
-	var releaseIdle func()
-	idle := false
-	if s.cfg.ReserveIdle != nil {
-		releaseIdle, idle = s.cfg.ReserveIdle(ctx)
+	if s.cfg.ReserveIdle == nil {
+		return
 	}
+	releaseIdle, idle := s.cfg.ReserveIdle(ctx)
 	if !idle {
 		if releaseIdle != nil {
 			releaseIdle()
-			releaseIdle = nil
 		}
+		return
 	}
 	if !s.cfg.RequestRestart(pending.installed.Binary) {
 		if releaseIdle != nil {
@@ -533,7 +532,7 @@ func (s *Scheduler) restartBehindControlLocked(ctx context.Context) {
 	s.controlRestart = nil
 	s.mu.Unlock()
 	s.updateStatus(func(status *AutoStatus) { status.State = "restart_requested" })
-	s.cfg.Logger.Info("controller behind applied release; graceful restart requested", "version", pending.installed.LatestVersion, "idle", idle)
+	s.cfg.Logger.Info("idle controller behind applied release; restart requested", "version", pending.installed.LatestVersion)
 }
 
 func (s *Scheduler) applyExceptionalWorkerUpdateLocked(ctx context.Context, opts ApplyOptions, err error) (Status, error) {
