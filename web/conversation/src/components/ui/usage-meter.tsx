@@ -47,6 +47,7 @@ export function UsageMeter({
   statusText,
   layout = "stacked",
   detail,
+  limitTone = "error",
 }: {
   readonly label: string;
   readonly used: number;
@@ -61,6 +62,7 @@ export function UsageMeter({
   readonly statusText?: string;
   readonly layout?: "stacked" | "row";
   readonly detail?: ReactNode;
+  readonly limitTone?: "error" | "warning";
 }) {
   const id = useId();
   const state =
@@ -112,7 +114,7 @@ export function UsageMeter({
         className={cn(
           "h-full rounded-full",
           state === "reached"
-            ? "bg-error"
+            ? limitTone === "warning" ? "bg-warning" : "bg-error"
             : state === "warning"
               ? "bg-warning"
               : "bg-foreground/60",
@@ -137,7 +139,7 @@ export function UsageMeter({
             !limitOnly &&
               !unlimited &&
               (state === "reached"
-                ? "text-error-foreground"
+                ? limitTone === "warning" ? "text-foreground" : "text-error-foreground"
                 : state === "warning"
                   ? "text-warning-foreground"
                   : "text-foreground"),
@@ -175,7 +177,7 @@ export function UsageMeter({
               !limitOnly &&
               !unlimited &&
               (state === "reached"
-                ? "text-error-foreground"
+                ? limitTone === "warning" ? "text-foreground" : "text-error-foreground"
                 : state === "warning"
                   ? "text-warning-foreground"
                   : "text-foreground"),
@@ -193,13 +195,13 @@ export function UsageMeter({
             !limitOnly &&
             !unlimited &&
             (state === "reached"
-              ? "text-error-foreground"
+              ? limitTone === "warning" ? undefined : "text-error-foreground"
               : state === "warning"
                 ? "text-warning-foreground"
                 : undefined),
         )}
       >
-        {!excluded && !limitOnly && !unlimited ? (
+        {!excluded && !limitOnly && !unlimited && status !== "" ? (
           <p>
             {status}
             {statusText === undefined

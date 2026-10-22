@@ -13,6 +13,7 @@ import { ControlError } from "../account/controls.tsx";
 import { useAccountApi } from "../account/context.ts";
 import { newKey } from "../account/idempotency.ts";
 import { useMutation } from "../account/useResource.ts";
+import { UsageMeter } from "~/components/ui/usage-meter";
 import { SettingsSection } from "./settingsLayout.tsx";
 
 export function creditAmount(micros: number): string {
@@ -108,6 +109,11 @@ export function CreditSettings({ credits, report, refresh }: {
   };
   return <>
     <SettingsSection id="settings-ai-credits" title="AI credits">
+      {credits.included && credits.included.allowance_micros > 0 ? <div className="px-4 py-4">
+        <UsageMeter label={`Included with ${credits.included.plan_name}`} used={credits.included.used_micros} limit={credits.included.allowance_micros} limitTone="warning"
+          valueText={`${creditAmount(credits.included.used_micros)} / ${creditAmount(credits.included.allowance_micros)} used`}
+          statusText="" description={`Resets ${new Date(credits.included.period_end).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })} · then purchased credits are used`} />
+      </div> : null}
       <MetricTileGroup>
         <MetricTile size="compact" className="p-4" label="Balance" value={<span className="inline-flex flex-wrap items-center gap-1.5"><span title={`$${(credits.balance_micros / 1_000_000).toFixed(6)}`}>{creditAmount(credits.balance_micros)}</span><Button size="icon-micro" variant="ghost-muted" aria-label="Refresh balance" disabled={reload.pending} onClick={() => void reload.call()}><RefreshCwIcon className="size-3.5" /></Button></span>} detail={credits.in_flight ? <Badge variant="info">Top-up pending</Badge> : undefined} />
         <MetricTile size="compact" className="p-4" label="Charged this period" value={creditAmount(report.charged_ai_micros ?? 0)} />

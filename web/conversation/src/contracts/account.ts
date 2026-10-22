@@ -781,6 +781,7 @@ export type PlanGrant = typeof PlanGrant.Type;
 export const PlanReport = Schema.Struct({
   name: Schema.optional(Schema.String),
   monthly_usd_cents: Schema.optional(Schema.NullOr(Schema.Number)),
+  included_ai_credit_micros: Schema.optional(Schema.NullOr(Schema.Number)),
   organization_id: Schema.String,
   base: PlanReference,
   effective_base: PlanReference,
@@ -835,6 +836,10 @@ export const BillingPrice = Schema.Struct({
 export type BillingPrice = typeof BillingPrice.Type;
 
 export const AICredits = Schema.Struct({
+  included: Schema.optional(Schema.Struct({
+    allowance_micros: Schema.Number, used_micros: Schema.Number,
+    period_start: Schema.String, period_end: Schema.String, plan_name: Schema.String,
+  })),
   next_cursor: Schema.optional(Schema.String),
   total_rows: Schema.optional(Schema.Number),
   balance_micros: Schema.Number,
@@ -848,6 +853,7 @@ export const AICredits = Schema.Struct({
     price_id: Schema.String, label: Schema.String, usd_cents: Schema.Number,
   })),
   history: Schema.Array(Schema.Struct({
+    included_amount_micros: Schema.optional(Schema.Number),
     amount_micros: Schema.Number, kind: Schema.String, at: Schema.String, turns: Schema.optional(Schema.Number),
   })),
 });
@@ -858,6 +864,7 @@ export const ComparisonPlan = Schema.Struct({
   version: Schema.Number,
   name: Schema.optional(Schema.String),
   monthly_usd_cents: Schema.optional(Schema.NullOr(Schema.Number)),
+  included_ai_credit_micros: Schema.optional(Schema.NullOr(Schema.Number)),
   allowances: Schema.Record(Schema.String, Schema.Number),
   features: Schema.Array(Schema.String),
   price_id: Schema.String,
@@ -869,6 +876,7 @@ export const BillingUsageReport = Schema.Struct({
   effective_base: Schema.optional(PlanReference),
   name: Schema.optional(Schema.String),
   monthly_usd_cents: Schema.optional(Schema.NullOr(Schema.Number)),
+  included_ai_credit_micros: Schema.optional(Schema.NullOr(Schema.Number)),
   complimentary: Schema.optional(Schema.Boolean),
   expires_at: Schema.optional(Schema.NullOr(Schema.String)),
   renews_at: Schema.NullOr(Schema.String),

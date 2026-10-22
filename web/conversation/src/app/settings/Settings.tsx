@@ -217,6 +217,7 @@ export function PlanSettings(): React.ReactElement {
             features: report.features ?? [],
             allowances: report.allowances,
             price_id: "",
+            included_ai_credit_micros: 0,
           },
           ...comparisons,
         ];
@@ -527,6 +528,7 @@ export function PlanSettings(): React.ReactElement {
             <div role="row" className="sr-only">
               <span role="columnheader">Plan</span>
               <span role="columnheader">Concurrent work</span>
+              <span role="columnheader">AI credits / month</span>
               <span role="columnheader">Hosted artifacts</span>
               <span role="columnheader">Projects</span>
               <span role="columnheader">Storage</span>
@@ -534,11 +536,14 @@ export function PlanSettings(): React.ReactElement {
             </div>
             <div
               aria-hidden="true"
-              className="hidden grid-rows-[110px_44px_44px_44px_44px_64px] text-xs text-muted-foreground md:grid"
+              className="hidden grid-rows-[110px_44px_44px_44px_44px_44px_64px] text-xs text-muted-foreground md:grid"
             >
               <div />
               <div className="flex items-center border-t border-border/50 px-3">
                 Concurrent work
+              </div>
+              <div className="flex items-center border-t border-border/50 px-3">
+                AI credits / month
               </div>
               <div className="flex items-center border-t border-border/50 px-3">
                 Hosted artifacts
@@ -576,7 +581,7 @@ export function PlanSettings(): React.ReactElement {
                   key={`${candidate.id}-${candidate.version}`}
                   aria-current={current ? "true" : undefined}
                   className={cn(
-                    "grid grid-cols-[1fr_auto] gap-2 p-3 md:grid-cols-1 md:grid-rows-[110px_44px_44px_44px_44px_64px] md:gap-0 md:p-0",
+                    "grid grid-cols-[1fr_auto] gap-2 p-3 md:grid-cols-1 md:grid-rows-[110px_44px_44px_44px_44px_44px_64px] md:gap-0 md:p-0",
                     current &&
                       "relative z-1 rounded-xl bg-info/8 ring-2 ring-info ring-inset",
                   )}
@@ -616,6 +621,10 @@ export function PlanSettings(): React.ReactElement {
                       {custom ? (
                         <span className="md:hidden"> slots</span>
                       ) : null}
+                    </div>
+                    <div role="cell" className="text-xs text-muted-foreground md:flex md:items-center md:border-t md:border-border/50 md:px-3 md:text-foreground">
+                      <span className="md:sr-only">AI credits / month: </span>
+                      {candidate.included_ai_credit_micros === null ? "Custom" : (candidate.included_ai_credit_micros ?? 0) > 0 ? formatUsd(candidate.included_ai_credit_micros! / 1_000_000) : "—"}
                     </div>
                     <div
                       role="cell"

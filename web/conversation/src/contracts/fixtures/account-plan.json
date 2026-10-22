@@ -1,6 +1,7 @@
 {
   "name": "Starter",
   "monthly_usd_cents": 4900,
+  "included_ai_credit_micros": 0,
   "organization_id": "org_example",
   "base": { "id": "pilot_free", "version": 1 },
   "effective_base": { "id": "pilot_free", "version": 1 },

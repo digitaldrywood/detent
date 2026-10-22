@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"strconv"
@@ -65,7 +66,7 @@ func creditPageQuery(c echo.Context) (creditPageRequest, error) {
 }
 
 const groupedCreditHistory = `WITH grouped AS (
- SELECT max(id) AS row_id, sum(amount_micros) AS amount, kind, max(actor) AS actor, max(reason) AS reason,
+ SELECT max(id) AS row_id, sum(amount_micros) AS amount, sum(included_amount_micros) AS included, kind, max(actor) AS actor, max(reason) AS reason,
  max(recorded_at) AS at, CASE WHEN kind='usage' THEN count(*) ELSE 0 END AS turns
  FROM ai_credit_transactions
  WHERE organization_id=? AND mode=? AND id<=? AND recorded_at>=? AND recorded_at<?
@@ -101,7 +102,7 @@ func (s *Service) readCreditHistory(ctx context.Context, view *aiCreditView, p c
 		return err
 	}
 	args = append(args, cursor.At, cursor.At, cursor.ID, p.Limit+1)
-	rows, err := d.reader.QueryContext(ctx, groupedCreditHistory+`SELECT row_id,amount,kind,actor,reason,at,turns FROM grouped WHERE at<? OR (at=? AND row_id<?) ORDER BY at DESC,row_id DESC LIMIT ?`, args...)
+	rows, err := d.reader.QueryContext(ctx, groupedCreditHistory+`SELECT row_id,amount,included,kind,actor,reason,at,turns FROM grouped WHERE at<? OR (at=? AND row_id<?) ORDER BY at DESC,row_id DESC LIMIT ?`, args...)
 	if err != nil {
 		return err
 	}
@@ -110,7 +111,7 @@ func (s *Service) readCreditHistory(ctx context.Context, view *aiCreditView, p c
 	for rows.Next() {
 		var item aiCreditTransaction
 		var id, at int64
-		if err := rows.Scan(&id, &item.AmountMicros, &item.Kind, &item.Actor, &item.Reason, &at, &item.Turns); err != nil {
+		if err := rows.Scan(&id, &item.AmountMicros, &item.IncludedAmountMicros, &item.Kind, &item.Actor, &item.Reason, &at, &item.Turns); err != nil {
 			return err
 		}
 		if len(view.History) == p.Limit {
@@ -158,7 +159,7 @@ func (s *Service) exportCreditTransactions(ctx context.Context, c echo.Context, 
 	d := s.database
 	rows, err := d.reader.QueryContext(ctx, `SELECT t.recorded_at,t.kind,
  CASE WHEN t.kind='usage' THEN substr(t.source,7) ELSE '' END,
- CASE WHEN t.kind='usage' THEN u.input+u.output ELSE NULL END,t.amount_micros
+ CASE WHEN t.kind='usage' THEN u.input+u.output ELSE NULL END,t.amount_micros,t.included_amount_micros
  FROM ai_credit_transactions t LEFT JOIN conversation_usage u ON t.kind='usage' AND u.organization_id=t.organization_id AND t.source='usage:'||u.turn_id
  WHERE t.organization_id=? AND t.mode=? AND t.recorded_at>=? AND t.recorded_at<? ORDER BY t.recorded_at DESC,t.id DESC`, d.hostedOrganization, d.aiCreditMode, from, to)
 	if err != nil {
@@ -173,14 +174,14 @@ func (s *Service) exportCreditTransactions(ctx context.Context, c echo.Context, 
 	c.Response().Header().Set(echo.HeaderContentDisposition, `attachment; filename="credit-transactions.csv"`)
 	c.Response().Header().Set(echo.HeaderCacheControl, "no-store")
 	writer := csv.NewWriter(c.Response())
-	if err := writer.Write([]string{"recorded_at", "kind", "turn_id", "tokens", "charged_amount_usd"}); err != nil {
+	if err := writer.Write([]string{"recorded_at", "kind", "turn_id", "tokens", "charged_amount_usd", "included_amount_usd"}); err != nil {
 		return err
 	}
 	for rows.Next() {
-		var at, amount int64
+		var at, amount, included int64
 		var kind, turn string
 		var tokens *int64
-		if err := rows.Scan(&at, &kind, &turn, &tokens, &amount); err != nil {
+		if err := rows.Scan(&at, &kind, &turn, &tokens, &amount, &included); err != nil {
 			return err
 		}
 		tokenText := ""
@@ -194,7 +195,7 @@ func (s *Service) exportCreditTransactions(ctx context.Context, c echo.Context, 
 		}
 		signed = strings.Repeat("0", max(0, 7-len(signed))) + signed
 		dollars := sign + signed[:len(signed)-6] + "." + signed[len(signed)-6:]
-		if err := writer.Write([]string{time.UnixMicro(at).UTC().Format(time.RFC3339Nano), kind, creditCSVCell(turn), tokenText, dollars}); err != nil {
+		if err := writer.Write([]string{time.UnixMicro(at).UTC().Format(time.RFC3339Nano), kind, creditCSVCell(turn), tokenText, dollars, fmt.Sprintf("%d.%06d", included/1000000, included%1000000)}); err != nil {
 			return err
 		}
 	}

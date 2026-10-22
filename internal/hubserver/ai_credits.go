@@ -16,15 +16,17 @@ import (
 )
 
 type aiCreditTransaction struct {
-	AmountMicros int64     `json:"amount_micros"`
-	Kind         string    `json:"kind"`
-	Actor        string    `json:"actor,omitempty"`
-	Reason       string    `json:"reason,omitempty"`
-	At           time.Time `json:"at"`
-	Turns        int64     `json:"turns"`
+	IncludedAmountMicros int64     `json:"included_amount_micros"`
+	AmountMicros         int64     `json:"amount_micros"`
+	Kind                 string    `json:"kind"`
+	Actor                string    `json:"actor,omitempty"`
+	Reason               string    `json:"reason,omitempty"`
+	At                   time.Time `json:"at"`
+	Turns                int64     `json:"turns"`
 }
 
 type aiCreditView struct {
+	Included       *includedAICredits    `json:"included,omitempty"`
 	BalanceMicros  int64                 `json:"balance_micros"`
 	AutoEnabled    bool                  `json:"auto_enabled"`
 	ThresholdCents int64                 `json:"threshold_cents"`
@@ -49,6 +51,13 @@ func (s *Service) readAICredits(ctx context.Context, pages ...creditPageRequest)
  FROM ai_credit_accounts a WHERE organization_id=? AND mode=?`, d.hostedOrganization, d.aiCreditMode).Scan(&view.BalanceMicros, &view.AutoEnabled, &view.ThresholdCents, &view.PriceID, &view.Failure, &method, &view.InFlight)
 	if err != nil {
 		return nil, err
+	}
+	included, err := d.includedAICredits(ctx, d.reader, d.hostedOrganization, s.config.now())
+	if err != nil {
+		return nil, err
+	}
+	if included.AllowanceMicros > 0 {
+		view.Included = &included
 	}
 	view.CanAutoFund = method != ""
 	if cfg := s.hostedBillingConfig(); cfg != nil {
@@ -255,6 +264,13 @@ func (w *hostedBillingWorker) autoFund(ctx context.Context) error {
 			return err
 		}
 		if !enabled || balance >= threshold*10000 {
+			return nil
+		}
+		included, includedErr := d.includedAICredits(readCtx, d.reader, d.hostedOrganization, s.config.now())
+		if includedErr != nil {
+			return includedErr
+		}
+		if included.remaining() > 0 {
 			return nil
 		}
 		pack, ok := s.creditPack(price)
