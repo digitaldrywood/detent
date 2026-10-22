@@ -1,11 +1,17 @@
 package hubserver
 
 import (
+	"context"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,17 +29,19 @@ func TestNativeDuplicateFiling(t *testing.T) {
 		challenge  bool
 		archived   bool
 		state      string
+		failRead   bool
 	}{
-		{"matching title", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false, "Todo"},
-		{"default lane", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false, ""},
-		{"matching body", true, "A different symptom", "Checkout hangs during repository association", 0, true, false, "Todo"},
-		{"no match", true, "Invitation email rejected", "Mailbox rejects the invite address; delivery returns an SMTP rejection from the recipient domain after verification links are sent. Sender reputation, relay credentials, mailbox quota, attachments, calendar invitations, spam filtering, and address formatting each need investigation.", 0, false, false, "Todo"},
-		{"disabled", false, "Runner checkout deadlocks", "Checkout hangs during repository association", 0, false, false, "Todo"},
-		{"recent closed", true, "Runner checkout deadlocks", "Separate observed details", 29, true, false, "Todo"},
-		{"old closed", true, "Runner checkout deadlocks", "Separate observed details", 31, false, false, "Todo"},
-		{"recent archived", true, "Runner checkout deadlocks", "Separate observed details", 29, true, true, "Todo"},
-		{"recent archived body", true, "A different symptom", "Checkout hangs during repository association", 29, true, true, "Todo"},
-		{"unlinked Triage", true, "Runner checkout deadlocks", "Separate observed details", 0, false, false, "Triage"},
+		{"matching title", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false, "Todo", false},
+		{"default lane", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false, "", false},
+		{"matching body", true, "A different symptom", "Checkout hangs during repository association", 0, true, false, "Todo", false},
+		{"no match", true, "Invitation email rejected", "Mailbox rejects the invite address; delivery returns an SMTP rejection from the recipient domain after verification links are sent. Sender reputation, relay credentials, mailbox quota, attachments, calendar invitations, spam filtering, and address formatting each need investigation.", 0, false, false, "Todo", false},
+		{"disabled", false, "Runner checkout deadlocks", "Checkout hangs during repository association", 0, false, false, "Todo", false},
+		{"recent closed", true, "Runner checkout deadlocks", "Separate observed details", 29, true, false, "Todo", false},
+		{"old closed", true, "Runner checkout deadlocks", "Separate observed details", 31, false, false, "Todo", false},
+		{"recent archived", true, "Runner checkout deadlocks", "Separate observed details", 29, true, true, "Todo", false},
+		{"recent archived body", true, "A different symptom", "Checkout hangs during repository association", 29, true, true, "Todo", false},
+		{"unlinked Triage", true, "Runner checkout deadlocks", "Separate observed details", 0, false, false, "Triage", false},
+		{"post-commit failure", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false, "Todo", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC).AddDate(0, 0, -test.closedDays)
@@ -121,6 +129,11 @@ func TestNativeDuplicateFiling(t *testing.T) {
 			}
 			request.ChallengeToken = challenge.ChallengeToken
 			request.NotDuplicateOf = []int{first.Number}
+			var fault *nativeBrowserPathFault
+			if test.failRead {
+				fault = installNativeBrowserPathFault(t, f.service)
+				fault.enabled.Store(true)
+			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 			requireNativeStatus(t, response, http.StatusOK)
 			var created tracker.NativeIssue
@@ -132,6 +145,15 @@ func TestNativeDuplicateFiling(t *testing.T) {
 			requireNativeStatus(t, replay, http.StatusOK)
 			if replay.Body.String() != response.Body.String() {
 				t.Fatal("confirmation replay changed")
+			}
+			if fault != nil {
+				if fault.failures.Load() != 2 || !slices.Contains(created.OmittedFields, "web_url") {
+					t.Fatalf("post-commit failure was not disclosed: failures=%d response=%s", fault.failures.Load(), response.Body.String())
+				}
+				fault.enabled.Store(false)
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil || count != 2 {
+					t.Fatalf("confirmation or replay duplicated item: count=%d err=%v", count, err)
+				}
 			}
 			ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 			credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
@@ -332,9 +354,76 @@ func TestNativeDuplicateChallengeSettings(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, request), http.StatusConflict)
 }
 
+type nativeBrowserPathFault struct {
+	enabled  atomic.Bool
+	failures atomic.Int64
+}
+
+type nativeBrowserPathConnector struct {
+	timedConnector
+	fault *nativeBrowserPathFault
+}
+
+func (c nativeBrowserPathConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	conn, err := c.timedConnector.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &nativeBrowserPathConn{timedConn: conn.(*timedConn), fault: c.fault}, nil
+}
+
+type nativeBrowserPathConn struct {
+	*timedConn
+	fault *nativeBrowserPathFault
+}
+
+func (c *nativeBrowserPathConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	if !c.inTx && c.fault.enabled.Load() && strings.HasPrefix(query, "SELECT o.slug,p.slug,i.number FROM issues") {
+		c.fault.failures.Add(1)
+		return nil, errors.New("injected browser path read failure")
+	}
+	return c.timedConn.QueryContext(ctx, query, args)
+}
+
+func installNativeBrowserPathFault(t *testing.T, s *Service) *nativeBrowserPathFault {
+	t.Helper()
+	fault := &nativeBrowserPathFault{}
+	for _, target := range []struct {
+		pool   **sql.DB
+		dsn    string
+		writer bool
+	}{
+		{&s.database.db, sqliteWriterDSN(s.database.path, s.config.BusyTimeout, s.config.Hosted != nil), true},
+		{&s.database.reader, sqliteReaderDSN(s.database.path, s.config.BusyTimeout), false},
+	} {
+		original := *target.pool
+		pool := sql.OpenDB(nativeBrowserPathConnector{timedConnector: timedConnector{dsn: target.dsn, driver: original.Driver(), writer: target.writer}, fault: fault})
+		if target.writer {
+			pool.SetMaxOpenConns(1)
+		}
+		*target.pool = pool
+		t.Cleanup(func() {
+			s.tokenUseWork.Wait()
+			*target.pool = original
+			if err := pool.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	return fault
+}
+
 func TestNativeDuplicateMCP(t *testing.T) {
-	for _, transport := range []string{"stdio", "http"} {
-		t.Run(transport, func(t *testing.T) {
+	for _, test := range []struct {
+		name, transport string
+		failBrowserPath bool
+	}{
+		{"stdio", "stdio", false},
+		{"http", "http", false},
+		{"stdio post-commit failure", "stdio", true},
+		{"http post-commit failure", "http", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "duplicate-mcp")
 			first := f.create(t, "Runner checkout deadlocks")
 			for i := range 6 {
@@ -353,7 +442,7 @@ func TestNativeDuplicateMCP(t *testing.T) {
 				t.Fatal(err)
 			}
 			ctx = f.service.withOperatorCatalog(authority.BindContext(ctx), credential, string(f.project.OrganizationID))
-			protocol := hostedContextProtocol(t, f.service, ctx, transport)
+			protocol := hostedContextProtocol(t, f.service, ctx, test.transport)
 			call := func(name string, args map[string]any) json.RawMessage {
 				t.Helper()
 				args["project_id"] = f.project.ID
@@ -417,10 +506,38 @@ func TestNativeDuplicateMCP(t *testing.T) {
 				numbers = append(numbers, match.Number)
 			}
 			args["challenge_token"], args["not_duplicate_of"] = challenge.ChallengeToken, numbers
+			var fault *nativeBrowserPathFault
+			if test.failBrowserPath {
+				fault = installNativeBrowserPathFault(t, f.service)
+				fault.enabled.Store(true)
+			}
 			raw = call(operatortool.FileIssue, args)
 			var created tracker.NativeIssue
 			if err := json.Unmarshal(raw, &created); err != nil || created.WorkItemID == "" {
 				t.Fatalf("confirmation=%s: %v", raw, err)
+			}
+			if created.State != "Todo" || created.Body != args["description"] || created.Title != first.Title {
+				t.Fatalf("confirmation lost committed item: %s", raw)
+			}
+			if fault != nil {
+				if fault.failures.Load() != 1 || !slices.Contains(created.OmittedFields, "web_url") || created.WebURL != "" {
+					t.Fatalf("post-commit failure was not disclosed: failures=%d response=%s", fault.failures.Load(), raw)
+				}
+				for _, failing := range []bool{true, false} {
+					fault.enabled.Store(failing)
+					raw = call(operatortool.FileIssue, args)
+					var replay tracker.NativeIssue
+					if err := json.Unmarshal(raw, &replay); err != nil || replay.WorkItemID != created.WorkItemID || slices.Contains(replay.OmittedFields, "web_url") != failing {
+						t.Fatalf("replay after post-commit failure=%s: %v", raw, err)
+					}
+				}
+				if fault.failures.Load() != 2 {
+					t.Fatalf("replay did not exercise post-commit failure: %d", fault.failures.Load())
+				}
+			}
+			var count int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil || count != 8 {
+				t.Fatalf("confirmation or replay duplicated item: count=%d err=%v", count, err)
 			}
 			raw = call(operatortool.WorkRelationships, map[string]any{"reference": created.WorkItemID})
 			var links struct {

@@ -1251,6 +1251,12 @@ Tokens expire after one hour; expired filings need a new request identity.
 Confirmation deletes the token, while request replay retains its original
 result. Machine reports and linked GitHub intake are never challenged.
 
+A committed native issue mutation still returns success if the subsequent
+browser-URL lookup fails. The response includes the committed item with an
+empty `web_url` and `omitted_fields: ["web_url"]`. Replaying the same
+`request_id` returns the original item without creating another issue; the URL
+lookup is repeated, so temporary omissions are not stored in the command receipt.
+
 Scheduled reporter evidence requires operator or administrator authority and
 the project's selected checkout repository. This report-only variant returns
 the report and the Hub's `recorded_at` receipt time without creating or changing

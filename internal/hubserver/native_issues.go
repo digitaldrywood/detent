@@ -72,11 +72,13 @@ func (s *Service) nativeIssueJSON(ctx context.Context, scope nativeScope, body j
 	if !scope.reporterOwns(issue.Actor) {
 		return nil, nativeNotFound()
 	}
-	path, err := readIssueBrowserPath(ctx, s.database.db, string(issue.WorkItemID))
+	path, err := readIssueBrowserPath(ctx, s.database.reader, string(issue.WorkItemID))
 	if err != nil {
-		return nil, err
+		issue.WebURL = ""
+		issue.OmittedFields = append(issue.OmittedFields, "web_url")
+	} else {
+		issue.WebURL = path
 	}
-	issue.WebURL = path
 	return json.Marshal(s.nativeIssueResponse(scope.reporterIssue(issue)))
 }
 
