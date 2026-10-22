@@ -45,14 +45,14 @@ func TestDispatchLoopStartPersistence(t *testing.T) {
 		usage: runpkg.UsageUpdate{DispatchLoopStart: &runpkg.DispatchLoopStartSnapshot{
 			WorkspaceDiffAvailable: true,
 			WorkspaceHeadAvailable: true,
-			DiffStats:              DiffStats{HeadSHA: "dispatch-head", Status: "clean"},
+			DiffStats:              DiffStats{HeadSHA: "dispatch-head", TreeSHA: "dispatch-tree", Status: "clean"},
 		}},
 	})
 	if len(attempts.heartbeats) != 1 {
 		t.Fatalf("heartbeats = %d, want 1", len(attempts.heartbeats))
 	}
 	persistedStart = dispatchLoopStartFromMetadata(t, attempts.heartbeats[0].WorkerMetadataJSON)
-	if !persistedStart.Captured || !persistedStart.Persisted || persistedStart.Fingerprint.WorkspaceHead != "dispatch-head" {
+	if !persistedStart.Captured || !persistedStart.Persisted || persistedStart.Fingerprint.WorkspaceHead != "dispatch-head" || persistedStart.Fingerprint.WorkspaceTree != "dispatch-tree" {
 		t.Fatalf("heartbeat dispatch loop start = %#v, want complete persisted baseline", persistedStart)
 	}
 }
@@ -76,7 +76,7 @@ func TestDispatchLoopStartPersistenceFailureFailsOpen(t *testing.T) {
 		usage: runpkg.UsageUpdate{DispatchLoopStart: &runpkg.DispatchLoopStartSnapshot{
 			WorkspaceDiffAvailable: true,
 			WorkspaceHeadAvailable: true,
-			DiffStats:              DiffStats{HeadSHA: "dispatch-head", Status: "clean"},
+			DiffStats:              DiffStats{HeadSHA: "dispatch-head", TreeSHA: "dispatch-tree", Status: "clean"},
 		}},
 	})
 

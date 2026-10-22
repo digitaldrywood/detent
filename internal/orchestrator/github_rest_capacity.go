@@ -259,6 +259,9 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 	} else if !active || event.Err == nil || !o.dispatchPlanner().githubRESTDependent(running.Issue) {
 		return false
 	}
+	if !o.nativeWorkflow() {
+		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
+	}
 	if !o.nativeWorkflow() || !mergeWorkerIssue(running.Issue) {
 		running = o.restoreBackendCapacityIssueState(ctx, state, running, event.CompletedAt)
 	}

@@ -179,9 +179,12 @@ consolidation.
 Per-issue instant/repeated failure, no-progress, spend-since-progress,
 dispatch-loop, token-ceiling and workspace retry brakes are consolidated into
 the existing machine retry owner. Machine failures remain dispatchable with
-persisted attempts and capped jittered backoff, including native failures,
-no-product completions and session-brake retries. Only verified new progress
-resets a continuation; unchanged or unavailable evidence and rejected completions
+growing attempts and capped jittered backoff, including native failures,
+no-product completions, session-brake retries and merge failures, refusals and
+unavailable-evidence waits. Durable restoration requires configured
+`workflowMetrics`. Continuations reset only for a host-observed changed PR head
+or committed tree against the dispatch baseline. Unchanged or unavailable
+evidence and rejected completions
 retain growing retries. Budget/usage checks, provider capacity and session
 ceilings are existing policies, not an unconditional spend bound. An unset or
 disabled budget imposes no monetary cap; drain mode can admit already-admitted

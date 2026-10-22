@@ -625,14 +625,14 @@ func TestLocalGitDiffStat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clean DiffStat() error = %v", err)
 	}
-	if !clean.IsEmpty() || clean.HeadSHA != head || clean.HeadObservedAt.Before(before) || clean.HeadObservedAt.After(time.Now()) {
+	if !clean.IsEmpty() || clean.TreeSHA == "" || clean.HeadSHA != head || clean.HeadObservedAt.Before(before) || clean.HeadObservedAt.After(time.Now()) {
 		t.Fatalf("clean DiffStat() = %+v, want clean observation of %s", clean, head)
 	}
 	before = time.Now()
 	runGit(t, info.Path, "commit", "--allow-empty", "-m", "change checked-out head")
 	head = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 	changedHead, err := backend.DiffStat(t.Context(), info, Issue{Identifier: "DD-DIFF"})
-	if err != nil || !changedHead.IsEmpty() || changedHead.HeadSHA != head || changedHead.HeadSHA == clean.HeadSHA || !changedHead.HeadObservedAt.After(clean.HeadObservedAt) || changedHead.HeadObservedAt.Before(before) {
+	if err != nil || !changedHead.IsEmpty() || changedHead.HeadSHA != head || changedHead.HeadSHA == clean.HeadSHA || changedHead.TreeSHA != clean.TreeSHA || !changedHead.HeadObservedAt.After(clean.HeadObservedAt) || changedHead.HeadObservedAt.Before(before) {
 		t.Fatalf("changed head DiffStat() = %+v, %v", changedHead, err)
 	}
 
@@ -666,7 +666,7 @@ func TestLocalGitDiffStat(t *testing.T) {
 	if got.Files != 4 || got.Added != 4 || got.Removed != 1 || got.Fingerprint == "" {
 		t.Fatalf("DiffStat() = %+v, want 4 files, 4 added, 1 removed, and a fingerprint", got)
 	}
-	if got.HeadSHA != head || !got.HeadObservedAt.After(changedHead.HeadObservedAt) {
+	if got.TreeSHA != clean.TreeSHA || got.HeadSHA != head || !got.HeadObservedAt.After(changedHead.HeadObservedAt) {
 		t.Fatalf("nonempty head observation = %+v", got)
 	}
 	data, err := os.ReadFile(trace)
@@ -693,8 +693,8 @@ func TestLocalGitDiffStat(t *testing.T) {
 			t.Fatalf("diff is not pinned to captured head: %v", event.Argv)
 		}
 	}
-	if commands != 4 {
-		t.Fatalf("Git processes per nonempty refresh = %d, want 4", commands)
+	if commands != 5 {
+		t.Fatalf("Git processes per nonempty refresh = %d, want 5", commands)
 	}
 	originalFingerprint := got.Fingerprint
 
@@ -736,6 +736,13 @@ func TestLocalGitDiffStat(t *testing.T) {
 	if !strings.Contains(runGit(t, info.Path, "status", "--short", "--untracked-files=all"), ".detent/notes.md") {
 		t.Fatal("diagnostics changed repository ignore rules for runtime files")
 	}
+	runGit(t, info.Path, "add", "--", "other.txt")
+	runGit(t, info.Path, "commit", "-m", "add committed work")
+	committed, err := backend.DiffStat(t.Context(), info, Issue{Identifier: "DD-DIFF"})
+	if err != nil || committed.TreeSHA == "" || committed.TreeSHA == clean.TreeSHA {
+		t.Fatalf("committed tree = %q, error = %v", committed.TreeSHA, err)
+	}
+	head = committed.HeadSHA
 	for _, relative := range []bool{false, true} {
 		t.Run(fmt.Sprintf("index pathname/relative=%t", relative), func(t *testing.T) {
 			name := " index pathname "

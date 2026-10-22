@@ -21,7 +21,6 @@ const (
 	implementProgressMetadataKey       = "completion_progress"
 	implementProgressOutcomeNoProgress = "no_progress"
 	implementProgressReasonNonDiff     = "verifiable_non_diff_progress"
-	implementProgressReasonMixed       = "workspace_diff_and_verifiable_non_diff_progress"
 	implementOperationalCompletion     = "operational_completion"
 	implementDependencyDeferralReason  = "dependency_deferral"
 	implementMergedCompletionReason    = "merged_pull_request_completion"
@@ -123,6 +122,7 @@ type implementProgressDiffStats struct {
 	RecoveryStateExpected          bool     `json:"recovery_state_expected,omitempty"`
 	RecoveryStateAvailable         bool     `json:"recovery_state_available,omitempty"`
 	HeadSHA                        string   `json:"head_sha,omitempty"`
+	TreeSHA                        string   `json:"tree_sha,omitempty"`
 	Fingerprint                    string   `json:"fingerprint,omitempty"`
 	Status                         string   `json:"status,omitempty"`
 }
@@ -131,7 +131,7 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 	ctx context.Context,
 	running Running,
 	finalState string,
-	pullRequestUpdated bool,
+	_ bool,
 ) implementCompletionProgressDecision {
 	decision := implementCompletionProgressDecision{
 		Issue:              cloneIssue(running.Issue),
@@ -139,21 +139,15 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 		Reason:             "success_without_progress_check",
 		WorkspaceDiffStats: running.DiffStats,
 	}
-	if strings.TrimSpace(finalState) != FinalStateCompleted {
+	if terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
 		decision.Reason = "final_state_not_completed"
-		if pullRequestUpdated && terminalStateForRun(nil, finalState) == store.WorkAttemptTerminalSuccess {
-			decision.ProgressKinds = []string{"pull_request"}
-		}
 		return decision
 	}
 	if !implementProgressLinkedPullRequest(running.Issue) {
 		issue, workpadCurrent := o.refreshImplementCompletionIssue(ctx, running.Issue)
 		decision.Issue = issue
 		decision.TrackerState = strings.TrimSpace(issue.State)
-		decision.ProgressKinds = implementProgressArtifactKinds(
-			running.DispatchProgress,
-			implementProgressArtifactSnapshotFromIssue(issue, workpadCurrent),
-		)
+		decision.ProgressKinds = implementProgressSourceKinds(running, issue)
 		if workpadCurrent {
 			decision.WorkpadStatus, decision.HumanAction = implementProgressBlockedHumanAction(issue)
 			blockers, rejected, deferred := o.evaluateImplementDependencyDeferral(ctx, issue)
@@ -165,11 +159,6 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 				decision.WorkpadStatus = workpad.StatusBlocked
 				return decision
 			}
-		}
-		if pullRequestUpdated {
-			decision.Reason = "pull_request_created_or_updated"
-			decision.ProgressKinds = []string{"pull_request"}
-			return decision
 		}
 		operationalCompletionCandidate := false
 		if workpadCurrent {
@@ -207,8 +196,6 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 		}
 		attempts, err := o.recentImplementCompletionAttempts(ctx, issue, running)
 		if err != nil {
-			decision.Outcome = store.WorkAttemptTerminalNoProgress
-			decision.Reason = "attempt_history_lookup_failed"
 			decision.Warning = err.Error()
 			if o.logger != nil {
 				o.logger.Warn(
@@ -218,7 +205,6 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 					"error", err,
 				)
 			}
-			return decision
 		}
 		if decision.HumanAction != "" {
 			decision.ConsecutiveHumanAction = 1 + consecutiveImplementBlockedHumanActionAttempts(
@@ -254,6 +240,10 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 				return decision
 			}
 		}
+		if len(decision.ProgressKinds) > 0 {
+			decision.Reason = "signature_changed"
+			return decision
+		}
 		if !diffStatsPresent(running.DiffStats) {
 			decision.Outcome = store.WorkAttemptTerminalNoProgress
 			decision.Reason = "workspace_diffstat_unavailable_without_pull_request"
@@ -271,26 +261,10 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 				decision.WorkpadStatus,
 				decision.HumanAction,
 			)
-			if matchingAttempts == 0 {
-				decision.ProgressKinds = append([]string{"workspace_diff"}, decision.ProgressKinds...)
-				decision.Reason = "workspace_diff_present_without_pull_request"
-				if len(decision.ProgressKinds) > 1 {
-					decision.Reason = implementProgressReasonMixed
-				}
-				return decision
-			}
-			if len(decision.ProgressKinds) > 0 {
-				decision.Reason = implementProgressReasonNonDiff
-				return decision
-			}
 			decision.Outcome = store.WorkAttemptTerminalNoProgress
 			decision.Reason = "unchanged_workspace_diff_without_pull_request"
 			decision.ConsecutiveNoProgress = 1 + matchingAttempts
 
-			return decision
-		}
-		if len(decision.ProgressKinds) > 0 {
-			decision.Reason = implementProgressReasonNonDiff
 			return decision
 		}
 		decision.Outcome = store.WorkAttemptTerminalNoProgress
@@ -349,10 +323,7 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 			return decision
 		}
 	}
-	decision.ProgressKinds = implementProgressArtifactKinds(
-		running.DispatchProgress,
-		implementProgressArtifactSnapshotFromIssue(issue, workpadCurrent),
-	)
+	decision.ProgressKinds = implementProgressSourceKinds(running, issue)
 	signature := autoPromoteReworkSignatureFromIssue(issue, AutoPromoteSummaryFromIssue(issue))
 	decision.CurrentSignature = signature
 	if !implementProgressSignatureUsable(signature) {
@@ -363,8 +334,6 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 
 	attempts, err := o.recentImplementCompletionAttempts(ctx, issue, running)
 	if err != nil {
-		decision.Outcome = store.WorkAttemptTerminalNoProgress
-		decision.Reason = "attempt_history_lookup_failed"
 		decision.Warning = err.Error()
 		if o.logger != nil {
 			o.logger.Warn(
@@ -374,7 +343,6 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 				"error", err,
 			)
 		}
-		return decision
 	}
 	previous, ok := latestImplementProgressSignature(attempts)
 	if decision.WorkpadStatus == workpad.StatusBlocked {
@@ -407,21 +375,16 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 		return decision
 	}
 	if !ok {
-		dispatched := autoPromoteReworkSignatureFromIssue(running.Issue, AutoPromoteSummaryFromIssue(running.Issue))
-		if implementProgressSignatureUsable(dispatched) && !implementProgressSignatureEqual(dispatched, signature) {
-			decision.ProgressKinds = append([]string{"pull_request"}, decision.ProgressKinds...)
-		}
 		if running.Attempt > 1 && len(decision.ProgressKinds) == 0 && decision.WorkpadStatus != workpad.StatusComplete {
 			decision.Outcome = store.WorkAttemptTerminalNoProgress
-			decision.Reason = "attempt_history_unavailable"
+			decision.Reason = "unchanged_signature_clean_diff"
 			return decision
 		}
 		decision.Reason = "first_completed_attempt"
 		return decision
 	}
-	if !implementProgressSignatureEqual(previous, signature) {
+	if len(decision.ProgressKinds) > 0 {
 		decision.Reason = "signature_changed"
-		decision.ProgressKinds = append([]string{"pull_request"}, decision.ProgressKinds...)
 		return decision
 	}
 	if !implementProgressDiffStatsClean(decision.WorkspaceDiffStats) {
@@ -436,21 +399,9 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 			return decision
 		}
 		matchingAttempts := consecutiveImplementSameDiffAttempts(attempts, decision.WorkspaceDiffStats, decision.WorkpadStatus, decision.HumanAction)
-		if matchingAttempts > 0 && len(decision.ProgressKinds) == 0 {
-			decision.Outcome = store.WorkAttemptTerminalNoProgress
-			decision.Reason = "unchanged_workspace_diff"
-			decision.ConsecutiveNoProgress = 1 + matchingAttempts
-			return decision
-		}
-		decision.ProgressKinds = append([]string{"workspace_diff"}, decision.ProgressKinds...)
-		decision.Reason = "workspace_diff_present"
-		if len(decision.ProgressKinds) > 1 {
-			decision.Reason = implementProgressReasonMixed
-		}
-		return decision
-	}
-	if len(decision.ProgressKinds) > 0 {
-		decision.Reason = implementProgressReasonNonDiff
+		decision.Outcome = store.WorkAttemptTerminalNoProgress
+		decision.Reason = "unchanged_workspace_diff"
+		decision.ConsecutiveNoProgress = 1 + matchingAttempts
 		return decision
 	}
 
@@ -506,29 +457,28 @@ func implementProgressArtifactSnapshotFromIssue(issue connector.Issue, workpadRe
 	return snapshot
 }
 
-func implementProgressArtifactKinds(previous, current implementProgressArtifactSnapshot) []string {
-	kinds := make([]string, 0, 5)
-	if previous.TrackerState != "" && current.TrackerState != "" && previous.TrackerState != current.TrackerState {
-		kinds = append(kinds, "tracker_state_transition")
+func implementProgressSourceKinds(running Running, issue connector.Issue) []string {
+	baseline := running.DispatchLoopStart
+	before := strings.TrimSpace(baseline.Fingerprint.PRHeadSHA)
+	linked := baseline.Fingerprint.PRNumber > 0
+	if !baseline.LaneAvailable && !baseline.Captured {
+		linked = implementProgressLinkedPullRequest(running.Issue)
+		if running.Issue.PullRequest != nil {
+			before = strings.TrimSpace(running.Issue.PullRequest.HeadSHA)
+		}
 	}
-	if implementProgressHasNewString(current.NativeBlockers, previous.NativeBlockers) {
-		kinds = append(kinds, "linked_blocker")
+	if pr := issue.PullRequest; pr != nil && !pullRequestHydrationBlocksProgress(pr) {
+		after := strings.TrimSpace(pr.HeadSHA)
+		if after != "" && after != before && (before != "" || !linked) {
+			return []string{"pull_request"}
+		}
 	}
-	if !previous.WorkpadRead || !current.WorkpadRead {
-		return kinds
+	beforeTree := strings.TrimSpace(baseline.Fingerprint.WorkspaceTree)
+	afterTree := strings.TrimSpace(running.DiffStats.TreeSHA)
+	if beforeTree != "" && afterTree != "" && beforeTree != afterTree {
+		return []string{"committed_tree"}
 	}
-	if current.WorkpadReason != "" && current.WorkpadReason != previous.WorkpadReason {
-		kinds = append(kinds, "workpad_predicate")
-	}
-	if strings.TrimSpace(current.WorkpadFields[workpad.FieldCompletionKind]) != workpad.CompletionOperational &&
-		current.WorkpadStatus == workpad.StatusComplete && current.WorkpadReceiptHash != "" &&
-		current.WorkpadReceiptHash != previous.WorkpadReceiptHash {
-		kinds = append(kinds, "artifact_receipt")
-	}
-	if implementProgressFieldsAdvanced(previous.WorkpadFields, current.WorkpadFields) {
-		kinds = append(kinds, "audit_artifact")
-	}
-	return kinds
+	return nil
 }
 
 func implementProgressBlockedRefIdentifiers(refs []connector.BlockedRef) []string {
@@ -546,34 +496,13 @@ func implementProgressBlockedRefIdentifiers(refs []connector.BlockedRef) []strin
 	return slices.Compact(identifiers)
 }
 
-func implementProgressHasNewString(current, previous []string) bool {
-	for _, value := range current {
-		if !slices.Contains(previous, value) {
-			return true
-		}
-	}
-	return false
-}
-
-func implementProgressFieldsAdvanced(previous, current map[string]string) bool {
-	for name, value := range current {
-		if strings.HasPrefix(name, "completion_") {
-			continue
-		}
-		if previousValue, ok := previous[name]; !ok || strings.TrimSpace(previousValue) != strings.TrimSpace(value) {
-			return true
-		}
-	}
-	return false
-}
-
 func (o *Orchestrator) recentImplementCompletionAttempts(
 	ctx context.Context,
 	issue connector.Issue,
 	running Running,
 ) ([]store.WorkAttempt, error) {
 	if o == nil || o.workAttempts == nil {
-		return nil, errors.New("implement completion history unavailable")
+		return nil, nil
 	}
 	limit := normalizeAutoPromoteConfig(o.cfg.AutoPromote).NoProgressLimit + 1
 	if limit < 20 {
@@ -883,6 +812,7 @@ func implementProgressDiffStatsFromDiffStats(diffStats DiffStats) implementProgr
 		RecoveryStateExpected:          diffStats.RecoveryStateExpected,
 		RecoveryStateAvailable:         diffStats.RecoveryStateAvailable,
 		HeadSHA:                        strings.TrimSpace(diffStats.HeadSHA),
+		TreeSHA:                        strings.TrimSpace(diffStats.TreeSHA),
 		Fingerprint:                    strings.TrimSpace(diffStats.Fingerprint),
 		Status:                         strings.TrimSpace(diffStats.Status),
 	}

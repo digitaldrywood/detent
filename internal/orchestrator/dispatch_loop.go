@@ -24,6 +24,7 @@ type dispatchLoopFingerprint struct {
 	AddedLines      int      `json:"added_lines"`
 	RemovedLines    int      `json:"removed_lines"`
 	UnpushedCommits int      `json:"unpushed_commits,omitempty"`
+	WorkspaceTree   string   `json:"workspace_tree,omitempty"`
 	WorkspaceHead   string   `json:"workspace_head,omitempty"`
 	DiffFingerprint string   `json:"diff_fingerprint,omitempty"`
 	DiffStatus      string   `json:"diff_status,omitempty"`
@@ -162,6 +163,7 @@ func dispatchLoopFingerprintFromValues(lane string, signature autoPromoteReworkS
 		RemovedLines:    diff.RemovedLines,
 		UnpushedCommits: diff.UnpushedCommits,
 		WorkspaceHead:   strings.TrimSpace(diff.HeadSHA),
+		WorkspaceTree:   strings.TrimSpace(diff.TreeSHA),
 		DiffFingerprint: strings.TrimSpace(diff.Fingerprint),
 		DiffStatus:      diffStatus,
 	}

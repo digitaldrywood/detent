@@ -706,7 +706,7 @@ func TestDraftMergeCompletionHydrationFailurePreservesAttempt(t *testing.T) {
 				t.Fatal("completion was not handled")
 			}
 			retry, ok := state.Retry[issue.ID]
-			if !ok || retry.Attempt != attempt || retry.Wait.Kind == retryWaitCurrentHeadCI || !strings.Contains(retry.Error, "pull request hydration") {
+			if !ok || retry.Attempt != attempt+1 || retry.Wait.Kind == retryWaitCurrentHeadCI || !strings.Contains(retry.Error, "pull request hydration") {
 				t.Fatalf("retry = %+v, want hydration wait preserving attempt %d", retry, attempt)
 			}
 			if len(tracker.updates) != 0 || len(tracker.merges) != 0 {

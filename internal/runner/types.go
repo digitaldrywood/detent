@@ -1042,6 +1042,7 @@ type DiffStats struct {
 	CommitsAhead                   int
 	RemoteBranchExists             bool
 	DeliveryStateChecked           bool
+	TreeSHA                        string
 	HeadSHA                        string
 	Fingerprint                    string
 	Status                         string

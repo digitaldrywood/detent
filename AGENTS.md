@@ -146,9 +146,12 @@ interactions are the main source of incidents, so the set may not grow.
   and genuine human intent remain authoritative.
 - Per-issue instant/repeated failure, progress, spend-since-progress, dispatch-loop,
   token-ceiling and workspace retry brakes use the existing machine retry state,
-  including native failures, no-product completions and session-brake retries.
-  Persisted attempts grow with capped jittered backoff; only verified new progress
-  resets a continuation. Unchanged or unavailable evidence and rejected completions
+  including native failures, no-product completions, session-brake retries and
+  merge failures, refusals and unavailable-evidence waits.
+  Attempts grow with capped jittered backoff; durable restoration is available
+  only where `workflowMetrics` is configured. Continuations reset only for a
+  host-observed changed PR head or committed tree against the dispatch baseline.
+  Unchanged or unavailable evidence and rejected completions
   retain growing retries. Historical brake metadata never parks work or vetoes dispatch.
   Budgets, usage checks, provider capacity and session ceilings remain existing
   policies, not an unconditional spend bound. An unset or disabled budget imposes

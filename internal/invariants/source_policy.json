@@ -45,7 +45,7 @@
     "internal/orchestrator/autopromote_tick.go:applyStaleMergedPullRequestDecision": "b244fe108d32adec7c008795a08c6c1ebf0cb78cfa9fe1232c832a5c00fd45e1",
     "internal/orchestrator/autopromote_tick.go:applyStaleMergingPullRequestDecision": "4f13339935e0cb0d2a4b05727c20224f8bf8b6b685ded22e0ba6134f84ac0bc3",
     "internal/orchestrator/autopromote_tick.go:applyStaleTodoPullRequestDecision": "bc21a3871b4509cd8118ed97b4ef7d1f1158770ef60210badb2a35aa536b96c2",
-    "internal/orchestrator/completion_transition.go:transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads": "d92e0fea94d1d3871a7401922c779c8f400c0f0a6230713deb2c134d4609753c",
+    "internal/orchestrator/completion_transition.go:transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads": "cb0ccdc6d1bb3338b8bbe5032fee64e52d0d4d338af3f59ed1f81ed4024b3aa8",
     "internal/orchestrator/deliverable_recovery.go:blockDeliverableRecoveryFailure": "304e815f0ad6d57e22badc4373c8b0f847c8c9170bff6b721b2991f57eef83e9",
     "internal/orchestrator/deliverable_recovery.go:blockHumanOwnedWorkerFailure": "25c3dc2b8920328fbc81e69af83b88b53e0088edae9cbb39501aa85aa3332f17",
     "internal/orchestrator/implement_progress.go:blockImplementProgress": "6f0572367ad61fe02435ba44636bccaaa83f87daa1fa41a4155572f80d132496",

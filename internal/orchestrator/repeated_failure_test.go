@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
@@ -14,6 +15,7 @@ import (
 type tokenCeilingRunner struct {
 	calls        atomic.Int64
 	failureCount int64
+	onSuccess    func()
 }
 
 type restBudgetHeadroomRunner struct {
@@ -32,7 +34,10 @@ func (r *restBudgetHeadroomRunner) Run(_ context.Context, _ orchestrator.RunRequ
 func (r *tokenCeilingRunner) Run(_ context.Context, _ orchestrator.RunRequest) (orchestrator.RunResult, error) {
 	n := r.calls.Add(1)
 	if r.failureCount > 0 && n > r.failureCount {
-		return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted, PullRequestUpdated: true}, nil
+		if r.onSuccess != nil {
+			r.onSuccess()
+		}
+		return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted, DiffStats: orchestrator.DiffStats{Status: "clean"}}, nil
 	}
 	return orchestrator.RunResult{TurnStarted: true}, fmt.Errorf(
 		"run agent turn: claude update rejected: session token ceiling exceeded: total_tokens=%d ceiling_tokens=2000000 source=max_session_tokens",
@@ -45,7 +50,9 @@ func TestRunRetriesRepeatedCostlyWorkerFailures(t *testing.T) {
 
 	issue := testIssue("issue-repeated-fail", "wi-011cd179bc7ecf36b7197e4b", "Todo")
 	tracker := newFakeConnector(issue)
-	runner := &tokenCeilingRunner{failureCount: 6}
+	runner := &tokenCeilingRunner{failureCount: 6, onSuccess: func() {
+		tracker.setCandidatePullRequest(issue.ID, &connector.PullRequest{Number: 1, HeadSHA: "published-head", State: "OPEN", Draft: true})
+	}}
 
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:           time.Millisecond,

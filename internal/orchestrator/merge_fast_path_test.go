@@ -438,8 +438,8 @@ func TestMergingFallbackPushWaitsAfterWorkerReappliesCITriggerWhenHydrationIsGre
 	if !ok {
 		t.Fatalf("Retry[%q] missing while current-head checks run", issue.ID)
 	}
-	if retry.Attempt != 1 {
-		t.Fatalf("Retry[%q].Attempt = %d, want unchanged attempt 1", issue.ID, retry.Attempt)
+	if retry.Attempt != 2 {
+		t.Fatalf("Retry[%q].Attempt = %d, want next attempt 2", issue.ID, retry.Attempt)
 	}
 	if !strings.Contains(retry.Error, "current-head CI") {
 		t.Fatalf("Retry[%q].Error = %q, want current-head CI wait", issue.ID, retry.Error)
@@ -758,8 +758,8 @@ func TestMergingFastPathHydrationUnavailableDefers(t *testing.T) {
 	if !ok {
 		t.Fatalf("Retry[%q] missing without fresh pull request hydration", issue.ID)
 	}
-	if retry.Attempt != 2 {
-		t.Fatalf("Retry[%q].Attempt = %d, want unchanged attempt 2", issue.ID, retry.Attempt)
+	if retry.Attempt != 3 {
+		t.Fatalf("Retry[%q].Attempt = %d, want next attempt 3", issue.ID, retry.Attempt)
 	}
 	if !strings.Contains(retry.Error, "pull request hydration") {
 		t.Fatalf("Retry[%q].Error = %q, want pull request hydration wait", issue.ID, retry.Error)
@@ -860,14 +860,14 @@ func TestMergingFastPathWaitsForMergeabilityComputation(t *testing.T) {
 			if !ok {
 				t.Fatalf("Retry[%q] missing while GitHub computes mergeability", issue.ID)
 			}
-			if retry.Attempt != 2 || retry.WorkerHost != "worker-a" {
-				t.Fatalf("Retry[%q] = %#v, want same-attempt retry on worker-a", issue.ID, retry)
+			if retry.Attempt != 3 || retry.WorkerHost != "worker-a" {
+				t.Fatalf("Retry[%q] = %#v, want growing retry on worker-a", issue.ID, retry)
 			}
 			if !strings.Contains(retry.Error, "mergeability computation") {
 				t.Fatalf("Retry[%q].Error = %q, want mergeability computation reason", issue.ID, retry.Error)
 			}
-			if !retry.DueAt.Equal(now.Add(5 * time.Second)) {
-				t.Fatalf("Retry[%q].DueAt = %s, want continuation retry delay", issue.ID, retry.DueAt)
+			if delay := retry.DueAt.Sub(now); delay < 4*time.Minute-4*time.Minute/8 || delay > 4*time.Minute {
+				t.Fatalf("Retry[%q].DueAt = %s, want jittered attempt 3 backoff", issue.ID, retry.DueAt)
 			}
 		})
 	}
@@ -945,14 +945,14 @@ func TestMergingFastPathCleanPrecheckWaitsForCurrentHeadCI(t *testing.T) {
 	if !ok {
 		t.Fatalf("Retry[%q] missing while CI is pending", issue.ID)
 	}
-	if retry.Attempt != 1 || retry.WorkerHost != "worker-a" {
-		t.Fatalf("Retry[%q] = %#v, want unchanged attempt 1 wait on worker-a", issue.ID, retry)
+	if retry.Attempt != 2 || retry.WorkerHost != "worker-a" {
+		t.Fatalf("Retry[%q] = %#v, want next attempt 2 wait on worker-a", issue.ID, retry)
 	}
 	if !strings.Contains(retry.Error, "current-head CI") {
 		t.Fatalf("Retry[%q].Error = %q, want current-head CI wait", issue.ID, retry.Error)
 	}
-	if !retry.DueAt.Equal(now.Add(5 * time.Second)) {
-		t.Fatalf("Retry[%q].DueAt = %s, want continuation retry delay", issue.ID, retry.DueAt)
+	if delay := retry.DueAt.Sub(now); delay < 2*time.Minute-2*time.Minute/8 || delay > 2*time.Minute {
+		t.Fatalf("Retry[%q].DueAt = %s, want jittered attempt 2 backoff", issue.ID, retry.DueAt)
 	}
 	if retry.Wait.Kind != retryWaitCurrentHeadCI || retry.Wait.PollCount != 1 {
 		t.Fatalf("Retry[%q].Wait = %#v, want first current-head CI poll", issue.ID, retry.Wait)
@@ -979,7 +979,7 @@ func TestMergeWorkerCurrentHeadCIRetryBound(t *testing.T) {
 		wantMerged    bool
 	}{
 		{
-			name:          "attempt stays fixed across waits",
+			name:          "attempt grows across waits",
 			attempt:       1,
 			ciStatus:      "pending",
 			mergeable:     "blocked",
@@ -992,7 +992,7 @@ func TestMergeWorkerCurrentHeadCIRetryBound(t *testing.T) {
 			wantRetry: 1,
 		},
 		{
-			name:          "later wait keeps attempt fixed",
+			name:          "later wait grows attempt",
 			attempt:       2,
 			ciStatus:      "pending",
 			mergeable:     "blocked",
@@ -1068,7 +1068,7 @@ func TestMergeWorkerCurrentHeadCIRetryBound(t *testing.T) {
 				if !ok {
 					t.Fatalf("Retry[%q] missing", issue.ID)
 				}
-				if retry.Attempt != tt.wantRetry {
+				if retry.Attempt != tt.attempt+1 {
 					t.Fatalf("Retry[%q].Attempt = %d, want %d", issue.ID, retry.Attempt, tt.wantRetry)
 				}
 				return

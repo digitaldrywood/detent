@@ -36,6 +36,7 @@ type DiffStat struct {
 	Added          int       `json:"added"`
 	Removed        int       `json:"removed"`
 	Fingerprint    string    `json:"fingerprint,omitempty"`
+	TreeSHA        string    `json:"tree_sha,omitempty"`
 	HeadSHA        string    `json:"head_sha,omitempty"`
 	HeadObservedAt time.Time `json:"head_observed_at,omitzero"`
 }
@@ -385,6 +386,11 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string, includeIndex b
 			return DiffStat{}, err
 		}
 	}
+	tree, err := runGitAt(ctx, workspacePath, "rev-parse", index.HeadSHA+"^{tree}")
+	if err != nil {
+		return DiffStat{}, err
+	}
+	stat.TreeSHA = strings.TrimSpace(tree)
 	stat.HeadSHA = index.HeadSHA
 	stat.HeadObservedAt = index.HeadObservedAt
 	return stat, nil

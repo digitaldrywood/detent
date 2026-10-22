@@ -198,6 +198,9 @@ func (o *Orchestrator) handleCIUnavailableCompletion(
 	if !errors.Is(event.Err, runpkg.ErrCIUnavailable) {
 		return false
 	}
+	if !o.nativeWorkflow() {
+		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
+	}
 	message := "CI unavailable; attempt parked until checks start moving"
 	o.completeDurableWorkAttempt(
 		ctx,

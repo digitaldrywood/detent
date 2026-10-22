@@ -108,6 +108,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		}
 		return
 	}
+	if !running.DispatchLoopStart.LaneAvailable && !running.DispatchLoopStart.Captured {
+		running.DispatchLoopStart = newDispatchLoopStartRecord(running.Issue, firstNonBlank(running.Mode, runpkg.RunModeImplement))
+	}
 	running = running.withProgress()
 	state.Running[event.IssueID] = running
 	if !completionMatchesRunning(event, running) {
@@ -312,10 +315,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	o.finishForgeAvailabilityProbe(state, event, running)
-	var sessionBrake *runpkg.SessionBrakeError
-	if event.Err != nil && !nativeCompletion && !errors.As(event.Err, &sessionBrake) {
-		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
-	}
 	if event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 {
 		o.recordProjectFailureBreakerProgress(state, event.IssueID, event.CompletedAt)
 		o.advanceDispatchRecovery(state, event.IssueID, event.CompletedAt)
@@ -346,6 +345,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	if capacityErr, ok := backendcapacity.As(event.Err); ok {
+		if !nativeCompletion {
+			o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
+		}
 		if capacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
 			o.handleTransientOverload(ctx, state, event, running, capacityErr)
 			return
@@ -406,9 +408,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		}
 		if o.handlePreTurnFailure(ctx, state, event, running) {
 			return
-		}
-		if event.Err != nil {
-			o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 		}
 	}
 
@@ -527,6 +526,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			o.retryMachineCompletion(ctx, state, event, running, attempt, event.Err.Error())
 			return
 		}
+		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 		delay := event.RetryDelay
 		if delay <= 0 {
 			delay = o.retryDelay(attempt, false)
@@ -688,6 +688,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		finalState = runpkg.FinalStateNoProgress
 	}
 	state.Completed[event.IssueID] = Completed{
+		Attempt:                    running.Attempt,
 		Issue:                      cloneIssue(running.Issue),
 		SessionID:                  running.SessionID,
 		StartedAt:                  running.StartedAt,
@@ -728,7 +729,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			return
 		}
 		o.commentCompletionCleanlinessRejection(ctx, running.Issue, completionCleanliness)
-		o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), dirtyCompletionReason)
+		o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), completionCleanlinessRejectionComment(completionCleanliness))
 		return
 	}
 
@@ -1226,20 +1227,20 @@ func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
 	running Running,
 	issue connector.Issue,
 ) {
-	attempt := running.Attempt
 	reconcileMergeWorkerCurrentHeadCIWait(state, issue, event.CompletedAt)
-	if attempt < 1 {
-		attempt = 1
-	}
 	retryError := mergeWorkerCurrentHeadCIWaitReason(issue, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus)
-	exceeded := o.mergeWorkerCurrentHeadCIWaitExceeded(state, issue, event.CompletedAt)
+	if o.mergeWorkerCurrentHeadCIWaitExceeded(state, issue, event.CompletedAt) {
+		retryError = fmt.Sprintf("current-head CI wait exceeded %s: %s", mergeWorkerCurrentHeadCIWaitTimeout, retryError)
+	}
 	reservation := o.recordMergeReservationWait(state, issue, event.CompletedAt)
 	running.Issue = issue
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError,
 		map[string]any{mergeReservationMetadataKey: reservation})
-	o.releaseTerminalAttemptClaim(ctx, state, issue, event.CompletedAt)
-	o.scheduleRetry(state, issue, attempt, event.CompletedAt, retryError, true, running.WorkerHost)
+	if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(running.Attempt), event.CompletedAt, retryError, running.WorkerHost); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		return
+	}
 	retry := state.Retry[issue.ID]
 	retry.Wait = RetryWait{
 		Kind:                  retryWaitCurrentHeadCI,
@@ -1251,12 +1252,6 @@ func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
 	}
 	state.Retry[issue.ID] = retry
 	o.logMergeWorkerCurrentHeadCIWait(state, issue, retry, event.CompletedAt)
-	if exceeded {
-		err := fmt.Errorf("current-head CI wait exceeded %s: %s", mergeWorkerCurrentHeadCIWaitTimeout, retryError)
-		if o.blockExhaustedMergeWorker(ctx, state, running, event, mergeWorkerCurrentHeadCIWaitExceededReason, attempt, err) {
-			return
-		}
-	}
 }
 
 func (o *Orchestrator) pollMergeWorkerCurrentHeadCI(
@@ -1450,11 +1445,8 @@ func (o *Orchestrator) waitForMergeWorkerRetry(
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError,
 		mergeWorkAttemptMetadata(map[string]any{mergeReservationMetadataKey: state.mergeReservations[issue.ID]}, nativeLandingMetadata(event.Result.NativeLanding)))
-	o.releaseTerminalAttemptClaim(ctx, state, issue, event.CompletedAt)
-	if attempt < 1 {
-		attempt = 1
-	}
-	o.scheduleRetry(state, issue, attempt, event.CompletedAt, retryError, true, running.WorkerHost)
+	attempt = nextAttempt(running.Attempt)
+	o.retryMachineCompletion(ctx, state, event, running, attempt, retryError)
 	if o.logger != nil {
 		o.logger.Info(eventName, mergeWorkerLogAttrs(issue, "attempt", attempt, "reason", retryError)...)
 	}
@@ -1521,8 +1513,7 @@ func (o *Orchestrator) refreshMergeWorkerBase(
 	running.Issue = issue
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess,
 		"", "", "waiting", "base refresh required before merge", map[string]any{mergeReservationMetadataKey: reservation})
-	o.releaseTerminalAttemptClaim(ctx, state, issue, event.CompletedAt)
-	o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "base refresh required before merge", true, running.WorkerHost)
+	o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), "base refresh required before merge")
 	if o.logger != nil {
 		o.logger.Info("merge_base_refresh_required", mergeWorkerLogAttrs(issue,
 			"reason", reason, "prior_validation_invalidated", true, "reservation_expires_at", reservation.ExpiresAt)...)
@@ -1547,15 +1538,7 @@ func (o *Orchestrator) failProgrammaticMergeWorkerResult(
 			return
 		}
 	}
-	o.scheduleRetry(
-		state,
-		running.Issue,
-		attempt,
-		event.CompletedAt,
-		errorString(err),
-		false,
-		running.WorkerHost,
-	)
+	o.retryMachineCompletion(ctx, state, event, running, attempt, errorString(err))
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
 		Event:   "merge_worker_programmatic_merge_failed",
@@ -2073,15 +2056,7 @@ func (o *Orchestrator) handleIncompleteMergeWorkerResult(
 			return
 		}
 	}
-	o.scheduleRetry(
-		state,
-		running.Issue,
-		attempt,
-		event.CompletedAt,
-		err.Error(),
-		false,
-		running.WorkerHost,
-	)
+	o.retryMachineCompletion(ctx, state, event, running, attempt, err.Error())
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
 		Event:   "merge_worker_terminal_state_missing",

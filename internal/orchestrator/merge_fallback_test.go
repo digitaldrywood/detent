@@ -263,7 +263,7 @@ func TestMergeFallbackResolvedHeadHandoff(t *testing.T) {
 			}
 
 			retry := state.Retry[issue.ID]
-			if retry.Wait.Kind != retryWaitCurrentHeadCI || retry.Attempt != 1 {
+			if retry.Wait.Kind != retryWaitCurrentHeadCI || retry.Attempt != 2 {
 				t.Fatalf("retry = %#v, want current-head CI wait without another implementation", retry)
 			}
 			reservation := state.mergeReservations[issue.ID]

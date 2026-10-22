@@ -187,8 +187,8 @@ func TestHandleRunResultAcceptsPRAdvanceBeforeWorkerError(t *testing.T) {
 	if _, blocked := state.Blocked[runningIssue.ID]; blocked {
 		t.Fatalf("Blocked[%q] present after PR head advanced", runningIssue.ID)
 	}
-	if tracker.hydrations != 1 {
-		t.Fatalf("hydrations = %d, want 1", tracker.hydrations)
+	if tracker.hydrations != 2 {
+		t.Fatalf("hydrations = %d, want 2", tracker.hydrations)
 	}
 	if len(attempts.completions) != 1 {
 		t.Fatalf("completions = %#v, want one", attempts.completions)
@@ -256,8 +256,8 @@ func TestHandleRunResultDiscoversWorkerOpenedPRBeforeWorkerError(t *testing.T) {
 	if _, blocked := state.Blocked[runningIssue.ID]; blocked {
 		t.Fatalf("Blocked[%q] present after linked PR discovery", runningIssue.ID)
 	}
-	if tracker.referenceRefreshes != 1 || tracker.hydrations != 1 {
-		t.Fatalf("reference refreshes = %d, hydrations = %d, want 1 each", tracker.referenceRefreshes, tracker.hydrations)
+	if tracker.referenceRefreshes != 1 || tracker.hydrations != 2 {
+		t.Fatalf("reference refreshes = %d, hydrations = %d, want 2 each", tracker.referenceRefreshes, tracker.hydrations)
 	}
 	if len(attempts.completions) != 1 {
 		t.Fatalf("completions = %#v, want one", attempts.completions)

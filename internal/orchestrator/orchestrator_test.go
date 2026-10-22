@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -53,9 +52,12 @@ func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 				LimitID:   "codex",
 				LimitName: "Codex",
 			},
-			FinalState:         orchestrator.FinalStateCompleted,
-			PullRequestUpdated: true,
+			FinalState: orchestrator.FinalStateCompleted,
 		},
+	}
+
+	runner.onRun = func(request orchestrator.RunRequest) {
+		tracker.setCandidatePullRequest(request.Issue.ID, &connector.PullRequest{Number: 1, HeadSHA: "published-head", State: "OPEN", Draft: true})
 	}
 
 	orch := newTestOrchestrator(t, tracker, runner)
@@ -135,7 +137,7 @@ func TestRunCompletionTransitionsLabelModeIssueToHumanReview(t *testing.T) {
 	issue.Labels = []string{"detent:todo", "bug"}
 	tracker := newFakeLabelConnector(issue)
 	runner := &staticRunner{
-		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted, PullRequestUpdated: true, DiffStats: orchestrator.DiffStats{Status: "clean"}},
+		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted, DiffStats: orchestrator.DiffStats{Status: "clean"}},
 		onRun: func(request orchestrator.RunRequest) {
 			tracker.setCandidatePullRequest(request.Issue.ID, &connector.PullRequest{
 				Number:         17,
@@ -148,11 +150,6 @@ func TestRunCompletionTransitionsLabelModeIssueToHumanReview(t *testing.T) {
 		},
 	}
 
-	attempts, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "attempts.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = attempts.Close() })
 	orch, err := orchestrator.New(orchestrator.Config{
 		Project:                scheduler.ProjectCandidate{ID: "example-project"},
 		PollInterval:           5 * time.Millisecond,
@@ -164,9 +161,8 @@ func TestRunCompletionTransitionsLabelModeIssueToHumanReview(t *testing.T) {
 		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
 		ContinuationRetryDelay: time.Millisecond,
 	}, orchestrator.Dependencies{
-		Connector:    tracker,
-		Runner:       runner,
-		WorkAttempts: attempts,
+		Connector: tracker,
+		Runner:    runner,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -206,7 +202,7 @@ func TestRunCompletionPromotesLabelModeWorkpadDirectlyToMerging(t *testing.T) {
 	tracker := newFakeLabelConnector(issue)
 	activityAt := time.Now().Add(-time.Hour)
 	runner := &staticRunner{
-		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted, PullRequestUpdated: true, DiffStats: orchestrator.DiffStats{Status: "clean"}},
+		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted, DiffStats: orchestrator.DiffStats{Status: "clean"}},
 		onRun: func(request orchestrator.RunRequest) {
 			tracker.setCandidatePullRequest(request.Issue.ID, &connector.PullRequest{
 				Number:         1288,
@@ -223,11 +219,6 @@ func TestRunCompletionPromotesLabelModeWorkpadDirectlyToMerging(t *testing.T) {
 		},
 	}
 
-	attempts, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "attempts.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = attempts.Close() })
 	orch, err := orchestrator.New(orchestrator.Config{
 		Project:               scheduler.ProjectCandidate{ID: "example-project"},
 		PollInterval:          5 * time.Millisecond,
@@ -249,9 +240,8 @@ func TestRunCompletionPromotesLabelModeWorkpadDirectlyToMerging(t *testing.T) {
 		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
 		ContinuationRetryDelay: time.Millisecond,
 	}, orchestrator.Dependencies{
-		Connector:    tracker,
-		Runner:       runner,
-		WorkAttempts: attempts,
+		Connector: tracker,
+		Runner:    runner,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -706,7 +696,7 @@ func TestRunReportsRunningStateWhileRunnerIsInFlight(t *testing.T) {
 	close(runner.release)
 
 	waitForState(t, orch, func(state orchestrator.State) bool {
-		_, completed := state.Completed[issue.ID]
+		_, completed := state.Retry[issue.ID]
 		return completed
 	})
 }
@@ -942,7 +932,7 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 			}
 			close(otherRunner.release)
 			waitForState(t, other, func(state orchestrator.State) bool {
-				_, completed := state.Completed[otherIssue.ID]
+				_, completed := state.Retry[otherIssue.ID]
 				return completed
 			})
 
@@ -3909,7 +3899,7 @@ func (r *blockingRunner) Run(ctx context.Context, request orchestrator.RunReques
 
 	select {
 	case <-r.release:
-		return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted, PullRequestUpdated: true}, nil
+		return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted}, nil
 	case <-ctx.Done():
 		return orchestrator.RunResult{}, ctx.Err()
 	}

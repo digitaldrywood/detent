@@ -571,13 +571,14 @@ func completionDeferralIssue(id string, state string) connector.Issue {
 
 func completionDeferralRunning(issue connector.Issue, attemptID int64, now time.Time) Running {
 	return Running{
-		Issue:         cloneIssue(issue),
-		Attempt:       2,
-		WorkAttemptID: attemptID,
-		Generation:    7,
-		Mode:          runpkg.RunModeImplement,
-		StartedAt:     now.Add(-time.Minute),
-		WorkerHost:    "worker-a",
+		Issue:             cloneIssue(issue),
+		DispatchLoopStart: dispatchLoopStartRecord{Captured: true, Fingerprint: dispatchLoopFingerprint{WorkspaceTree: "dispatch-tree"}},
+		Attempt:           2,
+		WorkAttemptID:     attemptID,
+		Generation:        7,
+		Mode:              runpkg.RunModeImplement,
+		StartedAt:         now.Add(-time.Minute),
+		WorkerHost:        "worker-a",
 	}
 }
 
@@ -595,11 +596,10 @@ func completionDeferralEvent(issue connector.Issue, attemptID int64, now time.Ti
 			WorkerHost:    "worker-a",
 		},
 		Result: runpkg.RunResult{
-			FinalState:         runpkg.FinalStateCompleted,
-			PullRequestUpdated: true,
-			Output:             "validated completion",
-			Tokens:             runpkg.TokenTotals{InputTokens: 25, OutputTokens: 12, TotalTokens: 37},
-			DiffStats:          runpkg.DiffStats{FilesChanged: 2, AddedLines: 8, RemovedLines: 3, Status: "clean"},
+			FinalState: runpkg.FinalStateCompleted,
+			Output:     "validated completion",
+			Tokens:     runpkg.TokenTotals{InputTokens: 25, OutputTokens: 12, TotalTokens: 37},
+			DiffStats:  runpkg.DiffStats{TreeSHA: "committed-tree", FilesChanged: 2, AddedLines: 8, RemovedLines: 3, Status: "clean"},
 		},
 		CompletedAt: now,
 	}

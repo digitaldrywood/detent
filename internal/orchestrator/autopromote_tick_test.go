@@ -6028,8 +6028,9 @@ func TestHandleRunResultRetriesMergeWorkerWhenRunCompletesWithoutTerminalState(t
 	issue.State = "Merging"
 	var logs strings.Builder
 	orch := &Orchestrator{
-		cfg:    cfg,
-		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		cfg:       cfg,
+		connector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
+		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
 	}
 	state := newState(cfg)
 	state.Running[issue.ID] = Running{
@@ -6064,7 +6065,7 @@ func TestHandleRunResultRetriesMergeWorkerWhenRunCompletesWithoutTerminalState(t
 	if retry.Error != "merge worker completed without reaching a terminal issue or pull request state" {
 		t.Fatalf("Retry[%q].Error = %q", issue.ID, retry.Error)
 	}
-	if !retry.DueAt.Equal(now.Add(time.Minute * 2)) {
+	if delay := retry.DueAt.Sub(now); delay < 2*time.Minute-2*time.Minute/8 || delay > 2*time.Minute {
 		t.Fatalf("Retry[%q].DueAt = %v, want %v", issue.ID, retry.DueAt, now.Add(time.Minute*2))
 	}
 	for _, fragment := range []string{
@@ -6782,22 +6783,23 @@ func (r *autoPromoteWorkflowMetricsRecorder) snapshot() []store.WorkflowPhaseEve
 }
 
 type autoPromoteTickConnector struct {
-	stateIssues            []connector.Issue
-	candidateIssues        []connector.Issue
-	candidateIssuesSet     bool
-	candidateByStates      [][]string
-	fetchByStatesRequests  [][]string
-	fetchComments          []string
-	fetchIdentifiers       [][]string
-	issueComments          map[string][]connector.IssueComment
-	resolvedIssues         []connector.Issue
-	updates                []autoPromoteTickUpdate
-	comments               []autoPromoteTickComment
-	prComments             []autoPromoteTickComment
-	setFields              []autoPromoteTickSetField
-	reruns                 []autoPromoteTickRerun
-	updateErr              error
-	reviewThreadHydrations []string
+	stateIssues             []connector.Issue
+	candidateIssues         []connector.Issue
+	candidateIssuesSet      bool
+	candidateByStates       [][]string
+	fetchByStatesRequests   [][]string
+	fetchComments           []string
+	fetchIdentifiers        [][]string
+	issueComments           map[string][]connector.IssueComment
+	resolvedIssues          []connector.Issue
+	updates                 []autoPromoteTickUpdate
+	comments                []autoPromoteTickComment
+	prComments              []autoPromoteTickComment
+	setFields               []autoPromoteTickSetField
+	reruns                  []autoPromoteTickRerun
+	updateErr               error
+	reviewThreadHydrations  []string
+	reviewThreadUnavailable string
 }
 
 type autoPromoteTickMergeConnector struct {
@@ -6881,7 +6883,11 @@ func (c *autoPromoteTickConnector) FetchIssueStatesByIdentifiers(_ context.Conte
 
 func (c *autoPromoteTickConnector) HydratePullRequestReviewThreads(_ context.Context, issue connector.Issue) (connector.Issue, error) {
 	c.reviewThreadHydrations = append(c.reviewThreadHydrations, strings.TrimSpace(issue.ID))
-	return cloneIssue(issue), nil
+	issue = cloneIssue(issue)
+	if c.reviewThreadUnavailable != "" && issue.PullRequest != nil {
+		issue.PullRequest.HydrationUnavailableReason = c.reviewThreadUnavailable
+	}
+	return issue, nil
 }
 
 func (c *autoPromoteTickConnector) CreateComment(_ context.Context, issueID string, body string) error {

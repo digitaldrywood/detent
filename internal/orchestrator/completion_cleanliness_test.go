@@ -347,7 +347,7 @@ func TestHandleRunResultRejectsDirtyCompletionAndEscalates(t *testing.T) {
 		wantBlocked  bool
 		intentional  bool
 	}{
-		{name: "first rejection returns to agent", wantTerminal: store.WorkAttemptTerminalSuccess, wantRetry: true},
+		{name: "first rejection returns to agent", wantTerminal: store.WorkAttemptTerminalNoProgress, wantRetry: true},
 		{name: "second rejection grows retry", history: []store.WorkAttempt{previousRejected}, wantTerminal: store.WorkAttemptTerminalNoProgress, wantRetry: true},
 		{name: "intentional remainder parks", history: []store.WorkAttempt{previousRejected}, wantTerminal: store.WorkAttemptTerminalNoProgress, wantBlocked: true, intentional: true},
 	}

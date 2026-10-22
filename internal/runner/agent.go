@@ -6160,6 +6160,7 @@ func diffStatsFromWorkspace(stat workspace.DiffStat) DiffStats {
 		RemovedLines: stat.Removed,
 		Fingerprint:  strings.TrimSpace(stat.Fingerprint),
 		HeadSHA:      stat.HeadSHA,
+		TreeSHA:      stat.TreeSHA,
 		Status:       status,
 	}
 }

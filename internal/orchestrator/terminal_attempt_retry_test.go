@@ -1663,6 +1663,37 @@ func TestMachineFailuresUseRetryOwner(t *testing.T) {
 		{"repeated failure", func(o *Orchestrator, s *State, r Running) {
 			o.retryMachineCompletion(t.Context(), s, runpkg.Completion{CompletedAt: now}, r, 50, "validation failed")
 		}},
+		{"merge current head CI wait", func(o *Orchestrator, s *State, r Running) {
+			o.waitForMergeWorkerCurrentHeadCI(t.Context(), s, runpkg.Completion{IssueID: r.Issue.ID, CompletedAt: now}, r, r.Issue)
+		}},
+		{"merge hydration wait", func(o *Orchestrator, s *State, r Running) {
+			event := runpkg.Completion{IssueID: r.Issue.ID, CompletedAt: now}
+			o.waitForMergeWorkerPullRequestHydration(t.Context(), s, event, r, r.Issue)
+		}},
+		{"merge base refresh", func(o *Orchestrator, s *State, r Running) {
+			event := runpkg.Completion{IssueID: r.Issue.ID, CompletedAt: now}
+			o.refreshMergeWorkerBase(t.Context(), s, event, r, r.Issue, "merge_api_rejected_out_of_date_base")
+		}},
+		{"programmatic merge failure", func(o *Orchestrator, s *State, r Running) {
+			event := runpkg.Completion{IssueID: r.Issue.ID, CompletedAt: now}
+			o.failProgrammaticMergeWorkerResult(t.Context(), s, event, r, "merge_failed", errors.New("merge failed"))
+		}},
+		{"incomplete merge", func(o *Orchestrator, s *State, r Running) {
+			event := runpkg.Completion{IssueID: r.Issue.ID, CompletedAt: now}
+			o.handleIncompleteMergeWorkerResult(t.Context(), s, event, r)
+		}},
+		{"merge startup fallback", func(o *Orchestrator, s *State, r Running) {
+			event := runpkg.Completion{IssueID: r.Issue.ID, CompletedAt: now}
+			event.Err = runpkg.ErrMergeWorkerStartupTimeout
+			o.handleMergeWorkerStartupTimeout(t.Context(), s, event, r)
+		}},
+		{"ordinary error", func(o *Orchestrator, s *State, r Running) {
+			event := runpkg.Completion{IssueID: r.Issue.ID, CompletedAt: now}
+			s.Running[r.Issue.ID] = r
+			event.Err = errors.New("runner failed")
+			event.Result.TurnStarted = true
+			o.handleRunResult(t.Context(), s, event)
+		}},
 		{"merge exhaustion", func(o *Orchestrator, s *State, r Running) {
 			o.blockExhaustedMergeWorker(t.Context(), s, r, runpkg.Completion{IssueID: r.Issue.ID, CompletedAt: now}, mergeWorkerRetryExhaustedReason, 50, errors.New("merge failed"))
 		}},
@@ -1690,21 +1721,44 @@ func TestMachineFailuresUseRetryOwner(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			issue := terminalRetryTestIssue("retry")
+			issue.PullRequest = &connector.PullRequest{Number: 1, HeadSHA: "head"}
 			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: issue}}
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, MaxRetryBackoff: time.Minute, FailureRetryBaseDelay: time.Second})
-			o := &Orchestrator{cfg: cfg, connector: tracker}
+			metrics, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "retry.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = metrics.Close() })
+			scheduling := &hubSchedulingSource{}
+			o := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: metrics, scheduling: scheduling}
 			state := newState(cfg)
-			tt.apply(o, &state, Running{Issue: issue, Attempt: 49})
-			retry, ok := state.Retry[issue.ID]
-			if !ok || len(state.Blocked) != 0 || slices.Contains(tracker.transitions, "Blocked") {
-				t.Fatalf("machine failure did not retry: retry=%v blocked=%v transitions=%v", ok, state.Blocked, tracker.transitions)
-			}
-			if !retry.DueAt.After(now) || retry.DueAt.After(now.Add(cfg.MaxRetryBackoff)) {
-				t.Fatalf("retry outside capped backoff: %v", retry.DueAt)
-			}
-			o.releaseClaim(&state, issue.ID)
-			if len(state.Retry) != 0 {
-				t.Fatal("completion retained retry state")
+			state.mergeReservations = map[string]mergeReservation{}
+			for _, attempt := range []int{1, 2, 49} {
+				state.Claimed[issue.ID] = Claimed{Issue: issue}
+				beforeReleases := scheduling.releases
+				tt.apply(o, &state, Running{Issue: issue, Attempt: attempt})
+				retry, ok := state.Retry[issue.ID]
+				if !ok || len(state.Blocked) != 0 || slices.Contains(tracker.transitions, "Blocked") {
+					t.Fatalf("machine failure did not retry: retry=%v blocked=%v transitions=%v", ok, state.Blocked, tracker.transitions)
+				}
+				if !retry.DueAt.After(now) || retry.DueAt.After(now.Add(cfg.MaxRetryBackoff)) {
+					t.Fatalf("retry outside capped backoff: %v", retry.DueAt)
+				}
+				o.releaseClaim(&state, issue.ID)
+				if len(state.Retry) != 0 {
+					t.Fatal("completion retained retry state")
+				}
+				if scheduling.releases != beforeReleases+1 {
+					t.Fatalf("releases = %d, want %d", scheduling.releases, beforeReleases+1)
+				}
+				if strings.HasPrefix(tt.name, "merge ") && tt.name != "merge exhaustion" && tt.name != "merge duration" || tt.name == "programmatic merge failure" || tt.name == "incomplete merge" || tt.name == "ordinary error" {
+					state.Retry[issue.ID] = retry
+					upper := time.Second << attempt
+					if attempt > 5 {
+						upper = time.Minute
+					}
+					assertCompletionMachineRetry(t, o, state, issue.ID, now, attempt+1, upper)
+				}
 			}
 		})
 	}

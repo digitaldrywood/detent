@@ -79,7 +79,8 @@ func TestWorkspacePreparationRetriesIssueWithoutPausingProject(t *testing.T) {
 					Cooldown:       time.Hour,
 				},
 			})
-			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+			scheduling := &hubSchedulingSource{}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling}
 			state := newState(cfg)
 			base := time.Date(2026, 8, 18, 20, 0, 0, 0, time.UTC)
 
@@ -115,6 +116,9 @@ func TestWorkspacePreparationRetriesIssueWithoutPausingProject(t *testing.T) {
 
 				if _, retried := state.Retry[issue.ID]; !retried || len(state.Blocked) != 0 || len(tracker.comments) != 0 {
 					t.Fatal("workspace failure did not retry the issue in its lane")
+				}
+				if scheduling.releases != attempt {
+					t.Fatalf("releases = %d, want %d", scheduling.releases, attempt)
 				}
 				maximum := time.Second << attempt
 				delay := state.Retry[issue.ID].DueAt.Sub(completedAt)

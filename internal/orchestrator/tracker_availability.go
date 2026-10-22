@@ -300,6 +300,9 @@ func (o *Orchestrator) handleTrackerUnavailableCompletion(ctx context.Context, s
 	if !ok || availabilityErr == nil {
 		return false
 	}
+	if !o.nativeWorkflow() {
+		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
+	}
 	o.observeTrackerReadFailure(state, "", event.Err, event.CompletedAt)
 	message := strings.TrimSpace(event.Err.Error())
 	o.completeDurableWorkAttempt(

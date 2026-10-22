@@ -310,7 +310,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			retry, retried := state.Retry[issue.ID]
 			_, deferred := state.deferredCompletions[issue.ID]
 			if test.wantLandingWait {
-				if !retried || retry.ForgeUnavailable || retry.ForgeRetry != nil || retry.Attempt != 1 || retry.Issue.State != issue.State || !retry.DueAt.Equal(now.Add(cfg.ContinuationRetryDelay)) || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Completed) != 0 || len(state.Blocked) != 0 || scheduling.releases != 1 || len(state.Claimed) != 0 || len(state.Running) != 0 {
+				if !retried || retry.ForgeUnavailable || retry.ForgeRetry != nil || retry.Attempt != 2 || retry.Issue.State != issue.State || retry.DueAt.Sub(now) < 2*cfg.FailureRetryBaseDelay-2*cfg.FailureRetryBaseDelay/8 || retry.DueAt.Sub(now) > 2*cfg.FailureRetryBaseDelay || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Completed) != 0 || len(state.Blocked) != 0 || scheduling.releases != 1 || len(state.Claimed) != 0 || len(state.Running) != 0 {
 					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 				}
 				peer := completionTransitionIssue("Merging", "")
@@ -348,11 +348,11 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 							t.Fatalf("repeated base movement bypassed validation or source identity: %#v, %v", landing, err)
 						}
 						previousTree = landing.Gate
-						state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: int64(42 + cycle), Mode: runpkg.RunModeMerge, DispatchSourceState: "Merging", StartedAt: retry.DueAt}
+						state.Running[issue.ID] = Running{Issue: issue, Attempt: retry.Attempt, WorkAttemptID: int64(42 + cycle), Mode: runpkg.RunModeMerge, DispatchSourceState: "Merging", StartedAt: retry.DueAt}
 						state.Claimed[issue.ID] = Claimed{Issue: issue}
 						orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: retry.DueAt.Add(time.Second), Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: retryResult})
 						retry = state.Retry[issue.ID]
-						if retry.Attempt != 1 || retry.Issue.State != "Merging" || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(state.Claimed) != 0 || len(state.Running) != 0 || len(state.Retry) != 1 || len(state.Completed) != 0 || len(state.Blocked) != 0 || len(tick.updates) != 0 || scheduling.releases != cycle+1 || len(attempts.completions) != cycle+1 {
+						if retry.Attempt != cycle+2 || retry.Issue.State != "Merging" || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(state.Claimed) != 0 || len(state.Running) != 0 || len(state.Retry) != 1 || len(state.Completed) != 0 || len(state.Blocked) != 0 || len(tick.updates) != 0 || scheduling.releases != cycle+1 || len(attempts.completions) != cycle+1 {
 							t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 						}
 						completion := attempts.completions[cycle]

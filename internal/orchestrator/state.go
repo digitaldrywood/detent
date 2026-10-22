@@ -278,6 +278,7 @@ type Blocked struct {
 }
 
 type Completed struct {
+	Attempt                    int
 	Issue                      connector.Issue
 	SessionID                  string
 	StartedAt                  time.Time

@@ -482,8 +482,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "human owned dirty prerequisite retains ordinary path", states: workflow, finalMessage: strings.Replace(prerequisiteReport, "    reason:", "    owner: human\n    reason:", 1), wantOrdinary: true, wantContinue: true},
 		{name: "dirty tracked native Code keeps ordinary continuation", states: workflow, wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"source.go"}}},
 		{name: "dirty untracked native Rework keeps ordinary continuation", states: rework, sourceState: "Rework", wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, UntrackedPaths: []string{"source.go"}}},
-		{name: "late host source conflict preserves progress", states: rework, sourceState: "Rework", wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"docs/invariants.md"}, Fingerprint: "late-host-conflict", RecoveryStateExpected: true, RecoveryStateAvailable: true}},
-		{name: "late host conflict after replay preserves unpublished progress", states: rework, sourceState: "Rework", wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"docs/invariants.md"}, UnpushedCommits: 1, Fingerprint: "late-host-conflict", RecoveryStateExpected: true, RecoveryStateAvailable: true}},
+		{name: "late host source conflict preserves progress", states: rework, sourceState: "Rework", wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"docs/invariants.md"}, TreeSHA: "committed-tree", Fingerprint: "late-host-conflict", RecoveryStateExpected: true, RecoveryStateAvailable: true}},
+		{name: "late host conflict after replay preserves unpublished progress", states: rework, sourceState: "Rework", wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"docs/invariants.md"}, UnpushedCommits: 1, TreeSHA: "committed-tree", Fingerprint: "late-host-conflict", RecoveryStateExpected: true, RecoveryStateAvailable: true}},
 		{name: "already paused conflict left unresolved remains failure", states: rework, sourceState: "Rework", runErr: fmt.Errorf("finalize native work: %w: unresolved source conflicts: docs/invariants.md", workspace.ErrMergeResolutionInvalid), wantState: "In Review", diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"docs/invariants.md"}, Fingerprint: "existing-conflict", RecoveryStateExpected: true, RecoveryStateAvailable: true}},
 		{name: "non-native final question keeps the ordinary path", finalMessage: "May I merge?", plain: true, wantContinue: true},
 		{name: "a connector without a workflow keeps the ordinary path", change: &runpkg.NativeChange{}, plain: true, wantContinue: true},
@@ -588,6 +588,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				runningTokens = TokenTotals{}
 			}
 			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Generation: 7, SessionID: "native-session", Tokens: runningTokens, Mode: mode, DispatchSourceState: issue.State, DispatchTargetState: issue.State, StartedAt: now.Add(-time.Minute)}
+			if test.diffStats.TreeSHA != "" {
+				running := state.Running[issue.ID]
+				running.DispatchLoopStart = dispatchLoopStartRecord{Captured: true, Fingerprint: dispatchLoopFingerprint{WorkspaceTree: "dispatch-tree"}}
+				state.Running[issue.ID] = running
+			}
 			if test.startHead != "" {
 				running := state.Running[issue.ID]
 				running.DispatchLoopStart = dispatchLoopStartRecord{Captured: true, WorkspaceHeadAvailable: true, Fingerprint: dispatchLoopFingerprint{WorkspaceHead: test.startHead}}
@@ -1109,7 +1114,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					if err := json.Unmarshal([]byte(receipt.WorkerMetadataJSON), &metadata); err != nil {
 						t.Fatal(err)
 					}
-					if receipt.TerminalState != store.WorkAttemptTerminalSuccess || receipt.ErrorClass != "" || metadata.Progress.Reason != "workspace_diff_present_without_pull_request" || metadata.Progress.WorkspaceDiffStats.Fingerprint != test.diffStats.Fingerprint {
+					if receipt.TerminalState != store.WorkAttemptTerminalSuccess || receipt.ErrorClass != "" || metadata.Progress.Reason != "signature_changed" || metadata.Progress.WorkspaceDiffStats.Fingerprint != test.diffStats.Fingerprint {
 						t.Fatalf("host integration conflict lost successful source progress: receipt=%#v metadata=%#v", receipt, metadata)
 					}
 					if terminalAttemptRetryableFailure(telemetry.WorkAttempt{TerminalState: string(receipt.TerminalState), ErrorClass: receipt.ErrorClass}) || retry.Attempt != 1 {

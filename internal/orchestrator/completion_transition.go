@@ -80,8 +80,8 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReviewWithHydratedValida
 			if !hydrated {
 				result.transitioned[issueID] = struct{}{}
 				if completed.successfulAttemptPersisted {
-					if _, claimed := state.Claimed[issueID]; claimed {
-						o.releaseCompletedAttemptClaim(ctx, state, issue)
+					if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(completed.Attempt), now, "review thread evidence unavailable", ""); err != nil && o.logger != nil {
+						o.logger.Warn("review thread retry failed", "issue_id", issueID, "error", err)
 					}
 				}
 				continue
