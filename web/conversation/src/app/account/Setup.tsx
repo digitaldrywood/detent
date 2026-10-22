@@ -343,7 +343,7 @@ function SetupContent({ projectId, onNavigate }: {
 
   const steps = orderedSteps(onboarding.value, integration.value);
   const runners = React.useMemo(() => [...(onboarding.value?.runners ?? [])].sort((a, b) => Number((b.runner.connection_health ?? b.runner.health) === "online") - Number((a.runner.connection_health ?? a.runner.health) === "online")), [onboarding.value?.runners]);
-  const [selectedRunnerId, setSelectedRunnerId] = React.useState("");
+  const [selectedRunnerId, setSelectedRunnerId] = React.useState(() => new URLSearchParams(window.location.search).get("setup_runner") ?? "");
   const runner = runners.find((entry) => entry.runner.runner_id === selectedRunnerId)
     ?? runners.find((entry) => entry.runner.state === "active" && (entry.runner.connection_health ?? entry.runner.health) === "online" && !(entry.exclusions ?? []).some((exclusion) => !["project_access_denied", "host_capacity", "runner_capacity"].includes(exclusion.code)))
     ?? runners.find((entry) => entry.runner.state === "active");
@@ -368,7 +368,7 @@ function SetupContent({ projectId, onNavigate }: {
   const [settled, setSettled] = React.useState(false);
   React.useEffect(() => {
     if (onboarding.value === undefined || integration.value === undefined || settled) return;
-    setActiveIndex(firstUnreadyStep(orderedSteps(onboarding.value, integration.value)));
+    setActiveIndex(new URLSearchParams(window.location.search).get("setup_step") === "repository" ? 1 : firstUnreadyStep(orderedSteps(onboarding.value, integration.value)));
     setShowReady(onboarding.value.ready && orderedSteps(onboarding.value, integration.value).every((step) => step.state === "ready"));
     setSettled(true);
   }, [onboarding.value, integration.value, settled]);
@@ -455,6 +455,15 @@ function SetupContent({ projectId, onNavigate }: {
   });
   const requestRepositories = refreshRepositories.call;
   const repositoryStep = steps[activeIndex]?.name === "Repository";
+  const githubAvailable = integration.value?.github_transport_available === true;
+  const githubRepositories = useResource(() => repositoryStep && githubAvailable ? api.githubRepositories() : Promise.resolve(undefined), [api, repositoryStep, githubAvailable]);
+  const connectGitHub = useMutation(async () => {
+    const target = new URL(window.location.href);
+    target.searchParams.set("setup_step", "repository");
+    if (runner) target.searchParams.set("setup_runner", runner.runner.runner_id);
+    const result = await api.connectGitHub(`${target.pathname}${target.search}`);
+    window.location.assign(result.url);
+  });
   const listingRunnerId = runner?.runner.runner_id;
   React.useEffect(() => {
     if (repositoryStep && listingRunnerId && !integration.value?.checkout_repository) void requestRepositories(listingRunnerId);
@@ -581,7 +590,9 @@ function SetupContent({ projectId, onNavigate }: {
       <>
         <RepositoryPicker key={preparingRunner?.runner.runner_id} runner={preparingRunner} value={checkoutRepository || repositoryName}
           onChange={setRepositoryName} disabled={Boolean(checkoutRepository)} refreshing={refreshRepositories.pending}
-          refresh={() => { if (preparingRunner) void refreshRepositories.call(preparingRunner.runner.runner_id); }} />
+          github={githubAvailable ? githubRepositories.value : undefined} connectGitHub={() => void connectGitHub.call()} connecting={connectGitHub.pending}
+          refresh={() => { if (preparingRunner) void refreshRepositories.call(preparingRunner.runner.runner_id); void githubRepositories.refresh(); }} />
+        <ControlError message={connectGitHub.error?.message ?? null} />
         <ControlError message={refreshRepositories.error?.message ?? null} />
         <ControlError message={bindRepository.error?.message ?? null} />
         <ControlError message={integration.error?.message ?? null} />

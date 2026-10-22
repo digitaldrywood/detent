@@ -14,6 +14,7 @@ import * as Schema from "effect/Schema";
 
 import {
   ReleaseNotesPage,
+  GitHubRepositories,
   CreatedOperatorAPIKey,
   OperatorAPIKeys,
   AICredits,
@@ -202,6 +203,8 @@ export function makeAccountApi(options: AccountApiOptions) {
   const organizationId = base.split("/organizations/")[1]?.split("/")[0] ?? "";
   const cloudOrganization = `/api/cloud/organizations/${organizationId}`;
   return {
+    githubRepositories: () => send(GitHubRepositories, "GET", "/api/cloud/account/github/repositories"),
+    connectGitHub: (returnTo: string) => send(Schema.Struct({ url: Schema.String }), "POST", "/api/cloud/account/github/connect", { return_to: returnTo }),
     releaseNotes: (cursor?: string) => send(ReleaseNotesPage, "GET", `${base}/release-notes${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
     markReleaseNotesSeen: () => send(ReleaseNotesPage, "PUT", `${base}/release-notes/seen`, {}),
     widgetToken: () => send(Schema.Struct({ token: Schema.String }), "POST", `${base}/widget-token`, {}),

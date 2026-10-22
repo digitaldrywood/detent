@@ -325,6 +325,18 @@ storage (such as the existing root-only `credentials.env`):
 | `DETENT_HUB_GITHUB_APP_ID` | Numeric App ID, not its client ID or installation ID |
 | `DETENT_HUB_GITHUB_APP_PRIVATE_KEY` | PEM private key contents, not a filename; literal `\n` escapes are also accepted |
 | `DETENT_HUB_GITHUB_WEBHOOK_SECRET` | High-entropy shared webhook secret, identical to the App's configured secret |
+| `DETENT_HUB_GITHUB_APP_CLIENT_ID` | App client ID for optional Cloud repository discovery |
+| `DETENT_HUB_GITHUB_APP_CLIENT_SECRET` | App client secret for optional Cloud repository discovery |
+
+For optional Connect GitHub in Cloud project setup, provide both client values
+to Cloud entry along with the App credentials. Register
+`https://<cloud-origin>/auth/github/callback` as an App callback URL and its
+Setup URL, including redirects on installation updates. The picker opens the
+App installation account chooser, then authorizes the user with PKCE and returns
+to the same project setup step and runner. Other installation links keep their
+existing behavior. Tokens are encrypted per user in Cloud entry, never passed to
+runners or browsers, and can be revoked from account OAuth grants. Expired tokens
+require reconnecting. Without a connection, repository reads make no GitHub calls.
 
 Remove `--github-disabled` from the service command. Both App ID and private key
 must be nonempty to select App transport; setting only one falls back to the

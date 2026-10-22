@@ -67,6 +67,8 @@ type Config struct {
 	Attachments               *attachment.Config
 	GitHubWebhookSecret       []byte
 	GitHubApp                 *github.InstallationTokenConfig
+	GitHubUserClientID        string
+	GitHubUserClientSecret    string
 
 	now                 func() time.Time
 	generateToken       func() (string, error)
@@ -345,6 +347,7 @@ func (s *Service) routes() {
 	s.registerAccessKeys()
 	s.registerKeyMCP()
 	s.registerOAuth()
+	s.registerGitHubConnection()
 	e := s.echo
 	e.Pre(s.boundary)
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(detent.StaticFS()))))

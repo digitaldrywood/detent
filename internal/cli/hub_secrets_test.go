@@ -365,17 +365,21 @@ func TestHubSecretsStatusAuthDatabase(t *testing.T) {
 		versions             []string
 		exit                 int
 		problem              string
+		github               bool
 	}{
-		{"legacy", "legacy", "2", []string{"1", "2"}, 3, "legacy"},
-		{"old key", "1", "2", []string{"1", "2"}, 3, "not_active_version"},
-		{"active key", "2", "2", []string{"1", "2"}, 0, ""},
-		{"empty", "empty", "2", []string{"2"}, 0, ""},
-		{"missing key", "1", "2", []string{"2"}, 2, "missing_key"},
-		{"disabled legacy", "legacy", "", nil, 3, "legacy"},
-		{"disabled versioned", "2", "", nil, 2, "missing_key"},
-		{"malformed", "malformed", "2", []string{"2"}, 2, "unwrap_failed"},
-		{"wrong AAD", "wrong aad", "2", []string{"2"}, 2, "unwrap_failed"},
-		{"wrapping only", "ciphertext corrupt", "2", []string{"2"}, 0, ""},
+		{"legacy", "legacy", "2", []string{"1", "2"}, 3, "legacy", false},
+		{"old key", "1", "2", []string{"1", "2"}, 3, "not_active_version", false},
+		{"active key", "2", "2", []string{"1", "2"}, 0, "", false},
+		{"empty", "empty", "2", []string{"2"}, 0, "", false},
+		{"missing key", "1", "2", []string{"2"}, 2, "missing_key", false},
+		{"disabled legacy", "legacy", "", nil, 3, "legacy", false},
+		{"disabled versioned", "2", "", nil, 2, "missing_key", false},
+		{"malformed", "malformed", "2", []string{"2"}, 2, "unwrap_failed", false},
+		{"wrong AAD", "wrong aad", "2", []string{"2"}, 2, "unwrap_failed", false},
+		{"wrapping only", "ciphertext corrupt", "2", []string{"2"}, 0, "", false},
+		{"GitHub active key", "2", "2", []string{"1", "2"}, 0, "", true},
+		{"GitHub old key", "1", "2", []string{"1", "2"}, 3, "not_active_version", true},
+		{"GitHub wrong AAD", "wrong aad", "2", []string{"2"}, 2, "unwrap_failed", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -398,10 +402,17 @@ func TestHubSecretsStatusAuthDatabase(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			kinds := []string{"provider-access", "provider-refresh"}
+			if test.github {
+				if _, err := db.ExecContext(t.Context(), `CREATE TABLE github_user_connections(owner_subject TEXT PRIMARY KEY,access_token TEXT NOT NULL)`); err != nil {
+					t.Fatal(err)
+				}
+				kinds = append(kinds, "github-user-access")
+			}
 			forbidden := []string{"known-auth-token", "legacy-auth-token", "auth-binding-one", "auth-binding-two", "oauth_client_example_one", "https://assistant.example.test/callback"}
 			for _, binding := range []string{"auth-binding-one", "auth-binding-two"} {
 				values := []string{}
-				for _, kind := range []string{"provider-access", "provider-refresh"} {
+				for _, kind := range kinds {
 					value := ""
 					switch test.format {
 					case "empty":
@@ -430,7 +441,13 @@ func TestHubSecretsStatusAuthDatabase(t *testing.T) {
 						value = strings.Join([]string{"hk1", version, base64.RawURLEncoding.EncodeToString(e.Nonce), base64.RawURLEncoding.EncodeToString(e.WrappedKey), base64.RawURLEncoding.EncodeToString(e.Ciphertext)}, ".")
 						forbidden = append(forbidden, value, base64.RawURLEncoding.EncodeToString(e.WrappedKey))
 					}
-					values = append(values, value)
+					if kind == "github-user-access" {
+						if _, err := db.ExecContext(t.Context(), `INSERT INTO github_user_connections VALUES(?,?)`, binding, value); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						values = append(values, value)
+					}
 				}
 				if _, err := db.ExecContext(t.Context(), `INSERT INTO authorizations VALUES(?,?,?)`, binding, values[0], values[1]); err != nil {
 					t.Fatal(err)
@@ -466,17 +483,17 @@ func TestHubSecretsStatusAuthDatabase(t *testing.T) {
 			case "malformed":
 				version = 0
 			}
-			if len(status.Counts) != 2 {
+			if len(status.Counts) != len(kinds) {
 				t.Fatalf("counts=%+v", status.Counts)
 			}
 			for _, count := range status.Counts {
-				if count.Format != format || count.Version != version || count.Count != 2 || !slices.Contains([]string{"provider-access", "provider-refresh"}, count.Kind) {
+				if count.Format != format || count.Version != version || count.Count != 2 || !slices.Contains(kinds, count.Kind) {
 					t.Fatalf("count=%+v", count)
 				}
 			}
 			wantProblems := 0
 			if test.problem != "" {
-				wantProblems = 4
+				wantProblems = 2 * len(kinds)
 			}
 			if len(status.Problems) != wantProblems {
 				t.Fatalf("problems=%+v", status.Problems)

@@ -89,7 +89,7 @@ func (s *Service) resealAuthorizations(ctx context.Context) error {
 		var item authorization
 		err := s.auth.store.reader.QueryRowContext(ctx, `SELECT binding,access_token,refresh_token FROM authorizations WHERE binding>? AND revoked_at IS NULL AND (access_token<>'' OR refresh_token<>'') ORDER BY binding LIMIT 1`, after).Scan(&item.Binding, &item.sealedAccess, &item.sealedRefresh)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil
+			return s.resealGitHubConnections(ctx)
 		}
 		if err != nil {
 			return err
@@ -116,4 +116,28 @@ func (a *authStore) resealAuthorization(ctx context.Context, item authorization)
 	}
 	_, err = a.store.db.ExecContext(ctx, `UPDATE authorizations SET access_token=?,refresh_token=? WHERE binding=? AND access_token=? AND refresh_token=? AND revoked_at IS NULL`, access, refresh, item.Binding, item.sealedAccess, item.sealedRefresh)
 	return err
+}
+
+func (s *Service) resealGitHubConnections(ctx context.Context) error {
+	var after string
+	for {
+		var owner, sealed string
+		err := s.auth.store.reader.QueryRowContext(ctx, `SELECT owner_subject,access_token FROM github_user_connections WHERE owner_subject>? AND revoked_at IS NULL AND access_token<>'' ORDER BY owner_subject LIMIT 1`, after).Scan(&owner, &sealed)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		after = owner
+		resealed, err := s.auth.resealToken("github-user-access", owner, sealed)
+		if err != nil {
+			return errNoSession
+		}
+		if sealed != resealed {
+			if _, err := s.auth.store.db.ExecContext(ctx, `UPDATE github_user_connections SET access_token=? WHERE owner_subject=? AND access_token=? AND revoked_at IS NULL`, resealed, owner, sealed); err != nil {
+				return err
+			}
+		}
+	}
 }

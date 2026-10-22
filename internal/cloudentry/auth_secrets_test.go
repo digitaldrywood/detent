@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 )
@@ -223,6 +225,11 @@ func TestEntrySecretResealCASAndSkips(t *testing.T) {
 	t.Parallel()
 	var logs lockedBuffer
 	s := openSecretEntry(t, secretEntryConfig(t, &logs))
+	for _, owner := range []string{"first-user", "second-user"} {
+		if err := s.saveGitHubConnection(t.Context(), owner, &oauth2.Token{AccessToken: "github-" + owner}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	old := auth.HostedTokens{AccessToken: "old-access", RefreshToken: "old-refresh"}
 	items := map[string]authorization{}
 	for _, name := range []string{"refresh", "revoked", "empty", "partial", "broken", "healthy", "active"} {
@@ -269,6 +276,22 @@ func TestEntrySecretResealCASAndSkips(t *testing.T) {
 	close(gate.resume)
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+	for _, owner := range []string{"first-user", "second-user"} {
+		var sealed string
+		if err := s.auth.store.reader.QueryRowContext(t.Context(), `SELECT access_token FROM github_user_connections WHERE owner_subject=?`, owner).Scan(&sealed); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(sealed, "hk1.2.") {
+			t.Fatal("GitHub connection did not rotate")
+		}
+		plain, err := s.auth.openToken("github-user-access", owner, sealed)
+		if err != nil || plain != "github-"+owner {
+			t.Fatal("rotated GitHub connection unusable", err)
+		}
+		if _, err := s.auth.openToken("github-user-access", "other-user", sealed); err == nil {
+			t.Fatal("GitHub connection lost owner binding")
+		}
 	}
 	for name, item := range items {
 		var pair [2]string

@@ -6,11 +6,55 @@ import userEvent from "@testing-library/user-event";
 import { startMockHub, type MockHub } from "../../dev/mock-hub.ts";
 import { ClientContext } from "../../src/app/client.ts";
 import { SetupRoute } from "../../src/app/account/Setup.tsx";
+import { RepositoryPicker } from "../../src/app/account/RepositoryPicker.tsx";
+import { Onboarding } from "../../src/contracts/account.ts";
+import onboardingFixture from "../../src/contracts/fixtures/account-onboarding.json";
+import * as Schema from "effect/Schema";
 import { loadBootstrap, makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
 import { fetchEventStreamTransport } from "../../src/runtime/rpc/sse.ts";
 
 let hub: MockHub | undefined;
 let client: ConversationClient | undefined;
+
+it.each([false, true])("offers GitHub discovery only when available (%s), including from Not listed", async (available) => {
+  const connect = vi.fn();
+  const view = render(<RepositoryPicker runner={undefined} value="example-org/unlisted" onChange={vi.fn()} refresh={vi.fn()} refreshing={false}
+    github={{ available, connected: false, reconnect: false, repositories: [] }} connectGitHub={connect} />);
+  const user = userEvent.setup();
+  const button = screen.queryByRole("button", { name: /Connect GitHub to list more repositories/ });
+  expect(Boolean(button)).toBe(available);
+  if (available) {
+    await user.click(button!);
+    expect(connect).toHaveBeenCalledOnce();
+  }
+  view.rerender(<RepositoryPicker runner={undefined} value="" onChange={vi.fn()} refresh={vi.fn()} refreshing={false}
+    github={{ available, connected: true, reconnect: false, repositories: [{ owner: "example-org", name: "project", private: true, pushed_at: null }] }} connectGitHub={connect} />);
+  expect(screen.queryByRole("button", { name: /Connect GitHub to list more repositories/ })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Not listed?" }));
+  expect(Boolean(screen.queryByRole("button", { name: /Connect GitHub to list more repositories/ }))).toBe(available);
+});
+
+it("merges GitHub and runner repositories without duplicates and retains the runner list on reconnect", async () => {
+  const runner = { ...Schema.decodeUnknownSync(Onboarding)(onboardingFixture).runners![0]!, repository_list: {
+    request_id: "listed", pending: false, repositories: [{ owner: "example-org", name: "project", private: true, pushed_at: null }],
+  } };
+  const change = vi.fn();
+  const view = render(<RepositoryPicker runner={runner} value="" onChange={change} refresh={vi.fn()} refreshing={false}
+    github={{ available: true, connected: true, reconnect: false, repositories: [{ owner: "EXAMPLE-ORG", name: "PROJECT", private: true, pushed_at: null }, { owner: "example-user", name: "another", private: false, pushed_at: null }] }} />);
+  expect(screen.getAllByRole("option", { name: /example-org\/project/ })).toHaveLength(1);
+  expect(screen.getByRole("option", { name: /example-org\/project/ }).textContent).toContain("Runner + GitHub App");
+  const added = screen.getByRole("option", { name: /example-user\/another/ });
+  expect(added.textContent).toContain("GitHub App");
+  expect(screen.getByText(/Listed by .* and the Detent Cloud GitHub App/)).toBeTruthy();
+  await userEvent.setup().click(added);
+  expect(change).toHaveBeenCalledWith("example-user/another");
+  view.rerender(<RepositoryPicker runner={runner} value="" onChange={change} refresh={vi.fn()} refreshing={false}
+    github={{ available: true, connected: false, reconnect: true, repositories: [] }} />);
+  await userEvent.setup().click(screen.getByRole("combobox"));
+  expect(screen.getByRole("option", { name: /example-org\/project/ })).toBeTruthy();
+  expect(screen.queryByRole("option", { name: /example-user\/another/ })).toBeNull();
+  expect(screen.getByText(/Reconnect GitHub to update its repositories/)).toBeTruthy();
+});
 
 afterEach(async () => {
   cleanup();
@@ -124,13 +168,17 @@ it("preserves unsaved setup choices and fields through refresh, then saves and s
   expect(screen.queryByRole("textbox", { name: "Publisher token id" })).toBeNull();
 });
 
-it.each(["listed", "typed", "offline"] as const)("binds a %s repository and rejects invalid input", async (state) => {
+it.each(["listed", "typed", "offline", "github"] as const)("binds a %s repository and rejects invalid input", async (state) => {
   const mount = await mountSetup();
   const fetch = globalThis.fetch;
   let bound: Record<string, unknown> | undefined;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     if (String(input).endsWith("/onboarding/repository")) bound = JSON.parse(String(init?.body));
+    if (state === "github" && String(input).endsWith("/api/cloud/account/github/repositories")) {
+      return Response.json({ available: true, connected: true, reconnect: false, repositories: [{ owner: "example-user", name: "added-project", private: true, pushed_at: null }] });
+    }
     const response = await fetch(input, init);
+    if (state === "github" && String(input).endsWith("/integration") && response.ok) return Response.json({ ...await response.json(), github_transport_available: true });
     if (state === "offline" && String(input).endsWith("/onboarding") && response.ok) {
       const data = await response.json();
       return Response.json({ ...data, runners: data.runners.map((entry: { runner: Record<string, unknown> }) => ({ ...entry, repository_list: { request_id: "loading", repositories: [], pending: true }, runner: { ...entry.runner, connection_health: "offline" } })) });
@@ -153,6 +201,10 @@ it.each(["listed", "typed", "offline"] as const)("binds a %s repository and reje
     expect(screen.queryByRole("option", { name: /project-notes/ })).toBeNull();
     await user.keyboard("{ArrowDown}{Enter}");
     repository = "example-org/example-project";
+  } else if (state === "github") {
+    repository = "example-user/added-project";
+    fireEvent.change(field, { target: { value: "added-project" } });
+    await user.click(await screen.findByRole("option", { name: /example-user\/added-project.*GitHub App/ }));
   } else {
     repository = "example-org/unlisted";
     fireEvent.change(field, { target: { value: repository } });

@@ -71,51 +71,57 @@ func AuthSecretStatus(ctx context.Context, path string, keys *hubsecrets.Keyring
 }
 
 func readAuthSecretStatus(ctx context.Context, db *sql.DB, keys *hubsecrets.Keyring, status *AuthSecretDatabaseStatus) error {
-	rows, err := db.QueryContext(ctx, `SELECT binding,access_token,refresh_token FROM authorizations ORDER BY binding`)
+	var hasGitHubConnections bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='github_user_connections')`).Scan(&hasGitHubConnections); err != nil {
+		return err
+	}
+	query := `SELECT binding,'provider-access',access_token FROM authorizations UNION ALL SELECT binding,'provider-refresh',refresh_token FROM authorizations`
+	if hasGitHubConnections {
+		query += ` UNION ALL SELECT owner_subject,'github-user-access',access_token FROM github_user_connections`
+	}
+	rows, err := db.QueryContext(ctx, query+` ORDER BY 1,2`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	counts := make(map[AuthSecretCount]int)
 	for rows.Next() {
-		var binding, access, refresh string
-		if err := rows.Scan(&binding, &access, &refresh); err != nil {
+		var binding, kind, value string
+		if err := rows.Scan(&binding, &kind, &value); err != nil {
 			return err
 		}
-		for _, token := range []struct{ kind, value string }{{"provider-access", access}, {"provider-refresh", refresh}} {
-			group := AuthSecretCount{Kind: token.kind, Format: "legacy"}
-			problem := "legacy"
+		group := AuthSecretCount{Kind: kind, Format: "legacy"}
+		problem := "legacy"
+		switch {
+		case value == "":
+			group.Format, problem = "empty", ""
+		case strings.HasPrefix(value, "hk1."):
+			group.Format = "hk1"
+			envelope, err := decodeEntrySecret(value)
+			group.Version = envelope.Version
+			if err == nil {
+				err = keys.Check(envelope, entrySecretAAD(kind, binding))
+			}
 			switch {
-			case token.value == "":
-				group.Format, problem = "empty", ""
-			case strings.HasPrefix(token.value, "hk1."):
-				group.Format = "hk1"
-				envelope, err := decodeEntrySecret(token.value)
-				group.Version = envelope.Version
-				if err == nil {
-					err = keys.Check(envelope, entrySecretAAD(token.kind, binding))
-				}
-				switch {
-				case errors.Is(err, hubsecrets.ErrUnavailable):
-					problem = "missing_key"
-				case err != nil:
-					problem = "unwrap_failed"
-				case envelope.Version != keys.Version():
-					problem = "not_active_version"
-				default:
-					problem = ""
-				}
+			case errors.Is(err, hubsecrets.ErrUnavailable):
+				problem = "missing_key"
+			case err != nil:
+				problem = "unwrap_failed"
+			case envelope.Version != keys.Version():
+				problem = "not_active_version"
+			default:
+				problem = ""
 			}
-			index, exists := counts[group]
-			if !exists {
-				index = len(status.Counts)
-				counts[group] = index
-				status.Counts = append(status.Counts, group)
-			}
-			status.Counts[index].Count++
-			if problem != "" {
-				status.Problems = append(status.Problems, AuthSecretProblem{Kind: token.kind, Version: group.Version, Problem: problem})
-			}
+		}
+		index, exists := counts[group]
+		if !exists {
+			index = len(status.Counts)
+			counts[group] = index
+			status.Counts = append(status.Counts, group)
+		}
+		status.Counts[index].Count++
+		if problem != "" {
+			status.Problems = append(status.Problems, AuthSecretProblem{Kind: kind, Version: group.Version, Problem: problem})
 		}
 	}
 	if err := rows.Err(); err != nil {

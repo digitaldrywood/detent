@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 
@@ -28,7 +29,8 @@ type oauthGrantPage struct {
 }
 
 func (s *Service) oauthGrants(ctx context.Context, owner, cursor string) (oauthGrantPage, error) {
-	rows, err := s.auth.store.reader.QueryContext(ctx, `SELECT g.id,g.client_id,c.name,g.organization_id,g.created_at,g.last_used_at,g.revoked_at FROM oauth_grants g JOIN oauth_clients c ON c.id=g.client_id WHERE g.owner_subject=? AND g.id>? ORDER BY g.id LIMIT 201`, owner, cursor)
+	rows, err := s.auth.store.reader.QueryContext(ctx, `SELECT g.id,g.client_id,c.name,g.organization_id,g.created_at,g.last_used_at,g.revoked_at FROM oauth_grants g JOIN oauth_clients c ON c.id=g.client_id WHERE g.owner_subject=? AND g.id>?
+UNION ALL SELECT id,'github-app','Detent Cloud GitHub App','',created_at,NULL,revoked_at FROM github_user_connections WHERE owner_subject=? AND id>? ORDER BY id LIMIT 201`, owner, cursor, owner, cursor)
 	if err != nil {
 		return oauthGrantPage{}, err
 	}
@@ -53,6 +55,20 @@ func (s *Service) oauthGrants(ctx context.Context, owner, cursor string) (oauthG
 }
 
 func (s *Service) revokeOAuthGrant(ctx context.Context, owner, id string) error {
+	if strings.HasPrefix(id, "github_") {
+		result, err := s.auth.store.db.ExecContext(ctx, `UPDATE github_user_connections SET revoked_at=COALESCE(revoked_at,?),access_token='' WHERE id=? AND owner_subject=?`, formatTime(s.config.now()), id, owner)
+		if err != nil {
+			return err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count != 1 {
+			return sql.ErrNoRows
+		}
+		return nil
+	}
 	result, err := s.auth.store.db.ExecContext(ctx, "UPDATE oauth_grants SET revoked_at=COALESCE(revoked_at,?) WHERE id=? AND owner_subject=?", formatTime(s.config.now()), id, owner)
 	if err != nil {
 		return err

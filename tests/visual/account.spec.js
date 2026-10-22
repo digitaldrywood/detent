@@ -17,6 +17,32 @@ const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
 let hub;
 
+for (const viewport of [
+  { name: "desktop-light", width: 1440, height: 900, theme: "light" },
+  { name: "desktop-dark", width: 1440, height: 900, theme: "dark" },
+  { name: "phone-light", width: 390, height: 844, theme: "light" },
+  { name: "phone-dark", width: 390, height: 844, theme: "dark" },
+]) {
+  test(`repository picker Connect GitHub no-match ${viewport.name}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await page.route("**/integration", async (route) => {
+      const response = await route.fetch();
+      const integration = await response.json();
+      await route.fulfill({ json: { ...integration, github_transport_available: true, checkout_repository: "", repository: "" } });
+    });
+    await page.route("**/api/cloud/account/github/repositories", (route) => route.fulfill({ json: { available: true, connected: false, reconnect: false, repositories: [] } }));
+    await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);
+    await page.evaluate((theme) => {
+      localStorage.setItem("detent.theme", theme);
+      document.documentElement.classList.toggle("dark", theme === "dark");
+    }, viewport.theme);
+    await page.getByRole("button", { name: /Repository action required/ }).click();
+    await page.getByRole("combobox", { name: "Search or type owner/name" }).fill("example-org/unlisted-project");
+    await expect(page.getByRole("button", { name: /Connect GitHub to list more repositories/ })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath(`connect-github-${viewport.name}.png`), animations: "disabled", fullPage: true });
+  });
+}
+
 test.beforeEach(async () => {
   test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
   hub = await startHostedHub("account", { env: { DETENT_HOSTED_BROWSER_UNSIGNED_MEMBER: "1" } });

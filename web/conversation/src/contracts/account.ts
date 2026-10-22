@@ -14,6 +14,14 @@
 // are recorded in README.md ("Contract ambiguities resolved").
 import * as Schema from "effect/Schema";
 
+export const GitHubRepositories = Schema.Struct({
+  available: Schema.Boolean,
+  connected: Schema.Boolean,
+  reconnect: Schema.Boolean,
+  repositories: Schema.Array(Schema.Struct({ owner: Schema.String, name: Schema.String, private: Schema.Boolean, pushed_at: Schema.NullOr(Schema.String) })),
+});
+export type GitHubRepositories = typeof GitHubRepositories.Type;
+
 import { ChatUsage } from "./usage.ts";
 
 import { ApiError } from "./conversation.ts";
