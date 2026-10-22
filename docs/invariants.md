@@ -55,6 +55,15 @@ intent and the current operator-stop entry on every read. Historical machine
 parks, retry counts, fingerprints and consumed recovery signatures do not own
 the lane. No migration or new recovery sweep clears them.
 
+Execution ownership is a fenced, renewed lease. Completion replay payloads
+never exempt an attempt from lease expiry or independently veto a claim. Expiry
+returns the item to claim eligibility under current source custody and human
+intent; no recovery park or park-clearing sweep owns that return.
+
+**Lease enforcement:** `TestRetainedWorkAttemptsExpireOnTick` and
+`TestHubSchedulingReadinessBeforeClaim` in `internal/orchestrator` and `TestTimeoutWorkAttemptsProcessEvidence` and
+`TestStartupTimeoutWorkAttemptsScope` in `internal/store`.
+
 Derived hold metadata requires an owner, source revision and expiry when
 written. It cannot replace current intent: wiping it and recomputing must
 produce the same dispatch decision. Expiry of derived metadata does not expire

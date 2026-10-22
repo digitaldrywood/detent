@@ -1366,12 +1366,14 @@ func TestRetainedWorkAttemptsExpireOnTick(t *testing.T) {
 	for _, tt := range []struct {
 		name         string
 		running      bool
+		successor    bool
 		phase        string
 		wantTerminal bool
 	}{
 		{name: "orphan expires", wantTerminal: true},
 		{name: "owned attempt survives expired heartbeat", running: true},
-		{name: "deferred completion survives", phase: "completion_deferred"},
+		{name: "deferred completion expires", phase: "completion_deferred", wantTerminal: true},
+		{name: "expired completion preserves successor", phase: "completion_deferred", successor: true, wantTerminal: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := t.Context()
@@ -1400,6 +1402,12 @@ func TestRetainedWorkAttemptsExpireOnTick(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if tt.phase != "" {
+				issue := connector.Issue{ID: "retained"}
+				state.deferredCompletions[issue.ID] = deferredCompletion{Running: Running{Issue: issue, WorkAttemptID: id}}
+				state.Claimed[issue.ID] = Claimed{Issue: issue, LeaseExpiresAt: now.Add(time.Minute)}
+				state.Retry[issue.ID] = Retry{Issue: issue, CompletionDeferred: true, DueAt: now.Add(time.Hour)}
+			}
 			if tt.running {
 				state.Running["retained"] = Running{Issue: connector.Issue{ID: "retained"}, WorkAttemptID: id}
 			}
@@ -1408,7 +1416,11 @@ func TestRetainedWorkAttemptsExpireOnTick(t *testing.T) {
 			if err != nil || len(active) != 1 {
 				t.Fatalf("before expiry active = %v, err = %v", active, err)
 			}
-			// Recovery must still run when tracker polling is paused.
+			if tt.successor {
+				state.Running["retained"] = Running{Issue: connector.Issue{ID: "retained"}, WorkAttemptID: id + 1}
+				state.Claimed["retained"] = Claimed{Issue: connector.Issue{ID: "retained"}, LeaseExpiresAt: now.Add(time.Hour)}
+				state.Retry["retained"] = Retry{RecoveryAttemptID: id + 1, DueAt: now.Add(time.Hour)}
+			}
 			o.tick(ctx, &state, now.Add(2*time.Minute))
 			active, err = runtimeStore.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: "detent"})
 			if err != nil {
@@ -1420,6 +1432,18 @@ func TestRetainedWorkAttemptsExpireOnTick(t *testing.T) {
 			recent, err := runtimeStore.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{ProjectID: "detent", Limit: 10})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tt.phase != "" && len(state.deferredCompletions) != 0 {
+				t.Fatal("expired completion retained ownership")
+			}
+			if tt.phase != "" {
+				if tt.successor {
+					if state.Running["retained"].WorkAttemptID != id+1 || state.Retry["retained"].RecoveryAttemptID != id+1 || !state.Claimed["retained"].LeaseExpiresAt.Equal(now.Add(time.Hour)) {
+						t.Fatal("expired completion changed successor ownership")
+					}
+				} else if len(state.Claimed) != 0 || len(state.Retry) != 0 {
+					t.Fatal("expired completion retained claim or retry")
+				}
 			}
 			if tt.wantTerminal && (len(recent) != 1 || recent[0].ErrorClass != "lease_expired") {
 				t.Fatalf("terminal attempts = %#v", recent)

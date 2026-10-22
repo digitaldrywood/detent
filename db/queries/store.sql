@@ -1076,8 +1076,8 @@ SET status = ?,
 WHERE completed_at IS NULL
   AND (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
   AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= sqlc.arg(lease_expires_at))
+       OR (lease_expires_at IS NULL AND lower(trim(COALESCE(phase, ''))) = 'completion_deferred')
        OR id IN (SELECT value FROM json_each(sqlc.arg(confirmed_gone_attempt_ids))))
-  AND lower(trim(COALESCE(phase, ''))) != 'completion_deferred'
   AND id NOT IN (SELECT value FROM json_each(sqlc.arg(exclude_attempt_ids)))
   AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(sqlc.arg(live_foreign_generations))))
 RETURNING *;

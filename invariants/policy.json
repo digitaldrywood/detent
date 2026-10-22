@@ -30,6 +30,8 @@
       "TestAttemptMetadataRetainsApprovedPolicy",
       "TestMachineRetrySurvivesStoreRestart",
       "TestStartupDoesNotReclaimLiveWorkAttempts",
+      "TestRetainedWorkAttemptsExpireOnTick",
+      "TestHubSchedulingReadinessBeforeClaim",
       "TestINV14DispatchQuestionTool",
       "TestINV14LegacyQuestionRowDispatch",
       "TestFirstHumanBlockerCompletionReachesBlocked",
@@ -103,6 +105,8 @@
       "TestGitMetadataWritableRootsForLinkedWorktree"
     ],
     "./internal/store": [
+      "TestTimeoutWorkAttemptsProcessEvidence",
+      "TestStartupTimeoutWorkAttemptsScope",
       "TestLegacyHumanQuestionReceiptsReadable",
       "TestIssueSpendSinceExcludesInstanceInfrastructureAttempts"
     ],

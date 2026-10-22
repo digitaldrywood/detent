@@ -317,9 +317,6 @@ func knownDispatchWaitReason(issue connector.Issue, state *State, dueRetries map
 	if _, running := state.Running[issue.ID]; running {
 		return dispatchSkipAlreadyRunning
 	}
-	if _, deferred := state.deferredCompletions[issue.ID]; deferred {
-		return dispatchSkipCompletionDeferred
-	}
 	if _, retry := state.Retry[issue.ID]; retry {
 		return dispatchSkipRetryPending
 	}
@@ -874,9 +871,6 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	}
 	if _, ok := state.Running[issue.ID]; ok {
 		return dispatchableDecision{reason: dispatchSkipAlreadyRunning}
-	}
-	if _, ok := state.deferredCompletions[issue.ID]; ok {
-		return dispatchableDecision{reason: dispatchSkipCompletionDeferred}
 	}
 	if _, ok := state.Retry[issue.ID]; ok {
 		return dispatchableDecision{reason: dispatchSkipRetryPending}

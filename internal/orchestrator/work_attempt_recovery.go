@@ -495,6 +495,15 @@ func (o *Orchestrator) clearLiveWorkAttemptState(state *State, attempt telemetry
 	if issueID == "" {
 		return
 	}
+	if running, ok := state.Running[issueID]; ok && running.WorkAttemptID != attempt.AttemptID {
+		if deferred, ok := state.deferredCompletions[issueID]; ok && deferred.Running.WorkAttemptID == attempt.AttemptID {
+			delete(state.deferredCompletions, issueID)
+		}
+		return
+	}
+	if deferred, ok := state.deferredCompletions[issueID]; ok && deferred.Running.WorkAttemptID != attempt.AttemptID {
+		return
+	}
 	if running, ok := state.Running[issueID]; ok && running.WorkAttemptID == attempt.AttemptID {
 		cancelRunning(state, issueID, "operator.work_attempt_recovery")
 		o.releaseGlobalDispatchSlot(running.globalSlot)

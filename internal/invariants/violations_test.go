@@ -31,6 +31,8 @@ func TestSourceViolations(t *testing.T) {
 		{"remembered review", "internal/hubserver/new.go", `func nativeReviewConversationRefusalStands() {}`, "INV-9"},
 		{"uncertain effect hold", "internal/runner/new.go", `const reason = "external_effect_uncertain"`, "INV-9"},
 		{"manual checkpoint hold", "internal/runner/new.go", `const reason = "checkpoint_requires_recovery"`, "INV-9"},
+		{"recovery park sweep", "internal/orchestrator/new.go", `func reconcileInvalidWorkpadPark() {}`, "INV-9"},
+		{"recovery park persistence", "internal/orchestrator/new.go", `func deriveCurrentBreakerRecoveryPark() {}`, "INV-9"},
 		{"revocation", "internal/runner/new.go", `const reason = "worker_lane_revocation"`, "INV-9"},
 		{"split revocation", "internal/runner/new.go", `const reason = "worker_lane_"+"revocation"`, "INV-9"},
 		{"lane stop", "internal/runner/new.go", `func stopIndeterminateLane() {}`, "INV-9"},

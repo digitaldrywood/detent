@@ -111,6 +111,9 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			if receipt.Status != store.WorkAttemptStatusActive || receipt.Phase != deferredCompletionPhase || receipt.WaitReason != connector.TrackerUnavailableCondition || receipt.NextAction != deferredCompletionNextAction {
 				t.Fatalf("deferred work attempt = %#v, want active tracker wait", receipt)
 			}
+			if !receipt.LeaseExpiresAt.After(now) {
+				t.Fatal("completion persistence removed its lease expiry")
+			}
 			if strings.Contains(receipt.WorkerMetadataJSON, `"lane_revocation"`) || len(tracker.comments) != 0 {
 				t.Fatalf("unreadable fence produced a revocation: %s", receipt.WorkerMetadataJSON)
 			}
@@ -124,8 +127,8 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			if len(snapshot.Queue) != 1 || snapshot.Queue[0].QueueState != telemetry.QueueStateWaitingOnTracker {
 				t.Fatalf("snapshot queue = %#v, want waiting_on_tracker", snapshot.Queue)
 			}
-			if outcome := orch.dispatchIssueWithOutcome(t.Context(), &state, issue, 1, now, ""); outcome.dispatched || outcome.reason != dispatchSkipCompletionDeferred {
-				t.Fatalf("dispatch while completion deferred = %#v, want suppressed", outcome)
+			if reason := knownDispatchWaitReason(issue, &state, nil, cfg.TerminalStates); reason != dispatchSkipRetryPending {
+				t.Fatalf("dispatch while completion deferred = %q, want pending replay", reason)
 			}
 		})
 	}
@@ -321,8 +324,8 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			if _, ok := restartedState.Claimed[issue.ID]; !ok {
 				t.Fatalf("Claimed[%q] missing after restart", issue.ID)
 			}
-			if outcome := restartedOrch.dispatchIssueWithOutcome(t.Context(), &restartedState, recoveredIssue, 1, restartAt, ""); outcome.dispatched || outcome.reason != dispatchSkipCompletionDeferred {
-				t.Fatalf("dispatch after restart = %#v, want suppressed", outcome)
+			if reason := knownDispatchWaitReason(recoveredIssue, &restartedState, nil, cfg.TerminalStates); reason != dispatchSkipRetryPending {
+				t.Fatalf("dispatch after restart = %q, want pending completion replay", reason)
 			}
 			if tt.retryCount > 1 {
 				fetchesBeforeDuplicate := tracker.fetchCount()

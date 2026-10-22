@@ -118,10 +118,6 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 	o.recoverPendingOperatorStops(ctx, state, now)
 }
 
-// expireOrphanedWorkAttempts applies the existing lease recovery at startup and
-// on refresh. The event-loop-owned running set excludes local workers even if
-// their independent heartbeat is delayed; deferred completions remain excluded
-// by the store query.
 func (o *Orchestrator) expireOrphanedWorkAttempts(ctx context.Context, state *State, now time.Time) {
 	if o == nil || o.workAttempts == nil || state == nil {
 		return
@@ -148,6 +144,9 @@ func (o *Orchestrator) expireOrphanedWorkAttempts(ctx context.Context, state *St
 		o.logger.Warn("work attempt timeout recovery failed", "project_id", projectID, "error", err)
 	}
 	for _, attempt := range timedOut {
+		if deferred, ok := state.deferredCompletions[attempt.IssueID]; ok && deferred.Running.WorkAttemptID == attempt.ID {
+			o.clearLiveWorkAttemptState(state, telemetryWorkAttempt(attempt, now))
+		}
 		o.recordRecoveredWorkAttempt(state, attempt, now)
 	}
 }

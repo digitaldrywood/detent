@@ -428,6 +428,10 @@ interactions are the main source of incidents, so the set may not grow.
   every recovery read, without fingerprint, retry-limit or consumed-signature vetoes.
   Stored derived hold metadata requires an owner, source revision and expiry;
   deleting derived holds must not change recomputed dispatch decisions.
+- Execution ownership is a fenced, renewed lease. Deferred completion payloads
+  do not extend ownership beyond lease expiry. Expired attempts return to claim
+  eligibility without a recovery park or park-clearing sweep; source custody
+  and genuine human intent remain authoritative.
 - The orchestrator is the only writer of tracker lane state; workers report
   outcomes and never write lane labels.
 - Do not add configuration keys, CLI subcommands, or dashboard surfaces to work

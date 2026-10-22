@@ -114,8 +114,8 @@ func TestPlanCompletionCoordinationDeferral(t *testing.T) {
 				if !state.Retry[issue.ID].CompletionDeferred {
 					t.Fatal("completion lost during repeated outage")
 				}
-				if got := orch.dispatchIssueWithOutcome(t.Context(), &state, issue, 3, now, ""); got.dispatched || got.reason != dispatchSkipCompletionDeferred {
-					t.Fatalf("planner redispatch = %#v", got)
+				if reason := knownDispatchWaitReason(issue, &state, nil, orch.cfg.TerminalStates); reason != dispatchSkipRetryPending {
+					t.Fatalf("planner redispatch = %q", reason)
 				}
 			}
 			shared.err = nil

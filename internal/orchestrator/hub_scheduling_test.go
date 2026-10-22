@@ -771,8 +771,12 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 		{name: "running work never preempted", state: "Merging", knownWait: dispatchSkipAlreadyRunning, setup: func(s *State, issue connector.Issue) {
 			s.Running[issue.ID] = Running{Issue: issue, cancel: func() { t.Error("preview cancelled running work") }}
 		}},
-		{name: "deferred completion keeps its owner", state: "Todo", knownWait: dispatchSkipCompletionDeferred, setup: func(s *State, issue connector.Issue) {
+		{name: "completion payload alone owns no claim", state: "Todo", want: true, setup: func(s *State, issue connector.Issue) {
 			s.deferredCompletions[issue.ID] = deferredCompletion{Running: Running{Issue: issue}}
+		}},
+		{name: "completion lease keeps its owner", state: "Todo", knownWait: dispatchSkipAlreadyClaimed, setup: func(s *State, issue connector.Issue) {
+			s.deferredCompletions[issue.ID] = deferredCompletion{Running: Running{Issue: issue}}
+			s.Claimed[issue.ID] = Claimed{Issue: issue, LeaseExpiresAt: now.Add(time.Hour)}
 		}},
 		{name: "claimed work keeps its owner", state: "Todo", knownWait: dispatchSkipAlreadyClaimed, setup: func(s *State, issue connector.Issue) {
 			s.Claimed[issue.ID] = Claimed{Issue: issue}
@@ -863,6 +867,16 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			}
 			if ready := source.request.CandidateReady(t.Context(), issue); ready != test.want {
 				t.Errorf("ready = %t, want %t", ready, test.want)
+			}
+			if payload, present := state.deferredCompletions[issue.ID]; present {
+				delete(state.deferredCompletions, issue.ID)
+				if ready := source.request.CandidateReady(t.Context(), issue); ready != test.want {
+					t.Fatalf("wiping completion payload changed readiness to %t", ready)
+				}
+				if waits := source.request.CandidateKnownWait(issue); waits != (test.knownWait != "") {
+					t.Fatal("wiping completion payload changed ownership")
+				}
+				state.deferredCompletions[issue.ID] = payload
 			}
 			observed := state.ProjectDiagnostics(nil, time.Now())
 			if len(observed.Admissions) == 0 || observed.Admissions[0].IssueID != issue.ID || observed.Admissions[0].Predicate == "" || ((observed.Admissions[0].Result == "eligible") != test.want) {

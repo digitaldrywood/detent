@@ -727,8 +727,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					if orch.retryDeferredCompletions(t.Context(), &state, now) {
 						t.Fatal("unreviewed version settled")
 					}
-					if result := orch.dispatchIssueWithOutcome(t.Context(), &state, issue, 2, now, ""); result.dispatched || result.reason != dispatchSkipCompletionDeferred {
-						t.Fatalf("review wait allowed implementation: %+v", result)
+					if reason := knownDispatchWaitReason(issue, &state, nil, orch.cfg.TerminalStates); reason != dispatchSkipRetryPending {
+						t.Fatalf("review wait allowed implementation: %q", reason)
 					}
 				}
 				last := attempts.heartbeats[len(attempts.heartbeats)-1]

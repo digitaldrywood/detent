@@ -650,9 +650,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if state.Draining {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}
 	}
-	if _, deferred := state.deferredCompletions[issue.ID]; deferred {
-		return dispatchIssueOutcome{reason: dispatchSkipCompletionDeferred}
-	}
 	queuedRetry, retryQueued := state.Retry[issue.ID]
 	if retryState != nil {
 		queuedRetry = *retryState

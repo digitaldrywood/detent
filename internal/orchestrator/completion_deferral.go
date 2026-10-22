@@ -405,6 +405,7 @@ func (o *Orchestrator) persistDeferredCompletion(ctx context.Context, state *Sta
 	heartbeat := store.WorkAttemptHeartbeat{
 		AttemptID:              record.Running.WorkAttemptID,
 		HeartbeatAt:            record.DeferredAt,
+		LeaseExpiresAt:         o.workAttemptLeaseExpiresAt(record.DeferredAt),
 		Phase:                  deferredCompletionPhase,
 		StatusMessage:          record.statusMessage(),
 		WaitReason:             record.waitReason(),

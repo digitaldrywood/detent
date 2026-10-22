@@ -171,7 +171,7 @@ func TestDispatchPlannerBoundsGitHubIssueReads(t *testing.T) {
 
 func TestDispatchPlannerFindsReadyTailBeyondKnownWaits(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"native waits", "unknown waits", "due retries", "running", "blocked", "claimed", "deferred completion", "pending retry", "pending CI", "refreshed CI", "completed gate", "operator rejection", "artifact wait", "mixed", "ready merge"} {
+	for _, mode := range []string{"native waits", "unknown waits", "due retries", "running", "blocked", "claimed", "completion lease", "pending retry", "pending CI", "refreshed CI", "completed gate", "operator rejection", "artifact wait", "mixed", "ready merge"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			capacity := 6
@@ -200,7 +200,7 @@ func TestDispatchPlannerFindsReadyTailBeyondKnownWaits(t *testing.T) {
 				if i < 24 {
 					wait := mode
 					if mode == "mixed" {
-						wait = []string{"running", "blocked", "deferred completion", "pending retry"}[i%4]
+						wait = []string{"running", "blocked", "completion lease", "pending retry"}[i%4]
 					}
 					switch wait {
 					case "native waits", "unknown waits", "due retries", "ready merge":
@@ -217,8 +217,9 @@ func TestDispatchPlannerFindsReadyTailBeyondKnownWaits(t *testing.T) {
 						state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: "human_action"}
 					case "claimed":
 						state.Claimed[issue.ID] = Claimed{}
-					case "deferred completion":
+					case "completion lease":
 						state.deferredCompletions[issue.ID] = deferredCompletion{}
+						state.Claimed[issue.ID] = Claimed{Issue: issue, LeaseExpiresAt: now.Add(time.Minute)}
 					case "pending retry":
 						state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 1, DueAt: now.Add(time.Minute)}
 					case "pending CI", "refreshed CI", "completed gate", "operator rejection":
