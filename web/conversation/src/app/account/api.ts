@@ -526,6 +526,8 @@ export function makeAccountApi(options: AccountApiOptions) {
         ...(input.hostServices !== undefined ? { host_services: input.hostServices } : {}),
         ...(input.availability !== undefined ? { availability: input.availability } : {}),
       }),
+    requestRunnerRepositories: (projectId: string, runner: string, key: string) =>
+      send(Schema.Struct({ request_id: Schema.String }), "POST", `${project(projectId)}/onboarding/repositories`, { runner_id: runner, idempotency_key: key }),
     bindRepository: (input: {
       projectId: string;
       repository: string;

@@ -66,6 +66,7 @@ type ClaimState struct {
 }
 
 type RoutingSnapshot struct {
+	RepositoryListRequest       string                       `json:"repository_list_request,omitempty"`
 	HostMetricsAcknowledged     []hostmetrics.Acknowledgment `json:"host_metrics_acknowledged,omitempty"`
 	Changes                     *HeartbeatChanges            `json:"changes,omitempty"`
 	TargetRunnerVersion         string                       `json:"target_runner_version,omitempty"`
@@ -148,10 +149,11 @@ type Exclusion struct {
 }
 
 type Eligibility struct {
-	OtherProjectCount int          `json:"other_project_count,omitempty"`
-	LocalChecks       *LocalChecks `json:"local_checks,omitempty"`
-	Runner            Runner       `json:"runner"`
-	Exclusions        []Exclusion  `json:"exclusions"`
+	RepositoryList    *RepositoryList `json:"repository_list,omitempty"`
+	OtherProjectCount int             `json:"other_project_count,omitempty"`
+	LocalChecks       *LocalChecks    `json:"local_checks,omitempty"`
+	Runner            Runner          `json:"runner"`
+	Exclusions        []Exclusion     `json:"exclusions"`
 }
 
 type Fleet struct {

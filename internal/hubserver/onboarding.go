@@ -18,6 +18,7 @@ import (
 )
 
 func (s *Service) registerOnboardingRoutes(e *echo.Echo) {
+	s.registerRunnerRepositoryRoutes(e)
 	e.GET(nativeBase+"/onboarding/issue-intake", s.getGitHubBatch, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
 	e.POST(nativeBase+"/onboarding/issue-intake", s.commandGitHubBatch, s.requireOnboardingAdmin())
 	e.POST(nativeBase+"/onboarding/issue-intake/result", s.reportGitHubBatch, s.requireNativeScope(apiScopeWorker))
@@ -132,7 +133,16 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 		if err := json.Unmarshal([]byte(checksJSON), &checks); err != nil {
 			return result, err
 		}
-		result.Runners = append(result.Runners, runnerauth.Eligibility{OtherProjectCount: otherProjects, Runner: runner, Exclusions: exclusions, LocalChecks: checks[scope.project]})
+		var repositories *runnerauth.RepositoryList
+		if scope.credential.Runner.RunnerID == "" {
+			if _, accessErr := s.readRunnerRouting(ctx, scope, id); accessErr == nil {
+				repositories, err = readRunnerRepositories(ctx, s.database.reader, id)
+				if err != nil {
+					return result, err
+				}
+			}
+		}
+		result.Runners = append(result.Runners, runnerauth.Eligibility{RepositoryList: repositories, OtherProjectCount: otherProjects, Runner: runner, Exclusions: exclusions, LocalChecks: checks[scope.project]})
 	}
 	rows, err = s.database.reader.QueryContext(ctx, "SELECT binding_json FROM artifact_services WHERE organization_id=? AND project_id=? ORDER BY id", scope.organization, scope.project)
 	if err != nil {

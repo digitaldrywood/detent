@@ -519,6 +519,25 @@ those projects. Each project's checkout and `hooks.runner_setup` remain separate
 
 ## Scoped runner onboarding
 
+The Repository setup step requests a fresh runner-owned repository list with
+`POST .../projects/{project}/onboarding/repositories` (`runner_id` and
+`idempotency_key`). The caller needs the same authority as runner routing.
+The existing heartbeat routing snapshot carries `repository_list_request`;
+the runner returns `request_id`, `repositories` (owner, name, private and nullable
+`pushed_at`), and an optional fixed `reason` to
+`POST .../projects/{project}/onboarding/repositories/report` with its heartbeat
+credential and the request ID as its idempotency key. Reports replace only that
+runner's list, capped at 2,000 repositories, in one transaction. A superseded
+request cannot replace a newer list.
+
+`GET .../projects/{project}/onboarding` and MCP `get_onboarding` include each
+visible runner's `repository_list` only for callers allowed to route that runner.
+It includes `pending`, Hub-stamped `listed_at`, and repositories ordered by most
+recent push. The runner uses its own GitHub CLI sign-in, including organization
+memberships; Cloud makes no GitHub request and receives no credentials. Missing
+CLI sign-in yields an empty list with reason `no GitHub CLI sign-in`. Typed
+owner/name binding through `onboarding/repository` remains available throughout.
+
 | Credential | Owner and lifetime | Revocation |
 | --- | --- | --- |
 | Enrollment token | Hub issues a grant for one organization, either scope `organization` with no project list or scope `projects` with explicit projects, operations and, optionally, host-generated runner/machine IDs; valid for 1–900 seconds and one redemption | Administrator deletes the unconsumed enrollment; expiry/revocation does not end an enrolled session |
