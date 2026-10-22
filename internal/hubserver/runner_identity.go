@@ -41,7 +41,7 @@ func runnerOperationAllowed(c echo.Context, operations []string) bool {
 		// The diff is written by the runner holding the attempt's lease;
 		// postAttemptDiff re-checks that lease and its fencing token.
 		operation = runnerauth.Claim
-	case path == nativeBase+"/onboarding/issue-intake/result":
+	case path == nativeBase+"/onboarding/issue-intake/result", path == nativeBase+"/onboarding/repositories/report":
 		operation = runnerauth.Heartbeat
 	case path == nativeBase+"/work-items/:item/source-intake":
 		operation = runnerauth.Claim

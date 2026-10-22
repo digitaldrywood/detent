@@ -37,6 +37,8 @@ func TestRunnerOperationAllowed(t *testing.T) {
 		{name: "conversation events wrong method", method: http.MethodDelete, path: nativeBase + "/conversations/:conversation/turn-events", operations: all},
 		{name: "conversation command remains forbidden", method: http.MethodPost, path: nativeBase + "/conversations/:conversation/commands", operations: all},
 		{name: "heartbeat", method: http.MethodPost, path: nativeBase + "/machines/:machine/heartbeat", operations: []string{runnerauth.Heartbeat}, want: true},
+		{name: "repository report", method: http.MethodPost, path: nativeBase + "/onboarding/repositories/report", operations: []string{runnerauth.Heartbeat}, want: true},
+		{name: "repository report without heartbeat", method: http.MethodPost, path: nativeBase + "/onboarding/repositories/report", operations: []string{runnerauth.Read}},
 		{name: "outside the native base", method: http.MethodPost, path: "/api/v2/organizations/:organization/members", operations: all},
 	} {
 		t.Run(test.name, func(t *testing.T) {

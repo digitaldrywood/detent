@@ -124,41 +124,49 @@ it("preserves unsaved setup choices and fields through refresh, then saves and s
   expect(screen.queryByRole("textbox", { name: "Publisher token id" })).toBeNull();
 });
 
-it.each([
-  ["reported checkout", "mockorg/private", "Verified runner checkout:"],
-  ["new checkout", "example-org/example-repository", "Waiting for Example runner to clone or verify checkout:"],
-])("shows association progress for a %s", async (_name, repository, status) => {
+it.each(["listed", "typed", "offline"] as const)("binds a %s repository and rejects invalid input", async (state) => {
   const mount = await mountSetup();
-  let checkoutReported = false;
   const fetch = globalThis.fetch;
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (...args) => {
-    const response = await fetch(...args);
-    if (String(args[0]).endsWith("/onboarding") && response.ok) {
-      const onboarding = await response.json();
-      return Response.json({ ...onboarding, runners: onboarding.runners.map((row: { runner: { display_name: string } }) => ({ ...row, runner: { ...row.runner, display_name: "Example runner" } })) });
-    }
-    if (checkoutReported && String(args[0]).endsWith("/integration") && response.ok) {
-      return Response.json({ ...await response.json(), checkout_verified: true });
+  let bound: Record<string, unknown> | undefined;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    if (String(input).endsWith("/onboarding/repository")) bound = JSON.parse(String(init?.body));
+    const response = await fetch(input, init);
+    if (state === "offline" && String(input).endsWith("/onboarding") && response.ok) {
+      const data = await response.json();
+      return Response.json({ ...data, runners: data.runners.map((entry: { runner: Record<string, unknown> }) => ({ ...entry, repository_list: { request_id: "loading", repositories: [], pending: true }, runner: { ...entry.runner, connection_health: "offline" } })) });
     }
     return response;
   });
   mount();
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /Repository action required/ }));
-  const field = await screen.findByLabelText("Which repository should Detent work on?");
-  expect(screen.getByText(/Private repositories work too, without a GitHub integration/)).toBeTruthy();
-  fireEvent.change(field, { target: { value: "https://github.com/example-org/example-repository" } });
-  await user.click(screen.getByRole("button", { name: "Associate" }));
-  expect(await screen.findByText("Enter the repository as owner/name, then retry.")).toBeTruthy();
-  fireEvent.change(field, { target: { value: repository } });
-  await user.click(screen.getByRole("button", { name: "Associate" }));
-  await waitFor(() => expect(screen.getByText(/runner checkout:|clone or verify checkout:/).textContent).toContain(`${status} ${repository}`));
-  await waitFor(() => expect(screen.getByRole("button", { name: "Associate" }).hasAttribute("disabled")).toBe(true));
-  if (repository === "example-org/example-repository") {
-    checkoutReported = true;
-    await waitFor(() => expect(screen.getByText(/runner checkout:|clone or verify checkout:/).textContent).toContain(`Verified runner checkout: ${repository}`), { timeout: 6_000 });
+  const field = await screen.findByRole("combobox", { name: "Search or type owner/name" });
+  await user.click(field);
+  fireEvent.change(field, { target: { value: "invalid value" } });
+  expect(screen.getByRole("button", { name: "Use invalid value" }).hasAttribute("disabled")).toBe(true);
+  expect(bound).toBeUndefined();
+  let repository: string;
+  if (state === "listed") {
+    fireEvent.change(field, { target: { value: "example-" } });
+    expect(screen.queryByRole("option", { name: /project-notes/ })).toBeTruthy();
+    fireEvent.change(field, { target: { value: "example-project" } });
+    expect(screen.queryByRole("option", { name: /project-notes/ })).toBeNull();
+    await user.keyboard("{ArrowDown}{Enter}");
+    repository = "example-org/example-project";
+  } else {
+    repository = "example-org/unlisted";
+    fireEvent.change(field, { target: { value: repository } });
+    await user.click(screen.getByRole("option", { name: `Use ${repository} as typed` }));
+    if (state === "offline") expect(screen.getByText(/You can still type owner\/name/)).toBeTruthy();
   }
-}, 10_000);
+  await user.click(screen.getByRole("button", { name: `Use ${repository}` }));
+  await waitFor(() => expect(bound?.repository).toBe(repository));
+  expect(bound?.source).toBe("runner_checkout");
+  expect(bound?.expected_revision).toBeDefined();
+  expect(bound?.idempotency_key).toBeTruthy();
+  const integration = await (await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/integration`)).json();
+  expect(integration.checkout_repository).toBe(repository);
+});
 
 it.each(["no repository", "configuration needed", "policy pending", "policy reported", "approved", "conflict"] as const)("reveals repository setup actions in order: %s", async (state) => {
   const mount = await mountSetup();
@@ -196,7 +204,7 @@ it.each(["no repository", "configuration needed", "policy pending", "policy repo
   mount();
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /^.*Repository (ready|action required)$/ }));
-  expect(await screen.findByLabelText("Which repository should Detent work on?")).toBeTruthy();
+  expect(await screen.findByLabelText("Search or type owner/name")).toBeTruthy();
   await user.click(screen.getByRole("button", { name: /Checkout/ }));
   expect(approveRequests).toEqual([]);
   expect(screen.queryByLabelText("Resolved policy descriptor")).toBeNull();
@@ -283,7 +291,7 @@ it.each([["projects", false], ["projects", true], ["organization", false]] as co
   expect(screen.getAllByText(/works on 1 other project/).length).toBeGreaterThan(0);
   if (offline) await user.click(screen.getByRole("radio", { name: /Offline runner/ }));
   await user.click(screen.getByRole("button", { name: offline ? "Use Offline runner" : "Use Build runner" }));
-  expect(await screen.findByRole("heading", { level: 1, name: "Repository" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { level: 1, name: "Which repository is beta?" })).toBeTruthy();
   expect(routed).toMatchObject({ expected_revision: 4, project_ids: scope === "organization" ? [] : ["proj_alpha", "proj_beta"], project_ranks: { proj_alpha: 7 }, scope });
 });
 
@@ -317,7 +325,7 @@ it.each([false, true])("enrolls inline when there are no runners and advances wh
   }
   connected = true;
   await act(async () => poll!());
-  expect(await screen.findByRole("heading", { level: 1, name: "Repository" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { level: 1, name: "Which repository is beta?" })).toBeTruthy();
   await userEvent.setup().click(screen.getByRole("button", { name: /Runner action required/ }));
   expect((screen.getByRole("radio", { name: /New build runner/ }) as HTMLInputElement).checked).toBe(true);
 });
@@ -368,7 +376,7 @@ it("shows the Ready summary and opens each step from its link", async () => {
     return response;
   });
   const user = userEvent.setup();
-  for (const [link, heading] of [["Change Runner", "Which computer should work on beta?"], ["Change Repository", "Repository"], ["View Checkout", "Build runner is preparing example-org/example-project"], ["Change Run files", "Where should run files go?"]]) {
+  for (const [link, heading] of [["Change Runner", "Which computer should work on beta?"], ["Change Repository", "Which repository is beta?"], ["View Checkout", "Build runner is preparing example-org/example-project"], ["Change Run files", "Where should run files go?"]]) {
     const view = mount();
     expect(await screen.findByRole("heading", { level: 1, name: "beta is ready for work" })).toBeTruthy();
     expect(screen.getAllByRole("definition").some((element) => element.textContent === "Build runner")).toBe(true);

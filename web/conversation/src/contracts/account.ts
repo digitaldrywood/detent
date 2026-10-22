@@ -493,6 +493,13 @@ export const RunnerLocalChecks = Schema.Struct({
 });
 
 export const RunnerEligibility = Schema.Struct({
+  repository_list: Schema.optional(Schema.NullOr(Schema.Struct({
+    request_id: Schema.String,
+    repositories: Schema.Array(Schema.Struct({ owner: Schema.String, name: Schema.String, private: Schema.Boolean, pushed_at: Schema.NullOr(Schema.String) })),
+    reason: Schema.optional(Schema.String),
+    listed_at: Schema.optional(Schema.String),
+    pending: Schema.Boolean,
+  }))),
   other_project_count: Schema.optional(Schema.Number),
   local_checks: Schema.optional(Schema.NullOr(RunnerLocalChecks)),
   runner: Schema.Struct({
