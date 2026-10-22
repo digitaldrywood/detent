@@ -812,6 +812,23 @@ func TestSharedEntryBoundaries(t *testing.T) {
 		t.Fatalf("release health identity=%d %s", health.Code, health.Body)
 	}
 
+	for _, tt := range []struct {
+		name, method, target, location string
+		status                         int
+	}{
+		{"login alias", http.MethodGet, "/login", "/", http.StatusSeeOther},
+		{"login return", http.MethodGet, "/login?return=%2Forganizations%2Forg_alpha%2Fwork", "/?return=%2Forganizations%2Forg_alpha%2Fwork", http.StatusSeeOther},
+		{"login external return", http.MethodGet, "/login?return=https%3A%2F%2Fattacker.example.test", "/?return=https%3A%2F%2Fattacker.example.test", http.StatusSeeOther},
+		{"home head", http.MethodHead, "/", "", http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			response := newBrowser(t, f.service.Handler()).do(tt.method, tt.target, nil, nil)
+			if response.StatusCode != tt.status || response.Header.Get("Location") != tt.location {
+				t.Fatalf("response = %d, location %q; want %d, %q", response.StatusCode, response.Header.Get("Location"), tt.status, tt.location)
+			}
+		})
+	}
+
 	alice := newBrowser(t, f.service.Handler())
 	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 	stranger := newBrowser(t, f.service.Handler())
@@ -828,6 +845,7 @@ func TestSharedEntryBoundaries(t *testing.T) {
 		{"dot segment", alice, "/organizations/org_alpha/../org_beta/organization", nil, http.StatusNotFound},
 		{"spoofed assertion without session", stranger, "/organizations/org_alpha/organization", map[string]string{cloudassert.Header: "forged.value", "X-Forwarded-Host": "tenant"}, http.StatusSeeOther},
 		{"bearer is not browser authority", alice, "/organizations/org_alpha/organization", map[string]string{"Authorization": "Bearer detent_invalid"}, http.StatusSeeOther},
+		{"absolute open redirect", stranger, "/auth/oidc/start?return=https%3A%2F%2Fattacker.example.test", nil, http.StatusBadRequest},
 		{"open redirect", alice, "/auth/oidc/start?return=%2F%2Fattacker.example.test", nil, http.StatusBadRequest},
 		{"cross-organization return", alice, "/auth/oidc/start?organization=org_alpha&return=%2Forganizations%2Forg_beta%2Forganization", nil, http.StatusBadRequest},
 		{"legacy unscoped route", alice, "/organization", nil, http.StatusNotFound},
