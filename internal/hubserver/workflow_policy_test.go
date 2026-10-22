@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
@@ -41,6 +42,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		landing                                                                               string
 		unbound, unmerged, otherBranch, lateLanding                                           bool
 		largeHistory                                                                          bool
+		changedSource, concurrentReports                                                      bool
 	}{
 		{name: "native landing applies instructions without reachability report", initial: true, canonical: true, changedInputs: true, landing: "native", active: true, status: http.StatusNoContent, applied: true},
 		{name: "bound merged PR applies instructions without reachability report", initial: true, canonical: true, changedInputs: true, landing: "pr", active: true, status: http.StatusNoContent, applied: true},
@@ -69,15 +71,20 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		{name: "nil configuration invented digest is refused", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "digest", status: http.StatusUnprocessableEntity},
 		{name: "canonical version carries feature approval", initial: true, canonical: true, status: http.StatusNoContent, applied: true},
 		{name: "canonical version preserves active lease", initial: true, canonical: true, active: true, status: http.StatusNoContent, applied: true},
-		{name: "canonical version without source stays pending", initial: true, canonical: true, local: true, status: http.StatusNoContent},
-		{name: "canonical version wrong repository stays pending", initial: true, canonical: true, wrongRepository: true, status: http.StatusNoContent},
-		{name: "copied provenance cannot change gate", initial: true, canonical: true, local: true, active: true, forge: "gate", status: http.StatusNoContent},
-		{name: "copied provenance cannot change selector", initial: true, canonical: true, local: true, active: true, forge: "selector", status: http.StatusNoContent},
-		{name: "copied provenance cannot change behavior", initial: true, canonical: true, local: true, active: true, forge: "behavior", status: http.StatusNoContent},
+		{name: "canonical version without provenance carries approval", initial: true, canonical: true, local: true, active: true, status: http.StatusNoContent, applied: true},
+		{name: "canonical version with native landing preserves approver", initial: true, canonical: true, landing: "native", status: http.StatusNoContent, applied: true},
+		{name: "canonical version with merged PR preserves approver", initial: true, canonical: true, landing: "pr", status: http.StatusNoContent, applied: true},
+		{name: "canonical version wrong repository carries approval", initial: true, canonical: true, wrongRepository: true, status: http.StatusNoContent, applied: true},
+		{name: "changed authored workflow without provenance stays pending", initial: true, canonical: true, local: true, changedInputs: true, status: http.StatusNoContent},
+		{name: "changed workflow source without provenance stays pending", initial: true, canonical: true, local: true, changedSource: true, status: http.StatusNoContent},
+		{name: "concurrent different authored reports stay conflicting", initial: true, canonical: true, local: true, changedInputs: true, concurrentReports: true, status: http.StatusNoContent},
+		{name: "copied provenance cannot change gate", initial: true, canonical: true, local: true, active: true, forge: "gate", status: http.StatusNoContent, applied: true},
+		{name: "copied provenance cannot change selector", initial: true, canonical: true, local: true, active: true, forge: "selector", status: http.StatusNoContent, applied: true},
+		{name: "copied provenance cannot change behavior", initial: true, canonical: true, local: true, active: true, forge: "behavior", status: http.StatusNoContent, applied: true},
 		{name: "copied provenance cannot change local grant", initial: true, canonical: true, local: true, active: true, forge: "grant", status: http.StatusUnprocessableEntity},
-		{name: "nil configuration cannot change gate", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "gate", status: http.StatusNoContent},
-		{name: "nil configuration cannot change selector", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "selector", status: http.StatusNoContent},
-		{name: "nil configuration cannot change profile", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "profile", status: http.StatusNoContent},
+		{name: "nil configuration cannot change gate", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "gate", status: http.StatusNoContent, applied: true},
+		{name: "nil configuration cannot change selector", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "selector", status: http.StatusNoContent, applied: true},
+		{name: "nil configuration cannot change profile", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "profile", status: http.StatusNoContent, applied: true},
 		{name: "canonical version with changed inputs pending", initial: true, canonical: true, changedInputs: true, status: http.StatusNoContent},
 		{name: "default branch changed authored files auto apply", initial: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "default branch initial definition", reachable: true, status: http.StatusNoContent, applied: true},
@@ -234,6 +241,9 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			}
 			if test.nilConfiguration {
 				candidate.Configuration = nil
+			}
+			if test.changedSource {
+				candidate.Workflow.Source = "other.yaml"
 			}
 			candidate = candidate.WithID()
 			source := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("b", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("c", 40), DefaultBranchReachable: test.reachable}
@@ -394,7 +404,32 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				}
 			}
 			report := policy.Observation{Descriptor: candidate, Source: source}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), test.status)
+			if test.concurrentReports {
+				other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+				other.enroll(t)
+				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte("Other runner instructions.\n"), Config: []byte(candidate.Authored.Files["detent.yaml"]), HasConfig: true, ConfigPath: candidate.Workflow.Source})
+				if err != nil {
+					t.Fatal(err)
+				}
+				workflow.Definition.Revision = strings.Repeat("d", 40)
+				descriptor, err := workflowconfig.ResolvePolicy(workflow)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := newHubAPIRequest(t, http.MethodPost, f.base+"/policy/observed", other.redemption.Credential, policy.Observation{Descriptor: descriptor})
+				done := make(chan *httptest.ResponseRecorder, 1)
+				go func() {
+					response := httptest.NewRecorder()
+					f.service.Handler().ServeHTTP(response, request)
+					done <- response
+				}()
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report)
+				otherResponse := <-done
+				requireNativeStatus(t, response, test.status)
+				requireNativeStatus(t, otherResponse, http.StatusNoContent)
+			} else {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), test.status)
+			}
 			if test.lateLanding {
 				seedLanding()
 				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
@@ -513,6 +548,9 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			decodeHubResponse(t, response, &setup)
 			if test.applied {
 				historyCount++
+				if test.initial && candidate.SameAuthoredInputs(original) && setup.Policy != nil && setup.Policy.ApprovedBy != initialApproval.ApprovedBy {
+					t.Fatalf("carryover changed approver: got %s, want %s", setup.Policy.ApprovedBy, initialApproval.ApprovedBy)
+				}
 				if test.reachable && !candidate.SameAuthoredInputs(original) && setup.Policy != nil && setup.Policy.ApprovedBy != "repository-default-branch" && test.landing == "" {
 					t.Fatalf("default branch apply attribution = %s", setup.Policy.ApprovedBy)
 				}
@@ -520,6 +558,15 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					t.Fatalf("default-branch apply left pending approval: %+v", setup)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), http.StatusNoContent)
+			} else if test.concurrentReports {
+				if setup.Policy == nil || setup.Policy.Policy.ID != original.ID || len(setup.ObservedPolicies) != 2 {
+					t.Fatalf("conflicting reports changed approval or lost candidate: %+v", setup)
+				}
+				for _, observed := range setup.ObservedPolicies {
+					if !observed.Conflict || observed.PreviouslyApproved {
+						t.Fatalf("different authored report not pending with conflict: %+v", observed)
+					}
+				}
 			} else if len(setup.ObservedPolicies) != 1 || setup.Policy == nil || setup.Policy.Policy.ID != original.ID || !reflect.DeepEqual(setup.ObservedPolicies[0].Source, source) {
 				t.Fatalf("unapplied revision changed approval or lost report: %+v", setup)
 			}
@@ -537,9 +584,12 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, Policy: candidate}), http.StatusUnprocessableEntity)
 			}
 			if test.applied && test.initial && test.canonical && !test.fromLegacy {
-				previousSource := *source
-				previousSource.Commit = original.Workflow.Revision
-				previousReport := policy.Observation{Descriptor: original, Source: &previousSource}
+				previousReport := policy.Observation{Descriptor: original}
+				if source != nil {
+					previousSource := *source
+					previousSource.Commit = original.Workflow.Revision
+					previousReport.Source = &previousSource
+				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, previousReport), http.StatusNoContent)
 				response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
@@ -608,7 +658,9 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				entry := approval.History[0]
 				if test.landing != "" {
 					wantActor := landingActor
-					if test.lateLanding {
+					if test.initial && candidate.SameAuthoredInputs(original) {
+						wantActor = initialApproval.ApprovedBy
+					} else if test.lateLanding {
 						wantActor = "repository-default-branch"
 					}
 					if entry.AppliedBy != wantActor || approval.ApprovedBy != wantActor || test.landing == "native" && entry.ChangeID != "change_landed" || test.landing == "pr" && entry.PullRequestURL != "https://github.com/example-org/example-project/pull/1" {
@@ -619,7 +671,11 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				if test.initial {
 					previous = original.SourceDigest
 				}
-				if entry.Repository != "example-org/example-project" || entry.Commit != candidate.Workflow.Revision || entry.PreviousDefinitionDigest != previous || entry.DefinitionDigest != candidate.SourceDigest || entry.RunnerID != runner.binding.RunnerID || entry.AppliedBy != approval.ApprovedBy || strings.HasPrefix(entry.AppliedBy, "runner_") && test.landing == "" || entry.AppliedAt == "" {
+				repository, commit := "example-org/example-project", candidate.Workflow.Revision
+				if test.initial && candidate.SameAuthoredInputs(original) && (test.local || test.wrongRepository) && !test.humanApproval {
+					repository, commit = "", ""
+				}
+				if entry.Repository != repository || entry.Commit != commit || entry.PreviousDefinitionDigest != previous || entry.DefinitionDigest != candidate.SourceDigest || entry.RunnerID != runner.binding.RunnerID || entry.AppliedBy != approval.ApprovedBy || strings.HasPrefix(entry.AppliedBy, "runner_") && test.landing == "" || entry.AppliedAt == "" {
 					t.Fatalf("incomplete apply history: %+v", entry)
 				}
 				if !reflect.DeepEqual(entry.Definition, &candidate) || test.initial && !reflect.DeepEqual(entry.PreviousDefinition, &original) || !test.initial && entry.PreviousDefinition != nil {
