@@ -191,10 +191,10 @@ const WORKFLOW_STATES = [
  * needs, which does not change with whether it has it, so only `state` moves.
  */
 const ONBOARDING_STEP_TEXT: ReadonlyArray<{ name: string; detail: string }> = [
-  { name: "Execution runner", detail: "Connect a computer to do this project's work. Click Enroll a runner, then paste the command it gives you into a terminal on that machine." },
-  { name: "Local validation", detail: "Check that your computer has the project files, can run Detent, and is signed in to your AI coding tool. Fix any failed checks on that computer, restart the runner, then click Refresh runner checks." },
-  { name: "Repository configuration", detail: "Review the repository configuration reported from detent.yaml and WORKFLOW.md on the runner host." },
-  { name: "Artifact history", detail: "Choose where to keep files from agent runs, such as logs and screenshots. Keep them on your runner, or connect storage that you manage." },
+  { name: "Runner", detail: "Use a runner you already have. It can work on this project alongside its other projects." },
+  { name: "Repository", detail: "Choose the repository your runner should work on using its own Git sign-in." },
+  { name: "Checkout", detail: "Verify the checkout, repository configuration, Detent checks and provider sign-in on your runner." },
+  { name: "Run files", detail: "Choose where to keep logs, screenshots and other run files." },
 ];
 
 /**
@@ -2293,10 +2293,11 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     const progress = account.progress.get(projectId);
     const services = account.artifactServices.get(projectId) ?? [];
     const artifacts = progress?.artifacts ?? "";
+    const integration = account.integrations.get(projectId);
     const met = [
-      account.runners.some((entry) => entry.runner.state === "active" && entry.runner.health === "online"),
-      account.runners.some((entry) => entry.runner.state === "active" && entry.runner.health === "online" && entry.local_checks?.checkout === "passed" && ["passed", "warning"].includes(entry.local_checks.doctor) && entry.local_checks.provider === "passed"),
-      policy !== null,
+      account.runners.some((entry) => entry.runner.state === "active" && !entry.exclusions.some((exclusion) => exclusion.code === "project_access_denied")),
+      Boolean(integration?.checkout_repository || integration?.repository),
+      policy !== null && account.runners.some((entry) => entry.runner.state === "active" && entry.runner.health === "online" && entry.local_checks?.checkout === "passed" && ["passed", "warning"].includes(entry.local_checks.doctor) && entry.local_checks.provider === "passed"),
       artifacts === "local" || (artifacts === "customer" && services.length > 0),
     ];
     return {

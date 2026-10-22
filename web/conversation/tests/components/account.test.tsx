@@ -641,10 +641,10 @@ describe("the plan's allowances", () => {
 
 describe("the wizard stepper", () => {
   const steps: OnboardingStep[] = [
-    { name: "Repository configuration", state: "ready", detail: "" },
-    { name: "Local validation", state: "action_required", detail: "" },
-    { name: "Execution runner", state: "ready", detail: "" },
-    { name: "Artifact history", state: "action_required", detail: "" },
+    { name: "Repository", state: "ready", detail: "" },
+    { name: "Checkout", state: "action_required", detail: "" },
+    { name: "Runner", state: "ready", detail: "" },
+    { name: "Run files", state: "action_required", detail: "" },
   ];
 
   it("opens on the first step that still needs something", () => {
@@ -655,28 +655,27 @@ describe("the wizard stepper", () => {
     expect(firstUnreadyStep(steps.map((step) => ({ ...step, state: "ready" as const })))).toBe(3);
   });
 
-  it("puts repository binding before the Hub steps and preserves their readiness", () => {
+  it("keeps the Hub steps in runner-first order and preserves their readiness", () => {
     const ordered = orderedSteps({
       progress: { revision: "1", repository: "", doctor: false, provider: false, artifacts: "" },
       runners: [],
       artifact_services: [],
-      steps: [{ name: "Execution runner", state: "ready", detail: "d" }],
+      steps: [{ name: "Runner", state: "ready", detail: "d" }],
       ready: false,
     });
     expect(ordered.map((step) => step.name)).toEqual([
+      "Runner",
       "Repository",
-      "Execution runner",
-      "Local validation",
-      "Repository configuration",
-      "Artifact history",
+      "Checkout",
+      "Run files",
     ]);
-    expect(ordered[0]?.state).toBe("action_required");
-    expect(ordered[1]?.state).toBe("ready");
+    expect(ordered[0]?.state).toBe("ready");
+    expect(ordered[1]?.state).toBe("action_required");
     expect(ordered[3]?.state).toBe("action_required");
   });
 
   it("says ready or action required in words, not only in colour", () => {
-    render(<Stepper steps={steps} activeIndex={1} onSelect={vi.fn()} summaries={{ "Execution runner": "Example runner", "Repository configuration": "Configuration approved", "Local validation": "Check your runner" }} />);
+    render(<Stepper steps={steps} activeIndex={1} onSelect={vi.fn()} summaries={{ "Runner": "Example runner", "Repository": "Configuration approved", "Checkout": "Check your runner" }} />);
     for (const step of steps) expect(screen.getByText(step.name, { exact: true })).toBeTruthy();
     expect(screen.getByText("Example runner")).toBeTruthy();
     expect(screen.getByText("Configuration approved")).toBeTruthy();
@@ -692,7 +691,7 @@ describe("the wizard stepper", () => {
       .getAllByRole("button")
       .filter((button) => button.getAttribute("aria-current") === "step");
     expect(current).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: /Artifact history/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Run files/ }));
     expect(onSelect).toHaveBeenCalledWith(3);
   });
 });

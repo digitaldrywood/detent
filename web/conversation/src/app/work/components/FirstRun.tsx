@@ -297,7 +297,7 @@ export function FirstRunPanel({
           : "loading",
     runnerState:
       onboarding !== undefined
-        ? onboarding.steps.find((step) => step.name === "Execution runner")?.state ?? "unavailable"
+        ? onboarding.steps.find((step) => step.name === "Runner")?.state ?? "unavailable"
         : setup.error !== null && !setup.loading
           ? "unavailable"
           : "loading",
