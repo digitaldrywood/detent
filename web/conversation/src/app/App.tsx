@@ -14,6 +14,7 @@ import { readLastProject, useClient, writeLastProject } from "./client.ts";
 import { HealthFindingsProvider } from "./diagnostics/healthFindings.tsx";
 import { useSidebarFindings } from "./adapters/sidebarFindings.ts";
 import { useSidebarHumanActions } from "./adapters/sidebarHumanActions.ts";
+import { ProjectSetupProvider } from "./account/projectSetup.tsx";
 import { SidebarDataProvider } from "./adapters/sidebarData.tsx";
 import { sidebarProjectScopeKey } from "./adapters/shell.ts";
 import { setSidebarProjectScopeKey, useUiStateStore } from "../uiStateStore.ts";
@@ -157,7 +158,7 @@ function ShellBody(): React.ReactElement {
   const list = useListState(client);
   const search = useAtomSet(client.searchConversations, { mode: "promise" });
   const refreshList = useAtomSet(client.refreshList, { mode: "promise" });
-  const params = useParams({ strict: false }) as { conversationId?: string; projectId?: string; workItemId?: string; viewId?: string };
+  const params = useParams({ strict: false }) as { conversationId?: string; projectId?: string; project?: string; workItemId?: string; viewId?: string };
   const savedView = useSavedViews()?.views.find((view) => view.id === params.viewId);
   // The Work destination and the Browse group need to know where they are.
   // `useRouterState` is the only source of the current path that stays correct
@@ -180,7 +181,7 @@ function ShellBody(): React.ReactElement {
     () => readLastProject() ?? projects[0]?.id ?? "",
   );
   const savedProjectId = savedView === undefined ? undefined : savedView.project_id ?? "";
-  const projectId = params.projectId ?? context.resolvedProjectId ?? savedProjectId ?? (activePath === "/work" ? "" : selectedProjectId);
+  const projectId = params.project ?? params.projectId ?? context.resolvedProjectId ?? savedProjectId ?? (activePath === "/work" ? "" : selectedProjectId);
   React.useEffect(() => {
     setProjectIdState(projectId);
     writeLastProject(projectId);
@@ -268,7 +269,9 @@ function ShellBody(): React.ReactElement {
     void import("./lib/routePrefetch.ts").then(({ prefetchRoute }) => prefetchRoute(to, { router, client, activeProjectId }));
   }, [activeProjectId, client, router]);
 
+  const [projectSwitcherOpen, setProjectSwitcherOpen] = React.useState(false);
   const sidebarProps: SidebarShellData = {
+    projectSwitcher: { open: projectSwitcherOpen, setOpen: setProjectSwitcherOpen },
     organizationName: client.bootstrap.organization.name,
     projects,
     activeProjectId: projectId === "" ? null : projectId,
@@ -328,6 +331,7 @@ function ShellBody(): React.ReactElement {
   return (
     <ShellContext.Provider value={shell}>
 
+      <ProjectSetupProvider projectId={projectId}>
       <SidebarDataProvider value={sidebarProps}>
         <SidebarSearchProvider work={activePath === "/work" || activePath.startsWith("/work/")}>
 
@@ -346,6 +350,7 @@ function ShellBody(): React.ReactElement {
         </NewProjectProvider>
         </SidebarSearchProvider>
       </SidebarDataProvider>
+      </ProjectSetupProvider>
     </ShellContext.Provider>
   );
 }
