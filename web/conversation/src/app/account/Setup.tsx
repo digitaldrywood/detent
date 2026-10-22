@@ -3,6 +3,7 @@ import { CheckIcon, CircleIcon, TriangleAlertIcon } from "lucide-react";
 import { Spinner } from "../../components/ui/spinner.tsx";
 import { formatRelativeTime } from "../fleet/format.ts";
 import { GitHubIssueIntake } from "./IssueIntake.tsx";
+import { RepositoryPicker, validRepositoryName } from "./RepositoryPicker.tsx";
 
 import { Avatar } from "../../components/ui/avatar.tsx";
 import { useSidebar } from "../../components/ui/sidebar.tsx";
@@ -447,10 +448,22 @@ function SetupContent({ projectId, onNavigate }: {
     },
   );
 
+  const refreshRepositories = useMutation(async (runnerId: string) => {
+    const body = { runner_id: runnerId };
+    await withSetupKey(`${base}/onboarding/repositories`, body, (key) => api.requestRunnerRepositories(projectId, runnerId, key));
+    await onboarding.refresh();
+  });
+  const requestRepositories = refreshRepositories.call;
+  const repositoryStep = steps[activeIndex]?.name === "Repository";
+  const listingRunnerId = runner?.runner.runner_id;
+  React.useEffect(() => {
+    if (repositoryStep && listingRunnerId && !integration.value?.checkout_repository) void requestRepositories(listingRunnerId);
+  }, [repositoryStep, listingRunnerId, projectId, requestRepositories, integration.value?.checkout_repository]);
+
   const bindRepository = useMutation(async (name: string) => {
     const current = onboarding.value;
     if (current === undefined) return null;
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(name)) {
+    if (!validRepositoryName(name)) {
       throw new AccountError({ status: 422, code: "invalid_request", message: "Enter the repository as owner/name, then retry." });
     }
     const currentIntegration = await api.integration(projectId);
@@ -556,7 +569,6 @@ function SetupContent({ projectId, onNavigate }: {
   const back = () => setActiveIndex((index) => Math.max(index - 1, 0));
   const checkoutRepository = integration.value?.checkout_repository;
   const associatedRepository = checkoutRepository || integration.value?.repository;
-  const checkoutVerified = integration.value?.checkout_verified === true;
   const preparingRunner = runner;
   const configurationMissing = preparingRunner?.local_checks?.configuration === "missing";
   const runnerName = preparingRunner?.runner.display_name ?? "Your runner";
@@ -567,39 +579,10 @@ function SetupContent({ projectId, onNavigate }: {
   const bodies: Record<string, React.ReactNode> = {
     "Repository": (
       <>
-        <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5 sm:flex-row sm:items-end">
-          <div className="flex flex-1 flex-col gap-1.5">
-            <div className="flex items-center gap-1">
-              <Label htmlFor="setup-repository">Which repository should Detent work on?</Label>
-              <ContextHelp label="Associate the runner checkout">
-                This connects your project to a repository your runner can download using its Git sign-in. Enter owner/name and click Associate; private repositories work too, without a GitHub integration.
-              </ContextHelp>
-            </div>
-            <Input
-              id="setup-repository"
-              placeholder="owner/name"
-              value={checkoutRepository || repositoryName}
-              onChange={(event) => setRepositoryName(event.currentTarget.value)}
-              disabled={Boolean(integration.value?.checkout_repository)}
-            />
-            <p className="text-[13px] text-muted-foreground">
-              Enter your repository's owner/name; your runner downloads it using its Git sign-in. Private repositories work too, without a GitHub integration.
-            </p>
-            {integration.value?.checkout_repository ? (
-              <p role="status" className={`text-[13px] ${checkoutVerified ? "text-success-foreground" : "text-muted-foreground"}`}>
-                {checkoutVerified ? "Verified runner checkout: " : `Waiting for ${preparingRunner?.runner.display_name || "an enrolled runner"} to clone or verify checkout: `}
-                <code className="font-mono">{integration.value.checkout_repository}</code>
-              </p>
-            ) : null}
-          </div>
-          <Button
-            variant="outline"
-            disabled={bindRepository.pending || repositoryName.trim().length === 0 || Boolean(integration.value?.checkout_repository)}
-            onClick={() => void bindRepository.call(repositoryName.trim())}
-          >
-            {bindRepository.pending ? "Associating…" : "Associate"}
-          </Button>
-        </div>
+        <RepositoryPicker key={preparingRunner?.runner.runner_id} runner={preparingRunner} value={checkoutRepository || repositoryName}
+          onChange={setRepositoryName} disabled={Boolean(checkoutRepository)} refreshing={refreshRepositories.pending}
+          refresh={() => { if (preparingRunner) void refreshRepositories.call(preparingRunner.runner.runner_id); }} />
+        <ControlError message={refreshRepositories.error?.message ?? null} />
         <ControlError message={bindRepository.error?.message ?? null} />
         <ControlError message={integration.error?.message ?? null} />
         {showGitHubApp ? (
@@ -784,7 +767,7 @@ function SetupContent({ projectId, onNavigate }: {
   };
   const titles: Record<string, string> = {
     Runner: enrolling ? `Connect a computer to ${projectName ?? "this project"}` : `Which computer should work on ${projectName ?? "this project"}?`,
-    Repository: "Repository",
+    Repository: `Which repository is ${projectName ?? "this project"}?`,
     Checkout: configurationMissing ? `${associatedRepository ?? "This repository"} has no Detent settings yet` : `${runnerName} is preparing ${associatedRepository ?? "the repository"}`,
     "Run files": "Where should run files go?",
   };
@@ -796,6 +779,7 @@ function SetupContent({ projectId, onNavigate }: {
       title={ready ? `${projectName ?? "This project"} is ready for work` : titles[step?.name ?? ""] ?? "Set up this project"}
       lede={ready ? `New issues in this project go to ${runner?.runner.display_name ?? "your runner"}. You can change any of this in project settings.`
         : step?.name === "Runner" && enrolling ? "Name it, then run the command in a terminal on that computer."
+        : step?.name === "Repository" ? `These are the repositories ${runnerName} can reach with its own Git sign-in. Private ones are included; no GitHub integration is needed.`
         : step?.name === "Checkout" ? configurationMissing ? `${runnerName} cloned it but found no project configuration. Pick one and the checks continue on their own.` : "The runner clones the repository and checks itself. This page updates as each check finishes; sign-in details and command output stay on that computer."
         : step?.name === "Run files" ? `Logs, screenshots and other files from each run of ${projectName ?? "this project"}.` : step?.detail ?? ""}
       footer={ready ? <Button onClick={() => onNavigate?.("/work")}>Open Work</Button> : <>
@@ -807,7 +791,7 @@ function SetupContent({ projectId, onNavigate }: {
           }}>{route.pending ? "Routing…" : `Use ${runner?.runner.display_name ?? "runner"}`}</Button> : null}
         </> : <>
           <Button variant="outline" onClick={back}>Back</Button>
-          {step?.name === "Checkout" ? <>
+          {step?.name === "Repository" && checkoutRepository ? <Button onClick={next}>Continue</Button> : step?.name === "Repository" ? <Button disabled={bindRepository.pending || !validRepositoryName(repositoryName.trim()) || Boolean(checkoutRepository)} onClick={() => void bindRepository.call(repositoryName.trim()).then((bound) => { if (bound) next(); })}>{bindRepository.pending ? "Connecting…" : `Use ${repositoryName.trim() || "owner/name"}`}</Button> : step?.name === "Checkout" ? <>
             {configurationMissing ? <Button disabled={saveProgress.pending} onClick={() => void saveProgress.call({ repository: repository || "generate", doctor: progress?.doctor ?? false, provider: progress?.provider ?? false, artifacts })}>{saveProgress.pending ? "Saving…" : repository === "existing" ? "Wait for files" : "Create starter files"}</Button> : <>
               <Button variant="outline" className="order-last w-full sm:order-none sm:w-auto" onClick={next}>Continue in background</Button>
               <Button disabled={needsAction} onClick={next}>Continue</Button>

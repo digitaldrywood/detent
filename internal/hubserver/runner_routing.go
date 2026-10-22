@@ -260,7 +260,14 @@ func readRunnerRoutingSnapshot(ctx context.Context, db nativeQueryer, organizati
 	if err == nil {
 		runner.ProjectRanks, err = readRunnerProjectRanks(ctx, db, runner.RunnerID, runner.OrganizationID)
 	}
-	return runnerauth.RoutingSnapshot{RunnerID: id, Revision: runner.Revision, Routing: runner.Routing}, err
+	snapshot := runnerauth.RoutingSnapshot{RunnerID: id, Revision: runner.Revision, Routing: runner.Routing}
+	if err == nil {
+		err = db.QueryRowContext(ctx, `SELECT request_id FROM runner_repository_lists WHERE runner_id=? AND pending=1`, id).Scan(&snapshot.RepositoryListRequest)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = nil
+		}
+	}
+	return snapshot, err
 }
 
 func (s *Service) getRunnerRouting(c echo.Context) error {

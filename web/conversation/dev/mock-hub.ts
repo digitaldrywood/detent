@@ -140,6 +140,7 @@ interface RunnerRow {
 }
 
 interface RunnerEligibilityRow {
+  repository_list?: { request_id: string; repositories: Array<{ owner: string; name: string; private: boolean; pushed_at: string | null }>; listed_at: string; pending: boolean };
   local_checks?: { checkout: string; doctor: string; provider: string; provider_kinds?: string[]; observed_at: string };
   runner: RunnerRow;
   /** Empty is what makes the wizard's third step ready. */
@@ -383,6 +384,11 @@ const SEED_PROGRESS: Record<string, ProgressRow> = {
  */
 const SEED_RUNNERS: RunnerEligibilityRow[] = [
   {
+    repository_list: { request_id: "repos_mock", pending: false, listed_at: "2026-10-22T18:00:00Z", repositories: [
+      { owner: "example-org", name: "example-project", private: true, pushed_at: "2026-10-22T16:00:00Z" },
+      { owner: "example-org", name: "example-infra", private: true, pushed_at: "2026-10-20T12:00:00Z" },
+      { owner: "example-user", name: "project-notes", private: false, pushed_at: "2026-10-01T12:00:00Z" },
+    ] },
     runner: {
       runner_id: "rnr_mock",
       machine_id: "mac_mock01",
@@ -3129,6 +3135,15 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         // its next revision from what it wrote rather than re-reading.
         return { status: 200, payload: clone(next) };
       });
+      return true;
+    }
+
+    if (tail === "onboarding/repositories" && method === "POST") {
+      const body = await readBody(request);
+      const runner = account.runners.find((entry) => entry.runner.runner_id === body.runner_id);
+      if (!runner) { notFound(response, "Runner not found."); return true; }
+      runner.repository_list = { request_id: "repos_mock", pending: false, listed_at: now(), repositories: runner.repository_list?.repositories ?? [] };
+      json(response, 200, { request_id: "repos_mock" });
       return true;
     }
 
