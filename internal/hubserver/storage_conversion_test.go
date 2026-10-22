@@ -51,9 +51,15 @@ func TestStorageConversionHistoricalConversations(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if len(before) != 1 {
+			t.Fatalf("messages before conversion = %d, want 1", len(before))
+		}
 		events, err := f.store.listEvents(t.Context(), f.store.reader, record.ID, 0, 100)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if len(events) != 1 {
+			t.Fatalf("events before conversion = %d, want 1", len(events))
 		}
 		if err := f.service.convertLegacyStorage(t.Context(), f.now); err != nil {
 			t.Fatal(err)
@@ -242,6 +248,9 @@ func TestStorageConversionHistoricalJSONScope(t *testing.T) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(converted, &envelope); err != nil {
 		t.Fatal(err)
+	}
+	if envelope == nil {
+		t.Fatal("conversion returned a null envelope")
 	}
 	envelope["runtime"] = json.RawMessage(`{"landing":{"waiting":false,"landed":true}}`)
 	updated, err := json.Marshal(envelope)
