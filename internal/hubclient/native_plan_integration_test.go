@@ -822,6 +822,16 @@ func assertInstanceRecoveryRetry(t *testing.T, h *nativeChangeHub, orch *orchest
 	if candidates := h.candidates(t); len(candidates) != 1 || candidates[0].ID != issueID {
 		t.Errorf("instance recovery refusal not reclaimable in its lane: candidates=%d", len(candidates))
 	}
+	testenv.WaitUntil(t, t.Context(), func() error {
+		state, err := orch.State(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, retried := state.Retry[issueID]; !retried {
+			return fmt.Errorf("recovery refusal retry is not published yet")
+		}
+		return nil
+	})
 	state, err := orch.State(t.Context())
 	retry, retried := state.Retry[issueID]
 	if err != nil || state.FailureBreaker.Count != 0 || len(state.Retry) != 1 || !retried || !strings.Contains(retry.Error, "native checkpoint requires recovery") || len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 {
