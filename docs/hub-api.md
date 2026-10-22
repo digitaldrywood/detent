@@ -179,10 +179,16 @@ The existing organization controller reserves members under the shared
 organization ceiling and reported provider limits. It retains existing members
 and assigns available slots to the oldest eligible unsatisfied project request, breaking
 ties by project ID, before satisfying new organization demand. Each member has
-one allocation owner. Managed projects accept work only on their own members;
-desired zero holds new claims, including workspace claims. Organization and
-manual runners remain available to projects that have not opted in. Manual
-adoption is not supported. Every new member is a fresh runner identity with one
+one allocation owner. A managed allocation restricts Sprite execution to that
+project's own members; it does not restrict authorized local execution. Existing
+`blended` and `local_first` placement policies continue to permit local runners,
+including when the allocation is empty, provisioning failed, or the organization
+pool is disabled. `sprites_only` continues to exclude local runners. Desired zero
+holds new managed Sprite claims, including workspace claims, while placement
+continues to govern local claims. This supersedes the blanket desired-zero claim
+hold from #1219. Organization and manually enrolled Sprites remain available only
+to projects that have not opted into managed allocation. Manual adoption is not
+supported. Every new member is a fresh runner identity with one
 work slot. A managed member receives claims only after its runner's existing
 setup observation for the project passes, which includes the provider sign-in
 and repository checkout done once in the member's console. A Pi backend,

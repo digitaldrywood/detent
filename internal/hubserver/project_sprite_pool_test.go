@@ -1190,25 +1190,64 @@ func TestProjectSpriteAllocationLimits(t *testing.T) {
 
 func TestProjectSpriteWorkspaceClaims(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		desired int
-		owned   bool
-		status  int
+		name, mode, state             string
+		desired                       int
+		owned, sprite, other, unready bool
+		status                        int
 	}{
-		{"zero holds workspace jobs", 0, true, http.StatusConflict},
-		{"manual runners cannot claim workspace jobs", 1, false, http.StatusConflict},
-		{"owned members can claim workspace jobs", 1, true, http.StatusOK},
+		{name: "zero holds managed Sprite workspace jobs", desired: 0, owned: true, sprite: true, status: http.StatusConflict},
+		{name: "blended local workspace jobs", desired: 2, status: http.StatusOK},
+		{name: "blended zero permits local workspace jobs", status: http.StatusOK},
+		{name: "local-first local workspace jobs", mode: "local_first", desired: 2, status: http.StatusOK},
+		{name: "local-first zero permits local workspace jobs", mode: "local_first", status: http.StatusOK},
+		{name: "Sprites-only excludes local workspace jobs", mode: "sprites_only", desired: 2, status: http.StatusConflict},
+		{name: "Sprites-only zero excludes local workspace jobs", mode: "sprites_only", status: http.StatusConflict},
+		{name: "manual Sprites cannot claim workspace jobs", desired: 1, sprite: true, status: http.StatusConflict},
+		{name: "owned members can claim workspace jobs", desired: 1, owned: true, sprite: true, status: http.StatusOK},
+		{name: "owned member without marker retains readiness checks", desired: 1, owned: true, unready: true, status: http.StatusConflict},
+		{name: "owned member without marker retains desired count checks", owned: true, status: http.StatusConflict},
+		{name: "unready owned member", desired: 1, owned: true, sprite: true, unready: true, status: http.StatusConflict},
+		{name: "retiring owned member", desired: 1, owned: true, sprite: true, state: "deleting", status: http.StatusConflict},
+		{name: "other project member excludes managed project", desired: 1, owned: true, sprite: true, other: true, status: http.StatusConflict},
+		{name: "other project member excludes unmanaged project", desired: -1, owned: true, sprite: true, other: true, status: http.StatusConflict},
+		{name: "other project member without marker", desired: 1, owned: true, other: true, status: http.StatusConflict},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newWorkspaceRunnerFixture(t)
-			setPlacementFixture(t, f.nativeFixture, policy.Placement{Mode: "blended"}, 2)
-			setSpriteAllocationFixture(t, f.nativeFixture, test.desired, 0)
-			if test.owned {
-				now := formatHubTime(f.service.config.now())
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,allocation_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,'test',?,'enrolled',?,?)`, f.project.OrganizationID, f.project.ID, f.runner.redemption.Hostname, f.runner.enrollment.ID, now, now); err != nil {
+			mode := test.mode
+			if mode == "" {
+				mode = "blended"
+			}
+			placement := policy.Placement{Mode: mode}
+			if mode == "local_first" {
+				placement.TodoThreshold, placement.OverflowSlots = 3, 2
+			}
+			setPlacementFixture(t, f.nativeFixture, placement, 2)
+			if test.desired >= 0 {
+				setSpriteAllocationFixture(t, f.nativeFixture, test.desired, 0)
+			}
+			if test.sprite {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_name',hostname) WHERE id=?`, f.runner.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
-				setSpriteMemberChecks(t, f.nativeFixture, spriteMemberReady)
+			}
+			if test.owned {
+				owner := f.nativeFixture
+				if test.other {
+					owner = newNativeFixture(t, f.service, f.project.OrganizationID, "other")
+					setSpriteAllocationFixture(t, owner, 1, 0)
+				}
+				state := test.state
+				if state == "" {
+					state = "enrolled"
+				}
+				now := formatHubTime(f.service.config.now())
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,allocation_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,'test',?,?,?,?)`, f.project.OrganizationID, owner.project.ID, f.runner.redemption.Hostname, f.runner.enrollment.ID, state, now, now); err != nil {
+					t.Fatal(err)
+				}
+				if !test.unready {
+					setSpriteMemberChecks(t, owner, spriteMemberReady)
+				}
 			}
 			session := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
 			item := f.item(t, session.ID)
