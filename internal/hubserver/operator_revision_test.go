@@ -22,6 +22,7 @@ func TestOperatorRevisionSchemaContract(t *testing.T) {
 		operatortool.RestoreItem:                      &operatortool.WorkArguments{},
 		operatortool.TransferItem:                     &operatortool.WorkArguments{},
 		operatortool.VerifyFix:                        &operatortool.WorkArguments{},
+		operatortool.PublishReleasePick:               &operatortool.ChangeArguments{},
 		operatortool.AssociateReleasePick:             &operatortool.ChangeArguments{},
 		operatortool.ReviewChange:                     &operatortool.ChangeArguments{},
 		operatortool.OrganizationProjectRankUpdate:    &operatoradmin.Input{},

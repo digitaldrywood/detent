@@ -14,6 +14,7 @@ import (
 )
 
 const (
+	PublishReleasePick        = "publish_release_pick"
 	AssociateReleasePick      = "associate_release_pick"
 	ListChanges               = "list_changes"
 	GetChange                 = "get_change"
@@ -218,6 +219,9 @@ func ChangeCatalog() []Definition {
 		for _, k := range strings.Fields(optional) {
 			fields[k] = props[k]
 		}
+		if name == PublishReleasePick {
+			fields["release_pick"] = json.RawMessage(strings.ReplaceAll(strings.ReplaceAll(string(fields["release_pick"]), `"pr_number",`, ""), `"pr_number":{"type":"integer","minimum":1},`, ""))
+		}
 		schema, _ := json.Marshal(struct { //nolint:errcheck // Properties are fixed, valid JSON schema fragments.
 			Type       string                     `json:"type"`
 			Required   []string                   `json:"required"`
@@ -235,6 +239,7 @@ func ChangeCatalog() []Definition {
 	add(ArtifactReferences, "Read artifact receipts and availability for an owned work item.", "work_item_id", "limit offset", true, false)
 	add(GetArtifactReference, "Read the exact immutable artifact receipt, including historical revisions.", "work_item_id artifact_id revision", "", true, false)
 	add(ArtifactAccess, "Authorize an exact artifact revision for download/export through existing manifest/object endpoints. Token expires within one minute; send it as Bearer, never in a URL. Replays reauthorize and mint fresh ephemeral access.", "work_item_id artifact_id revision sha256 request_id", "", false, false)
+	add(PublishReleasePick, "Publish or recover one verified single -x release-pick PR through the project repository transport. Requires an unfinished unheld dependent delivery and an exact landed develop source, prepared head, release base and frozen source. Returns PR identity only; association, independent review and native landing remain mandatory. Does not approve, merge, admit work or deploy.", "work_item_id release_pick expected_revision request_id", "", false, true)
 	add(AssociateReleasePick, "Associate an existing single -x release-pick PR with an unfinished native dependent issue. Verifies the recorded develop source merge, repository, exact PR head/base and frozen source identity; preserves holds and active ownership. Opens the normal Change for runner source capture, independent review, gate and PR landing. Does not merge or deploy.", "work_item_id release_pick expected_revision request_id", "", false, true)
 	add(CreateChange, "Create a Change Request using the existing application command, optionally linking other work items owned by this project.", "work_item_id title request_id", "body linked_issues", false, false)
 	add(PublishChangeVersion, "Publish a genuine operator-authored immutable version without a Run/Attempt. Use an empty expected_version_id for first publication. Optional source_capture metadata and base64 source_bundle use the existing HTTP source owner; complete arguments must fit 64 KiB. Reuses approved policy, artifact validation and promotion; returns the stable published version and live current Change/lane. Unverified artifacts remain unverified; external PR references do not bypass repository protection.", "work_item_id change_id expected_version_id base_sha head_sha merge_base_sha repository code policy_id request_id", "artifacts external source_capture source_bundle", false, false)
@@ -300,7 +305,7 @@ func DecodeChangeArguments(name string, raw json.RawMessage) (ChangeArguments, e
 			}
 		}
 	}
-	if name == AssociateReleasePick && (args.ReleasePick == nil || args.ExpectedRevision < 1) {
+	if (name == AssociateReleasePick || name == PublishReleasePick) && (args.ReleasePick == nil || args.ExpectedRevision < 1) {
 		return args, ErrInvalidArguments
 	}
 	if name == PublishChangeVersion {

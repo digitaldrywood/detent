@@ -2151,6 +2151,7 @@ also supply their current `lease_id`, `fencing_token`, `run_id`, and `attempt_id
 | Method and suffix | Authority and result |
 | --- | --- |
 | `GET /work-items/{item}/changes` | Project-scoped linked Change Requests |
+| `POST /work-items/{item}/release-pick/publication` | Project operator; publish or recover a verified prepared release-pick PR without association or admission |
 | `POST /work-items/{item}/release-pick` | Project operator; associate a verified existing release PR with a dependent native delivery issue |
 | `POST /work-items/{item}/changes` | Worker/operator; `title`, `body`, optional `linked_issues` |
 | `GET /work-items/{item}/changes/{change}` | Consistent detail with versions, decisions, checks, discussion and current summary |
@@ -2397,6 +2398,39 @@ detail. Detail provides version selection, stale/missing-evidence messages,
 discussion provenance, artifact availability, and issue/run navigation. Native
 run recovery uses published change references from ordered issue history rather
 than trusting a stale worker checkpoint to identify the current version.
+
+### Publish a prepared release-pick PR
+
+`POST /work-items/{delivery}/release-pick/publication`, native client
+`PublishReleasePick`, and operator MCP `publish_release_pick` publish through the
+project's configured GitHub transport. They use the same project write and
+operator/admin authority as association; runner and worker credentials are
+refused. No new token or organization setting is required.
+
+The API accepts `idempotency_key`, string `expected_revision`, and the exact
+source, repository, head, base and frozen identities in the association table
+below, excluding `pr_number`. MCP uses `project_id`, `work_item_id`, `request_id`,
+integer `expected_revision`, and these identities inside `release_pick`.
+The source must be a terminal required dependency with a recorded current
+`develop` landing and a passing security audit for its immutable source version.
+The delivery must be unfinished, unarchived, unheld, without an active lease or
+existing Change, and require normal independent review. Explicit release delivery
+retains its scoped PR landing authority without enabling global GitHub PR landing.
+Current grants, revision and holds are rechecked before publication.
+
+The transport verifies current head/base refs, a single-parent pick directly on
+the exact base, the unique `-x` source trailer, matching source patches, develop
+ancestry and the frozen merge-base. It creates an open, non-draft PR with native
+provenance, or recovers one identical PR for the same head and delivery after a
+lost response. Differing, closed or ambiguous PRs are refused. A failed response
+may have created a PR: retry the same identities and request key to reconcile it.
+
+The receipt contains `work_item_id`, `url`, `pr_number` and the verified source,
+head, base and frozen identities. Publication does not change the delivery's
+revision or lane, create a Change, approve, merge, admit work, push release refs,
+or tag a release. Call `associate_release_pick` with the returned identities and
+current delivery revision; normal native source capture, audit and landing
+remain separate mandatory steps.
 
 ### Existing release-pick delivery
 

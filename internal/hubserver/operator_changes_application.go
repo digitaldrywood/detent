@@ -198,6 +198,18 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 	path := result.URL
 	method := "POST"
 	switch name {
+	case operatortool.PublishReleasePick:
+		if args.ReleasePick == nil {
+			return result, operatortool.ErrInvalidArguments
+		}
+		request := tracker.PublishReleasePick{Mutation: command, ReleasePickInput: *args.ReleasePick, ExpectedRevision: tracker.Revision(args.ExpectedRevision)}
+		publication, err := s.prepareReleasePublication(ctx, scope, args.ItemID, request)
+		if err != nil {
+			return result, err
+		}
+		input = request
+		path += "/release-pick/publication"
+		op = func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) { return publication, nil }
 	case operatortool.AssociateReleasePick:
 		if args.ReleasePick == nil {
 			return result, operatortool.ErrInvalidArguments

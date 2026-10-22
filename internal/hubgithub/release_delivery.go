@@ -15,6 +15,7 @@ import (
 
 type releasePickPull struct {
 	Number int            `json:"number"`
+	Body   string         `json:"body"`
 	State  string         `json:"state"`
 	Draft  bool           `json:"draft"`
 	Merged bool           `json:"merged"`
@@ -85,6 +86,20 @@ func (r *Reconciler) VerifyReleasePick(ctx context.Context, input tracker.Releas
 	if err := checkPull(); err != nil {
 		return err
 	}
+	var commits []releasePickCommit
+	if err := r.client.REST(ctx, http.MethodGet, pullPath+"/commits?per_page=2", nil, &commits); err != nil {
+		return fmt.Errorf("read release commits: %w", err)
+	}
+	if len(commits) != 1 || commits[0].SHA != input.HeadSHA || len(commits[0].Parents) != 1 || commits[0].Parents[0].SHA != input.BaseSHA {
+		return fmt.Errorf("%w: release PR must contain exactly one pick from the recorded base", hubserver.ErrReleasePickMismatch)
+	}
+	if err := r.verifyReleaseSource(ctx, path, input, commits[0]); err != nil {
+		return err
+	}
+	return checkPull()
+}
+
+func (r *Reconciler) verifyReleaseSource(ctx context.Context, path string, input tracker.ReleasePickInput, pick releasePickCommit) error {
 	var sourceCompare struct {
 		Status string `json:"status"`
 	}
@@ -105,16 +120,9 @@ func (r *Reconciler) VerifyReleasePick(ctx context.Context, input tracker.Releas
 	if releaseCompare.MergeBaseCommit.SHA != input.FrozenSHA {
 		return fmt.Errorf("%w: frozen release identity mismatch", hubserver.ErrReleasePickMismatch)
 	}
-	var commits []releasePickCommit
-	if err := r.client.REST(ctx, http.MethodGet, pullPath+"/commits?per_page=2", nil, &commits); err != nil {
-		return fmt.Errorf("read release commits: %w", err)
-	}
-	if len(commits) != 1 || commits[0].SHA != input.HeadSHA || len(commits[0].Parents) != 1 || commits[0].Parents[0].SHA != input.BaseSHA {
-		return fmt.Errorf("%w: release PR must contain exactly one pick from the recorded base", hubserver.ErrReleasePickMismatch)
-	}
 	trailer := "(cherry picked from commit " + input.SourceMergeSHA + ")"
 	linked := false
-	for _, line := range strings.Split(commits[0].Commit.Message, "\n") {
+	for _, line := range strings.Split(pick.Commit.Message, "\n") {
 		if strings.HasPrefix(line, "(cherry picked from commit ") {
 			if linked || line != trailer {
 				return fmt.Errorf("%w: release source trailer mismatch", hubserver.ErrReleasePickMismatch)
@@ -125,7 +133,7 @@ func (r *Reconciler) VerifyReleasePick(ctx context.Context, input tracker.Releas
 	if !linked {
 		return fmt.Errorf("%w: release commit lacks source provenance", hubserver.ErrReleasePickMismatch)
 	}
-	var source, pick releasePickCommit
+	var source releasePickCommit
 	for _, commit := range []struct {
 		sha    string
 		output *releasePickCommit
@@ -141,7 +149,7 @@ func (r *Reconciler) VerifyReleasePick(ctx context.Context, input tracker.Releas
 	if source.SHA != input.SourceMergeSHA || pick.SHA != input.HeadSHA || !equivalentReleasePatch(source.Files, pick.Files) {
 		return fmt.Errorf("%w: release patch does not match the merged source", hubserver.ErrReleasePickMismatch)
 	}
-	return checkPull()
+	return nil
 }
 
 func equivalentReleasePatch(source, pick []releasePickFile) bool {

@@ -803,6 +803,21 @@ revisions expose later edits. Reads use stored data and never refresh GitHub.
 This tool requires the same read scope and current project grants as `work_item`.
 Existing tools retain their limits and response shapes.
 
+## Publish a prepared release-pick PR
+
+The project-scoped `publish_release_pick` operator tool uses the
+[native publication contract](hub-api.md#publish-a-prepared-release-pick-pr).
+Supply the dependent `work_item_id`, current `expected_revision`, stable
+`request_id`, and `release_pick` source/repository/head/base/frozen identities
+without a PR number. The prepared branch must already contain exactly one `-x`
+pick of the audited, landed source fix on the frozen release base.
+
+The tool uses the existing GitHub transport and returns the exact PR identity.
+An identical retry recovers one matching open PR after a lost create response.
+It refuses stale refs, holds, conflicting PRs and unauthorized scope. It grants
+no approval or deployment authority and does not admit the issue. Associate the
+returned PR separately, then use normal native audit and landing.
+
 ## Associate an existing release-pick PR
 
 The project-scoped `associate_release_pick` MCP tool uses the supported

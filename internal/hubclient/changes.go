@@ -286,3 +286,13 @@ func (c *NativeClient) AssociateReleasePick(ctx context.Context, item tracker.Na
 	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/release-pick", request, &result)
 	return result, err
 }
+
+func (c *NativeClient) PublishReleasePick(ctx context.Context, item tracker.NativeWorkItemID, request tracker.PublishReleasePick) (tracker.ReleasePickPublication, error) {
+	var result tracker.ReleasePickPublication
+	path, err := nativeItemPath(item)
+	if err != nil {
+		return result, err
+	}
+	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/release-pick/publication", request, &result)
+	return result, err
+}
