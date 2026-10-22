@@ -1,0 +1,1834 @@
+package runner
+
+import (
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/lessons"
+	"github.com/digitaldrywood/detent/internal/skills"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
+	"github.com/digitaldrywood/detent/internal/workspace"
+)
+
+func TestNativeIssuePromptOwnership(t *testing.T) {
+	t.Parallel()
+	for _, profile := range []string{"native", "github_compatible", ""} {
+		t.Run(profile, func(t *testing.T) {
+			issue := connector.Issue{ID: "wi_example", Identifier: "prj_example#12", Metadata: map[string]string{"hub_profile": profile, "hub_project_id": "prj_example"}}
+			prompt, err := BuildPrompt(config.Workflow{}, issue, PromptOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if profile == "native" {
+				for _, want := range []string{"work_item", "work_comments", "get_change", "project_id prj_example", "Detent-Work-Item: wi_example", "Native approval does not satisfy a required GitHub review", "never copy its identity or credentials"} {
+					if !strings.Contains(prompt, want) {
+						t.Errorf("missing %q", want)
+					}
+				}
+				if strings.Contains(prompt, "Fixes #12") {
+					t.Fatal("native number generated a GitHub closing reference")
+				}
+				if strings.Contains(prompt, "using the configured Hub runner identity") {
+					t.Fatal("native prompt requires inaccessible host identity")
+				}
+			} else if strings.Contains(prompt, "Native Detent issue authority") {
+				t.Fatal("compatibility workflow changed")
+			}
+		})
+	}
+}
+
+func TestBuildPromptNativeCompletionContract(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name     string
+		kind     string
+		state    string
+		want     bool
+		recovery bool
+	}{
+		{name: "native code", kind: config.TrackerHubNative, state: "In Progress", want: true},
+		{name: "native rework", kind: config.TrackerHubNative, state: "Rework", want: true},
+		{name: "native recovery", kind: config.TrackerHubNative, state: "Rework", want: true, recovery: true},
+		{name: "github recovery", kind: config.TrackerGitHub, state: "Rework", recovery: true},
+		{name: "github", kind: config.TrackerGitHub, state: "In Progress"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workflow := config.Workflow{
+				Prompt: "Keep the `## Codex Workpad` comment current and open a pull request. Report in_progress until a native version is published.",
+				Config: config.Config{Tracker: config.Tracker{Kind: tt.kind}},
+			}
+			issue := connector.Issue{ID: "wi_example", Identifier: "prj_example#7", State: tt.state}
+			opts := PromptOptions{}
+			if tt.recovery {
+				opts.RecoveryState = &workspace.RecoveryState{DiffStat: workspace.DiffStat{Files: 1, Added: 2}, TrackedPaths: []string{"internal/example.go"}}
+			}
+			prompt, err := BuildPrompt(workflow, issue, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			index := strings.Index(prompt, "## Native completion contract")
+			if got := index >= 0; got != tt.want {
+				t.Fatalf("native completion contract present = %t, want %t", got, tt.want)
+			}
+			if tt.recovery {
+				if strings.Contains(prompt, "commit and publish work that belongs to the issue") == tt.want || strings.Contains(prompt, "native completion contract governs recovery") != tt.want {
+					t.Fatalf("recovery instructions conflict with selected completion authority: %s", prompt)
+				}
+				if tt.want && (strings.Contains(prompt, "Do not repeat `status: complete` while the worktree remains dirty") || !strings.Contains(prompt, "Staged issue-owned work is the expected handoff")) {
+					t.Fatalf("native recovery rejects staged source handoff: %s", prompt)
+				}
+			}
+			if !tt.want {
+				return
+			}
+			contract := prompt[index:]
+			for _, want := range []string{"explicit issue acceptance instructions remain authoritative", "Stage only your finished issue changes", "runner owns commit signing", "Do not commit", "Never push to or open or update pull requests on the forge", "never run `gh` or call the GitHub API", "records the Change Request from the exact finalized head", "final message", "existing detent-status YAML block", "unchanged inspection", "Missing or invalid acceptance on unchanged work"} {
+				if !strings.Contains(contract, want) {
+					t.Errorf("contract missing %q", want)
+				}
+			}
+			for _, want := range []string{"assigned source deliverable is staged and ready for host finalization", "all worker-owned pre-publication requirements are met", "not that the whole issue is Done", "final report precedes the runner-owned commit and immutable Change publication", "do not report in_progress or blocked solely", "diagnose a historical failure whose retained output is truncated or unavailable", "An explicitly assigned existing post-integration owner does not require a new follow-up", "For an unchanged inspection or verified already-landed result, use complete only when the issue acceptance is met"} {
+				if !strings.Contains(contract, want) {
+					t.Errorf("native source handoff contract missing %q", want)
+				}
+			}
+			if strings.Contains(contract[len("## Native completion contract"):], "\n## ") {
+				t.Error("native completion contract must be the final prompt section")
+			}
+		})
+	}
+}
+
+func TestNativeAcceptanceIsNeverDelegated(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name              string
+		enabled, planOnly bool
+	}{
+		{name: "permitted source handoff", enabled: true},
+		{name: "original acceptance retained"},
+		{name: "planning cannot delegate", enabled: true, planOnly: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workflow := config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Agent: config.Agent{Followups: config.Followups{Enabled: test.enabled}}}, Prompt: "Keep this issue open until its two-Sprite live acceptance passes."}
+			prompt, err := BuildPrompt(workflow, connector.Issue{ID: "wi_pool", State: "In Progress"}, PromptOptions{PlanOnly: test.planOnly})
+			if err != nil {
+				t.Fatal(err)
+			}
+			permitted := test.enabled && !test.planOnly
+			if strings.Contains(prompt, "## Out-of-scope discoveries") != permitted {
+				t.Error("out-of-scope discoveries presence does not match configured permission")
+			}
+			if permitted && !strings.Contains(prompt, "Never file validation, gate, barrier, timeout, flaky-test or host-load failures") {
+				t.Error("follow-ups permit filing validation failures")
+			}
+			for _, text := range []string{"post-integration handoff", "delegation exists only after the tool succeeds", "create or reuse its Backlog owner"} {
+				if strings.Contains(prompt, text) {
+					t.Errorf("prompt still permits delegating acceptance: %q", text)
+				}
+			}
+			for _, text := range []string{"Keep this issue open until its two-Sprite live acceptance passes.", "Report unfinished acceptance as in_progress or blocked", "source readiness alone does not permit complete", "unchanged inspection", "Missing or invalid acceptance on unchanged work"} {
+				if !strings.Contains(prompt, text) {
+					t.Errorf("required acceptance contract missing %q", text)
+				}
+			}
+		})
+	}
+}
+
+func TestNativeOrphanHandoffPreservesPlanOnly(t *testing.T) {
+	t.Parallel()
+	for _, planOnly := range []bool{false, true} {
+		t.Run(strconv.FormatBool(planOnly), func(t *testing.T) {
+			backend := &fakeCodexClient{}
+			run, err := NewRunner(Dependencies{
+				Workflow:     config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Agent: config.Agent{Followups: config.Followups{Enabled: true}}}, Prompt: "Implement the issue"},
+				Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "wi_example", Branch: "detent/wi_example"}},
+				AgentBackend: backend,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mode, role := RunModeImplement, RoleCode
+			if planOnly {
+				mode, role = RunModePlan, RolePlan
+			}
+			_, err = run.Run(t.Context(), RunRequest{
+				Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", State: "In Progress", ModelOverride: "gpt-5.6-codex", Metadata: map[string]string{"hub_profile": "native", "hub_project_id": "prj_example"}},
+				Mode:  mode, WorkAttemptID: 12, Generation: 2, RetryMode: RetryModeResume,
+				ResumeState: store.AgentResumeState{DetentSessionID: 11, ProviderThreadID: "original-thread", RequestedModel: "gpt-5.6-codex", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: role, Orphaned: true},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			prompt := backend.request.Prompt
+			if !strings.Contains(prompt, "## Native completion contract") {
+				t.Fatal("native orphan lost current completion ownership")
+			}
+			if strings.Contains(prompt, "## Out-of-scope discoveries") != !planOnly {
+				t.Error("resumed plan-only permission differs for out-of-scope discoveries")
+			}
+		})
+	}
+}
+
+func TestMergePromptHandsOffPushedHeadBeforeCI(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		state string
+		want  bool
+	}{
+		{state: "Merging", want: true},
+		{state: "Todo"},
+		{state: "Rework"},
+	} {
+		t.Run(tt.state, func(t *testing.T) {
+			workflow := config.Workflow{
+				Prompt: "Watch CI after pushing the head.",
+				Config: config.Config{Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest}},
+			}
+			issue := connector.Issue{Identifier: "digitaldrywood/detent#3045", State: tt.state}
+			prompt, err := BuildPrompt(workflow, issue, PromptOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Contains(prompt, "return immediately after pushing a new pull request head")
+			if got != tt.want {
+				t.Fatalf("merge CI handoff present = %t, want %t", got, tt.want)
+			}
+			if tt.want && strings.Index(prompt, "Watch CI after pushing the head.") >= strings.Index(prompt, "## Merge CI handoff") {
+				t.Fatal("CI handoff must follow the project workflow instruction")
+			}
+		})
+	}
+}
+
+func TestSourcePromptHandsOffReadyHeadBeforeCI(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		state string
+		want  bool
+	}{
+		{state: "Todo", want: true},
+		{state: "Rework", want: true},
+		{state: "In Progress", want: true},
+		{state: "Merging"},
+		{state: "Human Review"},
+	} {
+		t.Run(tt.state, func(t *testing.T) {
+			workflow := config.Workflow{
+				Prompt: "Watch CI after pushing the head.",
+				Config: config.Config{Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest}},
+			}
+			issue := connector.Issue{Identifier: "digitaldrywood/detent#3076", State: tt.state}
+			prompt, err := BuildPrompt(workflow, issue, PromptOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			index := strings.Index(prompt, "## Source CI handoff")
+			if (index >= 0) != tt.want {
+				t.Fatalf("source CI handoff present = %t, want %t", index >= 0, tt.want)
+			}
+			if !tt.want {
+				return
+			}
+			if strings.Index(prompt, "Watch CI after pushing the head.") >= index {
+				t.Fatal("source CI handoff must follow the project workflow instruction")
+			}
+			for _, required := range []string{"required local gate", "full-diff review", "Workpad handoff", "current-head CI is the only remaining work", "without watching or waiting for CI", "failing check requires normal Rework", "required runtime evidence is unfinished"} {
+				if !strings.Contains(prompt[index:], required) {
+					t.Errorf("source CI handoff missing %q", required)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	lessonsPath := filepath.Join(workspace, ".detent", "lessons.md")
+	if err := lessons.Append(lessonsPath, lessons.Entry{
+		IssueNumber: "21",
+		Title:       "Previous failure",
+		FailureKind: "workspace HEAD did not advance",
+		Symptom:     "Codex produced no diff",
+		Hypothesis:  "The command failed before writing files.",
+		Hint:        "Check generator aliases before editing.",
+	}, lessons.AppendOptions{Date: time.Date(2026, 5, 30, 0, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("append lesson: %v", err)
+	}
+
+	attempt := 2
+	autoBranch := true
+	prompt, err := BuildPrompt(config.Workflow{
+		Config: config.Config{
+			Tracker: config.Tracker{
+				Kind:        config.TrackerGitHub,
+				Endpoint:    "memory://local",
+				ProjectSlug: "memory-project",
+			},
+			Workspace: config.Workspace{AutoBranch: false},
+			Agent: config.Agent{
+				Lessons: config.Lessons{
+					Enabled: true,
+					Path:    ".detent/lessons.md",
+					RecallN: 1,
+				},
+				Skills: config.Skills{
+					Enabled: true,
+					Path:    ".detent/skills",
+					Creation: config.SkillCreation{
+						Enabled:         true,
+						MaxDraftsPerRun: 1,
+					},
+				},
+			},
+		},
+		Prompt: "Prompt for {{ issue.identifier }} via {{ tracker.kind }} attempt={{ attempt }} auto={{ workspace.auto_branch }} metadata={{ issue.author_id }} {{ issue.assignees }} {{ issue.fields }}",
+	}, connector.Issue{
+		ID:          "issue-21",
+		Identifier:  "digitaldrywood/detent#21",
+		Title:       "Build prompt",
+		Description: "Wire prompt builder",
+		AuthorID:    "author-1",
+		Assignees:   []string{"reviewer-1", "reviewer-2"},
+		Labels:      []string{"enhancement", "stage:s3"},
+		Fields:      map[string]string{"Status": "Todo"},
+	}, PromptOptions{
+		Attempt:       &attempt,
+		WorkspacePath: workspace,
+		AutoBranch:    &autoBranch,
+		AvailableSkills: []skills.Skill{
+			{Name: "migrate", Description: "Add migrations.", WhenToUse: "Issue mentions schema changes.", Aliases: []string{"schema-migration"}, BodyPath: "migrate.md"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"Prompt for digitaldrywood/detent#21 via github attempt=2 auto=true",
+		"metadata=author-1 reviewer-1, reviewer-2 map[Status:Todo]",
+		"## Lessons from prior runs",
+		"Check generator aliases before editing.",
+		"## Blocked handoff",
+		"`in_progress`, `blocked`, or `complete`",
+		"dependencies/blocked_by",
+		"```detent-status",
+		"status: blocked",
+		"status: complete",
+		"Depends on: owner/repo#123",
+		"Prose is not a blocker.",
+		"Merged work needs no authorization.",
+		"completion_merged_pr", "completion_merge_commit", "completion_branch_head",
+		"completion_ancestry: verified", "Missing evidence: blocked Workpad `human_action`.",
+		"## Validation gate",
+		"Run `make check` from the workspace root",
+		"## Available skills",
+		"- migrate (includes: schema-migration)",
+		"## Skill creation loop",
+		"Reusable multi-step methods/conventions only",
+		"Revalidate; PR review approves.",
+		"Skill draft: yes",
+		"Skill draft: no",
+		"Draft at most 1 skill file under `.detent/skills/`",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "Add migrations.") || strings.Contains(prompt, "Issue mentions schema changes.") {
+		t.Fatalf("prompt included skill description or trigger prose:\n%s", prompt)
+	}
+}
+
+func TestBuildRoutinePromptUsesConfiguredCriteriaAndProposalContract(t *testing.T) {
+	t.Parallel()
+	prompt, err := BuildRoutinePrompt(config.Workflow{Config: config.Config{
+		Tracker: config.Tracker{Kind: config.TrackerHubNative},
+	}}, connector.Issue{Identifier: "detent/routine/dependency-audit"}, RoutineRequest{
+		Name: "dependency-audit", Schedule: "0 3 * * 1", Prompt: "Follow the dependency criteria in WORKFLOW.md.",
+	}, PromptOptions{WorkspacePath: "/tmp/detent", Branch: "main"})
+	if err != nil {
+		t.Fatalf("BuildRoutinePrompt() error = %v", err)
+	}
+	for _, want := range []string{
+		"Routine: dependency-audit",
+		"Schedule: 0 3 * * 1",
+		"Follow the dependency criteria in WORKFLOW.md.",
+		"propose_maintenance_issue",
+		`{"issues":[{"dedup_key":"stable-key"`,
+		`{"issues":[]}`,
+		"Do not create or edit tracker issues directly.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unwanted := range []string{"## Validation gate", "## Skill creation loop", "## Blocked handoff"} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("prompt contains issue-workflow section %q:\n%s", unwanted, prompt)
+		}
+	}
+}
+
+func TestBuildPromptSkillCreationUsesDefaultConfigForPullRequestsOnly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		planOnly bool
+		want     bool
+	}{
+		{name: "pull request run", want: true},
+		{name: "plan only run", planOnly: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(config.Workflow{
+				Config: config.Default(),
+				Prompt: "Base prompt",
+			}, connector.Issue{
+				Identifier: "digitaldrywood/detent#1166",
+				Title:      "Tune skill creation",
+			}, PromptOptions{PlanOnly: tt.planOnly})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+
+			if got := strings.Contains(prompt, "## Skill creation loop"); got != tt.want {
+				t.Fatalf("skill creation block present = %v, want %v:\n%s", got, tt.want, prompt)
+			}
+		})
+	}
+}
+
+func TestBuildPromptIncludesMergeMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		deliverable   config.Deliverable
+		mergeFallback bool
+		want          string
+		wantBlock     bool
+	}{
+		{name: "omitted defaults to squash", want: "This project merges pull requests with: `squash`.", wantBlock: true},
+		{name: "squash", deliverable: config.Deliverable{MergeMethod: config.MergeMethodSquash}, want: "This project merges pull requests with: `squash`.", wantBlock: true},
+		{name: "merge", deliverable: config.Deliverable{MergeMethod: config.MergeMethodMerge}, want: "This project merges pull requests with: `merge`.", wantBlock: true},
+		{name: "rebase", deliverable: config.Deliverable{MergeMethod: config.MergeMethodRebase}, want: "This project merges pull requests with: `rebase`.", wantBlock: true},
+		{name: "merge fallback defaults to squash", mergeFallback: true, want: "This project merges pull requests with: `squash`.", wantBlock: true},
+		{name: "merge fallback uses configured method", deliverable: config.Deliverable{MergeMethod: config.MergeMethodMerge}, mergeFallback: true, want: "This project merges pull requests with: `merge`.", wantBlock: true},
+		{name: "artifact omits merge strategy", deliverable: config.Deliverable{Kind: config.DeliverableArtifact}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(config.Workflow{
+				Config: config.Config{Deliverable: tt.deliverable},
+				Prompt: "Base prompt",
+			}, connector.Issue{Identifier: "digitaldrywood/detent#1270"}, PromptOptions{MergeFallback: tt.mergeFallback})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+			if got := strings.Contains(prompt, "## Merge strategy"); got != tt.wantBlock {
+				t.Fatalf("merge strategy block present = %v, want %v:\n%s", got, tt.wantBlock, prompt)
+			}
+			if tt.want != "" && !strings.Contains(prompt, tt.want) {
+				t.Fatalf("prompt missing %q:\n%s", tt.want, prompt)
+			}
+		})
+	}
+}
+
+func TestSkillDraftProposed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{name: "yes decision", output: "Tests pass.\n\nSkill draft: yes — `.detent/skills/debug.md` captures the workflow.", want: true},
+		{name: "case and whitespace", output: "  SKILL DRAFT: YES  ", want: true},
+		{name: "no decision", output: "Skill draft: no — routine edit."},
+		{name: "discussion is not a proposal", output: "The prompt should require Skill draft: yes when appropriate."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := skillDraftProposed(tt.output); got != tt.want {
+				t.Fatalf("skillDraftProposed(%q) = %v, want %v", tt.output, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
+	t.Parallel()
+	for _, opts := range []PromptOptions{{}, {WorkAttemptID: 5715, Generation: 68}} {
+		t.Run(strconv.FormatInt(opts.WorkAttemptID, 10), func(t *testing.T) {
+			prompt := appendBlockedHandoffBlock("", opts)
+			for _, required := range []string{"current authoritative `## Codex Workpad`", "if permitted, else post anew", "body/final cannot supersede it", "Keep native/local writers", "reuse verified same-head/test-input receipts without handoff-only reruns", "Finish source/pre-merge requirements", "existing post-integration owner", "exact PR/head, pending acceptance", "Pending acceptance remains unverified", "Preserve pre-merge evidence, approvals and gates", "Without a permitted owner, retain original acceptance", "never file a follow-up issue for acceptance"} {
+				if !strings.Contains(prompt, required) {
+					t.Fatalf("handoff lost acceptance ownership: %s", required)
+				}
+			}
+			blocks := strings.Split(prompt, "```detent-status\n")[1:]
+			if len(blocks) != 2 {
+				t.Fatalf("got %d examples, want 2", len(blocks))
+			}
+			for i, block := range blocks {
+				content := strings.SplitN(block, "```", 2)[0]
+				for _, ref := range []string{"owner/repo#123", "#123"} {
+					signal, err := workpad.ParseStatusBlock(strings.ReplaceAll(content, "owner/repo#123", ref), "owner/repo")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(signal.UnknownKeys) != 0 {
+						t.Fatalf("unknown fields: %v", signal.UnknownKeys)
+					}
+					if i == 0 && (signal.Status != workpad.StatusBlocked || signal.Blockers[0].Identifier != "owner/repo#123" || signal.Blockers[0].Unverifiable) {
+						t.Fatalf("invalid dependency signal: %+v", signal)
+					}
+					if i == 1 && signal.Status != workpad.StatusComplete {
+						t.Fatalf("invalid completion: %+v", signal)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestPromptWrapperBytes(t *testing.T) {
+	t.Parallel()
+	// Keep the size fixture independent of the repository's changing catalog.
+	available := make([]skills.Skill, skills.DefaultMaxSkillsInPrompt)
+	for i := range available {
+		available[i] = skills.Skill{Name: "repository-skill-" + strconv.Itoa(i)}
+	}
+	workspacePath := t.TempDir()
+	prompt, err := BuildPrompt(config.Workflow{Prompt: "WORKFLOW", Config: config.Default()}, connector.Issue{Identifier: "digitaldrywood/detent#2662"}, PromptOptions{WorkspacePath: workspacePath, Branch: "detent/detent-digitaldrywood_detent_2662-4373c74c714b", AvailableSkills: available, WorkAttemptID: 5715, Generation: 68})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, section := range strings.Split(prompt, "\n## ") {
+		t.Logf("section %s: %d", strings.SplitN(section, "\n", 2)[0], len(section))
+	}
+	// The wrapper budget measures authored text, not the worker's temp-root length.
+	size := len(strings.ReplaceAll(prompt, workspacePath, "/workspace")) - len("WORKFLOW")
+	t.Logf("wrapper=%d bytes, handoff=%d bytes, skills=%d bytes", size, len(appendBlockedHandoffBlock("", PromptOptions{})), len(AvailableSkillsBlock(available)))
+	if size >= 7000 {
+		t.Errorf("wrapper is %d bytes, want under 7000", size)
+	}
+}
+
+func TestBuildPromptBindsCompletionToCurrentAttempt(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{Prompt: "Base prompt"}, connector.Issue{
+		Identifier: "digitaldrywood/detent#1906",
+		Title:      "Fence completion",
+	}, PromptOptions{WorkAttemptID: 3295, Generation: 7})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+	for _, want := range []string{
+		"The orchestrator is the only writer of tracker lane state.",
+		"completion_work_attempt_id: \"3295\"",
+		"completion_generation: \"7\"",
+		"Never change lane labels or status fields",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildPromptSkillCreationInstructionsAreConfigurable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		workflow  config.Workflow
+		planOnly  bool
+		want      []string
+		forbidden []string
+	}{
+		{
+			name: "enabled pull request workflow",
+			workflow: config.Workflow{Config: config.Config{
+				Agent: config.Agent{Skills: config.Skills{
+					Enabled: true,
+					Path:    ".detent/team-skills",
+					Creation: config.SkillCreation{
+						Enabled:         true,
+						MaxDraftsPerRun: 2,
+					},
+				}},
+			}},
+			want: []string{
+				"## Skill creation loop",
+				"Draft at most 2 skill files under `.detent/team-skills/`",
+			},
+		},
+		{
+			name: "disabled creation",
+			workflow: config.Workflow{Config: config.Config{
+				Agent: config.Agent{Skills: config.Skills{
+					Enabled: true,
+					Creation: config.SkillCreation{
+						Enabled:         false,
+						MaxDraftsPerRun: 1,
+					},
+				}},
+			}},
+			forbidden: []string{"## Skill creation loop"},
+		},
+		{
+			name: "artifact workflow",
+			workflow: config.Workflow{Config: config.Config{
+				Deliverable: config.Deliverable{Kind: config.DeliverableArtifact},
+				Agent: config.Agent{Skills: config.Skills{
+					Enabled: true,
+					Creation: config.SkillCreation{
+						Enabled:         true,
+						MaxDraftsPerRun: 1,
+					},
+				}},
+			}},
+			forbidden: []string{"## Skill creation loop"},
+		},
+		{
+			name:     "plan only workflow",
+			planOnly: true,
+			workflow: config.Workflow{Config: config.Config{
+				Agent: config.Agent{Skills: config.Skills{
+					Enabled: true,
+					Creation: config.SkillCreation{
+						Enabled:         true,
+						MaxDraftsPerRun: 1,
+					},
+				}},
+			}},
+			forbidden: []string{"## Skill creation loop"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(tt.workflow, connector.Issue{
+				Identifier: "digitaldrywood/detent#931",
+				Title:      "Skill creation loop",
+			}, PromptOptions{
+				PlanOnly: tt.planOnly,
+			})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+
+			for _, want := range tt.want {
+				if !strings.Contains(prompt, want) {
+					t.Fatalf("prompt missing %q:\n%s", want, prompt)
+				}
+			}
+			for _, forbidden := range tt.forbidden {
+				if strings.Contains(prompt, forbidden) {
+					t.Fatalf("prompt contains %q:\n%s", forbidden, prompt)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildPromptFollowupInstructionsAreConfigurable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		config      config.Config
+		planOnly    bool
+		wantPresent bool
+	}{
+		{name: "default pull request workflow", config: config.Default(), wantPresent: true},
+		{name: "disabled", config: func() config.Config {
+			cfg := config.Default()
+			cfg.Agent.Followups.Enabled = false
+			return cfg
+		}()},
+		{name: "artifact workflow", config: func() config.Config {
+			cfg := config.Default()
+			cfg.Deliverable.Kind = config.DeliverableArtifact
+			return cfg
+		}()},
+		{name: "plan only workflow", config: config.Default(), planOnly: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(config.Workflow{Config: tt.config}, connector.Issue{
+				Identifier: "digitaldrywood/detent#1164",
+				Title:      "Follow-up filing guidance",
+			}, PromptOptions{PlanOnly: tt.planOnly})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+
+			for _, text := range []string{
+				"## Out-of-scope discoveries",
+				"project Backlog",
+				"fenced `detent-agent`",
+				"`effort` per project rubric",
+				"missing state: file stateless and report",
+			} {
+				if strings.Contains(prompt, text) != tt.wantPresent {
+					t.Fatalf("prompt presence of %q = %t, want %t:\n%s", text, strings.Contains(prompt, text), tt.wantPresent, prompt)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildPromptAppendsTeamKnowledge(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	globalPath := filepath.Join(root, "global.md")
+	projectPath := filepath.Join(root, "project.md")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll(workspace) error = %v", err)
+	}
+	if err := os.WriteFile(globalPath, []byte("Use allowlist terminology.\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(global) error = %v", err)
+	}
+	if err := os.WriteFile(projectPath, []byte("Run project smoke tests.\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(project) error = %v", err)
+	}
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Config: config.Config{
+			Agent: config.Agent{
+				Knowledge: config.Knowledge{
+					Enabled:  true,
+					MaxBytes: 4096,
+					Sources: []config.KnowledgeSource{
+						{Name: "Global", Path: globalPath},
+						{Name: "Missing", Path: filepath.Join(root, "missing.md")},
+						{Name: "Project", Path: projectPath},
+					},
+				},
+			},
+		},
+		Prompt: "Base prompt",
+	}, connector.Issue{
+		Identifier: "digitaldrywood/detent#930",
+		Title:      "Knowledge",
+	}, PromptOptions{
+		WorkspacePath: workspace,
+	})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"## Team knowledge",
+		"Shared context supplied by Detent configuration.",
+		"### Global",
+		"Use allowlist terminology.",
+		"### Project",
+		"Run project smoke tests.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "### Missing") {
+		t.Fatalf("prompt includes missing knowledge source:\n%s", prompt)
+	}
+	if strings.Index(prompt, "Use allowlist terminology.") > strings.Index(prompt, "Run project smoke tests.") {
+		t.Fatalf("prompt knowledge order = %q, want global before project", prompt)
+	}
+	if strings.Index(prompt, "## Team knowledge") > strings.Index(prompt, "## Blocked handoff") {
+		t.Fatalf("prompt places the completion contract before team knowledge:\n%s", prompt)
+	}
+}
+
+func TestBuildPromptReturnsKnowledgeReadError(t *testing.T) {
+	t.Parallel()
+
+	_, err := BuildPrompt(config.Workflow{
+		Config: config.Config{
+			Agent: config.Agent{
+				Knowledge: config.Knowledge{
+					Enabled: true,
+					Sources: []config.KnowledgeSource{{
+						Name: "Directory",
+						Path: t.TempDir(),
+					}},
+				},
+			},
+		},
+		Prompt: "Base prompt",
+	}, connector.Issue{Identifier: "digitaldrywood/detent#930"}, PromptOptions{})
+	if err == nil {
+		t.Fatal("BuildPrompt() error = nil, want knowledge read error")
+	}
+	if !strings.Contains(err.Error(), "read shared knowledge") {
+		t.Fatalf("BuildPrompt() error = %v, want knowledge context", err)
+	}
+}
+
+func TestBuildPromptUsesPriorAttemptWithoutRepoNotes(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	notesPath := filepath.Join(workspace, ".detent", "notes.md")
+	const note = "Existing user handoff notes"
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(notesPath, []byte(note), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Prompt: "Base prompt",
+	}, connector.Issue{
+		Identifier: "digitaldrywood/detent#856",
+		Title:      "Handoff notes",
+	}, PromptOptions{
+		WorkspacePath: workspace,
+		PriorAttempt: PriorAttempt{
+			Source: "auto_promote",
+			Reason: "validator_rework",
+			Validator: gate.ValidatorResult{
+				Submitted: true,
+				Verdict:   gate.ValidatorVerdictRework,
+				Score:     0.42,
+				Summary:   "Missing deterministic rework context.",
+				Findings: []gate.Finding{{
+					Severity: "p1",
+					Body:     "Rework prompt does not include validator findings.",
+					Path:     "internal/runner/prompt.go",
+					Line:     44,
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"## Prior attempt handoff",
+		"- source: auto_promote",
+		"- failing gate reason: validator_rework",
+		"- validator verdict: rework",
+		"- validator score: 0.42",
+		"- validator summary: Missing deterministic rework context.",
+		"p1: Rework prompt does not include validator findings. (internal/runner/prompt.go:44)",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, note) || !strings.Contains(prompt, repositoryHandoffContract) || !strings.Contains(prompt, "```detent-status") {
+		t.Fatal("repository notes replaced the current handoff contract")
+	}
+	after, err := os.ReadFile(notesPath)
+	if err != nil || string(after) != note {
+		t.Fatalf("existing notes changed: %v", err)
+	}
+}
+
+func TestBuildPromptRequiresExplanationBeforeBreakerRetry(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{Prompt: "Base prompt"}, connector.Issue{
+		Identifier: "gopherguides/gopher-ai#214",
+	}, PromptOptions{PriorAttempt: PriorAttempt{
+		Source:                  "spend_since_progress_circuit_breaker",
+		Reason:                  "spend exceeded the configured limit without an accepted state change",
+		ExplainBeforeRetry:      true,
+		MissingSignal:           "lane transition or pull request signature change",
+		ObservedTokens:          25_000_000,
+		NoProgressTokenLimit:    20_000_000,
+		ObservedSpendUSD:        6.75,
+		NoProgressSpendLimitUSD: 5,
+	}})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+	for _, want := range []string{
+		"### Explain before retry",
+		"first tool action must update the Workpad",
+		"Do not use any other tools",
+		"lane transition or pull request signature change",
+		"tokens since last accepted state change: 25000000",
+		"configured token limit: 20000000",
+		"notional USD since last accepted state change: $6.75",
+		"configured notional USD limit: $5.00",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildPromptRendersGateAssignsAndInstructions(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Config: config.Config{
+			Gate: gate.Config{
+				Kind:           gate.KindHumanReview,
+				ApprovalLabel:  "Approved-By-Human",
+				CITriggerLabel: "CI:Ready",
+			},
+			Plan: gate.PlanConfig{
+				Enabled:       true,
+				ApprovalLabel: "Plan-Approved",
+			},
+		},
+		Prompt: "Gate {{ gate.kind }} label={{ gate.approval_label }} trigger={{ gate.ci_trigger_label }} stagger={{ gate.ci_trigger_label_stagger_seconds }} run={{ gate.run }} ci={{ gate.ci_failure_action }} max={{ gate.validator.max_inline_diff_bytes }} plan={{ plan.approval_label }}",
+	}, connector.Issue{
+		Identifier: "digitaldrywood/detent#266",
+		Title:      "Gate prompt",
+	}, PromptOptions{})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"Gate human_review label=approved-by-human trigger=ci:ready stagger=15 run= ci=skip max=65536 plan=plan-approved",
+		"## Human approval",
+		"Keep the pull request in Human Review until a human applies label `approved-by-human`",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildPromptIncludesGitHubTrackerHostnameInCITriggerCommand(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{Config: config.Config{
+		Tracker: config.Tracker{Kind: config.TrackerGitHub, Endpoint: "https://github.example.com/api/graphql"},
+		Gate: gate.Config{
+			Kind:           gate.KindCommand,
+			CITriggerLabel: "CI Ready",
+		},
+	}}, connector.Issue{Identifier: "owner/repo#42", Title: "Enterprise label gate"}, PromptOptions{})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+	for _, want := range []string{"--label-base64 Y2kgcmVhZHk", "--hostname-base64 Z2l0aHViLmV4YW1wbGUuY29t", "--stagger-seconds 15"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildPromptAppendsWorkflowInstructionsByState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		state     string
+		want      string
+		forbidden []string
+	}{
+		{
+			name:      "todo",
+			state:     "Todo",
+			want:      "Prepare the research brief.",
+			forbidden: []string{"Address review feedback.", "Run the merge checklist."},
+		},
+		{
+			name:      "rework",
+			state:     "Rework",
+			want:      "Address review feedback.",
+			forbidden: []string{"Prepare the research brief.", "Run the merge checklist."},
+		},
+		{
+			name:      "merging",
+			state:     "Merging",
+			want:      "Run the merge checklist.",
+			forbidden: []string{"Prepare the research brief.", "Address review feedback."},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(config.Workflow{
+				Config: config.Config{
+					Agent: config.Agent{
+						InstructionsByState: map[string]string{
+							"Todo":    "Prepare the research brief.",
+							"Rework":  "Address review feedback.",
+							"Merging": "Run the merge checklist.",
+						},
+					},
+				},
+				Prompt: "Base workflow prompt.",
+			}, connector.Issue{
+				Identifier: "digitaldrywood/detent#980",
+				Title:      "Workflow instructions",
+				State:      tt.state,
+			}, PromptOptions{})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+
+			for _, want := range []string{"## Workflow instructions", "### State: " + tt.state, tt.want} {
+				if !strings.Contains(prompt, want) {
+					t.Fatalf("prompt missing %q:\n%s", want, prompt)
+				}
+			}
+			for _, forbidden := range tt.forbidden {
+				if strings.Contains(prompt, forbidden) {
+					t.Fatalf("prompt contains %q:\n%s", forbidden, prompt)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildPromptAppendsWorkflowInstructionsByTransitionBeforeDeliverableAndGate(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Config: config.Config{
+			Deliverable: config.Deliverable{Kind: config.DeliverableArtifact},
+			Agent: config.Agent{
+				InstructionsByState: map[string]string{
+					"In Progress": "Work from the implementation checklist.",
+				},
+				InstructionsByTransition: map[string]map[string]string{
+					"Todo": {
+						"In Progress": "Confirm dependencies before coding.",
+					},
+				},
+			},
+			Gate: gate.Config{Kind: gate.KindArtifact},
+		},
+		Prompt: "Base workflow prompt.",
+	}, connector.Issue{
+		Identifier: "digitaldrywood/detent#980",
+		Title:      "Workflow instructions",
+		State:      "In Progress",
+	}, PromptOptions{
+		DispatchSourceState: "Todo",
+		DispatchTargetState: "In Progress",
+	})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"## Workflow instructions",
+		"### State: In Progress",
+		"Work from the implementation checklist.",
+		"### Transition: Todo -> In Progress",
+		"Confirm dependencies before coding.",
+		"## Deliverable",
+		"## Validation gate",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+
+	workflowInstructionsIndex := strings.Index(prompt, "## Workflow instructions")
+	deliverableIndex := strings.Index(prompt, "## Deliverable")
+	gateIndex := strings.Index(prompt, "## Validation gate")
+	if workflowInstructionsIndex == -1 || deliverableIndex == -1 || gateIndex == -1 {
+		t.Fatalf("prompt missing block markers:\n%s", prompt)
+	}
+	if workflowInstructionsIndex > deliverableIndex {
+		t.Fatalf("workflow instructions appear after deliverable block:\n%s", prompt)
+	}
+	if workflowInstructionsIndex > gateIndex {
+		t.Fatalf("workflow instructions appear after validation gate block:\n%s", prompt)
+	}
+}
+
+func TestBuildPromptOmitsWorkflowInstructionsWhenUnconfigured(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Prompt: "Base workflow prompt.",
+	}, connector.Issue{
+		Identifier: "digitaldrywood/detent#980",
+		Title:      "Workflow instructions",
+		State:      "Todo",
+	}, PromptOptions{})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+	if strings.Contains(prompt, "## Workflow instructions") {
+		t.Fatalf("prompt contains workflow instructions when unconfigured:\n%s", prompt)
+	}
+	if !strings.HasPrefix(prompt, "Base workflow prompt.") {
+		t.Fatalf("prompt prefix = %q, want base workflow prompt", prompt[:len("Base workflow prompt.")])
+	}
+}
+
+func TestImplementationReviewPromptLeavesAcceptanceToValidator(t *testing.T) {
+	t.Parallel()
+	workflow := config.Workflow{Config: config.Config{Gate: gate.Config{Validator: gate.ValidatorConfig{Enabled: true, UnverifiedCriteria: gate.UnverifiedCriteriaRework}}}}
+	issue := connector.Issue{Description: "## Acceptance criteria\n- Verify the delivered feature through its real surface."}
+	prompt := BuildValidatorPrompt(workflow, issue, ValidatorPromptOptions{implementationReview: true})
+	for _, instruction := range []string{"implementation defects", "separate validator", "immutable source diff", "Return only JSON"} {
+		if !strings.Contains(prompt, instruction) {
+			t.Errorf("source-review task omitted its independent contract: %q", instruction)
+		}
+	}
+	for _, instruction := range []string{"Acceptance criteria to map", "Map every acceptance criterion", "any not_verified criterion forces rework", "satisfies the acceptance criteria"} {
+		if strings.Contains(prompt, instruction) {
+			t.Errorf("source review was assigned the later acceptance validator's task: %q", instruction)
+		}
+	}
+}
+
+func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
+	t.Parallel()
+
+	patch := "diff --git a/README.md b/README.md\n+seeded validator diff\n"
+	stat := workspace.DiffStat{Files: 1, Added: 1, HeadSHA: "physical-head", HeadObservedAt: time.Now()}
+	clean := workspace.DiffStat{HeadSHA: "physical-head", HeadObservedAt: time.Now()}
+
+	tests := []struct {
+		name      string
+		opts      ValidatorPromptOptions
+		want      []string
+		forbidden []string
+	}{
+		{
+			name: "unverified criterion classes",
+			opts: ValidatorPromptOptions{VersionID: "version"},
+			want: []string{`"unverified_class"`, "rework_fixable", "unsatisfiable", "outside system", "production or deployed environment", "a deployment", "human action", "missing tests", "failing checks", "missing screenshots", "unimplemented behavior", "rewrite it as a pre-merge check or remove it", "Blocked on this run"},
+		},
+		{
+			name:      "non-native criteria retain configured policy",
+			want:      []string{"Any not_verified criterion under rework policy forces rework"},
+			forbidden: []string{`"unverified_class"`, "Blocked on this run", "set unverified_class"},
+		},
+		{
+			name: "native host command evidence",
+			opts: ValidatorPromptOptions{VersionID: "version", HeadSHA: "head", Commands: []gate.CommandResult{{ReceiptID: "timing_build", Command: "cd frontend && pnpm build", HeadSHA: "head", TreeSHA: "tree", ExitCode: 0, Output: "build passed"}}},
+			want: []string{"host", `receipt_id="timing_build"`, "receipt_ids", "pnpm build", "build passed", "head=", "tree=", "exit=", "detent_run_validation", "Worker prose and human approval do not replace test evidence"},
+		},
+		{
+			name: "native failure superseded on the same tree",
+			opts: ValidatorPromptOptions{VersionID: "version", HeadSHA: "head", Commands: []gate.CommandResult{
+				{ReceiptID: "timing_failed", Command: "make check-landing", HeadSHA: "head", TreeSHA: "tree", ExitCode: 2, Output: "[earlier output truncated]", OutputTruncated: true},
+				{ReceiptID: "timing_passed", Command: "make check-landing", HeadSHA: "head", TreeSHA: "tree", ExitCode: 0, Output: "check-landing finished: exit=0"},
+			}},
+			want:      []string{`receipt_id="timing_failed"`, `receipt_id="timing_passed"`, "unless a later receipt of the same command passed on the same head and tree", "a High defect under INV-19", `starts with "INV-19 High flaky test"`, "names both receipt_ids", "exercises source this change adds or modifies, report it at p1; it blocks this change", "report it at p2 without blocking an otherwise passing candidate", "do not demand that Rework diagnose it beyond its retained output"},
+			forbidden: []string{"prevents a passing review, even if omitted from criteria_evidence. Use", "p3 finding"},
+		},
+		{
+			name:      "native omitted patch reads pinned source",
+			opts:      ValidatorPromptOptions{VersionID: "version_example", Repository: "example-org/example-project", WorkspacePath: "workspace", BaseSHA: "base", HeadSHA: "head", DiffDigest: "digest", DiffStat: &stat, DiffTruncated: true, MaxInlineDiffBytes: len(patch)},
+			want:      []string{"Reviewed native version: version_example", "base=base head=head sha256=digest", "Full diff omitted", "git rev-parse --verify base^{commit}", "git rev-parse --verify head^{commit}", "git --no-pager diff --no-ext-diff --no-textconv base head --", "do not call GitHub", "Never substitute working-tree or index edits", "instance/evidence limitation", "Missing source is not approval"},
+			forbidden: []string{"use the named GitHub PR diff", "do not use workspace git diff", "+seeded validator diff"},
+		},
+		{
+			name:      "native source read unavailable",
+			opts:      ValidatorPromptOptions{VersionID: "version_example", DiffError: "source unavailable"},
+			want:      []string{"Diff collection error: source unavailable", "instance/evidence limitation", "Missing source is not approval"},
+			forbidden: []string{"use the named GitHub PR diff", "git --no-pager diff", "git rev-parse"},
+		},
+		{
+			name:      "native implementation review reads pinned source",
+			opts:      ValidatorPromptOptions{implementationReview: true, VersionID: "version_example", Repository: "example-org/example-project", WorkspacePath: "workspace", BaseSHA: "base", HeadSHA: "head", DiffStat: &stat, DiffTruncated: true},
+			want:      []string{"git --no-pager diff --no-ext-diff --no-textconv base head --", "instance/evidence limitation", "wait when source review cannot be completed"},
+			forbidden: []string{"use the named GitHub PR diff", "Map every acceptance criterion"},
+		},
+		{
+			name:      "clean physical observation",
+			opts:      ValidatorPromptOptions{DiffStat: &clean},
+			want:      []string{"Stat: 0 files changed", "Full diff: no workspace changes detected."},
+			forbidden: []string{"Full diff omitted because", "physical-head"},
+		},
+		{
+			name: "inline diff under threshold",
+			opts: ValidatorPromptOptions{
+				DiffStat:           &stat,
+				DiffPatch:          patch,
+				MaxInlineDiffBytes: len(patch),
+			},
+			want: []string{
+				"Diff context:",
+				"Stat: 1 file changed, 1 insertion(+)",
+				"Inline diff limit: " + strconv.Itoa(len(patch)) + " bytes (`gate.validator.max_inline_diff_bytes`).",
+				"Inline diff (" + strconv.Itoa(len(patch)) + " bytes):",
+				"+seeded validator diff",
+			},
+			forbidden: []string{"Full diff omitted because it exceeds"},
+		},
+		{
+			name: "stat only above threshold",
+			opts: ValidatorPromptOptions{
+				DiffStat:           &stat,
+				DiffPatch:          patch,
+				MaxInlineDiffBytes: len(patch) - 1,
+			},
+			want: []string{
+				"Diff context:",
+				"Stat: 1 file changed, 1 insertion(+)",
+				"Full diff omitted because it exceeds the inline diff limit.",
+				"use the named GitHub PR diff at the stated head; do not use workspace git diff",
+			},
+			forbidden: []string{"+seeded validator diff"},
+		},
+		{
+			name: "stat only when threshold disabled",
+			opts: ValidatorPromptOptions{
+				DiffStat:           &stat,
+				DiffPatch:          patch,
+				MaxInlineDiffBytes: 0,
+			},
+			want: []string{
+				"Diff context:",
+				"Inline diff limit: 0 bytes (`gate.validator.max_inline_diff_bytes`); full diff omitted.",
+				"Full diff omitted because it exceeds the inline diff limit.",
+			},
+			forbidden: []string{"+seeded validator diff"},
+		},
+		{
+			name: "stat only when provider truncated",
+			opts: ValidatorPromptOptions{
+				DiffStat:           &stat,
+				DiffPatch:          "",
+				DiffTruncated:      true,
+				MaxInlineDiffBytes: len(patch),
+			},
+			want: []string{
+				"Diff context:",
+				"Stat: 1 file changed, 1 insertion(+)",
+				"Full diff omitted because it exceeds the inline diff limit.",
+			},
+			forbidden: []string{"+seeded validator diff"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt := BuildValidatorPrompt(config.Workflow{}, connector.Issue{
+				Identifier:  "example-org/example-project#854",
+				Title:       "Seed validator prompt",
+				Description: "## Acceptance Criteria\n- Inline small diffs.",
+			}, tt.opts)
+
+			for _, want := range tt.want {
+				if !strings.Contains(prompt, want) {
+					t.Fatalf("prompt missing %q:\n%s", want, prompt)
+				}
+			}
+			for _, forbidden := range tt.forbidden {
+				if strings.Contains(prompt, forbidden) {
+					t.Fatalf("prompt contains %q:\n%s", forbidden, prompt)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildPromptPrependsWorkspaceIsolationBlock(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		workspacePath string
+		branch        string
+		sourceRoot    string
+	}{
+		{
+			name:          "project scoped issue branch",
+			workspacePath: "/workspaces/detent-digitaldrywood_detent_527-74ece90926d1",
+			branch:        "detent/detent-digitaldrywood_detent_527-74ece90926d1",
+			sourceRoot:    "/runner/source",
+		},
+		{
+			name:          "another host",
+			workspacePath: "/Users/runner/source/.detent/workspaces/issue-527",
+			branch:        "detent/issue-527",
+			sourceRoot:    "/Users/runner/source",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(config.Workflow{
+				Prompt: "Issue prompt: {{ workspace.path }} from {{ workspace.source_root }}",
+				Config: config.Config{Workspace: config.Workspace{SourceRoot: tt.sourceRoot}},
+			}, connector.Issue{
+				Identifier: "digitaldrywood/detent#527",
+				Title:      "Prompt isolation",
+			}, PromptOptions{
+				WorkspacePath: tt.workspacePath,
+				Branch:        tt.branch,
+			})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+
+			for _, want := range []string{
+				"## Detent workspace isolation",
+				"Detent's worktree `" + tt.workspacePath + "` and branch `" + tt.branch + "` satisfy isolation.",
+				"Never require different branch naming or workspace prerequisites.",
+				"Use `TMPDIR`/`TMP`/`TEMP` for all scratch output",
+				"Never use host-temp siblings",
+				"source checkout at `" + tt.sourceRoot + "`",
+				"Issue prompt: " + tt.workspacePath + " from " + tt.sourceRoot,
+			} {
+				if !strings.Contains(prompt, want) {
+					t.Fatalf("prompt missing %q:\n%s", want, prompt)
+				}
+			}
+			if !strings.HasPrefix(prompt, "## Detent workspace isolation") {
+				t.Fatalf("prompt did not start with isolation block:\n%s", prompt)
+			}
+		})
+	}
+}
+
+func TestBuildPromptIncludesStrandedWorkspaceRecovery(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{Config: config.Config{
+		Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest},
+	}}, connector.Issue{Identifier: "digitaldrywood/detent#1290"}, PromptOptions{
+		WorkspacePath: "/tmp/detent-1290",
+		Branch:        "detent/issue-1290",
+		RecoveryState: &workspace.RecoveryState{
+			UnpushedCommits: 1,
+			DiffStat:        workspace.DiffStat{Files: 4, Added: 12, Removed: 3},
+			TrackedPaths:    []string{"internal/worker.go"},
+			UntrackedPaths:  []string{"worker.log"},
+			UnpushedCommitRefs: []string{
+				"abc123 fix: preserve work",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+	for _, want := range []string{
+		"## Existing workspace recovery",
+		"unpushed commits: 1",
+		"diffstat: 4 files, +12/-3",
+		"tracked paths: `internal/worker.go`",
+		"untracked paths: `worker.log`",
+		"`abc123 fix: preserve work`",
+		"completion cannot be accepted",
+		"commit and publish",
+		"discard stray artifacts",
+		"completion_cleanliness_resolution: committed",
+		"completion_cleanliness_resolution: discarded",
+		"under `fields:`",
+		"`status: blocked`",
+		"Do not repeat `status: complete`",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, commits := range []int{0, 1} {
+		state := &workspace.RecoveryState{UnpushedCommits: commits, DiffStat: workspace.DiffStat{HeadSHA: "physical-head", HeadObservedAt: time.Now()}}
+		cleanPrompt := appendWorkspaceRecoveryBlock("base", state, false)
+		if strings.Contains(cleanPrompt, "diffstat:") || (commits == 0 && cleanPrompt != "base") || (commits == 1 && !strings.Contains(cleanPrompt, "unpushed commits: 1")) {
+			t.Fatalf("clean recovery observation changed prompt: %q", cleanPrompt)
+		}
+	}
+}
+
+func TestBuildPromptUsesDefaultPromptDescriptionFallback(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Config: config.Config{},
+		Prompt: " \n",
+	}, connector.Issue{
+		Identifier: "MT-1",
+		Title:      "Missing body",
+	}, PromptOptions{})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"You are working on a Linear issue.",
+		"Identifier: MT-1",
+		"Title: Missing body",
+		"No description provided.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("default prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildPromptAppendsGitHubClosingReferenceInstruction(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Prompt: "Base prompt",
+	}, connector.Issue{
+		Identifier: "digitaldrywood/detent#193",
+		Title:      "Dedupe dispatch",
+	}, PromptOptions{})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	if !strings.Contains(prompt, "Fixes #193") {
+		t.Fatalf("prompt missing closing reference instruction:\n%s", prompt)
+	}
+}
+
+func TestBuildPromptArtifactWorkflowOmitsPullRequestContract(t *testing.T) {
+	t.Parallel()
+
+	workspacePath := filepath.Join(t.TempDir(), "ad-1")
+	prompt, err := BuildPrompt(config.Workflow{
+		Config: config.Config{
+			Workspace: config.Workspace{Kind: config.WorkspaceFilesystem},
+			Deliverable: config.Deliverable{
+				Kind:       config.DeliverableArtifact,
+				OutputRoot: "/tmp/detent-renders",
+				ReviewURL:  "http://127.0.0.1:8080/review/ad-1",
+			},
+			Gate: gate.Config{Kind: gate.KindArtifact},
+		},
+		Prompt: "Deliver {{ deliverable.kind }} from {{ workspace.kind }} status={{ issue.deliverable.validation_status }} store={{ issue.metadata.store }}",
+	}, connector.Issue{
+		Identifier: "digitaldrywood/detent#780",
+		Title:      "Artifact prompt",
+		Metadata:   map[string]string{"store": "creswood"},
+		Deliverable: &connector.Deliverable{
+			Kind:             "video_ad",
+			Path:             "outputs/ad-1/manifest.json",
+			ReviewURL:        "http://127.0.0.1:8080/review/ad-1",
+			ValidationStatus: "pending",
+			ExternalID:       "creative-101",
+		},
+	}, PromptOptions{
+		WorkspacePath: workspacePath,
+	})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"## Detent artifact workspace",
+		"filesystem workspace at `" + workspacePath + "`",
+		"Deliver artifact from filesystem status=pending store=creswood",
+		"## Deliverable",
+		"Produce artifact deliverables for this work item instead of a pull request.",
+		"- configured output root: `/tmp/detent-renders`",
+		"- work item artifact path: `outputs/ad-1/manifest.json`",
+		"## Validation gate",
+		"artifact status",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{"Fixes #780", "pull request in Human Review"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("prompt contains %q, want omitted:\n%s", forbidden, prompt)
+		}
+	}
+}
+
+func TestBuildPromptRejectsUnknownTemplateVariables(t *testing.T) {
+	t.Parallel()
+
+	_, err := BuildPrompt(config.Workflow{
+		Prompt: "Prompt {{ issue.missing }}",
+	}, connector.Issue{Identifier: "MT-1"}, PromptOptions{})
+	if err == nil {
+		t.Fatal("BuildPrompt() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "unknown template variable") {
+		t.Fatalf("BuildPrompt() error = %v, want unknown variable", err)
+	}
+}
+
+func TestBuildPromptRendersIssueFieldLookups(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		fields map[string]string
+		want   string
+	}{
+		{
+			name: "present field",
+			fields: map[string]string{
+				"Owner":  "team-a",
+				"Status": "Ready",
+			},
+			want: "owner=team-a status=Ready",
+		},
+		{
+			name: "empty field",
+			fields: map[string]string{
+				"Owner":  "team-b",
+				"Status": "",
+			},
+			want: "owner=team-b missing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(config.Workflow{
+				Prompt: "owner={{ issue.fields.Owner }} {% if issue.fields.Status %}status={{ issue.fields.Status }}{% else %}missing{% endif %}",
+			}, connector.Issue{
+				Identifier: "MT-1",
+				Fields:     tt.fields,
+			}, PromptOptions{})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+			if !strings.HasPrefix(prompt, tt.want) {
+				t.Fatalf("prompt = %q, want prefix %q", prompt, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildPromptRendersNestedConditionals(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Prompt: `{% if issue.description %}{{ issue.description }} {% if issue.title %}{{ issue.title }}{% endif %}{% else %}No body{% endif %}`,
+	}, connector.Issue{
+		Identifier: "MT-1",
+		Title:      "Nested title",
+	}, PromptOptions{})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+	if !strings.HasPrefix(prompt, "No body") {
+		t.Fatalf("prompt = %q, want No body prefix", prompt)
+	}
+	if strings.Contains(prompt, "{% endif %}") {
+		t.Fatalf("prompt left template delimiter: %q", prompt)
+	}
+}
+
+func TestBuildPromptIgnoresUnreadableLessons(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, ".detent", "lessons.md"), 0o755); err != nil {
+		t.Fatalf("mkdir lessons path: %v", err)
+	}
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Config: config.Config{
+			Agent: config.Agent{
+				Lessons: config.Lessons{
+					Enabled: true,
+					Path:    ".detent/lessons.md",
+					RecallN: 2,
+				},
+			},
+		},
+		Prompt: "Base prompt",
+	}, connector.Issue{Identifier: "MT-1"}, PromptOptions{WorkspacePath: workspace})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+	if strings.Contains(prompt, "## Lessons from prior runs") {
+		t.Fatalf("prompt included unreadable lessons:\n%s", prompt)
+	}
+}
+
+func TestBuildAdmissionPromptUsesCurrentDependencyEvidence(t *testing.T) {
+	t.Parallel()
+	for _, ready := range []bool{false, true} {
+		t.Run(strconv.FormatBool(ready), func(t *testing.T) {
+			observedAt := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+			request := AdmissionRequest{Candidates: []AdmissionCandidate{{
+				ID: "dependent", Description: "Blocked by: #10\nA human must provide credentials.",
+				Dependencies: &AdmissionDependencies{ObservedAt: observedAt, Readiness: "terminal_or_merged", Ready: ready, References: []AdmissionDependency{{Identifier: "owner/repo#10", Closed: ready, Ready: ready}}},
+			}}}
+			prompt, err := BuildAdmissionPrompt(connector.Issue{Identifier: "project"}, request, PromptOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{
+				`"observed_at":"2026-09-04T12:00:00Z"`, `"ready":` + strconv.FormatBool(ready),
+				"A Depends on or Blocked by declaration alone is not an open blocker.",
+				"A ready dependency satisfies the configured dependency rule even when its declaration remains in the body.",
+				"Preserve independent human prerequisites", "A human must provide credentials.",
+			} {
+				if !strings.Contains(prompt, want) {
+					t.Errorf("prompt lacks %q", want)
+				}
+			}
+		})
+	}
+}
+
+func TestPromptDoesNotUseRepositoryNotes(t *testing.T) {
+	t.Parallel()
+	for _, profile := range []string{"code", "plan", "merge fallback", "native"} {
+		for _, exists := range []bool{false, true} {
+			t.Run(profile+"/exists="+strconv.FormatBool(exists), func(t *testing.T) {
+				t.Parallel()
+				path := t.TempDir()
+				notePath := filepath.Join(path, ".detent", "notes.md")
+				const notes = "Private notes from a different issue"
+				if exists {
+					if err := os.MkdirAll(filepath.Dir(notePath), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(notePath, []byte(notes), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				workflow := config.Workflow{Prompt: "Current issue"}
+				opts := PromptOptions{WorkspacePath: path, PlanOnly: profile == "plan", MergeFallback: profile == "merge fallback"}
+				if profile == "native" {
+					workflow.Config.Tracker.Kind = config.TrackerHubNative
+				}
+				prompt, err := BuildPrompt(workflow, connector.Issue{Identifier: "owner/repo#1"}, opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, absent := range []string{notes, "Maintain `.detent/notes.md`", "## Handoff notes", "Verify prior notes"} {
+					if strings.Contains(prompt, absent) {
+						t.Fatalf("prompt injected repository notes: %q", absent)
+					}
+				}
+				contract := "```detent-status"
+				if profile == "native" {
+					contract = "Native completion contract"
+				}
+				if !strings.Contains(prompt, contract) || !strings.Contains(prompt, repositoryHandoffContract) {
+					t.Fatalf("current handoff contract missing: %q", contract)
+				}
+				after, err := os.ReadFile(notePath)
+				if exists && (err != nil || string(after) != notes) {
+					t.Fatalf("existing notes changed: %v", err)
+				}
+				if !exists && !os.IsNotExist(err) {
+					t.Fatalf("prompt created repository notes: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestMergeFallbackPromptPreservesPublishedHistory(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name        string
+		description string
+		subjects    []string
+		message     string
+		want        []string
+		truncated   bool
+	}{
+		{name: "intent", description: "Keep the acceptance criteria intact.", subjects: []string{"fix: preserve target behavior"}, want: []string{"Keep the acceptance criteria intact.", "fix: preserve target behavior"}},
+		{name: "bounded context", description: strings.Repeat("界", 10000), subjects: []string{strings.Repeat("commit subject\n", 1000)}, message: strings.Repeat("precheck\n", 2000), truncated: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			prompt, err := BuildMergeFallbackPrompt(config.Workflow{}, connector.Issue{Description: tt.description}, PromptOptions{MergeTargetCommitSubjects: tt.subjects, MergePrecheckMessage: tt.message})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range append(tt.want,
+				"Preserve both sides’ behavior",
+				"intent is ambiguous",
+				"merge.conflictStyle=zdiff3",
+				"merge it into the PR branch",
+				"do not rebase published commits",
+				"Preserve the remote PR head as an ancestor",
+			) {
+				if !strings.Contains(prompt, want) {
+					t.Errorf("fallback prompt missing %q", want)
+				}
+			}
+			if tt.truncated && (len(prompt) > 40*1024 || strings.Count(prompt, "[truncated]") != 3 || !utf8.ValidString(prompt)) {
+				t.Fatalf("context truncation: bytes=%d markers=%d valid=%t", len(prompt), strings.Count(prompt, "[truncated]"), utf8.ValidString(prompt))
+			}
+			if !strings.HasSuffix(prompt, "Otherwise end with `DETENT_MERGE_FALLBACK: rework`.") {
+				t.Fatal("bounded context lost enforcement")
+			}
+		})
+	}
+}
+
+func TestGateBlockSeparatesHumanApproval(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		kind, heading string
+	}{
+		{gate.KindHumanReview, "Human approval"},
+		{"human-review", "Human approval"},
+		{gate.KindCommand, "Validation gate"},
+	} {
+		t.Run(tt.kind, func(t *testing.T) {
+			got := appendGateBlock("Issue", config.Config{Gate: gate.Config{Kind: tt.kind, Run: "make check-fast"}})
+			if !strings.Contains(got, "## "+tt.heading+"\n") {
+				t.Fatalf("missing heading %q: %s", tt.heading, got)
+			}
+			if tt.heading == "Human approval" && strings.Contains(strings.ToLower(got), "validation gate") {
+				t.Fatalf("human approval conflates command validation: %s", got)
+			}
+		})
+	}
+}
+
+func TestBuildPromptGoTestScopeFollowsGoModule(t *testing.T) {
+	t.Parallel()
+
+	goModule := t.TempDir()
+	if err := os.WriteFile(filepath.Join(goModule, "go.mod"), []byte("module example.com/x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name      string
+		workspace string
+		want      bool
+	}{
+		{name: "go module", workspace: goModule, want: true},
+		{name: "non-go workspace", workspace: t.TempDir()},
+		{name: "no workspace"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(config.Workflow{Prompt: "Base prompt"}, connector.Issue{Identifier: "digitaldrywood/detent#3310"}, PromptOptions{WorkspacePath: tt.workspace})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+			if got := strings.Contains(prompt, "## Go test scope"); got != tt.want {
+				t.Fatalf("Go test scope block present = %v, want %v:\n%s", got, tt.want, prompt)
+			}
+			if tt.want && !strings.Contains(prompt, "instead of `go test ./...` sweeps") {
+				t.Fatalf("Go test scope block missing targeted-package guidance:\n%s", prompt)
+			}
+		})
+	}
+}
+
+func TestPlanOnlyPromptOmitsCIImplementationHandoff(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"Todo", "Rework", "In Progress", "Merging"} {
+		t.Run(state, func(t *testing.T) {
+			workflow := config.Workflow{Prompt: "Prepare a plan.", Config: config.Config{Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest}}}
+			prompt, err := BuildPrompt(workflow, connector.Issue{Identifier: "digitaldrywood/detent#3076", State: state}, PromptOptions{PlanOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"## Source CI handoff", "## Merge CI handoff", "Complete the source changes"} {
+				if strings.Contains(prompt, forbidden) {
+					t.Fatalf("plan-only prompt contains %q", forbidden)
+				}
+			}
+		})
+	}
+	workflow := config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Plan: gate.PlanConfig{Enabled: true, Review: gate.PlanReviewAutomated}}}
+	prompt, err := BuildPrompt(workflow, connector.Issue{State: "Todo"}, PromptOptions{PlanOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt, "automated plan review should be posted") || !strings.Contains(prompt, "include a `## Detent Plan Review` section") {
+		t.Fatal("native plan prompt did not return review evidence to the orchestrator")
+	}
+}
+
+func TestReviewConversationRefusalReachesNativeRework(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("a", 40)
+	finding := "- review-bot on internal/app.go:12: handle the empty case"
+	refusal := workspace.ReviewConversationsRefusalText + " Address each finding in Rework, then resolve its conversation with evidence of the fix or dismissal.\n" + finding
+	recovery := func(version, exitDetail string) tracker.NativeRecovery {
+		return tracker.NativeRecovery{
+			Change:   &tracker.NativeChangeReference{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head},
+			Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{ChangeID: "change_1", VersionID: version, HeadSHA: head, RefusalKind: workspace.LandRefusalProtected}}}}},
+			History: []tracker.CollaborationEvent{
+				{Type: "workflow.transitioned", Data: tracker.CollaborationData{FromState: "Merging", ToState: "Rework", ReasonDetail: refusal}},
+				{Type: "workflow.transitioned", Data: tracker.CollaborationData{FromState: "Rework", ToState: "Merging", ReasonDetail: "The run succeeded"}},
+				{Type: "workflow.transitioned", Data: tracker.CollaborationData{FromState: "Merging", ToState: "Rework", ReasonDetail: exitDetail}},
+			},
+		}
+	}
+	for _, test := range []struct {
+		name     string
+		recovery tracker.NativeRecovery
+		planOnly bool
+		want     bool
+	}{
+		{name: "latest landing refusal names review conversations", recovery: recovery("version_1", refusal), want: true},
+		{name: "a later different landing refusal supersedes it", recovery: recovery("version_1", "GitHub refused the pull request operation: Pull Request is still a draft")},
+		{name: "a refusal of an earlier version does not apply", recovery: recovery("version_0", refusal)},
+		{name: "planning does not receive the review handoff", recovery: recovery("version_1", refusal), planOnly: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			workflow := config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}}, Prompt: "Implement the issue"}
+			prompt, err := BuildPrompt(workflow, connector.Issue{ID: "wi_1", State: "Rework"}, PromptOptions{PlanOnly: test.planOnly, ReviewConversationRefusal: NativeReviewConversationRefusal(test.recovery)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			index := strings.Index(prompt, "## Landing refused: unresolved review conversations")
+			if (index >= 0) != test.want {
+				t.Fatalf("review conversation handoff present = %t, want %t", index >= 0, test.want)
+			}
+			if !test.want {
+				return
+			}
+			for _, required := range []string{"detent_read_review_threads", "detent_resolve_review_thread", "stages no change and resolves no conversation", finding} {
+				if !strings.Contains(prompt[index:], required) {
+					t.Errorf("review conversation handoff missing %q", required)
+				}
+			}
+		})
+	}
+}

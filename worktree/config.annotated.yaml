@@ -1,0 +1,77 @@
+# Use the GitHub issue-label status source when a project does not use
+# ProjectV2 or a custom issue Status field.
+tracker:
+  kind: github
+  api_key: replace-with-a-github-token
+  github_status_source: label
+  repository: example/example
+  status_label_prefix: "detent:"
+  lanes:
+    - name: Backlog
+      role: holding
+    - name: Human Review
+      role: holding
+    - name: Blocked
+      role: holding
+    - name: Todo
+      role: active
+    - name: In Progress
+      role: active
+    - name: Rework
+      role: active
+    - name: Merging
+      role: active
+    - name: Done
+      role: terminal
+    - name: Cancelled
+      role: terminal
+  state_map:
+    Backlog: Backlog
+    Todo: Todo
+    In Progress: In Progress
+    Human Review: Human Review
+    Rework: Rework
+    Merging: Merging
+    Done: Done
+    Cancelled: Done
+# Keep worktrees outside the source checkout. The isolated cache strategy
+# prevents mutable build state from leaking between concurrent agents.
+workspace:
+  kind: local_git
+  root: /var/tmp/detent-workspaces
+  auto_branch: true
+# Reuse ambient gh authentication through an isolated worker config directory.
+# When principals match, workers brake above the 1000-request dispatch floor.
+worker:
+  github_token: gh
+  github_rest_min_remaining_reserve: 1250
+  github_rest_poll_interval_ms: 60000
+# Bound fleet concurrency globally and serialize only the merge lane.
+review:
+  human: false
+agent:
+  max_concurrent_agents: 4
+  # The project may override global subscription-provider pacing. Missing or
+  # stale provider buckets fail open to max_concurrent_agents.
+  rate_window_pacing:
+    mode: proportional
+    floor_percent: 20
+    stale_after_seconds: 900
+  max_concurrent_agents_by_state:
+    Merging: 1
+  auto_promote:
+    enabled: true
+    source_state: Human Review
+    pass_state: Merging
+    rework_state: Rework
+    quiet_seconds: 600
+# The command gate runs in the isolated worktree. Automated review remains a
+# required independent signal before automatic promotion.
+gate:
+  kind: command
+  run: make check
+  automated_review: required
+# Hooks are trusted commands. This example only installs dependencies after a
+# new worktree is created.
+hooks:
+  after_create: go mod download
