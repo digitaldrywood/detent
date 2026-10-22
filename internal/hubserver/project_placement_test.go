@@ -68,6 +68,14 @@ func TestPlacementClaims(t *testing.T) {
 		{"no local", "local_first", "absent", "sprite", 3, http.StatusOK, -1},
 		{"no local below threshold", "local_first", "absent", "sprite", 2, http.StatusConflict, -1},
 		{"non-Todo work uses Todo overflow eligibility", "local_first", "full", "sprite", 4, http.StatusOK, -1},
+		{"managed blended manual Sprite desired 2", "blended", "free", "sprite", 3, http.StatusOK, 2},
+		{"managed blended manual Sprite desired 0", "blended", "free", "sprite", 3, http.StatusOK, 0},
+		{"managed manual Sprite preserves project grant", "blended", "grant", "sprite", 3, http.StatusNotFound, 2},
+		{"managed manual Sprite preserves disabled state", "blended", "disabled", "sprite", 3, http.StatusConflict, 2},
+		{"managed manual Sprite preserves unavailable execution", "blended", "execution", "sprite", 3, http.StatusConflict, 2},
+		{"managed manual Sprite preserves dependency hold", "blended", "dependency", "sprite", 3, http.StatusConflict, 2},
+		{"managed manual Sprite retains local-first preference", "local_first", "free", "sprite", 3, http.StatusConflict, 2},
+		{"managed sprites_only admits manual Sprite", "sprites_only", "free", "sprite", 3, http.StatusOK, 2},
 		{"managed blended local desired 2", "blended", "free", "local", 3, http.StatusOK, 2},
 		{"managed blended local desired 0", "blended", "free", "local", 3, http.StatusOK, 0},
 		{"managed local_first local desired 2", "local_first", "free", "local", 3, http.StatusOK, 2},
@@ -152,6 +160,15 @@ func TestPlacementClaims(t *testing.T) {
 				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE project_sprite_allocations SET provision_failures=3,revision=2 WHERE project_id=?`, f.project.ID); err != nil {
 					t.Fatal(err)
 				}
+				if test.claimant == "sprite" {
+					for i := range 2 {
+						historical := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim)
+						now := formatHubTime(f.service.config.now())
+						if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,allocation_project_id,name,provider_organization,enrollment_id,state,bootstrap_log,idle_since,created_at) VALUES(?,?,?,'test',?,'deleted','bootstrap failed',?,?)`, f.project.OrganizationID, f.project.ID, fmt.Sprintf("historical-%d", i), historical.enrollment.ID, now, now); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 				allocation, err := readProjectSpriteAllocation(t.Context(), f.service.database.reader, scope)
 				if err != nil || allocation.AllocatedCount != 0 || allocation.ProvisionFailures != 3 || allocation.Shortfall != test.desired {
 					t.Fatalf("allocation=%+v err=%v", allocation, err)
@@ -175,6 +192,14 @@ func TestPlacementClaims(t *testing.T) {
 			}
 			claim := providerClaim(r, issue, "placement")
 			switch test.local {
+			case "disabled":
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET state='disabled' WHERE id=?`, r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			case "execution":
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET backend_isolation_json='{}' WHERE id=?`, r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
 			case "runner_full":
 				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET capacity_limit=1 WHERE id=?`, r.binding.RunnerID); err != nil {
 					t.Fatal(err)
@@ -217,6 +242,16 @@ func TestPlacementClaims(t *testing.T) {
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 			requireNativeStatus(t, response, test.want)
 			if test.desired >= 0 {
+				if test.claimant == "sprite" {
+					var adopted int
+					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM organization_sprite_members WHERE organization_id=? AND enrollment_id=?`, f.project.OrganizationID, sprite.enrollment.ID).Scan(&adopted); err != nil || adopted != 0 {
+						t.Fatalf("manual runner adopted=%d err=%v", adopted, err)
+					}
+					allocation, err := readProjectSpriteAllocation(t.Context(), f.service.database.reader, scope)
+					if err != nil || allocation.DesiredCount != test.desired || allocation.AllocatedCount != 0 || allocation.ProvisionFailures != 3 {
+						t.Fatalf("allocation changed: %+v err=%v", allocation, err)
+					}
+				}
 				runners, err := readPlacementRunners(t.Context(), f.service.database.reader, scope, f.service.config.now())
 				if err != nil {
 					t.Fatal(err)
@@ -228,7 +263,7 @@ func TestPlacementClaims(t *testing.T) {
 					}
 				}
 				wantLocals := 3
-				if test.local == "grant" {
+				if test.local == "grant" && test.claimant == "local" {
 					wantLocals = 2
 				}
 				if test.mode == "sprites_only" {
@@ -374,8 +409,8 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 		{"explicit Sprite maximum bounds concurrent warm claims", "blended", 1, 0, 1, 1, false, ""},
 		{"legacy blended retains deployed capacity", "blended", 1, 0, 0, 6, false, ""},
 		{"organization Sprite maximum spans projects", "blended", 1, 0, 1, 1, true, ""},
-		{"managed zero holds organization runners", "blended", 4, 0, 0, 0, true, "zero"},
-		{"managed project requires explicit member ownership", "blended", 4, 0, 0, 0, false, "manual"},
+		{"managed zero permits granted manual organization runners", "blended", 4, 0, 0, 6, true, "zero"},
+		{"managed project permits granted manual Sprites", "blended", 4, 0, 0, 6, false, "manual"},
 		{"desired members do not cap job slots", "blended", 4, 0, 0, 6, false, "owned"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
