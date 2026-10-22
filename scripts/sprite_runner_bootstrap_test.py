@@ -72,7 +72,11 @@ elif name == "apt-get":
                 sys.exit(100)
             if package.startswith("postgresql-client-"):
                 candidates = json.loads(os.environ.get("PSQL_CANDIDATES", '{"postgresql-client-17": "17.10-0ubuntu0.25.10.1"}'))
-                if candidates.get(package) != version or os.environ.get("PSQL_INSTALL_FAIL"):
+                if candidates.get(package) != version:
+                    print(f"E: Version '{version}' for '{package}' was not found", file=sys.stderr)
+                    sys.exit(100)
+                if os.environ.get("PSQL_INSTALL_FAIL"):
+                    print("E: Failed to fetch https://example.invalid/package", file=sys.stderr)
                     sys.exit(100)
                 binary = root / package / "bin/psql"
                 if not os.environ.get("PSQL_BINARY_MISSING"):
@@ -858,6 +862,10 @@ class SpriteBootstrapTests(unittest.TestCase):
                 self.assertNotIn(TOKEN, result.stdout + result.stderr)
                 if failure:
                     self.assertNotEqual(result.returncode, 0)
+                    if failure == "PSQL_INSTALL_FAIL":
+                        self.assertEqual(result.returncode, 100)
+                        self.assertIn("E: Failed to fetch", result.stderr)
+                        self.assertIn("Last completed step: GitHub CLI, ripgrep and fd installed.", result.stderr)
                     if failure == "configured APT repositories":
                         self.assertTrue(link.is_symlink())
                     else:

@@ -114,6 +114,7 @@ type spritePoolProvider struct {
 	conflictStatus   int
 	created, deleted []string
 	runners          []runnerauth.Redemption
+	manual           []runnerFixture
 	checkpoint       int
 	started          chan struct{}
 	deleteStarted    chan struct{}
@@ -235,6 +236,14 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 			_ = conn.Write(r.Context(), websocket.MessageBinary, []byte{3, 7})
 			return
 		}
+		if provider.fail == "installer" {
+			output := "Customer setup completed\nRunner bootstrap started\nInstalling PostgreSQL client " + provider.token + "\nE: Version '" + spritesSecretSentinel + "' for 'postgresql-client-17' was not found\nAuthorization: Bearer private-provider-secret\nBootstrap stopped. Last completed step: GitHub CLI, ripgrep and fd installed.\n"
+			_ = conn.Write(r.Context(), websocket.MessageBinary, append([]byte{1}, []byte(output[:20])...))
+			_ = conn.Write(r.Context(), websocket.MessageBinary, append([]byte{1}, []byte(output[20:])...))
+			_ = conn.Write(r.Context(), websocket.MessageBinary, append([]byte{1}, []byte(strings.Repeat("E: Failed to fetch https://private-provider-secret\n", 1000))...))
+			_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"exit","exit_code":100}`))
+			return
+		}
 		name := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/sprites/"), "/")[0]
 		binding := runnerauth.NewBinding()
 		credential, err := apikey.GenerateToken()
@@ -293,6 +302,9 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 	f.create(t, "first")
 	f.create(t, "second")
 	f.service.spriteWakeWork.Wait()
+	if failure == "installer" {
+		provider.manual = enrollSpriteWakeRunners(t, f, time.Hour, "existing-one", "existing-two")
+	}
 	f.service.config.Hosted = &HostedConfig{PublicURL: "https://hub.example.test"}
 	f.service.config.Version = "v0.117.99"
 	f.service.config.generateToken = func() (string, error) {
@@ -342,6 +354,7 @@ func TestSpritePoolLifecycle(t *testing.T) {
 		{"two independent connected members then idle deletion", "", 2, 2, 2, false, nil, false, "", nil},
 		{"project heartbeat triggers idle cleanup", "", 2, 2, 2, true, nil, false, "", nil},
 		{"bootstrap failure deletes only its member", "bootstrap", 1, 1, 0, false, nil, false, "", nil},
+		{"installer failure retains bounded safe diagnostics", "installer", 1, 1, 0, false, nil, false, "", nil},
 		{"checkpoint failure deletes enrolled member", "checkpoint", 1, 1, 1, false, nil, false, "", nil},
 		{"billing failure is retained for onboarding", "billing", 1, 1, 0, false, nil, false, "", nil},
 		{"token rejection is retained for onboarding", "invalid token", 1, 1, 0, false, nil, false, "", nil},
@@ -398,6 +411,16 @@ func TestSpritePoolLifecycle(t *testing.T) {
 				}
 				if test.failure == "" && (member.State != "enrolled" || member.RunnerID == "") {
 					t.Fatalf("successful member = %+v", member)
+				}
+				if test.failure == "installer" {
+					for _, want := range []string{"Runner installer: installing PostgreSQL client", "Runner installer: APT requested package version unavailable", "Runner installer stopped after: GitHub CLI, ripgrep and fd installed", "Bootstrap exited with code 100", "Bootstrap did not complete"} {
+						if !strings.Contains(member.BootstrapLog, want) {
+							t.Fatalf("missing %q in %s", want, member.BootstrapLog)
+						}
+					}
+					if len(member.BootstrapLog) > 8500 {
+						t.Fatalf("unbounded bootstrap log: %d bytes", len(member.BootstrapLog))
+					}
 				}
 				if test.failure == "" {
 					token, tokenErr := f.service.poolSpriteToken(t.Context(), scope, member.Name)
@@ -469,6 +492,15 @@ func TestSpritePoolLifecycle(t *testing.T) {
 			}
 			if len(provider.created) != test.wantCreated || len(provider.deleted) != test.wantDeleted || provider.checkpoint != test.wantCheckpoint {
 				t.Fatalf("provider created=%d deleted=%d checkpoint=%d", len(provider.created), len(provider.deleted), provider.checkpoint)
+			}
+			for _, runner := range provider.manual {
+				for _, deleted := range provider.deleted {
+					if deleted == runner.redemption.SpriteName {
+						t.Fatal("failed provisioning deleted a preexisting Sprite")
+					}
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"capacity": 1, "version": "fixture"})
+				requireNativeStatus(t, response, http.StatusOK)
 			}
 			view, err = f.service.readSpritePool(t.Context(), scope)
 			if err != nil {
