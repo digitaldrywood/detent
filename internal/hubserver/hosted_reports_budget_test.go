@@ -17,7 +17,7 @@ import (
 
 func TestReportsLongRangeReadBudget(t *testing.T) {
 	f := newUsageHostedFixture(t)
-	now := f.service.config.now().UTC().Truncate(time.Hour)
+	now := f.service.config.now().UTC().Truncate(24 * time.Hour).Add(-12 * time.Hour)
 	f.service.config.now = func() time.Time { return now }
 	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
 	seedProductionProject(t, f.service, scope, productionProjectShape{issues: 990, attempts: 990, usage: 660, leases: 1682, comments: 7000, days: 180})
