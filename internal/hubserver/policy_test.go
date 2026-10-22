@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -652,5 +653,128 @@ func clearNativeFixturePolicy(t *testing.T, f nativeFixture) {
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM policy_revisions WHERE scope=? AND approved_by='fixture'", scope); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestApprovedPolicyClaimExposure(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{config.BillingModeMetered, config.BillingModeSubscription} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			f := newDefaultNativeFixture(t, Config{})
+			cfg := config.Default()
+			cfg.Tracker.Kind = config.TrackerHubNative
+			cfg.Budget.BillingMode = mode
+			cfg.Plan.Enabled = false
+			cfg.Gate.SecurityAudit.Enabled = false
+			cfg.Gate.Validator.Enabled = true
+			cfg.Runners = config.Runners{Profile: "approved", Profiles: map[string]policy.Requirements{"approved": {RequiredTags: []string{"linux"}}}}
+			descriptor, err := config.ResolvePolicy(config.Workflow{Config: cfg})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var behavior map[string]json.RawMessage
+			if err := json.Unmarshal(descriptor.Configuration.Behavior, &behavior); err != nil {
+				t.Fatal(err)
+			}
+			behavior["RetiredBehavior"] = json.RawMessage(`{"Enabled":true}`)
+			delete(behavior, "Gate")
+			descriptor.Configuration.Behavior, err = json.Marshal(behavior)
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptor.SourceRevision = strings.Repeat("b", 64)
+			descriptor = descriptor.WithID()
+			raw, err := json.Marshal(descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			db := f.service.database.db
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			policyScope := string(scope.organization) + "/" + string(scope.project)
+			if _, err := db.ExecContext(t.Context(), "INSERT INTO policy_revisions (scope,policy_id,metadata_json,approved_by,approved_at) VALUES (?,?,?,'fixture',?)", policyScope, descriptor.ID, string(raw), formatHubTime(f.service.config.now())); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(t.Context(), "UPDATE project_policies SET policy_id=? WHERE scope=?", descriptor.ID, policyScope); err != nil {
+				t.Fatal(err)
+			}
+			r := placementFixtureRunner(t, f, "local-runner", "local", false, 1, "gpt-6.1-sol")
+			exposure, err := monthlyClaimExposure(t.Context(), db, scope, r.binding.MachineID, false)
+			if err != nil || exposure.SpriteInfrastructure || exposure.RunnerAPI != (mode == config.BillingModeMetered) {
+				t.Fatalf("claim exposure = %+v, error = %v", exposure, err)
+			}
+			contract, err := nativeIssueContractConfig(t.Context(), db, scope)
+			if err != nil || contract.Budget.EffectiveBillingMode() != mode || contract.Plan.Enabled || contract.Gate.SecurityAudit.Enabled != descriptor.Gates.SecurityAudit || contract.Gate.Validator.Enabled != descriptor.Gates.Validator {
+				t.Fatalf("issue contract configuration = %+v, error = %v", contract, err)
+			}
+			snapshot, err := readPlacementSnapshotWithCapacity(t.Context(), db, scope, f.service.config.now(), nil, newPlacementCapacity(), make(map[string]bool))
+			if err != nil || snapshot.resolver == nil || !reflect.DeepEqual(snapshot.Requirements, policy.Requirements{RequiredTags: []string{"linux"}}) || strings.Contains(strings.ToLower(snapshot.Reason), "approval") {
+				t.Fatalf("placement = %+v, error = %v", snapshot, err)
+			}
+			approved, err := readProjectPolicy(t.Context(), db, policyScope)
+			if err != nil || !reflect.DeepEqual(approved.Policy, descriptor) {
+				t.Fatalf("stored policy changed: %+v, error = %v", approved, err)
+			}
+		})
+	}
+}
+
+func TestNativePolicySubmissionConsistency(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		change func(*policy.Descriptor)
+	}{
+		{"gates", func(d *policy.Descriptor) { d.Gates.SecurityAudit = !d.Gates.SecurityAudit }},
+		{"validator", func(d *policy.Descriptor) { d.Gates.Validator = !d.Gates.Validator }},
+		{"planning", func(d *policy.Descriptor) { d.Gates.PlanEnabled = !d.Gates.PlanEnabled }},
+		{"requirements", func(d *policy.Descriptor) { d.Requirements.RequiredTags = []string{"privileged"} }},
+		{"profile", func(d *policy.Descriptor) { d.Profile = "privileged" }},
+		{"revision", func(d *policy.Descriptor) { d.SourceRevision = strings.Repeat("b", 64) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newDefaultNativeFixture(t, Config{})
+			path := string(f.project.OrganizationID) + "/" + string(f.project.ID)
+			before, err := readProjectPolicy(t.Context(), f.service.database.db, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Default()
+			cfg.Tracker.Kind = config.TrackerHubNative
+			descriptor, err := config.ResolvePolicy(config.Workflow{Config: cfg})
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.change(&descriptor)
+			descriptor = descriptor.WithID()
+			if err := descriptor.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			for _, submission := range []struct {
+				method, path string
+				body         any
+			}{
+				{http.MethodPut, f.base + "/policy", policy.Change{ExpectedID: before.Policy.ID, Policy: descriptor}},
+				{http.MethodPost, f.base + "/policy/observed", policy.Observation{Descriptor: descriptor}},
+			} {
+				response := performHubAPIRequest(t, f.service, submission.method, submission.path, testHubAdminToken, submission.body)
+				requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+				if !strings.Contains(response.Body.String(), "policy_mismatch") {
+					t.Fatalf("submission refused for unrelated reason: %s", response.Body.String())
+				}
+			}
+			after, err := readProjectPolicy(t.Context(), f.service.database.db, path)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("inconsistent submission changed approval: %+v, error = %v", after, err)
+			}
+			var observations int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM project_observed_policies WHERE scope=?", path).Scan(&observations); err != nil {
+				t.Fatal(err)
+			}
+			if observations != 0 {
+				t.Fatalf("inconsistent observations stored: %d", observations)
+			}
+		})
 	}
 }

@@ -204,9 +204,58 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 	if descriptor.Configuration == nil {
 		return workflow, nil
 	}
+	workflow, err := applyNativePolicyConfiguration(workflow, descriptor)
+	if err != nil {
+		return Workflow{}, err
+	}
+	cfg := &workflow.Config
+	cfg.Review.Human = descriptor.Gates.HumanReview
+	effectiveGate := gate.Effective(cfg.Gate)
+	if effectiveGate.Kind != descriptor.Gates.Kind {
+		cfg.Gate.Kind = descriptor.Gates.Kind
+	}
+	if effectiveGate.AutomatedReview != descriptor.Gates.AutomatedReview {
+		cfg.Gate.AutomatedReview = descriptor.Gates.AutomatedReview
+	}
+	cfg.Gate.Validator.Enabled = descriptor.Gates.Validator
+	cfg.Gate.SecurityAudit.Enabled = descriptor.Gates.SecurityAudit
+	cfg.Plan.Enabled = descriptor.Gates.PlanEnabled
+	if gate.EffectivePlan(cfg.Plan).Review != descriptor.Gates.PlanReview {
+		cfg.Plan.Review = descriptor.Gates.PlanReview
+	}
+	cfg.Agent.AutoPromote.Enabled = descriptor.Gates.AutoPromote
+	if cfg.Deliverable.EffectiveMergeMethod() != descriptor.Gates.MergeMethod {
+		cfg.Deliverable.MergeMethod = descriptor.Gates.MergeMethod
+	}
+	cfg.Deliverable.GitHubPullRequest = descriptor.Gates.GitHubPullRequest
+	cfg.Runners.Profile = descriptor.Profile
+	if descriptor.Profile != "" && !reflect.DeepEqual(cfg.Runners.Profiles[descriptor.Profile].Normalized(), descriptor.Requirements) {
+		if cfg.Runners.Profiles == nil {
+			cfg.Runners.Profiles = make(map[string]policy.Requirements)
+		}
+		cfg.Runners.Profiles[descriptor.Profile] = descriptor.Requirements.Normalized()
+	}
+	return workflow, nil
+}
+
+func applyNativePolicyConfiguration(workflow Workflow, descriptor policy.Descriptor) (Workflow, error) {
+	defaults, err := json.Marshal(nativeProjectBehavior(Default()))
+	if err != nil {
+		return Workflow{}, fmt.Errorf("encode shared project defaults: %w", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(defaults, &fields); err != nil {
+		return Workflow{}, fmt.Errorf("decode shared project defaults: %w", err)
+	}
+	if err := json.Unmarshal(descriptor.Configuration.Behavior, &fields); err != nil {
+		return Workflow{}, fmt.Errorf("decode shared project behavior: %w", err)
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return Workflow{}, fmt.Errorf("encode shared project behavior: %w", err)
+	}
 	var behavior nativeBehavior
-	decoder := json.NewDecoder(bytes.NewReader(descriptor.Configuration.Behavior))
-	decoder.DisallowUnknownFields()
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	if err := decoder.Decode(&behavior); err != nil {
 		return Workflow{}, fmt.Errorf("decode shared project behavior: %w", err)
@@ -232,16 +281,6 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 	} else if descriptor.Configuration.DefinitionDigest != "" {
 		workflow.Definition.Layout = ProjectDefinitionCloud
 		workflow.SourceHash = descriptor.Configuration.DefinitionDigest
-	}
-	resolved, err := ResolvePolicy(workflow)
-	if err != nil {
-		return Workflow{}, err
-	}
-	if !reflect.DeepEqual(resolved.Gates, descriptor.Gates) || !reflect.DeepEqual(resolved.Requirements, descriptor.Requirements) || resolved.Profile != descriptor.Profile || !reflect.DeepEqual(resolved.Workflow, descriptor.Workflow) {
-		return Workflow{}, errors.New("policy_mismatch: runtime metadata differs from shared configuration")
-	}
-	if err := resolved.Match(descriptor); err != nil {
-		return Workflow{}, err
 	}
 	return workflow, nil
 }
@@ -322,11 +361,21 @@ func ResolveSharedPolicy(descriptor policy.Descriptor) (policy.Descriptor, error
 	if descriptor.Configuration == nil {
 		return descriptor, nil
 	}
-	workflow, err := ApplyNativePolicy(Workflow{Config: Default()}, descriptor)
+	workflow, err := applyNativePolicyConfiguration(Workflow{Config: Default()}, descriptor)
 	if err != nil {
 		return policy.Descriptor{}, err
 	}
 	if err := ValidateWorkflowAdmission(workflow); err != nil {
+		return policy.Descriptor{}, err
+	}
+	resolved, err := ResolvePolicy(workflow)
+	if err != nil {
+		return policy.Descriptor{}, err
+	}
+	if !reflect.DeepEqual(resolved.Gates, descriptor.Gates) || !reflect.DeepEqual(resolved.Requirements, descriptor.Requirements) || resolved.Profile != descriptor.Profile || !reflect.DeepEqual(resolved.Workflow, descriptor.Workflow) {
+		return policy.Descriptor{}, errors.New("policy_mismatch: runtime metadata differs from shared configuration")
+	}
+	if err := resolved.Match(descriptor); err != nil {
 		return policy.Descriptor{}, err
 	}
 	return descriptor, nil

@@ -21,8 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const placementPolicyApprovalPending = "Project policy approval is pending; compatible Todo demand is unavailable"
-
 type placementDecision struct {
 	Policy        policy.Placement `json:"policy"`
 	ReadyTodo     int              `json:"ready_todo"`
@@ -237,8 +235,7 @@ func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, sco
 	}
 	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, approval.Policy)
 	if err != nil {
-		result.Reason = placementPolicyApprovalPending
-		return result, nil
+		return result, err
 	}
 	result.Requirements = approval.Policy.Requirements
 	workflow.Config.Plan.Enabled = approval.Policy.Gates.PlanEnabled
@@ -605,9 +602,6 @@ func readOrganizationPlacementSnapshot(ctx context.Context, q nativeQueryer, sco
 			result.Pending += snapshot.Pending
 			result.Provisionable += snapshot.Provisionable
 			result.LocalFree += snapshot.LocalFree
-		}
-		if snapshot.Reason == placementPolicyApprovalPending {
-			result.Reason = snapshot.Reason
 		}
 		if snapshot.ProviderFree != nil {
 			if result.ProviderFree == nil {

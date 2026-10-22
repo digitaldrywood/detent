@@ -392,7 +392,9 @@ Removing a forbidden symbol from a list does not authorize its resurrection.
 **Enforcement:** `TestRepositorySources`, `TestSourceViolations`, and
 `TestMutationDocuments` in `internal/invariants` reject retired identifiers,
 assembled constants and GraphQL mutation budget queries, including aliases
-and fragments. INV-2's behavioral checks preserve infrastructure attribution.
+and fragments. `TestApprovedPolicyClaimExposure` in `internal/hubserver`
+preserves claim exposure across approved-policy behavior and release drift.
+INV-2's behavioral checks preserve infrastructure attribution.
 Review covers novel names, reflection and generated semantic equivalents.
 
 ## INV-10 — Priority only picks the next job

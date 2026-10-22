@@ -222,7 +222,7 @@ func TestProjectSecretPermissions(t *testing.T) {
 			})
 		}
 	})
-	t.Run("pending project policy approval keeps saved pool readable", func(t *testing.T) {
+	t.Run("older approved project policy keeps saved pool readable", func(t *testing.T) {
 		workflow := config.Workflow{Config: config.Default()}
 		workflow.Config.Tracker.Kind = config.TrackerHubNative
 		descriptor, err := config.ResolvePolicy(workflow)
@@ -251,7 +251,7 @@ func TestProjectSecretPermissions(t *testing.T) {
 		for _, path := range []string{"/api/v2/organizations/" + f.service.config.Hosted.OrganizationID + "/sprite-pool", strings.TrimSuffix(base, "/secrets/"+flySpritesToken) + "/sprite-pool"} {
 			var pool spritePoolView
 			decodeHubResponse(t, f.api(t, "owner", http.MethodGet, path, nil, http.StatusOK), &pool)
-			if pool.Bootstrap != "true" || pool.Revision == 0 || len(pool.Members) != 1 || pool.Members[0].Name != "pending-policy-sprite" || pool.Decision == nil || pool.Decision.Reason != placementPolicyApprovalPending || pool.RunnerSetupDeclared != nil {
+			if pool.Bootstrap != "true" || pool.Revision == 0 || len(pool.Members) != 1 || pool.Members[0].Name != "pending-policy-sprite" || pool.Decision == nil || strings.Contains(strings.ToLower(pool.Decision.Reason), "approval") || pool.RunnerSetupDeclared != nil {
 				t.Fatalf("%s pool = %+v decision = %+v", path, pool, pool.Decision)
 			}
 		}
