@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -31,7 +30,8 @@ import (
 )
 
 func TestOperatorNativeWorkReadErrors(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "read-errors")
+	var logs hostedLogBuffer
+	f := newDefaultNativeFixture(t, Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
@@ -66,8 +66,6 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_json='[]' WHERE native_id=?", fault.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
-	var logs bytes.Buffer
-	f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	for _, transport := range []string{"stdio", "http"} {
 		t.Run(transport, func(t *testing.T) {
 			for _, test := range []struct {
@@ -88,7 +86,7 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 					call := hostedContextProtocol(t, f.service, callCtx, transport)
 					for _, tool := range []string{operatortool.WorkItem, operatortool.WorkRuns, operatortool.WorkHistory, operatortool.WorkComments, operatortool.WorkRelationships, operatortool.ExplainItem, operatortool.BoardActivity, operatortool.ListComments} {
 						t.Run(tool, func(t *testing.T) {
-							logs.Reset()
+							before := logs.String()
 							args := map[string]any{"project_id": string(f.project.ID), "reference": test.reference}
 							if tool == operatortool.ListComments {
 								delete(args, "reference")
@@ -107,23 +105,41 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 							if !result.IsError || len(result.Content) != 1 || test.name != "server fault" && result.Content[0].Text != test.want {
 								t.Fatalf("tool error=%s %s, want %q", reply.Result, reply.Error, test.want)
 							}
+							var faults []json.RawMessage
+							for line := range strings.SplitSeq(strings.TrimPrefix(logs.String(), before), "\n") {
+								if line == "" {
+									continue
+								}
+								var record struct {
+									Message string `json:"msg"`
+								}
+								if err := json.Unmarshal([]byte(line), &record); err != nil {
+									t.Fatal(err)
+								}
+								if record.Message == "operator tool failed" {
+									faults = append(faults, json.RawMessage(line))
+								}
+							}
 							if test.name == "server fault" {
+								if len(faults) != 1 {
+									t.Fatalf("expected one tool fault: %s", faults)
+								}
 								var entry struct {
 									Tool          string `json:"tool"`
 									CorrelationID string `json:"correlation_id"`
 									Error         string `json:"error"`
 								}
-								if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
-									t.Fatalf("fault log=%s: %v", logs.Bytes(), err)
+								if err := json.Unmarshal(faults[0], &entry); err != nil {
+									t.Fatalf("fault log=%s: %v", faults[0], err)
 								}
 								if entry.Tool != tool || entry.CorrelationID == "" || !strings.Contains(entry.Error, "cannot unmarshal array") {
-									t.Fatalf("lost fault context: %s", logs.Bytes())
+									t.Fatalf("lost fault context: %s", faults[0])
 								}
 								if want := test.want + " (reason_code service_unavailable, correlation_id " + entry.CorrelationID + ")"; result.Content[0].Text != want {
 									t.Fatalf("tool error text = %q, want %q", result.Content[0].Text, want)
 								}
-							} else if logs.Len() != 0 {
-								t.Fatalf("expected read failure logged as server fault: %s", logs.Bytes())
+							} else if len(faults) != 0 {
+								t.Fatalf("expected read failure logged as server fault: %s", faults)
 							}
 						})
 					}

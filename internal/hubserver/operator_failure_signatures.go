@@ -211,9 +211,25 @@ FROM failures a WHERE 1=1`
 		if err := rows.Scan(&f.attemptID, &f.workItem, &status, &from, &to, &at, &raw, &f.cost, &f.tokens); err != nil {
 			return nil, false, err
 		}
-		var data tracker.NativeRunData
-		if err := decodeRunDetail(ctx, raw, &data); err != nil {
+		var stored struct {
+			Detail          *runDetailReference            `json:"detail"`
+			TerminalFailure *tracker.NativeTerminalFailure `json:"terminal_failure"`
+			Finalization    *tracker.NativeFinalization    `json:"finalization"`
+			Runtime         *struct {
+				Landing    *tracker.NativeLandingReceipt `json:"landing"`
+				Validation *gate.CommandResult           `json:"validation"`
+			} `json:"runtime"`
+		}
+		if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 			return nil, false, err
+		}
+		data := tracker.NativeRunData{TerminalFailure: stored.TerminalFailure, Finalization: stored.Finalization}
+		if stored.Detail != nil {
+			if err := decodeRunDetail(ctx, raw, &data); err != nil {
+				return nil, false, err
+			}
+		} else if stored.Runtime != nil {
+			data.Runtime = &tracker.NativeRuntimeObservation{Landing: stored.Runtime.Landing, Validation: stored.Runtime.Validation}
 		}
 		f.example, f.class = failureFromAttempt(data, status)
 		if f.example == "" {
