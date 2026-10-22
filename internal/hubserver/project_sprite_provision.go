@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -95,14 +96,38 @@ func (s *Service) poolSpriteRequest(ctx context.Context, scope nativeScope, name
 }
 
 func (s *Service) createPoolSprite(ctx context.Context, scope nativeScope, settings spritePoolSettings, allowOrganization bool) (bool, error) {
-	scope.project = ""
+	return s.createPoolSpriteWithNames(ctx, scope, settings, allowOrganization, &spriteNameGenerator{intN: rand.IntN})
+}
+
+func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope nativeScope, settings spritePoolSettings, allowOrganization bool, names *spriteNameGenerator) (bool, error) {
 	if s.config.Hosted == nil || settings.MaxRunners == 0 {
 		return false, nil
 	}
 	if _, err := s.poolSpriteTokenAvailable(ctx, scope); err != nil {
 		return false, err
 	}
-	name := "detent-" + strings.TrimPrefix(newNativeID("sprite"), "sprite_")
+	created := false
+	for {
+		name, err := names.next(func(name string) (bool, error) {
+			readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+			defer cancel()
+			var exists bool
+			err := s.database.reader.QueryRowContext(readCtx, `SELECT EXISTS(SELECT 1 FROM organization_sprite_members WHERE organization_id=? AND name=?)`, scope.organization, name).Scan(&exists)
+			return exists, err
+		})
+		if err != nil {
+			return created, err
+		}
+		reserved, err := s.createPoolSpriteNamed(ctx, scope, settings, allowOrganization, name)
+		created = created || reserved
+		if !errors.Is(err, errSpriteNameTaken) {
+			return created, err
+		}
+	}
+}
+
+func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, settings spritePoolSettings, allowOrganization bool, name string) (bool, error) {
+	scope.project = ""
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -210,7 +235,12 @@ func (s *Service) createPoolSprite(ctx context.Context, scope nativeScope, setti
 	if err != nil {
 		return false, err
 	}
-	inserted, err := tx.ExecContext(ctx, `INSERT INTO organization_sprite_members(organization_id,name,provider_organization,enrollment_id,state,idle_since,created_at,allocation_project_id,allocation_revision) SELECT ?,?,organization_slug,?,'bootstrapping',?,?,?,? FROM organization_secrets WHERE organization_id=? AND kind=?`, scope.organization, name, enrollment.ID, formatHubTime(now), formatHubTime(now), scope.project, allocationRevision, scope.organization, flySpritesToken)
+	inserted, err := tx.ExecContext(ctx, `INSERT INTO organization_sprite_members(organization_id,name,provider_organization,enrollment_id,state,idle_since,created_at,allocation_project_id,allocation_revision) SELECT ?,?,organization_slug,?,'bootstrapping',?,?,?,? FROM organization_secrets WHERE organization_id=? AND kind=? ON CONFLICT(organization_id,name) DO NOTHING`, scope.organization, name, enrollment.ID, formatHubTime(now), formatHubTime(now), scope.project, allocationRevision, scope.organization, flySpritesToken)
+	if err == nil {
+		if count, countErr := inserted.RowsAffected(); countErr == nil && count == 0 {
+			return false, errSpriteNameTaken
+		}
+	}
 	if err := requireRunnerUpdate(inserted, err); err != nil {
 		return false, err
 	}
@@ -230,6 +260,12 @@ func (s *Service) createPoolSprite(ctx context.Context, scope nativeScope, setti
 	}
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
+	if errors.Is(err, errSpriteNameTaken) {
+		if cancelErr := s.cancelPoolSpriteReservation(cleanup, scope, member, err); cancelErr != nil {
+			return true, cancelErr
+		}
+		return true, errSpriteNameTaken
+	}
 	stale := errors.Is(err, errSpriteReservationStale)
 	failure := "Sprite provisioning did not complete; check customer setup and retry\n"
 	if stale {
@@ -260,7 +296,7 @@ func (s *Service) requireSpriteMemberWanted(ctx context.Context, scope nativeSco
 }
 
 func (s *Service) cancelPoolSpriteReservation(ctx context.Context, scope nativeScope, member spritePoolMember, cause error) error {
-	if !errors.Is(cause, errSpriteReservationStale) {
+	if !errors.Is(cause, errSpriteReservationStale) && !errors.Is(cause, errSpriteNameTaken) {
 		return errors.Join(cause, s.retirePoolSpriteReservation(ctx, scope, member.Name, "Sprite provisioning did not start\n", false))
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
@@ -271,7 +307,7 @@ func (s *Service) cancelPoolSpriteReservation(ctx context.Context, scope nativeS
 	if _, err := tx.ExecContext(ctx, `UPDATE runner_enrollments SET revoked_at=? WHERE id=? AND organization_id=? AND revoked_at IS NULL`, formatHubTime(s.config.now()), member.EnrollmentID, scope.organization); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE organization_sprite_members SET state='deleted',bootstrap_log=bootstrap_log || ? WHERE organization_id=? AND name=? AND state='bootstrapping'`, errSpriteReservationStale.Error()+" before paid creation; its reservation was cancelled\n", scope.organization, member.Name); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE organization_sprite_members SET state='deleted',bootstrap_log=bootstrap_log || ? WHERE organization_id=? AND name=? AND state IN ('bootstrapping','deleting')`, cause.Error()+" before paid creation; its reservation was cancelled\n", scope.organization, member.Name); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -327,6 +363,20 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, me
 	}
 	data, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	_ = response.Body.Close()
+	if response.StatusCode == http.StatusConflict {
+		return errSpriteNameTaken
+	}
+	if response.StatusCode == http.StatusBadRequest && readErr == nil {
+		var failure struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(data, &failure) == nil {
+			message := strings.ToLower(failure.Error)
+			if strings.Contains(message, "already exists") || strings.Contains(message, "already taken") {
+				return errSpriteNameTaken
+			}
+		}
+	}
 	if response.StatusCode != http.StatusCreated {
 		return spritesResponseError(response.StatusCode)
 	}

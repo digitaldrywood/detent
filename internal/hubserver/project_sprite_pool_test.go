@@ -110,6 +110,8 @@ type spritePoolProvider struct {
 	f                nativeFixture
 	token            string
 	fail             string
+	nameConflicts    int
+	conflictStatus   int
 	created, deleted []string
 	runners          []runnerauth.Redemption
 	checkpoint       int
@@ -143,6 +145,15 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 			provider.mu.Lock()
 			provider.created = append(provider.created, body.Name)
 			provider.mu.Unlock()
+			if provider.nameConflicts > 0 {
+				provider.nameConflicts--
+				if provider.stage != nil {
+					provider.stage("create conflict")
+				}
+				w.WriteHeader(provider.conflictStatus)
+				_, _ = io.WriteString(w, `{"error":"Sprite name already exists"}`)
+				return
+			}
 			if provider.fail == "billing" || provider.fail == "invalid token" {
 				status := http.StatusPaymentRequired
 				if provider.fail == "invalid token" {
@@ -325,16 +336,18 @@ func TestSpritePoolLifecycle(t *testing.T) {
 		setup                                    *bool
 		emptyBootstrap                           bool
 		tier                                     string
+		names                                    []string
 	}{
-		{"sandbox pool", "", 2, 2, 2, false, nil, false, "sandbox"},
-		{"two independent connected members then idle deletion", "", 2, 2, 2, false, nil, false, ""},
-		{"project heartbeat triggers idle cleanup", "", 2, 2, 2, true, nil, false, ""},
-		{"bootstrap failure deletes only its member", "bootstrap", 1, 1, 0, false, nil, false, ""},
-		{"checkpoint failure deletes enrolled member", "checkpoint", 1, 1, 1, false, nil, false, ""},
-		{"billing failure is retained for onboarding", "billing", 1, 1, 0, false, nil, false, ""},
-		{"token rejection is retained for onboarding", "invalid token", 1, 1, 0, false, nil, false, ""},
-		{"empty bootstrap with declared setup", "", 2, 2, 2, false, new(true), true, ""},
-		{"empty bootstrap without setup", "", 2, 2, 2, false, new(false), true, ""},
+		{"sandbox pool", "", 2, 2, 2, false, nil, false, "sandbox", nil},
+		{"two independent connected members then idle deletion", "", 2, 2, 2, false, nil, false, "", nil},
+		{"project heartbeat triggers idle cleanup", "", 2, 2, 2, true, nil, false, "", nil},
+		{"bootstrap failure deletes only its member", "bootstrap", 1, 1, 0, false, nil, false, "", nil},
+		{"checkpoint failure deletes enrolled member", "checkpoint", 1, 1, 1, false, nil, false, "", nil},
+		{"billing failure is retained for onboarding", "billing", 1, 1, 0, false, nil, false, "", nil},
+		{"token rejection is retained for onboarding", "invalid token", 1, 1, 0, false, nil, false, "", nil},
+		{"empty bootstrap with declared setup", "", 2, 2, 2, false, new(true), true, "", nil},
+		{"empty bootstrap without setup", "", 2, 2, 2, false, new(false), true, "", nil},
+		{"legacy hex names survive reconciliation and retirement", "", 2, 2, 2, false, nil, false, "", []string{"detent-0123456789abcdef0123456789abcdef", "detent-fedcba9876543210fedcba9876543210"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, scope, provider := newSpritePoolFixture(t, test.failure)
@@ -349,7 +362,21 @@ func TestSpritePoolLifecycle(t *testing.T) {
 				}
 			}
 			var err error
-			if test.failure == "" {
+			if test.names != nil {
+				view, readErr := f.service.readSpritePool(t.Context(), scope)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				for _, name := range test.names {
+					created, createErr := f.service.createPoolSpriteNamed(t.Context(), scope, view.spritePoolSettings, true, name)
+					if !created || createErr != nil {
+						t.Fatalf("legacy member: created=%t err=%v", created, createErr)
+					}
+				}
+				if err = f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+					t.Fatal(err)
+				}
+			} else if test.failure == "" {
 				f.service.wakeSpriteRunnersAfter(scope, json.RawMessage(`{"state":"Todo"}`))
 				f.service.spriteWakeWork.Wait()
 			} else {
@@ -363,6 +390,9 @@ func TestSpritePoolLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, member := range view.Members {
+				if test.names == nil && !strings.HasPrefix(member.Name, "sprite-") || !validSpritesSlug(member.Name) {
+					t.Fatalf("invalid new member name %q", member.Name)
+				}
 				if strings.Contains(member.BootstrapLog, provider.token) || strings.Contains(member.BootstrapLog, "private-provider-secret") || strings.Contains(member.BootstrapLog, spritesSecretSentinel) {
 					t.Fatal("secret appeared in the retained bootstrap log")
 				}
@@ -370,6 +400,11 @@ func TestSpritePoolLifecycle(t *testing.T) {
 					t.Fatalf("successful member = %+v", member)
 				}
 				if test.failure == "" {
+					token, tokenErr := f.service.poolSpriteToken(t.Context(), scope, member.Name)
+					if tokenErr != nil || string(token) != spritesSecretSentinel {
+						t.Fatalf("member token lookup failed: %v", tokenErr)
+					}
+					clear(token)
 					r, err := readRunnerWithClock(t.Context(), f.service.database.db, scope.organization, member.RunnerID, f.service.config.now)
 					if err != nil || r.IsolationTier != view.IsolationTier {
 						t.Fatalf("provisioned tier=%q pool=%q err=%v", r.IsolationTier, view.IsolationTier, err)
@@ -451,6 +486,105 @@ func TestSpritePoolLifecycle(t *testing.T) {
 				}
 				if len(provider.created) != 3 {
 					t.Fatalf("next scale-up created %d total members, want 3", len(provider.created))
+				}
+			}
+		})
+	}
+}
+
+func TestSpritePoolNameCollisions(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		conflicts int
+		status    int
+		stored    bool
+		retired   bool
+	}{
+		{"free pair", 0, 0, false, false},
+		{"deleted member name is reserved", 0, 0, true, false},
+		{"provider bad request collision", 1, http.StatusBadRequest, false, false},
+		{"provider conflict collision", 1, http.StatusConflict, false, false},
+		{"retired conflict never deletes the existing Sprite", 1, http.StatusConflict, false, true},
+		{"provider collisions get suffix", 5, http.StatusBadRequest, false, false},
+		{"provider collisions are bounded", 10, http.StatusBadRequest, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, scope, provider := newSpritePoolFixture(t, "")
+			provider.nameConflicts, provider.conflictStatus = test.conflicts, test.status
+			if test.retired {
+				provider.stage = func(stage string) {
+					if stage == "create conflict" {
+						name := provider.created[len(provider.created)-1]
+						if err := f.service.retirePoolSpriteReservation(t.Context(), scope, name, "reservation retired\n", false); err != nil {
+							t.Error(err)
+						}
+					}
+				}
+			}
+			if test.stored {
+				hosted := f.service.config.Hosted
+				f.service.config.Hosted = nil
+				historical := prepareRunner(t, f, runnerauth.Read)
+				f.service.config.Hosted = hosted
+				now := formatHubTime(f.service.config.now())
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,'detent-test',?,'deleted',?,?)`, scope.organization, "sprite-bright-badger", historical.enrollment.ID, now, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			view, err := f.service.readSpritePool(t.Context(), scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.stored {
+				created, err := f.service.createPoolSpriteNamed(t.Context(), scope, view.spritePoolSettings, true, "sprite-bright-badger")
+				if created || !errors.Is(err, errSpriteNameTaken) || len(provider.created) != 0 {
+					t.Fatalf("insert collision was not retried: created=%t err=%v", created, err)
+				}
+			}
+			draws := 0
+			names := spriteNameGenerator{intN: func(n int) int {
+				value := draws / 2
+				draws++
+				return value % n
+			}}
+			for range 2 {
+				created, err := f.service.createPoolSpriteWithNames(t.Context(), scope, view.spritePoolSettings, true, &names)
+				if test.conflicts == 10 {
+					if !created || !errors.Is(err, errSpriteNamesExhausted) || len(provider.created) != 10 {
+						t.Fatalf("unbounded conflict handling: created=%t err=%v calls=%d", created, err, len(provider.created))
+					}
+					break
+				}
+				if !created || err != nil {
+					t.Fatalf("provision after collision: created=%t err=%v", created, err)
+				}
+			}
+			if len(provider.deleted) != 0 {
+				t.Fatalf("deleted a provider-owned name: %v", provider.deleted)
+			}
+			seen := make(map[string]bool)
+			for i, name := range provider.created {
+				if seen[name] || test.stored && name == "sprite-bright-badger" {
+					t.Fatalf("reused taken name %q", name)
+				}
+				seen[name] = true
+				if i < test.conflicts {
+					var state string
+					var revoked bool
+					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT m.state,e.revoked_at IS NOT NULL FROM organization_sprite_members m JOIN runner_enrollments e ON e.id=m.enrollment_id WHERE m.organization_id=? AND m.name=?`, scope.organization, name).Scan(&state, &revoked); err != nil {
+						t.Fatal(err)
+					}
+					if state != "deleted" || !revoked {
+						t.Fatalf("conflicted reservation state=%q revoked=%t", state, revoked)
+					}
+				}
+			}
+			if test.conflicts != 10 {
+				if len(provider.runners) != 2 || provider.checkpoint != 2 {
+					t.Fatalf("usable members=%d checkpoints=%d, want two", len(provider.runners), provider.checkpoint)
+				}
+				if test.conflicts == 5 && strings.Count(provider.created[5], "-") != 3 {
+					t.Fatalf("missing collision suffix: %q", provider.created[5])
 				}
 			}
 		})
