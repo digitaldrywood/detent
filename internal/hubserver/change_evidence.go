@@ -65,7 +65,7 @@ func (s *Service) submitChangeCheck(c echo.Context) error {
 		err = tx.QueryRowContext(ctx, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'check' AND source_key = ?", change.ID, request.CheckRunID).Scan(&previous)
 		if err == nil {
 			var result tracker.ChangeCheck
-			if err := json.Unmarshal([]byte(previous), &result); err != nil {
+			if err := decodeStorageJSON(ctx, []byte(previous), &result); err != nil {
 				return nil, err
 			}
 			oldContent, err := marshalNative(result.ChangeCheckResult)
@@ -207,7 +207,7 @@ func (s *Service) discussChangeCommand(ctx context.Context, tx *sql.Tx, scope na
 		err := tx.QueryRowContext(ctx, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'discussion' AND source_key = ?", change.ID, sourceKey).Scan(&raw)
 		if err == nil {
 			var existing tracker.ChangeDiscussion
-			err = json.Unmarshal([]byte(raw), &existing)
+			err = decodeStorageJSON(ctx, []byte(raw), &existing)
 			return existing, err
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -226,7 +226,7 @@ func storeChangeReview(ctx context.Context, tx *sql.Tx, organization, changeID s
 			return err
 		}
 		storedReview = tracker.ChangeReview{}
-		if err := json.Unmarshal(raw, &storedReview); err != nil {
+		if err := decodeStorageJSON(ctx, raw, &storedReview); err != nil {
 			return err
 		}
 		for role, result := range map[string]*gate.ValidatorResult{"validator": storedReview.Validator, "implementation_review": storedReview.ImplementationReview} {

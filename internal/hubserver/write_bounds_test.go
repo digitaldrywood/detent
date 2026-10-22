@@ -154,6 +154,9 @@ func TestINV18HubMigrationsUseTypedColumns(t *testing.T) {
 			t.Fatal(err)
 		}
 		up, _, _ := strings.Cut(string(raw), "-- +goose Down")
+		if filepath.Base(path) == "20261022040000_storage_conversion_progress.sql" && regexp.MustCompile(`(?i)\b(UPDATE|DELETE\s+FROM|INSERT|REPLACE|SELECT|VACUUM|DROP|ALTER|CREATE\s+(UNIQUE\s+)?INDEX)\b`).MatchString(up) {
+			t.Errorf("%s performs startup conversion or populated-table work", filepath.Base(path))
+		}
 		if filepath.Base(path) >= "20261021143500" && regexp.MustCompile(`(?is)CREATE\s+(?:UNIQUE\s+)?INDEX\b[^;]*\bjulianday\s*\(`).Match(raw) {
 			t.Errorf("%s adds a nonportable julianday expression index", filepath.Base(path))
 		}

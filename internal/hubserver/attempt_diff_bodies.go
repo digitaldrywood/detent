@@ -75,7 +75,7 @@ func (s *Service) attemptDiffBodyBatch(c echo.Context) error {
 		return c.JSON(http.StatusOK, batch)
 	}
 	err = s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE attempt_diffs SET manifest_expired=1 WHERE id IN (SELECT d.id FROM attempt_diffs d WHERE d.object_key<>'' AND d.manifest_expired=0 AND `+supersededDiffBody+` LIMIT 32)`, formatHubTime(now.Add(-diffBodyRetention))); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE attempt_diffs SET manifest_expired=1 WHERE id IN (SELECT d.id FROM attempt_diffs d WHERE (d.object_key<>'' OR EXISTS(SELECT 1 FROM attempt_diff_file_archives f WHERE f.diff_id=d.id)) AND d.manifest_expired=0 AND `+supersededDiffBody+` LIMIT 32)`, formatHubTime(now.Add(-diffBodyRetention))); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE attempt_diff_files SET patch_expired=1 WHERE patch_object<>'' AND patch_expired=0
@@ -230,7 +230,7 @@ func (s *Service) manifestDiffBodyExists(ctx context.Context, key string) (bool,
 	if len(parts) != 7 || parts[0] != "orgs" || parts[2] != "attempt-diffs" {
 		return false, nil
 	}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT id FROM attempt_diffs WHERE object_key<>'' AND manifest_expired=0 AND organization_id=? AND project_id=?`, parts[1], parts[3])
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT id FROM attempt_diffs d WHERE (object_key<>'' OR EXISTS(SELECT 1 FROM attempt_diff_file_archives f WHERE f.diff_id=d.id)) AND manifest_expired=0 AND organization_id=? AND project_id=?`, parts[1], parts[3])
 	if err != nil {
 		return false, err
 	}

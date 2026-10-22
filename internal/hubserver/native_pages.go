@@ -561,6 +561,11 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence >
 		if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
+		resolved, err := resolveStorageJSON(ctx, []byte(data))
+		if err != nil {
+			return tracker.Page[tracker.CollaborationEvent]{}, err
+		}
+		data = string(resolved)
 		if err := decodeRunHistory(ctx, data, &event.Data); err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
@@ -617,9 +622,13 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence >
 	}
 	hasMore := len(page.Items) > limit
 	if state, ok := ctx.Value(nativeArchiveContextKey{}).(*nativeArchiveRead); ok && state.section != nil && state.last > 0 {
+		through := state.last
+		if len(page.Items) > 0 {
+			through = max(through, page.Items[len(page.Items)-1].AggregateSequence)
+		}
 		var subsequent bool
 		err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>?)
-OR EXISTS(SELECT 1 FROM native_archive_sections WHERE organization_id=? AND project_id=? AND work_item_id=? AND kind='history' AND first_sequence>?)`, scope.organization, scope.project, item, state.last, scope.organization, scope.project, item, state.last).Scan(&subsequent)
+OR EXISTS(SELECT 1 FROM native_archive_sections WHERE organization_id=? AND project_id=? AND work_item_id=? AND kind='history' AND first_sequence>?)`, scope.organization, scope.project, item, through, scope.organization, scope.project, item, through).Scan(&subsequent)
 		if err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}

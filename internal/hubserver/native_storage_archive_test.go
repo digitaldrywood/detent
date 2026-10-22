@@ -594,6 +594,9 @@ func TestNativeStorageArchiveRunTimeline(t *testing.T) {
 	for index, path := range paths {
 		before[index] = read(index, path)
 	}
+	if err := a.service.convertLegacyStorage(t.Context(), a.service.config.now()); err != nil {
+		t.Fatal(err)
+	}
 	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
 		t.Fatal(err)
 	}

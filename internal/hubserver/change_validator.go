@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"math"
 	"net/http"
 	"strings"
@@ -179,7 +178,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		return "", err
 	}
 	var source tracker.NativeRunData
-	if err := json.Unmarshal([]byte(raw), &source); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &source); err != nil {
 		return "", err
 	}
 	if source.RunID != version.RunID || source.PolicyID != version.PolicyID || source.Identity == nil || (source.Identity.Role != "code" && source.Identity.Role != "rework") || source.Runtime == nil || source.Runtime.Activity == nil || source.Runtime.Activity.SessionID <= 0 {
@@ -192,7 +191,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 	if err := tx.QueryRowContext(ctx, "SELECT data_json FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND lease_id=?", scope.organization, scope.project, change.WorkItemID, request.LeaseID).Scan(&raw); err != nil {
 		return "", err
 	}
-	if err := json.Unmarshal([]byte(raw), &current); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &current); err != nil {
 		return "", err
 	}
 	var currentSession int64

@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -35,6 +36,22 @@ type attemptDiffFixture struct {
 	lease    tracker.NativeLease
 	attempt  string
 	run      string
+}
+
+type convertingDiffQuery struct {
+	nativeQueryer
+	convert func() error
+}
+
+func (q *convertingDiffQuery) QueryContext(ctx context.Context, statement string, args ...any) (*sql.Rows, error) {
+	if q.convert != nil && strings.Contains(statement, "attempt_diff_file_archives") {
+		convert := q.convert
+		q.convert = nil
+		if err := convert(); err != nil {
+			return nil, err
+		}
+	}
+	return q.nativeQueryer.QueryContext(ctx, statement, args...)
 }
 
 func newAttemptDiffFixture(t *testing.T) *attemptDiffFixture {
@@ -743,6 +760,41 @@ func TestAttemptDiffManifest(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	legacy.service.config.content = objects.call
+	if _, err := legacy.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET status='succeeded' WHERE id=?", f.attempt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.service.database.db.ExecContext(t.Context(), "UPDATE leases SET released_at=? WHERE lease_id=?", formatHubTime(now), f.lease.ID); err != nil {
+		t.Fatal(err)
+	}
+	for pass, want := range []int{200, 100, 0} {
+		if pass == 0 {
+			query := &convertingDiffQuery{nativeQueryer: legacy.service.database.reader, convert: func() error {
+				return legacy.service.convertLegacyStorage(t.Context(), now)
+			}}
+			files, err := readAttemptDiffFiles(legacy.service.contentContext(t.Context()), query, receipt.DiffID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if query.convert != nil {
+				t.Fatal("diff read did not interleave with conversion")
+			}
+			if !reflect.DeepEqual(files, expected) {
+				t.Fatalf("conversion during diff read returned %d files, want %d unchanged files", len(files), len(expected))
+			}
+		} else if err := legacy.service.convertLegacyStorage(t.Context(), now); err != nil {
+			t.Fatal(err)
+		}
+		var remaining int
+		if err := legacy.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attempt_diff_files WHERE diff_id=?", receipt.DiffID).Scan(&remaining); err != nil || remaining != want {
+			t.Fatalf("pass %d remaining=%d want=%d err=%v", pass, remaining, want, err)
+		}
+		mixed := legacy.get(t, "")
+		requireNativeStatus(t, mixed, http.StatusOK)
+		if response.Body.String() != mixed.Body.String() {
+			t.Fatal("partial legacy conversion changed diff output")
+		}
 	}
 	legacyResponse := legacy.get(t, "")
 	requireNativeStatus(t, legacyResponse, http.StatusOK)

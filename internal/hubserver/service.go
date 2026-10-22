@@ -496,6 +496,9 @@ func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 				}
 				lastOptimize = now
 			}
+			if err := s.convertLegacyStorage(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
+				s.config.Logger.Warn("convert legacy storage", "error", err)
+			}
 			s.maintainGitHubWebhooks(ctx)
 			if err := s.maintainGitHubBatches(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				s.config.Logger.Error("process GitHub intake batches", "error", err)

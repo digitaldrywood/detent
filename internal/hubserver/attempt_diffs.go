@@ -13,6 +13,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/diffbody"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -105,27 +107,66 @@ func readAttemptDiffFiles(ctx context.Context, query nativeQueryer, diffID strin
 		}
 		return files, nil
 	}
-	rows, err := query.QueryContext(ctx, `SELECT path, old_path, status, additions, deletions, binary, patch, truncated, denied, patch_object, patch_sha256, patch_size, patch_expired
-FROM attempt_diff_files WHERE diff_id = ? ORDER BY position`, diffID)
+	rows, err := query.QueryContext(ctx, `SELECT position, path, old_path, status, additions, deletions, binary, patch, truncated, denied, patch_object, patch_sha256, patch_size, patch_expired,
+'', '', 0, 0 FROM attempt_diff_files WHERE diff_id = ?
+UNION ALL
+SELECT position, '', '', '', 0, 0, 0, '', 0, 0, '', '', 0, 0,
+object_key, object_sha256, object_bytes, content_bytes FROM attempt_diff_file_archives WHERE diff_id=? AND organization_id=?
+ORDER BY position`, diffID, diffID, organization)
 	if err != nil {
 		return nil, fmt.Errorf("query attempt diff files: %w", err)
 	}
 	defer rows.Close()
-	files := []tracker.AttemptDiffFile{}
+	type positionedFile struct {
+		position int
+		file     tracker.AttemptDiffFile
+		ref      attachment.ArchiveReference
+	}
+	positioned := []positionedFile{}
 	for rows.Next() {
+		var position int
 		var file tracker.AttemptDiffFile
 		var body diffbody.Reference
-		if err := rows.Scan(&file.Path, &file.OldPath, &file.Status, &file.Additions, &file.Deletions,
-			&file.Binary, &file.Patch, &file.Truncated, &file.Denied, &body.Key, &body.SHA256, &body.Bytes, &file.PatchExpired); err != nil {
+		ref := contentReference()
+		if err := rows.Scan(&position, &file.Path, &file.OldPath, &file.Status, &file.Additions, &file.Deletions,
+			&file.Binary, &file.Patch, &file.Truncated, &file.Denied, &body.Key, &body.SHA256, &body.Bytes, &file.PatchExpired, &ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize); err != nil {
 			return nil, fmt.Errorf("scan attempt diff file: %w", err)
 		}
 		if body.Key != "" && !file.PatchExpired {
 			file.PatchBody = &body
 		}
-		files = append(files, file)
+		positioned = append(positioned, positionedFile{position: position, file: file, ref: ref})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate attempt diff files: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for i, f := range positioned {
+		if f.ref.Key == "" {
+			continue
+		}
+		data, err := readChangeContent(ctx, organization, f.ref)
+		if err != nil {
+			return nil, err
+		}
+		var file storageDiffFile
+		if err := json.Unmarshal(data, &file); err != nil {
+			return nil, err
+		}
+		if file.DiffID != diffID || file.Position != f.position {
+			return nil, artifact.ErrIntegrity
+		}
+		if expired && file.File.PatchBody != nil {
+			file.File.PatchBody = nil
+			file.File.PatchExpired = true
+		}
+		positioned[i].file = file.File
+	}
+	files := make([]tracker.AttemptDiffFile, 0, len(positioned))
+	for _, file := range positioned {
+		files = append(files, file.file)
 	}
 	return files, nil
 }

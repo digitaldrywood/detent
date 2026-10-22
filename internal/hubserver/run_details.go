@@ -60,6 +60,7 @@ func (s *Service) runDetailStore() attachment.DetailStore {
 }
 
 func (s *Service) runDetailContext(ctx context.Context) context.Context {
+	ctx = s.contentContext(ctx)
 	if ctx.Value(runDetailContextKey{}) != nil {
 		return ctx
 	}
@@ -83,7 +84,7 @@ func (s *Service) runDetailMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 
 func decodeRunDetail(ctx context.Context, raw string, result *tracker.NativeRunData) error {
 	var stored storedRun
-	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &stored); err != nil {
 		return err
 	}
 	if stored.Detail == nil {
@@ -112,6 +113,11 @@ func decodeRunDetail(ctx context.Context, raw string, result *tracker.NativeRunD
 }
 
 func decodeRunHistory(ctx context.Context, raw string, result *tracker.CollaborationData) error {
+	resolved, err := resolveStorageJSON(ctx, []byte(raw))
+	if err != nil {
+		return err
+	}
+	raw = string(resolved)
 	if err := json.Unmarshal([]byte(raw), result); err != nil {
 		return err
 	}
@@ -453,5 +459,5 @@ func readRunDetailSegment(ctx context.Context, detail *runDetailReference) (map[
 }
 
 func (s *Service) freshRunDetailContext(ctx context.Context) context.Context {
-	return s.runDetailContext(context.WithValue(ctx, runDetailContextKey{}, nil))
+	return s.runDetailContext(s.contentContext(context.WithValue(ctx, runDetailContextKey{}, nil)))
 }

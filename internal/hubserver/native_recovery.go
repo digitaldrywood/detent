@@ -286,9 +286,12 @@ func (s *Service) readRecoveryEvidenceRecord(ctx context.Context, query nativeQu
 		if _, archived := query.(*nativeArchiveQuery); archived {
 			err = query.QueryRowContext(ctx, "SELECT record_json FROM change_evidence WHERE change_id=? AND sequence=?", cursor.Change, sequence).Scan(&content)
 		}
+		if err == nil {
+			content, err = resolveStorageJSON(ctx, content)
+		}
 		if err == nil && kind == "review" {
 			var review tracker.ChangeReview
-			if err = json.Unmarshal(content, &review); err == nil {
+			if err = decodeStorageJSON(ctx, content, &review); err == nil {
 				err = hydrateChangeRecord(ctx, query, &review)
 			}
 			if err == nil {
@@ -736,7 +739,7 @@ ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&
 	if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
 		return event, false, err
 	}
-	if err := json.Unmarshal([]byte(data), &event.Data); err != nil {
+	if err := decodeRunHistory(ctx, data, &event.Data); err != nil {
 		return event, false, err
 	}
 	event.RecordedAt, err = parseTimeValue(at)

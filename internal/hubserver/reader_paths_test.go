@@ -377,6 +377,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"expireNativeRecords":               "Deletes one bounded batch of expired native records on the existing maintenance tick.",
 		"publishStorageArchive":             "Commits one issue archive pointer and its bounded section metadata after rechecking the exact issue and conversation revisions.",
 		"retireStorageArchiveSections":      "Rechecks the archived issue before atomically retiring at most 500 copied rows and advancing their durable section cursor.",
+		"convertStorageAggregate":           "Commits one verified immutable reference and retires its owned inline row with the progress cursor after rechecking the aggregate and source snapshot.",
 		"compactRetainedEvents":             "Deletes one bounded batch of obsolete event history planned on the reader, on the existing maintenance tick.",
 		"compactAnalyticsSamples":           "Deletes one bounded batch of skip samples already counted by hourly rollups, on the existing maintenance tick.",
 		"backfillChangeSource":              "Converts one legacy source representation after reader-pool validation on the existing maintenance tick.",

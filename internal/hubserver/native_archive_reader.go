@@ -402,8 +402,16 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 			result.values = append(result.values, first)
 		}
 		if name == "collaboration_events" && last > 0 {
-			conditions = append(conditions, "live.sequence BETWEEN ? AND ?")
-			result.values = append(result.values, first, last)
+			var next sql.NullInt64
+			if err := query.QueryRowContext(ctx, `SELECT min(first_sequence) FROM native_archive_sections WHERE organization_id=? AND project_id=? AND work_item_id=? AND kind='history' AND subject_id=? AND first_sequence>?`, section.OrganizationID, section.ProjectID, section.WorkItemID, subject, last).Scan(&next); err != nil {
+				return nil, err
+			}
+			conditions = append(conditions, "live.sequence>=?")
+			result.values = append(result.values, first)
+			if next.Valid {
+				conditions = append(conditions, "live.sequence<?")
+				result.values = append(result.values, next.Int64)
+			}
 		}
 		ctes = append(ctes, fmt.Sprintf(`archive_%s(%s) AS MATERIALIZED (SELECT %s FROM json_each(?)),
 %s AS NOT MATERIALIZED (SELECT * FROM archive_%s UNION ALL SELECT %s FROM main.%s AS live WHERE %s)`, name, strings.Join(quoted, ","), strings.Join(projection, ","), name, name, strings.Join(liveProjection, ","), name, strings.Join(conditions, " AND ")))

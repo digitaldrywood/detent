@@ -10,6 +10,9 @@ import (
 )
 
 func (s *Service) maintainChangeSources(ctx context.Context) {
+	if s.storageArchiveContent() != nil {
+		return
+	}
 	deadline := time.Now().Add(analyticsBackfillBudget)
 	for time.Now().Before(deadline) && ctx.Err() == nil {
 		more, err := s.database.backfillChangeSource(ctx)

@@ -31,25 +31,31 @@ type diagnosticsCapacity struct {
 }
 
 type diagnosticsReport struct {
-	Requests      *requestMetricsReport      `json:"requests,omitempty"`
-	From          time.Time                  `json:"from"`
-	To            time.Time                  `json:"to"`
-	Partial       bool                       `json:"partial"`
-	Findings      any                        `json:"findings"`
-	DetectorTick  *time.Time                 `json:"detector_tick"`
-	Capacity      []diagnosticsCapacity      `json:"capacity"`
-	Claimed       *int                       `json:"claimed"`
-	Ready         *int                       `json:"ready"`
-	Skipped       *int                       `json:"skipped"`
-	SkipReasons   []nativeAnalyticsSkip      `json:"skip_reasons"`
-	MergeEntered  int                        `json:"merge_entered"`
-	MergeLanded   int                        `json:"merge_landed"`
-	MergeWaitP50  *float64                   `json:"merge_wait_p50"`
-	MergeWaitP90  *float64                   `json:"merge_wait_p90"`
-	MergeWaitMax  *float64                   `json:"merge_wait_max"`
-	Refused       []diagnosticsRefusal       `json:"refused"`
-	Coverage      []diagnosticsCoverage      `json:"coverage"`
-	Configuration []diagnosticsConfiguration `json:"configuration"`
+	StorageConversions []diagnosticsStorageConversion `json:"storage_conversions"`
+	Requests           *requestMetricsReport          `json:"requests,omitempty"`
+	From               time.Time                      `json:"from"`
+	To                 time.Time                      `json:"to"`
+	Partial            bool                           `json:"partial"`
+	Findings           any                            `json:"findings"`
+	DetectorTick       *time.Time                     `json:"detector_tick"`
+	Capacity           []diagnosticsCapacity          `json:"capacity"`
+	Claimed            *int                           `json:"claimed"`
+	Ready              *int                           `json:"ready"`
+	Skipped            *int                           `json:"skipped"`
+	SkipReasons        []nativeAnalyticsSkip          `json:"skip_reasons"`
+	MergeEntered       int                            `json:"merge_entered"`
+	MergeLanded        int                            `json:"merge_landed"`
+	MergeWaitP50       *float64                       `json:"merge_wait_p50"`
+	MergeWaitP90       *float64                       `json:"merge_wait_p90"`
+	MergeWaitMax       *float64                       `json:"merge_wait_max"`
+	Refused            []diagnosticsRefusal           `json:"refused"`
+	Coverage           []diagnosticsCoverage          `json:"coverage"`
+	Configuration      []diagnosticsConfiguration     `json:"configuration"`
+}
+
+type diagnosticsStorageConversion struct {
+	ProjectID string                      `json:"project_id"`
+	Progress  []storageConversionProgress `json:"progress"`
 }
 
 type diagnosticsRefusal struct {
@@ -134,6 +140,11 @@ func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativ
 			}
 		}
 		scope := nativeScope{organization: tracker.OrganizationID(analytics.OrganizationID), project: tracker.ProjectID(p.ProjectID)}
+		progress, err := readStorageConversionProgress(ctx, reader, scope)
+		if err != nil {
+			return out, err
+		}
+		out.StorageConversions = append(out.StorageConversions, diagnosticsStorageConversion{ProjectID: p.ProjectID, Progress: progress})
 		q, err := analyticsProjectReader(ctx, reader, scope)
 		if err != nil {
 			return out, err

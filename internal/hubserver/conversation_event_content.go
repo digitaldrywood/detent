@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 )
 
@@ -59,6 +60,16 @@ func (s *conversationStore) resolveEventContent(ctx context.Context, query nativ
 	ctx = context.WithValue(ctx, conversationReadContentsKey{}, conversationContentReads{})
 	for index := range events {
 		event := &events[index]
+		resolved, err := resolveStorageJSONWith(ctx, event.Data, func(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+			if s.contents == nil {
+				return nil, errors.New("conversation content storage is unavailable")
+			}
+			return s.contents.ReadContent(ctx, organization, ref)
+		})
+		if err != nil {
+			return err
+		}
+		event.Data = resolved
 		var body any
 		switch event.Type {
 		case conversation.EventMessageAccepted, conversation.EventMessageUpdated:

@@ -476,6 +476,12 @@ func (a *terminalAttemptFixture) runEvents(t *testing.T) map[string]int {
 func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 	t.Parallel()
 	a := newTerminalAttemptFixture(t)
+	runtime := a.runtime
+	a.runtime = func(phase string) *tracker.NativeRuntimeObservation {
+		r := runtime(phase)
+		r.Validation = &gate.CommandResult{Command: "focused test", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, Output: strings.Repeat("historical output\n", 2048)}
+		return r
+	}
 	a.snapshots(t, 12)
 	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
 		t.Fatal(err)
@@ -484,7 +490,15 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 		t.Fatalf("running attempt was compacted: %v", counts)
 	}
 	a.finish(t)
+	if _, err := a.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.completion_body',?) WHERE id=?", strings.Repeat("legacy attempt detail", 2048), a.start.Data.AttemptID); err != nil {
+		t.Fatal(err)
+	}
 	a.advance(2 * time.Hour)
+	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
+		t.Fatal(err)
+	}
+	objects := &changeObjectFixture{}
+	a.service.config.content = objects.call
 	ctx := changeOperatorContext(t, a.service, a.token, string(a.project.OrganizationID))
 	executor := hostedOperatorExecutor{service: a.service}
 	reads := func() map[string]string {
@@ -516,9 +530,25 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 		t.Fatalf("receipt lacks the terminal answer: %s", before[operatortool.WorkAttemptReceipt])
 	}
 	for range 2 {
+		if err := a.service.convertLegacyStorage(t.Context(), a.service.config.now()); err != nil {
+			t.Fatal(err)
+		}
 		if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
 			t.Fatal(err)
 		}
+	}
+	progress, err := readStorageConversionProgress(t.Context(), a.service.database.reader, a.scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptsConverted := false
+	for _, p := range progress {
+		if p.Family == "attempts" && p.Aggregate == string(a.issue.WorkItemID) {
+			attemptsConverted = p.Complete && p.Rows == 1
+		}
+	}
+	if !attemptsConverted {
+		t.Fatalf("legacy attempt detail was not converted: %+v", progress)
 	}
 	counts := a.runEvents(t)
 	if counts["run.started"] != 1 || counts["run.checkpointed"] != 12 || counts["run.observed"] != 12 || counts["run.finished"] != 1 {
@@ -536,6 +566,9 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 		if after[tool] != answer {
 			t.Fatalf("%s changed after compaction:\nbefore=%s\nafter=%s", tool, answer, after[tool])
 		}
+	}
+	if _, err := a.service.readHistory(t.Context(), a.scope, string(a.issue.WorkItemID), url.Values{"limit": {"200"}}); err != nil {
+		t.Fatal(err)
 	}
 	response := performHubAPIRequest(t, a.service, http.MethodGet, a.base+"/work-items/"+string(a.issue.WorkItemID)+"/history?limit=200", a.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)

@@ -125,7 +125,7 @@ func readChangePolicy(ctx context.Context, query nativeQueryer, scope nativeScop
 	if err := query.QueryRowContext(ctx, "SELECT policy_json FROM change_review_policies WHERE organization_id = ? AND project_id = ?", scope.organization, scope.project).Scan(&raw); err != nil {
 		return result, err
 	}
-	err := json.Unmarshal([]byte(raw), &result)
+	err := decodeStorageJSON(ctx, []byte(raw), &result)
 	return result, err
 }
 
@@ -160,7 +160,7 @@ WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? AND c.id
 	if err != nil {
 		return change, fmt.Errorf("read snapshot: %w", err)
 	}
-	err = json.Unmarshal([]byte(raw), &change)
+	err = decodeStorageJSON(ctx, []byte(raw), &change)
 	if err != nil {
 		return change, fmt.Errorf("decode snapshot: %w", err)
 	}
@@ -180,7 +180,7 @@ func readChangeVersionSnapshot(ctx context.Context, query nativeQueryer, changeI
 	if err := query.QueryRowContext(ctx, "SELECT record_json FROM change_versions WHERE change_id = ? AND id = ?", changeID, versionID).Scan(&raw); err != nil {
 		return version, fmt.Errorf("read version snapshot: %w", err)
 	}
-	if err := json.Unmarshal([]byte(raw), &version); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &version); err != nil {
 		return version, fmt.Errorf("decode version snapshot: %w", err)
 	}
 	if err := hydrateChangeRecord(ctx, query, &version); err != nil {
@@ -307,7 +307,7 @@ func changeRows[T any](ctx context.Context, query nativeQueryer, statement strin
 		if err := rows.Scan(&raw); err != nil {
 			return nil, fmt.Errorf("scan snapshot: %w", err)
 		}
-		if err := json.Unmarshal([]byte(raw), &item); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &item); err != nil {
 			return nil, fmt.Errorf("decode snapshot: %w", err)
 		}
 		result = append(result, item)

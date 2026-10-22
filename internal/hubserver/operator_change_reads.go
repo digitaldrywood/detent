@@ -178,6 +178,11 @@ func readChangeSection(ctx context.Context, query nativeQueryer, args operatorto
 		if omitHistory || i == changeLimit(args) {
 			break
 		}
+		resolved, err := resolveStorageJSON(ctx, row.raw)
+		if err != nil {
+			return operatortool.ChangeReadPage{}, err
+		}
+		row.raw = resolved
 		detail := result.Detail
 		before := *detail
 		previous, err := json.Marshal(result)

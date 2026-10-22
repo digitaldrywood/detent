@@ -660,6 +660,16 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 		t.Fatal(err)
 	}
 	drainTestAnalytics(t, f.service)
+	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE analytics_hourly_rollups SET data_json=json_set(data_json,'$.completion_body',?) WHERE organization_id=? AND project_id=? AND metric='attempt'`, strings.Repeat("legacy payload", 2048), scope.organization, scope.project); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.convertStorageFamily(t.Context(), scope, storageConversionFamilies[2], now); err != nil {
+		t.Fatal(err)
+	}
+	var legacyRows int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='attempt' AND json_extract(data_json,'$.completion_body') IS NOT NULL`, scope.organization, scope.project).Scan(&legacyRows); err != nil || legacyRows != 0 {
+		t.Fatalf("legacy report payloads=%d err=%v", legacyRows, err)
+	}
 	for _, test := range []struct {
 		name     string
 		from, to time.Time

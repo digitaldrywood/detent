@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -28,7 +27,7 @@ func readQualityLanding(ctx context.Context, q nativeQueryer, change tracker.Cha
 		return nil, err
 	}
 	var landing tracker.ChangeLanding
-	err = json.Unmarshal([]byte(raw), &landing)
+	err = decodeStorageJSON(ctx, []byte(raw), &landing)
 	return &landing, err
 }
 
@@ -53,7 +52,7 @@ func readLandingQualitySnapshot(ctx context.Context, q nativeQueryer, scope nati
 			return nil, err
 		}
 		var review tracker.ChangeReview
-		if err := json.Unmarshal([]byte(raw), &review); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &review); err != nil {
 			return nil, err
 		}
 		if review.CreatedAt.After(at) || review.Decision != "approved" || review.Validator == nil {
@@ -110,7 +109,7 @@ func validateQualityEscape(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 	}
 	if err == nil {
 		var discussion tracker.ChangeDiscussion
-		if err := json.Unmarshal([]byte(previous), &discussion); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(previous), &discussion); err != nil {
 			return err
 		}
 		prior := discussion.Escape

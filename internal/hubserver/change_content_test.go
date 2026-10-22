@@ -169,6 +169,13 @@ func TestChangeContentObjects(t *testing.T) {
 	}
 
 	requireUsageCountersMatchRecount(t, f.service.database)
+	legacy.service.config.content = objects.call
+	if err := legacy.service.convertLegacyStorage(t.Context(), now); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(detail, legacy.detail(t)) {
+		t.Fatal("legacy conversion changed Change API")
+	}
 	operatorCtx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 	legacyOperatorCtx := changeOperatorContext(t, legacy.service, f.token, string(f.project.OrganizationID))
 	for _, args := range []operatortool.ChangeArguments{
