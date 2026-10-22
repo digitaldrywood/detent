@@ -3,7 +3,6 @@ import { Navigate, useNavigate, useParams, useSearch } from "@tanstack/react-rou
 import React from "react";
 
 import { SetupRoute } from "./account/Setup.tsx";
-import { usePageTitle } from "./pageTitle.ts";
 import { navigationTarget } from "./routes.account.tsx";
 import { ProjectSettingsPage } from "./settings/ProjectSettingsPage.tsx";
 import { SettingsRoute } from "./settings/Settings.tsx";
@@ -31,7 +30,6 @@ export function SettingsScreen(): React.ReactElement {
 
 export function SetupScreen(): React.ReactElement {
   const { project } = useParams({ strict: false }) as { project?: string };
-  usePageTitle("Project setup");
   return <SetupRoute projectId={project ?? ""} onNavigate={useGo()} />;
 }
 
