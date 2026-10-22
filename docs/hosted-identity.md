@@ -156,9 +156,16 @@ The browser requests a user-only widget token from the session-authenticated
 JSON body. API keys and support impersonation cannot mint widget tokens; no
 organization or administrative widget scopes are granted.
 
-In the WorkOS application's Sessions settings, include the Cloud web origin in
-the allowed CORS origins. WorkOS owns this cross-origin response policy; the
-Hub does not proxy widget requests. The Cloud CSP allows connections to
+Before deploying each hosted environment, configure its WorkOS application:
+
+- Set its client ID and server-side API key in the hosted configuration above.
+- In Sessions › allowed CORS origins, add that environment's exact public web
+  origin: the Cloud origin for production and the staging origin for staging.
+  Each origin must be allowed in the WorkOS application used by that environment.
+
+These allowed CORS origins are required for the account widgets. WorkOS owns
+this cross-origin response policy; the Hub does not proxy widget requests.
+The Cloud CSP allows connections to
 `https://api.workos.com` and profile images from `https://workoscdn.com`.
 Widget styles are bundled locally and use the app's semantic theme tokens.
 

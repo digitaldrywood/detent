@@ -644,10 +644,10 @@ it("shows the first unready setup step for the active project and hides setup on
     progress: { revision: "1", repository: "existing", doctor: false, provider: false, artifacts: "local" },
     runners: [], artifact_services: [], ready: false,
     steps: [
-      { name: "Execution runner", state: "ready", detail: "" },
-      { name: "Local validation", state: "action_required", detail: "" },
-      { name: "Repository configuration", state: "ready", detail: "" },
-      { name: "Artifact history", state: "ready", detail: "" },
+      { name: "Runner", state: "ready", detail: "" },
+      { name: "Repository", state: "ready", detail: "" },
+      { name: "Checkout", state: "action_required", detail: "" },
+      { name: "Run files", state: "ready", detail: "" },
     ],
   };
   const integration = readyResource({ checkout_repository: "example-org/example-project" } as ProjectIntegration);
@@ -657,7 +657,7 @@ it("shows the first unready setup step for the active project and hides setup on
     </ProjectSetupContext.Provider>
   </SidebarDataProvider>;
   const mounted = render(view(false));
-  const setup = screen.getByRole("button", { name: "Setup 3 of 5" });
+  const setup = screen.getByRole("button", { name: "Setup 3 of 4" });
   fireEvent.click(setup);
   expect(onNavigate).toHaveBeenCalledWith("/projects/proj_example/setup");
   mounted.rerender(view(true));
