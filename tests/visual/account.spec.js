@@ -488,13 +488,37 @@ test("the first-run wizard puts repository binding before the four Hub onboardin
 });
 
 for (const viewport of [
-  { name: "desktop", width: 1440, height: 900 },
-  { name: "phone", width: 390, height: 844 },
+  { name: "desktop-light", width: 1440, height: 900, theme: "light" },
+  { name: "desktop-dark", width: 1440, height: 900, theme: "dark" },
+  { name: "phone-light", width: 390, height: 844, theme: "light" },
+  { name: "phone-dark", width: 390, height: 844, theme: "dark" },
 ]) {
-  test(`the setup wizard fits a ${viewport.name} and its choices show what is selected`, async ({ page }) => {
+  test(`the setup wizard fits a ${viewport.name} and its choices show what is selected`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     const errors = watchConsole(page);
     await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);
+
+    await page.evaluate((theme) => {
+      localStorage.setItem("detent.theme", theme);
+      document.documentElement.classList.toggle("dark", theme === "dark");
+    }, viewport.theme);
+    const context = page.getByRole("region", { name: "Project setup context" });
+    const bootstrap = await page.evaluate(async () => (await fetch("/app/bootstrap")).json());
+    const project = bootstrap.projects.find((entry) => entry.id === hub.fixture.project_id);
+    await expect(context.getByText(`Setting up a project in ${bootstrap.organization.name}`, { exact: true })).toBeVisible();
+    await expect(context.getByText(project.name, { exact: true })).toBeVisible();
+    await expect(page).toHaveTitle(`${project.name} setup · Detent`);
+    const steps = page.getByRole("list", { name: "Setup steps" });
+    for (const label of ["Repository", "Execution runner", "Local validation", "Repository configuration", "Artifact history"]) {
+      await expect(steps.getByText(label, { exact: true })).toBeVisible();
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+    expect(await steps.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(0);
+    await page.screenshot({ path: testInfo.outputPath(`setup-context-${viewport.name}.png`), animations: "disabled" });
+    await context.getByRole("button", { name: "Switch project" }).click();
+    await expect(page.getByRole("combobox", { name: "Search projects" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    if (viewport.width === 390) await page.keyboard.press("Escape");
 
     const tabs = page.getByRole("list", { name: "Setup steps" }).getByRole("button");
     await expect(tabs).toHaveCount(5);
