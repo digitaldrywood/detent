@@ -210,7 +210,7 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 		if !strings.Contains(string(script), provider.token) || strings.Contains(r.URL.RawQuery, provider.token) {
 			t.Error("fresh enrollment must travel only through stdin")
 		}
-		if !strings.Contains(string(script), "https://raw.githubusercontent.com/digitaldrywood/detent/1a3f19c175cd3b77100115dedea8b1cbe4396286/scripts/sprite-runner-bootstrap.sh") || !strings.Contains(string(script), "--version 'v0.117.99'") {
+		if !strings.Contains(string(script), "https://raw.githubusercontent.com/digitaldrywood/detent/v0.117.99/scripts/sprite-runner-bootstrap.sh") || !strings.Contains(string(script), "--version 'v0.117.99'") {
 			t.Error("bootstrap must use immutable source and the Hub's pinned runner release")
 		}
 		if provider.fail == "cancel" {

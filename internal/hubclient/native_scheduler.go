@@ -322,7 +322,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 }
 
 func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
-	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	if s.leaseHold != nil {
 		release, err := s.leaseHold(probeCtx)
@@ -335,19 +335,31 @@ func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []run
 	report, problems := s.isolationReport(probeCtx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := probeCtx.Err(); err != nil {
+	probeErr := probeCtx.Err()
+	incomplete := slices.ContainsFunc(problems, func(p runnerauth.Problem) bool { return p.Code == "backend_probe_failed" })
+	if probeErr != nil || incomplete {
 		problem := runnerauth.NewProblem("backend_probe_failed")
 		problem.Subject = "backend_isolation"
 		problem.Check = "runner isolation probe"
-		problem.ErrorOutput = err.Error()
+		if probeErr != nil {
+			problem.ErrorOutput = probeErr.Error()
+		} else {
+			for _, p := range problems {
+				if p.Code == "backend_probe_failed" {
+					problem.ErrorOutput = p.ErrorOutput
+					break
+				}
+			}
+		}
 		problem.ReportedAt = s.now().UTC()
 		if s.lastIsolation != nil {
+			report = reuseIncompleteIsolation(report, s.lastIsolation, problems, probeErr != nil)
+			s.lastIsolation = report
 			problem.CachedCapabilities = true
 			problems = slices.DeleteFunc(problems, func(p runnerauth.Problem) bool {
 				return p.Code == "backend_probe_failed"
 			})
-			problem.Message += " Reported capabilities are cached from the last completed runner isolation probe at " + s.lastIsolationAt.UTC().Format(time.RFC3339Nano) + "."
-			report = s.lastIsolation
+			problem.Message += " Reported capabilities combine completed checks with cached capabilities; the last complete runner isolation probe finished at " + s.lastIsolationAt.UTC().Format(time.RFC3339Nano) + "."
 		} else {
 			problem.Message += " No completed runner isolation probe is cached; reported capabilities contain only completed backend checks."
 		}
@@ -357,6 +369,38 @@ func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []run
 		s.lastIsolationAt = s.now().UTC()
 	}
 	return report, problems
+}
+
+func reuseIncompleteIsolation(current, cached isolation.Report, problems []runnerauth.Problem, interrupted bool) isolation.Report {
+	report := make(isolation.Report, len(current)+len(cached))
+	for backend, tiers := range current {
+		report[backend] = slices.Clone(tiers)
+	}
+	for backend, tiers := range cached {
+		_, observed := current[backend]
+		if interrupted && !observed {
+			report[backend] = []string{}
+		}
+		for _, tier := range tiers {
+			incomplete := interrupted && !observed
+			failed := false
+			for _, problem := range problems {
+				if problem.Subject != backend && (tier != isolation.Sandbox || problem.Subject != backend+"/sandbox") {
+					continue
+				}
+				switch problem.Code {
+				case "backend_probe_failed":
+					incomplete = true
+				case "backend_missing", "tier_unavailable":
+					failed = true
+				}
+			}
+			if incomplete && !failed && !slices.Contains(report[backend], tier) {
+				report[backend] = append(report[backend], tier)
+			}
+		}
+	}
+	return report
 }
 
 func (s *Scheduler) reserveNativeClaim() (func(), bool) {

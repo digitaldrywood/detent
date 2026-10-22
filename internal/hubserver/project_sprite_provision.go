@@ -21,7 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const spriteBootstrapSource = "https://raw.githubusercontent.com/digitaldrywood/detent/1a3f19c175cd3b77100115dedea8b1cbe4396286/scripts/sprite-runner-bootstrap.sh"
+const spriteBootstrapSource = "https://raw.githubusercontent.com/digitaldrywood/detent/%s/scripts/sprite-runner-bootstrap.sh"
 
 func spriteShellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
@@ -356,7 +356,7 @@ trap 'rm -f -- "$bootstrap"' EXIT
 curl --fail --silent --show-error --location %s --output "$bootstrap" >/dev/null 2>&1
 printf '%%s\n' %s | bash "$bootstrap" --version %s >/dev/null 2>&1
 printf "Runner bootstrap completed\n"
-`, spriteShellQuote(string(scope.organization)), spriteShellQuote(s.config.Hosted.PublicURL), settings.Bootstrap, spriteShellQuote(spriteBootstrapSource), spriteShellQuote(command), spriteShellQuote(version))
+`, spriteShellQuote(string(scope.organization)), spriteShellQuote(s.config.Hosted.PublicURL), settings.Bootstrap, spriteShellQuote(fmt.Sprintf(spriteBootstrapSource, version)), spriteShellQuote(command), spriteShellQuote(version))
 	log, execErr := s.execPoolSprite(ctx, scope, member.Name, []byte(script))
 	if execErr != nil {
 		log += "Bootstrap did not complete\n"

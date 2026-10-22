@@ -125,7 +125,7 @@ func backendVersionAtLeast(output []byte, minimum [3]int) bool {
 }
 
 func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy) (probeErr error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	command := strings.TrimSpace(backend.Command)
 	var shell string
@@ -341,16 +341,37 @@ func backendReadinessProblem(subject, kind, tier, goos string, err error) runner
 		if code == "tier_unavailable" && (check == nil || !strings.HasSuffix(check.Check, " --version")) {
 			p.FixCommand = ""
 		}
-		missingTool := strings.Contains(output, "bwrap") || strings.Contains(output, "bubblewrap") || strings.Contains(output, "socat")
-		if tier == isolation.Sandbox && goos == "linux" && missingTool && missingCommand {
-			p.FixCommand = "sudo apt-get install bubblewrap socat"
-		}
+	}
+	if prerequisite, ok := backendPrerequisiteProblem(goos, err.Error()); ok {
+		prerequisite.Subject = p.Subject
+		prerequisite.Check = p.Check
+		return prerequisite
 	}
 	return runnerauth.SanitizeProblem(p)
 }
 
+func backendPrerequisiteProblem(goos, output string) (runnerauth.Problem, bool) {
+	lower := strings.ToLower(output)
+	missing := strings.Contains(lower, "could not find") || strings.Contains(lower, "command not found") || strings.Contains(lower, ": not found") || strings.Contains(lower, "no such file") || strings.Contains(lower, "executable file not found")
+	if goos != "linux" || !missing {
+		return runnerauth.Problem{}, false
+	}
+	for _, tool := range []struct{ name, command string }{{"bubblewrap", "bwrap"}, {"socat", "socat"}} {
+		if !strings.Contains(lower, tool.name) && !strings.Contains(lower, tool.command) {
+			continue
+		}
+		p := runnerauth.NewProblem("backend_missing")
+		p.Message = "The backend prerequisite " + tool.name + " (" + tool.command + ") is missing from PATH."
+		p.ErrorOutput = output
+		p.FixCommand = "sudo apt-get install bubblewrap socat"
+		p.FixHint = "Install " + tool.name + " and ensure " + tool.command + " is on the runner's PATH."
+		return runnerauth.SanitizeProblem(p), true
+	}
+	return runnerauth.Problem{}, false
+}
+
 func probeBackendSignIn(ctx context.Context, backend workflowconfig.AgentBackend) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	command := backend.Command
 	var shell string
