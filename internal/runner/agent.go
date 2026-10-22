@@ -136,6 +136,7 @@ type Dependencies struct {
 	SecurityAuditRoot      string
 	ServiceConnection      serviceapi.Connection
 	AfterRunTimeout        time.Duration
+	FinalizationContext    func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)
 	MaxAgentRSSBytes       uint64
 	RSSPollInterval        time.Duration
 	GoBudget               gobudget.Budget
@@ -173,6 +174,7 @@ type Runner struct {
 	securityAuditRoot         string
 	serviceConnection         serviceapi.Connection
 	afterRunTimeout           time.Duration
+	finalizationContext       durationLimitContextFactory
 	maxAgentRSSBytes          uint64
 	rssPollInterval           time.Duration
 	processRSS                func(context.Context, procgroup.Identity) (uint64, error)
@@ -205,6 +207,9 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	}
 	if deps.AfterRunTimeout <= 0 {
 		deps.AfterRunTimeout = defaultAfterRunTimeout
+	}
+	if deps.FinalizationContext == nil {
+		deps.FinalizationContext = context.WithTimeoutCause
 	}
 	if deps.RSSPollInterval <= 0 {
 		deps.RSSPollInterval = time.Second
@@ -277,6 +282,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		securityAuditRoot:         filepath.Clean(deps.SecurityAuditRoot),
 		serviceConnection:         deps.ServiceConnection,
 		afterRunTimeout:           deps.AfterRunTimeout,
+		finalizationContext:       deps.FinalizationContext,
 		maxAgentRSSBytes:          deps.MaxAgentRSSBytes,
 		rssPollInterval:           deps.RSSPollInterval,
 		processRSS:                deps.ProcessRSS,
@@ -2583,7 +2589,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				// finalized head. It needs the work budget, not the cleanup budget.
 				timeout = r.nativeWorkTimeout(workflow.Config, backendConfig, 0)
 			}
-			afterRunCtx, afterRunCancel = context.WithTimeoutCause(context.WithoutCancel(ctx), timeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+			afterRunCtx, afterRunCancel = r.finalizationContext(context.WithoutCancel(ctx), timeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 		}
 		defer afterRunCancel()
 		disposition := NativeDispositionFromMessage(result.FinalMessage)
@@ -2670,7 +2676,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		finalizationCtx := ctx
 		finalizationCancel := func() {}
 		if turnErr == nil {
-			finalizationCtx, finalizationCancel = context.WithTimeoutCause(context.WithoutCancel(ctx), r.afterRunTimeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+			finalizationCtx, finalizationCancel = r.finalizationContext(context.WithoutCancel(ctx), r.afterRunTimeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 		}
 		defer finalizationCancel()
 		if mode == RunModeImplement && workflow.Config.Deliverable.Kind == config.DeliverableArtifact {

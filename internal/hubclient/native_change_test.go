@@ -3092,6 +3092,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				Workflow:     config.Workflow{Config: config.Config{Gate: gate.Config{Run: validationCommand, AutomatedReview: automatedReview, Validator: gate.ValidatorConfig{Enabled: test.validator != ""}}}, Prompt: "Complete the issue"},
 				Workspace:    backend,
 				AgentBackend: provider,
+				FinalizationContext: func(ctx context.Context, _ time.Duration, _ error) (context.Context, context.CancelFunc) {
+					return context.WithCancel(testenv.WaitContext(t, ctx))
+				},
 				ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) {
 					return 0, nil
 				},

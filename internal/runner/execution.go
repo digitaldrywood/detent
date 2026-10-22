@@ -478,7 +478,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 				runErr = errors.Join(runErr, routeErr)
 				outcome = "failed"
 			} else {
-				prepareCtx, prepareCancel = context.WithTimeoutCause(context.WithoutCancel(guarded), r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+				prepareCtx, prepareCancel = r.finalizationContext(context.WithoutCancel(guarded), r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 			}
 		}
 		failure := nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused)
@@ -1174,7 +1174,7 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error
 		return nil
 	}
 	_, _, backend, routeErr := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
-	ctx, cancel := context.WithTimeoutCause(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backend, durationFromMillis(cfg.TurnTimeoutMS)), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+	ctx, cancel := r.finalizationContext(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backend, durationFromMillis(cfg.TurnTimeoutMS)), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 	defer cancel()
 	input, err := execution.ValidatorVersion(ctx)
 	if err != nil || input.Version == nil {
@@ -1222,7 +1222,7 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (bool, 
 		return false, errors.New("required native implementation review producer is unavailable")
 	}
 	_, _, backend, routeErr := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleCode)
-	ctx, cancel := context.WithTimeoutCause(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+	ctx, cancel := r.finalizationContext(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 	defer cancel()
 	input, err := execution.ReviewVersion(ctx)
 	if err != nil || input.Version == nil {
