@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -54,24 +55,59 @@ func TestNativeRestorableCheckpoint(t *testing.T) {
 	}
 }
 
+type checkpointFinalizingWorkspace struct {
+	*wipExecutionWorkspace
+	onFinalize func() error
+}
+
+func (w *checkpointFinalizingWorkspace) FinalizeNativeWork(ctx context.Context, _ workspace.Info, _ workspace.Issue, validate func(context.Context) error) (string, error) {
+	if err := w.onFinalize(); err != nil {
+		return "", err
+	}
+	return "", validate(ctx)
+}
+
 func TestCheckpointRefsPushAfterCompletedTurn(t *testing.T) {
 	t.Parallel()
-	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
+	backend := &checkpointFinalizingWorkspace{wipExecutionWorkspace: &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}}
 	recorded := make(chan tracker.NativeCheckpoint, 1)
 	execution := &testExecution{onCheckpoint: func(c tracker.NativeCheckpoint) { recorded <- c }}
-	r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
 	refs := newCheckpointRefs(backend, execution, workspace.Info{}, workspace.Issue{}, nil)
 	req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}
 	r.startCheckpointRefs(t.Context(), refs, req, backend)
+	stopped := false
+	stop := refs.stop
+	refs.stop = func() {
+		stop()
+		stopped = true
+	}
 	defer refs.halt()
 	refs.requestPush()
+	waitCtx, cancelWait := testenv.WaitContext(t)
+	defer cancelWait()
 	select {
 	case checkpoint := <-recorded:
 		if !checkpoint.GitRef() || checkpoint.CommitSHA != strings.Repeat("c", 40) || checkpoint.WorktreeState != "dirty" {
 			t.Fatalf("recorded checkpoint = %#v", checkpoint)
 		}
-	case <-time.After(10 * time.Second):
+	case <-waitCtx.Done():
 		t.Fatal("completed turn did not push a checkpoint")
+	}
+	finalized := false
+	backend.onFinalize = func() error {
+		if !stopped {
+			return errors.New("host finalization overlapped the turn checkpoint publisher")
+		}
+		finalized = true
+		return nil
+	}
+	req.checkpointRefs, req.finalizeNativeWork = refs, true
+	if _, err := r.prepareExecutionCompletion(t.Context(), req, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}, true); err != nil {
+		t.Fatal(err)
+	}
+	if !finalized {
+		t.Fatal("completed turn did not finalize its source")
 	}
 }
 
