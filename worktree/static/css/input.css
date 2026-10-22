@@ -1,0 +1,391 @@
+@import "tailwindcss" source(none);
+
+@source "../../internal/web/templates/**/*.templ";
+@source "../../internal/web/templates/**/*.go";
+@source "../../internal/web/ui/**/*.templ";
+@source "../../internal/web/ui/**/*.go";
+
+@font-face {
+  font-family: "Geist";
+  src: url("/static/fonts/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/static/fonts/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* neutrals (dark default) */
+  --color-page: #0b0d10;
+  --color-surface: #14171c;
+  --color-elev: #1c2027;
+  --color-line: #262b33;
+  --color-text: #edf0f4;
+  --color-sec: #8a93a2;
+  /* dim brightened from the brief's #5C6470 to keep 11px footnotes at
+     WCAG AA on every surface (4.7:1 on elev) */
+  --color-dim: #808a97;
+  /* semantics — exactly five, plus one accent. Never invent a 7th color. */
+  --color-ok: #34d399;
+  --color-warn: #fbbf24;
+  --color-err: #f87171;
+  --color-info: #60a5fa;
+  --color-accent: #2dd4bf; /* interactivity ONLY (links, focus, selected). Never status. */
+  /* type: five sizes total. Hierarchy via weight (400/500/600) + color, not size. */
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, monospace;
+  --text-2xs: 11px;
+  --text-2xs--line-height: 1.3;
+  --text-xs: 12px;
+  --text-xs--line-height: 1.4;
+  --text-sm: 13px;
+  --text-sm--line-height: 1.45;
+  --text-base: 16px;
+  --text-base--line-height: 1.4;
+  --text-xl: 22px;
+  --text-xl--line-height: 1.2;
+  /* geometry */
+  --radius-card: 6px;
+  --radius-chip: 4px;
+  --spacing: 4px; /* strict 4px grid */
+
+}
+
+/* Light theme. Several values are darkened from the brief's suggestions so
+   every text/surface and status-tint pair holds WCAG AA — ratios are
+   documented in docs/redesign-contrast.md. */
+[data-theme="light"] {
+  --color-page: #f7f8fa;
+  --color-surface: #ffffff;
+  --color-elev: #f0f2f5;
+  --color-line: #e4e7ec;
+  --color-text: #1a1f27;
+  --color-sec: #5d6b80;
+  --color-dim: #5f6b7e;
+  --color-ok: #046c4e;
+  --color-warn: #92400e;
+  --color-err: #b42318;
+  --color-info: #1d4ed8;
+  --color-accent: #0f766e;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    background: var(--color-page);
+  }
+
+  html[data-theme="light"] {
+    color-scheme: light;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--color-page);
+    color: var(--color-text);
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line);
+    border-radius: 4px;
+  }
+
+  * {
+    scrollbar-color: var(--color-line) transparent;
+    scrollbar-width: thin;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+}
+
+@layer components {
+  /* one continuously-animating element per active agent: the 6px pulsing dot */
+  @keyframes dt-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+
+  .dt-pulse {
+    animation: dt-pulse 2s ease-in-out infinite;
+  }
+
+  /* one-shot ~1s background tint fade when the server marks a node changed */
+  @keyframes dt-tick {
+    from {
+      background-color: color-mix(in oklab, var(--color-ok) 12%, transparent);
+    }
+    to {
+      background-color: transparent;
+    }
+  }
+
+  [data-changed="true"] {
+    animation: dt-tick 1s ease-out 1;
+  }
+
+  /* skeleton shimmer: first paint only, never on SSE ticks */
+  @keyframes dt-skeleton {
+    0%,
+    100% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
+
+  .dt-skeleton {
+    animation: dt-skeleton 1.6s ease-in-out infinite;
+    background: var(--color-elev);
+    border-radius: var(--radius-chip);
+  }
+
+  /* disconnected: cached content stays visible, dimmed */
+  .dt-stale #snapshot {
+    opacity: 0.85;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dt-pulse,
+    .dt-skeleton,
+    [data-changed="true"] {
+      animation: none !important;
+    }
+  }
+
+  .dt-lane-scroll {
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  #board-lanes {
+    touch-action: pan-x pan-y;
+  }
+
+  #board-lanes [data-kanban-card] {
+    touch-action: pan-x pan-y;
+  }
+
+  #board-lanes > [data-board-lane] > .dt-lane-scroll {
+    overscroll-behavior-x: auto;
+  }
+
+  .dt-work-row {
+    min-height: 44px;
+  }
+
+  [data-density="compact"] .dt-work-row {
+    min-height: 36px;
+  }
+
+  [data-density="compact"] .dt-work-row [data-work-row-secondary] {
+    display: none;
+  }
+
+  [data-density="comfy"] .dt-work-row {
+    min-height: 52px;
+  }
+
+  @media (width < 48rem) {
+    .dt-responsive-chart {
+      aspect-ratio: var(--dt-chart-aspect-ratio);
+      height: auto !important;
+    }
+  }
+
+  .htmx-indicator {
+    display: none;
+  }
+
+  .htmx-request .htmx-indicator,
+  .htmx-request.htmx-indicator {
+    display: inline-flex;
+  }
+
+  /* legacy styles for pages awaiting migration */
+  .sse-surface {
+    transition: opacity 160ms ease, transform 160ms ease;
+  }
+
+  .sse-surface.htmx-swapping {
+    opacity: 0;
+    transform: translateY(0.25rem);
+  }
+
+  .sse-surface.htmx-settling {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .sse-tick {
+    transition: opacity 120ms ease, transform 120ms ease, border-color 120ms ease;
+  }
+
+  .sse-tick.htmx-swapping {
+    opacity: 0.45;
+    transform: translateY(-0.125rem);
+  }
+
+  .sse-tick.htmx-settling {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .dashboard-table {
+    table-layout: fixed;
+  }
+
+  .dashboard-table th {
+    padding-top: var(--dashboard-table-head-y, 0.75rem);
+    padding-bottom: var(--dashboard-table-head-y, 0.75rem);
+  }
+
+  .dashboard-table td {
+    padding-top: var(--dashboard-table-cell-y, 1rem);
+    padding-bottom: var(--dashboard-table-cell-y, 1rem);
+  }
+
+  .dashboard-agent-scroll,
+  .pr-pipeline-lane-scroll {
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .help-tip-button {
+    align-items: center;
+    background: var(--color-elev);
+    border: 1px solid var(--color-line);
+    border-radius: 9999px;
+    color: var(--color-sec);
+    display: inline-flex;
+    font-size: 11px;
+    font-weight: 600;
+    height: 1.25rem;
+    justify-content: center;
+    line-height: 1;
+    width: 1.25rem;
+  }
+
+  .help-tip-button:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  .popover-panel {
+    background: var(--color-elev);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-card);
+    color: var(--color-text);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.625;
+    max-height: calc(100vh - 2rem);
+    max-width: calc(100vw - 2rem);
+    opacity: 0;
+    overflow: auto;
+    padding: 0.75rem;
+    pointer-events: none;
+    position: fixed;
+    text-align: left;
+    text-transform: none;
+    transition: opacity 150ms ease, visibility 150ms ease;
+    visibility: hidden;
+    width: 16rem;
+    z-index: 50;
+  }
+
+  .help-tooltip {
+    display: block;
+    width: min(16rem, calc(100vw - 2rem));
+    z-index: 80;
+  }
+
+  .help-tooltip[data-open="true"] {
+    visibility: visible;
+    opacity: 1;
+  }
+
+  .help-tip-title {
+    color: var(--color-text);
+    display: block;
+    font-weight: 600;
+  }
+
+  .help-tip-description {
+    color: var(--color-sec);
+    display: block;
+    margin-top: 0.25rem;
+  }
+
+}
+
+[data-board-card-content="comfy"],
+[data-ai-debug-card-action] {
+  display: none;
+}
+
+[data-density="compact"] [data-work-representation="board"],
+[data-density="cozy"] [data-work-representation="board"] {
+  gap: 0.25rem;
+  padding: 0.625rem;
+}
+
+[data-density="compact"] [data-board-card-title] {
+  -webkit-line-clamp: 1;
+}
+
+[data-density="compact"] [data-pool-capacity-label],
+[data-density="compact"] [data-pool-capacity-status] {
+  display: none;
+}
+
+[data-active-hours-label="compact"] {
+  display: none;
+}
+
+[data-density="compact"] [data-active-hours-label="cozy"] {
+  display: none;
+}
+
+[data-density="compact"] [data-active-hours-label="compact"] {
+  display: inline;
+}
+
+[data-density="comfy"] [data-board-card-content="comfy"] {
+  display: grid;
+}
+
+[data-density="comfy"] [data-ai-debug-card-action] {
+  display: flex;
+}
+
+[data-density="compact"] [data-board-card-effort] {
+  display: none;
+}
