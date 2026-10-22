@@ -18,6 +18,11 @@ type LocalChecks struct {
 	RunnerSetupDeclared *bool     `json:"runner_setup_declared,omitempty"`
 	Setup               string    `json:"setup,omitempty"`
 	Checkout            string    `json:"checkout"`
+	Configuration       string    `json:"configuration,omitempty"`
+	CheckoutAt          time.Time `json:"checkout_at,omitzero"`
+	ConfigurationAt     time.Time `json:"configuration_at,omitzero"`
+	DoctorAt            time.Time `json:"doctor_at,omitzero"`
+	ProviderAt          time.Time `json:"provider_at,omitzero"`
 	Doctor              string    `json:"doctor"`
 	Provider            string    `json:"provider"`
 	ProviderKinds       []string  `json:"provider_kinds,omitempty"`
@@ -37,8 +42,11 @@ func (c LocalChecks) Validate() error {
 	if c.Setup != "" && !slices.Contains([]string{"passed", "failed", "pending"}, c.Setup) {
 		return errors.New("local setup check status is invalid")
 	}
+	if c.Configuration != "" && !slices.Contains([]string{"passed", "missing", "failed", "pending", "running"}, c.Configuration) {
+		return errors.New("local configuration check status is invalid")
+	}
 	for _, state := range []string{c.Checkout, c.Doctor, c.Provider} {
-		if !slices.Contains([]string{"passed", "failed", "pending", "warning"}, state) {
+		if !slices.Contains([]string{"passed", "failed", "pending", "warning", "running"}, state) {
 			return errors.New("local check status is invalid")
 		}
 	}
@@ -55,9 +63,9 @@ func (c LocalChecks) ProviderReady() bool {
 }
 
 func (c LocalChecks) WorkReady() bool {
-	return (c.Setup == "" || c.Setup == "passed") && c.Checkout == "passed" && (c.Doctor == "passed" || c.Doctor == "warning") && c.ProviderReady()
+	return (c.Configuration == "" || c.Configuration == "passed") && (c.Setup == "" || c.Setup == "passed") && c.Checkout == "passed" && (c.Doctor == "passed" || c.Doctor == "warning") && c.ProviderReady()
 }
 
 func (c LocalChecks) Passed() bool {
-	return (c.Setup == "" || c.Setup == "passed") && c.Checkout == "passed" && (c.Doctor == "passed" || c.Doctor == "warning") && c.Provider == "passed"
+	return c.WorkReady() && c.Provider == "passed"
 }

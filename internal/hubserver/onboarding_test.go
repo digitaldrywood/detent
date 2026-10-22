@@ -186,8 +186,12 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 			if setup.Runners[0].LocalChecks != nil || setup.Steps[2].State == "ready" {
 				t.Fatalf("routing forged local validation evidence: %+v", setup)
 			}
-			for _, doctor := range []string{"failed", "passed"} {
-				checks := runnerauth.LocalChecks{Checkout: "passed", Doctor: doctor, Provider: "passed", ProviderKinds: []string{"codex"}}
+			approveHubTestPolicy(t, f.service, other.base+"/policy", descriptor)
+			for _, configuration := range []string{"missing", "passed"} {
+				checks := runnerauth.LocalChecks{Checkout: "passed", Configuration: configuration, Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}}
+				if configuration == "missing" {
+					checks.Doctor, checks.Provider = "pending", "pending"
+				}
 				response = performHubAPIRequest(t, f.service, http.MethodPost, other.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 2, "version": "test", "local_checks": checks})
 				requireNativeStatus(t, response, http.StatusOK)
 				response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", token, nil)
@@ -197,8 +201,11 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 					t.Fatalf("newly routed runner lost local checks: %+v", setup.Runners)
 				}
 				reported := setup.Runners[0].LocalChecks
-				if reported.Checkout != "passed" || reported.Doctor != doctor || reported.Provider != "passed" || reported.ObservedAt.IsZero() || (setup.Steps[2].State == "ready") != (doctor == "passed" && setup.Policy != nil) {
+				if reported.Checkout != "passed" || reported.Configuration != configuration || reported.Doctor != checks.Doctor || reported.Provider != checks.Provider || reported.ObservedAt.IsZero() || (setup.Steps[2].State == "ready") != (configuration == "passed" && setup.Policy != nil) {
 					t.Fatalf("newly routed runner validation did not follow its report: %+v", setup)
+				}
+				if configuration == "missing" && !strings.Contains(setup.Steps[2].Detail, "Configuration missing") {
+					t.Fatalf("missing configuration not distinct: %+v", setup.Steps[2])
 				}
 			}
 			for _, visibility := range []struct {

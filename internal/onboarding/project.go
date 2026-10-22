@@ -64,6 +64,11 @@ func (p *Project) Evaluate() {
 		return enrolled(r) && (r.Runner.ConnectionHealth == "online" || r.Runner.ConnectionHealth == "" && r.Runner.Health == "online") && r.LocalChecks != nil && r.LocalChecks.Passed()
 	})
 	add("Checkout", validated && (p.Policy != nil || len(p.ObservedPolicies) > 0), "Verify the checkout, repository configuration, Detent checks and provider sign-in on your runner.")
+	if !validated && slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool {
+		return enrolled(r) && r.LocalChecks != nil && r.LocalChecks.Configuration == "missing"
+	}) {
+		p.Steps[len(p.Steps)-1].Detail = "Configuration missing: detent.yaml and WORKFLOW.md not found. Create starter files or add them to the repository; checks continue automatically."
+	}
 	matching := slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool {
 		return !slices.ContainsFunc(r.Exclusions, func(e runnerauth.Exclusion) bool {
 			return e.Code != "host_capacity" && e.Code != "runner_capacity"

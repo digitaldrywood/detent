@@ -19,6 +19,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -340,4 +341,87 @@ func (w *runnerCheckoutTransferWriter) Write(p []byte) (int, error) {
 		p = p[n:]
 	}
 	return total, nil
+}
+
+func TestRunnerCheckoutRefreshPreservesEdits(t *testing.T) {
+	t.Parallel()
+	for _, dirty := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dirty=%t", dirty), func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			source, target := filepath.Join(root, "source"), filepath.Join(root, "checkout")
+			checkout(t, source)
+			runDoctorWorkflowSourceGit(t, root, "clone", source, target)
+			if err := os.WriteFile(filepath.Join(source, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: hub_native\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			runDoctorWorkflowSourceGit(t, source, "add", "detent.yaml")
+			runDoctorWorkflowSourceGit(t, source, "-c", "user.name=Test runner", "-c", "user.email=runner@example.test", "-c", "commit.gpgsign=false", "commit", "-m", "add configuration")
+			if dirty {
+				if err := os.WriteFile(filepath.Join(target, "WORKFLOW.md"), []byte("Local edits\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := refreshRunnerCheckout(t.Context(), globalconfig.Project{Workdir: target}); err != nil {
+				t.Fatal(err)
+			}
+			_, err := os.Stat(filepath.Join(target, "detent.yaml"))
+			if dirty {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("dirty checkout was updated: %v", err)
+				}
+				raw, err := os.ReadFile(filepath.Join(target, "WORKFLOW.md"))
+				if err != nil || string(raw) != "Local edits\n" {
+					t.Fatalf("lost local edits: %q %v", raw, err)
+				}
+			} else if err != nil {
+				t.Fatalf("configuration commit not picked up: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunnerStarterFiles(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ name, workflow, config string }{
+		{name: "empty"},
+		{name: "existing instructions", workflow: "Existing project instructions.\n"},
+		{name: "existing configuration", config: "schema: 1\ntracker:\n  kind: hub_native\n"},
+		{name: "legacy definition", workflow: "---\ntracker:\n  kind: hub_native\n---\nExisting instructions.\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			for file, content := range map[string]string{"WORKFLOW.md": test.workflow, "detent.yaml": test.config} {
+				if content != "" {
+					if err := os.WriteFile(filepath.Join(root, file), []byte(content), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			external := filepath.Join(t.TempDir(), "WORKFLOW.md")
+			selected := globalconfig.Project{Workdir: root, Workflow: external}
+			for range 2 {
+				if err := createRunnerStarterFiles(selected, "example-org/example-project"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := os.Stat(external); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("wrote outside checkout: %v", err)
+			}
+			for file, content := range map[string]string{"WORKFLOW.md": test.workflow, "detent.yaml": test.config} {
+				if content == "" {
+					continue
+				}
+				raw, err := os.ReadFile(filepath.Join(root, file))
+				if err != nil || string(raw) != content {
+					t.Fatalf("overwrote %s: %q %v", file, raw, err)
+				}
+			}
+			workflow, err := workflowconfig.LoadWorkflow(filepath.Join(root, "WORKFLOW.md"))
+			if err != nil || workflow.Prompt == "" {
+				t.Fatalf("starter definition cannot load (prompt bytes %d): %v", len(workflow.Prompt), err)
+			}
+		})
+	}
 }

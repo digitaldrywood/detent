@@ -18,6 +18,7 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -38,6 +39,8 @@ type runnerProjects struct {
 	checkout    func(context.Context, globalconfig.Project, string) error
 	preparing   map[string]*runnerProjectPreparation
 	observed    map[string]time.Time
+	progress    map[string]onboarding.Progress
+	inspect     func(context.Context, globalconfig.Config, string, ...func(runnerauth.LocalChecks)) runnerauth.LocalChecks
 }
 
 const runnerReadinessRecheck = 30 * time.Second
@@ -46,10 +49,12 @@ func runnerProjectObservationDue(previous runnerauth.LocalChecks, reported bool,
 	if !reported || previous.Checkout != "passed" || previous.Setup != "passed" {
 		return true, false
 	}
-	return false, !previous.WorkReady() && now.Sub(observedAt) >= runnerReadinessRecheck
+	return false, now.Sub(observedAt) >= runnerReadinessRecheck
 }
 
 type runnerProjectPreparation struct {
+	mu       sync.Mutex
+	snapshot runnerauth.LocalChecks
 	selected globalconfig.Project
 	cancel   context.CancelFunc
 	done     chan struct{}
@@ -116,38 +121,114 @@ func (p *runnerProjects) prepareConfiguration(ctx context.Context, cfg globalcon
 	return fmt.Errorf("runner project checkout %s is unavailable", name)
 }
 
-func (p *runnerProjects) startPreparation(ctx context.Context, cfg globalconfig.Config, selected globalconfig.Project, observeOnly bool) *runnerProjectPreparation {
+func (p *runnerProjects) startPreparation(ctx context.Context, cfg globalconfig.Config, selected globalconfig.Project, refreshCheckout bool) *runnerProjectPreparation {
 	ctx, cancel := context.WithCancel(ctx)
 	run := &runnerProjectPreparation{selected: selected, cancel: cancel, done: make(chan struct{})}
+	progress := p.progress[selected.ID]
+	emit := func(checks runnerauth.LocalChecks) {
+		run.mu.Lock()
+		run.snapshot = checks
+		run.mu.Unlock()
+	}
+	inspect := p.inspect
+	if inspect == nil {
+		inspect = runnerProjectLocalChecks
+	}
 	go func() {
 		defer close(run.done)
 		defer cancel()
-		if observeOnly {
-			run.checks = runnerProjectLocalChecks(ctx, cfg, selected.ID)
-			run.checks.Setup = "passed"
+		run.checks = runnerauth.LocalChecks{Checkout: "running", Configuration: "pending", Doctor: "pending", Provider: "pending", Setup: "pending"}
+		emit(run.checks)
+		defer func() {
+			if run.err != nil {
+				run.checks.Setup = "failed"
+				if run.checks.Checkout == "running" {
+					run.checks.Checkout = "failed"
+					run.checks.CheckoutAt = time.Now().UTC()
+				}
+				if run.checks.Configuration == "running" {
+					run.checks.Configuration = "failed"
+					run.checks.ConfigurationAt = time.Now().UTC()
+				}
+			}
+			emit(run.checks)
+		}()
+		clone := p.checkout
+		if clone == nil {
+			clone = prepareRunnerCheckout
+		}
+		native, err := p.client.Native(tracker.OrganizationID(cfg.Client.OrganizationID), tracker.ProjectID(cfg.Client.NativeProjects[selected.ID]))
+		if err != nil {
+			run.err = err
 			return
 		}
-		run.err = p.prepareConfiguration(ctx, cfg, selected.ID)
+		definition, err := native.Project(ctx)
+		if err != nil {
+			run.err = err
+			return
+		}
+		cloneURL := definition.CloneURL
+		if cloneURL == "" && definition.Repository != "" {
+			cloneURL = "https://github.com/" + definition.Repository + ".git"
+		}
+		if _, err := os.Stat(filepath.Join(selected.Workdir, ".git")); err != nil {
+			run.err = clone(ctx, selected, cloneURL)
+		}
+		if run.err == nil && refreshCheckout {
+			run.err = refreshRunnerCheckout(ctx, selected)
+		}
 		if run.err != nil {
-			run.checks = runnerauth.LocalChecks{Checkout: "failed", Setup: "failed", Doctor: "pending", Provider: "pending"}
+			run.checks.Checkout, run.checks.Setup = "failed", "failed"
 			var checkoutErr *runnerCheckoutError
 			if errors.As(run.err, &checkoutErr) {
 				run.checks.CheckoutMessage, run.checks.CheckoutFix = checkoutErr.guidance(), checkoutErr.fix
 			}
 			return
 		}
-		run.checks = runnerProjectLocalChecks(ctx, cfg, selected.ID)
-		run.checks.Setup = "passed"
-		native, err := p.client.Native(tracker.OrganizationID(cfg.Client.OrganizationID), tracker.ProjectID(cfg.Client.NativeProjects[selected.ID]))
-		if err == nil && run.checks.Checkout == "passed" {
-			var descriptor policy.Descriptor
-			_, _, descriptor, err = resolveRunnerProjectPolicy(ctx, cfg, selected.ID)
-			if err == nil {
-				err = native.ReportObservedPolicy(ctx, descriptor)
+		run.checks.Checkout, run.checks.CheckoutAt = "passed", time.Now().UTC()
+		run.checks.Configuration = "running"
+		emit(run.checks)
+		verification := selected
+		verification.WorkflowRef = ""
+		cfg.Projects = []globalconfig.Project{verification}
+		if progress.Repository == "generate" {
+			run.err = createRunnerStarterFiles(verification, definition.Repository)
+			if run.err != nil {
+				run.checks.Configuration = "failed"
+				run.checks.Setup = "failed"
+				return
 			}
 		}
-		if err != nil {
-			run.err = err
+		setupProject := project.ManagerConfigFromGlobal(cfg).Projects[0]
+		_, err = project.LoadWorkflowContext(ctx, setupProject)
+		if err == nil {
+			if id := cfg.Client.NativeProjects[selected.ID]; id != "" {
+				setupProject.ID = id
+			}
+			run.err = p.setup.Prepare(ctx, setupProject)
+			if run.err != nil {
+				run.checks.Configuration = "passed"
+				run.checks.ConfigurationAt = time.Now().UTC()
+				run.checks.Doctor, run.checks.DoctorAt = "failed", time.Now().UTC()
+				run.checks.Setup = "failed"
+				return
+			}
+		}
+		setup := "pending"
+		if err == nil {
+			setup = "passed"
+		}
+		run.checks = inspect(ctx, cfg, selected.ID, func(checks runnerauth.LocalChecks) { checks.Setup = setup; emit(checks) })
+		run.checks.Setup = setup
+		if run.checks.Configuration != "passed" {
+			return
+		}
+		var descriptor policy.Descriptor
+		_, _, descriptor, run.err = resolveRunnerProjectPolicy(ctx, cfg, selected.ID)
+		if run.err == nil {
+			run.err = native.ReportObservedPolicy(ctx, descriptor)
+		}
+		if run.err != nil {
 			run.checks.Setup = "failed"
 		}
 	}()
@@ -208,6 +289,7 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 			delete(p.checks, name)
 			delete(p.problems, name)
 			delete(p.observed, name)
+			delete(p.progress, name)
 		}
 	}
 	for name := range p.checks {
@@ -215,24 +297,52 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 			delete(p.checks, name)
 			delete(p.problems, name)
 			delete(p.observed, name)
+			delete(p.progress, name)
 		}
 	}
 	for _, selected := range p.cfg.Projects {
 		previous, reported := p.checks[selected.ID]
+		requested := false
+		native, err := p.client.Native(identity.OrganizationID, tracker.ProjectID(p.cfg.Client.NativeProjects[selected.ID]))
+		if err != nil {
+			return err
+		}
+		supported, err := native.HubFeature(ctx, tracker.NativeLocalChecksCapability)
+		if err != nil {
+			return err
+		}
+		if supported {
+			progress, err := native.SetupProgress(ctx)
+			if err != nil {
+				return err
+			}
+			if p.progress == nil {
+				p.progress = make(map[string]onboarding.Progress)
+			}
+			requested = progress.Revision != p.progress[selected.ID].Revision
+			if p.preparing[selected.ID] == nil {
+				p.progress[selected.ID] = progress
+			}
+		}
 		run := p.preparing[selected.ID]
 		if run != nil && !reflect.DeepEqual(run.selected, selected) {
 			continue
 		}
 		if run == nil {
 			prepare, observe := runnerProjectObservationDue(previous, reported, p.observed[selected.ID], time.Now())
+			if requested {
+				prepare = true
+			}
 			if !prepare && !observe {
 				continue
 			}
-			run = p.startPreparation(ctx, p.cfg, selected, observe)
+			run = p.startPreparation(ctx, p.cfg, selected, observe || reported && previous.Checkout == "passed")
 			p.preparing[selected.ID] = run
-			if !reported {
-				p.checks[selected.ID] = runnerauth.LocalChecks{Checkout: "pending", Setup: "pending", Doctor: "pending", Provider: "pending"}
+			setup := "pending"
+			if previous.Setup == "passed" {
+				setup = "passed"
 			}
+			p.checks[selected.ID] = runnerauth.LocalChecks{Checkout: "running", Configuration: "pending", Setup: setup, Doctor: "pending", Provider: "pending"}
 			continue
 		}
 		select {
@@ -262,6 +372,15 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 				p.logger.Warn("prepare assigned runner project failed", "project", selected.ID, "attribution", "instance", "error", run.err)
 			}
 		default:
+			run.mu.Lock()
+			if run.snapshot.Checkout != "" {
+				snapshot := run.snapshot
+				if previous.Setup == "passed" && snapshot.Setup == "pending" {
+					snapshot.Setup = "passed"
+				}
+				p.checks[selected.ID] = snapshot
+			}
+			run.mu.Unlock()
 		}
 	}
 	projects := make(map[string]tracker.ProjectID, len(p.cfg.Client.NativeProjects))

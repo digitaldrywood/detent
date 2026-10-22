@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/cloudorigin"
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -142,6 +143,14 @@ func (c *NativeClient) Project(ctx context.Context) (tracker.NativeProject, erro
 	var result tracker.NativeProject
 	err := c.client.request(ctx, http.MethodGet, c.base(), nil, &result)
 	return result, err
+}
+
+func (c *NativeClient) SetupProgress(ctx context.Context) (onboarding.Progress, error) {
+	var result struct {
+		Progress onboarding.Progress `json:"progress"`
+	}
+	err := c.client.request(ctx, http.MethodGet, c.base()+"/onboarding", nil, &result)
+	return result.Progress, err
 }
 
 func nativeItemPath(id tracker.NativeWorkItemID) (string, error) {

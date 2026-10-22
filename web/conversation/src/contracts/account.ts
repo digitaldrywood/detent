@@ -479,6 +479,13 @@ export type RunnerExclusion = typeof RunnerExclusion.Type;
  */
 export const RunnerLocalChecks = Schema.Struct({
   checkout: Schema.String,
+  configuration: Schema.optional(Schema.String),
+  checkout_message: Schema.optional(Schema.String),
+  checkout_fix: Schema.optional(Schema.String),
+  checkout_at: Schema.optional(Schema.String),
+  configuration_at: Schema.optional(Schema.String),
+  doctor_at: Schema.optional(Schema.String),
+  provider_at: Schema.optional(Schema.String),
   doctor: Schema.String,
   provider: Schema.String,
   provider_kinds: Schema.optional(Schema.Array(Schema.String)),

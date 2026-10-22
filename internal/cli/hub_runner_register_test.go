@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -291,6 +293,8 @@ func TestRunnerGitHubAuthNextSteps(t *testing.T) {
 }
 
 type registerHub struct {
+	setupProgress    atomic.Value
+	localChecks      sync.Map
 	server           *httptest.Server
 	credential       atomic.Value
 	identity         atomic.Value
@@ -369,6 +373,30 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 			_ = json.NewEncoder(w).Encode(identity)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/onboarding") {
+			progress, _ := hub.setupProgress.Load().(onboarding.Progress)
+			_ = json.NewEncoder(w).Encode(map[string]any{"progress": progress})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/machines/") && strings.HasSuffix(r.URL.Path, "/heartbeat") {
+			var body struct {
+				LocalChecks runnerauth.LocalChecks `json:"local_checks"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			if err := body.LocalChecks.Validate(); err != nil {
+				t.Error(err)
+			}
+			for id := range projects {
+				if strings.Contains(r.URL.Path, "/projects/"+string(id)+"/") {
+					hub.localChecks.Store(id, body.LocalChecks)
+				}
+			}
+			identity := hub.identity.Load().(runnerauth.Identity)
+			_ = json.NewEncoder(w).Encode(runnerauth.RoutingSnapshot{RunnerID: identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Build host", State: "active", CapacityLimit: 2, ProjectIDs: ids}.Normalized()})
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/policy/observed") {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -385,7 +413,7 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 		}
 		for id, name := range projects {
 			if strings.HasSuffix(r.URL.Path, "/projects/"+string(id)) {
-				_ = json.NewEncoder(w).Encode(tracker.NativeProject{ID: id, OrganizationID: "org_example", Name: name, CloneURL: hub.cloneURLs[id], Repository: hub.repositories[id], States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}})
+				_ = json.NewEncoder(w).Encode(tracker.NativeProject{ID: id, Profile: "native", OrganizationID: "org_example", Name: name, CloneURL: hub.cloneURLs[id], Repository: hub.repositories[id], States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}})
 				return
 			}
 			if strings.HasSuffix(r.URL.Path, "/projects/"+string(id)+"/work-items") {

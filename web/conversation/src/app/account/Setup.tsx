@@ -1,4 +1,7 @@
 import React from "react";
+import { CheckIcon, CircleIcon, TriangleAlertIcon } from "lucide-react";
+import { Spinner } from "../../components/ui/spinner.tsx";
+import { formatRelativeTime } from "../fleet/format.ts";
 import { GitHubIssueIntake } from "./IssueIntake.tsx";
 
 import { Avatar } from "../../components/ui/avatar.tsx";
@@ -277,7 +280,7 @@ export function WizardCard({
           <h1 className="mb-2 text-2xl font-semibold tracking-[-0.02em] text-balance">{title}</h1>
           <p className="mb-[18px] text-sm text-muted-foreground">{lede}</p>
           {children}
-          <div className="mt-[18px] flex justify-end gap-2">{footer}</div>
+          <div className="mt-[18px] flex flex-wrap justify-end gap-2">{footer}</div>
         </div>
       </div>
     </div>
@@ -383,7 +386,6 @@ function SetupContent({ projectId, onNavigate }: {
   }, [projectId, savedRepository, savedArtifacts]);
 
   const [repositoryName, setRepositoryName] = React.useState("");
-  const policyReports = onboarding.value?.observed_policies ?? [];
   const [enrollingChoice, setEnrolling] = React.useState<boolean | null>(null);
   const enrolling = enrollingChoice ?? (onboarding.value !== undefined && runners.length === 0);
   const enrollmentBaseline = React.useRef<Set<string> | null>(null);
@@ -555,9 +557,10 @@ function SetupContent({ projectId, onNavigate }: {
   const checkoutRepository = integration.value?.checkout_repository;
   const associatedRepository = checkoutRepository || integration.value?.repository;
   const checkoutVerified = integration.value?.checkout_verified === true;
-  const configurationChosen = Boolean(progress?.repository) || Boolean(onboarding.value.policy);
-  const configurationReported = Boolean(onboarding.value.policy) || policyReports.length > 0;
-  const preparingRunner = onboarding.value.runners?.find((entry) => entry.runner.state === "active" && (entry.runner.connection_health ?? entry.runner.health) === "online");
+  const preparingRunner = runner;
+  const configurationMissing = preparingRunner?.local_checks?.configuration === "missing";
+  const runnerName = preparingRunner?.runner.display_name ?? "Your runner";
+  const requestChecks = () => void saveProgress.call({ repository: progress?.repository ?? "", doctor: progress?.doctor ?? false, provider: progress?.provider ?? false, artifacts });
   const githubApp = integration.value;
   const showGitHubApp = githubApp?.profile === "native" && associatedRepository && githubApp.github_transport_available === true && githubApp.github_app_slug && githubApp.github_app_install_url;
 
@@ -614,63 +617,51 @@ function SetupContent({ projectId, onNavigate }: {
         ) : null}
       </>
     ),
-    "Configuration": (
-      <>
-        {checkoutRepository ? (
-          <section className="mt-4" aria-labelledby="setup-configuration-heading">
-            <h2 id="setup-configuration-heading" className="mb-2 text-sm font-medium">Configuration files</h2>
-            {configurationChosen ? (
-              <p className="mb-3 text-sm text-muted-foreground">
-                {progress?.repository === "generate" && policyReports.length === 0 && !configurationReported ? `Create detent.yaml and WORKFLOW.md in ${associatedRepository} on your runner’s computer so it can load the project settings.` : `The runner reads detent.yaml and WORKFLOW.md from ${associatedRepository} to learn how to build, check and deliver your work.`}
-              </p>
-            ) : (
-              <>
-                <p className="mb-3 text-sm text-muted-foreground">Detent needs detent.yaml and WORKFLOW.md in this repository to know how to build, check and deliver your work.</p>
-                <ChoiceGroup
-                  name="setup-repository"
-                  legend="Configuration files"
-                  value={repository}
-                  onValueChange={setRepository}
-                  choices={[
-                    { value: "existing", name: "Use existing configuration files", detail: "detent.yaml and WORKFLOW.md are already in the repository" },
-                    { value: "generate", name: "Create configuration files", detail: "Create detent.yaml and WORKFLOW.md on your runner’s computer" },
-                  ]}
-                />
-                <Button variant="outline" disabled={saveProgress.pending || repository === ""} onClick={() => void saveProgress.call({ repository, doctor: progress?.doctor ?? false, provider: progress?.provider ?? false, artifacts })}>
-                  {saveProgress.pending ? "Saving…" : "Save configuration choice"}
-                </Button>
-              </>
-            )}
-          </section>
-        ) : null}
-
-      </>
-    ),
     "Checkout": (
       <>
-        {(onboarding.value.runners ?? []).length === 0 ? (
-          <p className="mb-3 text-sm text-muted-foreground">Enroll a runner first to check that its computer is ready.</p>
-        ) : null}
-        {(onboarding.value.runners ?? []).map((entry) => {
-          const checks = entry.local_checks;
-          const offline = (entry.runner.connection_health ?? entry.runner.health) !== "online";
-          return (
-            <div key={entry.runner.runner_id} className="mb-3">
-              <p className="mb-2 text-sm font-medium">{entry.runner.display_name} · {offline ? "Offline" : "Online"}{entry.runner.health === "needs_attention" ? " · Needs attention" : ""}</p>
-              {([
-                ["Project checkout and configuration", "Your runner needs a copy of your code with detent.yaml and WORKFLOW.md in the project folder. Put those files on the runner’s computer, restart the runner, then click Refresh runner checks.", checks?.checkout, "Put your code, WORKFLOW.md and detent.yaml in the project folder shown when you enrolled the runner."],
-                ["detent doctor", "detent doctor checks whether Detent is set up correctly on your computer. Run the command below on that computer for details, fix any problems, then restart the runner and refresh the checks.", checks?.doctor, "Run detent doctor --config <global.yaml> --project <project> on your runner’s computer to see what needs fixing."],
-                ["Provider sign-in", "Your runner needs to be signed in to the AI coding tool chosen for this project; your sign-in details stay on that computer. Sign in there, restart the runner, then click Refresh runner checks.", checks?.provider, `Sign in to ${(checks?.provider_kinds ?? []).join(" and ") || "the AI coding tool chosen for this project"} on your runner’s computer, then restart the runner.`],
-              ] as const).map(([name, help, state, hint]) => (
-                <OptionRow key={name} label={name} name={name} help={help}
-                  detail={state === "passed" ? "Checked on your runner’s computer" : hint}
-                  right={<><StatusDot tone={state === "passed" && !offline ? "ok" : "warn"} />{state === "passed" ? "Passed" : state === "failed" ? "Failed" : state === "warning" ? "Warnings" : "Waiting"}</>} />
-              ))}
-              {checks?.observed_at ? <p className="text-xs text-muted-foreground">Reported {new Date(checks.observed_at).toLocaleString()}. {offline ? "Reconnect the runner’s computer to use these results." : "Sign-in details and command output stay on your computer."}</p> : null}
-            </div>
-          );
-        })}
-        <Button variant={needsAction ? "default" : "outline"} onClick={() => void onboarding.refresh()}>Refresh runner checks</Button>
+        {!preparingRunner ? <p className="mb-3 text-sm text-muted-foreground">Enroll a runner first to check that its computer is ready.</p> : (() => {
+          const checks = preparingRunner.local_checks;
+          const offline = (preparingRunner.runner.connection_health ?? preparingRunner.runner.health) !== "online";
+          const configuration = checks?.configuration ?? (checks?.checkout === "passed" ? "passed" : "pending");
+          const rows = [
+            { name: `Cloned ${associatedRepository ?? "repository"}`, state: checks?.checkout, at: checks?.checkout_at, detail: `Using ${runnerName}’s Git sign-in`, hint: checks?.checkout_fix || "Check the runner’s Git sign-in and repository access, then retry." },
+            { name: configurationMissing ? "detent.yaml and WORKFLOW.md not found" : "Found detent.yaml and WORKFLOW.md", state: configuration, at: checks?.configuration_at, detail: configurationMissing ? "Looked in the repository root" : "Project settings loaded from the repository", hint: "Check detent.yaml and WORKFLOW.md in the repository, then retry." },
+            { name: "detent doctor", state: checks?.doctor, at: checks?.doctor_at, detail: configurationMissing ? "Waiting for settings" : `Checking build tools on ${runnerName}`, hint: "Run detent doctor --config <global.yaml> --project <project> on your runner’s computer to see what needs fixing." },
+            { name: "AI coding tool sign-in", state: checks?.provider, at: checks?.provider_at, detail: configurationMissing ? "Waiting for settings" : `Sign-in stays on ${runnerName}`, hint: `Sign in to ${(checks?.provider_kinds ?? []).join(" and ") || "the AI coding tool chosen for this project"} on your runner’s computer, then retry.` },
+          ];
+          return <>
+            <ul aria-label="Runner checks" className="divide-y divide-border/60 overflow-hidden rounded-xl border border-border/60 bg-muted" aria-live="polite">
+              {rows.map((row) => {
+                const state = row.state ?? "pending";
+                const status = state === "passed" ? "Passed" : state === "running" ? "Running" : state === "failed" ? "Failed" : state === "missing" ? "Missing" : state === "warning" ? "Warnings" : "Waiting";
+                const observed = row.at || checks?.observed_at;
+                return <li key={row.name} className="flex items-start gap-3 px-3.5 py-3">
+                  <span className="mt-0.5 shrink-0" aria-hidden="true">
+                    {state === "passed" ? <CheckIcon className="size-5 rounded-full bg-success/15 p-0.5 text-success-foreground" /> : state === "running" ? <Spinner size="lg" /> : ["failed", "missing", "warning"].includes(state) ? <TriangleAlertIcon className="size-5 text-warning-foreground" /> : <CircleIcon className="size-5 text-muted-foreground" />}
+                  </span>
+                  <div className="min-w-0 flex-1 text-sm">
+                    <p className="break-words">{row.name}</p>
+                    <p className="break-words text-xs text-muted-foreground">{state === "failed" ? row.hint : row.detail}</p>
+                    {state === "failed" && row.name.startsWith("Cloned") && checks?.checkout_message ? <p className="text-xs text-muted-foreground">{checks.checkout_message}</p> : null}
+                    {state === "failed" ? <Button variant="link" size="sm" disabled={saveProgress.pending} onClick={requestChecks} aria-label={`Retry ${row.name}`}>Retry</Button> : null}
+                  </div>
+                  <div className="shrink-0 text-right text-xs text-muted-foreground">
+                    <span>{status}</span>
+                    {observed && !["pending", "running"].includes(state) ? <time className="mt-0.5 block" dateTime={observed}>{formatRelativeTime(observed)}</time> : null}
+                  </div>
+                </li>;
+              })}
+            </ul>
+            {offline ? <p role="status" className="mt-2 text-sm text-muted-foreground">Reconnect {runnerName} to continue checking.</p> : null}
+            {configurationMissing ? <section className="mt-3">
+              <ChoiceGroup name="setup-repository" legend="Configuration files" value={repository || "generate"} onValueChange={setRepository} choices={[
+                { value: "generate", name: `Create starter files on ${runnerName}`, detail: `Written into ${runnerName}’s checkout for you to review and commit` },
+                { value: "existing", name: "I’ll add them myself", detail: `${runnerName} picks them up on its next check` },
+              ]} />
+              {progress?.repository ? <p role="status" className="text-sm text-muted-foreground">{progress.repository === "generate" ? `Waiting for ${runnerName} to create starter files.` : `Add and commit the files. ${runnerName} will check again automatically.`}</p> : null}
+            </section> : <div className="mt-2"><Button variant="link" size="sm" disabled={saveProgress.pending} onClick={requestChecks}>Refresh runner checks</Button></div>}
+          </>;
+        })()}
       </>
     ),
     "Runner": enrolling ? (
@@ -794,7 +785,7 @@ function SetupContent({ projectId, onNavigate }: {
   const titles: Record<string, string> = {
     Runner: enrolling ? `Connect a computer to ${projectName ?? "this project"}` : `Which computer should work on ${projectName ?? "this project"}?`,
     Repository: "Repository",
-    Checkout: "Checkout",
+    Checkout: configurationMissing ? `${associatedRepository ?? "This repository"} has no Detent settings yet` : `${runnerName} is preparing ${associatedRepository ?? "the repository"}`,
     "Run files": "Where should run files go?",
   };
   const selectStep = (index: number) => { setShowReady(false); setActiveIndex(index); };
@@ -805,6 +796,7 @@ function SetupContent({ projectId, onNavigate }: {
       title={ready ? `${projectName ?? "This project"} is ready for work` : titles[step?.name ?? ""] ?? "Set up this project"}
       lede={ready ? `New issues in this project go to ${runner?.runner.display_name ?? "your runner"}. You can change any of this in project settings.`
         : step?.name === "Runner" && enrolling ? "Name it, then run the command in a terminal on that computer."
+        : step?.name === "Checkout" ? configurationMissing ? `${runnerName} cloned it but found no project configuration. Pick one and the checks continue on their own.` : "The runner clones the repository and checks itself. This page updates as each check finishes; sign-in details and command output stay on that computer."
         : step?.name === "Run files" ? `Logs, screenshots and other files from each run of ${projectName ?? "this project"}.` : step?.detail ?? ""}
       footer={ready ? <Button onClick={() => onNavigate?.("/work")}>Open Work</Button> : <>
         {step?.name === "Runner" ? <>
@@ -815,7 +807,12 @@ function SetupContent({ projectId, onNavigate }: {
           }}>{route.pending ? "Routing…" : `Use ${runner?.runner.display_name ?? "runner"}`}</Button> : null}
         </> : <>
           <Button variant="outline" onClick={back}>Back</Button>
-          {step?.name === "Run files" ? <Button disabled={saveProgress.pending || artifacts === "customer" && (onboarding.value.artifact_services ?? []).length === 0} onClick={() => void finishSetup()}>{saveProgress.pending ? "Saving…" : "Finish setup"}</Button>
+          {step?.name === "Checkout" ? <>
+            {configurationMissing ? <Button disabled={saveProgress.pending} onClick={() => void saveProgress.call({ repository: repository || "generate", doctor: progress?.doctor ?? false, provider: progress?.provider ?? false, artifacts })}>{saveProgress.pending ? "Saving…" : repository === "existing" ? "Wait for files" : "Create starter files"}</Button> : <>
+              <Button variant="outline" className="order-last w-full sm:order-none sm:w-auto" onClick={next}>Continue in background</Button>
+              <Button disabled={needsAction} onClick={next}>Continue</Button>
+            </>}
+          </> : step?.name === "Run files" ? <Button disabled={saveProgress.pending || artifacts === "customer" && (onboarding.value.artifact_services ?? []).length === 0} onClick={() => void finishSetup()}>{saveProgress.pending ? "Saving…" : "Finish setup"}</Button>
             : <Button variant={needsAction ? "outline" : "default"} disabled={saveProgress.pending} onClick={saveAndContinue}>{saveProgress.pending ? "Saving…" : needsAction ? "Skip for now" : "Continue"}</Button>}
         </>}
       </>}
@@ -832,7 +829,7 @@ function SetupContent({ projectId, onNavigate }: {
             right={<Button variant="outline" onClick={() => setImporting((open) => !open)}>{importing ? "Hide import" : "Import issues"}</Button>} />
           {importing ? <GitHubIssueIntake projectId={projectId} repository={associatedRepository} runners={runners.map((entry) => ({ id: entry.runner.runner_id, name: entry.runner.display_name }))} /> : null}
         </div> : null}
-      </> : <>{bodies[step?.name ?? ""] ?? null}{step?.name === "Checkout" ? bodies.Configuration : null}</>}
+      </> : <>{bodies[step?.name ?? ""] ?? null}</>}
       <ControlError message={saveProgress.error?.message ?? null} />
     </WizardCard>
   );

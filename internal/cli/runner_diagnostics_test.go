@@ -35,6 +35,7 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 		missingOrigin                          bool
 		unsupportedOrigin                      bool
 		missingWorkflow                        bool
+		refWorkflow                            bool
 		runnerSetup                            bool
 		doctor                                 doctorStatus
 		auth                                   bool
@@ -51,7 +52,8 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 		{name: "configured workflow outside committed checkout", checkout: true, externalWorkflow: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
 		{name: "missing Git origin", checkout: true, missingOrigin: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
 		{name: "GitLab origin with external workflow", checkout: true, externalWorkflow: true, unsupportedOrigin: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
-		{name: "missing configured workflow", checkout: true, externalWorkflow: true, missingWorkflow: true, doctor: doctorOK, auth: true, wantCheckout: "failed", wantDoctor: "pending", wantProvider: "pending"},
+		{name: "Git ref workflow absent locally", checkout: true, refWorkflow: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
+		{name: "missing configured workflow", checkout: true, externalWorkflow: true, missingWorkflow: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "pending", wantProvider: "pending"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -68,6 +70,9 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 				workflowPath = filepath.Join(root, "WORKFLOW.md")
 			}
 			cfg.Projects = []globalconfig.Project{{ID: "orders", Workflow: workflowPath, Workdir: workdir, Weight: 1}}
+			if tt.refWorkflow {
+				cfg.Projects[0].WorkflowRef = "HEAD"
+			}
 			if err := globalconfig.Write(path, cfg, globalconfig.WithMissingProjectPaths()); err != nil {
 				t.Fatal(err)
 			}
@@ -113,6 +118,11 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 					t.Fatalf("source checkout is dirty: %s", status)
 				}
 			}
+			if tt.refWorkflow {
+				if err := os.Remove(workflowPath); err != nil {
+					t.Fatal(err)
+				}
+			}
 			var doctors, auths int
 			checks := collectRunnerLocalChecks(t.Context(), cfg, "orders", func(_ context.Context, c doctorConfig) doctorReport {
 				doctors++
@@ -129,14 +139,17 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 			if checks.Checkout != tt.wantCheckout || checks.Doctor != tt.wantDoctor || checks.Provider != tt.wantProvider {
 				t.Fatalf("checks=%+v", checks)
 			}
-			if (checks.RunnerSetupDeclared != nil) != (tt.wantCheckout == "passed") || checks.RunnerSetupDeclared != nil && *checks.RunnerSetupDeclared != tt.runnerSetup {
+			if (checks.RunnerSetupDeclared != nil) != (tt.wantCheckout == "passed" && !tt.missingWorkflow) || checks.RunnerSetupDeclared != nil && *checks.RunnerSetupDeclared != tt.runnerSetup {
 				t.Fatalf("runner setup declaration = %v", checks.RunnerSetupDeclared)
 			}
-			if tt.wantCheckout == "passed" && (doctors != 1 || !tt.pi && auths == 0 || tt.pi && auths != 0) {
+			if tt.wantCheckout == "passed" && !tt.missingWorkflow && (doctors != 1 || !tt.pi && auths == 0 || tt.pi && auths != 0) {
 				t.Fatalf("probes doctor=%d auth=%d", doctors, auths)
 			}
-			if tt.wantCheckout != "passed" && (doctors != 0 || auths != 0) {
+			if (tt.wantCheckout != "passed" || tt.missingWorkflow) && (doctors != 0 || auths != 0) {
 				t.Fatal("probed before checkout")
+			}
+			if tt.missingWorkflow && checks.Configuration != "missing" {
+				t.Fatalf("configuration not missing: %+v", checks)
 			}
 			encoded, err := json.Marshal(checks)
 			if err != nil {

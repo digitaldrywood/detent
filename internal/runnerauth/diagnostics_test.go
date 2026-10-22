@@ -12,6 +12,8 @@ func TestLocalChecksValidation(t *testing.T) {
 		{"runner commit policy", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", CommitName: "Enrolled runner", CommitEmail: "machine@runners.detent.invalid", CommitSigning: "unsigned"}, true},
 		{"invalid signing mode", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", CommitSigning: "pinentry"}, false},
 		{"multiline commit identity", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", CommitName: "Runner\nother"}, false},
+		{"running configuration", LocalChecks{Checkout: "passed", Configuration: "running", Doctor: "pending", Provider: "pending"}, true},
+		{"raw configuration", LocalChecks{Checkout: "passed", Configuration: "secret-token", Doctor: "pending", Provider: "pending"}, false},
 		{"pending", LocalChecks{Checkout: "failed", Doctor: "pending", Provider: "pending"}, true},
 		{"setup failed", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", Setup: "failed"}, true},
 		{"raw setup output", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", Setup: "secret-token"}, false},
@@ -46,6 +48,7 @@ func TestLocalChecksWorkReady(t *testing.T) {
 		{"no observed provider", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "pending"}, false},
 		{"signed-out provider beside Pi", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "failed", ProviderKinds: []string{"codex", "pi_agent"}}, false},
 		{"checkout not verified", LocalChecks{Checkout: "failed", Doctor: "pending", Provider: "passed", ProviderKinds: []string{"codex"}}, false},
+		{"missing configuration", LocalChecks{Configuration: "missing", Checkout: "passed", Doctor: "passed", Provider: "passed"}, false},
 		{"setup failed", LocalChecks{Setup: "failed", Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

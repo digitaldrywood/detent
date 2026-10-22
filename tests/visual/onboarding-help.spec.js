@@ -75,9 +75,31 @@ for (const width of [1280, 390]) {
     await expect(page.getByRole("button", { name: "Associate", exact: true })).toBeEnabled();
     await steps.getByRole("button", { name: /Checkout/ }).click();
     await expect(page.getByRole("checkbox")).toHaveCount(0);
-    await help(page, "Project checkout and configuration", "Your runner needs a copy of your code", tap);
-    await help(page, "detent doctor", "checks whether Detent is set up correctly", tap);
-    await help(page, "Provider sign-in", "your sign-in details stay on that computer", tap);
+    let configurationMissing = false;
+    await page.route("**/projects/proj_alpha/onboarding", async (route) => {
+      if (route.request().method() !== "GET") { await route.continue(); return; }
+      const response = await route.fetch();
+      const data = await response.json();
+      const at = new Date(Date.now() - 12_000).toISOString();
+      await route.fulfill({ response, json: { ...data, runners: data.runners.slice(0, 1).map((entry) => ({ ...entry, runner: { ...entry.runner, display_name: "Example runner", connection_health: "online" }, local_checks: { checkout: "passed", configuration: configurationMissing ? "missing" : "passed", doctor: configurationMissing ? "pending" : "running", provider: "pending", observed_at: at } })), steps: data.steps.map((step) => step.name === "Checkout" ? { ...step, state: "action_required" } : step) } });
+    });
+    await page.getByRole("button", { name: "Refresh runner checks" }).click();
+    const checks = page.getByRole("list", { name: "Runner checks" });
+    await expect(checks.getByText("Running", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();
+    for (const name of ["Back", "Continue in background", "Continue"]) {
+      const button = page.getByRole("button", { name, exact: true });
+      await button.scrollIntoViewIfNeeded();
+      await expect(button).toBeInViewport({ ratio: 1 });
+    }
+    await page.screenshot({ path: testInfo.outputPath(`checkout-running-${width}.png`) });
+    configurationMissing = true;
+    await page.getByRole("button", { name: "Refresh runner checks" }).click();
+    await expect(checks.getByText("detent.yaml and WORKFLOW.md not found")).toBeVisible();
+    await expect(page.getByRole("radio", { name: "Create starter files on Example runner" })).toBeVisible();
+    await expect(page.getByRole("radio", { name: "I’ll add them myself" })).toBeVisible();
+    await expect(page.getByText(/restart/i)).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath(`checkout-missing-${width}.png`) });
 
     await steps.getByRole("button", { name: /Runner (ready|action required)/ }).click();
     await expect(page.getByRole("group", { name: "Computer for this project" })).toBeVisible();
@@ -140,7 +162,7 @@ for (const width of [1280, 390]) {
 
     await steps.getByRole("button", { name: /Run files/ }).click();
     await page.screenshot({ path: testInfo.outputPath(`run-files-${width}.png`) });
-    await help(page, "Keep them on Mock MacBook Pro", "losing it also loses those files", tap);
+    await help(page, "Keep them on Example runner", "losing it also loses those files", tap);
     await help(page, "Your bucket and gateway", "you run and pay for", tap);
     await page.getByRole("radio", { name: "Your bucket and gateway", exact: true }).check();
     await help(page, "Service id", "does not create storage or check that it works", tap);
@@ -153,7 +175,7 @@ for (const width of [1280, 390]) {
     await page.getByRole("button", { name: "Associate", exact: true }).click();
     await steps.getByRole("button", { name: /Checkout/ }).click();
     await expect(page.getByText("Configuration files", { exact: true })).toBeVisible();
-    await expect(page.getByText(/The runner reads detent.yaml and WORKFLOW.md/)).toBeVisible();
+    await expect(page.getByRole("radio", { name: "Create starter files on Example runner" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Advanced policy details", exact: true })).toHaveCount(0);
     await expect(page.getByLabel("Resolved policy descriptor", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Approve settings", exact: true })).toHaveCount(0);

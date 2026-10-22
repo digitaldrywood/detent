@@ -43,9 +43,13 @@ it("preserves unsaved setup choices and fields through refresh, then saves and s
     if (String(input).endsWith("/integration") && response.ok) {
       return Response.json({ ...await response.json(), checkout_repository: String(input).includes("proj_alpha") ? "example-org/another-project" : "example-org/example-project", checkout_verified: true });
     }
-    if (deferRefresh && String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
-      deferRefresh = false;
-      await new Promise<void>((resolve) => { finishRefresh = resolve; });
+    if (String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET") && response.ok) {
+      if (deferRefresh) {
+        deferRefresh = false;
+        await new Promise<void>((resolve) => { finishRefresh = resolve; });
+      }
+      const data = await response.json();
+      return Response.json({ ...data, runners: data.runners.map((entry: Record<string, unknown>) => ({ ...entry, local_checks: { checkout: "passed", configuration: "missing", doctor: "pending", provider: "pending", observed_at: new Date().toISOString() } })) });
     }
     return response;
   });
@@ -75,7 +79,7 @@ it("preserves unsaved setup choices and fields through refresh, then saves and s
   expect(poll).toBeDefined();
   act(() => poll!());
   await waitFor(() => expect(finishRefresh).toBeDefined());
-  await user.click(screen.getByRole("radio", { name: "Create configuration files" }));
+  await user.click(screen.getByRole("radio", { name: /Create starter files on/ }));
   await user.click(screen.getByRole("button", { name: /Run files/ }));
   await user.click(screen.getByRole("radio", { name: "Your bucket and gateway" }));
   const fields = [
@@ -90,8 +94,8 @@ it("preserves unsaved setup choices and fields through refresh, then saves and s
   expect(screen.getByRole("button", { name: "Help for Publisher token id" })).toBeTruthy();
   await user.click(screen.getByRole("radio", { name: /Keep them on/ }));
   await user.click(screen.getByRole("button", { name: /Checkout/ }));
-  expect((screen.getByRole("radio", { name: "Create configuration files" }) as HTMLInputElement).checked).toBe(true);
-  await user.click(screen.getByRole("button", { name: "Save configuration choice" }));
+  expect((screen.getByRole("radio", { name: /Create starter files on/ }) as HTMLInputElement).checked).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Create starter files" }));
   expect(screen.queryByRole("button", { name: "Approve settings" })).toBeNull();
   const saved = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`).then((response) => response.json());
   expect(saved.progress).toMatchObject({ repository: "generate", artifacts: "local", revision: "2" });
@@ -176,6 +180,7 @@ it.each(["no repository", "configuration needed", "policy pending", "policy repo
       const approved = state === "approved" || onboarding.policy?.policy.policy_id === descriptor.policy_id;
       return Response.json({
         ...onboarding,
+        runners: onboarding.runners.map((entry: Record<string, unknown>) => ({ ...entry, local_checks: { checkout: "passed", configuration: state === "configuration needed" ? "missing" : "passed", doctor: "passed", provider: "passed", observed_at: new Date().toISOString() } })),
         progress: { ...onboarding.progress, repository: configurationChosen ? "existing" : onboarding.progress.repository },
         policy: approved ? approval : null,
         observed_policies: reported && !approved ? [{ policy: descriptor, runner_id: "runner_example", observed_at: "2026-10-12T12:00:00Z", conflict: state === "conflict" }] : [],
@@ -205,8 +210,8 @@ it.each(["no repository", "configuration needed", "policy pending", "policy repo
   if (state === "configuration needed") {
     expect(await screen.findByRole("group", { name: "Configuration files" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Approve settings" })).toBeNull();
-    await user.click(screen.getByRole("radio", { name: "Create configuration files" }));
-    await user.click(screen.getByRole("button", { name: "Save configuration choice" }));
+    await user.click(screen.getByRole("radio", { name: /Create starter files on/ }));
+    await user.click(screen.getByRole("button", { name: "Create starter files" }));
     expect(screen.queryByRole("button", { name: "Approve settings" })).toBeNull();
     await waitFor(async () => {
       const saved = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`);
@@ -226,7 +231,7 @@ it.each([
   ["online", "needs_attention", "Example runner · Online · Needs attention"],
   ["offline", "needs_attention", "Example runner · Offline · Needs attention"],
   [undefined, "online", "Example runner · Online"],
-])("uses connection health %s with runner health %s", async (connection_health, health, label) => {
+])("uses connection health %s with runner health %s", async (connection_health, health, _label) => {
   const mount = await mountSetup();
   const fetch = globalThis.fetch;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (...args) => {
@@ -239,9 +244,10 @@ it.each([
   });
   mount();
   await userEvent.setup().click(await screen.findByRole("button", { name: /Checkout/ }));
-  expect(await screen.findByText(label)).toBeTruthy();
-  if (connection_health === "offline") expect(screen.getByText(/Reconnect the runner’s computer/)).toBeTruthy();
-  else expect(screen.queryByText(/Reconnect the runner’s computer/)).toBeNull();
+  expect(await screen.findByRole("heading", { level: 1, name: /Example runner is preparing/ })).toBeTruthy();
+  expect(screen.getByRole("list", { name: "Runner checks" }).textContent).toContain("Failed");
+  if (connection_health === "offline") expect(screen.getByText(/Reconnect Example runner/)).toBeTruthy();
+  else expect(screen.queryByText(/Reconnect Example runner/)).toBeNull();
 });
 
 it.each([["projects", false], ["projects", true], ["organization", false]] as const)("preselects an eligible online runner and preserves routing when confirming (scope: %s, offline choice: %s)", async (scope, offline) => {
@@ -362,7 +368,7 @@ it("shows the Ready summary and opens each step from its link", async () => {
     return response;
   });
   const user = userEvent.setup();
-  for (const [link, heading] of [["Change Runner", "Which computer should work on beta?"], ["Change Repository", "Repository"], ["View Checkout", "Checkout"], ["Change Run files", "Where should run files go?"]]) {
+  for (const [link, heading] of [["Change Runner", "Which computer should work on beta?"], ["Change Repository", "Repository"], ["View Checkout", "Build runner is preparing example-org/example-project"], ["Change Run files", "Where should run files go?"]]) {
     const view = mount();
     expect(await screen.findByRole("heading", { level: 1, name: "beta is ready for work" })).toBeTruthy();
     expect(screen.getAllByRole("definition").some((element) => element.textContent === "Build runner")).toBe(true);
@@ -375,4 +381,64 @@ it("shows the Ready summary and opens each step from its link", async () => {
   mount();
   await user.click(await screen.findByRole("button", { name: "Open Work" }));
   expect(navigate).toHaveBeenCalledWith("/work");
+});
+
+it.each([
+  { checkout: "running", configuration: "pending", doctor: "pending", provider: "pending", statuses: ["Running", "Waiting", "Waiting", "Waiting"] },
+  { checkout: "passed", configuration: "passed", doctor: "running", provider: "pending", statuses: ["Passed", "Passed", "Running", "Waiting"] },
+  { checkout: "passed", configuration: "passed", doctor: "warning", provider: "passed", statuses: ["Passed", "Passed", "Warnings", "Passed"] },
+  { checkout: "passed", configuration: "passed", doctor: "failed", provider: "passed", statuses: ["Passed", "Passed", "Failed", "Passed"] },
+  { checkout: "passed", configuration: "passed", doctor: "passed", provider: "passed", statuses: ["Passed", "Passed", "Passed", "Passed"] },
+])("renders incremental runner checks: $doctor / $provider", async ({ statuses, ...checks }) => {
+  const mount = await mountSetup();
+  const fetch = globalThis.fetch;
+  const ready = ["passed", "warning"].includes(checks.doctor) && checks.provider === "passed";
+  const writes: unknown[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    if (String(input).endsWith("/onboarding") && init?.method === "PUT") writes.push(JSON.parse(String(init.body)));
+    const response = await fetch(input, init);
+    if (String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
+      const data = await response.json();
+      return Response.json({ ...data, runners: data.runners.slice(0, 1).map((entry: { runner: object }) => ({ ...entry, runner: { ...entry.runner, display_name: "Example runner" }, local_checks: { ...checks, observed_at: new Date(Date.now() - 12_000).toISOString() } })), steps: data.steps.map((step: { name: string }) => step.name === "Checkout" ? { ...step, state: ready ? "ready" : "action_required" } : step) });
+    }
+    return response;
+  });
+  mount();
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Checkout/ }));
+  const rows = within(screen.getByRole("list", { name: "Runner checks" })).getAllByRole("listitem");
+  statuses.forEach((status, index) => expect(within(rows[index]!).getByText(status, { exact: true })).toBeTruthy());
+  expect((screen.getByRole("button", { name: /^Continue$/ }) as HTMLButtonElement).disabled).toBe(!ready);
+  expect(screen.getByRole("button", { name: "Continue in background" })).toBeTruthy();
+  expect(document.body.textContent).not.toMatch(/restart/i);
+  if (checks.doctor === "failed") {
+    expect(rows[2]!.textContent).toContain("Run detent doctor --config");
+    await user.click(screen.getByRole("button", { name: "Retry detent doctor" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+  }
+});
+
+it("saves the choice to add missing configuration without creating files", async () => {
+  const mount = await mountSetup();
+  const fetch = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const response = await fetch(input, init);
+    if (String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
+      const data = await response.json();
+      return Response.json({ ...data, runners: data.runners.slice(0, 1).map((entry: object) => ({ ...entry, local_checks: { checkout: "passed", configuration: "missing", doctor: "pending", provider: "pending", observed_at: new Date().toISOString() } })) });
+    }
+    return response;
+  });
+  mount();
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Checkout/ }));
+  expect(screen.getByText("detent.yaml and WORKFLOW.md not found")).toBeTruthy();
+  expect(within(screen.getByRole("list", { name: "Runner checks" })).getAllByText("Waiting")).toHaveLength(2);
+  await user.click(screen.getByRole("radio", { name: "I’ll add them myself" }));
+  await user.click(screen.getByRole("button", { name: "Wait for files" }));
+  await waitFor(async () => {
+    const data = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`).then((response) => response.json());
+    expect(data.progress.repository).toBe("existing");
+  });
+  expect(document.body.textContent).not.toMatch(/restart/i);
 });
