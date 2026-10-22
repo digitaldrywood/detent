@@ -386,6 +386,12 @@ cannot grant itself tags or repository access. An exact offline host stays
 queued; tags constrain routing and do not grant authority. Logical runners
 sharing a host share its capacity.
 
+Configure required tags or exact runner/machine IDs in repository policy. Set
+administrator-owned runner tags, project access and capacity through
+`update_runner_routing` or
+`PUT /api/v2/organizations/{org}/runners/{runner}/routing`, as documented in
+[runner routing](hub-api.md#named-runners-host-capacity-and-eligibility).
+
 ### Enroll a runner without the web app
 
 Use the released binary on the runner host. No Cloud account or Enroll dialog is
@@ -497,8 +503,13 @@ with `runner_project_diagnostics`. Preserve old principal rows for history;
 never reactivate them by editing SQLite.
 
 See [Hub API enrollment](hub-api.md#scoped-runner-onboarding) for the separate
-`init`/`enroll` flow when IDs must be bound before token creation, and
-`detent hub runner --help` for renewal, rotation, revocation and fleet inspection.
+`init`/`enroll` flow when IDs must be bound before token creation. Use
+`detent hub runner renew` and `detent hub runner rotate` for credential
+maintenance. Administrators revoke identities with `revoke_runner_identity`;
+see [runner renewal, rotation and revocation](hub-api.md#runner-renewal-rotation-and-revocation)
+for credential lifecycle details. For routing and fleet inspection, use
+`list_runner_routing` or `GET /api/v2/organizations/{org}/runners`; see
+[runner routing](hub-api.md#named-runners-host-capacity-and-eligibility).
 
 ## Model selection
 
