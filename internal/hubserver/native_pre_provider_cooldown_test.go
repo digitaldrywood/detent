@@ -10,13 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// TestClaimCandidatesCoolDownInstancePreProviderFailures is #1408. A
-// workspace hook or workspace preparation failure never reaches the provider
-// and cannot succeed on an immediate retry, so the runner attributes it to the
-// instance and the existing instance cooldown holds the item instead of
-// offering it again every few minutes. Issue-attributed and provider failures
-// keep their current handling.
-func TestClaimCandidatesCoolDownInstancePreProviderFailures(t *testing.T) {
+func TestClaimCandidatesRetryInstancePreProviderFailures(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name          string
@@ -25,9 +19,9 @@ func TestClaimCandidatesCoolDownInstancePreProviderFailures(t *testing.T) {
 		aged          bool
 		wantCandidate bool
 	}{
-		{name: "after_create hook failure cools down", failure: tracker.NativeTerminalFailure{Error: "workspace hook after_create failed (exit status 1)", ErrorClass: "workspace_hook"}, preProvider: true},
-		{name: "published branch lookup failure cools down", failure: tracker.NativeTerminalFailure{Error: "workspace preparation failed: create workspace: inspect published workspace branch: git ls-remote origin failed: exit status 128", ErrorClass: "workspace_hook"}, preProvider: true},
-		{name: "checkpoint fetch failure cools down", failure: tracker.NativeTerminalFailure{Error: "workspace preparation failed: create workspace: fetch checkpoint: git fetch --no-tags failed: exit status 128", ErrorClass: "workspace_hook"}, preProvider: true},
+		{name: "after_create hook failure retries", failure: tracker.NativeTerminalFailure{Error: "workspace hook after_create failed (exit status 1)", ErrorClass: "workspace_hook"}, preProvider: true, wantCandidate: true},
+		{name: "published branch lookup failure retries", failure: tracker.NativeTerminalFailure{Error: "workspace preparation failed: create workspace: inspect published workspace branch: git ls-remote origin failed: exit status 128", ErrorClass: "workspace_hook"}, preProvider: true, wantCandidate: true},
+		{name: "checkpoint fetch failure retries", failure: tracker.NativeTerminalFailure{Error: "workspace preparation failed: create workspace: fetch checkpoint: git fetch --no-tags failed: exit status 128", ErrorClass: "workspace_hook"}, preProvider: true, wantCandidate: true},
 		{name: "aged instance failure retries", failure: tracker.NativeTerminalFailure{Error: "workspace hook after_create failed (exit status 1)", ErrorClass: "workspace_hook"}, preProvider: true, aged: true, wantCandidate: true},
 		{name: "issue attributed failure keeps retrying", failure: tracker.NativeTerminalFailure{Error: "native checkpoint requires recovery", ErrorClass: "source_recovery"}, preProvider: true, wantCandidate: true},
 		{name: "unclassified failure keeps retrying", failure: tracker.NativeTerminalFailure{Error: "unknown setup error"}, preProvider: true, wantCandidate: true},

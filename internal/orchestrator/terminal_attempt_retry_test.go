@@ -396,9 +396,6 @@ func TestHandleRunResultParksTerminalRetryAtDurableLimit(t *testing.T) {
 				t.Fatalf("work attempt completions = %d, want %d", len(attempts.completions), tt.failures)
 			}
 			wantComments := 1
-			if tt.limit != nil && *tt.limit == 0 {
-				wantComments = 3
-			}
 			if len(tracker.comments) != wantComments || !strings.Contains(tracker.comments[wantComments-1], wantError) {
 				t.Fatalf("retry-limit comments = %#v, want latest parked-attempt error", tracker.comments)
 			}
@@ -762,8 +759,8 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				if !strings.Contains(blocked.Reason, branch) || !strings.Contains(blocked.Reason, tt.wantReason) {
 					t.Fatalf("Blocked[%q].Reason = %q, want branch and %q", issue.ID, blocked.Reason, tt.wantReason)
 				}
-				if len(tracker.comments) != 3 || !strings.Contains(tracker.comments[2], "local commits ahead: ") ||
-					!strings.Contains(tracker.comments[2], "remote branch exists: ") || !strings.Contains(tracker.comments[2], tt.wantReason) {
+				if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0], "local commits ahead: ") ||
+					!strings.Contains(tracker.comments[0], "remote branch exists: ") || !strings.Contains(tracker.comments[0], tt.wantReason) {
 					t.Fatalf("comments = %#v, want delivery diagnostics containing %q", tracker.comments, tt.wantReason)
 				}
 				if got := tracker.transitionStates(); !slices.Equal(got, []string{blockedStatusState}) {
@@ -2126,12 +2123,8 @@ func TestTerminalRetryTransitionFailures(t *testing.T) {
 				if tracker.issues[issue.ID].State != "In Progress" {
 					t.Fatal("failed tracker park changed the remote lane")
 				}
-				if len(tracker.comments) != 1 {
-					t.Fatalf("failed tracker park comments = %v, want pending marker", tracker.comments)
-				}
-				marker, valid := parseTrackerRecoveryPark(tracker.comments[0])
-				if !valid || marker.Phase != "pending" {
-					t.Fatalf("failed tracker park marker = %#v, want pending operation", marker)
+				if len(tracker.comments) != 0 {
+					t.Fatalf("failed lane write published recovery markers: %v", tracker.comments)
 				}
 				o.trackCandidateBlockedStatusIssues(t.Context(), &state, []connector.Issue{updated}, now)
 				if _, held := state.Blocked[issue.ID]; !held {

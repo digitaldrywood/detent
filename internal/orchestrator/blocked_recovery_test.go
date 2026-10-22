@@ -115,12 +115,12 @@ func TestSetBlockedStatusIssueStoresSpecificCurrentCause(t *testing.T) {
 			wantReason:   BlockedRecoveryReasonDependencyBlocker,
 		},
 		{
-			name:         "human attention cause stays actionable",
+			name:         "human wording alone is diagnostic",
 			cause:        "pull request delivery needs human attention",
 			blockedState: "Done",
 			trackerState: connector.BlockedRefTrackerStateClosed,
 			wantCause:    "pull request delivery needs human attention",
-			wantReason:   BlockedRecoveryReasonHumanBlocker,
+			wantReason:   BlockedRecoveryReasonMissingPullRequest,
 		},
 	}
 
@@ -170,7 +170,7 @@ func TestSetBlockedStatusIssueReplacesUnrecordedCause(t *testing.T) {
 				BlockerReason: "waiting for human approval",
 			},
 			wantCause:    "waiting for human approval",
-			wantRecovery: BlockedRecoveryReasonHumanBlocker,
+			wantRecovery: BlockedRecoveryReasonMissingPullRequest,
 		},
 		{
 			name: "structured dependency cause",
@@ -259,7 +259,7 @@ func TestRecoverBlockedIssuesSkipsPersistedStickyBlockedIssue(t *testing.T) {
 	}
 }
 
-func TestRecoverBlockedIssuesUsesPersistedSignatureGuard(t *testing.T) {
+func TestRecoverBlockedIssuesIgnoresPersistedSignatures(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -267,11 +267,16 @@ func TestRecoverBlockedIssuesUsesPersistedSignatureGuard(t *testing.T) {
 		issue            connector.Issue
 		persistedIssue   connector.Issue
 		runTwice         bool
+		operatorStop     bool
 		wantUpdates      int
 		wantComments     int
-		wantExhausted    bool
 		wantTransitioned bool
 	}{
+		{
+			name:         "operator stop retains authority over PR maintenance",
+			issue:        blockedRecoverySignatureIssue("issue-stopped", "same-head", "same-diff", "same-base", "behind"),
+			operatorStop: true,
+		},
 		{
 			name:             "first recovery writes signature",
 			issue:            blockedRecoverySignatureIssue("issue-first-recovery", "same-head", "same-diff", "same-base", "behind"),
@@ -280,18 +285,20 @@ func TestRecoverBlockedIssuesUsesPersistedSignatureGuard(t *testing.T) {
 			wantTransitioned: true,
 		},
 		{
-			name:           "same signature skips and escalates",
-			issue:          blockedRecoverySignatureIssue("issue-same-signature", "same-head", "same-diff", "same-base", "behind"),
-			persistedIssue: blockedRecoverySignatureIssue("issue-same-signature", "same-head", "same-diff", "same-base", "behind"),
-			wantComments:   1,
-			wantExhausted:  true,
+			name:             "same signature permits current recovery",
+			issue:            blockedRecoverySignatureIssue("issue-same-signature", "same-head", "same-diff", "same-base", "behind"),
+			persistedIssue:   blockedRecoverySignatureIssue("issue-same-signature", "same-head", "same-diff", "same-base", "behind"),
+			wantComments:     1,
+			wantUpdates:      1,
+			wantTransitioned: true,
 		},
 		{
-			name:           "changed head sha does not re-arm recovery",
-			issue:          blockedRecoverySignatureIssue("issue-head-stable", "new-head", "same-diff", "same-base", "behind"),
-			persistedIssue: blockedRecoverySignatureIssue("issue-head-stable", "old-head", "same-diff", "same-base", "behind"),
-			wantComments:   1,
-			wantExhausted:  true,
+			name:             "changed head retains current recovery",
+			issue:            blockedRecoverySignatureIssue("issue-head-stable", "new-head", "same-diff", "same-base", "behind"),
+			persistedIssue:   blockedRecoverySignatureIssue("issue-head-stable", "old-head", "same-diff", "same-base", "behind"),
+			wantComments:     1,
+			wantUpdates:      1,
+			wantTransitioned: true,
 		},
 		{
 			name:             "changed diff fingerprint re-arms recovery",
@@ -310,19 +317,21 @@ func TestRecoverBlockedIssuesUsesPersistedSignatureGuard(t *testing.T) {
 			wantTransitioned: true,
 		},
 		{
-			name:           "changed recovery condition does not re-arm recovery",
-			issue:          blockedRecoverySignatureIssue("issue-kind-stable", "same-head", "same-diff", "same-base", "behind"),
-			persistedIssue: blockedRecoverySignatureIssue("issue-kind-stable", "same-head", "same-diff", "same-base", "dirty"),
-			wantComments:   1,
-			wantExhausted:  true,
+			name:             "current recovery condition wins",
+			issue:            blockedRecoverySignatureIssue("issue-kind-stable", "same-head", "same-diff", "same-base", "behind"),
+			persistedIssue:   blockedRecoverySignatureIssue("issue-kind-stable", "same-head", "same-diff", "same-base", "dirty"),
+			wantComments:     1,
+			wantUpdates:      1,
+			wantTransitioned: true,
 		},
 		{
-			name:           "exhausted comment is deduped by signature",
-			issue:          blockedRecoverySignatureIssue("issue-exhausted-dedupe", "same-head", "same-diff", "same-base", "behind"),
-			persistedIssue: blockedRecoverySignatureIssue("issue-exhausted-dedupe", "same-head", "same-diff", "same-base", "behind"),
-			runTwice:       true,
-			wantComments:   1,
-			wantExhausted:  true,
+			name:             "each current lane entry can recover",
+			issue:            blockedRecoverySignatureIssue("issue-exhausted-dedupe", "same-head", "same-diff", "same-base", "behind"),
+			persistedIssue:   blockedRecoverySignatureIssue("issue-exhausted-dedupe", "same-head", "same-diff", "same-base", "behind"),
+			runTwice:         true,
+			wantComments:     2,
+			wantUpdates:      2,
+			wantTransitioned: true,
 		},
 	}
 
@@ -338,6 +347,9 @@ func TestRecoverBlockedIssuesUsesPersistedSignatureGuard(t *testing.T) {
 				recordBlockedRecoverySignatureEvent(t, metrics, tt.persistedIssue, time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC))
 			}
 			state := newState(orch.cfg)
+			if tt.operatorStop {
+				state.Blocked[tt.issue.ID] = Blocked{Issue: tt.issue, Source: BlockedSourceOperatorStop}
+			}
 			now := time.Date(2026, 7, 8, 15, 1, 0, 0, time.UTC)
 			recordBlockedRecoveryReasonEvent(t, metrics, tt.issue, now.Add(-time.Minute), blockedRecoveryReasonCodeForIssue(tt.issue))
 
@@ -358,12 +370,6 @@ func TestRecoverBlockedIssuesUsesPersistedSignatureGuard(t *testing.T) {
 			}
 			if tt.wantUpdates > 0 {
 				assertBlockedRecoverySignatureMetadata(t, metrics, tt.issue)
-			}
-			if tt.wantExhausted {
-				if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[0].body, "Blocked recovery already moved this issue") {
-					t.Fatalf("comments = %#v, want exhausted escalation comment", tracker.comments)
-				}
-				assertWorkflowActionSignature(t, metrics, tt.issue, workflowActionBlockedRecoveryExhausted, mustBlockedRecoverySignature(t, tt.issue))
 			}
 		})
 	}
@@ -449,7 +455,8 @@ func TestRecoverBlockedIssuesRequiresConfiguredBlockedReasonAndCurrentCondition(
 			},
 		},
 		{
-			name:       "missing diff fingerprint stays blocked",
+			name:       "missing diff fingerprint does not veto recovery",
+			wantTarget: "Rework",
 			reasonCode: blockedRecoveryReasonMergeConflict,
 			mutateIssue: func(issue *connector.Issue) {
 				issue.PullRequest.DiffFingerprint = ""
@@ -761,10 +768,10 @@ func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {
 			wantUnpark: false,
 		},
 		{
-			name:       "same head auto-unpark already consumed",
+			name:       "same head history cannot veto current gate",
 			reason:     AutoPromoteReasonCINotGreen,
 			consumed:   true,
-			wantUnpark: false,
+			wantUnpark: true,
 		},
 	}
 
@@ -872,9 +879,6 @@ func TestRecoverBlockedIssuesDoesNotRecordRejectedReworkBreakerUnpark(t *testing
 	}
 	if _, ok := transitioned[issue.ID]; ok {
 		t.Fatalf("transitioned[%q] present after rejected transition", issue.ID)
-	}
-	if reworkBreakerAutoUnparkConsumed(metricsTimeline(t, metrics, issue), "pr=1585;head=parked-head") {
-		t.Fatal("rejected transition consumed the one-shot auto-unpark")
 	}
 }
 

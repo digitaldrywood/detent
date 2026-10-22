@@ -20,23 +20,6 @@ const nativeCandidateDependenciesSatisfied = `(p.require_dependencies = 0 OR NOT
  LEFT JOIN workflow_states blocker_state ON blocker_state.id = blocker.workflow_state_id
  WHERE dependency.dependent_issue_id = i.id AND (blocker_state.id IS NULL OR blocker_state.terminal = 0)))`
 
-const nativeCandidateRecordedDependenciesSatisfied = `NOT EXISTS (
- SELECT 1 FROM native_attempts reported
- WHERE reported.organization_id = i.organization_id AND reported.project_id = i.project_id
- AND reported.work_item_id = i.native_id AND reported.status = 'succeeded'
- AND reported.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest
-   WHERE latest.organization_id = i.organization_id AND latest.project_id = i.project_id AND latest.work_item_id = i.native_id)
- AND json_extract(reported.data_json, '$.disposition.status') = 'blocked'
- AND EXISTS (SELECT 1 FROM json_each(reported.data_json, '$.disposition.blocker_evidence') blocker
-   WHERE json_extract(blocker.value, '$.predicate.type') = 'issue_state')
- AND NOT EXISTS (SELECT 1 FROM collaboration_events recovered
-   WHERE recovered.organization_id = i.organization_id AND recovered.project_id = i.project_id AND recovered.work_item_id = i.native_id
-   AND recovered.type = 'workflow.transitioned' AND julianday(recovered.recorded_at) >= julianday(reported.updated_at)
-   AND ((json_extract(recovered.data_json, '$.reason') = 'dependency_ready'
-     AND json_extract(recovered.data_json, '$.blocker_attempt_id') = reported.id)
-     OR (json_extract(recovered.data_json, '$.reason') = 'user_requested'
-       AND json_extract(recovered.actor_json, '$.kind') = 'human'))))`
-
 type nativeCandidateSnapshot struct {
 	AnsweredExclusion      *tracker.NativeAnsweredExclusion
 	StateExclusion         string
@@ -53,15 +36,15 @@ func readNativeCandidateSnapshot(ctx context.Context, q nativeQueryer, query cla
 	}
 	var dependenciesSatisfied bool
 	var dispatchable, terminal bool
-	var kind, attemptID, updatedAt string
+	var kind, attemptID string
 	err = q.QueryRowContext(ctx, `SELECT `+nativeCandidateDependenciesSatisfied+`,
  CASE WHEN answered.id IS NULL THEN '' ELSE `+nativeAnsweredClassification+` END,
- COALESCE(answered.id, ''), COALESCE(answered.updated_at, ''), ws.dispatchable, ws.terminal
+ COALESCE(answered.id, ''), ws.dispatchable, ws.terminal
 FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
 JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN native_attempts answered ON answered.id = (SELECT answered.id `+nativeAnsweredAttemptFrom+`
  AND p.profile = 'native' AND lower(trim(ws.detent_state)) <> 'merging')
-WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID, query.NativeScope.organization, query.NativeScope.project).Scan(&dependenciesSatisfied, &kind, &attemptID, &updatedAt, &dispatchable, &terminal)
+WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID, query.NativeScope.organization, query.NativeScope.project).Scan(&dependenciesSatisfied, &kind, &attemptID, &dispatchable, &terminal)
 	if err != nil {
 		return snapshot, err
 	}
@@ -72,15 +55,6 @@ WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID
 	}
 	if kind != "" {
 		snapshot.AnsweredExclusion = &tracker.NativeAnsweredExclusion{Kind: kind, AttemptID: attemptID}
-		if kind == "untyped_cooldown" || kind == "instance_cooldown" {
-			updated, err := parseTimeValue(updatedAt)
-			if err != nil {
-				snapshot.Unavailable = append(snapshot.Unavailable, "answered_retry_eligibility")
-			} else {
-				eligible := updated.Add(30 * time.Minute)
-				snapshot.AnsweredExclusion.RetryEligibleAt = &eligible
-			}
-		}
 	}
 	if snapshot.AnsweredExclusion == nil {
 		waiting, err := readPublishedReviewWait(ctx, q, query.WorkItemID, time.Now().UTC())
@@ -159,9 +133,7 @@ WHERE i.organization_id = `,
 		notWorkspaceItemClause,
 		`)
  AND `,
-		nativeCandidateDependenciesSatisfied,
-		` AND `,
-		nativeCandidateRecordedDependenciesSatisfied}, "")
+		nativeCandidateDependenciesSatisfied}, "")
 	if query.NativeScope.project != "" {
 		statement += ` AND i.project_id = ` + bind(query.NativeScope.project)
 	} else {
@@ -271,12 +243,7 @@ WHERE i.organization_id = `,
 
 const nativeCandidateCompletionEvidence = `
  SELECT page.id, ` + notAlreadyAnsweredClause + `, i.project_id,
- json_type(a.data_json, '$.disposition') = 'object',
- CASE WHEN COALESCE(json_type(a.data_json, '$.disposition'), 'null') = 'null'
-   AND length(CAST(COALESCE(json_extract(a.data_json, '$.completion_body'), '') AS BLOB)) <= 65536
-   THEN COALESCE(json_extract(a.data_json, '$.completion_body'), '') ELSE '' END AS completion_body,
- COALESCE(json_extract(a.checkpoint_json, '$.head_sha'), ''),
- COALESCE(json_extract(a.checkpoint_json, '$.workspace_digest'), ''), COALESCE(a.data_json, '{}')
+ json_type(a.data_json, '$.disposition') = 'object', COALESCE(a.data_json, '{}') AS completion_evidence
  FROM page JOIN issues i ON i.id = page.id
  JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
  JOIN workflow_states ws ON ws.id = i.workflow_state_id
@@ -284,25 +251,7 @@ const nativeCandidateCompletionEvidence = `
  AND lower(trim(ws.detent_state)) <> 'merging'
  AND a.status = 'succeeded' AND a.work_item_revision >= i.revision AND a.dispatch_generation >= i.dispatch_generation
  AND a.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest
-   WHERE latest.organization_id = a.organization_id AND latest.project_id = a.project_id AND latest.work_item_id = a.work_item_id)
- AND (COALESCE(json_type(a.data_json, '$.disposition'), 'null') = 'null'
-   OR (json_extract(a.data_json, '$.disposition.status') = 'complete'
-     AND json_extract(a.data_json, '$.disposition.blockers') = 0
-     AND json_extract(a.data_json, '$.disposition.human_action') = 0
-     AND COALESCE(json_extract(a.data_json, '$.disposition.reason_code'), '') = ''
-     AND COALESCE(json_array_length(a.data_json, '$.disposition.blocker_evidence'), 0) = 0))
- AND json_extract(a.checkpoint_json, '$.worktree_state') IN ('dirty', 'unpushed')
- AND json_extract(a.checkpoint_json, '$.resume') = 'resume_session'
- AND json_extract(a.checkpoint_json, '$.availability') = 'available'
- AND json_extract(a.checkpoint_json, '$.storage') IN ('local_only', 'git_ref')
- AND json_extract(a.checkpoint_json, '$.external_effect') = 'none'
- AND json_extract(a.checkpoint_json, '$.effect_state') = 'none'
- AND COALESCE(json_extract(a.checkpoint_json, '$.effect_id'), '') = ''
- AND json_extract(a.checkpoint_json, '$.head_sha') IS NOT NULL
- AND json_extract(a.checkpoint_json, '$.workspace_digest') IS NOT NULL
- AND NOT EXISTS (SELECT 1 FROM change_issue_links l JOIN change_versions v ON v.change_id = l.change_id
-   WHERE l.organization_id = a.organization_id AND l.project_id = a.project_id AND l.work_item_id = a.work_item_id
-   AND json_extract(v.record_json, '$.head_sha') = json_extract(a.checkpoint_json, '$.head_sha'))`
+   WHERE latest.organization_id = a.organization_id AND latest.project_id = a.project_id AND latest.work_item_id = a.work_item_id)`
 
 func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement string, args []any) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
 	rows, err := q.QueryContext(ctx, statement, args...)
@@ -315,29 +264,22 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 	scanned := 0
 	for rows.Next() {
 		var unanswered bool
-		var project, body, head, digest, runRaw string
+		var project, runRaw string
 		var typed sql.NullBool
-		if err := rows.Scan(&last, &unanswered, &project, &typed, &body, &head, &digest, &runRaw); err != nil {
+		if err := rows.Scan(&last, &unanswered, &project, &typed, &runRaw); err != nil {
 			return nil, 0, 0, err
 		}
 		scanned++
 		if !unanswered {
-			if !validCommitID(head) || !validCommitID(digest) {
-				continue
+			continue
+		}
+		if !typed.Bool {
+			var run tracker.NativeRunData
+			if err := decodeRunDetail(ctx, runRaw, &run); err != nil {
+				return nil, 0, 0, err
 			}
-			if !typed.Bool {
-				var run tracker.NativeRunData
-				if err := decodeRunDetail(ctx, runRaw, &run); err != nil {
-					return nil, 0, 0, err
-				}
-				if run.CompletionBody != "" {
-					body = run.CompletionBody
-				}
-				signal, reported := workpad.SignalFromComment(body, "", project)
-				if !reported || signal == nil || signal.Invalid != nil || signal.Status != workpad.StatusComplete || len(signal.Blockers) != 0 ||
-					signal.HumanAction != "" || signal.ReasonCode != "" || signal.Fields["completion_kind"] == "operational" {
-					continue
-				}
+			if signal, reported := workpad.SignalFromComment(run.CompletionBody, "", project); reported && signal != nil && signal.Invalid == nil && (signal.HumanAction != "" || signal.ReasonCode == "permission_wait") {
+				continue
 			}
 		}
 		ids = append(ids, last)

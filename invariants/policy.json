@@ -13,6 +13,7 @@
       "TestBehaviorEvidence"
     ],
     "./internal/orchestrator": [
+      "TestDerivedHoldDispatchEquivalence",
       "TestOperatorRejectionPromotion",
       "TestOperatorRejectionRepairDispatch",
       "TestCompletedActiveReviewRequiresFinishedWork",
@@ -181,6 +182,10 @@
     ],
     "./internal/hubserver": [
       "TestClaimCandidatesRequireUnansweredWorkItem",
+      "TestNativeDerivedHoldDispatchEquivalence",
+      "TestNativeRecordedDependencyUsesCurrentEdges",
+      "TestClaimCandidatesRetryInstancePreProviderFailures",
+      "TestReviewConversationHistoryDoesNotVetoLanding",
       "TestINV18RequestCommitDoesNoDerivedWork",
       "TestINV18HubMigrationsUseTypedColumns"
     ],

@@ -792,9 +792,6 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 					}
 				}
 				wantComments := 1
-				if tt.wantBlockReason == noProgressLimitReason || tt.wantBlockReason == dispatchLoopDetectedReason || tt.wantBlockReason == "workpad_blocked_unactioned" {
-					wantComments = 3
-				}
 				if tt.refreshedState != "" && tt.refreshedState != tt.runningIssue.State {
 					wantComments++
 				}
@@ -1724,25 +1721,6 @@ func TestHandleRunResultRefreshesStalePullRequestAfterHydrationFailure(t *testin
 	}
 	if tracker.hydrations != 3 {
 		t.Fatalf("hydrations = %d, want completion hydration, push refresh, and trigger refresh", tracker.hydrations)
-	}
-}
-
-func TestStickyBlockReasonIncludesCircuitBreakers(t *testing.T) {
-	t.Parallel()
-
-	for _, reason := range []string{
-		noProgressLimitReason,
-		dispatchLoopDetectedReason,
-		terminalAttemptRetryLimitCause,
-		workspacePreparationRetryLimitCause,
-		workpadBlockedUnactionedReason,
-		"token_ceiling_circuit_breaker",
-		tokenCeilingBlockedReasonPrefix + "observed 16100000 tokens above the 16000000 max_session_tokens ceiling",
-		mergeWorkerRetryExhaustedReason,
-	} {
-		if !stickyBlockReason(reason) {
-			t.Fatalf("stickyBlockReason(%q) = false, want true", reason)
-		}
 	}
 }
 

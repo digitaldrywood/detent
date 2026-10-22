@@ -276,7 +276,8 @@ The configured warm floor remains independent of demand, limited to the
 overflow size in local-first mode; warm capacity does not authorize claims below
 the threshold.
 
-Only unleased, unanswered, dependency-ready, policy-compatible **Todo** work
+Only unleased, dependency-ready, policy-compatible **Todo** work without current
+human or permission intent or recorded acceptance
 contributes demand. Backlog, other dispatchable states, unresolved dependencies,
 workspace items and incompatible model/host requirements never trigger overflow
 or state promotion. Capacity estimates apply approved requirements, runner and
@@ -284,6 +285,10 @@ host ceilings, current runner health/availability, and reported shared-provider
 limits. Existing Sprite provider reports describe bootstrap compatibility; a
 first pool enrollment has unknown provider readiness until it reports capacity.
 Claims retain the runner's authoritative provider selection and admission gates.
+Historical failure answers and instance/untyped answer cooldowns do not exclude
+an item. Typed dependency edges are evaluated against current terminal states;
+no recorded recovery event is required. Landing evaluates the current version,
+review and checks, never remembered review-conversation refusal prose.
 Exhausted Sprite provider accounts exclude Sprite work without excluding an
 independent eligible local account. Future monthly Sprite budget eligibility
 belongs in the existing admission owner.

@@ -136,71 +136,69 @@ func (f dispatchGuardFixture) continueConversation(t *testing.T, key string) {
 	}
 }
 
-// TestClaimCandidatesRequireUnansweredWorkItem is operations.md section 7. An
-// item whose latest attempt succeeded at the item's current revision is not
-// offered again on its own; each of the three things that genuinely mean "run
-// it again" brings it back.
+// Approved holds redesign Step 2: historical failures do not answer dispatchable work.
 func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 	t.Parallel()
 	instanceReport := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:worker-loopback\n    reason: sandbox refused listener with EPERM\nhuman_action: null\n```"
 	definitionReport := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:tool\n    reason: approved portable project configuration and workflow prose unavailable\nhuman_action: null\n```"
 	completeReport := "Source ready for finalization.\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
 	for _, test := range []struct {
-		name           string
-		disposition    *tracker.NativeDisposition
-		finalMessage   string
-		worktreeState  string
-		manualHold     bool
-		edited         bool
-		continued      bool
-		commented      bool
-		wantCandidate  bool
-		accepted       bool
-		legacy         bool
-		retainedSource bool
-		checkpointEdit func(*tracker.NativeCheckpoint)
-		otherVersion   bool
-		newerChange    bool
-		expiredLease   bool
-		reviewOutcome  string
-		publication    string
-		terminal       bool
-		readAdmission  bool
-		moveRefusal    bool
-		moveGuidance   bool
-		exclusion      string
-		fullHost       bool
-		aged           bool
+		name             string
+		disposition      *tracker.NativeDisposition
+		finalMessage     string
+		worktreeState    string
+		manualHold       bool
+		edited           bool
+		continued        bool
+		commented        bool
+		wantCandidate    bool
+		claimUnavailable bool
+		accepted         bool
+		legacy           bool
+		retainedSource   bool
+		checkpointEdit   func(*tracker.NativeCheckpoint)
+		otherVersion     bool
+		newerChange      bool
+		expiredLease     bool
+		reviewOutcome    string
+		publication      string
+		terminal         bool
+		readAdmission    bool
+		moveRefusal      bool
+		moveGuidance     bool
+		exclusion        string
+		fullHost         bool
+		aged             bool
 	}{
 		{name: "continued instance cooldown exposes full host", finalMessage: instanceReport, continued: true, wantCandidate: true, readAdmission: true, fullHost: true},
 		{name: "expired cooldown exposes full host", aged: true, wantCandidate: true, readAdmission: true, fullHost: true},
-		{name: "completed instance report is answered", finalMessage: instanceReport, readAdmission: true, exclusion: "instance_cooldown"},
-		{name: "completed definition blocker is answered with clean source", finalMessage: definitionReport},
-		{name: "completed definition blocker is answered with dirty source", finalMessage: definitionReport, worktreeState: "dirty"},
-		{name: "ordinary comment does not resume dirty definition blocker", finalMessage: definitionReport, worktreeState: "dirty", commented: true},
+		{name: "completed instance report remains eligible", finalMessage: instanceReport, readAdmission: true, wantCandidate: true},
+		{name: "completed definition blocker remains eligible with clean source", finalMessage: definitionReport, wantCandidate: true},
+		{name: "completed definition blocker remains eligible with dirty source", finalMessage: definitionReport, worktreeState: "dirty", wantCandidate: true},
+		{name: "ordinary comment remains eligible dirty definition blocker", finalMessage: definitionReport, worktreeState: "dirty", commented: true, wantCandidate: true},
 		{name: "instance report remains runnable after revision edit", finalMessage: instanceReport, edited: true, wantCandidate: true, readAdmission: true},
 		{name: "dirty definition blocker resumes after revision edit", finalMessage: definitionReport, worktreeState: "dirty", edited: true, wantCandidate: true},
 		{name: "definition blocker resumes after continuation", finalMessage: definitionReport, continued: true, wantCandidate: true},
 		{name: "dirty definition blocker resumes after continuation", finalMessage: definitionReport, worktreeState: "dirty", continued: true, wantCandidate: true},
-		{name: "recorded prerequisite survives revision edit without relation", finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '#42'\n    reason: prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action: null\n```", edited: true},
+		{name: "recorded prerequisite survives revision edit without relation", finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '#42'\n    reason: prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action: null\n```", edited: true, wantCandidate: true},
 		{name: "instance report respects manual workflow hold", finalMessage: instanceReport, manualHold: true},
 		{name: "instance and human action remain held", finalMessage: strings.Replace(instanceReport, "human_action: null", "human_action: Approve the exception", 1)},
-		{name: "instance and external blocker remain held", finalMessage: strings.Replace(instanceReport, "human_action: null", "  - ref: '#42'\n    reason: Await dependency\nhuman_action: null", 1)},
-		{name: "reason only human blocker remains held", finalMessage: strings.Replace(instanceReport, "  - ref: instance:worker-loopback\n", "", 1)},
+		{name: "instance and external blocker remains eligible", finalMessage: strings.Replace(instanceReport, "human_action: null", "  - ref: '#42'\n    reason: Await dependency\nhuman_action: null", 1), wantCandidate: true},
+		{name: "reason only human blocker remains eligible", finalMessage: strings.Replace(instanceReport, "  - ref: instance:worker-loopback\n", "", 1), wantCandidate: true},
 		{name: "instance and reason code remain held", finalMessage: strings.Replace(instanceReport, "status: blocked", "status: blocked\nreason_code: permission_wait", 1)},
-		{name: "native273 malformed predicate remains held", finalMessage: strings.Replace(instanceReport, "    reason:", "    predicate: instance_available\n    reason:", 1)},
+		{name: "native273 malformed predicate remains eligible", finalMessage: strings.Replace(instanceReport, "    reason:", "    predicate: instance_available\n    reason:", 1), wantCandidate: true},
 		{name: "unfinished custom Rework remains runnable", disposition: &tracker.NativeDisposition{Status: "in_progress"}, wantCandidate: true},
 		{name: "unfinished dirty source remains runnable", disposition: &tracker.NativeDisposition{Status: "in_progress"}, worktreeState: "dirty", wantCandidate: true},
 		{name: "unaccepted completed custom Rework remains claimable", disposition: &tracker.NativeDisposition{Status: "complete"}, wantCandidate: true},
 		{name: "accepted completion remains answered", disposition: &tracker.NativeDisposition{Status: "complete"}, accepted: true},
 		{name: "unaccepted completed dirty source remains claimable", disposition: &tracker.NativeDisposition{Status: "complete"}, worktreeState: "dirty", wantCandidate: true},
-		{name: "explicit blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, readAdmission: true, exclusion: "external_blocker", moveRefusal: true, moveGuidance: true},
+		{name: "explicit blocker remains eligible", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, readAdmission: true, wantCandidate: true},
 		{name: "nondispatchable blocker move retains ordinary refusal", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, manualHold: true, readAdmission: true, moveRefusal: true},
 		{name: "terminal blocker move retains ordinary refusal", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, terminal: true, readAdmission: true, moveRefusal: true},
-		{name: "dirty external blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, worktreeState: "dirty"},
-		{name: "unfinished external blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", Blockers: true}},
+		{name: "dirty external blocker remains eligible", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, worktreeState: "dirty", wantCandidate: true},
+		{name: "unfinished external blocker remains eligible", disposition: &tracker.NativeDisposition{Status: "in_progress", Blockers: true}, wantCandidate: true},
 		{name: "unfinished human action keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", HumanAction: true}},
-		{name: "missing legacy disposition keeps the answer", readAdmission: true, exclusion: "untyped_cooldown"},
+		{name: "missing legacy disposition remains eligible", readAdmission: true, wantCandidate: true},
 		{name: "aged attempt without disposition or report retries", aged: true, wantCandidate: true, readAdmission: true},
 		{name: "uncertain push without a disposition is reconciled by any runner", retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
 			c.ExternalEffect, c.EffectState, c.EffectID = "git_push", "pending", newNativeID("effect")
@@ -209,22 +207,22 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "typed complete unpublished retained source is runnable", finalMessage: completeReport, retainedSource: true, wantCandidate: true},
 		{name: "typed complete without legacy body is runnable", disposition: &tracker.NativeDisposition{Status: "complete"}, retainedSource: true, wantCandidate: true},
 		{name: "legacy complete dirty retained source is runnable", finalMessage: completeReport, legacy: true, retainedSource: true, worktreeState: "dirty", wantCandidate: true},
-		{name: "legacy retained source without report stays answered", legacy: true, retainedSource: true},
+		{name: "legacy retained source without report remains eligible", legacy: true, retainedSource: true, wantCandidate: true},
 		{name: "aged legacy retained source without report retries", legacy: true, retainedSource: true, aged: true, wantCandidate: true},
-		{name: "legacy instance report with retained source stays answered", finalMessage: instanceReport, legacy: true, retainedSource: true},
-		{name: "legacy definition blocker with retained source stays answered", finalMessage: definitionReport, legacy: true, retainedSource: true},
+		{name: "legacy instance report with retained source remains eligible", finalMessage: instanceReport, legacy: true, retainedSource: true, wantCandidate: true},
+		{name: "legacy definition blocker with retained source remains eligible", finalMessage: definitionReport, legacy: true, retainedSource: true, wantCandidate: true},
 		{name: "legacy human action with retained source stays answered", finalMessage: strings.Replace(completeReport, "human_action: null", "human_action: Approve the exception", 1), legacy: true, retainedSource: true},
-		{name: "legacy external blocker with retained source stays answered", finalMessage: strings.Replace(completeReport, "blockers: []", "blockers:\n  - ref: '#42'\n    reason: Await dependency", 1), legacy: true, retainedSource: true},
-		{name: "legacy malformed report with retained source stays answered", finalMessage: strings.Replace(completeReport, "schema: 1", "schema: 2", 1), legacy: true, retainedSource: true},
-		{name: "legacy complete with invalid reason stays answered", finalMessage: strings.Replace(completeReport, "status: complete", "status: complete\nreason_code: permission_wait", 1), legacy: true, retainedSource: true},
-		{name: "typed blocker overrides legacy complete", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, finalMessage: completeReport, legacy: true, retainedSource: true},
+		{name: "legacy external blocker with retained source remains eligible", finalMessage: strings.Replace(completeReport, "blockers: []", "blockers:\n  - ref: '#42'\n    reason: Await dependency", 1), legacy: true, retainedSource: true, wantCandidate: true},
+		{name: "legacy malformed report with retained source remains eligible", finalMessage: strings.Replace(completeReport, "schema: 1", "schema: 2", 1), legacy: true, retainedSource: true, wantCandidate: true},
+		{name: "invalid legacy reason is not human intent", wantCandidate: true, finalMessage: strings.Replace(completeReport, "status: complete", "status: complete\nreason_code: permission_wait", 1), legacy: true, retainedSource: true},
+		{name: "typed blocker overrides legacy complete", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, finalMessage: completeReport, legacy: true, retainedSource: true, wantCandidate: true},
 		{name: "typed human action overrides legacy complete", disposition: &tracker.NativeDisposition{Status: "complete", HumanAction: true}, finalMessage: completeReport, legacy: true, retainedSource: true},
-		{name: "typed instance reason overrides legacy complete", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "instance_limitation"}, finalMessage: completeReport, legacy: true, retainedSource: true},
-		{name: "legacy in progress retained source stays answered", finalMessage: strings.Replace(completeReport, "status: complete", "status: in_progress", 1), legacy: true, retainedSource: true},
-		{name: "legacy complete with missing head stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.HeadSHA = "" }},
-		{name: "legacy complete with missing digest stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.WorkspaceDigest = "" }},
-		{name: "legacy complete with unavailable source stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.Availability = "missing" }},
-		{name: "legacy complete requiring manual recovery stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.Resume = "manual_recovery" }},
+		{name: "typed instance reason overrides legacy complete", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "instance_limitation"}, finalMessage: completeReport, legacy: true, retainedSource: true, wantCandidate: true},
+		{name: "legacy in progress retained source remains eligible", finalMessage: strings.Replace(completeReport, "status: complete", "status: in_progress", 1), legacy: true, retainedSource: true, wantCandidate: true},
+		{name: "legacy complete with missing head remains eligible", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.HeadSHA = "" }, wantCandidate: true},
+		{name: "legacy complete with missing digest remains eligible", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.WorkspaceDigest = "" }, wantCandidate: true},
+		{name: "legacy complete with unavailable source remains eligible", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.Availability = "missing" }, wantCandidate: true, claimUnavailable: true},
+		{name: "legacy complete requiring manual recovery remains eligible", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.Resume = "manual_recovery" }, wantCandidate: true},
 		{name: "pending publication is reconciled by any runner", finalMessage: completeReport, legacy: true, retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
 			c.ExternalEffect, c.EffectState, c.EffectID = "git_push", "pending", newNativeID("effect")
 		}},
@@ -240,7 +238,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "published version review preserves active claim owner", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "active"},
 		{name: "aged published current version still waits for review", finalMessage: completeReport, retainedSource: true, publication: "owned", aged: true, readAdmission: true, exclusion: "automated_review_missing"},
 		{name: "legacy complete with genuine publication stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "owned"},
-		{name: "legacy complete with published retained head stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "head"},
+		{name: "legacy complete with published retained head remains eligible", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "head", wantCandidate: true},
 		{name: "unrelated historical publication preserves retained source", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "unrelated", wantCandidate: true},
 		{name: "earlier published head from same attempt preserves retained source", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "earlier", wantCandidate: true},
 		{name: "aged instance blocker report retries", finalMessage: instanceReport, aged: true, wantCandidate: true, readAdmission: true},
@@ -254,7 +252,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		}},
 		{name: "aged human action stays held", disposition: &tracker.NativeDisposition{Status: "blocked", HumanAction: true}, aged: true, readAdmission: true, exclusion: "human_action"},
 		{name: "aged permission wait stays held", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "permission_wait"}, aged: true, readAdmission: true, exclusion: "permission_wait"},
-		{name: "aged external blocker stays held", finalMessage: strings.Replace(instanceReport, "human_action: null", "  - ref: '#42'\n    reason: Await dependency\nhuman_action: null", 1), aged: true},
+		{name: "aged external blocker remains eligible", finalMessage: strings.Replace(instanceReport, "human_action: null", "  - ref: '#42'\n    reason: Await dependency\nhuman_action: null", 1), aged: true, wantCandidate: true},
 		{name: "aged accepted completion stays held", disposition: &tracker.NativeDisposition{Status: "complete"}, accepted: true, aged: true, readAdmission: true, exclusion: "recorded_acceptance"},
 		{name: "legacy complete preserves manual hold", finalMessage: completeReport, legacy: true, retainedSource: true, manualHold: true},
 		{name: "legacy complete preserves terminal lane", finalMessage: completeReport, legacy: true, retainedSource: true, terminal: true},
@@ -416,8 +414,8 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			if f.reload(t).Revision != revision {
 				t.Fatal("completion fabricated an item edit")
 			}
-			if (test.edited || test.continued) && f.candidate(t) {
-				t.Fatal("completed blocker was offered before fresh context")
+			if (test.edited || test.continued) && !f.candidate(t) {
+				t.Fatal("historical failure vetoed work before fresh context")
 			}
 			if test.edited {
 				title := "Updated title"
@@ -567,7 +565,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 					}
 				}
 			}
-			if test.wantCandidate {
+			if test.wantCandidate && !test.claimUnavailable {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.nativeFixture.worker(t, "other-worker"), claim), http.StatusNotFound)
 				f.claim(t)
 				if f.lease.FencingToken <= attempt.FencingToken {
@@ -575,8 +573,8 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				}
 				if test.edited || test.continued {
 					f.succeed(t, test.disposition)
-					if f.candidate(t) {
-						t.Fatal("fresh context's completed blocker was offered again")
+					if !f.candidate(t) {
+						t.Fatal("fresh failure report vetoed current work")
 					}
 				}
 			} else {
@@ -609,7 +607,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		t.Fatal("a running attempt must not remove the item from the candidate query; the lease does that")
 	}
 
-	f.succeed(t)
+	f.succeed(t, &tracker.NativeDisposition{Status: "blocked", HumanAction: true})
 	if f.candidate(t) {
 		t.Fatal("a succeeded attempt on an unchanged item is still offered: this is the re-dispatch loop")
 	}
@@ -622,7 +620,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 	}
 
 	f.claim(t)
-	f.succeed(t)
+	f.succeed(t, &tracker.NativeDisposition{Status: "blocked", HumanAction: true})
 	if f.candidate(t) {
 		t.Fatal("the continuation's own attempt must not re-offer the item again")
 	}
@@ -638,7 +636,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 	}
 
 	f.claim(t)
-	f.succeed(t)
+	f.succeed(t, &tracker.NativeDisposition{Status: "blocked", HumanAction: true})
 	if f.candidate(t) {
 		t.Fatal("the edit's own attempt must not re-offer the item again")
 	}
@@ -666,9 +664,9 @@ func TestClaimCandidatesKeepOfferingUnsuccessfulAttempts(t *testing.T) {
 		{name: "failed", outcome: "failed", candidate: true},
 		{name: "cancelled", outcome: "cancelled", candidate: true},
 		{name: "interrupted", outcome: "interrupted", candidate: true},
-		{name: "successful dirty source without disposition", outcome: "succeeded", checkpoint: "dirty"},
-		{name: "successful finalized unpushed source", outcome: "succeeded", checkpoint: "unpushed"},
-		{name: "successful clean source", outcome: "succeeded", checkpoint: "clean"},
+		{name: "successful dirty source without disposition", outcome: "succeeded", checkpoint: "dirty", candidate: true},
+		{name: "successful finalized unpushed source", outcome: "succeeded", checkpoint: "unpushed", candidate: true},
+		{name: "successful clean source", outcome: "succeeded", checkpoint: "clean", candidate: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -742,7 +740,7 @@ func TestRecordNativeAttemptCapturesDispatchState(t *testing.T) {
 func TestClaimCandidatesIgnoreAnsweredOnProjectionProfile(t *testing.T) {
 	t.Parallel()
 	f := newDispatchGuardFixture(t)
-	f.succeed(t)
+	f.succeed(t, &tracker.NativeDisposition{Status: "blocked", HumanAction: true})
 	if f.candidate(t) {
 		t.Fatal("the native guard must suppress the answered item")
 	}
@@ -758,5 +756,78 @@ func TestClaimCandidatesIgnoreAnsweredOnProjectionProfile(t *testing.T) {
 	}
 	if len(ids) == 0 {
 		t.Fatal("a projected item must stay claimable: its revision is not the tracker's")
+	}
+}
+
+func TestNativeDerivedHoldDispatchEquivalence(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		disposition *tracker.NativeDisposition
+		state       string
+		dependency  bool
+		want        bool
+	}{
+		{name: "external blocker", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, want: true},
+		{name: "instance limitation", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "instance_limitation"}, want: true},
+		{name: "untyped", want: true},
+		{name: "human action", disposition: &tracker.NativeDisposition{Status: "blocked", HumanAction: true, Blockers: true}},
+		{name: "permission", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "permission_wait", Blockers: true}},
+		{name: "current dependency", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, dependency: true},
+		{name: "operator lane", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, state: "Blocked"},
+		{name: "terminal lane", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, state: "Done"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDispatchGuardFixture(t)
+			if test.dependency {
+				blocker := f.create(t, "Current prerequisite")
+				request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "dependency"}, ExpectedRevision: f.reload(t).Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/dependencies", f.token, request), http.StatusOK)
+			}
+			f.succeed(t, test.disposition)
+			if test.state != "" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET dispatchable=0, terminal=? WHERE project_id=? AND detent_state=?", test.state == "Done", f.project.ID, f.reload(t).State); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := f.candidate(t)
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=json_remove(data_json,
+ '$.disposition.blockers', '$.disposition.blocker_evidence', '$.disposition.status',
+ CASE WHEN json_extract(data_json, '$.disposition.reason_code') = 'permission_wait'
+ THEN '$.disposition.blockers' ELSE '$.disposition.reason_code' END) WHERE id=?`, f.attempt); err != nil {
+				t.Fatal(err)
+			}
+			after := f.candidate(t)
+			if before != test.want || after != test.want {
+				t.Fatalf("before=%t after=%t want=%t", before, after, test.want)
+			}
+		})
+	}
+}
+
+func TestNativeRecordedDependencyUsesCurrentEdges(t *testing.T) {
+	f := newDispatchGuardFixture(t)
+	blockers := []tracker.NativeIssue{f.create(t, "First prerequisite"), f.create(t, "Second prerequisite")}
+	for _, blocker := range blockers {
+		current := f.reload(t)
+		request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: string(blocker.WorkItemID)}, ExpectedRevision: current.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/dependencies", f.token, request), http.StatusOK)
+	}
+	f.succeed(t, &tracker.NativeDisposition{Status: "blocked", Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: "prerequisite", Predicate: &workpad.Predicate{Type: workpad.PredicateIssueState}}}})
+	if f.candidate(t) {
+		t.Fatal("unfinished dependencies allowed a candidate")
+	}
+	for index, blocker := range blockers {
+		request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "finish-" + string(blocker.WorkItemID)}, ExpectedRevision: blocker.Revision, State: "Done", Reason: "user_requested"}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(blocker.WorkItemID)+"/workflow", f.token, request), http.StatusOK)
+		if got, want := f.candidate(t), index == len(blockers)-1; got != want {
+			t.Fatalf("after prerequisite %d: candidate=%t want=%t", index, got, want)
+		}
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_remove(data_json, '$.disposition') WHERE id=?", f.attempt); err != nil {
+		t.Fatal(err)
+	}
+	if !f.candidate(t) {
+		t.Fatal("wiping historical dependency evidence changed eligibility")
 	}
 }

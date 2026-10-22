@@ -287,7 +287,6 @@ func (o *Orchestrator) prepareDispatchCandidates(ctx context.Context, state *Sta
 	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
 	issues = o.filterIssueContracts(ctx, state, issues, now)
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
-	o.retainUnacknowledgedRecoveryParks(ctx, state, issues)
 	o.enforceLifetimeLimits(ctx, state, issues, now)
 	return issues
 }

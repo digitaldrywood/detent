@@ -462,22 +462,6 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 				if len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantState {
 					t.Fatalf("updates = %+v, want %s", tracker.updates, tt.wantState)
 				}
-				if tt.parkCause != "" {
-					orch.cfg.ActiveStates = append(orch.cfg.ActiveStates, normalizeState(tt.wantState))
-					recovered := cloneIssue(issue)
-					recovered.State = tt.wantState
-					recovered.StageUpdatedAt = &now
-					for _, restarted := range []bool{false, true} {
-						if restarted {
-							state = newState(orch.cfg)
-						}
-						state.Blocked[issue.ID] = Blocked{Issue: recovered, Source: BlockedSourceProjectStatus, Reason: tt.parkCause, BlockedAt: parkedAt, RecoveryReason: "park_acknowledgement_required"}
-						orch.retainUnacknowledgedRecoveryParks(t.Context(), &state, []connector.Issue{recovered})
-						if blocked, held := state.Blocked[issue.ID]; held {
-							t.Fatalf("authorized recovery resurrected after restart=%t: %+v", restarted, blocked)
-						}
-					}
-				}
 			} else if len(tracker.updates) != 0 {
 				t.Fatalf("updates = %+v, want no transition", tracker.updates)
 			}

@@ -132,7 +132,7 @@ func TestCompletedDependencyWaitRequiresCurrentMachineSignal(t *testing.T) {
 	}
 }
 
-func TestCompletedDependencyWaitPreservesUnrelatedParks(t *testing.T) {
+func TestCompletedDependencyWaitPreservesOperatorStops(t *testing.T) {
 	t.Parallel()
 	for _, reason := range []string{repeatedFailureCircuitBreakerCause, dispatchLoopDetectedReason, workpadBlockedUnactionedReason} {
 		t.Run(reason, func(t *testing.T) {
@@ -145,7 +145,7 @@ func TestCompletedDependencyWaitPreservesUnrelatedParks(t *testing.T) {
 			attempts := &implementProgressAttemptStore{}
 			o := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
 			state := newState(cfg)
-			park := Blocked{Issue: issue, Reason: reason}
+			park := Blocked{Issue: issue, Reason: reason, Source: BlockedSourceOperatorStop}
 			state.Blocked[issue.ID] = park
 			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: 1, Mode: runpkg.RunModeImplement}
 			state.Claimed[issue.ID] = Claimed{Issue: issue}

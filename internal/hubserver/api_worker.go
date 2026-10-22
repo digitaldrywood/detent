@@ -746,48 +746,17 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 	return capacity - used, nil
 }
 
-// notAlreadyAnsweredClause excludes an item whose most recent attempt already
-// succeeded against the item as it stands, for an issue query that aliases the
-// issues table as i.
-//
-// A human-owned answer holds the item until the item changes: a human action,
-// a permission wait, recorded acceptance, or a blocker the instance does not
-// own. An instance-owned answer (an instance blocker, an instance reason code,
-// an attempt without a typed disposition, or a pre-provider failure the runner
-// attributed to the instance) holds it for 30 minutes and then
-// lets the next attempt retry, so a dispatchable item never waits forever on an
-// answer no human owns. A forge publication without a disposition never holds:
-// the next attempt continues from the published source.
-//
-// The latest attempt is the one with the highest fencing token. It applies to
-// native projects only: on a github_compatible project the issues row is a
-// projection whose writes never bump revision, so the clause would strand an
-// item whose lane moved on GitHub.
 const nativeAnsweredClassification = `CASE
- WHEN answered.status = 'failed' THEN CASE WHEN julianday(answered.updated_at) > julianday('now', '-30 minutes')
-   THEN 'instance_cooldown' ELSE '' END
  WHEN COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 0) <> 0 THEN 'human_action'
  WHEN COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') = 'permission_wait' THEN 'permission_wait'
  WHEN COALESCE(json_extract(answered.data_json, '$.runtime.completion.acceptance_recorded'), 0) = 1 THEN 'recorded_acceptance'
- WHEN COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 0) <> 0
-   AND (COALESCE(json_array_length(answered.data_json, '$.disposition.blocker_evidence'), 0) = 0
-     OR EXISTS (SELECT 1 FROM json_each(answered.data_json, '$.disposition.blocker_evidence') blocker
-       WHERE COALESCE(json_extract(blocker.value, '$.owner'), '') <> 'instance')) THEN 'external_blocker'
- WHEN (COALESCE(json_extract(answered.data_json, '$.disposition.status'), '') <> 'complete'
-     OR COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 0) <> 0
-     OR COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') <> '')
-   AND julianday(answered.updated_at) > julianday('now', '-30 minutes')
-   THEN CASE WHEN COALESCE(json_type(answered.data_json, '$.disposition'), 'null') = 'null'
-     THEN 'untyped_cooldown' ELSE 'instance_cooldown' END
  ELSE '' END`
 
 const nativeAnsweredAttemptFrom = `FROM native_attempts answered
  WHERE answered.organization_id = i.organization_id
    AND answered.project_id = i.project_id
    AND answered.work_item_id = i.native_id
-   AND (answered.status = 'succeeded' OR answered.status = 'failed'
-     AND json_extract(answered.data_json, '$.terminal_failure.stage') = 'pre_provider'
-     AND json_extract(answered.data_json, '$.terminal_failure.attribution') = 'instance')
+   AND answered.status = 'succeeded'
    AND (` + nativeAnsweredClassification + `) <> ''
    AND NOT (json_type(answered.data_json, '$.disposition') IS NULL
      AND COALESCE(json_extract(answered.checkpoint_json, '$.external_effect'), '') IN ('git_push', 'pr_create'))

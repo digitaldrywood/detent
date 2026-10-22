@@ -406,6 +406,11 @@ interactions are the main source of incidents, so the set may not grow.
   existing one in the same change. "Add a guard for the new case" is not a fix.
 - Infrastructure failures (backend startup, protocol errors, workspace hooks)
   are attributed to the instance, never to the issue.
+- Claim eligibility is recomputed from current workflow intent, typed dependency
+  edges, source, review, access, lease and instance-capacity facts. Historical
+  failure answers, recovery signatures, reason strings and cross-host park
+  markers are diagnostics, never additional eligibility vetoes. Genuine human
+  actions and permission requests retain their authority.
 - The orchestrator is the only writer of tracker lane state; workers report
   outcomes and never write lane labels.
 - Do not add configuration keys, CLI subcommands, or dashboard surfaces to work

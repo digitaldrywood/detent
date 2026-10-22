@@ -305,7 +305,7 @@ func TestRecoveryJournalFailureLeavesHoldsIntact(t *testing.T) {
 	}
 }
 
-func TestRecoveryIntentCannotAcknowledgeNewParkGeneration(t *testing.T) {
+func TestRecoveryIntentDoesNotReviveHistoricalPark(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}
@@ -331,9 +331,10 @@ func TestRecoveryIntentCannotAcknowledgeNewParkGeneration(t *testing.T) {
 			host.recordLaneTransition(t.Context(), issue, "Blocked", now.Add(time.Minute), cause, workflowLaneMetadata{BlockedRecovery: &newPark})
 			issue.State = "Todo"
 			state := newState(host.cfg)
-			host.retainUnacknowledgedRecoveryParks(t.Context(), &state, []connector.Issue{issue})
-			if blocked, held := state.Blocked[issue.ID]; !held || blocked.Reason != cause {
-				t.Fatalf("new park was acknowledged by old intent: %#v", blocked)
+
+			host.trackCandidateBlockedStatusIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			if _, held := state.Blocked[issue.ID]; held {
+				t.Fatal("historical park vetoed the current Todo lane")
 			}
 		})
 	}

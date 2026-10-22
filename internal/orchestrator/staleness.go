@@ -267,17 +267,6 @@ func recordedStalenessPark(issue connector.Issue, state *State, events []store.W
 		latest = store.WorkflowPhaseEvent{}
 	}
 	metadata, _ := workflowLaneMetadataFromJSON(latest.MetadataJSON)
-	for _, cause := range []string{
-		strings.TrimSpace(issue.BlockerReason),
-		blockedReason(blocked),
-		blockedRecoveryCause(blocked),
-		strings.TrimSpace(latest.Reason),
-		blockedRecoveryMetadataCause(metadata.BlockedRecovery),
-	} {
-		if stickyBlockReason(cause) {
-			return cause, true
-		}
-	}
 	if blocked != nil && blocked.Source == BlockedSourceOperatorStop {
 		if cause := firstNonBlank(blocked.StopReason, blocked.Reason); cause != "" {
 			return cause, true

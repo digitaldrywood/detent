@@ -2191,7 +2191,7 @@ func TestRetiredLandingBarrierEndpoints(t *testing.T) {
 	}
 }
 
-func TestReviewConversationRefusalHoldsLandingUntilReleased(t *testing.T) {
+func TestReviewConversationHistoryDoesNotVetoLanding(t *testing.T) {
 	t.Parallel()
 	refusal := "GitHub requires these review conversations to be resolved before the merge. Address each finding in Rework, then resolve its conversation with evidence of the fix or dismissal.\n- review-bot on internal/app.go:12: handle the empty case"
 	for _, test := range []struct {
@@ -2202,7 +2202,7 @@ func TestReviewConversationRefusalHoldsLandingUntilReleased(t *testing.T) {
 		resolved bool
 		want     bool
 	}{
-		{name: "runner re-entry after a review-conversation refusal is held", detail: refusal, reentry: "runner"},
+		{name: "runner re-entry recomputes readiness", detail: refusal, reentry: "runner", want: true},
 		{name: "a human move into Merging releases the refusal", detail: refusal, reentry: "human", want: true},
 		{name: "a newly published version releases the refusal", detail: refusal, reentry: "runner", publish: true, want: true},
 		{name: "other landing refusals keep their retry path", detail: "GitHub refused the pull request operation: Pull Request is still a draft", reentry: "runner", want: true},

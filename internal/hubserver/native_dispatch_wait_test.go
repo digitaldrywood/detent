@@ -94,7 +94,7 @@ func (r dispatchProbeRows) Next(values []driver.Value) error {
 	if err == nil {
 		r.probe.rows.Add(1)
 		for index, column := range r.Columns() {
-			if strings.Contains(column, "completion_body") && values[index] != nil && values[index] != "" {
+			if strings.Contains(column, "completion_evidence") && values[index] != nil && values[index] != "" {
 				r.probe.completionBodies.Add(1)
 			}
 		}
@@ -483,11 +483,8 @@ FROM native_attempts a JOIN issues i ON i.native_id = ? WHERE a.work_item_id = ?
 					t.Fatalf("paged=%d leased=%d bind_bytes=%d", len(seen), leasedID, probe.maxArgumentBytes.Load())
 				}
 				t.Logf("pages=%d candidates=%d legacy_bodies=%d max_bind_bytes=%d", pages, len(seen), probe.completionBodies.Load(), probe.maxArgumentBytes.Load())
-				for index, issue := range issues[:200] {
-					body := "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```"
-					if index%2 == 0 {
-						body = strings.Replace(body, "schema: 1", "schema: 2", 1)
-					}
+				for _, issue := range issues[:200] {
+					body := "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve scope\n```"
 					if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.completion_body', ?) WHERE work_item_id = ?`, body, issue.WorkItemID); err != nil {
 						t.Fatal(err)
 					}
@@ -530,7 +527,7 @@ FROM native_attempts a JOIN issues i ON i.native_id = ? WHERE a.work_item_id = ?
 			}
 			query.After = ids[0]
 			if test.unpublished {
-				if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.completion_body', ?) WHERE work_item_id = ?`, "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```", tail.WorkItemID); err != nil {
+				if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.completion_body', ?) WHERE work_item_id = ?`, "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve scope\n```", tail.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 				before := probe.completionBodies.Load()

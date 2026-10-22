@@ -352,7 +352,7 @@ func (o *Orchestrator) autoPromoteEvaluationIssues(
 			if _, running := state.Running[issueID]; running {
 				continue
 			}
-			if _, included := seen[issueID]; included || o.issueHasStickyBlockReason(ctx, state, issue) || issueBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
+			if _, included := seen[issueID]; included || issueBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
 				continue
 			}
 			entry, ok := o.latestWorkflowLaneEntry(ctx, issue)

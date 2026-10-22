@@ -18,11 +18,11 @@ import (
 const defaultWorkflowMetricsProjectID = "default"
 
 const (
-	workflowActionBlockedRecovery          = "blocked_recovery"
-	workflowActionBlockedRecoveryExhausted = "blocked_recovery_exhausted"
-	workflowActionPlanReviewRework         = "plan_review_rework"
-	workflowActionReworkBreakerAutoUnpark  = "rework_breaker_auto_unpark"
-	blockedCauseStatusUnrecorded           = "unrecorded"
+	workflowActionBlockedRecovery = "blocked_recovery"
+
+	workflowActionPlanReviewRework        = "plan_review_rework"
+	workflowActionReworkBreakerAutoUnpark = "rework_breaker_auto_unpark"
+	blockedCauseStatusUnrecorded          = "unrecorded"
 )
 
 type WorkflowMetricsRecorder interface {
@@ -229,15 +229,7 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 	if err != nil {
 		return err
 	}
-	park := newTrackerRecoveryPark(targetState, metadata)
-	if err := o.publishTrackerRecoveryPark(ctx, issueID, park); err != nil {
-		return errors.Join(err, o.resolveLaneWrite(ctx, write, "failed"))
-	}
 	if err := o.writeTrackerLane(ctx, issueID, targetState, metadata); err != nil {
-		var parkErr error
-		if errors.Is(err, connector.ErrStateUpdateBlocked) {
-			parkErr = o.finishTrackerRecoveryPark(ctx, issueID, park, "cancelled")
-		}
 		if errors.Is(err, connector.ErrStateUpdateBlocked) && !strict {
 			if receiptErr := o.resolveLaneWrite(ctx, write, "blocked"); receiptErr != nil {
 				return receiptErr
@@ -245,13 +237,13 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 			if o.logger != nil {
 				o.logger.Debug("skip blocked issue state update", "issue_id", issueID, "target_state", targetState, "error", err)
 			}
-			return parkErr
+			return nil
 		}
 		result := "uncertain"
 		if errors.Is(err, connector.ErrStateUpdateBlocked) {
 			result = "blocked"
 		}
-		return errors.Join(err, parkErr, o.resolveLaneWrite(ctx, write, result))
+		return errors.Join(err, o.resolveLaneWrite(ctx, write, result))
 	}
 	transitionAt := at
 	if normalizeState(issue.State) != normalizeState(targetState) {
@@ -277,7 +269,6 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 		issue.ID = issueID
 	}
 	o.recordLaneTransition(ctx, issue, targetState, at, reason, metadata)
-	receiptErr = errors.Join(receiptErr, o.finishTrackerRecoveryPark(ctx, issueID, park, "applied"))
 	return receiptErr
 }
 

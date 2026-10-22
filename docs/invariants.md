@@ -98,7 +98,7 @@ comparisons. Human and permission holds retain their authority.
 in `internal/orchestrator`;
 `TestNativeExecutionSettlesFinishedRun` in `internal/hubclient`;
 `TestClaimCandidatesRequireUnansweredWorkItem`,
-`TestClaimCandidatesCoolDownInstancePreProviderFailures` and
+`TestClaimCandidatesRetryInstancePreProviderFailures` and
 `TestHealthRunnerSetupFindings` in `internal/hubserver`;
 `TestLocalGitCreateReadsPublishedBranchWithRepositoryCredential` in
 `internal/workspace`;
@@ -397,6 +397,20 @@ preserves claim exposure across approved-policy behavior and release drift.
 INV-2's behavioral checks preserve infrastructure attribution.
 Review covers novel names, reflection and generated semantic equivalents.
 
+Historical external-blocker answers, per-item instance/untyped answer cooldowns,
+recorded-dependency recovery fences, sticky reason strings, consumed recovery
+signatures, generic managed/fingerprint and cross-host park vetoes, and remembered
+review-conversation refusals stay retired. Current typed dependencies and current
+review/check evidence own readiness; explicit human and permission requests remain
+human intent. No derived hold may be persisted without an owner, source revision
+and expiry, and a stale revision gives it no weight. This does not expire human
+intent or replace current facts with a timer.
+
+**Enforcement:** `TestNativeDerivedHoldDispatchEquivalence` and
+`TestReviewConversationHistoryDoesNotVetoLanding` in `internal/hubserver`,
+`TestDerivedHoldDispatchEquivalence` in `internal/orchestrator`, and the retired
+symbol checks in `internal/invariants`.
+
 ## INV-10 — Priority only picks the next job
 
 Priority picks the next job. Free capacity is never held, reserved or kept idle
@@ -431,6 +445,8 @@ requests; acquisition revalidates current eligibility. Authorization,
 dependencies, retry readiness, local ceilings and stop exclusions remain
 authoritative. Admission filters eligible candidates before acquiring capacity.
 
+Native claim eligibility has one candidate owner, recomputed from current facts.
+Wiping historical derived hold evidence must preserve the dispatch decision.
 Native admission reads reuse the claim owner's candidate predicates and retain
 authorized current exclusion evidence without changing eligibility. Required
 unfinished dependencies include their scoped identity and observed nonterminal

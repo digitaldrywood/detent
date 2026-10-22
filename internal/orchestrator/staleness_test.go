@@ -466,7 +466,7 @@ func TestRecordedStalenessPark(t *testing.T) {
 		{name: "cause-less blocked issue", issue: connector.Issue{ID: "2", State: "Blocked"}},
 		{name: "generic blocked reason", issue: connector.Issue{ID: "3", State: "Blocked"}, blocked: &Blocked{Reason: "waiting for dependency"}},
 		{name: "operator stop cause", issue: connector.Issue{ID: "4", State: "Blocked"}, blocked: &Blocked{Source: BlockedSourceOperatorStop, StopReason: "operator parked pending review"}, want: true},
-		{name: "sticky breaker cause", issue: connector.Issue{ID: "5", State: "Blocked"}, blocked: &Blocked{Reason: dispatchLoopDetectedReason}, want: true},
+		{name: "sticky breaker cause", issue: connector.Issue{ID: "5", State: "Blocked"}, blocked: &Blocked{Reason: dispatchLoopDetectedReason}},
 		{name: "tracked dependency", issue: connector.Issue{ID: "6", State: "Blocked", BlockedBy: []connector.BlockedRef{{Identifier: "detent#1"}}}},
 		{
 			name:        "authenticated human park with cause",

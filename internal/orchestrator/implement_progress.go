@@ -1116,7 +1116,7 @@ func (o *Orchestrator) finishImplementDependencyDeferral(
 	issue connector.Issue,
 	completedAt time.Time,
 ) {
-	if !o.issueHasStickyBlockReason(ctx, state, issue) {
+	if !o.currentBlockedOperatorStop(ctx, state, issue) && !blockedRecoveryHumanOnly(issue) {
 		sourceState, _ := o.dispatchTimelineTransitionContext(ctx, issue)
 		target := dependencyWaitTarget(issue, sourceState)
 		if normalizeState(issue.State) != normalizeState(target) {

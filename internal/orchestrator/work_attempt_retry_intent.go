@@ -203,7 +203,6 @@ func (o *Orchestrator) applyWorkAttemptRetryIntent(ctx context.Context, state *S
 			delete(state.Blocked, issue.ID)
 		}
 	}
-	o.retainUnacknowledgedRecoveryParks(ctx, state, []connector.Issue{issue})
 	receipt.Blockers = append(receipt.Blockers, o.currentWorkAttemptRecoveryBlockers(ctx, state, issue, receipt, now)...)
 	if len(receipt.Blockers) > 0 {
 		receipt.Status = "blocked"

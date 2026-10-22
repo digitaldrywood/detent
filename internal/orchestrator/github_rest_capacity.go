@@ -26,10 +26,10 @@ const (
 	workflowActionGitHubRESTBudgetRecovery   = "github_rest_budget_recovery"
 	githubRESTBudgetWaitingReason            = "github_rest_budget_wait"
 	githubRESTBudgetObservationPendingReason = "github_rest_budget_observation_pending"
-	githubRESTBudgetRearmConsumedReason      = "github_rest_budget_rearm_consumed"
-	repeatedFailureCircuitBreakerCause       = "repeated_failure_circuit_breaker"
-	githubRESTBudgetProbeRetryInterval       = time.Minute
-	legacyGitHubRESTBudgetStageUpdateSkew    = 10 * time.Second
+
+	repeatedFailureCircuitBreakerCause    = "repeated_failure_circuit_breaker"
+	githubRESTBudgetProbeRetryInterval    = time.Minute
+	legacyGitHubRESTBudgetStageUpdateSkew = 10 * time.Second
 )
 
 var githubRESTCapacityScope = backendcapacity.Scope{
@@ -859,11 +859,6 @@ func (o *Orchestrator) reconcileRepeatedFailureGitHubRESTBudgetPark(
 		return true, false
 	}
 	signature := githubRESTBudgetRecoverySignature(current, evidence.Reserve)
-	if _, consumed := o.workflowTimelineActionSignature(ctx, issue, workflowActionGitHubRESTBudgetRecovery, signature); consumed {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", githubRESTBudgetRearmConsumedReason, &park, signature)
-		o.setGitHubRESTBudgetParkSurface(state, issue.ID, githubRESTBudgetStatusMessage("capacity recovered; automatic re-arm already used for this reset window", current))
-		return true, false
-	}
 	targetState := o.repeatedFailureRecoveryTarget(evidence.TargetState)
 	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionGitHubRESTBudgetRecovery, signature)
 	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, targetState, now, workflowActionGitHubRESTBudgetRecovery, metadata); err != nil {

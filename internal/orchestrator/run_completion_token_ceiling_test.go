@@ -96,9 +96,6 @@ func TestHandleRunResultParksSlowTokenCeilingFailureWithoutRetry(t *testing.T) {
 			t.Fatalf("Blocked[%q].Reason = %q, want %q", issue.ID, blocked.Reason, want)
 		}
 	}
-	if !stickyBlockReason(blocked.Reason) {
-		t.Fatalf("stickyBlockReason(%q) = false, want current token ceiling park to suppress dependency recovery", blocked.Reason)
-	}
 	orch.setBlockedStatusIssue(t.Context(), &state, connector.Issue{
 		ID:         issue.ID,
 		Identifier: issue.Identifier,
@@ -178,7 +175,7 @@ func TestHandleRunResultParksBudgetProjectionFailureWithoutRetry(t *testing.T) {
 	if len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
 		t.Fatalf("state updates = %#v, want one Blocked transition", tracker.updates)
 	}
-	if len(tracker.comments) != 3 || !strings.Contains(tracker.comments[2].body, "40.250000") || !strings.Contains(tracker.comments[2].body, "10.000000") || !strings.Contains(tracker.comments[2].body, "historical") {
+	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "40.250000") || !strings.Contains(tracker.comments[0].body, "10.000000") || !strings.Contains(tracker.comments[0].body, "historical") {
 		t.Fatalf("comments = %#v, want observed and projected cost", tracker.comments)
 	}
 	for _, want := range []string{"worker_budget_projection_ceiling_tripped", "estimate_source=historical"} {
