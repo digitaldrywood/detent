@@ -109,18 +109,19 @@ type HostedGrant struct {
 }
 
 type HostedEntitlement struct {
-	Name            string           `json:"name"`
-	MonthlyUSDCents *int64           `json:"monthly_usd_cents"`
-	OrganizationID  string           `json:"organization_id"`
-	Base            PlanReference    `json:"base"`
-	EffectiveBase   PlanReference    `json:"effective_base"`
-	Source          string           `json:"source"`
-	Revision        int64            `json:"revision"`
-	Features        []string         `json:"features"`
-	Allowances      map[string]int64 `json:"allowances"`
-	Grants          []HostedGrant    `json:"grants"`
-	Usage           map[string]int64 `json:"usage"`
-	WindowEndsAt    time.Time        `json:"window_ends_at"`
+	IncludedAICreditMicros *int64           `json:"included_ai_credit_micros"`
+	Name                   string           `json:"name"`
+	MonthlyUSDCents        *int64           `json:"monthly_usd_cents"`
+	OrganizationID         string           `json:"organization_id"`
+	Base                   PlanReference    `json:"base"`
+	EffectiveBase          PlanReference    `json:"effective_base"`
+	Source                 string           `json:"source"`
+	Revision               int64            `json:"revision"`
+	Features               []string         `json:"features"`
+	Allowances             map[string]int64 `json:"allowances"`
+	Grants                 []HostedGrant    `json:"grants"`
+	Usage                  map[string]int64 `json:"usage"`
+	WindowEndsAt           time.Time        `json:"window_ends_at"`
 }
 
 func hostedAllowanceNames() []string {
@@ -483,6 +484,10 @@ func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, n
 	}
 	result.Allowances, result.Features = base.Allowances, base.Features
 	result.Name, result.MonthlyUSDCents = base.Name, base.MonthlyUSDCents
+	result.IncludedAICreditMicros = new(int64)
+	if result.Source == "subscription" {
+		result.IncludedAICreditMicros = base.includedAICreditMicros()
+	}
 	if result.Name == "" {
 		result.Name = fmt.Sprintf("%s · version %d", base.ID, base.Version)
 	}

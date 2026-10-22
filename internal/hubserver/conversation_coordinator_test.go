@@ -1850,6 +1850,7 @@ func TestConversationCoordinatorRefusesWritesOnceLinked(t *testing.T) {
 func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 	for _, test := range []struct {
 		name         string
+		included     bool
 		credits      bool
 		balance      int64
 		owner        bool
@@ -1859,6 +1860,7 @@ func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 		want, hidden string
 	}{
 		{name: "Free without credit accounting", wantCalls: 1},
+		{name: "included credits permit chat", included: true, credits: true, wantCalls: 1},
 		{name: "purchased credits permit chat", credits: true, balance: 1000000, wantCalls: 1},
 		{name: "marked-up turn overruns then refuses", credits: true, balance: 120000, overrun: true, wantBalance: -30000, wantCalls: 1},
 		{name: "exact charged balance exhausts then refuses", credits: true, balance: 150000, overrun: true, wantBalance: 0, wantCalls: 1},
@@ -1886,6 +1888,10 @@ func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 				if _, err := d.db.ExecContext(t.Context(), "INSERT INTO hosted_members(user_id,email,membership_id,role,principal_id,created_at,updated_at) VALUES('user_credit','credit@example.test','member_credit',?,?,?,?)", role, f.owner, formatHubTime(d.now()), formatHubTime(d.now())); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if test.included {
+				now := d.now()
+				setIncludedCreditSubscription(t, d, f.organization, now.Add(-time.Hour), now.Add(time.Hour), now.Add(time.Hour), PlanReference{ID: "team", Version: 2})
 			}
 			record := f.seed(t, "Free chat", nil)
 			f.say(t, &record, "Can you explain this project?")

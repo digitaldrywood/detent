@@ -1269,10 +1269,10 @@ const usageFixture: BillingUsageReport = {
     packs: [{ price_id: "credit_25", label: "$25 credit pack", usd_cents: 2500 }],
   },
   comparison_plans: [
-    { id: "starter", version: 1, name: "Starter", monthly_usd_cents: 4900, features: ["hosted_artifacts"], allowances: { concurrent_work: 8, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "price_starter" },
-    { id: "team", version: 2, name: "Team", monthly_usd_cents: 9900, features: ["hosted_artifacts"], allowances: { concurrent_work: 20, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "price_team" },
-    { id: "growth", version: 2, name: "Growth", monthly_usd_cents: 24900, features: ["hosted_artifacts"], allowances: { concurrent_work: 50, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "price_growth" },
-    { id: "scale", version: 2, name: "Scale", features: ["hosted_artifacts"], allowances: { concurrent_work: 100, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "" },
+    { id: "starter", version: 1, name: "Starter", monthly_usd_cents: 4900, included_ai_credit_micros: 4_900_000, features: ["hosted_artifacts"], allowances: { concurrent_work: 8, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "price_starter" },
+    { id: "team", version: 2, name: "Team", monthly_usd_cents: 9900, included_ai_credit_micros: 9_900_000, features: ["hosted_artifacts"], allowances: { concurrent_work: 20, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "price_team" },
+    { id: "growth", version: 2, name: "Growth", monthly_usd_cents: 24900, included_ai_credit_micros: 24_900_000, features: ["hosted_artifacts"], allowances: { concurrent_work: 50, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "price_growth" },
+    { id: "scale", version: 2, included_ai_credit_micros: null, name: "Scale", features: ["hosted_artifacts"], allowances: { concurrent_work: 100, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "" },
   ],
   can_checkout: true, can_manage: true, can_buy_credits: true, checkout_pending: false,
 };
@@ -1382,6 +1382,18 @@ describe("plan usage meters", () => {
 
 
 describe("plan billing usage", () => {
+  it("compares included credits for offered plans and a current legacy plan", async () => {
+    const free = { ...usageFixture.comparison_plans[0]!, id: "free", name: "Free", monthly_usd_cents: 0, included_ai_credit_micros: 0 };
+    mockPlanUsage({ ...usageFixture, name: "Legacy pilot", effective_base: { id: "pilot_free", version: 1 }, comparison_plans: [free, ...usageFixture.comparison_plans] }, { ...planFixture, name: "Legacy pilot", effective_base: { id: "pilot_free", version: 1 } });
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    const table = await screen.findByRole("table", { name: "Compare plans" });
+    expect(within(table).getByRole("columnheader", { name: "AI credits / month" })).toBeTruthy();
+    for (const [plan, amount] of [["Legacy pilot", "—"], ["Free", "—"], ["Starter", "$4.90"], ["Team", "$9.90"], ["Growth", "$24.90"], ["Scale", "Custom"]]) {
+      const row = within(table).getAllByRole("row").find((item) => within(item).queryByRole("heading", { name: new RegExp(plan!) }) !== null)!;
+      expect(within(row).getByRole("cell", { name: `AI credits / month: ${amount}` })).toBeTruthy();
+    }
+  });
+
   it("reads comparison storage from the catalog and workspace storage from the entitlement", async () => {
     const allowances = [25, 100, 250, 1];
     mockPlanUsage({ ...usageFixture, comparison_plans: usageFixture.comparison_plans.map((plan, index) => ({

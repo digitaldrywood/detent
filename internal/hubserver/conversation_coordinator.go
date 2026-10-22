@@ -551,7 +551,11 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 				return err
 			}
 			refusal = nil
-			if balance <= 0 {
+			included, err := d.includedAICredits(ctx, tx, record.OrganizationID, now)
+			if err != nil {
+				return err
+			}
+			if balance+included.remaining() <= 0 {
 				var owner bool
 				if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM hosted_members WHERE principal_id=? AND active=1 AND role='owner')", pending[len(pending)-1].Actor.PrincipalID).Scan(&owner); err != nil {
 					return err

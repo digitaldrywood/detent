@@ -235,27 +235,29 @@ type hostedBillingView struct {
 }
 
 type hostedComparisonPlan struct {
+	IncludedAICreditMicros *int64 `json:"included_ai_credit_micros"`
 	HostedPlan
 	PriceID string `json:"price_id"`
 }
 
 type hostedBillingUsageView struct {
-	OrganizationID  string                 `json:"organization_id"`
-	EffectiveBase   PlanReference          `json:"effective_base"`
-	Name            string                 `json:"name"`
-	MonthlyUSDCents *int64                 `json:"monthly_usd_cents"`
-	Complimentary   bool                   `json:"complimentary"`
-	ExpiresAt       *time.Time             `json:"expires_at"`
-	RenewsAt        *time.Time             `json:"renews_at"`
-	CancelsAt       *time.Time             `json:"cancels_at"`
-	ChatUsage       chatUsageSummary       `json:"chat_usage"`
-	ChargedAIMicros int64                  `json:"charged_ai_micros"`
-	AICredits       *aiCreditView          `json:"ai_credits,omitempty"`
-	ComparisonPlans []hostedComparisonPlan `json:"comparison_plans"`
-	CanCheckout     bool                   `json:"can_checkout"`
-	CanManage       bool                   `json:"can_manage"`
-	CanBuyCredits   bool                   `json:"can_buy_credits"`
-	CheckoutPending bool                   `json:"checkout_pending"`
+	IncludedAICreditMicros *int64                 `json:"included_ai_credit_micros"`
+	OrganizationID         string                 `json:"organization_id"`
+	EffectiveBase          PlanReference          `json:"effective_base"`
+	Name                   string                 `json:"name"`
+	MonthlyUSDCents        *int64                 `json:"monthly_usd_cents"`
+	Complimentary          bool                   `json:"complimentary"`
+	ExpiresAt              *time.Time             `json:"expires_at"`
+	RenewsAt               *time.Time             `json:"renews_at"`
+	CancelsAt              *time.Time             `json:"cancels_at"`
+	ChatUsage              chatUsageSummary       `json:"chat_usage"`
+	ChargedAIMicros        int64                  `json:"charged_ai_micros"`
+	AICredits              *aiCreditView          `json:"ai_credits,omitempty"`
+	ComparisonPlans        []hostedComparisonPlan `json:"comparison_plans"`
+	CanCheckout            bool                   `json:"can_checkout"`
+	CanManage              bool                   `json:"can_manage"`
+	CanBuyCredits          bool                   `json:"can_buy_credits"`
+	CheckoutPending        bool                   `json:"checkout_pending"`
 }
 
 func (s *Service) hostedBillingJSON(c echo.Context) error {
@@ -313,7 +315,8 @@ func (s *Service) hostedBillingUsageJSON(c echo.Context) error {
 	}
 	return c.JSON(http.StatusOK, hostedBillingUsageView{
 		OrganizationID: view.OrganizationID, EffectiveBase: plan.PlanReference, Name: plan.Name, MonthlyUSDCents: plan.MonthlyUSDCents, Complimentary: complimentary, ExpiresAt: expiresAt, RenewsAt: renewsAt, CancelsAt: cancelsAt,
-		ChatUsage: view.ChatUsage, ChargedAIMicros: view.ChargedAIMicros, AICredits: view.AICredits,
+		IncludedAICreditMicros: view.Entitlement.IncludedAICreditMicros,
+		ChatUsage:              view.ChatUsage, ChargedAIMicros: view.ChargedAIMicros, AICredits: view.AICredits,
 		ComparisonPlans: view.ComparisonPlans, CanCheckout: canBill && view.CanCheckout,
 		CanManage:       canBill && view.CanManage,
 		CanBuyCredits:   canBill && cfg != nil && !cfg.CheckoutDisabled && view.AICredits != nil && len(view.AICredits.Packs) > 0,
@@ -380,7 +383,7 @@ func (s *Service) readBillingView(ctx context.Context, pages ...creditPageReques
 			if err != nil {
 				return hostedBillingView{}, err
 			}
-			comparison := hostedComparisonPlan{HostedPlan: plan}
+			comparison := hostedComparisonPlan{HostedPlan: plan, IncludedAICreditMicros: plan.includedAICreditMicros()}
 			if cfg := s.hostedBillingConfig(); cfg != nil {
 				for _, price := range cfg.Prices {
 					if price.Plan == plan.PlanReference {

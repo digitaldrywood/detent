@@ -136,6 +136,24 @@ function renderBilling(_api: ReturnType<typeof fakeApi>, onCommit?: () => void) 
 }
 
 describe("billing screen", () => {
+  it.each([
+    ["Team", 9_900_000, 2_400_000],
+    ["Team exhausted", 9_900_000, 9_900_000],
+    ["Free", 0, 0],
+    ["Legacy pilot", 0, 0],
+  ])("shows the included allowance for %s", async (_name, allowance, used) => {
+    const included = allowance > 0 ? { plan_name: "Team", allowance_micros: allowance, used_micros: used, period_start: "2026-10-08T00:00:00Z", period_end: "2026-11-08T00:00:00Z" } : undefined;
+    renderBilling(fakeApi(report({}, { ai_credits: credits({ included }), chat_usage: chatUsage })));
+    await screen.findByText("Charged this period");
+    if (allowance === 0) {
+      expect(screen.queryByRole("meter")).toBeNull();
+    } else {
+      const meter = screen.getByRole("meter", { name: "Included with Team" });
+      expect(meter.getAttribute("aria-valuetext")).toBe(`$${(used / 1_000_000).toFixed(2)} / $9.90 used`);
+      expect(screen.getByText("Resets Nov 8 · then purchased credits are used")).toBeTruthy();
+    }
+  });
+
   it("shows charged spend rather than model cost in the credit tiles", async () => {
     renderBilling(fakeApi(report({}, { ai_credits: credits(), charged_ai_micros: 180_000, chat_usage: chatUsage })));
     expect(await screen.findByText("Charged this period")).toBeTruthy();
