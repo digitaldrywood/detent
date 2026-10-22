@@ -21,63 +21,6 @@ import (
 
 func TestEventCompactionWorkHistory(t *testing.T) {
 	t.Parallel()
-	t.Run("progress beyond the first candidate batch", func(t *testing.T) {
-		t.Parallel()
-		now := time.Date(2026, 10, 7, 8, 0, 0, 0, time.UTC)
-		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
-		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-		var items []tracker.NativeWorkItemID
-		for index := range 6 {
-			issue := f.create(t, fmt.Sprintf("history %d", index))
-			items = append(items, issue.WorkItemID)
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = tx.Rollback() })
-			for range 10 - index {
-				if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt_" + string(issue.WorkItemID)}}, now); err != nil {
-					t.Fatal(err)
-				}
-			}
-			issue.Archived = true
-			if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "issue.edited", tracker.CollaborationData{Operation: "archive"}, now); err != nil {
-				t.Fatal(err)
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
-		}
-		for pass, want := range []int{4, 6} {
-			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
-				t.Fatal(err)
-			}
-			compacted := 0
-			for index, item := range items {
-				summary, err := readEventCompaction(t.Context(), f.service.database.reader, scope.organization, scope.project, "work_item", string(item))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if summary.RemovedEvents == 0 {
-					continue
-				}
-				compacted++
-				if summary.RemovedEvents != int64(9-index) || summary.RemovedByType["run.observed"] != int64(9-index) {
-					t.Fatalf("item %s lost history: %+v", item, summary)
-				}
-			}
-			if compacted != want {
-				t.Fatalf("pass %d compacted %d work items, want %d", pass+1, compacted, want)
-			}
-		}
-		plans, err := planEventCompaction(t.Context(), f.service.database.reader, now)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(plans) != 0 {
-			t.Fatalf("completed work remains eligible for compaction: %d plans", len(plans))
-		}
-	})
 	for _, test := range []struct {
 		name             string
 		archived, leased bool
@@ -90,7 +33,7 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 		{name: "archived with live lease", archived: true, leased: true},
 		{name: "closed for three days", closedAgo: 73 * time.Hour, removed: 0},
 		{name: "closed recently", closedAgo: time.Hour},
-		{name: "closed activity spans span batches", closedAgo: 73 * time.Hour, removed: 0, extraActivity: 500},
+		{name: "unpublished closed activity stays hot", closedAgo: 73 * time.Hour, removed: 0, extraActivity: 500},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -167,7 +110,7 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.extraActivity > 0 {
-				for _, want := range []struct{ compacted, remaining int64 }{{500, 1}, {501, 0}, {501, 0}} {
+				for _, want := range []struct{ compacted, remaining int64 }{{0, 501}} {
 					summary, err := readEventCompaction(t.Context(), f.service.database.db, scope.organization, scope.project, "work_item", string(issue.WorkItemID))
 					if err != nil {
 						t.Fatal(err)
@@ -402,37 +345,28 @@ func TestEventCompactionConversations(t *testing.T) {
 
 func TestEventCompactionRollback(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	issue := f.create(t, "rollback compaction")
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
+	a := newTerminalAttemptFixture(t)
+	a.snapshots(t, 2)
+	a.finish(t)
+	a.advance(2 * time.Hour)
+	if _, err := a.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER fail_compaction BEFORE INSERT ON event_compactions BEGIN SELECT RAISE(ABORT,'injected failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
-	issue.Archived = true
-	if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "issue.edited", tracker.CollaborationData{Operation: "archive"}, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{}, time.Now()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER fail_compaction BEFORE INSERT ON event_compactions BEGIN SELECT RAISE(ABORT,'injected failure'); END`); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.maintainNativeRetention(t.Context(), time.Now()); err == nil || !strings.Contains(err.Error(), "injected failure") {
+	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err == nil || !strings.Contains(err.Error(), "injected failure") {
 		t.Fatalf("expected failure: %v", err)
 	}
-	var count int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=?", issue.WorkItemID).Scan(&count); err != nil || count != 4 {
-		t.Fatalf("rollback events=%d err=%v", count, err)
+	counts := a.runEvents(t)
+	if counts["run.started"] != 1 || counts["run.checkpointed"] != 2 || counts["run.observed"] != 2 || counts["run.finished"] != 1 {
+		t.Fatalf("rollback lost run events: %v", counts)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM collaboration_events WHERE work_item_id=?", issue.WorkItemID); err == nil {
+	var spans int
+	if err := a.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND json_type(data_json,'$.run.runtime.activity.spans')='array'`, a.issue.WorkItemID).Scan(&spans); err != nil {
+		t.Fatal(err)
+	}
+	if spans != 6 {
+		t.Fatalf("rollback lost activity payloads: %d", spans)
+	}
+	if _, err := a.service.database.db.ExecContext(t.Context(), "DELETE FROM collaboration_events WHERE work_item_id=?", a.issue.WorkItemID); err == nil {
 		t.Fatal("rollback lost deletion protection")
 	}
 }

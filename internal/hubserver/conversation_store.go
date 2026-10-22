@@ -188,7 +188,8 @@ const conversationColumns = `id, organization_id, project_id, owner_principal_id
 // resource's message_count (decisions section 10.5). It is a correlated
 // subquery rather than a second query because the hub pool holds a single
 // connection and a read must stay one statement.
-const conversationMessageCount = `(SELECT count(*) FROM conversation_messages cm WHERE cm.conversation_id = conversations.id)`
+const conversationMessageCount = `((SELECT count(*) FROM conversation_messages cm WHERE cm.conversation_id = conversations.id)
++ COALESCE((SELECT sum(n.retired_rows) FROM native_archive_sections n WHERE n.organization_id=conversations.organization_id AND n.project_id=conversations.project_id AND n.work_item_id=conversations.work_item_id AND n.kind='conversation' AND n.subject_id=conversations.id),0))`
 
 // conversationReadColumns is conversationColumns plus the derived columns a
 // read reports. Only conversationColumns names real columns, so it is the
@@ -642,7 +643,10 @@ func (s *conversationStore) appendMessage(ctx context.Context, tx *sql.Tx, messa
 	if err != nil {
 		return fmt.Errorf("encode message actor: %w", err)
 	}
-	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(seq), 0) + 1 FROM conversation_messages WHERE conversation_id = ?", message.ConversationID).Scan(&message.Seq); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT max(
+ COALESCE((SELECT MAX(seq) FROM conversation_messages WHERE conversation_id=?),0),
+ COALESCE((SELECT MAX(n.last_sequence) FROM native_archive_sections n JOIN conversations c ON c.id=n.subject_id AND c.organization_id=n.organization_id AND c.project_id=n.project_id AND c.work_item_id=n.work_item_id WHERE n.kind='conversation' AND n.subject_id=?),0)
+)+1`, message.ConversationID, message.ConversationID).Scan(&message.Seq); err != nil {
 		return fmt.Errorf("allocate message sequence: %w", err)
 	}
 	storedText, storedData, contentID, err := s.messageStorage(ctx, tx, *message)

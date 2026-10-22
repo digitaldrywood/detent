@@ -27,7 +27,7 @@ type sourceRepairAgent struct {
 	requests       []runner.AgentTurnRequest
 	workspaceHooks *sourceLoopWorkspace
 	checkpointed   <-chan struct{}
-	wait           context.Context
+	waitDone       <-chan struct{}
 }
 
 type sourceLoopWorkspace struct {
@@ -111,7 +111,7 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 		case <-a.checkpointed:
 		case <-ctx.Done():
 			return runner.AgentTurnResult{}, errors.New("repair turn did not publish its checkpoint before returning")
-		case <-a.wait.Done():
+		case <-a.waitDone:
 			return runner.AgentTurnResult{}, errors.New("repair turn did not publish its checkpoint before returning")
 		}
 		a.validator, a.sourceVerdict = "pass", "pass"
@@ -179,7 +179,7 @@ func TestNativeSourceReviewLoop(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer sessions.Close()
-			provider := &sourceRepairAgent{workspaceHooks: loopWorkspace, checkpointed: loopWorkspace.checkpointed, wait: testenv.WaitContext(t, t.Context()), auditRework: test.auditRework, committingAgent: committingAgent{staged: true, complete: true, validator: test.verdict}}
+			provider := &sourceRepairAgent{workspaceHooks: loopWorkspace, checkpointed: loopWorkspace.checkpointed, waitDone: testenv.WaitContext(t, t.Context()).Done(), auditRework: test.auditRework, committingAgent: committingAgent{staged: true, complete: true, validator: test.verdict}}
 			if test.sourceReview {
 				provider.sourceVerdict = "rework"
 			}

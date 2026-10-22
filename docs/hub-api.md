@@ -2596,19 +2596,30 @@ defines full-instance export/import, credential fencing on restore, whole-instan
 retirement and operator-managed backup expiry. Scoped purge remains unimplemented;
 append-only storage is not a promise of permanent retention.
 
-The existing archive/retention sweep compacts archived work, work that has been
-in a terminal state for more than 3 days, and conversations settled for more
-than 30 days. Active leases, unfinished executions, queued
-messages and pending questions exclude an aggregate. Each transaction examines
-at most four work items and four conversations, deleting at most 500 events per
-aggregate. It retains comments, content revisions, workflow transitions,
-scheduler decisions, attempt checkpoints and final observations, validation and
-landing evidence, messages, questions and command receipts. Superseded runtime
-observations, message updates and execution progress, streaming deltas,
-heartbeats and redundant conversation snapshots are removed. Retained work-item
-run events drop their activity spans and record `activity_spans_compacted` in
-the activity coverage notes. Conversation
-metadata changes keep their timeline boundaries.
+Open work stays live. Closed work is archived 3 days after it closes and remains
+retrievable until the organization is deleted. Storage archival is independent of
+the issue's board archive/restore flag. The retention sweep uses the persisted
+nonterminal-to-terminal transition time; terminal-to-terminal moves and late
+comments do not restart the clock, and reopening clears it. Work without a
+trustworthy terminal time stays live.
+
+The sweep uploads bounded, single-member gzip sections and publishes an immutable
+issue root last, then rechecks the issue revision and conversation sequence before
+committing its archive pointer. Detail retirement resumes in transactions of at
+most 500 rows. The issue, comments, factual timeline, replay receipts and recovery
+identities remain in SQLite. Viewer-filtered issue revisions and private
+conversations also remain in SQLite. Shared message ranges and historical comment
+revisions load through the bounded archive reader, with existing content objects
+referenced without downloading their payloads. Active leases, unfinished
+executions, queued messages, pending questions and unresolved Changes prevent
+archival. A reopened issue is never retired by an earlier publication.
+
+Closed-work event compaction requires a committed archive; the board visibility
+flag and a separate age cutoff do not authorize it. Standalone conversations
+retain their 30-day settled-event policy. Live streaming deltas and completed turn
+batch receipts retain their existing compaction behavior. Original archived run
+events remain retrievable while browser timelines read their retained SQLite
+facts, independently of object storage availability.
 
 History pages and conversation snapshots carry an optional `compaction` summary
 with removed event counts by type, retained event count, removed payload bytes,

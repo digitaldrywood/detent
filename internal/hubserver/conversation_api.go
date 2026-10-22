@@ -84,7 +84,7 @@ func (s *Service) requireConversationScope(extra ...apiScope) echo.MiddlewareFun
 			}
 			c.Set("native_scope", scope)
 			if c.Request().Method == http.MethodGet {
-				c.SetRequest(c.Request().WithContext(s.archiveContext(ctx, scope, c.QueryParam("archive_url") == "true")))
+				c.SetRequest(c.Request().WithContext(s.archiveRequestContext(c, scope)))
 			}
 			c.Response().Header().Set("Cache-Control", "no-store")
 			if credential.Hosted != nil {

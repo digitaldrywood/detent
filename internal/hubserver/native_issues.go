@@ -846,6 +846,15 @@ WHERE organization_id = ? AND project_id = ? AND native_id = ?`, issue.Type, ver
 	if err != nil {
 		return issue, err
 	}
+	if !issue.Terminal || !current.Terminal {
+		var entered any
+		if issue.Terminal {
+			entered = formatHubTime(now)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE issues SET terminal_entered_at=? WHERE organization_id=? AND project_id=? AND native_id=?`, entered, scope.organization, scope.project, issue.WorkItemID); err != nil {
+			return issue, err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE queue_entries SET state = ?, priority_override = ?, updated_at = ? WHERE issue_id = (SELECT id FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?)`, issue.State, issue.Priority, formatHubTime(now), scope.organization, scope.project, issue.WorkItemID); err != nil {
 		return issue, err
 	}

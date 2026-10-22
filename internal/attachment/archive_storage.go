@@ -55,7 +55,7 @@ func (s *spaces) PresignArchive(ctx context.Context, ref ArchiveReference) (Arch
 
 func validArchiveKey(ref ArchiveReference) bool {
 	parts := strings.Split(ref.Key, "/")
-	return len(parts) == 6 && ref.Validate(parts[1]) == nil
+	return len(parts) >= 2 && ref.Validate(parts[1]) == nil
 }
 
 func (s *spaces) ConfigureArchiveReads(ctx context.Context, origins []string) error {
@@ -105,7 +105,25 @@ func archivePrefixOverlaps(prefix string) bool {
 		return false
 	}
 	_, tail, found := strings.Cut(strings.TrimPrefix(prefix, "orgs/"), "/")
-	return !found || strings.HasPrefix("blobs/sha256/", tail) || strings.HasPrefix(tail, "blobs/sha256/")
+	if !found || strings.HasPrefix("blobs/sha256/", tail) || strings.HasPrefix(tail, "blobs/sha256/") {
+		return true
+	}
+	parts := strings.Split(tail, "/")
+	for index, segment := range []string{"projects", "", "issues", "", "archives"} {
+		if index >= len(parts) {
+			return true
+		}
+		if segment == "" {
+			continue
+		}
+		if index == len(parts)-1 {
+			return strings.HasPrefix(segment, parts[index])
+		}
+		if parts[index] != segment {
+			return false
+		}
+	}
+	return true
 }
 
 type archiveLifecycle struct {

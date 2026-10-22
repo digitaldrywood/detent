@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -56,10 +58,35 @@ func ArchiveKey(organization, digest string) (string, error) {
 
 func (r ArchiveReference) Validate(organization string) error {
 	key, err := ArchiveKey(organization, r.SHA256)
-	if (r.BindingID != "" && !validOrganization(r.BindingID)) || (r.CustomerOwned && r.BindingID == "") || err != nil || key != r.Key || r.CompressedSize <= 0 || r.CompressedSize > MaxArchiveBytes || r.UncompressedSize <= 0 || r.UncompressedSize > MaxArchiveBytes || r.Codec != "gzip" || r.SchemaVersion < 1 || r.Kind != "archive" || r.Retention != ArchiveRetention {
+	if (r.BindingID != "" && !validOrganization(r.BindingID)) || (r.CustomerOwned && r.BindingID == "") || err != nil || (key != r.Key && !validIssueArchiveKey(organization, r)) || r.CompressedSize <= 0 || r.CompressedSize > MaxArchiveBytes || r.UncompressedSize <= 0 || r.UncompressedSize > MaxArchiveBytes || r.Codec != "gzip" || r.SchemaVersion < 1 || r.Kind != "archive" || r.Retention != ArchiveRetention {
 		return ErrInvalid
 	}
 	return nil
+}
+
+func IssueArchiveKey(organization, project, issue string, revision int64, digest string) (string, error) {
+	for _, id := range []string{organization, project, issue} {
+		if !validOrganization(id) {
+			return "", ErrInvalid
+		}
+	}
+	if revision <= 0 || !artifact.ValidHash(digest, 64) {
+		return "", ErrInvalid
+	}
+	return "orgs/" + organization + "/projects/" + project + "/issues/" + issue + "/archives/" + strconv.FormatInt(revision, 10) + "/shared/" + digest + "/issue.json.gz", nil
+}
+
+func validIssueArchiveKey(organization string, ref ArchiveReference) bool {
+	parts := strings.Split(ref.Key, "/")
+	if len(parts) != 11 || parts[1] != organization {
+		return false
+	}
+	revision, err := strconv.ParseInt(parts[7], 10, 64)
+	if err != nil {
+		return false
+	}
+	key, err := IssueArchiveKey(organization, parts[3], parts[5], revision, ref.SHA256)
+	return err == nil && key == ref.Key && ref.UncompressedSize <= MaxSectionBytes
 }
 
 func PrepareArchive(organization string, schema int, reader io.Reader) (ArchiveReference, []byte, error) {

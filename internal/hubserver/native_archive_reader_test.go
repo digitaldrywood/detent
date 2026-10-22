@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strconv"
@@ -155,6 +156,7 @@ func TestNativeArchiveSectionFailures(t *testing.T) {
 	}{
 		{"valid", "available", nil, 1},
 		{"signed read", "available", nil, 1},
+		{"browser fallback", "available", nil, 1},
 		{"missing object", "unavailable", func(_ *testing.T, _ nativeFixture, _ string, _ *attachment.ArchiveReference, data *[]byte) {
 			*data = nil
 		}, 1},
@@ -206,7 +208,17 @@ func TestNativeArchiveSectionFailures(t *testing.T) {
 			if test.name == "signed read" {
 				token = testHubAdminToken
 			}
-			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+item+"/versions/1?archive_url=true", token, nil)
+			target := f.base + "/work-items/" + item + "/versions/1?archive_url=true"
+			var response *httptest.ResponseRecorder
+			if test.name == "browser fallback" {
+				request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+				request.Header.Set("Authorization", "Bearer "+token)
+				request.Header.Set("X-Detent-Archive-Read", "1")
+				response = httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, request)
+			} else {
+				response = performHubAPIRequest(t, f.service, http.MethodGet, target, token, nil)
+			}
 			status := http.StatusOK
 			if test.availability != "available" {
 				status = http.StatusServiceUnavailable
@@ -216,7 +228,14 @@ func TestNativeArchiveSectionFailures(t *testing.T) {
 				Archive tracker.ArchiveDescriptor `json:"archive"`
 			}
 			decodeHubResponse(t, response, &result)
-			if result.Archive.Availability != test.availability || fetches != test.wantFetches {
+			expected := test.availability
+			if test.name == "browser fallback" {
+				expected = ""
+				if !strings.Contains(response.Body.String(), `"title":"Archived revision"`) {
+					t.Fatal("browser fallback lost resolved revision")
+				}
+			}
+			if result.Archive.Availability != expected || fetches != test.wantFetches {
 				t.Fatalf("availability=%s fetches=%d body=%s", result.Archive.Availability, fetches, response.Body.String())
 			}
 			if (result.Archive.URL != "") != (test.name == "signed read") {

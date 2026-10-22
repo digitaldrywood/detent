@@ -14,20 +14,18 @@ import (
 
 const eventRetention = 30 * 24 * time.Hour
 const eventCompactionBatch = 500
-const closedWorkCompactionAge = 3 * 24 * time.Hour
 const terminalAttemptCompactionAge = time.Hour
 
-const closedWork = `(i.archived=1 OR (EXISTS (SELECT 1 FROM workflow_states ws WHERE ws.id=i.workflow_state_id AND ws.terminal=1)
-AND julianday(` + nativeTerminalEnteredAt + `)<julianday(?)))`
+const closedWork = `EXISTS(SELECT 1 FROM issue_storage_archives p WHERE p.organization_id=i.organization_id AND p.project_id=i.project_id AND p.work_item_id=i.native_id AND p.issue_revision=i.revision AND p.event_sequence=i.event_sequence AND julianday(p.published_at)<=julianday(?) AND EXISTS(SELECT 1 FROM native_archive_sections n WHERE n.organization_id=i.organization_id AND n.project_id=i.project_id AND n.work_item_id=i.native_id AND n.kind='history' AND n.first_sequence=0) AND COALESCE((SELECT max(n.last_sequence) FROM native_archive_sections n WHERE n.organization_id=i.organization_id AND n.project_id=i.project_id AND n.work_item_id=i.native_id AND n.kind='history'),0)>=COALESCE((SELECT max(e.sequence) FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type IN ('run.started','run.checkpointed','run.observed','run.finished')),0))`
 
 const terminalAttempt = `a.status<>'running' AND julianday(a.updated_at)<julianday(?)
 AND EXISTS (SELECT 1 FROM leases l WHERE l.lease_id=a.lease_id AND (l.released_at IS NOT NULL OR julianday(l.expires_at)<julianday(?)))`
 
 const compactableWork = `NOT EXISTS (SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?))
 AND COALESCE(s.scanned_sequence,0)<i.event_sequence
-AND (` + closedWork + ` OR EXISTS (SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.work_item_id=i.native_id AND ` + terminalAttempt + `))`
+AND (` + closedWork + ` OR (EXISTS(SELECT 1 FROM workflow_states ws WHERE ws.id=i.workflow_state_id AND ws.terminal=0) AND EXISTS (SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.work_item_id=i.native_id AND ` + terminalAttempt + `)))`
 
-const compactableConversation = `c.status='settled'
+const compactableConversation = `c.work_item_id IS NULL AND c.subject_work_item_id IS NULL AND c.status='settled'
 AND max(julianday(c.settled_at),julianday(c.updated_at),julianday(COALESCE(c.last_message_at,c.updated_at)))<julianday(?)
 AND json_extract(c.execution_json,'$.status') IN ('idle','completed','interrupted','failed')
 AND NOT EXISTS (SELECT 1 FROM conversation_messages m WHERE m.conversation_id=c.id AND m.delivery IN ('saved','queued','sending','responding'))
@@ -72,7 +70,7 @@ type eventCompactionPlan struct {
 }
 
 func planEventCompaction(ctx context.Context, q nativeQueryer, now time.Time) ([]eventCompactionPlan, error) {
-	closedBefore, settledBefore := formatHubTime(now.Add(-closedWorkCompactionAge)), formatHubTime(now.Add(-terminalAttemptCompactionAge))
+	closedBefore, settledBefore := formatHubTime(now), formatHubTime(now.Add(-terminalAttemptCompactionAge))
 	rows, err := q.QueryContext(ctx, `SELECT * FROM (SELECT i.organization_id,i.project_id,'work_item',i.native_id,i.event_sequence,`+closedWork+` FROM issues i
 LEFT JOIN event_compactions s ON s.organization_id=i.organization_id AND s.project_id=i.project_id AND s.aggregate_kind='work_item' AND s.aggregate_id=i.native_id
 WHERE `+compactableWork+` ORDER BY i.event_sequence-COALESCE(s.scanned_sequence,0) DESC LIMIT 4)

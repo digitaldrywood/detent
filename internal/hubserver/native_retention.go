@@ -22,6 +22,9 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 	if err := s.expireNativeRecords(ctx, now); err != nil {
 		return err
 	}
+	if err := s.archiveClosedNativeIssues(ctx, now); err != nil {
+		return fmt.Errorf("archive closed issues: %w", err)
+	}
 	if err := s.compactRetainedEvents(ctx, now); err != nil {
 		return fmt.Errorf("compact retained events: %w", err)
 	}

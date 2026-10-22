@@ -70,7 +70,7 @@ func TestConversationRunnerExecutesLiveTurns(t *testing.T) {
 				}
 			}
 
-			backend := &liveConversationBackend{started: make(chan struct{}, 2), wait: testenv.WaitContext(t, t.Context())}
+			backend := &liveConversationBackend{started: make(chan struct{}, 2), waitDone: testenv.WaitContext(t, t.Context()).Done()}
 			scheduler := hub.scheduler(t)
 			first := hub.startAttempt(t, scheduler, backend, issueID)
 			select {
@@ -684,7 +684,7 @@ func (w *conversationStubWorkspace) RecoveryState(context.Context, workspace.Inf
 // streams until it is interrupted.
 type liveConversationBackend struct {
 	started  chan struct{}
-	wait     context.Context
+	waitDone <-chan struct{}
 	mu       sync.Mutex
 	requests []runner.AgentTurnRequest
 	consumed []runner.AgentControlKind
@@ -811,7 +811,7 @@ func (b *liveConversationBackend) consume(ctx context.Context, request runner.Ag
 			}
 		case <-ctx.Done():
 			return runner.AgentControl{}, ctx.Err()
-		case <-b.wait.Done():
+		case <-b.waitDone:
 			return runner.AgentControl{}, fmt.Errorf("no %s control arrived before the test deadline", kind)
 		}
 	}

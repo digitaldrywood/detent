@@ -1,11 +1,16 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -454,4 +459,85 @@ func TestProjectArchivePeriods(t *testing.T) {
 		}
 	}
 
+}
+
+func TestNativeStorageArchiveRetention(t *testing.T) {
+	for _, test := range []struct {
+		name, state string
+		age         time.Duration
+		want        bool
+	}{
+		{"done before", "Done", 72*time.Hour - time.Second, false},
+		{"done boundary", "Done", 72 * time.Hour, true},
+		{"done after", "Done", 72*time.Hour + time.Second, true},
+		{"cancelled before", "Cancelled", 72*time.Hour - time.Second, false},
+		{"cancelled boundary", "Cancelled", 72 * time.Hour, true},
+		{"cancelled after", "Cancelled", 73 * time.Hour, true},
+		{"open", "Todo", 96 * time.Hour, false},
+		{"not started", "Backlog", 96 * time.Hour, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+			objects := map[string][]byte{}
+			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, content: func(_ context.Context, r entryauthority.ContentRequest) ([]byte, error) {
+				if r.Write {
+					objects[r.Reference.Key] = slices.Clone(r.Data)
+					return nil, nil
+				}
+				return objects[r.Reference.Key], nil
+			}})
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			issue := f.create(t, "archive cutoff")
+			if test.state != "Todo" {
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if test.state == "Cancelled" || test.state == "Backlog" {
+					states := append(append([]tracker.NativeState{}, f.project.States...), tracker.NativeState{Name: test.state, Terminal: test.state == "Cancelled"})
+					if err := updateNativeProjectStates(t.Context(), tx, scope, states, now); err != nil {
+						t.Fatal(err)
+					}
+				}
+				issue.State = test.state
+				issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: test.state}, now.Add(-test.age))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := f.service.archiveClosedNativeIssues(t.Context(), now); err != nil {
+				t.Fatal(err)
+			}
+			var count int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issue_storage_archives WHERE work_item_id=?", issue.WorkItemID).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if (count == 1) != test.want {
+				t.Fatalf("archives=%d want=%v", count, test.want)
+			}
+			got := readWorkItem(t, f, issue.WorkItemID, "")
+			if got.Archived || got.Revision != issue.Revision {
+				t.Fatalf("storage archival changed board issue: %+v", got)
+			}
+			if test.want {
+				ref, err := scanAttachmentArchive(f.service.database.reader.QueryRowContext(t.Context(), `SELECT a.object_key,a.sha256,a.size,a.uncompressed_size,a.codec,a.schema_version,a.kind,a.retention_class FROM issue_storage_archives p JOIN attachments a ON a.id=p.attachment_id WHERE p.work_item_id=?`, issue.WorkItemID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ref.Validate(string(scope.organization)) != nil || artifact.Digest(objects[ref.Key]) != ref.SHA256 || int64(len(objects[ref.Key])) != ref.CompressedSize || int64(len(archiveTestBytes(t, objects[ref.Key]))) != ref.UncompressedSize {
+					t.Fatalf("invalid root pointer: %+v", ref)
+				}
+				if err := f.service.archiveClosedNativeIssues(t.Context(), now); err != nil {
+					t.Fatal(err)
+				}
+				if len(objects) != 1 {
+					t.Fatalf("repeat publication created %d objects", len(objects))
+				}
+			}
+		})
+	}
 }

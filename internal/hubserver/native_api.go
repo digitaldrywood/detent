@@ -357,7 +357,7 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 			}
 			c.Set("native_scope", scope)
 			if c.Request().Method == http.MethodGet {
-				ctx := s.archiveContext(c.Request().Context(), scope, c.QueryParam("archive_url") == "true")
+				ctx := s.archiveRequestContext(c, scope)
 				c.SetRequest(c.Request().WithContext(ctx))
 			}
 			c.Response().Header().Set("Cache-Control", "no-store")

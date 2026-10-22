@@ -20,6 +20,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -192,9 +193,11 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		retained bool
+		archive  bool
 	}{
 		{name: "expired attempt"},
 		{name: "released retained source after runner loss", retained: true},
+		{name: "unresolved closed source stays hot", retained: true, archive: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
@@ -317,6 +320,45 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", formatHubTime(now.Add(-runnerauth.HeartbeatTimeout-time.Minute)), owner.binding.RunnerID); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if test.archive {
+				f.service.config.content = func(context.Context, entryauthority.ContentRequest) ([]byte, error) {
+					t.Error("unresolved source was archived")
+					return nil, errors.New("unexpected publication")
+				}
+				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+				move := func(state string, at time.Time) {
+					t.Helper()
+					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Rollback()
+					current, _, err := readNativeIssue(t.Context(), tx, scope, string(issue.WorkItemID))
+					if err != nil {
+						t.Fatal(err)
+					}
+					from := current.State
+					current.State = state
+					if _, err := persistNativeIssue(t.Context(), tx, scope, current, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: state}, at); err != nil {
+						t.Fatal(err)
+					}
+					if err := tx.Commit(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				move("Done", now.Add(-73*time.Hour))
+				if err := f.service.archiveClosedNativeIssues(t.Context(), now); err != nil {
+					t.Fatal(err)
+				}
+				var pointers int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issue_storage_archives WHERE work_item_id=?", issue.WorkItemID).Scan(&pointers); err != nil {
+					t.Fatal(err)
+				}
+				if pointers != 0 {
+					t.Fatal("unresolved Change was archived")
+				}
+				move("Todo", now)
 			}
 			refuseEvidence := func(mutation tracker.Mutation) {
 				t.Helper()

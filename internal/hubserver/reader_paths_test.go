@@ -375,6 +375,8 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"executeNativeMutation":             "Runs a native mutation with authority, event and replay receipt in one transaction.",
 		"populateTimeIndex":                 "Populates one bounded chunk of typed timestamp facts and its cursor on the existing retention tick.",
 		"expireNativeRecords":               "Deletes one bounded batch of expired native records on the existing maintenance tick.",
+		"publishStorageArchive":             "Commits one issue archive pointer and its bounded section metadata after rechecking the exact issue and conversation revisions.",
+		"retireStorageArchiveSections":      "Rechecks the archived issue before atomically retiring at most 500 copied rows and advancing their durable section cursor.",
 		"compactRetainedEvents":             "Deletes one bounded batch of obsolete event history planned on the reader, on the existing maintenance tick.",
 		"compactAnalyticsSamples":           "Deletes one bounded batch of skip samples already counted by hourly rollups, on the existing maintenance tick.",
 		"backfillChangeSource":              "Converts one legacy source representation after reader-pool validation on the existing maintenance tick.",

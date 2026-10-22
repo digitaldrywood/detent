@@ -24,10 +24,11 @@ import (
 func TestArchiveStorageLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name          string
-		fail, corrupt bool
+		name                string
+		fail, corrupt, root bool
 	}{
 		{name: "verified and deduplicated"},
+		{name: "issue root", root: true},
 		{name: "upload failure", fail: true},
 		{name: "verification failure", corrupt: true},
 	} {
@@ -41,7 +42,7 @@ func TestArchiveStorageLifecycle(t *testing.T) {
 				key := r.URL.Path
 				switch r.Method {
 				case http.MethodPut:
-					archive := strings.Contains(key, "/blobs/")
+					archive := strings.Contains(key, "/blobs/") || strings.HasSuffix(key, "/issue.json.gz")
 					if archive && test.fail {
 						return storageResponse(http.StatusBadRequest, `<Error><Code>InvalidRequest</Code><Message>fixture-secret</Message></Error>`), nil
 					}
@@ -90,6 +91,12 @@ func TestArchiveStorageLifecycle(t *testing.T) {
 				other, repeated, err := PrepareArchive(org, 1, strings.NewReader(content))
 				if err != nil || ref != other || !bytes.Equal(data, repeated) {
 					t.Fatal("archive encoding is not deterministic")
+				}
+				if test.root {
+					ref.Key, err = IssueArchiveKey(org, "prj_example", "wi_example", 7, ref.SHA256)
+					if err != nil {
+						t.Fatal(err)
+					}
 				}
 				reader := bytes.NewReader(data)
 				gz, err := gzip.NewReader(reader)
@@ -156,9 +163,11 @@ func TestArchiveStorageLifecycle(t *testing.T) {
 				if err != nil || string(readContent) != content {
 					t.Fatalf("archive content read: %v", err)
 				}
-				published, err := owner.PublishContent(t.Context(), org, []byte(content))
-				if err != nil || published != ref {
-					t.Fatalf("content publication changed reference: %v", err)
+				if !test.root {
+					published, err := owner.PublishContent(t.Context(), org, []byte(content))
+					if err != nil || published != ref {
+						t.Fatalf("content publication changed reference: %v", err)
+					}
 				}
 				wrongOrg := "org_other"
 				if _, err := owner.ReadContent(t.Context(), wrongOrg, ref); err == nil {
@@ -520,8 +529,15 @@ func TestArchiveBucketPolicy(t *testing.T) {
 		{name: "no lifecycle"},
 		{name: "global expiry", rule: `<Status>Enabled</Status><Expiration><Days>30</Days></Expiration>`, rejected: true},
 		{name: "archive expiry", rule: `<Status>Enabled</Status><Filter><Prefix>orgs/org_alpha/blobs/</Prefix></Filter><Expiration><Days>30</Days></Expiration>`, rejected: true},
+		{name: "issue root ancestor expiry", rule: `<Status>Enabled</Status><Prefix>orgs/org_alpha/projects/</Prefix><Expiration><Days>30</Days></Expiration>`, rejected: true},
+		{name: "issue root ancestor noncurrent expiry", rule: `<Status>Enabled</Status><Filter><Prefix>orgs/org_alpha/projects/</Prefix></Filter><NoncurrentVersionExpiration><NoncurrentDays>30</NoncurrentDays></NoncurrentVersionExpiration>`, rejected: true},
+		{name: "issue root expiry", rule: `<Status>Enabled</Status><Filter><Prefix>orgs/org_alpha/projects/prj_example/issues/wi_example/archives/7/shared/</Prefix></Filter><Expiration><Days>30</Days></Expiration>`, rejected: true},
+		{name: "issue root noncurrent expiry", rule: `<Status>Enabled</Status><Filter><And><Prefix>orgs/org_alpha/projects/prj_example/issues/wi_example/archives/</Prefix><Tag><Key>kind</Key><Value>archive</Value></Tag></And></Filter><NoncurrentVersionExpiration><NoncurrentDays>30</NoncurrentDays></NoncurrentVersionExpiration>`, rejected: true},
+		{name: "partial issue root prefix expiry", rule: `<Status>Enabled</Status><Prefix>orgs/org_alpha/projects/prj_example/issues/wi_example/arch</Prefix><Expiration><Days>30</Days></Expiration>`, rejected: true},
 		{name: "archive noncurrent expiry", rule: `<Status>Enabled</Status><Filter><And><Prefix>orgs/org_alpha/</Prefix><Tag><Key>kind</Key><Value>archive</Value></Tag></And></Filter><NoncurrentVersionExpiration><NoncurrentDays>30</NoncurrentDays></NoncurrentVersionExpiration>`, rejected: true},
 		{name: "attachment expiry preserved", rule: `<Status>Enabled</Status><Prefix>orgs/org_alpha/attachments/</Prefix><Expiration><Days>30</Days></Expiration>`},
+		{name: "project attachment expiry preserved", rule: `<Status>Enabled</Status><Prefix>orgs/org_alpha/projects/prj_example/attachments/</Prefix><Expiration><Days>30</Days></Expiration>`},
+		{name: "issue attachment expiry preserved", rule: `<Status>Enabled</Status><Prefix>orgs/org_alpha/projects/prj_example/issues/wi_example/attachments/</Prefix><Expiration><Days>30</Days></Expiration>`},
 		{name: "disabled expiry", rule: `<Status>Disabled</Status><Expiration><Days>30</Days></Expiration>`},
 	} {
 		t.Run(test.name, func(t *testing.T) {

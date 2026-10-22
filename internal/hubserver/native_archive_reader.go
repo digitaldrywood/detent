@@ -20,14 +20,15 @@ import (
 type nativeArchiveContextKey struct{}
 
 type nativeArchiveRead struct {
-	service    *Service
-	scope      nativeScope
-	presign    bool
-	descriptor *tracker.ArchiveDescriptor
-	section    *attachment.ArchiveSection
-	first      int64
-	last       int64
-	err        error
+	service     *Service
+	scope       nativeScope
+	presign     bool
+	webResponse bool
+	descriptor  *tracker.ArchiveDescriptor
+	section     *attachment.ArchiveSection
+	first       int64
+	last        int64
+	err         error
 }
 
 type nativeArchiveError struct {
@@ -43,8 +44,16 @@ func (s *Service) archiveContext(ctx context.Context, scope nativeScope, presign
 	return context.WithValue(ctx, nativeArchiveContextKey{}, &nativeArchiveRead{service: s, scope: scope, presign: presign})
 }
 
-func nativeArchiveDescriptor(ctx context.Context) *tracker.ArchiveDescriptor {
+func (s *Service) archiveRequestContext(c echo.Context, scope nativeScope) context.Context {
+	ctx := s.archiveContext(c.Request().Context(), scope, c.QueryParam("archive_url") == "true")
 	if state, ok := ctx.Value(nativeArchiveContextKey{}).(*nativeArchiveRead); ok {
+		state.webResponse = c.Request().Header.Get("X-Detent-Archive-Read") == "1"
+	}
+	return ctx
+}
+
+func nativeArchiveDescriptor(ctx context.Context) *tracker.ArchiveDescriptor {
+	if state, ok := ctx.Value(nativeArchiveContextKey{}).(*nativeArchiveRead); ok && !state.webResponse {
 		return state.descriptor
 	}
 	return nil
@@ -80,7 +89,7 @@ func nativeArchiveJSON(c echo.Context, status int, value any) error {
 
 func archiveQuery(ctx context.Context, query nativeQueryer, item, kind, subject string, sequence int64) (nativeQueryer, error) {
 	state, ok := ctx.Value(nativeArchiveContextKey{}).(*nativeArchiveRead)
-	if !ok {
+	if !ok || kind == "history" && state.webResponse {
 		return query, nil
 	}
 	if _, ok := query.(*nativeArchiveQuery); ok {
