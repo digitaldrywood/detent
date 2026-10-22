@@ -76,8 +76,11 @@ follow source ownership until edited in Cloud. GitHub close/reopen events add a
 Cloud comment without changing its state. Cloud discussion remains private;
 linked-source summary projection cannot mirror it to GitHub.
 
-The existing summary outbox sends one `Tracked in Detent: <url>` linkback. Cancelled
-uses its existing source-close path with a short link comment and GitHub's
+Intake records the link and source snapshot in Detent without enqueueing a GitHub
+outbox row or posting a source comment. This applies to webhook intake, manual
+linking and onboarding batch imports. The explicit onboarding close-source action
+still enqueues one `Tracked in Detent: <url>` summary per selected open source issue.
+Cancelled uses its existing source-close path with a short link comment and GitHub's
 `not_planned` state reason. Done closes only through the landing PR's
 `Closes owner/repo#N` reference. Webhook receipt, retry and outbox delivery retain
 their existing owners; intake adds no polling loop. Targeted manual reads fail

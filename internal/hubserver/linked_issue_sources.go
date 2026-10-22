@@ -224,9 +224,5 @@ FROM linked_issue_sources s WHERE work_item_id = ?`, issue.WorkItemID).Scan(&tit
 	if verified := scope.scheduledRepair; verified != nil && verified.importURL == canonical && verified.importReason != "" {
 		reason += ": " + verified.importReason
 	}
-	issue, err = persistNativeIssue(ctx, tx, scope, issue, "github.imported", tracker.CollaborationData{Operation: "source_intake", Reason: reason}, now)
-	if err == nil && !completed {
-		err = enqueueLinkedSourceSummary(ctx, tx, scope, issue, "intake", false, now)
-	}
-	return issue, err
+	return persistNativeIssue(ctx, tx, scope, issue, "github.imported", tracker.CollaborationData{Operation: "source_intake", Reason: reason}, now)
 }

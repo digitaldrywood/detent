@@ -901,8 +901,8 @@ func TestGitHubBatchSourceCloseOptIn(t *testing.T) {
 			f.report(t, tracker.GitHubBatchResult{Number: 13, Snapshot: &snapshot}, http.StatusOK)
 			f.report(t, tracker.GitHubBatchResult{Number: 14, Error: "Source context incomplete"}, http.StatusOK)
 			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox WHERE json_extract(desired_json, '$.close_source')=1").Scan(&count); err != nil || count != 0 {
-				t.Fatalf("source closed without opt-in: count=%d error=%v", count, err)
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox").Scan(&count); err != nil || count != 0 {
+				t.Fatalf("source write without opt-in: count=%d error=%v", count, err)
 			}
 			f.command(t, tracker.GitHubBatchCommand{Action: "close_source"}, http.StatusUnprocessableEntity)
 			f.service.database.linkedSourceBase = "https://cloud.example"
@@ -913,7 +913,7 @@ func TestGitHubBatchSourceCloseOptIn(t *testing.T) {
 			if closed {
 				expected = 0
 			}
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox WHERE json_extract(desired_json, '$.close_source')=1").Scan(&count); err != nil || count != expected {
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox").Scan(&count); err != nil || count != expected {
 				t.Fatalf("close requests=%d want=%d error=%v", count, expected, err)
 			}
 			if f.batch.Items[0].SourceCloseRequested || f.batch.Items[2].SourceCloseRequested || f.batch.Items[1].SourceCloseRequested == closed {
@@ -928,7 +928,7 @@ func TestGitHubBatchSourceCloseOptIn(t *testing.T) {
 				if err := json.Unmarshal([]byte(raw), &desired); err != nil {
 					t.Fatal(err)
 				}
-				if desired.Body != "Tracked in Detent: https://cloud.example/local-organization/linked/issues/2" || desired.StateReason != "" || desired.IssueNumber != 13 {
+				if desired.Body != "Tracked in Detent: https://cloud.example/local-organization/linked/issues/2" || !desired.CloseSource || desired.StateReason != "" || desired.IssueNumber != 13 {
 					t.Fatalf("close payload=%+v", desired)
 				}
 			}
