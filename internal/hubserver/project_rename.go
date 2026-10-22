@@ -22,7 +22,7 @@ type renameProjectRequest struct {
 func (s *Service) renameProject(c echo.Context) error {
 	var request renameProjectRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
 	if scope.credential.Hosted != nil && scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" {
