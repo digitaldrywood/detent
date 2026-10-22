@@ -466,23 +466,6 @@ func (instantMergeRunner) Run(context.Context, RunRequest) (RunResult, error) {
 	return RunResult{FinalState: FinalStateCompleted}, nil
 }
 
-type mergeDurationTransitionConnector struct {
-	connector.Connector
-	stateUpdateErrors int
-}
-
-func (c *mergeDurationTransitionConnector) UpdateIssueState(
-	ctx context.Context,
-	issueID string,
-	state string,
-) error {
-	if c.stateUpdateErrors > 0 {
-		c.stateUpdateErrors--
-		return errors.New("transient state update failure")
-	}
-	return c.Connector.UpdateIssueState(ctx, issueID, state)
-}
-
 func mergeDurationTestIssue(id string) connector.Issue {
 	return connector.Issue{
 		ID:               id,

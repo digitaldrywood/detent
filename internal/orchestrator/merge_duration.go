@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -92,34 +91,6 @@ func (o *Orchestrator) reconcileMergeDurationHolds(
 	now time.Time,
 ) map[string]struct{} {
 	return nil
-}
-
-func mergeWorkerDurationExceededComment(
-	running Running,
-	elapsed time.Duration,
-	ceiling time.Duration,
-	progressMarker string,
-) string {
-	var body strings.Builder
-	body.WriteString("Detent cancelled this merge worker after it exceeded the configured hard wall-clock ceiling and parked the issue in Blocked for human attention.")
-	body.WriteString("\n\n- reason: ")
-	body.WriteString(mergeWorkerDurationExceededReason)
-	body.WriteString("\n- elapsed: ")
-	body.WriteString(elapsed.String())
-	body.WriteString("\n- configured_ceiling: ")
-	body.WriteString(ceiling.String())
-	body.WriteString("\n- last_progress_marker: ")
-	body.WriteString(progressMarker)
-	if !running.LastEventAt.IsZero() {
-		body.WriteString("\n- last_progress_at: ")
-		body.WriteString(running.LastEventAt.UTC().Format(time.RFC3339))
-	}
-	if running.Attempt > 0 {
-		body.WriteString("\n- attempt: ")
-		body.WriteString(strconv.Itoa(running.Attempt))
-	}
-	body.WriteString("\n\nInspect the worker and pull request state, then move the issue back to Merging when it is safe to retry.")
-	return body.String()
 }
 
 func mergeWorkerProgressMarker(running Running) string {

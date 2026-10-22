@@ -2,8 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -126,10 +124,6 @@ func (o *Orchestrator) lifetimeLimitOverride(issue connector.Issue) bool {
 	return false
 }
 
-func lifetimeLimitUsageSignature(usage store.TokenSpend) string {
-	return "sessions=" + strconv.FormatInt(usage.Sessions, 10) + ";tokens=" + strconv.FormatInt(usage.TotalTokens, 10)
-}
-
 func (o *Orchestrator) parkLifetimeLimit(
 	ctx context.Context,
 	state *State,
@@ -143,68 +137,4 @@ func (o *Orchestrator) parkLifetimeLimit(
 		}
 		return
 	}
-}
-
-func lifetimeLimitBlockedReason(decision lifetimeLimitDecision) string {
-	parts := make([]string, 0, 2)
-	if decision.SessionsReached {
-		parts = append(parts, fmt.Sprintf("sessions %d/%d", decision.Usage.Sessions, decision.SessionLimit))
-	}
-	if decision.TokensReached {
-		parts = append(parts, fmt.Sprintf("tokens %d/%d", decision.Usage.TotalTokens, decision.TokenLimit))
-	}
-	return lifetimeLimitBlockedReasonPrefix + strings.Join(parts, ", ")
-}
-
-func (o *Orchestrator) lifetimeLimitComment(issue connector.Issue, decision lifetimeLimitDecision) string {
-	var b strings.Builder
-	b.WriteString("Detent parked this issue because its cumulative agent usage reached a configured lifetime limit.\n\n")
-	b.WriteString("- issue: ")
-	b.WriteString(issueLabel(issue))
-	b.WriteString("\n- lifetime_sessions: ")
-	b.WriteString(strconv.FormatInt(decision.Usage.Sessions, 10))
-	b.WriteString(" / ")
-	b.WriteString(formatLifetimeLimit(decision.SessionLimit))
-	b.WriteString("\n- lifetime_tokens: ")
-	b.WriteString(strconv.FormatInt(decision.Usage.TotalTokens, 10))
-	b.WriteString(" / ")
-	b.WriteString(formatLifetimeLimit(decision.TokenLimit))
-	if decision.ProjectHistory.CompletedIssues > 0 {
-		b.WriteString("\n- project_session_context: ")
-		b.WriteString(strconv.FormatInt(decision.Usage.Sessions, 10))
-		b.WriteString(" sessions; project p95 is ")
-		b.WriteString(strconv.FormatInt(decision.ProjectHistory.P95Sessions, 10))
-		b.WriteString(" across ")
-		b.WriteString(strconv.FormatInt(decision.ProjectHistory.CompletedIssues, 10))
-		b.WriteString(" completed issues")
-		b.WriteString("\n- project_token_context: ")
-		b.WriteString(strconv.FormatInt(decision.Usage.TotalTokens, 10))
-		b.WriteString(" tokens; project p95 is ")
-		b.WriteString(strconv.FormatInt(decision.ProjectHistory.P95Tokens, 10))
-		b.WriteString(" across ")
-		b.WriteString(strconv.FormatInt(decision.ProjectHistory.CompletedIssues, 10))
-		b.WriteString(" completed issues")
-	}
-	b.WriteString("\n\nThis park is held until the override label is applied or the configured limits no longer apply.")
-	if label := strings.TrimSpace(o.cfg.LifetimeLimitOverrideLabel); label != "" {
-		b.WriteString(" Apply the `")
-		b.WriteString(label)
-		b.WriteString("` label to deliberately bypass this lifetime limit for the issue.")
-	}
-	return b.String()
-}
-
-func formatLifetimeLimit(limit int64) string {
-	if limit <= 0 {
-		return "disabled"
-	}
-	return strconv.FormatInt(limit, 10)
-}
-
-func lifetimeLimitRecoveryRemedy(label string) string {
-	remedy := "Raise the configured lifetime limits above current usage."
-	if label = strings.TrimSpace(label); label != "" {
-		remedy += " Apply the " + label + " label for an explicit bypass."
-	}
-	return remedy
 }

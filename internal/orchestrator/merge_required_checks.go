@@ -116,36 +116,6 @@ func persistentMissingRequiredCheckNames(streaks []store.MergeRequiredCheckStrea
 	return strings.Join(names, ", ")
 }
 
-func persistentMissingRequiredCheckComment(issue connector.Issue, streaks []store.MergeRequiredCheckStreak) string {
-	if len(streaks) == 0 {
-		return ""
-	}
-	var body strings.Builder
-	body.WriteString("Detent parked this issue in Blocked because required checks remained missing across merge evaluations.")
-	body.WriteString("\n\n- reason: ")
-	body.WriteString(persistentMissingRequiredCheckReason(streaks))
-	body.WriteString("\n- missing_required_checks:")
-	for _, streak := range streaks {
-		body.WriteString("\n  - ")
-		body.WriteString(strings.TrimSpace(streak.CheckName))
-		body.WriteString(" (consecutive evaluations: ")
-		body.WriteString(strconv.Itoa(streak.ConsecutiveMissing))
-		body.WriteString(")")
-	}
-	if issue.PullRequest != nil {
-		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
-			body.WriteString("\n- pull request: ")
-			body.WriteString(url)
-		}
-		if headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA); headSHA != "" {
-			body.WriteString("\n- head_sha: ")
-			body.WriteString(headSHA)
-		}
-	}
-	body.WriteString("\n\nRestore or update the required-check configuration, then move the issue back to Merging.")
-	return body.String()
-}
-
 func (o *Orchestrator) clearMergeRequiredCheckStreaks(ctx context.Context, issue connector.Issue) {
 	if o == nil || o.mergeRequiredChecks == nil {
 		return
