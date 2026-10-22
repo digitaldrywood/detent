@@ -746,6 +746,10 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 	var observation *tracker.NativeRuntimeObservation
 	localWorker := false
 	if execution := claim.execution; execution != nil {
+		localWorker = execution.hasWorkers()
+		execution.cancelMu.Lock()
+		controller := execution.cancel != nil
+		execution.cancelMu.Unlock()
 		execution.diagnosticMu.Lock()
 		pending := execution.diagnostic.OperationPending
 		execution.diagnosticMu.Unlock()
@@ -756,6 +760,12 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 		if execution.data.Runtime != nil {
 			runtime := *execution.data.Runtime
 			observation = &runtime
+		}
+		// The controller owns bounded finalization after the turn ends. Its
+		// turn-end heartbeat cannot expire a live publication or review.
+		if observation != nil && observation.Phase == "completed" && (controller || localWorker) {
+			execution.mu.Unlock()
+			return true, nil
 		}
 		if !pending && observation != nil && observation.Phase == "completed" &&
 			(observation.HeartbeatAt.IsZero() || !s.now().Before(observation.HeartbeatAt.Add(s.leaseTTL))) {
@@ -773,13 +783,6 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 		prepared := execution.preparedOutcome != ""
 		execution.mu.Unlock()
 		if pending || prepared {
-			return true, nil
-		}
-		localWorker = execution.hasWorkers()
-		execution.cancelMu.Lock()
-		controller := execution.cancel != nil
-		execution.cancelMu.Unlock()
-		if observation != nil && observation.Phase == "completed" && (controller || localWorker) {
 			return true, nil
 		}
 	}
