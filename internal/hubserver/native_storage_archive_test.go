@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -559,19 +560,45 @@ func TestNativeStorageArchiveRunTimeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := []string{a.base + "/work-items/" + string(a.issue.WorkItemID) + "/runtime?native_attempt_id=" + a.start.Data.AttemptID, a.base + "/work-items/" + string(a.issue.WorkItemID) + "/history?limit=200"}
+	read := func(index int, path string) []byte {
+		t.Helper()
+		var items []tracker.CollaborationEvent
+		cursor := ""
+		for {
+			pagePath := path
+			if cursor != "" {
+				pagePath += "&cursor=" + url.QueryEscape(cursor)
+			}
+			response := performHubAPIRequest(t, a.service, http.MethodGet, pagePath, a.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			if index == 0 {
+				return slices.Clone(response.Body.Bytes())
+			}
+			var page tracker.Page[tracker.CollaborationEvent]
+			decodeHubResponse(t, response, &page)
+			items = append(items, page.Items...)
+			if page.NextCursor == "" {
+				raw, err := json.Marshal(tracker.Page[tracker.CollaborationEvent]{Items: items})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return raw
+			}
+			if page.NextCursor == cursor {
+				t.Fatal("history cursor did not advance")
+			}
+			cursor = page.NextCursor
+		}
+	}
 	before := make([][]byte, len(paths))
 	for index, path := range paths {
-		response := performHubAPIRequest(t, a.service, http.MethodGet, path, a.token, nil)
-		requireNativeStatus(t, response, http.StatusOK)
-		before[index] = slices.Clone(response.Body.Bytes())
+		before[index] = read(index, path)
 	}
 	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
 		t.Fatal(err)
 	}
 	for index, path := range paths {
-		response := performHubAPIRequest(t, a.service, http.MethodGet, path, a.token, nil)
-		requireNativeStatus(t, response, http.StatusOK)
-		assertArchiveGolden(t, before[index], response.Body.Bytes())
+		assertArchiveGolden(t, before[index], read(index, path))
 	}
 	var checkpoints int
 	if err := a.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempt_events WHERE attempt_id=?", a.start.Data.AttemptID).Scan(&checkpoints); err != nil {

@@ -156,7 +156,7 @@ func nativeFailureClass(f tracker.NativeTerminalFailure) string {
 // failed_at the projection records with the same rule as the raw read, in
 // failure order from the analytics_attempt_failed index.
 const analyticsRollupFailures = `SELECT a.id,a.work_item_id,a.status,a.started_at,a.updated_at,a.failed_at,
-a.data_json,
+json_remove(a.data_json,'$.runtime.phases'),
 (SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id),
 (SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id)
 FROM (SELECT organization_id,project_id,dimension AS id,json_work_item_id AS work_item_id,json_extract(data_json,'$.lease_id') AS lease_id,json_extract(data_json,'$.status') AS status,
@@ -170,7 +170,7 @@ THEN coalesce(nullif(json_extract(data_json,'$.runtime.landing.observed_at'),'00
 FROM native_attempts a WHERE organization_id=? AND project_id=?
 AND (status IN ('failed','interrupted') OR json_extract(data_json,'$.runtime.landing.refusal_kind') IN ('conflict','base_protected') OR coalesce(json_extract(data_json,'$.runtime.landing.gate_failed'),0)=1))
 SELECT a.id,a.work_item_id,a.status,a.started_at,a.updated_at,a.failed_at,
-a.data_json,
+json_remove(a.data_json,'$.runtime.phases'),
 (SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id),
 (SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id)
 FROM failures a WHERE 1=1`

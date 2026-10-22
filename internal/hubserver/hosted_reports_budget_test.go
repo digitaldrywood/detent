@@ -74,7 +74,7 @@ FROM change_requests c JOIN change_versions v ON v.change_id=c.id CROSS JOIN n W
 				t.Fatal(err)
 			}
 			now := f.service.config.now().UTC()
-			wantFrom := now.Add(-time.Nanosecond).Truncate(24*time.Hour).AddDate(0, 0, -test.days)
+			wantFrom := now.Truncate(24*time.Hour).AddDate(0, 0, -test.days)
 			if !report.Analytics.Window.From.Equal(wantFrom) || !report.Analytics.Window.To.Equal(now) || report.Completion.Done < test.days {
 				t.Fatalf("window=%+v shipped=%d, want %s through %s and at least %d shipped", report.Analytics.Window, report.Completion.Done, wantFrom, now, test.days)
 			}
