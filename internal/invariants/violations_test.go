@@ -29,6 +29,8 @@ func TestSourceViolations(t *testing.T) {
 		{"sticky reason", "internal/orchestrator/new.go", `func issueStickyBlockReason() {}`, "INV-9"},
 		{"consumed recovery", "internal/orchestrator/new.go", `func dependencyAutoUnblockAlreadyConsumed() {}`, "INV-9"},
 		{"remembered review", "internal/hubserver/new.go", `func nativeReviewConversationRefusalStands() {}`, "INV-9"},
+		{"uncertain effect hold", "internal/runner/new.go", `const reason = "external_effect_uncertain"`, "INV-9"},
+		{"manual checkpoint hold", "internal/runner/new.go", `const reason = "checkpoint_requires_recovery"`, "INV-9"},
 		{"revocation", "internal/runner/new.go", `const reason = "worker_lane_revocation"`, "INV-9"},
 		{"split revocation", "internal/runner/new.go", `const reason = "worker_lane_"+"revocation"`, "INV-9"},
 		{"lane stop", "internal/runner/new.go", `func stopIndeterminateLane() {}`, "INV-9"},

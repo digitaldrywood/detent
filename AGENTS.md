@@ -123,6 +123,11 @@ interactions are the main source of incidents, so the set may not grow.
   failure answers, recovery signatures, reason strings and cross-host park
   markers are diagnostics, never additional eligibility vetoes. Genuine human
   actions and permission requests retain their authority.
+- Uncertain publication is reconciled against the remote ref before execution:
+  an intended SHA match is published, an unchanged ref permits a compare-and-swap
+  push (including an absent ref), and a moved ref returns to Rework/rebase.
+  Historical `manual_recovery` checkpoint judgments never hold an item; verify
+  current source and lease authority through the existing publication owner.
 - The orchestrator is the only writer of tracker lane state; workers report
   outcomes and never write lane labels.
 - This project has no human review step. Never move a Detent issue to Human

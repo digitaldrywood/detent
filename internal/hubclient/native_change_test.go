@@ -600,6 +600,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "required PR refuses unrelated ambiguous external effect", requiredPR: true, publicationUncertain: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "required PR no edit Rework preserves human hold", requiredPR: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "required PR retries a lost push absent from the forge", requiredPR: true, lostPush: "absent", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "required PR retries a lost push over its recorded head", requiredPR: true, lostPush: "absent", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 2},
 		{name: "required PR finishes a lost push over a diverged branch as head moved", requiredPR: true, lostPush: "diverged", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
 		{name: "required PR lost response adopts one PR under human hold", requiredPR: true, lostPRResponse: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "required PR refuses replaced version at persistence", requiredPR: true, publicationWriteRefusal: "version", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
@@ -906,7 +907,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					if test.lostPush != "" {
 						record := opts.PublicationEffect
 						opts.PublicationEffect = func(ctx context.Context, kind, state string, publication workspace.GitHubPublication) error {
-							if opts.UnresolvedEffect && state == "pending" && test.lostPush == "absent" && !publicationCleared {
+							if opts.UnresolvedEffect && opts.ExpectedPublicationHead == "" && state == "pending" && test.lostPush == "absent" && !publicationCleared {
 								t.Fatal("publication retried before recording the absent external effect")
 							}
 							if err := record(ctx, kind, state, publication); err != nil {
@@ -1453,12 +1454,15 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				if err := owner.PrepareFinish(guarded, test.outcome, "", nil); err != nil || owner.publication != nil || owner.change.Error == "" || owner.data.Handoff.ExternalEffect != "git_push" || owner.data.Handoff.EffectState != "ambiguous" || owner.data.Outcome != "" {
 					t.Fatalf("lost push was not retained as an ambiguous effect: %+v, %v", owner.data, err)
 				}
+				if test.publicationReference != "" && owner.data.Handoff.ExpectedHeadSHA != publicationPrevious {
+					t.Fatalf("lost push omitted expected remote head: got %s, want %s", owner.data.Handoff.ExpectedHeadSHA, publicationPrevious)
+				}
 				if test.lostPush == "diverged" {
 					replacePublicationHead()
 					if err := owner.Finish(guarded, test.outcome); err != nil {
 						t.Fatalf("diverged publication branch held the lease as unavailable: %v", err)
 					}
-					if publicationCleared || owner.change.Error != "" || owner.change.VersionCode != workspace.LandRefusalHeadMoved || owner.publication != nil || owner.data.Outcome != "failed" || publicationHead() != base {
+					if !publicationCleared || owner.data.Handoff.UncertainForgeEffect() || owner.change.Error != "" || owner.change.VersionCode != workspace.LandRefusalHeadMoved || owner.publication != nil || owner.data.Outcome != "failed" || publicationHead() != base {
 						t.Fatalf("diverged publication branch was not a recorded head_moved failure: change=%+v outcome=%q", owner.change, owner.data.Outcome)
 					}
 					return
