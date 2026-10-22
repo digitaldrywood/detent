@@ -839,16 +839,50 @@ and public organization metadata. Backups must keep the corresponding master
 keys separately. Losing the keys loses access to stored credentials; possession
 of both a database backup and its keys exposes those credentials.
 
-For rotation, stop the Hub, add a new version to `DETENT_HUB_SECRET_KEYS` while
-retaining all old versions, and select the new `DETENT_HUB_SECRET_KEY_VERSION`.
-Run `detent hub secrets rotate --database /var/lib/detent/hub.db`. The existing
-database ownership lock refuses rotation against a running Hub. Rotation
-atomically re-wraps data keys and records the local operator identity; ciphertext
-and value nonces remain unchanged. Repeating rotation at that version is a no-op.
-Restart with the new active version; remove old keys only after every relevant
-database is rotated, keeping them in separate archival storage for old backups.
-A failed rotation rolls back every row. No master key is written to disk by this
-command.
+Before changing the deployed keyring, add a new version to the proposed
+`DETENT_HUB_SECRET_KEYS` while retaining all old versions, and select the new
+`DETENT_HUB_SECRET_KEY_VERSION`. Version names must be canonical positive
+integers, with no duplicate names or identical key material across versions.
+Never replace the key material assigned to an existing version.
+
+With that proposed environment, **run the read-only preflight before restarting**:
+
+```sh
+detent hub secrets status --database /var/lib/detent/hub.db
+```
+
+For Cloud, use `detent hub secrets status --tenant-root /var/lib/detent/tenants`
+to scan every `*/hub.db` under the tenant root in sorted order. Exactly one of
+`--database` and `--tenant-root` is required. Status can run against live Hubs:
+it reads current SQLite WAL state, takes no ownership lock, runs no migrations,
+and never decrypts secret values. It prints one JSON document containing the
+active and configured versions, counts by database/table/kind/key version,
+`missing_versions`, `retirable` versions, and problem-row metadata. No token,
+organization slug, ciphertext, nonce, wrapped key or master key is printed.
+
+Exit 0 means all rows unwrap and use the active version. Exit 3 means all rows
+unwrap but rotation is incomplete (`not_active_version`); the proposed keyring
+is safe to run. Exit 2 means the preflight failed: missing keys (`missing_key`),
+authentication failure (`unwrap_failed`), invalid configuration, or unreadable
+databases or secret tables. Database failures do not stop the remaining scans;
+`retirable` is withheld if any database cannot be scanned. Without configured
+keys, an empty inventory exits 0 and any stored secret causes exit 2.
+
+After a successful preflight (exit 0 or 3), stop the Hub and run
+`detent hub secrets rotate --database /var/lib/detent/hub.db` with the proposed
+environment. The existing database ownership lock refuses rotation against a
+running Hub. Rotation atomically re-wraps data keys and records the local
+operator identity; ciphertext and value nonces remain unchanged. Repeating
+rotation at that version is a no-op. A failed rotation rolls back every row.
+No master key is written to disk by this command.
+
+**Run status again before restarting with the changed keyring**, expecting exit 0
+after rotation. **Before removing any key version**, run status across every
+relevant database and require exit 0 with that version listed as `retirable`.
+For Cloud, scan the entire tenant root; an unreferenced version in one database
+may still be needed by another tenant. Retain retired keys in separate archival
+storage for old backups. Status is a snapshot: keep the proposed environment
+consistent across Hubs so concurrent writers cannot reintroduce retired versions.
 
 Setting a token validates `GET https://api.sprites.dev/v1/sprites` with Bearer
 authentication. Redirects are refused and provider errors/bodies are never echoed.

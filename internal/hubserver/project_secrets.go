@@ -27,6 +27,7 @@ type projectSecretStatus struct {
 
 type projectSecretRow struct {
 	organization, project, kind string
+	table, updatedAt            string
 	envelope                    hubsecrets.Envelope
 }
 
@@ -38,7 +39,7 @@ func secretAAD(organization, project, kind string) []byte {
 }
 
 func readSecretRows(ctx context.Context, db nativeQueryer) ([]projectSecretRow, error) {
-	rows, err := db.QueryContext(ctx, `SELECT organization_id, project_id, kind, ciphertext, nonce, wrapped_data_key, master_key_version FROM project_secrets UNION ALL SELECT organization_id, '', kind, ciphertext, nonce, wrapped_data_key, master_key_version FROM organization_secrets ORDER BY organization_id, project_id, kind`)
+	rows, err := db.QueryContext(ctx, `SELECT organization_id, project_id, kind, ciphertext, nonce, wrapped_data_key, master_key_version, 'project_secrets', updated_at FROM project_secrets UNION ALL SELECT organization_id, '', kind, ciphertext, nonce, wrapped_data_key, master_key_version, 'organization_secrets', updated_at FROM organization_secrets ORDER BY organization_id, project_id, kind`)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +47,7 @@ func readSecretRows(ctx context.Context, db nativeQueryer) ([]projectSecretRow, 
 	var result []projectSecretRow
 	for rows.Next() {
 		var r projectSecretRow
-		if err := rows.Scan(&r.organization, &r.project, &r.kind, &r.envelope.Ciphertext, &r.envelope.Nonce, &r.envelope.WrappedKey, &r.envelope.Version); err != nil {
+		if err := rows.Scan(&r.organization, &r.project, &r.kind, &r.envelope.Ciphertext, &r.envelope.Nonce, &r.envelope.WrappedKey, &r.envelope.Version, &r.table, &r.updatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, r)
