@@ -94,6 +94,7 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 			var responseMu sync.Mutex
 			candidateEntered := make(chan struct{})
 			parentDone := make(chan struct{})
+			parentApplied := make(chan struct{})
 			candidateDone := make(chan error, 1)
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -164,6 +165,7 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 						close(candidateEntered)
 						select {
 						case <-parentDone:
+						case <-parentApplied:
 						case <-testenv.WaitContext(t, t.Context()).Done():
 						}
 					}
@@ -317,6 +319,9 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 					}
 					projectApplications++
 					projectReport.RequestID = desired.RequestID
+					if test.overlapControl {
+						close(parentApplied)
+					}
 				}
 				projectReport.ObservedAt = now
 				return projectReport
