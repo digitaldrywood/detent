@@ -1,0 +1,204 @@
+{
+  "tests": {
+    "./tools/cifailure": [
+      "TestParseProblems",
+      "TestReport",
+      "TestReportFailures",
+      "TestCloudReport",
+      "TestCloudTransport",
+      "TestCloudDestinationAuthority",
+      "TestScheduledFinalizer"
+    ],
+    "./tools/invariantcheck": [
+      "TestBehaviorEvidence"
+    ],
+    "./internal/orchestrator": [
+      "TestDerivedHoldDispatchEquivalence",
+      "TestOperatorRejectionPromotion",
+      "TestOperatorRejectionRepairDispatch",
+      "TestCompletedActiveReviewRequiresFinishedWork",
+      "TestOperationalBodyCompletionSurvivesRestart",
+      "TestUnfinishedCompletionClassification",
+      "TestCompletionRebaseProgress",
+      "TestCompletionForgeEvidence",
+      "TestCompletionForgeEvidenceClassification",
+      "TestCompletionForgeEvidenceDispatch",
+      "TestCompletionForgeEvidencePreservesReceipt",
+      "TestUnfinishedSessionsRetainConfiguredDispatch",
+      "TestCompletedReworkCandidatesRemainVisible",
+      "TestPolicyMismatchStopsDispatchWithoutAttempt",
+      "TestAttemptMetadataRetainsApprovedPolicy",
+      "TestConfiguredTerminalRetryAfterStoreRestart",
+      "TestConsecutiveRetryCycleCountAcrossServiceRestarts",
+      "TestStartupDoesNotReclaimLiveWorkAttempts",
+      "TestINV14DispatchQuestionTool",
+      "TestINV14LegacyQuestionRowDispatch",
+      "TestFirstHumanBlockerCompletionReachesBlocked",
+      "TestWorkpadHumanActionClearanceRecoversBlockedIssue",
+      "TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane",
+      "TestPreTurnFailuresRetryWithoutPausingProject",
+      "TestWorkspacePreparationRetriesIssueWithoutPausingProject",
+      "TestClassifyWorkspaceForgeReadFailure",
+      "TestWorkspaceSSHRefusalDoesNotTripProjectBreaker",
+      "TestRecoverDurableWorkspaceGitReadWait",
+      "TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker",
+      "TestReadyMergeAtWorkerCapacity",
+      "TestCheckedMergeUnderForgeCondition",
+      "TestPlanCompletionCoordinationDeferral",
+      "TestPlanCompletionPublicationRecovery",
+      "TestRecordedBlockerDispatchOwnership",
+      "TestNativeChangeRunCompletion",
+      "TestWorkpadHumanActionSnapshot",
+      "TestObservedLanePreTurnFailureRemainsInstanceOwned",
+      "TestHandleRunResultReconcilesDeliverableRecoveryExactHead",
+      "TestApprovalDeniedDeliverableUsesInstanceForgeWait",
+      "TestCredentialForgeProbeRequiresSuccessfulWrite",
+      "TestCompoundPushCLIAuthCompletion",
+      "TestCredentialCanaryExcludesMergeWorker",
+      "TestCredentialWaitSurvivesOverlappingFailures",
+      "TestCredentialCanaryRecoversOverlappingHosts",
+      "TestCredentialCanaryReplacementOverlappingHosts",
+      "TestCredentialCanaryCrossHostFailureReleasesReservation",
+      "TestCredentialCanaryDurableRecovery",
+      "TestCredentialConditionOutlivesOriginatingIssue",
+      "TestCredentialClearSchedulesCanaryWithoutUnpausing",
+      "TestObservedLaneCredentialCanaryCompletion",
+      "TestRecoverBlockedIssuesFoldsLegacyCredentialParkIntoProjectPause",
+      "TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch",
+      "TestMachineIssueTool",
+      "TestRunDispatchesQueuedRequestsWithoutPolling",
+      "TestMergeIdleHeadDoesNotReserveSlot",
+      "TestMergeDispatchUsesMergingCapacity",
+      "TestMergeWaitMetadataRemainsIndependent",
+      "TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling",
+      "TestQueuedDispatchPreservesRetry",
+      "TestStandingDispatchSurvivesProjectRefresh",
+      "TestQueuedDispatchPreservesPullRequestEnrichment",
+      "TestDispatchRetainsConfiguredModeAfterPriorSessions",
+      "TestRetiredAttemptTriageParkRestoresPriorLane",
+      "TestAttemptAllowanceTriagePublication",
+      "TestAttemptAllowanceNoteFormat",
+      "TestAttemptAllowancePreservesOperatorCompletionLane",
+      "TestTransitionAlreadyMergedCompletion",
+      "TestSSHHostLossUsesInstanceRetry",
+      "TestSSHHostLossClearsResumeOnSpillover",
+      "TestSSHQueuedPreferenceAndHostCaps"
+    ],
+    "./internal/hubclient": [
+      "TestNativePlannerAutomaticHandoff",
+      "TestNativeExecutionSettlesFinishedRun"
+    ],
+    "./internal/runner": [
+      "TestNativeInterruptedCodeRecoversPersistedSession",
+      "TestNativeReworkFinalizesBeforeImmutableEvidence",
+      "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
+      "TestWorkerCredentialBlockerError",
+      "TestRunnerTriageIsReadOnly",
+      "TestINV12WorkerInheritsToolchainEnvironment",
+      "TestINV12BackendToolchainEnvironment",
+      "TestSSHCallbackDoesNotPublishRemotePID"
+    ],
+    "./internal/workspace": [
+      "TestLocalGitNativeReworkOwnsPausedRebase",
+      "TestGitMetadataWritableRootsForLinkedWorktree"
+    ],
+    "./internal/store": [
+      "TestLegacyHumanQuestionReceiptsReadable",
+      "TestIssueSpendSinceExcludesInstanceInfrastructureAttempts"
+    ],
+    "./internal/release": [
+      "TestMandatoryEvidence"
+    ],
+    "./internal/update": [
+      "TestSchedulerCriticalApplyWaitsForBothAttempts",
+      "TestSchedulerExplicitReleaseWithoutWorkerArtifacts",
+      "TestStartupRecoveryPersistsCrashLoopAcrossProcesses",
+      "TestStartupRecoveryAttemptsOneUpdatePerVersion",
+      "TestReplaceBinaryRollsBackWhenVerificationFails",
+      "TestVerifyMinisignSignatureRejectsTamper"
+    ],
+    "./internal/invariants": [
+      "TestRepositoryBrowserTests",
+      "TestBrowserPolicyViolations",
+      "TestRepositorySources",
+      "TestRepositoryWorkflow",
+      "TestRepositoryHasNoPullRequestActions",
+      "TestSourceViolations",
+      "TestWorkflowViolations",
+      "TestMutationDocuments"
+    ],
+    "./internal/admission": [
+      "TestAdmissionRequiresLedgerWriter",
+      "TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity"
+    ],
+    "./internal/cli": [
+      "TestPrepareCodexCommandForServiceIsolatesInstructions",
+      "TestPrepareWorkerCodexHomeExistingInstructions",
+      "TestDoctorInvariantEvidence",
+      "TestDoctorRespectsProjectCIPolicy",
+      "TestDoctorLocalGateCommitStatusProducer",
+      "TestINV12DoctorNativeCaches",
+      "TestINV12DoctorWorkspaceKinds",
+      "TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns",
+      "TestSSHLocalTargetIntegration",
+      "TestSSHServiceProxyKeepsCentralAuthority",
+      "TestSSHProbeRequiresProvidedScratch"
+    ],
+    "./internal/connector/github": [
+      "TestRefreshBoardFilterCost",
+      "TestFilteredRefreshExternalBlocker",
+      "TestFilteredRefreshBlockerLookupFailure",
+      "TestRefreshFilterChangeRestartsInterruptedScan",
+      "TestMachineIssueDuplicate",
+      "TestMachineIssueSeparateConnectors",
+      "TestMachineOriginSurvivesBodyUpdates",
+      "TestPullRequestMergeTimeSurvivesLaterActivity"
+    ],
+    "./internal/scheduler": [
+      "TestGlobalDispatchGatePriorityOnlyPicksNextJob",
+      "TestPoolRegistryRanksBorrowersAcrossPools",
+      "TestPoolRegistryQueuedBorrowersUseFreedCapacity",
+      "TestPoolRegistryReadyLenderNeverHoldsIdleCapacity",
+      "TestPoolRegistryPriorRefusalNeverHoldsBorrowedCapacity",
+      "TestGlobalDispatchGateReadyRequests",
+      "TestGlobalDispatchGateConcurrentReadyRequests",
+      "TestQueuedDispatchRanksIndependentRequests",
+      "TestStandingDispatchRequestUpdates",
+      "TestQueuedDispatchPreservesProjectCeilings",
+      "TestQueuedDispatchChoosesAvailableHost",
+      "TestQueuedDispatchSharedPoolRelease",
+      "TestQueuedDispatchCapacityChanges",
+      "TestQueuedDispatchRanksSynchronousAndQueuedCallersTogether",
+      "TestQueuedDispatchReleaseIncludesEnrolledCallers"
+    ],
+    "./internal/config": [
+      "TestINV12WorkspaceCacheKeys"
+    ],
+    "./internal/toolcache": [
+      "TestINV12TrimReadout"
+    ],
+    "./internal/workpad": [
+      "TestMergedCompletionEvidence"
+    ],
+    "./internal/hubserver": [
+      "TestClaimCandidatesRequireUnansweredWorkItem",
+      "TestNativeDerivedHoldDispatchEquivalence",
+      "TestNativeRecordedDependencyUsesCurrentEdges",
+      "TestClaimCandidatesRetryInstancePreProviderFailures",
+      "TestReviewConversationHistoryDoesNotVetoLanding",
+      "TestINV18RequestCommitDoesNoDerivedWork",
+      "TestINV18HubMigrationsUseTypedColumns"
+    ],
+    "./internal/web": [
+      "TestOperationsWorkpadHumanAction"
+    ],
+    "./internal/web/templates": [
+      "TestINV13BoardCardContent",
+      "TestINV13SheetObservations",
+      "TestBoardCardSignalBudget"
+    ],
+    "./internal/codex": [
+      "TestAppServerMarksOnlyConversationTurns"
+    ]
+  }
+}
