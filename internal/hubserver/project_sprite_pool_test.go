@@ -1177,8 +1177,8 @@ func TestProjectSpriteAllocationLimits(t *testing.T) {
 			}
 			if test.providerLimit > 0 {
 				allowed, err := spriteAllocationRunnerAllowed(t.Context(), f.service.database.reader, scope, manual.binding.MachineID)
-				if err != nil || allowed {
-					t.Fatalf("manual adoption allowed=%t err=%v", allowed, err)
+				if err != nil || !allowed {
+					t.Fatalf("manual runner allowed=%t err=%v", allowed, err)
 				}
 			}
 			if len(provider.deleted) != 0 {
@@ -1190,10 +1190,10 @@ func TestProjectSpriteAllocationLimits(t *testing.T) {
 
 func TestProjectSpriteWorkspaceClaims(t *testing.T) {
 	for _, test := range []struct {
-		name, mode, state             string
-		desired                       int
-		owned, sprite, other, unready bool
-		status                        int
+		name, mode, state                   string
+		desired                             int
+		owned, sprite, other, unready, pool bool
+		status                              int
 	}{
 		{name: "zero holds managed Sprite workspace jobs", desired: 0, owned: true, sprite: true, status: http.StatusConflict},
 		{name: "blended local workspace jobs", desired: 2, status: http.StatusOK},
@@ -1202,7 +1202,8 @@ func TestProjectSpriteWorkspaceClaims(t *testing.T) {
 		{name: "local-first zero permits local workspace jobs", mode: "local_first", status: http.StatusOK},
 		{name: "Sprites-only excludes local workspace jobs", mode: "sprites_only", desired: 2, status: http.StatusConflict},
 		{name: "Sprites-only zero excludes local workspace jobs", mode: "sprites_only", status: http.StatusConflict},
-		{name: "manual Sprites cannot claim workspace jobs", desired: 1, sprite: true, status: http.StatusConflict},
+		{name: "manual Sprites can claim workspace jobs", desired: 2, sprite: true, status: http.StatusOK},
+		{name: "manual Sprites can claim workspace jobs at zero desired", sprite: true, status: http.StatusOK},
 		{name: "owned members can claim workspace jobs", desired: 1, owned: true, sprite: true, status: http.StatusOK},
 		{name: "owned member without marker retains readiness checks", desired: 1, owned: true, unready: true, status: http.StatusConflict},
 		{name: "owned member without marker retains desired count checks", owned: true, status: http.StatusConflict},
@@ -1211,6 +1212,9 @@ func TestProjectSpriteWorkspaceClaims(t *testing.T) {
 		{name: "other project member excludes managed project", desired: 1, owned: true, sprite: true, other: true, status: http.StatusConflict},
 		{name: "other project member excludes unmanaged project", desired: -1, owned: true, sprite: true, other: true, status: http.StatusConflict},
 		{name: "other project member without marker", desired: 1, owned: true, other: true, status: http.StatusConflict},
+		{name: "organization pool member excludes allocated project", desired: 2, owned: true, sprite: true, pool: true, status: http.StatusConflict},
+		{name: "organization pool member excludes zero allocation", owned: true, sprite: true, pool: true, status: http.StatusConflict},
+		{name: "organization pool member retains unmanaged project eligibility", desired: -1, owned: true, sprite: true, pool: true, status: http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newWorkspaceRunnerFixture(t)
@@ -1241,8 +1245,12 @@ func TestProjectSpriteWorkspaceClaims(t *testing.T) {
 				if state == "" {
 					state = "enrolled"
 				}
+				allocationProject := owner.project.ID
+				if test.pool {
+					allocationProject = ""
+				}
 				now := formatHubTime(f.service.config.now())
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,allocation_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,'test',?,?,?,?)`, f.project.OrganizationID, owner.project.ID, f.runner.redemption.Hostname, f.runner.enrollment.ID, state, now, now); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,allocation_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,'test',?,?,?,?)`, f.project.OrganizationID, allocationProject, f.runner.redemption.Hostname, f.runner.enrollment.ID, state, now, now); err != nil {
 					t.Fatal(err)
 				}
 				if !test.unready {

@@ -123,22 +123,27 @@ const spriteProvisionAttempts = 3
 var errSpriteReservationStale = errors.New("project Sprite count changed before this member was ready")
 
 func spriteAllocationRunnerAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID) (bool, error) {
-	var managed, member bool
-	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM project_sprite_allocations WHERE organization_id=? AND project_id=?), EXISTS(SELECT 1 FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id WHERE m.organization_id=? AND m.allocation_project_id<>'' AND r.machine_id=?)`, scope.organization, scope.project, scope.organization, machine).Scan(&managed, &member); err != nil {
+	var target int
+	var allocation sql.NullString
+	if err := q.QueryRowContext(ctx, `SELECT COALESCE((SELECT desired_count FROM project_sprite_allocations WHERE organization_id=? AND project_id=?),-1), (SELECT max(m.allocation_project_id) FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id WHERE m.organization_id=? AND r.machine_id=?)`, scope.organization, scope.project, scope.organization, machine).Scan(&target, &allocation); err != nil {
 		return false, err
 	}
-	if !managed {
-		return !member, nil
-	}
-	if !member {
+	if !allocation.Valid || allocation.String == "" {
+		if target < 0 {
+			return true, nil
+		}
+		if allocation.Valid {
+			return false, nil
+		}
 		var name, hostname string
 		if err := q.QueryRowContext(ctx, `SELECT COALESCE(json_extract(capabilities_json,'$.sprite_name'),''),hostname FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&name, &hostname); err != nil {
 			return false, err
 		}
-		if name != hostname || !validSpritesSlug(name) {
-			placement, _, err := readPlacementPolicy(ctx, q, scope)
-			return placement.Mode != "sprites_only", err
+		if name == hostname && validSpritesSlug(name) {
+			return true, nil
 		}
+		placement, _, err := readPlacementPolicy(ctx, q, scope)
+		return placement.Mode != "sprites_only", err
 	}
 	var raw sql.NullString
 	err := q.QueryRowContext(ctx, `SELECT json_extract(r.local_checks_json,?) FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id JOIN project_sprite_allocations a ON a.organization_id=m.organization_id AND a.project_id=m.allocation_project_id WHERE m.organization_id=? AND m.allocation_project_id=? AND m.state='enrolled' AND r.state='active' AND a.desired_count>0 AND r.machine_id=?`, "$."+jsonPathKey(string(scope.project)), scope.organization, scope.project, machine).Scan(&raw)
