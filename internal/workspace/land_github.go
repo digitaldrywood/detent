@@ -146,6 +146,10 @@ func (l *LocalGit) gitHubPublicationIdentity(ctx context.Context, info Info, iss
 	if base == "" {
 		base, err = remoteDefaultBranch(ctx, normalized.Path, remote)
 		if err != nil {
+			var commandErr *CommandError
+			if errors.As(err, &commandErr) {
+				err = forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: "git ls-remote --symref HEAD"}, forgeavailability.ClassTransport, err)
+			}
 			return GitHubPublication{}, err
 		}
 	}

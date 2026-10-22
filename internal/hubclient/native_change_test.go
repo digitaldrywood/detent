@@ -2375,6 +2375,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "blocked SSH Rework retains staged source", finalMessage: instanceMessage, wantDisposition: instanceDisposition, rework: true, ssh: true, staged: true},
 		{name: "held publication reconciles lost create through new Runner lease", publication: "lost_create", rework: true, formal: true},
 		{name: "ambiguous retained PR push followed by third party advancement executes Rework", publication: "lost_push", publicationFault: "advanced_pr", rework: true, formal: true},
+		{name: "first publication HEAD discovery failure retries infrastructure", publication: "head_read", rework: true, formal: true},
 		{name: "uncertain publication initial ref read failure retries infrastructure", publication: "lost_push", publicationFault: "initial_read", rework: true, formal: true},
 		{name: "uncertain publication post push ref read failure retries infrastructure", publication: "lost_push", publicationFault: "post_push_read", rework: true, formal: true},
 		{name: "held publication reconciles lost push through new Runner lease", publication: "lost_push", rework: true, formal: true},
@@ -2465,7 +2466,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "Rework scoped read failure releases claim before dispatch", rework: true, failDetail: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if !test.enrolled && test.publicationFault != "initial_read" && test.publicationFault != "post_push_read" {
+			if !test.enrolled && test.publication != "head_read" && test.publicationFault != "initial_read" && test.publicationFault != "post_push_read" {
 				t.Parallel()
 			}
 			genuinePublication := test.publication != "" && test.validator != "" && (test.publicationFault == "" || test.publicationFault == "policy")
@@ -3211,6 +3212,28 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			if test.initialSourceWait {
 				provider.sourceVerdict = "wait"
 			}
+			var publicationRefsBefore []byte
+			if test.publication == "head_read" {
+				runExecution.(*nativePublicationFixtureExecution).beforePublication = func() {
+					if execution.(*nativeExecution).data.Handoff.UncertainForgeEffect() {
+						t.Fatal("first publication already has an uncertain checkpoint")
+					}
+					publicationRefsBefore, err = exec.CommandContext(t.Context(), "git", "-C", remote, "for-each-ref", "--format=%(objectname) %(refname)").Output()
+					if err != nil {
+						t.Fatal(err)
+					}
+					realGit, lookupErr := exec.LookPath("git")
+					if lookupErr != nil {
+						t.Fatal(lookupErr)
+					}
+					wrapper := t.TempDir()
+					script := "#!/bin/sh\nread_ref=0\nfor arg in \"$@\"; do if [ \"$arg\" = ls-remote ]; then read_ref=1; fi; if [ \"$read_ref\" = 1 ] && [ \"$arg\" = HEAD ]; then exit 1; fi; done\nexec '" + realGit + "' \"$@\"\n"
+					if writeErr := os.WriteFile(filepath.Join(wrapper, "git"), []byte(script), 0o700); writeErr != nil {
+						t.Fatal(writeErr)
+					}
+					t.Setenv("PATH", wrapper+string(os.PathListSeparator)+os.Getenv("PATH"))
+				}
+			}
 			var implementationSession atomic.Int64
 			result, err := agent.Run(runCtx, runner.RunRequest{Execution: runExecution, DeferExecutionFinish: test.failVersion || test.summaryFailure, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement, OnUsageUpdate: func(update runner.UsageUpdate) error {
 				if test.summaryFailure && update.DetentSessionID > 0 {
@@ -3218,6 +3241,16 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 				return nil
 			}})
+			if test.publication == "head_read" {
+				owner := execution.(*nativeExecution)
+				if !nativeTransportUnavailable(err) || owner.settled || owner.data.Outcome != "" || owner.data.Handoff.UncertainForgeEffect() || owner.publication != nil || forgeCreates != 0 || forgePull != "" {
+					t.Fatalf("HEAD discovery failure lost infrastructure retry: settled=%t outcome=%q checkpoint=%+v error=%v", owner.settled, owner.data.Outcome, owner.data.Handoff, err)
+				}
+				if after, readErr := exec.CommandContext(t.Context(), "git", "-C", remote, "for-each-ref", "--format=%(objectname) %(refname)").Output(); readErr != nil || string(after) != string(publicationRefsBefore) {
+					t.Fatalf("HEAD discovery failure wrote remote refs: before=%s after=%s", publicationRefsBefore, after)
+				}
+				return
+			}
 			if test.summaryFailure {
 				h.native.client.httpClient.Transport = transport
 				owner := execution.(*nativeExecution)
@@ -4896,13 +4929,17 @@ func versionsWithoutLanding(versions []tracker.ChangeVersion) []tracker.ChangeVe
 
 type nativePublicationFixtureExecution struct {
 	*nativeExecution
-	forge        *github.Client
-	losePush     *bool
-	retainedHead string
+	forge             *github.Client
+	losePush          *bool
+	retainedHead      string
+	beforePublication func()
 }
 
 func (e *nativePublicationFixtureExecution) SetPublicationSource(source func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)) {
 	e.nativeExecution.SetPublicationSource(func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+		if e.beforePublication != nil {
+			e.beforePublication()
+		}
 		opts.GitHubClient = e.forge
 		if e.retainedHead != "" {
 			opts.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: nativeChangeRepository + "/pull/7"}
