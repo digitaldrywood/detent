@@ -85,12 +85,12 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 		removed          int64
 		extraActivity    int
 	}{
-		{name: "archived", archived: true, removed: 19},
+		{name: "archived", archived: true, removed: 0},
 		{name: "open"},
 		{name: "archived with live lease", archived: true, leased: true},
-		{name: "closed for three days", closedAgo: 73 * time.Hour, removed: 19},
+		{name: "closed for three days", closedAgo: 73 * time.Hour, removed: 0},
 		{name: "closed recently", closedAgo: time.Hour},
-		{name: "closed activity spans span batches", closedAgo: 73 * time.Hour, removed: 19, extraActivity: 500},
+		{name: "closed activity spans span batches", closedAgo: 73 * time.Hour, removed: 0, extraActivity: 500},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -167,7 +167,7 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.extraActivity > 0 {
-				for _, want := range []struct{ compacted, remaining int64 }{{481, 20}, {501, 0}, {501, 0}} {
+				for _, want := range []struct{ compacted, remaining int64 }{{500, 1}, {501, 0}, {501, 0}} {
 					summary, err := readEventCompaction(t.Context(), f.service.database.db, scope.organization, scope.project, "work_item", string(issue.WorkItemID))
 					if err != nil {
 						t.Fatal(err)
@@ -176,7 +176,7 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 					if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*),coalesce(sum(json_type(data_json,'$.run.runtime.activity.spans') IS NOT NULL),0) FROM collaboration_events WHERE work_item_id=? AND type='run.checkpointed'`, issue.WorkItemID).Scan(&checkpoints, &remaining); err != nil {
 						t.Fatal(err)
 					}
-					if summary.RemovedEvents != 19 || summary.CompactedActivityEvents != want.compacted || remaining != want.remaining || checkpoints != 501 {
+					if summary.RemovedEvents != 0 || summary.CompactedActivityEvents != want.compacted || remaining != want.remaining || checkpoints != 501 {
 						t.Fatalf("compaction=%+v remaining=%d checkpoints=%d want=%+v", summary, remaining, checkpoints, want)
 					}
 					if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
@@ -437,58 +437,6 @@ func TestEventCompactionRollback(t *testing.T) {
 	}
 }
 
-func TestObsoleteRunEvents(t *testing.T) {
-	t.Parallel()
-	type fact = map[int]string
-	run := func(sequence int64, kind, attempt string, facts fact) runHistoryEvent {
-		event := runHistoryEvent{obsoleteEvent: obsoleteEvent{sequence: sequence, kind: kind}, attempt: attempt, facts: make([]json.RawMessage, runFactCount)}
-		for index := range event.facts {
-			event.facts[index] = json.RawMessage("null")
-		}
-		event.facts[runFactAttempt] = json.RawMessage(`"` + attempt + `"`)
-		for index, raw := range facts {
-			event.facts[index] = json.RawMessage(raw)
-		}
-		return event
-	}
-	usage := func(source string) string {
-		return `[{"provider":"openai","model":"gpt","usage_kind":"incremental","source_id":"` + source + `","input":1}]`
-	}
-	for _, test := range []struct {
-		name   string
-		events []runHistoryEvent
-		want   []int64
-	}{
-		{"intermediate snapshots", []runHistoryEvent{run(1, "run.started", "a", nil), run(2, "run.checkpointed", "a", nil), run(3, "run.observed", "a", nil), run(4, "run.checkpointed", "a", nil), run(5, "run.observed", "a", nil), run(6, "run.checkpointed", "a", nil), run(7, "run.finished", "a", nil)}, []int64{2, 3, 4}},
-		{"last snapshot of every attempt", []runHistoryEvent{run(1, "run.checkpointed", "a", nil), run(2, "run.checkpointed", "a", nil), run(3, "run.checkpointed", "b", nil)}, []int64{1}},
-		{"unique terminal failure", []runHistoryEvent{run(1, "run.observed", "a", fact{runFactTerminalFailure: `{"code":"boom"}`}), run(2, "run.observed", "a", nil)}, nil},
-		{"repeated landing", []runHistoryEvent{run(1, "run.observed", "a", fact{runFactLanding: `{"landed":true}`}), run(2, "run.observed", "a", fact{runFactLanding: `{"landed":true}`})}, []int64{1}},
-		{"changed landing", []runHistoryEvent{run(1, "run.observed", "a", fact{runFactLanding: `{"refusal_kind":"conflict"}`}), run(2, "run.observed", "a", fact{runFactLanding: `{"landed":true}`})}, nil},
-		{"landing repeated only by another attempt", []runHistoryEvent{run(1, "run.observed", "a", fact{runFactLanding: `{"landed":true}`}), run(2, "run.observed", "a", nil), run(3, "run.observed", "b", fact{runFactLanding: `{"landed":true}`})}, nil},
-		{"superseded handoff and artifacts", []runHistoryEvent{run(1, "run.checkpointed", "a", fact{runFactHandoff: `{"head_sha":"1"}`, runFactArtifacts: `["art_1"]`}), run(2, "run.checkpointed", "a", fact{runFactHandoff: `{"head_sha":"2"}`})}, []int64{1}},
-		{"push proof replaced by a later plain handoff", []runHistoryEvent{run(1, "run.checkpointed", "a", fact{runFactHandoff: `{"external_effect":"git_push","effect_state":"confirmed","effect_id":"effect_1","change":{"change_id":"change_1"}}`}), run(2, "run.checkpointed", "a", fact{runFactHandoff: `{"external_effect":"none","effect_state":"none"}`})}, nil},
-		{"push proof repeated by a later handoff", []runHistoryEvent{run(1, "run.checkpointed", "a", fact{runFactHandoff: `{"worktree_state":"dirty","external_effect":"git_push","effect_state":"confirmed","effect_id":"effect_1","change":{"change_id":"change_1"}}`}), run(2, "run.checkpointed", "a", fact{runFactHandoff: `{"worktree_state":"clean","external_effect":"git_push","effect_state":"confirmed","effect_id":"effect_1","change":{"change_id":"change_1"}}`})}, []int64{1}},
-		{"handoff without a later handoff", []runHistoryEvent{run(1, "run.observed", "a", fact{runFactHandoff: `{"head_sha":"1"}`}), run(2, "run.observed", "a", nil)}, nil},
-		{"running usage total superseded", []runHistoryEvent{run(1, "run.checkpointed", "a", fact{runFactUsage: `[{"provider":"openai","model":"gpt","input":1}]`}), run(2, "run.checkpointed", "a", fact{runFactUsage: `[{"provider":"openai","model":"gpt","input":5}]`}), run(3, "run.finished", "a", nil)}, []int64{1}},
-		{"incremental usage source", []runHistoryEvent{run(1, "run.checkpointed", "a", fact{runFactUsage: usage("one")}), run(2, "run.checkpointed", "a", fact{runFactUsage: usage("two")})}, nil},
-		{"evidence carried forward", []runHistoryEvent{run(1, "run.observed", "a", fact{runFactEvidence: `[{"attachment_id":"att_1"}]`}), run(2, "run.observed", "a", fact{runFactEvidence: `[{"attachment_id":"att_1"},{"attachment_id":"att_2"}]`})}, []int64{1}},
-		{"evidence dropped later", []runHistoryEvent{run(1, "run.observed", "a", fact{runFactEvidence: `[{"attachment_id":"att_1"}]`}), run(2, "run.observed", "a", nil)}, nil},
-		{"process usage superseded", []runHistoryEvent{run(1, "run.observed", "a", fact{runFactProcessUsage: `{"cpu":1}`}), run(2, "run.observed", "a", fact{runFactProcessUsage: `{"cpu":2}`})}, []int64{1}},
-		{"finalization repeated by finish", []runHistoryEvent{run(1, "run.observed", "a", fact{runFactFinalization: `{"settled":true}`}), run(2, "run.observed", "a", nil), run(3, "run.finished", "a", fact{runFactFinalization: `{"settled":true}`})}, []int64{1}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			var got []int64
-			for _, event := range obsoleteRunEvents(test.events) {
-				got = append(got, event.sequence)
-			}
-			if !slices.Equal(got, test.want) {
-				t.Fatalf("obsolete=%v want %v", got, test.want)
-			}
-		})
-	}
-}
-
 type terminalAttemptFixture struct {
 	nativeFixture
 	clock   *atomic.Int64
@@ -639,14 +587,14 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 		}
 	}
 	counts := a.runEvents(t)
-	if counts["run.started"] != 1 || counts["run.checkpointed"] != 1 || counts["run.observed"] != 1 || counts["run.finished"] != 1 {
+	if counts["run.started"] != 1 || counts["run.checkpointed"] != 12 || counts["run.observed"] != 12 || counts["run.finished"] != 1 {
 		t.Fatalf("terminal attempt history=%v", counts)
 	}
 	summary, err := readEventCompaction(t.Context(), a.service.database.db, a.scope.organization, a.scope.project, "work_item", string(a.issue.WorkItemID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.RemovedEvents != 22 || summary.RemovedByType["run.checkpointed"] != 11 || summary.RemovedByType["run.observed"] != 11 || summary.RemovedBytes <= 0 {
+	if summary.RemovedEvents != 0 || summary.CompactedActivityEvents != 26 {
 		t.Fatalf("compaction receipt=%+v", summary)
 	}
 	after := reads()
@@ -659,7 +607,7 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var history tracker.Page[tracker.CollaborationEvent]
 	decodeHubResponse(t, response, &history)
-	if history.Compaction == nil || history.Compaction.RemovedEvents != 22 {
+	if history.Compaction != nil {
 		t.Fatalf("history does not disclose compaction: %+v", history.Compaction)
 	}
 }
@@ -714,8 +662,8 @@ func TestEventCompactionPassIsBoundedAndYieldsToWrites(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		removed = append(removed, summary.RemovedEvents-previous)
-		previous = summary.RemovedEvents
+		removed = append(removed, summary.CompactedActivityEvents-previous)
+		previous = summary.CompactedActivityEvents
 	}
 	close(stop)
 	if err := <-writes; err != nil {
@@ -724,10 +672,10 @@ func TestEventCompactionPassIsBoundedAndYieldsToWrites(t *testing.T) {
 	if written.Load() == 0 {
 		t.Fatal("no request write completed while retention passes ran")
 	}
-	if want := []int64{eventCompactionBatch, eventCompactionBatch, int64(backlog) - 2*eventCompactionBatch, 0}; !slices.Equal(removed, want) {
+	if want := []int64{eventCompactionBatch, eventCompactionBatch, int64(backlog) + 4 - 2*eventCompactionBatch, 0}; !slices.Equal(removed, want) {
 		t.Fatalf("removed per pass=%v want %v", removed, want)
 	}
-	if counts := a.runEvents(t); counts["run.observed"] != 1 || counts["run.checkpointed"] != 1 {
+	if counts := a.runEvents(t); counts["run.observed"] != backlog+1 || counts["run.checkpointed"] != 1 {
 		t.Fatalf("history after backfill=%v", counts)
 	}
 }

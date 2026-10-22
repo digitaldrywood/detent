@@ -67,6 +67,7 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 }
 
 func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
+	ctx = e.service.freshRunDetailContext(ctx)
 	defer func() {
 		if resultErr != nil {
 			resultErr = fmt.Errorf("%s: %w", strings.ReplaceAll(call.Name, "_", " "), resultErr)

@@ -1,14 +1,12 @@
 package hubserver
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -319,33 +317,6 @@ WHERE conversation_id=e.conversation_id AND type='conversation.updated' AND seq<
 	return events, errors.Join(rows.Err(), rows.Close())
 }
 
-const (
-	runFactAttempt = iota
-	runFactTerminalFailure
-	runFactFinalization
-	runFactDisposition
-	runFactCompletionBody
-	runFactOutcome
-	runFactValidation
-	runFactCompletion
-	runFactLanding
-	runFactEvidence
-	runFactUsage
-	runFactHandoff
-	runFactArtifacts
-	runFactProcessUsage
-	runFactCount
-)
-
-const runFactPaths = `'$.run.attempt_id','$.run.terminal_failure','$.run.finalization','$.run.disposition','$.run.completion_body','$.run.outcome',
-'$.run.runtime.validation','$.run.runtime.completion','$.run.runtime.landing','$.run.evidence','$.run.usage','$.run.handoff','$.run.artifact_ids','$.run.process_usage'`
-
-type runHistoryEvent struct {
-	obsoleteEvent
-	attempt string
-	facts   []json.RawMessage
-}
-
 func obsoleteWorkItemEvents(ctx context.Context, q nativeQueryer, candidate eventCompactionCandidate, now time.Time) ([]obsoleteEvent, []int64, error) {
 	terminal := map[string]bool{}
 	if !candidate.closed {
@@ -358,186 +329,25 @@ func obsoleteWorkItemEvents(ctx context.Context, q nativeQueryer, candidate even
 			terminal[id] = true
 		}
 	}
-	rows, err := q.QueryContext(ctx, `SELECT sequence,type,length(CAST(data_json AS BLOB))+length(CAST(actor_json AS BLOB)),json_extract(data_json,`+runFactPaths+`),
-coalesce(json_type(data_json,'$.run.runtime.activity.spans')='array',0)
-FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type IN ('run.started','run.checkpointed','run.observed','run.finished') ORDER BY sequence`, candidate.organization, candidate.project, candidate.id)
+	rows, err := q.QueryContext(ctx, `SELECT sequence,json_extract(data_json,'$.run.attempt_id') FROM collaboration_events
+ WHERE organization_id=? AND project_id=? AND work_item_id=? AND type IN ('run.started','run.checkpointed','run.observed','run.finished')
+ AND json_type(data_json,'$.run.runtime.activity.spans')='array' ORDER BY sequence`, candidate.organization, candidate.project, candidate.id)
 	if err != nil {
-		return nil, nil, fmt.Errorf("select run history: %w", err)
+		return nil, nil, fmt.Errorf("select legacy activity spans: %w", err)
 	}
 	defer rows.Close()
-	var events []runHistoryEvent
 	var spans []int64
 	for rows.Next() {
-		var event runHistoryEvent
-		var facts string
-		var activity bool
-		if err := rows.Scan(&event.sequence, &event.kind, &event.bytes, &facts, &activity); err != nil {
+		var sequence int64
+		var attempt string
+		if err := rows.Scan(&sequence, &attempt); err != nil {
 			return nil, nil, err
 		}
-		if err := json.Unmarshal([]byte(facts), &event.facts); err != nil {
-			return nil, nil, fmt.Errorf("decode run history facts: %w", err)
-		}
-		if len(event.facts) != runFactCount {
-			return nil, nil, fmt.Errorf("decode run history facts: %d of %d", len(event.facts), runFactCount)
-		}
-		if json.Unmarshal(event.facts[runFactAttempt], &event.attempt) != nil {
-			event.attempt = ""
-		}
-		if !candidate.closed && !terminal[event.attempt] {
-			continue
-		}
-		events = append(events, event)
-		if activity {
-			spans = append(spans, event.sequence)
+		if candidate.closed || terminal[attempt] {
+			spans = append(spans, sequence)
 		}
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, nil, err
-	}
-	obsolete := obsoleteRunEvents(events)
-	deleted := map[int64]bool{}
-	for _, event := range obsolete {
-		deleted[event.sequence] = true
-	}
-	spans = slices.DeleteFunc(spans, func(sequence int64) bool { return deleted[sequence] })
-	return obsolete, spans, nil
-}
-
-func obsoleteRunEvents(events []runHistoryEvent) []obsoleteEvent {
-	type snapshot struct{ attempt, kind string }
-	last := map[snapshot]int64{}
-	for _, event := range events {
-		if runSnapshotEvent(event.kind) {
-			key := snapshot{event.attempt, event.kind}
-			last[key] = max(last[key], event.sequence)
-		}
-	}
-	kept := map[string][]runHistoryEvent{}
-	var intermediate []runHistoryEvent
-	for _, event := range events {
-		if runSnapshotEvent(event.kind) && last[snapshot{event.attempt, event.kind}] != event.sequence {
-			intermediate = append(intermediate, event)
-			continue
-		}
-		kept[event.attempt] = append(kept[event.attempt], event)
-	}
-	var obsolete []obsoleteEvent
-	for _, event := range intermediate {
-		var later []runHistoryEvent
-		for _, retained := range kept[event.attempt] {
-			if retained.sequence > event.sequence {
-				later = append(later, retained)
-			}
-		}
-		if runFactsRetained(event, later) {
-			obsolete = append(obsolete, event.obsoleteEvent)
-		}
-	}
-	return obsolete
-}
-
-func runSnapshotEvent(kind string) bool {
-	return kind == "run.checkpointed" || kind == "run.observed"
-}
-
-func runFactsRetained(event runHistoryEvent, later []runHistoryEvent) bool {
-	for fact := runFactTerminalFailure; fact <= runFactLanding; fact++ {
-		if runFactPresent(event.facts[fact]) && !slices.ContainsFunc(later, func(k runHistoryEvent) bool { return bytes.Equal(k.facts[fact], event.facts[fact]) }) {
-			return false
-		}
-	}
-	for fact, superseding := range map[int]int{runFactHandoff: runFactHandoff, runFactArtifacts: runFactHandoff, runFactProcessUsage: runFactProcessUsage} {
-		if runFactPresent(event.facts[fact]) && !slices.ContainsFunc(later, func(k runHistoryEvent) bool { return runFactPresent(k.facts[superseding]) }) {
-			return false
-		}
-	}
-	effect, ok := runHandoffEffect(event.facts[runFactHandoff])
-	if !ok {
-		return false
-	}
-	if effect != "" && !slices.ContainsFunc(later, func(k runHistoryEvent) bool {
-		retained, ok := runHandoffEffect(k.facts[runFactHandoff])
-		return ok && retained == effect
-	}) {
-		return false
-	}
-	evidence, ok := runFactItems(event.facts[runFactEvidence])
-	if !ok {
-		return false
-	}
-	for _, item := range evidence {
-		if !slices.ContainsFunc(later, func(k runHistoryEvent) bool {
-			retained, ok := runFactItems(k.facts[runFactEvidence])
-			return ok && slices.ContainsFunc(retained, func(r json.RawMessage) bool { return bytes.Equal(r, item) })
-		}) {
-			return false
-		}
-	}
-	usage, ok := runUsageKeys(event.facts[runFactUsage])
-	if !ok {
-		return false
-	}
-	for key := range usage {
-		if !slices.ContainsFunc(later, func(k runHistoryEvent) bool {
-			retained, ok := runUsageKeys(k.facts[runFactUsage])
-			return ok && retained[key]
-		}) {
-			return false
-		}
-	}
-	return true
-}
-
-func runFactPresent(raw json.RawMessage) bool {
-	return len(raw) > 0 && string(raw) != "null"
-}
-
-func runHandoffEffect(raw json.RawMessage) (string, bool) {
-	if !runFactPresent(raw) {
-		return "", true
-	}
-	var handoff struct {
-		ExternalEffect string          `json:"external_effect"`
-		EffectState    string          `json:"effect_state"`
-		EffectID       string          `json:"effect_id"`
-		HeadSHA        string          `json:"head_sha"`
-		Change         json.RawMessage `json:"change"`
-	}
-	if json.Unmarshal(raw, &handoff) != nil {
-		return "", false
-	}
-	if (handoff.ExternalEffect == "" || handoff.ExternalEffect == "none") && !runFactPresent(handoff.Change) {
-		return "", true
-	}
-	return strings.Join([]string{handoff.ExternalEffect, handoff.EffectState, handoff.EffectID, handoff.HeadSHA, string(handoff.Change)}, "\x00"), true
-}
-
-func runFactItems(raw json.RawMessage) ([]json.RawMessage, bool) {
-	if !runFactPresent(raw) {
-		return nil, true
-	}
-	var items []json.RawMessage
-	return items, json.Unmarshal(raw, &items) == nil
-}
-
-func runUsageKeys(raw json.RawMessage) (map[string]bool, bool) {
-	keys := map[string]bool{}
-	if !runFactPresent(raw) {
-		return keys, true
-	}
-	var usage []struct {
-		Provider  string `json:"provider"`
-		Model     string `json:"model"`
-		UsageKind string `json:"usage_kind"`
-		SourceID  string `json:"source_id"`
-	}
-	if json.Unmarshal(raw, &usage) != nil {
-		return nil, false
-	}
-	for _, entry := range usage {
-		keys[entry.Provider+"\x00"+entry.Model+"\x00"+entry.UsageKind+"\x00"+entry.SourceID] = true
-	}
-	return keys, true
+	return nil, spans, errors.Join(rows.Err(), rows.Close())
 }
 
 type tenantEventStorageSize struct {

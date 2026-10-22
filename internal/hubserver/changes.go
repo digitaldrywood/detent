@@ -222,7 +222,7 @@ func resolveVersionPublication(ctx context.Context, query nativeQueryer, changeI
 		return nil
 	}
 	var raw string
-	err := query.QueryRowContext(ctx, `SELECT json_extract(a.data_json, '$.finalization.publication')
+	err := query.QueryRowContext(ctx, `SELECT a.data_json
 FROM native_attempts a JOIN change_requests c ON c.id=?
 AND c.organization_id=a.organization_id AND c.project_id=a.project_id AND c.work_item_id=a.work_item_id
 WHERE json_extract(a.data_json, '$.finalization.publication.version_id')=?
@@ -233,12 +233,12 @@ ORDER BY a.fencing_token DESC LIMIT 1`, changeID, version.ID).Scan(&raw)
 	if err != nil {
 		return err
 	}
-	var publication tracker.NativePRPublication
-	if err := json.Unmarshal([]byte(raw), &publication); err != nil {
+	var run tracker.NativeRunData
+	if err := decodeRunDetail(ctx, raw, &run); err != nil {
 		return err
 	}
-	if publication.Matches(changeID, *version) {
-		version.External = &publication.External
+	if run.Finalization != nil && run.Finalization.Publication != nil && run.Finalization.Publication.Matches(changeID, *version) {
+		version.External = &run.Finalization.Publication.External
 	}
 	return nil
 }
@@ -283,7 +283,7 @@ func resolveVersionPublicationPush(ctx context.Context, query nativeQueryer, sco
 		return tracker.ChangePublicationPush{}, false, err
 	}
 	var run tracker.NativeRunData
-	if err := json.Unmarshal([]byte(raw), &run); err != nil {
+	if err := decodeRunDetail(ctx, raw, &run); err != nil {
 		return tracker.ChangePublicationPush{}, false, err
 	}
 	ref := tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}

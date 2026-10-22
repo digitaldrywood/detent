@@ -46,6 +46,7 @@ type nativeExecution struct {
 	publicationSource func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)
 	publication       *tracker.NativePRPublication
 	pending           *tracker.NativeRunEvent
+	observations      []tracker.NativeRunEvent
 	cancel            context.CancelCauseFunc
 	// diffSource computes the stored attempt diff the execution posts before
 	// every checkpoint and before the finish (decisions section 18.5). It is
@@ -882,7 +883,25 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 		}
 	}
 	data.Handoff = checkpoint
-	e.pending = &tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: kind, SchemaVersion: 1, Data: data}
+	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: kind, SchemaVersion: 1, Data: data}
+	if e.claim.lease.RunDetailBatching && kind == "run.observed" && len(e.observations) < 7 {
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		var observation tracker.NativeRunEvent
+		if err := json.Unmarshal(encoded, &observation); err != nil {
+			return err
+		}
+		e.observations = append(e.observations, observation)
+		checkpoint := e.data.Handoff
+		e.data = data
+		e.data.Handoff = checkpoint
+		e.runtimeDirty = false
+		return nil
+	}
+	event.PriorEvents = append([]tracker.NativeRunEvent(nil), e.observations...)
+	e.pending = &event
 	return e.flush(ctx)
 }
 
@@ -918,6 +937,10 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	if err := e.claim.source.client.AppendEvent(ctx, e.claim.lease.WorkItemID, *e.pending); err != nil {
 		var refusal *APIError
 		if e.pending.Type == "run.finished" && errors.As(err, &refusal) && refusal.permanentInvalidRequest() {
+			if len(e.pending.PriorEvents) > 0 {
+				e.data.Sequence = e.pending.PriorEvents[0].Data.Sequence - 1
+				e.observations = nil
+			}
 			failure := refusal.NativeTerminalFailure()
 			failure.Stage, failure.ErrorClass = "event_publication", "event_publication"
 			failure.Error = "Hub rejected the completion request"
@@ -953,6 +976,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 		e.data.Handoff = checkpoint
 	}
 	e.pending = nil
+	e.observations = nil
 	e.runtimeDirty = false
 	return nil
 }

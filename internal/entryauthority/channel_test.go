@@ -44,7 +44,7 @@ func TestArchiveAuthorityChannel(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			client := &Client{client: rpc.NewClient(channel{reader: parent.Files[0], writer: parent.Files[1], budget: time.Second}), budget: time.Second}
+			client := &Client{client: rpc.NewClient(channel{reader: parent.Files[0], writer: parent.Files[1], budget: time.Second}), budget: time.Second, organization: binding.Organization}
 			t.Cleanup(func() {
 				if err := client.Close(); err != nil {
 					t.Error(err)
@@ -92,7 +92,7 @@ func TestArchiveAuthorityChannel(t *testing.T) {
 func TestCurrentAuthorityChannel(t *testing.T) {
 	t.Parallel()
 	binding := Binding{Issuer: "entry", Organization: "org_example", Generation: 2}
-	for _, scenario := range []string{"concurrent lookups", "wrong allocation", "expired deadline", "shutdown pending lookup", "stalled reader", "archive content", "content read and write", "foreign content"} {
+	for _, scenario := range []string{"detail round trip", "detail owner unavailable", "concurrent lookups", "wrong allocation", "expired deadline", "shutdown pending lookup", "stalled reader", "archive content", "content read and write", "foreign content"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			if scenario == "stalled reader" {
@@ -153,6 +153,7 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 				return
 			}
 			entered := make(chan struct{}, 1)
+			details := &channelDetailStore{fail: scenario == "detail owner unavailable"}
 			parent, err := Start(t.Context(), binding, time.Second, func(ctx context.Context, origin Origin) (cloudassert.Claims, error) {
 				if scenario == "shutdown pending lookup" {
 					entered <- struct{}{}
@@ -163,7 +164,7 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 					return cloudassert.Claims{}, err
 				}
 				return cloudassert.Claims{Subject: origin.Subject, Audience: binding.Organization}, nil
-			}, Archives{Contents: &authorityContents{content: map[string][]byte{}}, Content: func(ctx context.Context, request ContentRequest) ([]byte, error) {
+			}, Archives{Details: details, Contents: &authorityContents{content: map[string][]byte{}}, Content: func(ctx context.Context, request ContentRequest) ([]byte, error) {
 				if err := ctx.Err(); err != nil {
 					return nil, err
 				}
@@ -184,7 +185,7 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 				})
 			}
 			t.Cleanup(closeParent)
-			client := &Client{client: rpc.NewClient(channel{reader: parent.Files[0], writer: parent.Files[1], budget: time.Second}), budget: time.Second}
+			client := &Client{client: rpc.NewClient(channel{reader: parent.Files[0], writer: parent.Files[1], budget: time.Second}), budget: time.Second, organization: binding.Organization}
 			t.Cleanup(func() { _ = client.Close() })
 			selected := binding
 			if scenario == "wrong allocation" {
@@ -223,6 +224,30 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 				}
 				if _, err := client.ReadContent(t.Context(), binding.Organization, foreign); err == nil {
 					t.Fatal("foreign reference accepted")
+				}
+				return
+			}
+			if scenario == "detail round trip" || scenario == "detail owner unavailable" {
+				content := []byte("run checkpoint and validation output")
+				ref, err := client.StoreDetail(t.Context(), binding.Organization, content)
+				if scenario == "detail owner unavailable" {
+					if err == nil || strings.Contains(err.Error(), "fixture-secret") {
+						t.Fatalf("unsafe upload failure: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				read, err := client.ReadDetail(t.Context(), binding.Organization, ref)
+				if err != nil || !bytes.Equal(read, content) {
+					t.Fatalf("detail round trip: %v", err)
+				}
+				if _, err := callAuthority[[]byte](t.Context(), client, "ReadDetail", DetailRequest{Organization: "org_foreign", Reference: ref, Deadline: time.Now().Add(time.Second)}); err == nil {
+					t.Fatal("parent accepted foreign organization detail")
+				}
+				if _, err := callAuthority[attachment.ArchiveReference](t.Context(), client, "StoreDetail", DetailRequest{Organization: "org_foreign", Data: content, Deadline: time.Now().Add(time.Second)}); err == nil {
+					t.Fatal("parent accepted foreign upload")
 				}
 				return
 			}
@@ -318,4 +343,29 @@ func (s *authorityContents) ReadContent(ctx context.Context, _ string, ref attac
 		return nil, err
 	}
 	return bytes.Clone(s.content[ref.Key]), nil
+}
+
+type channelDetailStore struct {
+	data      []byte
+	reference attachment.ArchiveReference
+	fail      bool
+}
+
+func (s *channelDetailStore) StoreDetail(_ context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
+	if s.fail {
+		return attachment.ArchiveReference{}, errors.New("fixture-secret upload failure")
+	}
+	ref, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(data))
+	if err != nil {
+		return ref, err
+	}
+	s.data, s.reference = bytes.Clone(data), ref
+	return ref, nil
+}
+
+func (s *channelDetailStore) ReadDetail(_ context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	if ref.Validate(organization) != nil || ref != s.reference {
+		return nil, attachment.ErrInvalid
+	}
+	return bytes.Clone(s.data), nil
 }

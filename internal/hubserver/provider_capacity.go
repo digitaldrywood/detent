@@ -345,7 +345,7 @@ func readProviderReservation(ctx context.Context, query nativeQueryer, lease tra
 	return reservation, err == nil, err
 }
 
-func validateProviderAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, data tracker.NativeRunData, now time.Time) error {
+func validateProviderAttempt(ctx context.Context, tx nativeQueryer, scope nativeScope, data tracker.NativeRunData, now time.Time) error {
 	reservation, found, err := readProviderReservation(ctx, tx, data.LeaseID)
 	if err != nil || !found {
 		return err
