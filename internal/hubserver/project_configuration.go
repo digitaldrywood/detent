@@ -140,14 +140,14 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 		return operatortool.Result{}, nativeConflict(tracker.Revision(selected.Revision))
 	}
 	if name == "apply_local_project_policy" {
-		if view.UnsettledAttempts != 0 {
-			return operatortool.Result{}, policyMismatch("Active leases retain their approved policy; finish or cancel them before approving a different revision")
-		}
 		approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
 		if err != nil || approval.Policy.ID != args.PolicyID || approval.Policy.SourceRevision != args.SourceRevision {
 			return operatortool.Result{}, policyMismatch("Approved policy changed; inspect the current policy and supply its expected_policy_id")
 		}
 		if args.AllowLocalBinding != nil {
+			if view.UnsettledAttempts != 0 {
+				return operatortool.Result{}, policyMismatch("Active or deferred work must settle before changing allow_local_binding")
+			}
 			candidate := view.RestrictedBindingPolicy
 			if *args.AllowLocalBinding {
 				candidate = view.LocalBindingPolicy
