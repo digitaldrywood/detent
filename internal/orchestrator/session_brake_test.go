@@ -160,8 +160,6 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			}
 			state := newState(cfg)
 			if tt.finalState == runpkg.FinalStateMemoryCeilingExceeded {
-				state.InstantFailures[issue.ID] = InstantFailure{Count: instantFailureThreshold - 1}
-				state.RepeatedFailures[issue.ID] = RepeatedFailure{Count: repeatedFailureThreshold - 1}
 			}
 
 			if !orch.dispatchIssue(t.Context(), &state, issue, 1, startedAt, "") {
@@ -220,12 +218,6 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			if tt.finalState == runpkg.FinalStateMemoryCeilingExceeded {
 				if sessionBrake["rss_bytes"] != float64(brake.RSSBytes) || sessionBrake["rss_ceiling_bytes"] != float64(brake.RSSCeilingBytes) {
 					t.Fatalf("session brake metadata = %#v, want RSS evidence", sessionBrake)
-				}
-				if _, ok := state.InstantFailures[issue.ID]; ok {
-					t.Fatalf("InstantFailures[%q] present after memory ceiling", issue.ID)
-				}
-				if _, ok := state.RepeatedFailures[issue.ID]; ok {
-					t.Fatalf("RepeatedFailures[%q] present after memory ceiling", issue.ID)
 				}
 				if state.FailureBreaker.Count != 0 || len(state.FailureBreaker.Failures) != 0 {
 					t.Fatalf("FailureBreaker = %#v, want no memory ceiling strike", state.FailureBreaker)

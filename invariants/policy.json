@@ -82,7 +82,12 @@
       "TestTransitionAlreadyMergedCompletion",
       "TestSSHHostLossUsesInstanceRetry",
       "TestSSHHostLossClearsResumeOnSpillover",
-      "TestSSHQueuedPreferenceAndHostCaps"
+      "TestSSHQueuedPreferenceAndHostCaps",
+      "TestMachineFailuresUseRetryOwner",
+      "TestHandleRunResultResetsRetryAfterProgress",
+      "TestBackendCapacityHelperBoundaries",
+      "TestStoredHoldRequiresProvenance",
+      "TestPruneBudgetRefusalsReevaluatesDailyCap"
     ],
     "./internal/hubclient": [
       "TestNativePlannerAutomaticHandoff",

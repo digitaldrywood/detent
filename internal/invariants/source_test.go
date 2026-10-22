@@ -210,6 +210,7 @@ func retiredSymbol(text string) bool {
 		return true
 	}
 	for _, forbidden := range []string{
+		"tripinstantfailurecircuitbreaker", "triprepeatedfailurecircuitbreaker", "triptokenceilingcircuitbreaker", "parkinstantfailure", "parkrepeatedfailure", "evaluatespendprogress", "blockspendprogress", "spendprogressbaseline", "dispatchloopblockmessage",
 		"nativecandidaterecordeddependenciessatisfied", "nativereviewconversationrefusalstands", "retainunacknowledgedrecoveryparks", "trackerrecoveryparkhold", "publishtrackerrecoverypark", "issuestickyblockreason", "dependencyautounblockalreadyconsumed",
 		"externaleffectuncertain",
 		"reconcilepersistentlymissingrequiredcheckpark", "reconcilelifetimelimitpark", "reconcilerepeatedfailuregithubrestbudgetpark", "reconcileattempttriagepark", "reconcilelegacydeliverablecredentialpark", "reconcileobsoleteartifactspendprogresspark", "reconcileinvalidworkpadpark", "reconcileblockedreadypullrequest", "derivecurrentbreakerrecoverypark", "normalizecurrentbreakerrecoverypark",

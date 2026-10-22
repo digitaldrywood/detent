@@ -308,8 +308,7 @@ func (o *Orchestrator) finishMergeRevocation(
 	delete(state.Retry, event.IssueID)
 	delete(state.BudgetRefusals, event.IssueID)
 	delete(state.PriorAttempts, event.IssueID)
-	delete(state.InstantFailures, event.IssueID)
-	delete(state.RepeatedFailures, event.IssueID)
+
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
 	releaseProjectFailureBreakerCanary(state, event.IssueID)
 	if event.Result.TurnStarted {

@@ -62,9 +62,6 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 	if event.Result.NativeLanding != nil {
 		metadata = mergeWorkAttemptMetadata(metadata, nativeLandingMetadata(event.Result.NativeLanding))
 	}
-	if terminal == store.WorkAttemptTerminalSuccess && (!cleanliness.Attempted || cleanliness.Outcome == completionCleanlinessAccepted) {
-		resetWorkerFailureBreakers(state, event.IssueID)
-	}
 	if err := o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt); err != nil {
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		return

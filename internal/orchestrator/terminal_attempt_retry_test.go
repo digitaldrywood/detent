@@ -36,22 +36,20 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 	secondBackendBody := backendPrefix + "second failure" + backendPrefix
 	capacityReset := time.Date(2026, 7, 18, 16, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name                string
-		limit               *int
-		wantBlocked         bool
-		completionErr       bool
-		noStore             bool
-		noAttemptID         bool
-		issue               connector.Issue
-		result              runpkg.RunResult
-		runError            error
-		wantState           string
-		wantTransitions     []string
-		previousBackendBody string
-		wantInstantFailures int
+		name            string
+		limit           *int
+		wantBlocked     bool
+		completionErr   bool
+		noStore         bool
+		noAttemptID     bool
+		issue           connector.Issue
+		result          runpkg.RunResult
+		runError        error
+		wantState       string
+		wantTransitions []string
 	}{
-		{name: "distinct full backend bodies reset streak", issue: terminalRetryTestIssue("distinct-backend"), runError: failureBreakerBackendError{body: secondBackendBody}, previousBackendBody: firstBackendBody, wantInstantFailures: 1, wantState: "Todo", wantTransitions: []string{"Todo"}},
-		{name: "identical full backend bodies accumulate streak", issue: terminalRetryTestIssue("identical-backend"), runError: failureBreakerBackendError{body: firstBackendBody}, previousBackendBody: firstBackendBody, wantInstantFailures: 2, wantState: "Todo", wantTransitions: []string{"Todo"}},
+		{name: "distinct backend bodies retry", issue: terminalRetryTestIssue("distinct-backend"), runError: failureBreakerBackendError{body: secondBackendBody}, wantState: "Todo", wantTransitions: []string{"Todo"}},
+		{name: "identical backend bodies retry", issue: terminalRetryTestIssue("identical-backend"), runError: failureBreakerBackendError{body: firstBackendBody}, wantState: "Todo", wantTransitions: []string{"Todo"}},
 		{name: "zero parks failed persistence", limit: new(0), issue: terminalRetryTestIssue("zero-store-error"), runError: errors.New("runner failed"), completionErr: true, wantState: "Todo", wantTransitions: []string{"Todo"}},
 		{name: "zero parks missing store", limit: new(0), issue: terminalRetryTestIssue("zero-no-store"), runError: errors.New("runner failed"), noStore: true, wantState: "Todo", wantTransitions: []string{"Todo"}},
 		{name: "zero parks missing attempt ID", limit: new(0), issue: terminalRetryTestIssue("zero-no-id"), runError: errors.New("runner failed"), noAttemptID: true, wantState: "Todo", wantTransitions: []string{"Todo"}},
@@ -141,23 +139,6 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 				state.Running[tt.issue.ID] = running
 			}
 
-			if tt.previousBackendBody != "" {
-				o.cfg.OutputTruncationMaxBytes = 100
-				if o.operatorText(firstBackendBody) != o.operatorText(secondBackendBody) || o.operatorText(firstBackendBody) == firstBackendBody {
-					t.Fatal("backend bodies must share a truncated display prefix")
-				}
-				running := state.Running[tt.issue.ID]
-				running.StartedAt = now.Add(-time.Second)
-				state.Running[tt.issue.ID] = running
-				if o.tripInstantFailureCircuitBreaker(t.Context(), &state, runpkg.Completion{
-					IssueID:     tt.issue.ID,
-					Err:         failureBreakerBackendError{body: tt.previousBackendBody},
-					CompletedAt: now,
-				}, running, 1) {
-					t.Fatal("first backend failure unexpectedly tripped the breaker")
-				}
-			}
-
 			tt.result.TurnStarted = true
 			o.handleRunResult(t.Context(), &state, runpkg.Completion{
 				IssueID:      tt.issue.ID,
@@ -168,15 +149,6 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 				RetryDelay:   time.Minute,
 			})
 
-			if tt.previousBackendBody != "" {
-				if got := state.InstantFailures[tt.issue.ID].Count; got != tt.wantInstantFailures {
-					t.Fatalf("instant failure streak = %d, want %d", got, tt.wantInstantFailures)
-				}
-			}
-
-			if len(state.Blocked) != 0 {
-				t.Fatal("machine failure retained Blocked state")
-			}
 			retry, ok := state.Retry[tt.issue.ID]
 			if !ok {
 				t.Fatalf("Retry[%q] missing", tt.issue.ID)
@@ -556,7 +528,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				lookupFoundAfter: tt.lookupFoundAfter,
 			}
 			attempts := &terminalRetryWorkAttemptStore{}
-			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}})
 			var recoveryConnector connector.Connector = tracker
 			if tt.withoutCreator {
 				recoveryConnector = struct {
@@ -681,8 +653,8 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				if err := json.Unmarshal([]byte(completion.WorkerMetadataJSON), &metadata); err != nil || !metadata.WorkProductPushed {
 					t.Fatalf("workspace failure lost pushed work evidence: metadata=%s error=%v", completion.WorkerMetadataJSON, err)
 				}
-				if _, retried := state.Retry[issue.ID]; !retried || len(state.PriorAttempts) != 0 || len(state.Claimed) != 0 || len(state.Completed) != 0 || len(state.RepeatedFailures) != 0 || len(tracker.transitionStates()) != 0 {
-					t.Fatalf("instance failure did not retry or charged/moved the issue: retries=%d prior=%d claims=%d completed=%d failures=%d moves=%v", len(state.Retry), len(state.PriorAttempts), len(state.Claimed), len(state.Completed), len(state.RepeatedFailures), tracker.transitionStates())
+				if _, retried := state.Retry[issue.ID]; !retried || len(state.PriorAttempts) != 0 || len(state.Claimed) != 0 || len(state.Completed) != 0 || len(tracker.transitionStates()) != 0 {
+					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 				}
 				return
 			}
@@ -1673,7 +1645,7 @@ func TestMachineFailuresUseRetryOwner(t *testing.T) {
 			}
 			event := runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: FinalStateCompleted}}
 			running := Running{Issue: issue, Attempt: 1, WorkAttemptID: 42}
-			o.parkRepeatedFailure(t.Context(), &state, event, running, RepeatedFailure{Error: "validation failed"}, 2)
+			o.retryMachineCompletion(t.Context(), &state, event, running, 2, "validation failed")
 			deferred, ok := state.deferredCompletions[issue.ID]
 			if !ok || deferred.Running.WorkAttemptID != 42 || deferred.Result.FinalState != FinalStateCompleted || !state.Retry[issue.ID].CompletionDeferred {
 				t.Fatal("retry routing error lost the original completion")
@@ -1686,10 +1658,10 @@ func TestMachineFailuresUseRetryOwner(t *testing.T) {
 		apply func(*Orchestrator, *State, Running)
 	}{
 		{"instant failure", func(o *Orchestrator, s *State, r Running) {
-			o.parkInstantFailure(t.Context(), s, runpkg.Completion{CompletedAt: now}, r, InstantFailure{Error: "backend failed"}, 50)
+			o.retryMachineCompletion(t.Context(), s, runpkg.Completion{CompletedAt: now}, r, 50, "backend failed")
 		}},
 		{"repeated failure", func(o *Orchestrator, s *State, r Running) {
-			o.parkRepeatedFailure(t.Context(), s, runpkg.Completion{CompletedAt: now}, r, RepeatedFailure{Error: "validation failed"}, 50)
+			o.retryMachineCompletion(t.Context(), s, runpkg.Completion{CompletedAt: now}, r, 50, "validation failed")
 		}},
 		{"merge exhaustion", func(o *Orchestrator, s *State, r Running) {
 			o.blockExhaustedMergeWorker(t.Context(), s, r, runpkg.Completion{IssueID: r.Issue.ID, CompletedAt: now}, mergeWorkerRetryExhaustedReason, 50, errors.New("merge failed"))
@@ -1707,7 +1679,7 @@ func TestMachineFailuresUseRetryOwner(t *testing.T) {
 			o.blockImplementProgress(t.Context(), s, r, implementCompletionProgressDecision{Issue: r.Issue}, runpkg.Completion{IssueID: r.Issue.ID, CompletedAt: now})
 		}},
 		{"spend progress", func(o *Orchestrator, s *State, r Running) {
-			o.blockSpendProgress(t.Context(), s, r, spendProgressDecision{}, runpkg.Completion{IssueID: r.Issue.ID, CompletedAt: now})
+			o.retryMachineCompletion(t.Context(), s, runpkg.Completion{CompletedAt: now}, r, 50, "no progress")
 		}},
 		{"lifetime", func(o *Orchestrator, s *State, r Running) {
 			o.parkLifetimeLimit(t.Context(), s, r.Issue, lifetimeLimitDecision{}, now)

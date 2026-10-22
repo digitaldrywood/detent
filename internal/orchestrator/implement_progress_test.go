@@ -179,7 +179,6 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantHydrations:   1,
 			wantConsecutive:  3,
 			wantBlocked:      true,
-			wantBlockReason:  noProgressLimitReason,
 		},
 		{
 			name:          "disabled signature limit retains unchanged classification",
@@ -221,9 +220,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantCurrentHead:  "same-head",
 			wantHydrations:   1,
 			wantBlocked:      true,
-			wantBlockReason:  strandedUnpushedWorkReason,
-			wantComment:      "commits_not_in_pull_request: \"abc123 fix: preserve work\"",
-			wantConsecutive:  3,
+
+			wantComment:     "commits_not_in_pull_request: \"abc123 fix: preserve work\"",
+			wantConsecutive: 3,
 		},
 		{
 			name:          "untracked file with matching pull request head is not stranded",
@@ -262,7 +261,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantCurrentHead: "same-head",
 			wantHydrations:  1,
 			wantBlocked:     true,
-			wantBlockReason: strandedUnpushedWorkReason,
+
 			wantComment:     "tracked_paths: \"tracked.go\"",
 			wantConsecutive: 1,
 		},
@@ -504,7 +503,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantTerminal:    store.WorkAttemptTerminalNoProgress,
 			wantReason:      "completed_clean_diff_without_pull_request",
 			wantBlocked:     true,
-			wantBlockReason: noProgressLimitReason,
+
 			wantConsecutive: 3,
 		},
 		{
@@ -826,7 +825,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 	}
 }
 
-func TestHandleRunResultResetsFailureBreakersOnlyForDurableWorkProduct(t *testing.T) {
+func TestHandleRunResultResetsRetryAfterProgress(t *testing.T) {
 	t.Parallel()
 
 	base := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
@@ -893,8 +892,6 @@ func TestHandleRunResultResetsFailureBreakersOnlyForDurableWorkProduct(t *testin
 				CompletionLane:   tt.completionLane,
 			}
 			state.Claimed[tt.issue.ID] = Claimed{Issue: tt.issue, ClaimedAt: base.Add(-time.Minute)}
-			state.InstantFailures[tt.issue.ID] = InstantFailure{Issue: tt.issue, Count: 2}
-			state.RepeatedFailures[tt.issue.ID] = RepeatedFailure{Issue: tt.issue, Count: 2}
 
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
 				IssueID:     tt.issue.ID,
@@ -903,14 +900,17 @@ func TestHandleRunResultResetsFailureBreakersOnlyForDurableWorkProduct(t *testin
 				Result:      runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: DiffStats{Status: "clean"}},
 			})
 
-			_, instantPresent := state.InstantFailures[tt.issue.ID]
-			_, repeatedPresent := state.RepeatedFailures[tt.issue.ID]
-			if tt.wantReset && (instantPresent || repeatedPresent) {
-				t.Fatalf("failure breakers remain after durable work product: instant=%t repeated=%t", instantPresent, repeatedPresent)
+			if retry, ok := state.Retry[tt.issue.ID]; ok {
+				if !tt.wantReset && retry.Attempt != 4 {
+					t.Fatalf("no-progress retry attempt = %d, want 4", retry.Attempt)
+				}
+				if tt.wantReset && retry.Attempt != 1 {
+					t.Fatalf("successful continuation attempt = %d, want 1", retry.Attempt)
+				}
+			} else if !tt.wantReset {
+				t.Fatal("no-progress completion lost retry")
 			}
-			if !tt.wantReset && (!instantPresent || !repeatedPresent) {
-				t.Fatalf("failure breakers cleared after yieldless completion: instant=%t repeated=%t", instantPresent, repeatedPresent)
-			}
+
 		})
 	}
 }
@@ -1921,113 +1921,6 @@ func TestCompletedReworkGateWaitProgressPreservesStrandedCommitDecision(t *testi
 	got, reason := completedReworkGateWaitProgress(running, decision, cfg, FinalStateCompleted)
 	if reason != "" || got.Outcome != store.WorkAttemptTerminalNoProgress || got.Reason != strandedUnpushedWorkReason {
 		t.Fatalf("completedReworkGateWaitProgress() = outcome %q reason %q gate wait %q, want preserved stranded decision", got.Outcome, got.Reason, reason)
-	}
-}
-
-func TestImplementProgressBlockComment(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		decision     implementCompletionProgressDecision
-		wantContains []string
-		wantAbsent   []string
-	}{
-		{
-			name: "boundary evidence",
-			decision: implementCompletionProgressDecision{
-				BlockReason:            workpadBlockedUnactionedReason,
-				NoProgressLimit:        3,
-				ConsecutiveNoProgress:  2,
-				ConsecutiveHumanAction: 3,
-				HumanAction:            "Approve release\nConfirm rollback",
-				CurrentSignature:       autoPromoteReworkSignature{PRNumber: 42, HeadSHA: "head", FailedChecks: []string{"test"}},
-				PreviousSignature:      autoPromoteReworkSignature{HeadSHA: "previous"},
-				FailedChecksAdded:      []string{"test"},
-				FailedChecksRemoved:    []string{"lint"},
-				WorkspaceDiffStats:     DiffStats{Status: "clean"},
-			},
-			wantContains: []string{"Workpad requests human action", "workpad_blocked_unactioned", "pull/42", "head", "previous", "failed_checks_added", "0 files", "> Approve release", "> Confirm rollback"},
-		},
-		{
-			name: "dispatch loop stale carry",
-			decision: implementCompletionProgressDecision{
-				BlockReason:           dispatchLoopDetectedReason,
-				NoProgressLimit:       3,
-				ConsecutiveNoProgress: 3,
-				WorkspaceDiffStats: DiffStats{
-					FilesChanged:    1,
-					AddedLines:      1,
-					RemovedLines:    1,
-					UnpushedCommits: 2,
-					HeadSHA:         "workspace-head",
-					Fingerprint:     "diff-fingerprint",
-					Status:          "changed",
-				},
-			},
-			wantContains: []string{
-				"workspace unchanged across 3 attempts",
-				"head `workspace-head`",
-				"diff fingerprint `diff-fingerprint`",
-				"identical since attempt 1",
-				"carrying 1 changed file (+1/-1), 2 unpushed commits, unchanged since attempt 1",
-			},
-			wantAbsent: []string{"workspace_diffstat", "(changed)"},
-		},
-		{
-			name: "historical dispatch loop clean workspace",
-			decision: implementCompletionProgressDecision{
-				BlockReason:           dispatchLoopDetectedReason,
-				ConsecutiveNoProgress: 3,
-				WorkspaceDiffStats:    DiffStats{Status: "clean", HeadSHA: "workspace-head"},
-			},
-			wantContains: []string{"workspace unchanged across 3 attempts", "head `workspace-head`", "identical since attempt 1"},
-			wantAbsent:   []string{"carried stale work", "diff fingerprint", "workspace evidence: unavailable"},
-		},
-		{
-			name: "historical dispatch loop fingerprint without head",
-			decision: implementCompletionProgressDecision{
-				BlockReason:           dispatchLoopDetectedReason,
-				ConsecutiveNoProgress: 3,
-				WorkspaceDiffStats: DiffStats{
-					FilesChanged: 2, AddedLines: 5, RemovedLines: 3, UnpushedCommits: 1,
-					Fingerprint: "historical-diff", Status: "changed",
-				},
-			},
-			wantContains: []string{"diff fingerprint `historical-diff`", "carrying 2 changed files (+5/-3), 1 unpushed commit, unchanged since attempt 1"},
-			wantAbsent:   []string{"head `", "workspace_diffstat", "workspace evidence: unavailable"},
-		},
-		{
-			name: "dispatch loop unavailable workspace evidence",
-			decision: implementCompletionProgressDecision{
-				BlockReason:           dispatchLoopDetectedReason,
-				NoProgressLimit:       3,
-				ConsecutiveNoProgress: 3,
-			},
-			wantContains: []string{"workspace evidence: unavailable"},
-			wantAbsent:   []string{"workspace unchanged", "identical since"},
-		},
-	}
-	issue := connector.Issue{PullRequest: &connector.PullRequest{URL: "https://github.test/pull/42"}}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			comment := implementProgressBlockComment(issue, tt.decision)
-			for _, want := range tt.wantContains {
-				if !strings.Contains(comment, want) {
-					t.Fatalf("comment missing %q:\n%s", want, comment)
-				}
-			}
-			for _, unwanted := range tt.wantAbsent {
-				if strings.Contains(comment, unwanted) {
-					t.Fatalf("comment contains misleading evidence %q:\n%s", unwanted, comment)
-				}
-			}
-		})
-	}
-	if got := implementProgressRecoveryReason(tests[0].decision); got != tests[0].decision.HumanAction {
-		t.Fatalf("implementProgressRecoveryReason() = %q, want %q", got, tests[0].decision.HumanAction)
 	}
 }
 

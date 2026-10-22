@@ -79,6 +79,11 @@ interactions are the main source of incidents, so the set may not grow.
   every recovery read, without fingerprint, retry-limit or consumed-signature vetoes.
   Stored derived hold metadata requires an owner, source revision and expiry;
   deleting derived holds must not change recomputed dispatch decisions.
+- Per-issue instant/repeated failure, progress, spend-since-progress, dispatch-loop,
+  token-ceiling and workspace retry brakes use the existing machine retry state,
+  with capped jittered backoff that resets on success. Current organization/project
+  budgets, usage and provider capacity bound admission; historical brake metadata
+  never parks work or vetoes dispatch. Session limits still bound individual runs.
 - The orchestrator is the only writer of tracker lane state; workers report
   outcomes and never write lane labels.
 - This project has no human review step. Never move a Detent issue to Human
@@ -108,8 +113,8 @@ as other stages. A project turns it off with `gate.security_audit.enabled: false
 
 ### Safety-critical orchestrator validation
 
-- `internal/orchestrator/implement_progress.go`, `internal/orchestrator/backend_capacity.go`, `internal/orchestrator/spend_progress.go`, `internal/orchestrator/ranking.go`, `internal/scheduler/global_gate.go`, and the capacity path in `internal/admission/manager.go` are safety-critical brakes and dispatch controls.
-- Changes to these files must preserve meaningful safety regression coverage. Changes to their comparison, signature, time-window, ordering, reservation, or capacity-cleanup logic must preserve the seed cases in `FuzzSafetyCriticalOrchestratorBoundaries`, which covers diffstat cleanliness, signature equality, capacity resume arithmetic, spend-progress baselines, dispatch ordering, and priority-only real-capacity acquisition.
+- `internal/orchestrator/implement_progress.go`, `internal/orchestrator/backend_capacity.go`, `internal/orchestrator/terminal_attempt_retry.go`, `internal/orchestrator/ranking.go`, `internal/scheduler/global_gate.go`, and the capacity path in `internal/admission/manager.go` are safety-critical completion, retry and dispatch controls.
+- Changes to these files must preserve meaningful safety regression coverage. Changes to their comparison, signature, time-window, ordering, reservation, or capacity-cleanup logic must preserve the seed cases in `FuzzSafetyCriticalOrchestratorBoundaries`, which covers diffstat cleanliness, signature equality, capacity resume arithmetic, machine retry backoff bounds, dispatch ordering, and priority-only real-capacity acquisition.
 - The [scheduled suite](docs/invariants.md#inv-5--local-pull-request-validation-and-scheduled-release-evidence) executes the boundary fuzz seeds and the named safety regression tables on pinned integrated `develop` commits. The guard is those named tests, not a coverage percentage.
 - Focused tests and fuzzing are available as diagnostics during an edit; for example, `go test ./internal/orchestrator -run '^$' -fuzz=. -fuzztime=30s -timeout=60s`. Under [AGENTS.md validation](AGENTS.md#validation), ordinary submission, completion, admission, and merge do not wait for a coverage percentage, fuzz duration, local status, or scheduled run.
 

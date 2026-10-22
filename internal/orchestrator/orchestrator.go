@@ -31,27 +31,27 @@ import (
 )
 
 const (
-	defaultPollInterval                        = 30 * time.Second
-	defaultRunningReconcileInterval            = 2 * time.Minute
-	defaultWorkspaceCleanupIdleTTL             = 24 * time.Hour
-	defaultWorkspaceCleanupSweep               = 10 * time.Minute
-	defaultGitHubGraphQLWarnRemaining          = 500
-	defaultGitHubGraphQLMinReserve             = 1000
-	defaultGitHubRESTMinReserve                = 1000
-	defaultMaxConcurrentAgents                 = 1
-	defaultMaxRetryBackoff                     = 5 * time.Minute
-	defaultOverloadRetryDelay                  = 45 * time.Second
-	defaultContinuationRetry                   = time.Second
-	defaultFailureRetryBaseDelay               = 10 * time.Second
-	defaultFailureBreakerSameClassLimit        = 5
-	defaultFailureBreakerWindow                = time.Hour
-	defaultFailureBreakerCooldown              = time.Hour
-	maxMergeWorkerRunnerFailures               = 3
-	mergeWorkerCurrentHeadCIWaitTimeout        = time.Hour
-	instantFailureThreshold                    = 5
-	instantFailureMaxDuration                  = 10 * time.Second
-	instantFailureBlockedReasonPrefix          = "instant fail circuit breaker: "
-	repeatedFailureThreshold                   = 5
+	defaultPollInterval                 = 30 * time.Second
+	defaultRunningReconcileInterval     = 2 * time.Minute
+	defaultWorkspaceCleanupIdleTTL      = 24 * time.Hour
+	defaultWorkspaceCleanupSweep        = 10 * time.Minute
+	defaultGitHubGraphQLWarnRemaining   = 500
+	defaultGitHubGraphQLMinReserve      = 1000
+	defaultGitHubRESTMinReserve         = 1000
+	defaultMaxConcurrentAgents          = 1
+	defaultMaxRetryBackoff              = 5 * time.Minute
+	defaultOverloadRetryDelay           = 45 * time.Second
+	defaultContinuationRetry            = time.Second
+	defaultFailureRetryBaseDelay        = 10 * time.Second
+	defaultFailureBreakerSameClassLimit = 5
+	defaultFailureBreakerWindow         = time.Hour
+	defaultFailureBreakerCooldown       = time.Hour
+	maxMergeWorkerRunnerFailures        = 3
+	mergeWorkerCurrentHeadCIWaitTimeout = time.Hour
+
+	repeatedFailureThreshold          = 5
+	instantFailureBlockedReasonPrefix = "instant fail circuit breaker: "
+
 	repeatedFailureBlockedReasonPrefix         = "repeated failure circuit breaker: "
 	tokenCeilingBlockedReasonPrefix            = "token ceiling circuit breaker: "
 	deliverableConfigurationFailureCause       = "deliverable_configuration_failure"
@@ -291,25 +291,25 @@ type RuntimeUpdate struct {
 }
 
 type Orchestrator struct {
-	nativeLandingBatch      *nativeLandingDispatchBatch
-	cfg                     Config
-	connector               connector.Connector
-	scheduling              SchedulingSource
-	workflowMetrics         WorkflowMetricsRecorder
-	laneLedger              store.LaneLedgerStore
-	laneCoordination        coordination.Store
-	laneWriteMu             sync.Mutex
-	laneWrites              map[string]coordination.LaneWrite
-	laneWriteResults        map[string]string
-	laneWriteOrigin         string
-	laneWriteAction         string
-	laneObservations        map[string]store.LaneObservation
-	efficiency              efficiency.Recorder
-	lifecycleExporter       efficiency.LifecycleExporter
-	workAttempts            store.WorkAttemptStore
-	mergeRequiredChecks     store.MergeRequiredCheckStore
-	operatorStops           store.OperatorStopStore
-	progressSpend           store.ProgressSpendStore
+	nativeLandingBatch  *nativeLandingDispatchBatch
+	cfg                 Config
+	connector           connector.Connector
+	scheduling          SchedulingSource
+	workflowMetrics     WorkflowMetricsRecorder
+	laneLedger          store.LaneLedgerStore
+	laneCoordination    coordination.Store
+	laneWriteMu         sync.Mutex
+	laneWrites          map[string]coordination.LaneWrite
+	laneWriteResults    map[string]string
+	laneWriteOrigin     string
+	laneWriteAction     string
+	laneObservations    map[string]store.LaneObservation
+	efficiency          efficiency.Recorder
+	lifecycleExporter   efficiency.LifecycleExporter
+	workAttempts        store.WorkAttemptStore
+	mergeRequiredChecks store.MergeRequiredCheckStore
+	operatorStops       store.OperatorStopStore
+
 	lifetimeUsage           LifetimeUsageStore
 	agentResume             store.AgentResumeStore
 	orphanSessions          store.OrphanSessionStore
@@ -627,12 +627,6 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 			laneLedger = ledger
 		}
 	}
-	progressSpend := deps.ProgressSpend
-	if progressSpend == nil {
-		if candidate, ok := deps.WorkflowMetrics.(store.ProgressSpendStore); ok {
-			progressSpend = candidate
-		}
-	}
 	lifetimeUsage := deps.LifetimeUsage
 	if lifetimeUsage == nil {
 		if candidate, ok := deps.WorkflowMetrics.(LifetimeUsageStore); ok {
@@ -713,18 +707,18 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	}
 
 	orchestrator := &Orchestrator{
-		cfg:                     cfg,
-		connector:               deps.Connector,
-		scheduling:              deps.Scheduling,
-		workflowMetrics:         deps.WorkflowMetrics,
-		laneLedger:              laneLedger,
-		laneCoordination:        deps.LaneCoordination,
-		efficiency:              deps.Efficiency,
-		lifecycleExporter:       deps.LifecycleExporter,
-		workAttempts:            deps.WorkAttempts,
-		mergeRequiredChecks:     mergeRequiredChecks,
-		operatorStops:           operatorStops,
-		progressSpend:           progressSpend,
+		cfg:                 cfg,
+		connector:           deps.Connector,
+		scheduling:          deps.Scheduling,
+		workflowMetrics:     deps.WorkflowMetrics,
+		laneLedger:          laneLedger,
+		laneCoordination:    deps.LaneCoordination,
+		efficiency:          deps.Efficiency,
+		lifecycleExporter:   deps.LifecycleExporter,
+		workAttempts:        deps.WorkAttempts,
+		mergeRequiredChecks: mergeRequiredChecks,
+		operatorStops:       operatorStops,
+
 		lifetimeUsage:           lifetimeUsage,
 		agentResume:             agentResume,
 		orphanSessions:          orphanSessions,
@@ -1711,6 +1705,5 @@ func (o *Orchestrator) cleanupDrainedRun(ctx context.Context, state *State, issu
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
 	delete(state.PriorAttempts, issueID)
-	delete(state.InstantFailures, issueID)
-	delete(state.RepeatedFailures, issueID)
+
 }

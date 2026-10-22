@@ -118,8 +118,6 @@ type State struct {
 	dependencyUnblockEarly   bool
 	BudgetRefusals           map[string]BudgetRefusal
 	PriorAttempts            map[string]runpkg.PriorAttempt
-	InstantFailures          map[string]InstantFailure
-	RepeatedFailures         map[string]RepeatedFailure
 	FailureBreaker           ProjectFailureBreaker
 	DispatchRecoveries       map[string]DispatchRecovery
 	StalenessWarnings        map[string]StalenessWarning
@@ -349,28 +347,6 @@ type RetryWait struct {
 	WorkspaceDestroyCount int
 }
 
-type InstantFailure struct {
-	Issue          connector.Issue
-	Error          string
-	errorKey       string
-	Count          int
-	FirstFailureAt time.Time
-	LastFailureAt  time.Time
-}
-
-// RepeatedFailure tracks consecutive worker failures of any duration for one
-// issue. Unlike InstantFailure it does not require matching error text: token
-// counts and other attempt-specific details vary between otherwise identical
-// failures, and each retry of a long-running failure spends real money.
-type RepeatedFailure struct {
-	Issue                    connector.Issue
-	Error                    string
-	Count                    int
-	GitHubRESTBudgetFailures int
-	FirstFailureAt           time.Time
-	LastFailureAt            time.Time
-}
-
 type ProjectFailureBreaker struct {
 	Config         FailureBreakerConfig
 	Failures       map[string][]ProjectFailure
@@ -467,8 +443,7 @@ func newState(cfg Config) State {
 		DependencyAutoUnblocks:   map[string]DependencyAutoUnblockRecord{},
 		BudgetRefusals:           map[string]BudgetRefusal{},
 		PriorAttempts:            map[string]runpkg.PriorAttempt{},
-		InstantFailures:          map[string]InstantFailure{},
-		RepeatedFailures:         map[string]RepeatedFailure{},
+
 		FailureBreaker:           newProjectFailureBreaker(cfg.FailureBreaker),
 		DispatchRecoveries:       map[string]DispatchRecovery{},
 		StalenessWarnings:        map[string]StalenessWarning{},
@@ -579,8 +554,7 @@ func (s State) clone() State {
 		dependencyUnblockEarly:   s.dependencyUnblockEarly,
 		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
 		PriorAttempts:            clonePriorAttempts(s.PriorAttempts),
-		InstantFailures:          make(map[string]InstantFailure, len(s.InstantFailures)),
-		RepeatedFailures:         make(map[string]RepeatedFailure, len(s.RepeatedFailures)),
+
 		FailureBreaker:           cloneProjectFailureBreaker(s.FailureBreaker),
 		DispatchRecoveries:       cloneDispatchRecoveries(s.DispatchRecoveries),
 		StalenessWarnings:        maps.Clone(s.StalenessWarnings),
@@ -638,14 +612,6 @@ func (s State) clone() State {
 		retry.ForgeRetry = cloneForgeRetry(retry.ForgeRetry)
 		retry.Wait.PendingChecks = append([]string(nil), retry.Wait.PendingChecks...)
 		cloned.Retry[id] = retry
-	}
-	for id, failure := range s.InstantFailures {
-		failure.Issue = cloneIssue(failure.Issue)
-		cloned.InstantFailures[id] = failure
-	}
-	for id, failure := range s.RepeatedFailures {
-		failure.Issue = cloneIssue(failure.Issue)
-		cloned.RepeatedFailures[id] = failure
 	}
 	for id, refusal := range s.BudgetRefusals {
 		refusal.Issue = cloneIssue(refusal.Issue)

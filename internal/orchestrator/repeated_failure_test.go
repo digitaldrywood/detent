@@ -11,11 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
-// tokenCeilingRunner fails every attempt with an error whose text varies per
-// call, the way a session token ceiling failure reports a different
-// total_tokens each attempt. The varying text keeps the instant-failure
-// breaker from matching consecutive errors, which is exactly the gap the
-// repeated-failure breaker covers.
 type tokenCeilingRunner struct {
 	calls        atomic.Int64
 	failureCount int64
@@ -99,47 +94,6 @@ func TestRunRetriesRepeatedCostlyWorkerFailures(t *testing.T) {
 	}
 }
 
-func TestRunRepeatedFailureCounterSurvivesYieldlessCompletion(t *testing.T) {
-	t.Parallel()
-
-	issue := testIssue("issue-repeated-fail-reset", "digitaldrywood/detent#980", "Todo")
-	tracker := newFakeConnector(issue)
-	runner := &tokenCeilingRunner{failureCount: 4}
-
-	orch, err := orchestrator.New(orchestrator.Config{
-		PollInterval:           time.Millisecond,
-		MaxConcurrentAgents:    1,
-		MaxRetryBackoff:        time.Millisecond,
-		FailureRetryBaseDelay:  time.Millisecond,
-		ActiveStates:           []string{"Todo", "In Progress"},
-		ObservedStates:         []string{"Blocked"},
-		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
-		ContinuationRetryDelay: time.Second,
-	}, orchestrator.Dependencies{
-		Connector: tracker,
-		Runner:    runner,
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	stop := runOrchestrator(t, orch)
-	defer stop()
-
-	// Multiple worker completions may exceed one second under aggregate-suite load.
-	// This timeout is a deadlock guard, not an assertion about failure latency.
-	state := waitForStateWithin(t, orch, slowCIIntegrationWaitTimeout, func(state orchestrator.State) bool {
-		_, ok := state.Completed[issue.ID]
-		return ok
-	})
-
-	if _, ok := state.Blocked[issue.ID]; ok {
-		t.Fatalf("Blocked[%q] present after successful completion", issue.ID)
-	}
-	if got := state.RepeatedFailures[issue.ID].Count; got != 4 {
-		t.Fatalf("RepeatedFailures[%q].Count = %d, want 4 after yieldless completion", issue.ID, got)
-	}
-}
-
 func TestRunDefersRESTBudgetFailureAsCapacityWithoutBreaker(t *testing.T) {
 	t.Parallel()
 
@@ -182,9 +136,6 @@ func TestRunDefersRESTBudgetFailureAsCapacityWithoutBreaker(t *testing.T) {
 	}
 	if _, ok := state.Blocked[issue.ID]; ok {
 		t.Fatalf("Blocked[%q] present after capacity deferral", issue.ID)
-	}
-	if _, ok := state.RepeatedFailures[issue.ID]; ok {
-		t.Fatalf("RepeatedFailures[%q] present after capacity deferral", issue.ID)
 	}
 	if state.FailureBreaker.Active() {
 		t.Fatalf("FailureBreaker = %#v, want inactive", state.FailureBreaker)

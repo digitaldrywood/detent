@@ -157,8 +157,7 @@ func (o *Orchestrator) handleSessionBrake(
 	delete(state.Blocked, event.IssueID)
 	delete(state.BudgetRefusals, event.IssueID)
 	delete(state.PriorAttempts, event.IssueID)
-	delete(state.InstantFailures, event.IssueID)
-	delete(state.RepeatedFailures, event.IssueID)
+
 	o.scheduleRetry(state, issue, nextAttempt(running.Attempt), completedAt, brake.Reason, false, running.WorkerHost)
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
 	releaseProjectFailureBreakerCanary(state, event.IssueID)

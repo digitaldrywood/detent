@@ -176,6 +176,24 @@ another recovery or capacity mechanism or exempt any changed content.
 `TestRunnerChunkedAudit` in `internal/runner`. Review verifies removal or
 consolidation.
 
+Per-issue instant/repeated failure, no-progress, spend-since-progress,
+dispatch-loop, token-ceiling and workspace retry brakes are consolidated into
+the existing machine retry owner. Machine failures remain dispatchable with
+capped jittered backoff, resetting after success. Current budget/usage policy
+and provider capacity own admission; individual session limits still bound a
+run. Historical brake metadata is diagnostic and cannot veto the next attempt.
+Explicit human action and operator stops retain their authority.
+
+**Retry enforcement:** `TestMachineFailuresUseRetryOwner`,
+`TestMachineRetrySurvivesStoreRestart`, `TestDerivedHoldDispatchEquivalence`,
+`TestHandleRunResultResetsRetryAfterProgress`, and
+`TestBackendCapacityHelperBoundaries` and
+`TestPruneBudgetRefusalsReevaluatesDailyCap` in `internal/orchestrator`.
+`FuzzSafetyCriticalOrchestratorBoundaries` retains completion-evidence,
+capacity resume arithmetic, capped backoff, dispatch ordering and priority-only
+real-capacity acquisition coverage. The retired-symbol checks prevent restoring
+the deleted per-issue brake owners.
+
 ## INV-4 — Native merge queue
 
 Merges go through the repository's merge queue when one exists. Without a

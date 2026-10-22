@@ -109,16 +109,14 @@ func TestSSHHostLossUsesInstanceRetry(t *testing.T) {
 			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: issue}}
 			orch := Orchestrator{cfg: cfg, connector: tracker}
 			state := newState(cfg)
-			state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: 2}
-			state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: 2}
 			state.Running[issue.ID] = Running{Issue: issue, WorkerHost: "air", Mode: runpkg.RunModeImplement, Attempt: 1, StartedAt: time.Now()}
 			err := backendcapacity.NewError(backendcapacity.Scope{BackendID: "ssh:air", BackendKind: "ssh", Provider: "local"}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload}, errors.New("SSH channel closed"))
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: err, Result: runpkg.RunResult{TurnStarted: started}, CompletedAt: time.Now(), Retryable: true, RetryAttempt: 1, RetryDelay: time.Second})
 			if _, ok := state.Retry[issue.ID]; !ok {
 				t.Fatal("host loss did not schedule retry")
 			}
-			if state.FailureBreaker.Active() || state.InstantFailures[issue.ID].Count != 2 || state.RepeatedFailures[issue.ID].Count != 2 {
-				t.Fatal("host loss charged issue failures or drained the instance")
+			if state.FailureBreaker.Active() {
+				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 			}
 		})
 	}

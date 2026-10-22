@@ -1589,12 +1589,6 @@ func TestRunPausesBackendAfterQuotaErrorWithoutBreakerStrike(t *testing.T) {
 	if got := runner.calls.Load(); got != 1 {
 		t.Fatalf("runner calls = %d, want one capacity probe", got)
 	}
-	if len(state.InstantFailures) != 0 {
-		t.Fatalf("InstantFailures = %#v, want no breaker strikes", state.InstantFailures)
-	}
-	if len(state.RepeatedFailures) != 0 {
-		t.Fatalf("RepeatedFailures = %#v, want no breaker strikes", state.RepeatedFailures)
-	}
 	if _, ok := state.Blocked[issue.ID]; ok {
 		t.Fatalf("Blocked[%q] present after quota error", issue.ID)
 	}

@@ -122,8 +122,6 @@ func TestTrackerUnavailableCompletionBypassesAllFailureBreakers(t *testing.T) {
 	state := newState(cfg)
 	issue := dispatchTestIssue("issue-tracker-wait", "In Progress")
 	state.Running[issue.ID] = Running{Issue: issue, Attempt: 4, StartedAt: now.Add(-time.Minute)}
-	state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: instantFailureThreshold - 1}
-	state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: repeatedFailureThreshold - 1}
 	err := trackerAvailabilityTestError("candidate_issues", connector.TrackerAvailabilityClassServer)
 
 	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
@@ -135,12 +133,6 @@ func TestTrackerUnavailableCompletionBypassesAllFailureBreakers(t *testing.T) {
 		RetryDelay:   time.Minute,
 	})
 
-	if got := state.InstantFailures[issue.ID].Count; got != instantFailureThreshold-1 {
-		t.Fatalf("instant failure count = %d, want unchanged", got)
-	}
-	if got := state.RepeatedFailures[issue.ID].Count; got != repeatedFailureThreshold-1 {
-		t.Fatalf("repeated failure count = %d, want unchanged", got)
-	}
 	if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
 		t.Fatalf("FailureBreaker = %#v, want no tracker strike", state.FailureBreaker)
 	}

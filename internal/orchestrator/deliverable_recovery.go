@@ -377,8 +377,7 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 	delete(state.Retry, issue.ID)
 	delete(state.BudgetRefusals, issue.ID)
 	delete(state.PriorAttempts, issue.ID)
-	delete(state.InstantFailures, issue.ID)
-	delete(state.RepeatedFailures, issue.ID)
+
 	if state.Blocked == nil {
 		state.Blocked = map[string]Blocked{}
 	}

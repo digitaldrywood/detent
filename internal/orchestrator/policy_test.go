@@ -76,9 +76,7 @@ func TestProjectSetupFailurePreservesIssueAccounting(t *testing.T) {
 			state := newState(cfg)
 			issue := dispatchTestIssue("issue-one", "Todo")
 			state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 2}
-			state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: 1}
 			beforeRetry := state.Retry[issue.ID]
-			beforeFailure := state.RepeatedFailures[issue.ID]
 			beforeBreaker := cloneProjectFailureBreaker(state.FailureBreaker)
 			attempts := &recordingWorkAttemptStore{}
 			orch := Orchestrator{cfg: cfg, workAttempts: attempts, scheduling: preparingProjectScheduling{err: errors.New("instance project setup exited 7")}}
@@ -90,8 +88,8 @@ func TestProjectSetupFailurePreservesIssueAccounting(t *testing.T) {
 			} else {
 				orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, time.Now())
 			}
-			if !reflect.DeepEqual(state.Retry[issue.ID], beforeRetry) || !reflect.DeepEqual(state.RepeatedFailures[issue.ID], beforeFailure) || !reflect.DeepEqual(state.FailureBreaker, beforeBreaker) || len(state.Running) != 0 || len(state.Claimed) != 0 || len(attempts.decisions) != 0 {
-				t.Fatal("instance setup failure changed issue accounting or started work")
+			if !reflect.DeepEqual(state.Retry[issue.ID], beforeRetry) || !reflect.DeepEqual(state.FailureBreaker, beforeBreaker) || len(state.Running) != 0 || len(state.Claimed) != 0 || len(attempts.decisions) != 0 {
+				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 			}
 		})
 	}

@@ -154,11 +154,6 @@ func TestCompletionForgeEvidencePreservesReceipt(t *testing.T) {
 			if snapshot.WorkpadStatus != workpad.StatusInProgress || snapshot.WorkpadReceiptHash != "" {
 				t.Errorf("forge evidence fabricated a receipt: %#v", snapshot)
 			}
-			orch := &Orchestrator{cfg: normalizeConfig(Config{})}
-			fingerprint, _ := orch.spendProgressArtifactFingerprint(running)
-			if fingerprint.ReceiptHash != "" {
-				t.Error("forge evidence credited an artifact receipt")
-			}
 			if completionCleanlinessAttempted(running, issue) {
 				t.Error("forge evidence accepted an authored current-attempt claim")
 			}

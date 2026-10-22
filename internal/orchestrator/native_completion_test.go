@@ -795,8 +795,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 			}
 			if test.preProvider {
-				if len(state.Completed) != 0 || len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 || state.FailureBreaker.Count != 0 {
-					t.Fatal("pre-provider native refusal consumed issue failures or acceptance")
+				if len(state.Completed) != 0 || state.FailureBreaker.Count != 0 {
+					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 				}
 				if test.preInstance {
 					retry, retried := state.Retry[issue.ID]

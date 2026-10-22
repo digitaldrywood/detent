@@ -244,8 +244,11 @@ func (o *Orchestrator) reconcileTerminalAttemptRetryStates(
 				if o.logger != nil {
 					o.logger.Warn("instance failure lane restoration failed", "issue_id", issue.ID, "error", err)
 				}
-			} else if changed {
-				transitions = append(transitions, updated)
+			} else {
+				o.releaseTerminalAttemptClaim(ctx, state, updated, now)
+				if changed {
+					transitions = append(transitions, updated)
+				}
 			}
 			continue
 		}

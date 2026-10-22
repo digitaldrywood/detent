@@ -194,12 +194,8 @@ func TestHubSchedulingCycle(t *testing.T) {
 				state.RateLimits = &telemetry.RateLimits{GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 0, Limit: 5000, Used: 5000, ResetAt: &resetAt}}
 			}
 			state.Retry["preserved"] = Retry{Attempt: 3, DueAt: now.Add(time.Hour)}
-			state.InstantFailures["preserved"] = InstantFailure{Count: 2}
-			state.RepeatedFailures["preserved"] = RepeatedFailure{Count: 2}
 			state.FailureBreaker.Failures["existing"] = []ProjectFailure{{IssueID: "preserved", At: now.Add(-time.Minute)}}
 			beforeRetry := state.Retry["preserved"]
-			beforeInstant := state.InstantFailures["preserved"]
-			beforeRepeated := state.RepeatedFailures["preserved"]
 			beforeBreaker := cloneProjectFailureBreaker(state.FailureBreaker)
 
 			if test.capacityWait == "quota-recovered" {
@@ -302,8 +298,8 @@ func TestHubSchedulingCycle(t *testing.T) {
 				if !strings.Contains(state.LastRefreshError, "Hub unavailable") || !state.Snapshot(now).Refresh.Degraded() {
 					t.Fatalf("refresh = %#v", state.Snapshot(now).Refresh)
 				}
-				if !reflect.DeepEqual(state.Retry["preserved"], beforeRetry) || !reflect.DeepEqual(state.InstantFailures["preserved"], beforeInstant) || !reflect.DeepEqual(state.RepeatedFailures["preserved"], beforeRepeated) || !reflect.DeepEqual(state.FailureBreaker, beforeBreaker) {
-					t.Fatalf("outage changed work budgets: retry=%#v instant=%#v repeated=%#v breaker=%#v", state.Retry, state.InstantFailures, state.RepeatedFailures, state.FailureBreaker)
+				if !reflect.DeepEqual(state.Retry["preserved"], beforeRetry) || !reflect.DeepEqual(state.FailureBreaker, beforeBreaker) {
+					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 				}
 				if state.PollInterval <= cfg.PollInterval {
 					t.Fatalf("outage poll interval = %s, want backoff above %s", state.PollInterval, cfg.PollInterval)
@@ -425,8 +421,8 @@ func TestHubSchedulingPreservesOverloadRetryAcrossAdmissions(t *testing.T) {
 			if retained == test.wantReleased || claimed != (hadClaim && !test.wantReleased) {
 				t.Fatalf("retry retained=%t claimed=%t, want released=%t", retained, claimed, test.wantReleased)
 			}
-			if len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 || len(state.BackendOutages) != 0 {
-				t.Fatal("provider overload spent issue failure allowance or created a backend outage")
+			if len(state.BackendOutages) != 0 {
+				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 			}
 			if test.wantReleased {
 				return

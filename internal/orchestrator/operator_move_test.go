@@ -33,10 +33,6 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 	state.Claimed[unrelated.ID] = Claimed{Issue: unrelated}
 	state.Retry[moved.ID] = Retry{Issue: moved}
 	state.Retry[unrelated.ID] = Retry{Issue: unrelated}
-	state.InstantFailures[moved.ID] = InstantFailure{Issue: moved, Count: 2}
-	state.InstantFailures[unrelated.ID] = InstantFailure{Issue: unrelated, Count: 1}
-	state.RepeatedFailures[moved.ID] = RepeatedFailure{Issue: moved, Count: 2}
-	state.RepeatedFailures[unrelated.ID] = RepeatedFailure{Issue: unrelated, Count: 1}
 	state.WorkAttempts = []telemetry.WorkAttempt{
 		{
 			AttemptID:          4,
@@ -96,12 +92,6 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 	if _, ok := state.Retry[moved.ID]; ok {
 		t.Fatalf("Retry[%q] remains", moved.ID)
 	}
-	if _, ok := state.InstantFailures[moved.ID]; ok {
-		t.Fatalf("InstantFailures[%q] remains", moved.ID)
-	}
-	if _, ok := state.RepeatedFailures[moved.ID]; ok {
-		t.Fatalf("RepeatedFailures[%q] remains", moved.ID)
-	}
 	if _, ok := state.Blocked[unrelated.ID]; !ok {
 		t.Fatalf("Blocked[%q] missing", unrelated.ID)
 	}
@@ -110,12 +100,6 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 	}
 	if _, ok := state.Retry[unrelated.ID]; !ok {
 		t.Fatalf("Retry[%q] missing", unrelated.ID)
-	}
-	if _, ok := state.InstantFailures[unrelated.ID]; !ok {
-		t.Fatalf("InstantFailures[%q] missing", unrelated.ID)
-	}
-	if _, ok := state.RepeatedFailures[unrelated.ID]; !ok {
-		t.Fatalf("RepeatedFailures[%q] missing", unrelated.ID)
 	}
 	if state.FailureBreaker.Active() {
 		t.Fatalf("FailureBreaker = %#v, want inactive after moved issue signal cleared", state.FailureBreaker)

@@ -113,7 +113,7 @@ substituting for that section.
 
 The safety-critical paths are `internal/orchestrator/implement_progress.go`,
 `internal/orchestrator/backend_capacity.go`,
-`internal/orchestrator/spend_progress.go`, `internal/orchestrator/ranking.go`,
+`internal/orchestrator/terminal_attempt_retry.go`, `internal/orchestrator/ranking.go`,
 `internal/scheduler/global_gate.go`, and the capacity path in
 `internal/admission/manager.go`. Comparison, signature, time-window, ordering,
 reservation and capacity-cleanup changes identify the relevant seed in
@@ -432,6 +432,11 @@ interactions are the main source of incidents, so the set may not grow.
   do not extend ownership beyond lease expiry. Expired attempts return to claim
   eligibility without a recovery park or park-clearing sweep; source custody
   and genuine human intent remain authoritative.
+- Per-issue instant/repeated failure, progress, spend-since-progress, dispatch-loop,
+  token-ceiling and workspace retry brakes use the existing machine retry state,
+  with capped jittered backoff that resets on success. Current organization/project
+  budgets, usage and provider capacity bound admission; historical brake metadata
+  never parks work or vetoes dispatch. Session limits still bound individual runs.
 - The orchestrator is the only writer of tracker lane state; workers report
   outcomes and never write lane labels.
 - Do not add configuration keys, CLI subcommands, or dashboard surfaces to work

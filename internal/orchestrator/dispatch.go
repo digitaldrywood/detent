@@ -855,11 +855,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 
 	issue = cloneIssue(claimedIssue)
 	priorAttempt := state.PriorAttempts[issue.ID]
-	if !priorAttemptPresent(priorAttempt) {
-		if breakerAttempt, ok := o.spendProgressPriorAttempt(runCtx, issue); ok {
-			priorAttempt = breakerAttempt
-		}
-	}
 	dispatchLoopStart := newDispatchLoopStartRecord(issue, runMode)
 	if (runMode == runpkg.RunModeImplement || runMode == runpkg.RunModeMerge && !mergeWorkerIssue(issue)) && issue.PullRequest != nil {
 		dispatchLoopStart.PRDiffFingerprint = o.implementCompletionDiffFingerprint(runCtx, issue)

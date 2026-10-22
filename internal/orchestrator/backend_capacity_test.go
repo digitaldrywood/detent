@@ -53,8 +53,8 @@ func TestCodexProviderOutagePausesAndRecoversWithoutParking(t *testing.T) {
 				orch.upsertWorkAttemptSnapshot(&state, telemetry.WorkAttempt{AttemptID: int64(attempt), IssueID: issue.ID, Status: string(store.WorkAttemptStatusActive), StartedAt: now.Add(-time.Second)})
 				orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: backendcapacity.NewError(scope, details, providerErr), CompletedAt: now})
 			}
-			if len(state.BackendOutages) != 1 || len(state.Retry) != 5 || len(state.Blocked) != 0 || state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 || len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 {
-				t.Fatalf("outage state = outages %#v retries %#v blocked %#v breaker %#v", state.BackendOutages, state.Retry, state.Blocked, state.FailureBreaker)
+			if len(state.BackendOutages) != 1 || len(state.Retry) != 5 || len(state.Blocked) != 0 || state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
+				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 			}
 			if len(attempts.completions) != 30 {
 				t.Fatalf("completed attempts = %d, want 30", len(attempts.completions))
@@ -142,9 +142,6 @@ func TestProductionClaudeSessionLimitRecordsOneCapacityOutage(t *testing.T) {
 	}
 	if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
 		t.Fatalf("FailureBreaker = %#v, want no capacity strikes", state.FailureBreaker)
-	}
-	if len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 {
-		t.Fatalf("issue failure breakers = instant %#v repeated %#v, want no capacity strikes", state.InstantFailures, state.RepeatedFailures)
 	}
 }
 
@@ -255,8 +252,8 @@ func TestSlippedSubscriptionAttemptsFinishAsCapacityBeforeSessionBrakes(t *testi
 	if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalCapacity || attempts.completions[0].ErrorClass != backendcapacity.ErrorClass {
 		t.Fatalf("work attempt completions = %#v, want backend capacity", attempts.completions)
 	}
-	if len(state.Blocked) != 0 || len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 || state.FailureBreaker.Active() {
-		t.Fatalf("outage-era brakes = blocked %#v instant %#v repeated %#v project %#v", state.Blocked, state.InstantFailures, state.RepeatedFailures, state.FailureBreaker)
+	if len(state.Blocked) != 0 || state.FailureBreaker.Active() {
+		t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 	}
 	if retry, ok := state.Retry[issue.ID]; !ok || !retry.CapacityScope.Matches(scope) || retry.Attempt != 3 {
 		t.Fatalf("Retry[%q] = %#v, want same-attempt capacity wait", issue.ID, retry)
@@ -481,9 +478,6 @@ func TestHandleRunResultRetriesTransientOverloadWithoutBackendOutage(t *testing.
 	}
 	if _, _, paused := orch.backendCapacityDispatch(&state, runpkg.RunRequest{Issue: connector.Issue{ID: "other-issue"}}, now); paused {
 		t.Fatal("transient overload paused dispatch for another issue")
-	}
-	if len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 {
-		t.Fatalf("failure breakers = instant %#v repeated %#v, want no overload strikes", state.InstantFailures, state.RepeatedFailures)
 	}
 	if !strings.Contains(logs.String(), "level=INFO") || !strings.Contains(logs.String(), "reason=transient_overload") {
 		t.Fatalf("logs = %q, want INFO transient_overload reason", logs.String())

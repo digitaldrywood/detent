@@ -1217,8 +1217,7 @@ func (o *Orchestrator) applyBackendCapacityBlockedRecovery(
 	delete(state.Blocked, issue.ID)
 	delete(state.Claimed, issue.ID)
 	delete(state.Retry, issue.ID)
-	delete(state.InstantFailures, issue.ID)
-	delete(state.RepeatedFailures, issue.ID)
+
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      now,
 		Event:   "backend_capacity_blocked_issue_recovered",

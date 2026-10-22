@@ -1,7 +1,6 @@
 package orchestrator
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -15,13 +14,6 @@ import (
 const dispatchLoopDetectedReason = "dispatch_loop_detected"
 
 const dispatchLoopStartMetadataKey = "dispatch_loop_start"
-
-func dispatchLoopBlockMessage(decision implementCompletionProgressDecision) string {
-	return fmt.Sprintf(
-		"loop detected after %d dispatches without lane, diff, commit, or pull request advancement",
-		decision.ConsecutiveNoProgress,
-	)
-}
 
 type dispatchLoopFingerprint struct {
 	Lane            string   `json:"lane,omitempty"`

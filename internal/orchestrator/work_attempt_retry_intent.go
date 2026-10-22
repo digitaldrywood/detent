@@ -330,12 +330,6 @@ func configurationRecoveryParkCause(cause string) bool {
 }
 
 func (o *Orchestrator) clearConfigurationFailureEvidence(state *State, issueID string, through time.Time) {
-	if failure, found := state.InstantFailures[issueID]; found && !failure.LastFailureAt.After(through) && issueConfigurationFailure(nil, "", failure.Error) {
-		delete(state.InstantFailures, issueID)
-	}
-	if failure, found := state.RepeatedFailures[issueID]; found && !failure.LastFailureAt.After(through) && issueConfigurationFailure(nil, "", failure.Error) {
-		delete(state.RepeatedFailures, issueID)
-	}
 	breaker := &state.FailureBreaker
 	changedActive := false
 	for class, failures := range breaker.Failures {

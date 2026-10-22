@@ -223,14 +223,6 @@ func (o *Orchestrator) handleOperatorMove(state *State, request OperatorMoveRequ
 			delete(state.Retry, issueID)
 			result.RetryCleared = true
 		}
-		if _, ok := state.InstantFailures[issueID]; ok {
-			delete(state.InstantFailures, issueID)
-			result.FailureMemoryCleared = true
-		}
-		if _, ok := state.RepeatedFailures[issueID]; ok {
-			delete(state.RepeatedFailures, issueID)
-			result.FailureMemoryCleared = true
-		}
 		if clearProjectFailureBreakerIssue(&state.FailureBreaker, issueID) {
 			result.FailureMemoryCleared = true
 		}
