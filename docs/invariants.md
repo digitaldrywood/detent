@@ -377,6 +377,15 @@ bisection and automatic revert owners stay retired. Historical barrier tables
 and migrations, legacy policy decoding and stale-version handling remain
 readable; they do not authorize restarting those owners.
 
+Uncertain publication and historical `manual_recovery` checkpoint judgments
+never hold an item. Before execution, the publication owner compares the remote
+ref with the intended SHA: a match is published, an unchanged ref permits a
+compare-and-swap retry (including an absent ref), and a moved ref requires
+Rework/rebase. Definitive remote observations settle the effect checkpoint;
+unavailable remote evidence is retryable infrastructure failure. Current source
+custody, lease authority and explicit human intent remain authoritative.
+No stored exclusion replaces this current-fact reconciliation.
+
 Repository-policy approval matching no longer gates claims, lease renewal,
 source publication or checkpoint recovery. Configuration reports retain source
 provenance and the selected workflow; they are not recurring permission requests.
@@ -393,6 +402,11 @@ Removing a forbidden symbol from a list does not authorize its resurrection.
 `TestMutationDocuments` in `internal/invariants` reject retired identifiers,
 assembled constants and GraphQL mutation budget queries, including aliases
 and fragments. INV-2's behavioral checks preserve infrastructure attribution.
+`TestNativeRecoveryWipeDerivedHold` and `TestNativePublicationRecoveryOnAnyRunner`
+in `internal/runner`, `TestNativeExecutionSettlesFinishedRun` in
+`internal/hubclient`, `TestLocalGitLandChangeViaGitHub` in `internal/workspace`,
+and `TestNativeChangeRunCompletion` in `internal/orchestrator` enforce effect
+reconciliation and dispatch equivalence after removing stored hold judgments.
 Review covers novel names, reflection and generated semantic equivalents.
 
 ## INV-10 — Priority only picks the next job

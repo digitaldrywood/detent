@@ -1000,12 +1000,9 @@ func TestNativeStartupRecoveryTracksActualProviderTurn(t *testing.T) {
 			identity := tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "provider_default"}
 			second := &testExecution{recovery: tracker.NativeRecovery{Lease: first.recovery.Lease, Attempts: []tracker.NativeAttempt{{Status: "interrupted", NativeRunData: tracker.NativeRunData{MachineID: "host", PolicyID: approved.ID, Identity: &identity, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: firstID}}, Checkpoint: first.checkpoint}}}}
 			_, secondErr := r.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, Execution: second, WorkAttemptID: secondID, Issue: issue, Mode: RunModeImplement})
-			if startedTurn {
-				if !errors.Is(secondErr, ErrNativeRecoveryRequired) || agent.calls != 1 {
-					t.Fatalf("started turn replayed: calls=%d checkpoint=%+v error=%v", agent.calls, first.checkpoint, secondErr)
-				}
-			} else if !errors.Is(secondErr, overload) || agent.calls != 2 {
-				t.Fatalf("second startup wedged: calls=%d checkpoint=%+v error=%v", agent.calls, first.checkpoint, secondErr)
+			// Approved hold redesign Step 4: prior activity alone is not a recovery hold.
+			if !errors.Is(secondErr, overload) || agent.calls != 2 || first.checkpoint.Resume != "fresh_checkout" {
+				t.Fatalf("verified source did not retry: calls=%d checkpoint=%+v error=%v", agent.calls, first.checkpoint, secondErr)
 			}
 		})
 	}
@@ -1080,7 +1077,7 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		}, "manual_recovery", "session_restart_required", nil},
 		{"clean startup with uncertain publication remains source", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts = append(r.Attempts, tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{MachineID: "other"}, Checkpoint: &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean", ExternalEffect: "pr_create", EffectState: "ambiguous"}})
-		}, "manual_recovery", "external_effect_uncertain", nil},
+		}, "fresh_checkout", "publication_reconciliation_required", nil},
 		{"advertised source is missing", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.SourceAttemptID = "missing"
 			r.Attempts = nil
@@ -1127,14 +1124,14 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		{"push ambiguity", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.ExternalEffect = "git_push"
 			r.Attempts[0].Checkpoint.EffectState = "ambiguous"
-		}, "manual_recovery", "external_effect_uncertain", nil},
+		}, "fresh_checkout", "publication_reconciliation_required", nil},
 		{"PR pending", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.ExternalEffect = "pr_create"
 			r.Attempts[0].Checkpoint.EffectState = "pending"
-		}, "manual_recovery", "external_effect_uncertain", nil},
+		}, "fresh_checkout", "publication_reconciliation_required", nil},
 		{"manual checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.Resume = "manual_recovery"
-		}, "manual_recovery", "checkpoint_requires_recovery", nil},
+		}, "fresh_checkout", "session_restart_required", nil},
 		{"git checkpoint restores on another runner", func(r *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
 			r.Lease.MachineID = "other"
 			remoteCheckpoint(r.Attempts[0].Checkpoint)
@@ -1153,7 +1150,7 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		{"git checkpoint keeps an uncertain push", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			remoteCheckpoint(r.Attempts[0].Checkpoint)
 			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
-		}, "manual_recovery", "external_effect_uncertain", nil},
+		}, "fresh_checkout", "publication_reconciliation_required", nil},
 		{"current Change supersedes obsolete unpushed checkpoint", func(*tracker.NativeRecovery, **workspace.RecoveryState, *bool) {}, "fresh_checkout", "session_restart_required", current},
 		{"current Change on original machine", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].MachineID = "machine"
@@ -1172,13 +1169,13 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		}, "fresh_checkout", "checkpoint_unavailable", current},
 		{"current Change preserves ambiguous push", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
-		}, "manual_recovery", "external_effect_uncertain", current},
+		}, "fresh_checkout", "publication_reconciliation_required", current},
 		{"current Change preserves pending publication", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "pr_create", "pending"
-		}, "manual_recovery", "external_effect_uncertain", current},
-		{"current Change preserves manual recovery", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+		}, "fresh_checkout", "publication_reconciliation_required", current},
+		{"current Change ignores historical manual recovery", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.Resume = "manual_recovery"
-		}, "manual_recovery", "checkpoint_requires_recovery", current},
+		}, "fresh_checkout", "session_restart_required", current},
 	} {
 		for _, mode := range []RetryMode{"", RetryModeFresh} {
 			t.Run(test.name+"/"+string(mode), func(t *testing.T) {
@@ -2206,12 +2203,6 @@ func TestNativePublicationRecoveryOnAnyRunner(t *testing.T) {
 			if got := nativePublicationRecovery(recovery, local, identity, current); got != test.want {
 				t.Fatalf("nativePublicationRecovery() = %v, want %v", got, test.want)
 			}
-			for _, operatorFresh := range []bool{false, true} {
-				action, reason := nativeRecoveryAction(recovery, local, false, store.AgentResumeState{}, identity, operatorFresh, current)
-				if reconciled := action == "fresh_checkout" && reason == "publication_reconciliation_required"; reconciled != test.want {
-					t.Fatalf("nativeRecoveryAction(operatorFresh=%t) = %s/%s, want reconciliation %t", operatorFresh, action, reason, test.want)
-				}
-			}
 		})
 	}
 }
@@ -2241,6 +2232,37 @@ func TestNativeDispositionFromMessageHostPublication(t *testing.T) {
 			got := NativeDispositionFromMessage(tt.message)
 			if got == nil || got.Status != tt.wantStatus || got.ReasonCode != tt.wantReason || tt.wantStatus == "complete" && (got.Blockers || len(got.BlockerEvidence) != 0) {
 				t.Fatalf("disposition = %+v, want status %q reason %q", got, tt.wantStatus, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestNativeRecoveryWipeDerivedHold(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name         string
+		availability string
+		effect       string
+		wantAction   string
+		wantReason   string
+	}{
+		{"verified source", "available", "none", "fresh_checkout", "session_restart_required"},
+		{"unavailable source", "inaccessible", "none", "manual_recovery", "checkpoint_unavailable"},
+		{"uncertain push", "available", "git_push", "fresh_checkout", "publication_reconciliation_required"},
+		{"uncertain PR", "available", "pr_create", "fresh_checkout", "publication_reconciliation_required"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, resume := range []string{"manual_recovery", "fresh_checkout"} {
+				checkpoint := &tracker.NativeCheckpoint{Resume: resume, Availability: test.availability, Storage: "local_only", WorktreeState: "unpushed", HeadSHA: "head", WorkspaceDigest: "digest", ExternalEffect: test.effect, EffectState: "none"}
+				if test.effect != "none" {
+					checkpoint.EffectState = "ambiguous"
+				}
+				recovery := tracker.NativeRecovery{SourceAttemptID: "source", Lease: tracker.NativeLease{MachineID: "runner"}, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "source", MachineID: "runner"}, Checkpoint: checkpoint}}}
+				local := &workspace.RecoveryState{HeadSHA: "head", WorkspaceFingerprint: "digest"}
+				action, reason := nativeRecoveryAction(recovery, local, false, store.AgentResumeState{}, tracker.NativeExecutionIdentity{Role: RoleCode}, false, nil)
+				if action != test.wantAction || reason != test.wantReason {
+					t.Fatalf("resume=%s: decision=%s/%s, want %s/%s", resume, action, reason, test.wantAction, test.wantReason)
+				}
 			}
 		})
 	}

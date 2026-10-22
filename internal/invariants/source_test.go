@@ -200,7 +200,11 @@ var retiredSymbolNormalizer = strings.NewReplacer("_", "", "-", "", " ", "")
 
 func retiredSymbol(text string) bool {
 	normalized := strings.ToLower(retiredSymbolNormalizer.Replace(text))
+	if normalized == "checkpointrequiresrecovery" {
+		return true
+	}
 	for _, forbidden := range []string{
+		"externaleffectuncertain",
 		"workerlanerevocation", "indeterminatelanestop", "laneindeterminatestop", "stopindeterminatelane", "laneoriginindeterminate",
 		"readlandingbarrier", "runlandingbarrier", "nextlandingbarrier", "repairlandingbarrier", "landingbarrierculprit", "revertlandingbarriercommit",
 	} {

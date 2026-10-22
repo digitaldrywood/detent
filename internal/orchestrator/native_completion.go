@@ -161,7 +161,6 @@ func (o *Orchestrator) completeNativeChangeRun(
 		return true
 	}
 	publicationRefused := !humanReview && change != nil && change.VersionCode == workspace.LandRefusalHeadMoved
-	blocked = blocked || publicationRefused
 	accepted := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusComplete && len(report.Blockers) == 0 && report.HumanAction == ""
 	if change == nil && !blocked && !clearedBlockers && (humanReview || accepted || running.DiffStats.Status != "clean" || running.DiffStats.UnpushedCommits > 0) {
 		return false
@@ -226,7 +225,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 			}
 		}
 	}
-	unfinished := !publicationRefused && (reviewChangesRequested || auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "")
+	unfinished := publicationRefused || (reviewChangesRequested || auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "")
 	start := running.DispatchLoopStart
 	headUnchanged := !changed || start.Captured && start.WorkspaceHeadAvailable && strings.TrimSpace(change.HeadSHA) != "" && strings.TrimSpace(start.Fingerprint.WorkspaceHead) == strings.TrimSpace(change.HeadSHA)
 	staleRework := unfinished && headUnchanged && !blocked && !clearedBlockers && !humanReview && normalizeState(issue.State) == normalizeState(cfg.ReworkState) &&
@@ -246,7 +245,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 		return handoff(errNativeReviewPending)
 	}
-	if !humanReview && !blocked && (staleRework || change != nil && change.VersionError != "" || !ok && (needsReview || changed && !change.Reviewed)) {
+	if !humanReview && !blocked && !publicationRefused && (staleRework || change != nil && change.VersionError != "" || !ok && (needsReview || changed && !change.Reviewed)) {
 		o.observeNativeCompletion(ctx, event, false)
 		if !changed || staleRework {
 			retryState := terminalAttemptTodoState(o.cfg.ActiveStates)

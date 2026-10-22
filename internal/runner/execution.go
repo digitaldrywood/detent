@@ -647,7 +647,7 @@ func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, bac
 	if !agentResumeEmpty(resume) {
 		checkpoint.Resume = "resume_session"
 	} else {
-		checkpoint.Resume = "manual_recovery"
+		checkpoint.Resume = "fresh_checkout"
 	}
 	req.checkpointRefs.apply(&checkpoint)
 	if refs := req.checkpointRefs; refs != nil && !refs.lastPushFailed() && refs.last.CommitSHA != "" {
@@ -802,12 +802,9 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	if state != nil && !agentResumeEmpty(resume) {
 		checkpoint.Resume = "resume_session"
 	} else if turnStarted {
-		checkpoint.Resume = "manual_recovery"
-	}
-	req.checkpointRefs.apply(&checkpoint)
-	if checkpoint.GitRef() && checkpoint.Resume == "manual_recovery" {
 		checkpoint.Resume = "fresh_checkout"
 	}
+	req.checkpointRefs.apply(&checkpoint)
 	artifactCtx := ctx
 	if deadlineExpired {
 		var cancel context.CancelFunc
@@ -971,13 +968,10 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 		return "fresh_checkout", "checkpoint_missing"
 	}
 	if checkpoint.UncertainForgeEffect() {
-		if nativePublicationRecovery(recovery, local, identity, current) {
-			return "fresh_checkout", "publication_reconciliation_required"
-		}
-		return "manual_recovery", "external_effect_uncertain"
+		return "fresh_checkout", "publication_reconciliation_required"
 	}
 	if current != nil && current.Version.ID != "" && local != nil && local.HeadSHA == current.Version.HeadSHA &&
-		len(local.TrackedPaths) == 0 && len(local.UntrackedPaths) == 0 && checkpoint.Resume != "manual_recovery" &&
+		len(local.TrackedPaths) == 0 && len(local.UntrackedPaths) == 0 &&
 		(checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
 		return "fresh_checkout", "session_restart_required"
 	}
@@ -995,9 +989,6 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 			return "fresh_checkout", "local_work_preserved"
 		}
 		return "manual_recovery", "local_checkpoint_changed"
-	}
-	if checkpoint.Resume == "manual_recovery" {
-		return "manual_recovery", "checkpoint_requires_recovery"
 	}
 	if !localAvailable && checkpoint.WorktreeState != "clean" {
 		return "fresh_checkout", "checkpoint_unavailable"
@@ -1041,6 +1032,9 @@ func (r *Runner) nativeResume(ctx context.Context, req RunRequest, backend Agent
 		}
 	}
 	action, reason := nativeRecoveryAction(req.Execution.Recovery(), local, sessionAvailable, state, identity, req.operatorFreshRetry(), issue.Source)
+	if reason == "publication_reconciliation_required" && !nativePublicationRecovery(req.Execution.Recovery(), local, identity, issue.Source) {
+		return store.AgentResumeState{}, fmt.Errorf("%w: publication requires verified current source before reconciliation", ErrNativeRecoveryRequired)
+	}
 	if issue.NativeRework && reason == "local_checkpoint_changed" && local != nil {
 		if preparer, ok := source.(workspace.ReworkPreparer); ok {
 			if err := req.Execution.Validate(ctx); err != nil {

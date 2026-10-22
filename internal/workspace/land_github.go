@@ -47,11 +47,12 @@ type githubLandingMerge struct {
 }
 
 type GitHubPublication struct {
-	Repository string                          `json:"repository"`
-	BaseRef    string                          `json:"base_ref"`
-	HeadSHA    string                          `json:"head_sha"`
-	Branch     string                          `json:"branch"`
-	External   tracker.ChangeExternalReference `json:"external"`
+	ExpectedHeadSHA string                          `json:"expected_head_sha,omitempty"`
+	Repository      string                          `json:"repository"`
+	BaseRef         string                          `json:"base_ref"`
+	HeadSHA         string                          `json:"head_sha"`
+	Branch          string                          `json:"branch"`
+	External        tracker.ChangeExternalReference `json:"external"`
 }
 
 // GitHubPublicationPush carries an existing confirmed git_push checkpoint.
@@ -236,11 +237,25 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 	if err != nil {
 		return githubLandingPull{}, false, false, fmt.Errorf("inspect published attempt branch: %w", err)
 	}
-	if opts.External != nil && (!exists || previous != head && previous != opts.ExternalHeadSHA) {
-		return githubLandingPull{}, false, false, refuse(LandRefusalHeadMoved, "the retained PR branch moved beyond its recorded source; preserve both sources and reconcile the PR before retrying publication")
+	effect := func(kind, state string) error {
+		if opts.PublicationEffect == nil {
+			return nil
+		}
+		publication := GitHubPublication{Repository: opts.Repository, BaseRef: base, HeadSHA: head, Branch: branch}
+		if kind == "git_push" && state == "pending" {
+			publication.ExpectedHeadSHA = previous
+		}
+		return opts.PublicationEffect(ctx, kind, state, publication)
 	}
-	if opts.UnresolvedEffect && exists && previous != head && (opts.External == nil || previous != opts.ExternalHeadSHA) {
-		return githubLandingPull{}, false, false, refuse(LandRefusalHeadMoved, fmt.Sprintf("the publication branch %s holds %s, not head %s of the unresolved publication write; preserve both sources and reconcile the branch before retrying publication", branch, previous, head))
+	expected := opts.ExpectedPublicationHead
+	if expected == "" && opts.External != nil {
+		expected = opts.ExternalHeadSHA
+	}
+	if opts.External != nil && (!exists || previous != head && previous != opts.ExternalHeadSHA && (!opts.UnresolvedEffect || previous != expected)) {
+		return githubLandingPull{}, false, false, errors.Join(refuse(LandRefusalHeadMoved, "the retained PR branch moved beyond its recorded source; rebase before retrying publication"), effect("git_push", "none"))
+	}
+	if opts.UnresolvedEffect && previous != head && previous != expected {
+		return githubLandingPull{}, false, false, errors.Join(refuse(LandRefusalHeadMoved, fmt.Sprintf("the publication branch %s holds %s, not intended head %s; rebase before retrying publication", branch, previous, head)), effect("git_push", "none"))
 	}
 	headChanged := exists && previous != head
 	var pulls []githubLandingPull
@@ -287,22 +302,12 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 			return githubLandingPull{}, false, false, refuse(LandRefusalHeadMoved, "the published branch contains newer work than the current native head; recover its exact source version before retrying publication")
 		}
 	}
-	effect := func(kind, state string) error {
-		if opts.PublicationEffect == nil {
-			return nil
-		}
-		return opts.PublicationEffect(ctx, kind, state, GitHubPublication{Repository: opts.Repository, BaseRef: base, HeadSHA: head, Branch: branch})
-	}
 	if opts.UnresolvedEffect && !exists && len(pulls) == 0 {
 		if err := effect("git_push", "none"); err != nil {
 			return githubLandingPull{}, false, headChanged, err
 		}
 	}
-	push := []string{"push"}
-	if exists {
-		push = append(push, "--force-with-lease=refs/heads/"+branch+":"+previous)
-	}
-	push = append(push, remote, head+":refs/heads/"+branch)
+	push := []string{"push", "--force-with-lease=refs/heads/" + branch + ":" + previous, remote, head + ":refs/heads/" + branch}
 	if previous != head {
 		if err := authorize(); err != nil {
 			return githubLandingPull{}, false, headChanged, err
@@ -311,11 +316,17 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 			return githubLandingPull{}, false, headChanged, err
 		}
 		if _, err := runGitAt(ctx, info.Path, push...); err != nil {
-			var refusal *LandRefusal
-			if classified := classifyLandingPush(err, branch); errors.As(classified, &refusal) && refusal.Kind == LandRefusalProtected {
-				return githubLandingPull{}, false, headChanged, errors.Join(refuse(LandRefusalProtected, "the runner cannot publish the reviewed attempt branch "+branch+": "+strings.TrimSpace(commandErrorOutput(err))), effect("git_push", "none"))
+			observed, _, readErr := remoteBranchHead(ctx, info.Path, remote, branch)
+			if readErr == nil && observed != head && observed != previous {
+				return githubLandingPull{}, false, headChanged, errors.Join(refuse(LandRefusalHeadMoved, "the publication branch moved during push; rebase before retrying publication"), effect("git_push", "none"))
 			}
-			return githubLandingPull{}, false, headChanged, errors.Join(classifyLandingPush(err, branch), effect("git_push", "ambiguous"))
+			if readErr != nil || observed != head {
+				var refusal *LandRefusal
+				if classified := classifyLandingPush(err, branch); errors.As(classified, &refusal) && refusal.Kind == LandRefusalProtected {
+					return githubLandingPull{}, false, headChanged, errors.Join(refuse(LandRefusalProtected, "the runner cannot publish the reviewed attempt branch "+branch+": "+strings.TrimSpace(commandErrorOutput(err))), effect("git_push", "none"))
+				}
+				return githubLandingPull{}, false, headChanged, errors.Join(classifyLandingPush(err, branch), effect("git_push", "ambiguous"))
+			}
 		}
 	}
 	if err := effect("git_push", "confirmed"); err != nil {

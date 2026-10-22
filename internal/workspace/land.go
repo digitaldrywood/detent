@@ -91,7 +91,8 @@ type LandOptions struct {
 	// UnresolvedEffect reports a prior publication write of HeadSHA whose
 	// outcome is unknown. Publication repeats it only when the branch holds
 	// HeadSHA, the recorded PR head or nothing.
-	UnresolvedEffect bool
+	UnresolvedEffect        bool
+	ExpectedPublicationHead string
 	// HeadSHA is the reviewed commit. It must be the worktree branch's head:
 	// a branch that moved past its review is not landed.
 	HeadSHA string

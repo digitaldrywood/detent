@@ -2106,9 +2106,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	if publicationRecovery || reviewRecovery != nil {
 		req.reviewSource = nil
-		if publicationRecovery && !nativePublicationRecovery(req.Execution.Recovery(), recoveryState, executionIdentity, workspaceIssue.Source) {
-			return RunResult{}, fmt.Errorf("%w: publication source changed before reconciliation", ErrNativeRecoveryRequired)
-		}
 		req.finalizeNativeWork = true
 		req.reviewOnly = reviewRecovery != nil
 		result := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}

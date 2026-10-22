@@ -1966,7 +1966,7 @@ Ordered `run.checkpointed` events require a bounded `handoff` object:
 
 | Field | Accepted values or format |
 | --- | --- |
-| `resume` | `resume_session`, `fresh_checkout`, `manual_recovery` |
+| `resume` | `resume_session`, `fresh_checkout`; historical `manual_recovery` remains accepted but has no hold authority |
 | `storage` | `git_ref`, `local_only` (legacy), `customer_store` |
 | `ref`, `commit_sha`, `tree_sha`, `base_sha` | Required with `git_ref` (`base_sha` optional): a `refs/detent/checkpoints/` ref and hexadecimal Git IDs; forbidden otherwise |
 | `availability` | `available`, `missing`, `inaccessible`, `unverified` |
@@ -1976,6 +1976,15 @@ Ordered `run.checkpointed` events require a bounded `handoff` object:
 | `effect_state` | `none`, `pending`, `confirmed`, `ambiguous` |
 | `effect_id` | Typed opaque `effect_` identity for an external effect |
 | `change` | Optional typed `change_id`, `version_id`, and immutable `head_sha` |
+
+Pending or ambiguous publication effects are reconciled before execution through
+the existing publication owner. Compare the remote ref with the intended SHA:
+a match confirms publication; `expected_head_sha` records the observed pre-push
+ref, and an unchanged ref is retried with an exact Git
+compare-and-swap, including an expected absent ref; a moved ref settles the
+uncertainty and returns the source to Rework/rebase. Remote read failures retry
+without a human hold. Historical resumption judgments do not override current
+source custody, remote observations or lease authority.
 
 Customer-store checkpoints require artifact IDs and cannot assert `available`:
 independent durable receipt/integrity/access verification follows the

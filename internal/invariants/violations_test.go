@@ -24,6 +24,8 @@ func TestSourceViolations(t *testing.T) {
 		{"constant reason", "internal/orchestrator/new.go", `const reason = "new_"+"brake"; func f(o Owner) { o.updateIssueState(0,0,0,0,0,reason) }`, "INV-3"},
 		{"saved reason method", "internal/orchestrator/new.go", `func f(o Owner) { write := o.updateIssueState; write(0,0,0,0,0,"new_brake") }`, "INV-3"},
 		{"dynamic reason", "internal/orchestrator/new.go", `func f(o Owner, reason string) { o.updateIssueState(0,0,0,0,0,reason) }`, "INV-3"},
+		{"uncertain effect hold", "internal/runner/new.go", `const reason = "external_effect_uncertain"`, "INV-9"},
+		{"manual checkpoint hold", "internal/runner/new.go", `const reason = "checkpoint_requires_recovery"`, "INV-9"},
 		{"revocation", "internal/runner/new.go", `const reason = "worker_lane_revocation"`, "INV-9"},
 		{"split revocation", "internal/runner/new.go", `const reason = "worker_lane_"+"revocation"`, "INV-9"},
 		{"lane stop", "internal/runner/new.go", `func stopIndeterminateLane() {}`, "INV-9"},
