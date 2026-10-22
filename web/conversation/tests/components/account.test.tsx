@@ -674,7 +674,11 @@ describe("the wizard stepper", () => {
   });
 
   it("says ready or action required in words, not only in colour", () => {
-    render(<Stepper steps={steps} activeIndex={1} onSelect={vi.fn()} />);
+    render(<Stepper steps={steps} activeIndex={1} onSelect={vi.fn()} summaries={{ "Execution runner": "Example runner", "Repository configuration": "Configuration approved", "Local validation": "Check your runner" }} />);
+    for (const step of steps) expect(screen.getByText(step.name, { exact: true })).toBeTruthy();
+    expect(screen.getByText("Example runner")).toBeTruthy();
+    expect(screen.getByText("Configuration approved")).toBeTruthy();
+    expect(screen.getByText("Check your runner")).toBeTruthy();
     expect(screen.getAllByText("ready")).toHaveLength(2);
     expect(screen.getAllByText("action required")).toHaveLength(2);
   });

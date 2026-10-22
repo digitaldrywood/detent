@@ -2083,7 +2083,8 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
 });
 
 export default function Sidebar() {
-  const allProjects = allProjectsLabel(useSidebarData()?.organizationName);
+  const sidebarData = useSidebarData();
+  const allProjects = allProjectsLabel(sidebarData?.organizationName);
   const projects = useProjects();
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
@@ -4390,8 +4391,9 @@ export default function Sidebar() {
                   autoHighlight
                   itemToStringLabel={(item) => item.label}
                   isItemEqualToValue={(a, b) => a.value === b.value}
-                  open={projectScopeMenuState.open}
+                  open={sidebarData?.projectSwitcher?.open ?? projectScopeMenuState.open}
                   onOpenChange={(open) => {
+                    sidebarData?.projectSwitcher?.setOpen(open);
                     if (open) suppressNextScopeChangeRef.current = false;
                     dispatchProjectScopeMenu({ type: "open-changed", open });
                   }}

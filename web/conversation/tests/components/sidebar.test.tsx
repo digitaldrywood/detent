@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import {
+  render,
   act,
   cleanup,
   fireEvent,
@@ -10,6 +11,13 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import React from "react";
+import { SidebarDestinations } from "../../src/app/adapters/sidebarDestinations.tsx";
+import { SidebarDataProvider, type SidebarShellData } from "../../src/app/adapters/sidebarData.tsx";
+import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
+import { ProjectSetupContext } from "../../src/app/account/projectSetup.tsx";
+import type { Onboarding, ProjectIntegration } from "../../src/contracts/account.ts";
+import type { Resource } from "../../src/app/account/useResource.ts";
 import { subscribeProjectEvents } from "../../src/app/work/lib/projectEvents.ts";
 import { HealthFindingsProvider, useHealthFindings } from "../../src/app/diagnostics/healthFindings.tsx";
 import { useSidebarFindings } from "../../src/app/adapters/sidebarFindings.ts";
@@ -619,4 +627,40 @@ it.each([true, false])("shows the settings gear unread dot from bootstrap (%s) a
   expect(gear.querySelector('[aria-hidden="true"].bg-primary') !== null).toBe(has_unread);
   act(() => setReleaseNotesUnread(account, false));
   expect(screen.getByRole("button", { name: "Settings" }).querySelector('[aria-hidden="true"].bg-primary')).toBeNull();
+});
+
+function readyResource<A>(value: A): Resource<A> {
+  return { value, error: null, loading: false, refresh: vi.fn(async () => undefined), set: vi.fn() };
+}
+
+it("shows the first unready setup step for the active project and hides setup once ready", () => {
+  const onNavigate = vi.fn();
+  const data: SidebarShellData = {
+    organizationName: "Example organization", projects: [], activeProjectId: "proj_example",
+    onProjectChange: vi.fn(), conversations: [], serverResults: [], activeConversationId: null,
+    onSelect: vi.fn(), onNewChat: vi.fn(), onRename: vi.fn(), attention: new Set(),
+    navigation: { activePath: "/chat", onNavigate },
+  };
+  const onboarding: Onboarding = {
+    progress: { revision: "1", repository: "existing", doctor: false, provider: false, artifacts: "local" },
+    runners: [], artifact_services: [], ready: false,
+    steps: [
+      { name: "Execution runner", state: "ready", detail: "" },
+      { name: "Local validation", state: "action_required", detail: "" },
+      { name: "Repository configuration", state: "ready", detail: "" },
+      { name: "Artifact history", state: "ready", detail: "" },
+    ],
+  };
+  const integration = readyResource({ checkout_repository: "example-org/example-project" } as ProjectIntegration);
+  const view = (ready: boolean) => <SidebarDataProvider value={data}>
+    <ProjectSetupContext.Provider value={{ projectId: "proj_example", onboarding: readyResource({ ...onboarding, ready }), integration }}>
+      <SidebarProvider><SidebarDestinations /></SidebarProvider>
+    </ProjectSetupContext.Provider>
+  </SidebarDataProvider>;
+  const mounted = render(view(false));
+  const setup = screen.getByRole("button", { name: "Setup 3 of 5" });
+  fireEvent.click(setup);
+  expect(onNavigate).toHaveBeenCalledWith("/projects/proj_example/setup");
+  mounted.rerender(view(true));
+  expect(screen.queryByRole("button", { name: /^Setup/ })).toBeNull();
 });
