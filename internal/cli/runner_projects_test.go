@@ -175,6 +175,9 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 					if err := runGit("config", "url."+selected.Workdir+".insteadOf", url); err != nil {
 						return err
 					}
+					if err := runGit("config", "uploadpack.hideRefs", "refs/remotes"); err != nil {
+						return err
+					}
 					workflow := "---\ntracker:\n  kind: hub_native\n  repository: example-org/later\nhooks:\n  runner_setup: setup.sh\n  shell: sh\n---\nRun work.\n"
 					if err := os.WriteFile(filepath.Join(target, "WORKFLOW.md"), []byte(workflow), 0600); err != nil {
 						return err
