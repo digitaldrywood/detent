@@ -17,7 +17,7 @@ import (
 
 func TestReportsLongRangeReadBudget(t *testing.T) {
 	f := newUsageHostedFixture(t)
-	now := f.service.config.now().UTC().Truncate(24 * time.Hour).Add(-12 * time.Hour)
+	now := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
 	f.service.config.now = func() time.Time { return now }
 	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
 	seedProductionProject(t, f.service, scope, productionProjectShape{issues: 990, attempts: 990, usage: 660, leases: 1682, comments: 7000, days: 180})
@@ -31,10 +31,18 @@ FROM change_requests c JOIN change_versions v ON v.change_id=c.id CROSS JOIN n W
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
+		name      string
 		rangeName string
+		hour      int
 		days      int
-	}{{"30d", 29}, {"90d", 89}} {
-		t.Run(test.rangeName, func(t *testing.T) {
+	}{
+		{"30d/midnight", "30d", 0, 30},
+		{"30d/daytime", "30d", 10, 29},
+		{"90d/midnight", "90d", 0, 90},
+		{"90d/daytime", "90d", 10, 89},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f.service.config.now = func() time.Time { return now.Add(time.Duration(test.hour) * time.Hour) }
 			var mu sync.Mutex
 			var statements []tracedStatement
 			timing := &requestTiming{trace: func(query string, args []driver.NamedValue) {
