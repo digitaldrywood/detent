@@ -19,11 +19,6 @@ type oauthTokenResponse struct {
 	Scope        string `json:"scope"`
 }
 
-type oauthRefreshToken struct {
-	Grant     string    `json:"g"`
-	ExpiresAt time.Time `json:"e"`
-}
-
 func (s *Service) exchangeOAuthToken(ctx context.Context, client string, form url.Values) (oauthTokenResponse, error) {
 	if form.Get("grant_type") != "authorization_code" && form.Get("grant_type") != "refresh_token" {
 		return oauthTokenResponse{}, errNoSession
@@ -44,13 +39,12 @@ func (s *Service) exchangeOAuthToken(ctx context.Context, client string, form ur
 			return oauthTokenResponse{}, errNoSession
 		}
 	} else {
-		var token oauthRefreshToken
-		if err := s.openOAuth("oauth-refresh", form.Get("refresh_token"), &token); err != nil || !token.ExpiresAt.After(now) {
-			return oauthTokenResponse{}, errNoSession
-		}
-		grant = token.Grant
 		hash = apikey.HashToken(form.Get("refresh_token"))
-		err := s.auth.store.reader.QueryRowContext(ctx, `SELECT t.expires_at FROM oauth_refresh_tokens t JOIN oauth_grants g ON g.id=t.grant_id WHERE t.grant_id=? AND g.client_id=? AND g.resource=?`, grant, client, form.Get("resource")).Scan(&codeExpires)
+		err := s.auth.store.reader.QueryRowContext(ctx, `SELECT t.grant_id,t.expires_at FROM (
+			SELECT grant_id,expires_at FROM oauth_refresh_tokens WHERE token_hash=?
+			UNION ALL
+			SELECT grant_id,expires_at FROM oauth_spent_refresh_tokens WHERE token_hash=?
+		) t JOIN oauth_grants g ON g.id=t.grant_id WHERE g.client_id=? AND g.resource=? AND g.revoked_at IS NULL`, hash, hash, client, form.Get("resource")).Scan(&grant, &codeExpires)
 		if err != nil {
 			return oauthTokenResponse{}, err
 		}
@@ -76,10 +70,12 @@ func (s *Service) exchangeOAuthToken(ctx context.Context, client string, form ur
 	}
 	access = oauthAccessPrefix + access
 	refreshExpires := now.Add(oauthRefreshLifetime)
-	refresh, err := s.sealOAuth("oauth-refresh", oauthRefreshToken{Grant: grant, ExpiresAt: refreshExpires})
+	refresh, err := s.config.generateToken()
 	if err != nil {
 		return oauthTokenResponse{}, err
 	}
+	refresh = "oauth_refresh_" + refresh
+
 	tx, err := s.auth.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return oauthTokenResponse{}, err
@@ -108,6 +104,11 @@ func (s *Service) exchangeOAuthToken(ctx context.Context, client string, form ur
 			}
 		}
 		return oauthTokenResponse{}, errNoSession
+	}
+	if form.Get("grant_type") == "refresh_token" {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO oauth_spent_refresh_tokens(token_hash,grant_id,expires_at) VALUES(?,?,?)", hash, grant, codeExpires); err != nil {
+			return oauthTokenResponse{}, err
+		}
 	}
 	result, err = tx.ExecContext(ctx, `UPDATE oauth_grants SET access_hash=?,access_expires_at=? WHERE id=? AND revoked_at IS NULL AND client_id=? AND resource=?`, apikey.HashToken(access), formatTime(now.Add(oauthAccessLifetime)), grant, client, form.Get("resource"))
 	if err != nil {

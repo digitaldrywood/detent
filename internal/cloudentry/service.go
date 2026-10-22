@@ -129,6 +129,8 @@ type Service struct {
 	diffBodySweepAt   time.Time
 	githubRoutes      githubRoutes
 
+	stopOAuthBackfill context.CancelFunc
+	oauthBackfillDone chan struct{}
 	stopAllocator     context.CancelFunc
 	allocatorDone     chan struct{}
 	wake              chan struct{}
@@ -219,6 +221,7 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	if err := service.startPlatformNotifications(ctx); err != nil {
 		return nil, errors.Join(err, service.CloseContext(ctx))
 	}
+	service.startOAuthClientBackfill(ctx)
 	return service, nil
 }
 
@@ -240,6 +243,10 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		keyErr = s.keyMCP.Shutdown(ctx)
 		cancel()
+	}
+	if s.stopOAuthBackfill != nil {
+		s.stopOAuthBackfill()
+		<-s.oauthBackfillDone
 	}
 	s.closePlatformNotifications()
 	s.closeBillingWorker()

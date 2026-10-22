@@ -290,6 +290,18 @@ func TestOAuthCodeExchangeAndRotation(t *testing.T) {
 			}
 		}
 		refresh := url.Values{"client_id": {c.ID}, "client_secret": {c.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
+		if _, err := f.service.auth.store.db.ExecContext(t.Context(), `CREATE TRIGGER fail_spent_refresh_insert BEFORE INSERT ON oauth_spent_refresh_tokens BEGIN SELECT RAISE(ABORT,'injected insert failure'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if response := owner.do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode < 400 {
+			t.Fatal("rotation succeeded without retaining spent token")
+		}
+		if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT token_hash FROM oauth_refresh_tokens WHERE grant_id=?", key.ID).Scan(&stored); err != nil || stored != apikey.HashToken(token.RefreshToken) {
+			t.Fatalf("failed rotation changed current token: %v", err)
+		}
+		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "DROP TRIGGER fail_spent_refresh_insert"); err != nil {
+			t.Fatal(err)
+		}
 		rotated := exchangeTestOAuth(t, owner, refresh)
 		if token.RefreshToken == rotated.RefreshToken || token.AccessToken == rotated.AccessToken {
 			t.Fatal("tokens did not rotate")
@@ -312,7 +324,10 @@ func TestOAuthCodeExchangeAndRotation(t *testing.T) {
 		}
 		for _, invalid := range []url.Values{
 			{"client_id": {c.ID}, "client_secret": {c.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {"A" + rotated.RefreshToken}, "resource": {testPublicURL + "/mcp"}},
+			{"client_id": {foreign.ID}, "client_secret": {foreign.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {rotated.RefreshToken}, "resource": {testPublicURL + "/mcp"}},
+			{"client_id": {c.ID}, "client_secret": {c.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {rotated.RefreshToken}, "resource": {"https://other.example.test/mcp"}},
 			{"client_id": {foreign.ID}, "client_secret": {foreign.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}},
+			{"client_id": {c.ID}, "client_secret": {c.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {"https://other.example.test/mcp"}},
 		} {
 			if response := owner.do(http.MethodPost, "/oauth/token", invalid, nil); response.StatusCode != http.StatusBadRequest {
 				t.Fatalf("invalid refresh=%+v", response)
@@ -325,7 +340,11 @@ func TestOAuthCodeExchangeAndRotation(t *testing.T) {
 			t.Fatal("refresh replay succeeded")
 		}
 		if _, err := f.service.activeMCPKey(t.Context(), apikey.HashToken(rotated.AccessToken)); err == nil {
-			t.Fatal("refresh replay did not revoke grant")
+			t.Fatal("refresh replay did not revoke current access token")
+		}
+		rotating.Set("refresh_token", rotated.RefreshToken)
+		if response := owner.do(http.MethodPost, "/oauth/token", rotating, nil); response.StatusCode != http.StatusBadRequest {
+			t.Fatal("refresh replay did not revoke current refresh token")
 		}
 	}
 	basic := registerTestOAuth(t, owner, "Basic assistant", "client_secret_basic")

@@ -118,16 +118,6 @@ func (s *Service) openOAuth(purpose, value string, target any) error {
 	return json.Unmarshal([]byte(raw), target)
 }
 
-func (s *Service) oauthRegistration(id string) (oauthRegistration, error) {
-	var registration oauthRegistration
-	sealed, ok := strings.CutPrefix(id, "oauth_client_")
-	if !ok || len(id) > 2048 {
-		return registration, errNoSession
-	}
-	err := s.openOAuth("oauth-client", sealed, &registration)
-	return registration, err
-}
-
 func validOAuthRedirect(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil || len(raw) > 2048 || u.Host == "" || u.User != nil || u.Fragment != "" || u.Opaque != "" {
@@ -201,8 +191,11 @@ func (s *Service) oauthAuthorize(c echo.Context) error {
 			return oauthError(c, 400, "invalid_request")
 		}
 	}
-	registration, err := s.oauthRegistration(q.Get("client_id"))
-	if err != nil || !slices.Contains(registration.RedirectURIs, q.Get("redirect_uri")) {
+	registration, err := s.oauthRegistration(c.Request().Context(), q.Get("client_id"))
+	if err != nil {
+		return oauthError(c, 400, "unauthorized_client")
+	}
+	if !slices.Contains(registration.RedirectURIs, q.Get("redirect_uri")) {
 		return oauthError(c, 400, "invalid_request")
 	}
 	if q.Get("response_type") != "code" || q.Get("resource") != s.config.PublicURL+"/mcp" || q.Get("code_challenge_method") != "S256" || len(q.Get("state")) > 2048 {
@@ -252,7 +245,7 @@ func (s *Service) oauthBrowserRequest(c echo.Context) (oauthRequest, error) {
 	if err := s.openOAuth("oauth-consent", cookie.Value, &r); err != nil || r.ID != c.Param("request") || !r.ExpiresAt.After(s.config.now()) {
 		return r, errNoSession
 	}
-	r.Registration, err = s.oauthRegistration(r.Client)
+	r.Registration, err = s.oauthRegistration(c.Request().Context(), r.Client)
 	if err != nil {
 		return r, err
 	}
@@ -356,6 +349,9 @@ func (s *Service) oauthApprove(c echo.Context) error {
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
+	if err := insertOAuthRedirectURIs(ctx, tx, r.Client, r.Registration.RedirectURIs); err != nil {
+		return oauthError(c, 503, "server_error")
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at) VALUES(?,?,?,?,?,?,?,?)`, id, r.Client, session.Subject, session.Email, org.ID, permission, r.Resource, formatTime(s.config.now()))
 	if err != nil {
 		return oauthError(c, 503, "server_error")
@@ -419,7 +415,7 @@ func (s *Service) oauthClientAuthentication(c echo.Context, form url.Values) (st
 		}
 		id, secret, method = user, password, "client_secret_basic"
 	}
-	registration, err := s.oauthRegistration(id)
+	registration, err := s.oauthRegistration(c.Request().Context(), id)
 	if err != nil {
 		return "", err
 	}
