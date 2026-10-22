@@ -133,23 +133,26 @@ func spriteAllocationRunnerProject(ctx context.Context, q nativeQueryer, scope n
 
 func spriteAllocationRunnerAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID) (bool, error) {
 	var target int
-	var member bool
-	if err := q.QueryRowContext(ctx, `SELECT COALESCE((SELECT desired_count FROM project_sprite_allocations WHERE organization_id=? AND project_id=?),-1), EXISTS(SELECT 1 FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id WHERE m.organization_id=? AND m.allocation_project_id<>'' AND r.machine_id=?)`, scope.organization, scope.project, scope.organization, machine).Scan(&target, &member); err != nil {
+	var allocation sql.NullString
+	if err := q.QueryRowContext(ctx, `SELECT COALESCE((SELECT desired_count FROM project_sprite_allocations WHERE organization_id=? AND project_id=?),-1), (SELECT max(m.allocation_project_id) FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id WHERE m.organization_id=? AND r.machine_id=?)`, scope.organization, scope.project, scope.organization, machine).Scan(&target, &allocation); err != nil {
 		return false, err
 	}
-	if !member {
+	if !allocation.Valid || allocation.String == "" {
 		if target < 0 {
 			return true, nil
+		}
+		if allocation.Valid {
+			return false, nil
 		}
 		var name, hostname string
 		if err := q.QueryRowContext(ctx, `SELECT COALESCE(json_extract(capabilities_json,'$.sprite_name'),''),hostname FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&name, &hostname); err != nil {
 			return false, err
 		}
-		if name != hostname || !validSpritesSlug(name) {
-			placement, _, err := readPlacementPolicy(ctx, q, scope)
-			return placement.Mode != "sprites_only", err
+		if name == hostname && validSpritesSlug(name) {
+			return true, nil
 		}
-		return false, nil
+		placement, _, err := readPlacementPolicy(ctx, q, scope)
+		return placement.Mode != "sprites_only", err
 	}
 	if target == 0 {
 		return false, nil
