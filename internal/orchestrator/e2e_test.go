@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -103,15 +104,17 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 	issue.CreatedAt = &createdAt
 
 	orch, err := New(Config{
+		Project:                scheduler.ProjectCandidate{ID: "detent"},
 		PollInterval:           time.Hour,
 		MaxConcurrentAgents:    1,
 		ActiveStates:           []string{"Todo"},
 		TerminalStates:         []string{"Done", "Cancelled"},
 		ContinuationRetryDelay: time.Hour,
 	}, Dependencies{
-		Connector: fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}}),
-		Runner:    runnerBackend,
-		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Connector:    fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}}),
+		Runner:       runnerBackend,
+		WorkAttempts: storeBackend,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("orchestrator.New() error = %v", err)

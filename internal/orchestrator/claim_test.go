@@ -200,7 +200,7 @@ func TestSuccessfulContinuationReleasesClaimLease(t *testing.T) {
 	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
 		IssueID:     issue.ID,
 		CompletedAt: now,
-		Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
+		Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, PullRequestUpdated: true},
 	})
 
 	if got := claimStore.issue(issue.ID).Fields["Detent Lease"]; got != "" {

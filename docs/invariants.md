@@ -179,9 +179,14 @@ consolidation.
 Per-issue instant/repeated failure, no-progress, spend-since-progress,
 dispatch-loop, token-ceiling and workspace retry brakes are consolidated into
 the existing machine retry owner. Machine failures remain dispatchable with
-capped jittered backoff, resetting after success. Current budget/usage policy
-and provider capacity own admission; individual session limits still bound a
-run. Historical brake metadata is diagnostic and cannot veto the next attempt.
+persisted attempts and capped jittered backoff, including native failures,
+no-product completions and session-brake retries. Only verified new progress
+resets a continuation; unchanged or unavailable evidence and rejected completions
+retain growing retries. Budget/usage checks, provider capacity and session
+ceilings are existing policies, not an unconditional spend bound. An unset or
+disabled budget imposes no monetary cap; drain mode can admit already-admitted
+work. Capacity limits concurrency and configured session ceilings limit one run,
+not cumulative retries. Historical brake metadata cannot veto the next attempt.
 Explicit human action and operator stops retain their authority.
 
 **Retry enforcement:** `TestMachineFailuresUseRetryOwner`,

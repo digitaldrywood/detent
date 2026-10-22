@@ -152,13 +152,14 @@ func (o *Orchestrator) handleSessionBrake(
 		RuntimeIdentity: running.RuntimeIdentity,
 	}
 	state.TokenTotals = addTokenTotals(state.TokenTotals, tokens)
-	delete(state.Claimed, event.IssueID)
 	delete(state.Retry, event.IssueID)
 	delete(state.Blocked, event.IssueID)
 	delete(state.BudgetRefusals, event.IssueID)
 	delete(state.PriorAttempts, event.IssueID)
 
-	o.scheduleRetry(state, issue, nextAttempt(running.Attempt), completedAt, brake.Reason, false, running.WorkerHost)
+	running.Issue = issue
+	event.CompletedAt = completedAt
+	o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), brake.Reason)
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
 	releaseProjectFailureBreakerCanary(state, event.IssueID)
 	recordStateEvent(state, telemetry.ActivityEvent{

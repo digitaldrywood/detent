@@ -874,17 +874,14 @@ func TestHandleRunResultReleasesClaimWhenReviewThreadsUnavailable(t *testing.T) 
 				},
 			})
 
-			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
-				t.Fatalf("completions = %#v, want one successful persisted attempt", attempts.completions)
+			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalNoProgress {
+				t.Fatalf("completions = %#v, want one no-progress attempt", attempts.completions)
 			}
 			if _, ok := state.Running[issue.ID]; ok {
 				t.Fatalf("Running[%q] present after completion", issue.ID)
 			}
-			if _, ok := state.Retry[issue.ID]; ok {
-				t.Fatalf("Retry[%q] present while review-thread hydration is pending", issue.ID)
-			}
-			if _, ok := state.Completed[issue.ID]; !ok {
-				t.Fatalf("Completed[%q] missing while review-thread hydration is pending", issue.ID)
+			if retry, ok := state.Retry[issue.ID]; ok == tt.wantClaimed || ok && retry.Attempt != 2 {
+				t.Fatalf("retry = %+v, present=%t, want attempt 2 after persistence", retry, ok)
 			}
 			_, claimed := state.Claimed[issue.ID]
 			if claimed != tt.wantClaimed {
@@ -896,12 +893,13 @@ func TestHandleRunResultReleasesClaimWhenReviewThreadsUnavailable(t *testing.T) 
 			if len(tracker.updates) != 0 {
 				t.Fatalf("updates = %#v, want no backend transition", tracker.updates)
 			}
-			if got := tracker.reviewThreadHydrations; !reflect.DeepEqual(got, []string{issue.ID}) {
-				t.Fatalf("review thread hydrations = %#v, want one for %s", got, issue.ID)
+			if got := tracker.reviewThreadHydrations; len(got) != 0 {
+				t.Fatalf("review thread hydration attempted before PR evidence was available: %v", got)
 			}
 			laterIssue := cloneIssue(issue)
 			laterIssue.PullRequest.HydrationUnavailableReason = ""
 			delete(state.Completed, issue.ID)
+			delete(state.Retry, issue.ID)
 			decision := orch.dispatchPlanner().dispatchableIssueDecision(laterIssue, &state, false, now.Add(time.Minute), "")
 			if tt.wantClaimed {
 				if decision.reason != dispatchSkipAlreadyClaimed {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -52,7 +53,8 @@ func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 				LimitID:   "codex",
 				LimitName: "Codex",
 			},
-			FinalState: "Human Review",
+			FinalState:         orchestrator.FinalStateCompleted,
+			PullRequestUpdated: true,
 		},
 	}
 
@@ -71,8 +73,8 @@ func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 	if _, ok := state.Claimed[issue.ID]; ok {
 		t.Fatalf("Claimed[%q] present after completed run", issue.ID)
 	}
-	if got := state.Completed[issue.ID].FinalState; got != "Human Review" {
-		t.Fatalf("Completed[%q].FinalState = %q, want Human Review", issue.ID, got)
+	if got := state.Completed[issue.ID].FinalState; got != orchestrator.FinalStateCompleted {
+		t.Fatalf("Completed[%q].FinalState = %q, want completed", issue.ID, got)
 	}
 	if got := state.Retry[issue.ID].Attempt; got != 1 {
 		t.Fatalf("Retry[%q].Attempt = %d, want 1", issue.ID, got)
@@ -133,19 +135,26 @@ func TestRunCompletionTransitionsLabelModeIssueToHumanReview(t *testing.T) {
 	issue.Labels = []string{"detent:todo", "bug"}
 	tracker := newFakeLabelConnector(issue)
 	runner := &staticRunner{
-		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted},
+		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted, PullRequestUpdated: true, DiffStats: orchestrator.DiffStats{Status: "clean"}},
 		onRun: func(request orchestrator.RunRequest) {
 			tracker.setCandidatePullRequest(request.Issue.ID, &connector.PullRequest{
 				Number:         17,
 				URL:            "https://github.com/digitaldrywood/detent/pull/17",
 				State:          "OPEN",
+				HeadSHA:        "published-head",
 				MergeableState: "clean",
 				CIStatus:       "success",
 			})
 		},
 	}
 
+	attempts, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "attempts.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = attempts.Close() })
 	orch, err := orchestrator.New(orchestrator.Config{
+		Project:                scheduler.ProjectCandidate{ID: "example-project"},
 		PollInterval:           5 * time.Millisecond,
 		MaxConcurrentAgents:    1,
 		MaxRetryBackoff:        time.Hour,
@@ -155,8 +164,9 @@ func TestRunCompletionTransitionsLabelModeIssueToHumanReview(t *testing.T) {
 		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
 		ContinuationRetryDelay: time.Millisecond,
 	}, orchestrator.Dependencies{
-		Connector: tracker,
-		Runner:    runner,
+		Connector:    tracker,
+		Runner:       runner,
+		WorkAttempts: attempts,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -196,12 +206,13 @@ func TestRunCompletionPromotesLabelModeWorkpadDirectlyToMerging(t *testing.T) {
 	tracker := newFakeLabelConnector(issue)
 	activityAt := time.Now().Add(-time.Hour)
 	runner := &staticRunner{
-		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted},
+		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted, PullRequestUpdated: true, DiffStats: orchestrator.DiffStats{Status: "clean"}},
 		onRun: func(request orchestrator.RunRequest) {
 			tracker.setCandidatePullRequest(request.Issue.ID, &connector.PullRequest{
 				Number:         1288,
 				URL:            "https://github.com/digitaldrywood/detent/pull/1288",
 				State:          "OPEN",
+				HeadSHA:        "published-head",
 				MergeableState: "clean",
 				CIStatus:       "success",
 				ActivityAt:     &activityAt,
@@ -212,7 +223,13 @@ func TestRunCompletionPromotesLabelModeWorkpadDirectlyToMerging(t *testing.T) {
 		},
 	}
 
+	attempts, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "attempts.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = attempts.Close() })
 	orch, err := orchestrator.New(orchestrator.Config{
+		Project:               scheduler.ProjectCandidate{ID: "example-project"},
 		PollInterval:          5 * time.Millisecond,
 		MaxConcurrentAgents:   1,
 		MaxRetryBackoff:       time.Hour,
@@ -232,8 +249,9 @@ func TestRunCompletionPromotesLabelModeWorkpadDirectlyToMerging(t *testing.T) {
 		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
 		ContinuationRetryDelay: time.Millisecond,
 	}, orchestrator.Dependencies{
-		Connector: tracker,
-		Runner:    runner,
+		Connector:    tracker,
+		Runner:       runner,
+		WorkAttempts: attempts,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -3891,7 +3909,7 @@ func (r *blockingRunner) Run(ctx context.Context, request orchestrator.RunReques
 
 	select {
 	case <-r.release:
-		return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted}, nil
+		return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted, PullRequestUpdated: true}, nil
 	case <-ctx.Done():
 		return orchestrator.RunResult{}, ctx.Err()
 	}
@@ -4027,4 +4045,8 @@ func (c *instantFailureCommentConnector) CreateComment(ctx context.Context, issu
 	default:
 	}
 	return nil
+}
+
+func (f *fakeConnector) HydratePullRequest(_ context.Context, issue connector.Issue) (connector.Issue, error) {
+	return issue, nil
 }

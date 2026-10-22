@@ -141,6 +141,9 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 	}
 	if strings.TrimSpace(finalState) != FinalStateCompleted {
 		decision.Reason = "final_state_not_completed"
+		if pullRequestUpdated && terminalStateForRun(nil, finalState) == store.WorkAttemptTerminalSuccess {
+			decision.ProgressKinds = []string{"pull_request"}
+		}
 		return decision
 	}
 	if !implementProgressLinkedPullRequest(running.Issue) {
@@ -204,6 +207,7 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 		}
 		attempts, err := o.recentImplementCompletionAttempts(ctx, issue, running)
 		if err != nil {
+			decision.Outcome = store.WorkAttemptTerminalNoProgress
 			decision.Reason = "attempt_history_lookup_failed"
 			decision.Warning = err.Error()
 			if o.logger != nil {
@@ -239,6 +243,7 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 		}
 		if _, native := o.connector.(connector.WorkflowStateReader); !native {
 			if stranded, deferReason := implementProgressUnpushedClassification(running.DiffStats, nil); deferReason != "" {
+				decision.Outcome = store.WorkAttemptTerminalNoProgress
 				decision.Reason = deferReason
 				return decision
 			} else if stranded {
@@ -250,15 +255,17 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 			}
 		}
 		if !diffStatsPresent(running.DiffStats) {
+			decision.Outcome = store.WorkAttemptTerminalNoProgress
 			decision.Reason = "workspace_diffstat_unavailable_without_pull_request"
 			return decision
 		}
 		if !implementProgressDiffStatsClean(running.DiffStats) {
 			if strings.TrimSpace(running.DiffStats.Fingerprint) == "" {
+				decision.Outcome = store.WorkAttemptTerminalNoProgress
 				decision.Reason = "workspace_diff_fingerprint_unavailable_without_pull_request"
 				return decision
 			}
-			matchingAttempts := consecutiveImplementSameNoPRDiffAttempts(
+			matchingAttempts := consecutiveImplementSameDiffAttempts(
 				attempts,
 				running.DiffStats,
 				decision.WorkpadStatus,
@@ -294,6 +301,7 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 	}
 	hydrator, ok := o.connector.(connector.PullRequestHydrator)
 	if !ok {
+		decision.Outcome = store.WorkAttemptTerminalNoProgress
 		decision.Reason = "pull_request_hydrator_unavailable"
 		decision.Warning = "pull request hydrator unavailable"
 		o.warnImplementProgressHydration(running.Issue, decision.Warning, nil)
@@ -301,6 +309,7 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 	}
 	issue, err := hydrator.HydratePullRequest(ctx, running.Issue)
 	if err != nil {
+		decision.Outcome = store.WorkAttemptTerminalNoProgress
 		decision.Reason = "pull_request_hydration_failed"
 		decision.Warning = err.Error()
 		o.warnImplementProgressHydration(running.Issue, "pull request hydration failed", err)
@@ -308,6 +317,7 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 	}
 	decision.Issue = issue
 	if reason := implementProgressHydrationUnavailableReason(issue.PullRequest); reason != "" {
+		decision.Outcome = store.WorkAttemptTerminalNoProgress
 		decision.Reason = "pull_request_hydration_unavailable"
 		decision.Warning = reason
 		o.warnImplementProgressHydration(issue, reason, nil)
@@ -346,12 +356,14 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 	signature := autoPromoteReworkSignatureFromIssue(issue, AutoPromoteSummaryFromIssue(issue))
 	decision.CurrentSignature = signature
 	if !implementProgressSignatureUsable(signature) {
+		decision.Outcome = store.WorkAttemptTerminalNoProgress
 		decision.Reason = "pull_request_signature_incomplete"
 		return decision
 	}
 
 	attempts, err := o.recentImplementCompletionAttempts(ctx, issue, running)
 	if err != nil {
+		decision.Outcome = store.WorkAttemptTerminalNoProgress
 		decision.Reason = "attempt_history_lookup_failed"
 		decision.Warning = err.Error()
 		if o.logger != nil {
@@ -384,6 +396,7 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 		decision.FailedChecksAdded, decision.FailedChecksRemoved = implementProgressFailedCheckDelta(previous.FailedChecks, signature.FailedChecks)
 	}
 	if stranded, deferReason := implementProgressUnpushedClassification(decision.WorkspaceDiffStats, issue.PullRequest); deferReason != "" {
+		decision.Outcome = store.WorkAttemptTerminalNoProgress
 		decision.Reason = deferReason
 		return decision
 	} else if stranded {
@@ -394,6 +407,15 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 		return decision
 	}
 	if !ok {
+		dispatched := autoPromoteReworkSignatureFromIssue(running.Issue, AutoPromoteSummaryFromIssue(running.Issue))
+		if implementProgressSignatureUsable(dispatched) && !implementProgressSignatureEqual(dispatched, signature) {
+			decision.ProgressKinds = append([]string{"pull_request"}, decision.ProgressKinds...)
+		}
+		if running.Attempt > 1 && len(decision.ProgressKinds) == 0 && decision.WorkpadStatus != workpad.StatusComplete {
+			decision.Outcome = store.WorkAttemptTerminalNoProgress
+			decision.Reason = "attempt_history_unavailable"
+			return decision
+		}
 		decision.Reason = "first_completed_attempt"
 		return decision
 	}
@@ -404,7 +426,20 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 	}
 	if !implementProgressDiffStatsClean(decision.WorkspaceDiffStats) {
 		if !diffStatsPresent(decision.WorkspaceDiffStats) {
+			decision.Outcome = store.WorkAttemptTerminalNoProgress
 			decision.Reason = "workspace_diffstat_unavailable"
+			return decision
+		}
+		if strings.TrimSpace(decision.WorkspaceDiffStats.Fingerprint) == "" {
+			decision.Outcome = store.WorkAttemptTerminalNoProgress
+			decision.Reason = "workspace_diff_fingerprint_unavailable"
+			return decision
+		}
+		matchingAttempts := consecutiveImplementSameDiffAttempts(attempts, decision.WorkspaceDiffStats, decision.WorkpadStatus, decision.HumanAction)
+		if matchingAttempts > 0 && len(decision.ProgressKinds) == 0 {
+			decision.Outcome = store.WorkAttemptTerminalNoProgress
+			decision.Reason = "unchanged_workspace_diff"
+			decision.ConsecutiveNoProgress = 1 + matchingAttempts
 			return decision
 		}
 		decision.ProgressKinds = append([]string{"workspace_diff"}, decision.ProgressKinds...)
@@ -538,13 +573,13 @@ func (o *Orchestrator) recentImplementCompletionAttempts(
 	running Running,
 ) ([]store.WorkAttempt, error) {
 	if o == nil || o.workAttempts == nil {
-		return nil, nil
+		return nil, errors.New("implement completion history unavailable")
 	}
 	limit := normalizeAutoPromoteConfig(o.cfg.AutoPromote).NoProgressLimit + 1
 	if limit < 20 {
 		limit = 20
 	}
-	return o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
+	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
 		ProjectID:  strings.TrimSpace(o.cfg.Project.ID),
 		IssueID:    strings.TrimSpace(issue.ID),
 		Identifier: strings.TrimSpace(issue.Identifier),
@@ -552,6 +587,7 @@ func (o *Orchestrator) recentImplementCompletionAttempts(
 		WorkerType: workAttemptWorkerType(issue, running.Mode),
 		Limit:      limit,
 	})
+	return attempts, err
 }
 
 func (o *Orchestrator) refreshImplementCompletionIssue(ctx context.Context, issue connector.Issue) (connector.Issue, bool) {
@@ -686,7 +722,7 @@ func consecutiveImplementNoProgressAttempts(attempts []store.WorkAttempt, curren
 	return count
 }
 
-func consecutiveImplementSameNoPRDiffAttempts(
+func consecutiveImplementSameDiffAttempts(
 	attempts []store.WorkAttempt,
 	current DiffStats,
 	workpadStatus string,
@@ -695,8 +731,7 @@ func consecutiveImplementSameNoPRDiffAttempts(
 	count := 0
 	for _, attempt := range attempts {
 		record, ok := implementProgressRecordFromAttempt(attempt)
-		if !ok || implementProgressSignatureUsable(record.CurrentSignature.signature()) ||
-			!implementProgressDiffFingerprintEqual(record.WorkspaceDiffStats.Fingerprint, current.Fingerprint) ||
+		if !ok || !implementProgressDiffFingerprintEqual(record.WorkspaceDiffStats.Fingerprint, current.Fingerprint) ||
 			!implementProgressWorkpadEqual(record, workpadStatus, humanAction) {
 			return count
 		}
@@ -972,7 +1007,7 @@ func (o *Orchestrator) warnImplementProgressHydration(issue connector.Issue, mes
 	if err != nil {
 		attrs = append(attrs, "error", err)
 	}
-	o.logger.Warn("implement worker progress check failed open", attrs...)
+	o.logger.Warn("implement worker progress evidence unavailable", attrs...)
 }
 
 func (o *Orchestrator) warnImplementProgressRefresh(issue connector.Issue, message string, err error) {

@@ -434,9 +434,15 @@ interactions are the main source of incidents, so the set may not grow.
   and genuine human intent remain authoritative.
 - Per-issue instant/repeated failure, progress, spend-since-progress, dispatch-loop,
   token-ceiling and workspace retry brakes use the existing machine retry state,
-  with capped jittered backoff that resets on success. Current organization/project
-  budgets, usage and provider capacity bound admission; historical brake metadata
-  never parks work or vetoes dispatch. Session limits still bound individual runs.
+  including native failures, no-product completions and session-brake retries.
+  Persisted attempts grow with capped jittered backoff; only verified new progress
+  resets a continuation. Unchanged or unavailable evidence and rejected completions
+  retain growing retries. Historical brake metadata never parks work or vetoes dispatch.
+  Budgets, usage checks, provider capacity and session ceilings remain existing
+  policies, not an unconditional spend bound. An unset or disabled budget imposes
+  no monetary cap; drain-mode budgets can admit already-admitted work. Provider
+  capacity limits concurrency, and configured session ceilings limit individual
+  runs, not cumulative retries.
 - The orchestrator is the only writer of tracker lane state; workers report
   outcomes and never write lane labels.
 - Do not add configuration keys, CLI subcommands, or dashboard surfaces to work

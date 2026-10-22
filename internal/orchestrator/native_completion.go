@@ -115,19 +115,22 @@ func (o *Orchestrator) completeNativeChangeRun(
 			o.recordCompletionUsage(ctx, state, event, issue)
 			return true
 		}
-		if err := o.abandonClaim(ctx, issueID); err != nil {
-			return handoff(err)
-		}
 		terminal := terminalStateForRun(event.Err, finalState)
 		class := runnerWorkAttemptErrorClass(event.Err)
 		message := errorString(event.Err)
 		o.recordProjectAttemptOutcome(state, issueID, event.CompletedAt, terminal, event.Err, class, message)
 		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, class, message, "failed", "native worker failed; source preserved", nativeChangeMetadata(change))
 		o.recordCompletionUsage(ctx, state, event, issue)
-		o.releaseClaim(state, issueID)
 		issue.State = target
 		if dispatchableState(states, target) && running.Cancellation == nil && !errors.Is(event.Err, context.Canceled) {
-			o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, message, false, running.WorkerHost)
+			if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(running.Attempt), event.CompletedAt, message, running.WorkerHost); err != nil {
+				return handoff(err)
+			}
+		} else {
+			if err := o.abandonClaim(ctx, issueID); err != nil {
+				return handoff(err)
+			}
+			o.releaseClaim(state, issueID)
 		}
 		return true
 	}
@@ -252,14 +255,12 @@ func (o *Orchestrator) completeNativeChangeRun(
 					return handoff(fmt.Errorf("move unfinished native item to %s: %w", retryState, err))
 				}
 			}
-			if err := o.abandonClaim(ctx, issueID); err != nil {
-				return handoff(err)
-			}
 			o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, terminalAttemptWithoutWorkProductReason, noWorkProductMessage, "completed", "provider completed; issue acceptance is not recorded", nativeChangeMetadata(change))
 			o.recordCompletionUsage(ctx, state, event, issue)
-			o.releaseClaim(state, issueID)
 			issue.State = retryState
-			o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, noWorkProductMessage, false, running.WorkerHost)
+			if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(running.Attempt), event.CompletedAt, noWorkProductMessage, running.WorkerHost); err != nil {
+				return handoff(err)
+			}
 			return true
 		}
 		if err := o.abandonClaim(ctx, issueID); err != nil {

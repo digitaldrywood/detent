@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -158,11 +159,15 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 				runUpdates:         make(chan runUpdate, 1),
 				logger:             slog.New(slog.NewTextHandler(&logs, nil)),
 			}
-			state := newState(cfg)
-			if tt.finalState == runpkg.FinalStateMemoryCeilingExceeded {
+			db, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "retry.db")})
+			if err != nil {
+				t.Fatal(err)
 			}
+			t.Cleanup(func() { _ = db.Close() })
+			orch.workflowMetrics = db
+			state := newState(cfg)
 
-			if !orch.dispatchIssue(t.Context(), &state, issue, 1, startedAt, "") {
+			if !orch.dispatchIssue(t.Context(), &state, issue, 3, startedAt, "") {
 				t.Fatal("dispatchIssue() = false, want true")
 			}
 			var completion runpkg.Completion
@@ -174,7 +179,13 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			if completion.Retryable {
 				t.Fatal("session brake completion is retryable")
 			}
+			scheduling := &nativeCompletionScheduling{hubSchedulingSource: &hubSchedulingSource{}}
+			orch.scheduling = scheduling
 			orch.handleRunResult(t.Context(), &state, completion)
+			assertCompletionMachineRetry(t, orch, state, issue.ID, completedAt, 4, 80*time.Second)
+			if scheduling.releases != 1 {
+				t.Fatalf("lease releases = %d, want 1", scheduling.releases)
+			}
 
 			if _, ok := state.Running[issue.ID]; ok {
 				t.Fatalf("Running[%q] present after session brake", issue.ID)
@@ -185,9 +196,8 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			if _, ok := state.Blocked[issue.ID]; ok {
 				t.Fatalf("Blocked[%q] present after session brake", issue.ID)
 			}
-			completed, ok := state.Completed[issue.ID]
-			if !ok || completed.Issue.State != tt.wantState {
-				t.Fatalf("Completed[%q] = %#v, want parked state %q", issue.ID, completed, tt.wantState)
+			if retry := state.Retry[issue.ID]; retry.Issue.State != tt.wantState {
+				t.Fatalf("retry state = %q, want %q", retry.Issue.State, tt.wantState)
 			}
 			if availableSlots(&state) != 1 {
 				t.Fatalf("availableSlots() = %d, want released local slot", availableSlots(&state))

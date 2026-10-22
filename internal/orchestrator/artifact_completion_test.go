@@ -139,11 +139,11 @@ func TestHandleRunResultAppliesArtifactGateWorkpadField(t *testing.T) {
 			if !reflect.DeepEqual(tracker.setFields, tt.wantSetFields) {
 				t.Fatalf("set fields = %#v, want %#v", tracker.setFields, tt.wantSetFields)
 			}
-			completed, ok := state.Completed[issue.ID]
-			if !ok {
-				t.Fatalf("Completed[%q] missing", issue.ID)
+			retry, ok := state.Retry[issue.ID]
+			if !ok || retry.Attempt != 2 {
+				t.Fatalf("retry = %+v, want attempt 2 without completion evidence", retry)
 			}
-			if got := artifactStatusFromIssue(completed.Issue, "render_status"); got != tt.wantStatus {
+			if got := artifactStatusFromIssue(retry.Issue, "render_status"); got != tt.wantStatus {
 				t.Fatalf("completed render_status = %q, want %q", got, tt.wantStatus)
 			}
 			for _, fragment := range tt.wantLogFragments {

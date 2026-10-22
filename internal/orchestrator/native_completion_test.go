@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -178,6 +179,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	connectorAction := "Rewrite each of these acceptance criteria as a pre-merge check or remove it; no repository change can satisfy them before merge:\n- " + chatGPTCriterion + "\n- " + claudeCriterion
 	deliveryErr := &runpkg.DeliverableRecoveryError{Err: &runpkg.DeliverableCommandError{OperationClass: "pull_request", Message: "pull request publication failed"}}
 	for _, test := range []struct {
+		machineAttempt   int
 		optout           bool
 		name             string
 		republish        bool
@@ -308,8 +310,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "permanent source refusal cannot accept a complete report", change: &runpkg.NativeChange{VersionError: `checkpoint could not be safely published: excluded source path ".detent/skills/split-issue.md"`}, states: workflow, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1), wantState: "In Review", wantComment: "excluded source path"},
 		{name: "settled head refusal retires deferred completion authority", lifecycle: "refusal", republish: true, change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, VersionError: "the final attempt diff does not identify the current Change Request head"}, states: fourLanes, statesErr: errors.New("workflow temporarily unavailable"), humanReview: &no, wantSettled: true, roundTrip: true},
 		{name: "settled policy refusal retires deferred completion authority", lifecycle: "refusal", republish: true, change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: head, VersionError: "policy mismatch", VersionCode: "policy_mismatch"}, states: landing, statesErr: errors.New("workflow temporarily unavailable"), reviewed: &yes, humanReview: &no, wantSettled: true},
-		{name: "no review missing report returns source free completion to Todo", lifecycle: "settle", change: &runpkg.NativeChange{}, states: fourLanes, humanReview: &no, wantSettled: true, wantContinue: true, wantState: "Todo", roundTrip: true},
-		{name: "no review failed final state returns to Todo", change: accepted, states: fourLanes, humanReview: &no, finalState: runpkg.FinalStateFailed, wantContinue: true, wantState: "Todo", wantTerminal: store.WorkAttemptTerminalFailure},
+		{name: "no review missing report returns source free completion to Todo", machineAttempt: 3, lifecycle: "settle", change: &runpkg.NativeChange{}, states: fourLanes, humanReview: &no, wantSettled: true, wantContinue: true, wantState: "Todo", roundTrip: true},
+		{name: "no review failed final state returns to Todo", machineAttempt: 4, change: accepted, states: fourLanes, humanReview: &no, finalState: runpkg.FinalStateFailed, wantContinue: true, wantState: "Todo", wantTerminal: store.WorkAttemptTerminalFailure},
 		{name: "refusal without a safe workflow destination settles without relaning", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, VersionError: "head mismatch"}, states: hosted, humanReview: &no, wantSettled: true, roundTrip: true},
 		{name: "native release outage keeps completion ownership", lifecycle: "release", change: accepted, states: landing, reviewed: &yes, wantState: "Merging"},
 		{name: "normal provider exit renews through delayed native settlement", lifecycle: "settle", change: accepted, states: landing, reviewed: &yes, wantState: "Merging"},
@@ -321,7 +323,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "four lane reviewed change lands from current lane", change: accepted, states: fourLanes, humanReview: &no, wantDirect: true},
 		{name: "four lane reviewed change lands during drain", change: accepted, states: fourLanes, humanReview: &no, draining: true, wantDirect: true},
 		{name: "four lane reviewed optout waits for human review", change: accepted, states: fourLanes, reviewed: &yes, optout: true, humanReview: &no, wantState: "Human Review"},
-		{name: "four lane failed run returns to Todo", lifecycle: "settle", roundTrip: true, change: accepted, states: fourLanes, humanReview: &no, runErr: errors.New("provider failed"), wantContinue: true, wantState: "Todo"},
+		{name: "native token ceiling uses growing retry", machineAttempt: 8, change: accepted, states: fourLanes, humanReview: &no, runErr: runpkg.ErrSessionTokenCeilingExceeded, turnStarted: true, wantContinue: true, wantState: "Todo"},
+		{name: "four lane failed run returns to Todo", machineAttempt: 5, lifecycle: "settle", roundTrip: true, change: accepted, states: fourLanes, humanReview: &no, runErr: errors.New("provider failed"), wantContinue: true, wantState: "Todo"},
 		{name: "four lane unreviewed version retains completion", change: waiting, states: fourLanes, humanReview: &no, wantDeferred: true},
 		{name: "four lane unfinished source settles without a Rework move", change: accepted, states: fourLanes, humanReview: &no, finalMessage: unfinishedReport, wantSettled: true},
 		{name: "reason only report settles without acceptance", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: "Source conflicts remain unresolved.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```", wantSettled: true},
@@ -549,6 +552,14 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			}
 			metrics := &workflowMetricsRecorderSpy{}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling, workflowMetrics: metrics}
+			if test.machineAttempt > 0 {
+				db, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "retry.db")})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = db.Close() })
+				orch.workflowMetrics = db
+			}
 			if native, ok := tracker.(*nativeWorkflowConnector); ok && test.reviewed == nil && test.change != nil {
 				native.reviewed = &test.change.Reviewed
 			}
@@ -580,6 +591,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if test.startHead != "" {
 				running := state.Running[issue.ID]
 				running.DispatchLoopStart = dispatchLoopStartRecord{Captured: true, WorkspaceHeadAvailable: true, Fingerprint: dispatchLoopFingerprint{WorkspaceHead: test.startHead}}
+				state.Running[issue.ID] = running
+			}
+			if test.machineAttempt > 0 {
+				running := state.Running[issue.ID]
+				running.Attempt = test.machineAttempt
 				state.Running[issue.ID] = running
 			}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
@@ -717,6 +733,13 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				t.Fatal("nil native result bypassed ordinary continuation ownership")
 			}
 			orch.handleRunResult(t.Context(), &state, event)
+			if test.machineAttempt > 0 {
+				wantDelay := map[int]time.Duration{3: 80 * time.Second, 4: 160 * time.Second, 5: 300 * time.Second, 8: 300 * time.Second}[test.machineAttempt]
+				assertCompletionMachineRetry(t, orch, state, issue.ID, event.CompletedAt, test.machineAttempt+1, wantDelay)
+				if scheduling.releases != 1 {
+					t.Fatalf("lease releases = %d, want 1", scheduling.releases)
+				}
+			}
 			if strings.HasPrefix(test.lifecycle, "review_") {
 				if len(state.deferredCompletions) != 1 || !state.Retry[issue.ID].CompletionDeferred || scheduling.releases != 0 || len(attempts.completions) != 0 || tick.stateIssues[0].State != issue.State {
 					t.Fatalf("published unreviewed version lost completion ownership: deferred=%d releases=%d completions=%d lane=%s", len(state.deferredCompletions), scheduling.releases, len(attempts.completions), tick.stateIssues[0].State)
@@ -1537,5 +1560,26 @@ func TestNativeReviewContinuationRespectsProviderCapacity(t *testing.T) {
 				t.Fatal("accepted review continuation replaced native landing")
 			}
 		})
+	}
+}
+
+func assertCompletionMachineRetry(t *testing.T, orch *Orchestrator, state State, issueID string, at time.Time, attempt int, upper time.Duration) {
+	t.Helper()
+	retry, ok := state.Retry[issueID]
+	if !ok || retry.Attempt != attempt {
+		t.Fatalf("retry = %+v, want attempt %d", retry, attempt)
+	}
+	if delay := retry.DueAt.Sub(at); delay < upper-upper/8 || delay > upper {
+		t.Fatalf("delay = %v, want [%v, %v]", delay, upper-upper/8, upper)
+	}
+	if _, claimed := state.Claimed[issueID]; claimed {
+		t.Fatal("retry retained lease")
+	}
+	restarted := &Orchestrator{cfg: orch.cfg, connector: orch.connector, workflowMetrics: orch.workflowMetrics}
+	restored := newState(orch.cfg)
+	restarted.restoreMachineRetry(t.Context(), &restored, retry.Issue)
+	got, ok := restored.Retry[issueID]
+	if !ok || got.Attempt != attempt || !got.DueAt.Equal(retry.DueAt) || got.Error != retry.Error || got.Issue.State != retry.Issue.State || got.WorkerHost != retry.WorkerHost {
+		t.Fatalf("persisted retry restoration = %+v, want %+v", got, retry)
 	}
 }

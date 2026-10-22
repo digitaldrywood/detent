@@ -312,7 +312,8 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	o.finishForgeAvailabilityProbe(state, event, running)
-	if event.Err != nil && !nativeCompletion {
+	var sessionBrake *runpkg.SessionBrakeError
+	if event.Err != nil && !nativeCompletion && !errors.As(event.Err, &sessionBrake) {
 		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	}
 	if event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 {
@@ -619,7 +620,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		progress = o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
 	}
 	// Classify current Workpad evidence before reusing a historical gate wait.
-	if !repairRun && !completionWorkpadUnfinished(progress.Issue) && progress.Reason != implementProgressOutcomeNoProgress && o.completeRedundantGateWaitRun(ctx, state, event, running) {
+	if terminalState == store.WorkAttemptTerminalSuccess && !repairRun && !completionWorkpadUnfinished(progress.Issue) && progress.Reason != implementProgressOutcomeNoProgress && o.completeRedundantGateWaitRun(ctx, state, event, running) {
 		releaseProjectFailureBreakerCanary(state, event.IssueID)
 		return
 	}
@@ -727,7 +728,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			return
 		}
 		o.commentCompletionCleanlinessRejection(ctx, running.Issue, completionCleanliness)
-		o.scheduleContinuationRetry(ctx, state, running.Issue, 1, event.CompletedAt, dirtyCompletionReason, running.WorkerHost)
+		o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), dirtyCompletionReason)
 		return
 	}
 
@@ -755,10 +756,26 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		}
 		return
 	}
+	if event.Result.BudgetRefusal != nil && !o.cfg.subscriptionBilling() && event.Result.BudgetRefusal.Code == string(budget.ReasonPerIssueMaxUSD) {
+		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
+			o.logger.Warn("per-issue budget hold claim release failed", "issue_id", event.IssueID, "error", err)
+		}
+		delete(state.Claimed, event.IssueID)
+		delete(state.Retry, event.IssueID)
+		delete(state.PriorAttempts, event.IssueID)
+		return
+	}
 	if terminalState == store.WorkAttemptTerminalNoProgress {
+		if !attemptCompleted && o.workAttempts != nil && running.WorkAttemptID > 0 {
+			return
+		}
 		if o.blockImplementProgress(ctx, state, running, progress, event) {
 			return
 		}
+	}
+	if terminalState != store.WorkAttemptTerminalSuccess {
+		o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), firstNonBlank(errorMessage, string(terminalState)))
+		return
 	}
 	if progress.DependencyDeferral {
 		if attemptCompleted {
@@ -784,13 +801,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			return
 		}
 	}
-	if event.Result.BudgetRefusal != nil && !o.cfg.subscriptionBilling() && event.Result.BudgetRefusal.Code == string(budget.ReasonPerIssueMaxUSD) {
-		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
-			o.logger.Warn("per-issue budget hold claim release failed", "issue_id", event.IssueID, "error", err)
-		}
-		delete(state.Claimed, event.IssueID)
-		delete(state.Retry, event.IssueID)
-		delete(state.PriorAttempts, event.IssueID)
+
+	if len(progress.ProgressKinds) == 0 {
+		o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), progress.Reason)
 		return
 	}
 	o.scheduleContinuationRetry(ctx, state, running.Issue, 1, event.CompletedAt, "", running.WorkerHost)

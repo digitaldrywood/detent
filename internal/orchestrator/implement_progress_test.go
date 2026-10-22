@@ -271,11 +271,11 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			hydratedIssue:   implementProgressIssue("same-head", "Test"),
 			diffStats:       DiffStats{UnpushedCommits: 1, Status: "clean"},
 			noProgressLimit: 1,
-			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantTerminal:    store.WorkAttemptTerminalNoProgress,
 			wantReason:      "workspace_head_unavailable_for_unpushed_check",
 			wantCurrentHead: "same-head",
 			wantHydrations:  1,
-			wantReview:      true,
+			wantRetry:       true,
 		},
 		{
 			name:               "unverified pull request update counts as no progress",
@@ -515,7 +515,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			},
 			diffStats:       DiffStats{UnpushedCommits: 1, Status: "clean"},
 			noProgressLimit: 3,
-			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantTerminal:    store.WorkAttemptTerminalNoProgress,
 			wantReason:      "unpushed_remote_truth_unavailable_without_pull_request",
 			wantRetry:       true,
 		},
@@ -604,31 +604,31 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			refreshedState:     "Rework",
 		},
 		{
-			name:            "hydration failure fails open to success",
+			name:            "hydration failure retries",
 			runningIssue:    implementProgressIssue("same-head", "Test"),
 			hydratedIssue:   implementProgressIssue("same-head", "Test"),
 			hydrateErr:      errors.New("github hiccup"),
-			history:         []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
+			history:         []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalNoProgress)},
 			diffStats:       DiffStats{Status: "clean"},
 			noProgressLimit: 3,
-			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantTerminal:    store.WorkAttemptTerminalNoProgress,
 			wantReason:      "pull_request_hydration_failed",
 			wantHydrations:  1,
-			wantReview:      true,
-			wantLogContains: "implement worker progress check failed open",
+			wantRetry:       true,
+			wantLogContains: "implement worker progress evidence unavailable",
 		},
 		{
-			name:            "degraded hydration fails open to success",
+			name:            "degraded hydration retries",
 			runningIssue:    implementProgressIssue("same-head", "Test"),
 			hydratedIssue:   implementProgressIssueWithHydrationDegraded("same-head", connector.PullRequestHydrationReasonStaleCachedPullData, "Test"),
-			history:         []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
+			history:         []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalNoProgress)},
 			diffStats:       DiffStats{UnpushedCommits: 1, HeadSHA: "same-head", Status: "clean"},
 			noProgressLimit: 3,
-			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantTerminal:    store.WorkAttemptTerminalNoProgress,
 			wantReason:      "pull_request_hydration_unavailable",
 			wantHydrations:  1,
-			wantReview:      true,
-			wantLogContains: "implement worker progress check failed open",
+			wantRetry:       true,
+			wantLogContains: "implement worker progress evidence unavailable",
 		},
 		{
 			name:              "failed check delta is recorded",
@@ -830,35 +830,54 @@ func TestHandleRunResultResetsRetryAfterProgress(t *testing.T) {
 
 	base := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name           string
-		issue          connector.Issue
-		hydrated       connector.Issue
-		refreshedState string
-		completionLane string
-		wantReset      bool
+		name            string
+		issue           connector.Issue
+		hydrated        connector.Issue
+		refreshedState  string
+		completionLane  string
+		wantReset       bool
+		history         []store.WorkAttempt
+		diff            DiffStats
+		hydrateErr      error
+		historyErr      error
+		missingStore    bool
+		missingHydrator bool
+		unfinished      bool
+		finalState      string
 	}{
 		{
 			name:  "yieldless completion preserves failures",
 			issue: implementProgressIssueWithoutPR(),
 		},
 		{
-			name:      "linked pull request clears failures",
+			name:      "new pull request head clears failures",
 			issue:     implementProgressIssue("head", "Test"),
-			hydrated:  implementProgressIssue("head", "Test"),
+			hydrated:  implementProgressIssue("new-head", "Test"),
+			history:   []store.WorkAttempt{implementProgressHistoryAttempt(1, autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "head", FailedChecks: []string{"Test"}}, store.WorkAttemptTerminalSuccess)},
 			wantReset: true,
 		},
 		{
 			name:           "current attempt completion lane clears failures",
 			issue:          implementProgressIssueWithoutPR(),
 			completionLane: "Human Review",
+			history:        []store.WorkAttempt{implementProgressLegacyNoPRHistoryAttempt(1)},
 			wantReset:      true,
 		},
 		{
 			name:           "tracker state transition clears failures",
 			issue:          implementProgressIssueWithoutPR(),
 			refreshedState: "Rework",
+			history:        []store.WorkAttempt{implementProgressLegacyNoPRHistoryAttempt(1)},
 			wantReset:      true,
 		},
+		{name: "identical linked workspace diff retains attempts", issue: implementProgressIssue("head", "Test"), hydrated: implementProgressIssue("head", "Test"), diff: DiffStats{Status: "changed", FilesChanged: 1, Fingerprint: "same-diff", HeadSHA: "head"}, history: []store.WorkAttempt{{TerminalState: store.WorkAttemptTerminalSuccess, WorkerMetadataJSON: implementProgressMetadataJSONWithDiff(autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "head", FailedChecks: []string{"Test"}}, implementProgressDiffStats{Fingerprint: "same-diff", FilesChanged: 1, Status: "changed"}, store.WorkAttemptTerminalSuccess)}}},
+		{name: "hydration failure retains attempts", issue: implementProgressIssue("head"), hydrateErr: errors.New("hydration unavailable")},
+		{name: "missing hydrator retains attempts", issue: implementProgressIssue("head"), missingHydrator: true},
+		{name: "history failure retains attempts", issue: implementProgressIssue("head"), hydrated: implementProgressIssue("head"), historyErr: errors.New("history unavailable")},
+		{name: "missing history store retains attempts", issue: implementProgressIssue("head"), hydrated: implementProgressIssue("head"), missingStore: true},
+		{name: "missing prior history retains attempts", issue: implementProgressIssue("head"), hydrated: implementProgressIssue("head")},
+		{name: "unfinished Workpad retains attempts", issue: implementProgressIssue("head"), hydrated: implementProgressIssue("head"), unfinished: true, history: []store.WorkAttempt{implementProgressHistoryAttempt(1, autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "head"}, store.WorkAttemptTerminalSuccess)}},
+		{name: "nil error failed final state retains attempts", issue: implementProgressIssueWithoutPR(), finalState: runpkg.FinalStateFailed},
 	}
 
 	for _, tt := range tests {
@@ -869,8 +888,11 @@ func TestHandleRunResultResetsRetryAfterProgress(t *testing.T) {
 			if tt.refreshedState != "" {
 				refreshed.State = tt.refreshedState
 			}
-			tracker := &implementProgressConnector{refreshed: refreshed, hydrated: tt.hydrated}
-			attempts := &implementProgressAttemptStore{}
+			if tt.unfinished {
+				refreshed.Comments = []connector.IssueComment{{Body: implementProgressStructuredWorkpad(workpad.StatusInProgress, "Still working", nil)}}
+			}
+			tracker := &implementProgressConnector{refreshed: refreshed, hydrated: tt.hydrated, hydrateErr: tt.hydrateErr}
+			attempts := &implementProgressAttemptStore{history: tt.history, historyErr: tt.historyErr}
 			cfg := normalizeConfig(Config{
 				Project:                scheduler.ProjectCandidate{ID: "detent"},
 				AutoPromote:            AutoPromoteConfig{NoProgressLimit: 3},
@@ -880,35 +902,50 @@ func TestHandleRunResultResetsRetryAfterProgress(t *testing.T) {
 				ContinuationRetryDelay: time.Minute,
 			})
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
-			state := newState(cfg)
-			state.Running[tt.issue.ID] = Running{
-				Issue:            tt.issue,
-				Attempt:          3,
-				WorkAttemptID:    42,
-				Mode:             runpkg.RunModeImplement,
-				StartedAt:        base.Add(-time.Minute),
-				DiffStats:        DiffStats{Status: "clean"},
-				DispatchProgress: implementProgressArtifactSnapshotFromIssue(tt.issue, true),
-				CompletionLane:   tt.completionLane,
+			if tt.missingStore {
+				orch.workAttempts = nil
 			}
-			state.Claimed[tt.issue.ID] = Claimed{Issue: tt.issue, ClaimedAt: base.Add(-time.Minute)}
-
-			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
-				IssueID:     tt.issue.ID,
-				CompletedAt: base,
-				Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
-				Result:      runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: DiffStats{Status: "clean"}},
-			})
-
-			if retry, ok := state.Retry[tt.issue.ID]; ok {
-				if !tt.wantReset && retry.Attempt != 4 {
-					t.Fatalf("no-progress retry attempt = %d, want 4", retry.Attempt)
+			if tt.missingHydrator {
+				orch.connector = &backendCapacityTestConnector{}
+			}
+			diff := tt.diff
+			if !diffStatsPresent(diff) {
+				diff = DiffStats{Status: "clean"}
+			}
+			state := newState(cfg)
+			for _, attempt := range []int{3, 4} {
+				state.Running[tt.issue.ID] = Running{
+					Issue:            tt.issue,
+					Attempt:          attempt,
+					WorkAttemptID:    42,
+					Mode:             runpkg.RunModeImplement,
+					StartedAt:        base.Add(-time.Minute),
+					DiffStats:        diff,
+					DispatchProgress: implementProgressArtifactSnapshotFromIssue(tt.issue, true),
+					CompletionLane:   tt.completionLane,
 				}
-				if tt.wantReset && retry.Attempt != 1 {
-					t.Fatalf("successful continuation attempt = %d, want 1", retry.Attempt)
+				state.Claimed[tt.issue.ID] = Claimed{Issue: tt.issue, ClaimedAt: base.Add(-time.Minute)}
+
+				orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+					IssueID:     tt.issue.ID,
+					CompletedAt: base,
+					Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+					Result:      runpkg.RunResult{FinalState: firstNonBlank(tt.finalState, FinalStateCompleted), DiffStats: diff},
+				})
+
+				if retry, ok := state.Retry[tt.issue.ID]; ok {
+					if !tt.wantReset && retry.Attempt != attempt+1 {
+						t.Fatalf("no-progress retry attempt = %d, want %d", retry.Attempt, attempt+1)
+					}
+					if tt.wantReset && retry.Attempt != 1 {
+						t.Fatalf("successful continuation attempt = %d, want 1", retry.Attempt)
+					}
+				} else if !tt.wantReset {
+					t.Fatal("no-progress completion lost retry")
 				}
-			} else if !tt.wantReset {
-				t.Fatal("no-progress completion lost retry")
+				if tt.wantReset {
+					break
+				}
 			}
 
 		})
@@ -1091,7 +1128,7 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 			mutate: func(issue *connector.Issue, _ *Config) { issue.PullRequest.CodexReviewState = "PENDING" }},
 		{name: "validator evidence remains pending", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 2,
 			mutate: func(_ *connector.Issue, cfg *Config) { cfg.AutoPromote.Gate.Validator.Enabled = true }},
-		{name: "unknown PR authority remains held", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1,
+		{name: "unknown PR authority retries", ready: true, wantTerminal: store.WorkAttemptTerminalNoProgress, wantHydrations: 1,
 			mutate: func(issue *connector.Issue, _ *Config) {
 				issue.PullRequest.HydrationUnavailableReason = associationUnavailable
 			}},
@@ -1101,8 +1138,8 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 				cfg.AutoPromote.Gate.Kind = gate.KindHumanReview
 			}},
 		{
-			name:           "initial success waits for gate without continuation",
-			wantTerminal:   store.WorkAttemptTerminalSuccess,
+			name:           "missing prior progress retries",
+			wantTerminal:   store.WorkAttemptTerminalNoProgress,
 			wantHydrations: 1,
 		},
 		{
@@ -1179,6 +1216,15 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 			}
 			if tracker.hydrations != tt.wantHydrations {
 				t.Fatalf("hydrations = %d, want %d", tracker.hydrations, tt.wantHydrations)
+			}
+			if tt.wantTerminal == store.WorkAttemptTerminalNoProgress {
+				if retry, ok := state.Retry[issue.ID]; !ok || retry.Attempt != 3 {
+					t.Fatalf("retry = %+v, want attempt 3", retry)
+				}
+				if len(tracker.updates) != 0 {
+					t.Fatalf("unknown progress changed lane: %+v", tracker.updates)
+				}
+				return
 			}
 			if _, ok := state.Completed[issue.ID]; !ok {
 				t.Fatalf("Completed[%q] missing after gate-wait completion", issue.ID)
