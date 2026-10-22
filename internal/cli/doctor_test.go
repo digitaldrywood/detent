@@ -2941,12 +2941,12 @@ func TestCheckDoctorBlockedRecovery(t *testing.T) {
 		}
 	}
 	if len(got.BlockedRecoveryCandidates) != 1 || got.BlockedRecoveryCandidates[0].IssueID != recoverable.ID {
-		t.Fatalf("condition diagnostics = %#v", got.BlockedRecoveryCandidates)
+		t.Fatalf("BlockedRecoveryCandidates = %#v, want only %q", got.BlockedRecoveryCandidates, recoverable.ID)
 	}
 	if len(got.PermanentlyHeldRecoveries) != 1 || got.PermanentlyHeldRecoveries[0].IssueID != humanOnly.ID {
 		t.Fatalf("human hold diagnostics = %#v", got.PermanentlyHeldRecoveries)
 	}
-	if !strings.Contains(got.Detail, "issue-manual") || len(got.BlockedWithoutRecovery) != 1 || got.BlockedWithoutRecovery[0].IssueID != manual.ID {
+	if !strings.Contains(got.Detail, manual.ID) || len(got.BlockedWithoutRecovery) != 1 || got.BlockedWithoutRecovery[0].IssueID != manual.ID || got.BlockedWithoutRecovery[0].Reason != "no_recovery_predicate" {
 		t.Fatalf("relation-less diagnostics = %#v; detail = %q", got.BlockedWithoutRecovery, got.Detail)
 	}
 	if !stringSliceContains(fake.verifyStates, "Blocked") || !stringSliceContains(fake.verifyStates, "Rework") {
