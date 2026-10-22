@@ -450,10 +450,10 @@ export type OnboardingStep = typeof OnboardingStep.Type;
 
 /** The four steps `Evaluate()` emits, in its order. */
 export const ONBOARDING_STEPS = [
-  "Execution runner",
-  "Local validation",
-  "Repository configuration",
-  "Artifact history",
+  "Runner",
+  "Repository",
+  "Checkout",
+  "Run files",
 ] as const;
 
 export const ArtifactBinding = Schema.Struct({
@@ -486,6 +486,7 @@ export const RunnerLocalChecks = Schema.Struct({
 });
 
 export const RunnerEligibility = Schema.Struct({
+  other_project_count: Schema.optional(Schema.Number),
   local_checks: Schema.optional(Schema.NullOr(RunnerLocalChecks)),
   runner: Schema.Struct({
     runner_id: Schema.String,
@@ -509,6 +510,7 @@ export type RunnerEligibility = typeof RunnerEligibility.Type;
 
 /** `GET {nativeBase}/onboarding` (`onboarding.Project`). */
 export const Onboarding = Schema.Struct({
+  repository: Schema.optional(Schema.String),
   latest_run: Schema.optional(Schema.String),
   progress: OnboardingProgress,
   policy: Schema.optional(Schema.NullOr(PolicyApproval)),

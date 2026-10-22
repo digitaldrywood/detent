@@ -15,30 +15,49 @@
       "git": false
     },
     "states": [
-      { "name": "Todo", "terminal": false, "dispatchable": true, "transitions": ["In Progress"] },
-      { "name": "In Progress", "terminal": false, "dispatchable": false, "transitions": ["Done"] },
-      { "name": "Done", "terminal": true, "dispatchable": false, "transitions": [] }
+      {
+        "name": "Todo",
+        "terminal": false,
+        "dispatchable": true,
+        "transitions": [
+          "In Progress"
+        ]
+      },
+      {
+        "name": "In Progress",
+        "terminal": false,
+        "dispatchable": false,
+        "transitions": [
+          "Done"
+        ]
+      },
+      {
+        "name": "Done",
+        "terminal": true,
+        "dispatchable": false,
+        "transitions": []
+      }
     ],
     "onboarding": {
       "ready": true,
       "steps": [
         {
-          "name": "Repository configuration",
-          "state": "ready",
-          "detail": "Review the repository configuration reported from detent.yaml and WORKFLOW.md on the runner host."
-        },
-        {
-          "name": "Local validation",
-          "state": "ready",
-          "detail": "User-reported: run detent doctor and sign in to the selected provider on the execution host. Credentials stay local."
-        },
-        {
-          "name": "Execution runner",
+          "name": "Runner",
           "state": "ready",
           "detail": "Requires approved project access, matching tags and host selectors, a fresh heartbeat and available capacity."
         },
         {
-          "name": "Artifact history",
+          "name": "Repository",
+          "state": "ready",
+          "detail": "Review the repository configuration reported from detent.yaml and WORKFLOW.md on the runner host."
+        },
+        {
+          "name": "Checkout",
+          "state": "ready",
+          "detail": "User-reported: run detent doctor and sign in to the selected provider on the execution host. Credentials stay local."
+        },
+        {
+          "name": "Run files",
           "state": "ready",
           "detail": "Choose local history or configure the customer S3-compatible service and independent gateway. A binding does not verify storage or promise offline access."
         }
@@ -61,29 +80,41 @@
       "git": false
     },
     "states": [
-      { "name": "Todo", "terminal": false, "dispatchable": true, "transitions": ["Done"] },
-      { "name": "Done", "terminal": true, "dispatchable": false, "transitions": [] }
+      {
+        "name": "Todo",
+        "terminal": false,
+        "dispatchable": true,
+        "transitions": [
+          "Done"
+        ]
+      },
+      {
+        "name": "Done",
+        "terminal": true,
+        "dispatchable": false,
+        "transitions": []
+      }
     ],
     "onboarding": {
       "ready": false,
       "steps": [
         {
-          "name": "Repository configuration",
-          "state": "ready",
-          "detail": "Review the repository configuration reported from detent.yaml and WORKFLOW.md on the runner host."
-        },
-        {
-          "name": "Local validation",
-          "state": "action_required",
-          "detail": "User-reported: run detent doctor and sign in to the selected provider on the execution host. Credentials stay local."
-        },
-        {
-          "name": "Execution runner",
+          "name": "Runner",
           "state": "action_required",
           "detail": "Requires approved project access, matching tags and host selectors, a fresh heartbeat and available capacity."
         },
         {
-          "name": "Artifact history",
+          "name": "Repository",
+          "state": "ready",
+          "detail": "Review the repository configuration reported from detent.yaml and WORKFLOW.md on the runner host."
+        },
+        {
+          "name": "Checkout",
+          "state": "action_required",
+          "detail": "User-reported: run detent doctor and sign in to the selected provider on the execution host. Credentials stay local."
+        },
+        {
+          "name": "Run files",
           "state": "action_required",
           "detail": "Choose local history or configure the customer S3-compatible service and independent gateway. A binding does not verify storage or promise offline access."
         }

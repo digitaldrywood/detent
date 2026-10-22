@@ -66,18 +66,17 @@ it("preserves unsaved setup choices and fields through refresh, then saves and s
   expect(document.title).toBe("beta setup · Detent");
   const stepper = await screen.findByRole("list", { name: "Setup steps" });
   await waitFor(() => expect(within(stepper).getByText("example-org/example-project")).toBeTruthy());
-  expect(within(stepper).getByText("Execution runner", { exact: true })).toBeTruthy();
-  expect(within(stepper).getByText("Local validation", { exact: true })).toBeTruthy();
-  expect(within(stepper).getByText("Repository configuration", { exact: true })).toBeTruthy();
-  expect(within(stepper).getByText("Artifact history", { exact: true })).toBeTruthy();
+  expect(within(stepper).getByText("Runner", { exact: true })).toBeTruthy();
+  expect(within(stepper).getByText("Checkout", { exact: true })).toBeTruthy();
+  expect(within(stepper).getByText("Run files", { exact: true })).toBeTruthy();
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: /Repository configuration/ }));
+  await user.click(await screen.findByRole("button", { name: /Checkout/ }));
   deferRefresh = true;
   expect(poll).toBeDefined();
   act(() => poll!());
   await waitFor(() => expect(finishRefresh).toBeDefined());
   await user.click(screen.getByRole("radio", { name: "Create configuration files" }));
-  await user.click(screen.getByRole("button", { name: /Artifact history/ }));
+  await user.click(screen.getByRole("button", { name: /Run files/ }));
   await user.click(screen.getByRole("radio", { name: "Your bucket and gateway" }));
   const fields = [
     ["Service id", "service_example"],
@@ -89,15 +88,15 @@ it("preserves unsaved setup choices and fields through refresh, then saves and s
   expect((screen.getByRole("radio", { name: "Your bucket and gateway" }) as HTMLInputElement).checked).toBe(true);
   for (const [label, value] of fields) expect((screen.getByRole("textbox", { name: label }) as HTMLInputElement).value).toBe(value);
   expect(screen.getByRole("button", { name: "Help for Publisher token id" })).toBeTruthy();
-  await user.click(screen.getByRole("radio", { name: "Your runner (local history)" }));
-  await user.click(screen.getByRole("button", { name: /Repository configuration/ }));
+  await user.click(screen.getByRole("radio", { name: /Keep them on/ }));
+  await user.click(screen.getByRole("button", { name: /Checkout/ }));
   expect((screen.getByRole("radio", { name: "Create configuration files" }) as HTMLInputElement).checked).toBe(true);
   await user.click(screen.getByRole("button", { name: "Save configuration choice" }));
   expect(screen.queryByRole("button", { name: "Approve settings" })).toBeNull();
   const saved = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`).then((response) => response.json());
   expect(saved.progress).toMatchObject({ repository: "generate", artifacts: "local", revision: "2" });
-  await user.click(screen.getByRole("button", { name: /Artifact history/ }));
-  expect((screen.getByRole("radio", { name: "Your runner (local history)" }) as HTMLInputElement).checked).toBe(true);
+  await user.click(screen.getByRole("button", { name: /Run files/ }));
+  expect((screen.getByRole("radio", { name: /Keep them on/ }) as HTMLInputElement).checked).toBe(true);
   await user.click(screen.getByRole("radio", { name: "Your bucket and gateway" }));
   const alpha = `${client!.http.origin}${client!.http.apiBase}/projects/proj_alpha/onboarding`;
   const alphaProgress = await fetch(alpha).then((response) => response.json());
@@ -115,7 +114,8 @@ it("preserves unsaved setup choices and fields through refresh, then saves and s
   expect(document.title).toBe("alpha setup · Detent");
   expect(screen.queryByText("example-org/example-project")).toBeNull();
   await waitFor(() => expect(within(screen.getByRole("list", { name: "Setup steps" })).getByText("example-org/another-project")).toBeTruthy());
-  await waitFor(() => expect((screen.getByRole("radio", { name: "Your runner (local history)" }) as HTMLInputElement).checked).toBe(true));
+  await user.click(await screen.findByRole("button", { name: /Run files/ }));
+  await waitFor(() => expect((screen.getByRole("radio", { name: /Keep them on/ }) as HTMLInputElement).checked).toBe(true));
   expect((screen.getByRole("radio", { name: "Your bucket and gateway" }) as HTMLInputElement).checked).toBe(false);
   expect(screen.queryByRole("textbox", { name: "Publisher token id" })).toBeNull();
 });
@@ -179,7 +179,7 @@ it.each(["no repository", "configuration needed", "policy pending", "policy repo
         progress: { ...onboarding.progress, repository: configurationChosen ? "existing" : onboarding.progress.repository },
         policy: approved ? approval : null,
         observed_policies: reported && !approved ? [{ policy: descriptor, runner_id: "runner_example", observed_at: "2026-10-12T12:00:00Z", conflict: state === "conflict" }] : [],
-        steps: onboarding.steps.map((step: { name: string; state: string }) => step.name === "Repository configuration" ? { ...step, state: approved ? "ready" : "action_required" } : step),
+        steps: onboarding.steps.map((step: { name: string; state: string }) => step.name === "Checkout" ? { ...step, state: approved ? "ready" : "action_required" } : step),
       });
     }
     if (String(input).endsWith("/integration") && response.ok) {
@@ -192,7 +192,7 @@ it.each(["no repository", "configuration needed", "policy pending", "policy repo
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /^.*Repository (ready|action required)$/ }));
   expect(await screen.findByLabelText("Which repository should Detent work on?")).toBeTruthy();
-  await user.click(screen.getByRole("button", { name: /Repository configuration/ }));
+  await user.click(screen.getByRole("button", { name: /Checkout/ }));
   expect(approveRequests).toEqual([]);
   expect(screen.queryByLabelText("Resolved policy descriptor")).toBeNull();
   expect(screen.queryByText(/detent hub policy inspect/)).toBeNull();
@@ -222,198 +222,6 @@ it.each(["no repository", "configuration needed", "policy pending", "policy repo
 });
 
 it.each([
-  { ready: false, unrouted: false, capacityFull: false },
-  { ready: true, unrouted: false, capacityFull: false },
-  { ready: true, unrouted: true, capacityFull: false },
-  { ready: true, unrouted: false, capacityFull: true },
-])("uses the runner step's readiness for its primary action (ready: $ready, unrouted: $unrouted, capacity full: $capacityFull)", async ({ ready, unrouted, capacityFull }) => {
-  const onNavigate = vi.fn();
-  const mount = await mountSetup(onNavigate);
-  const intervals = vi.spyOn(window, "setInterval");
-  const clearInterval = vi.spyOn(window, "clearInterval");
-  let onboardingReads = 0;
-  let scopedRunnerReads = 0;
-  let routedProjects: readonly string[] | undefined;
-  const fetch = globalThis.fetch;
-  const approval = capacityFull
-    ? await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_alpha/policy`).then((response) => response.json())
-    : undefined;
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-    if (unrouted && String(input).endsWith("/runners") && (!init?.method || init.method === "GET")) {
-      return Response.json({ code: "not_found", message: "Organization-wide runner access is unavailable" }, { status: 404 });
-    }
-    if (unrouted && String(input).endsWith("/routing") && init?.method === "PUT") {
-      routedProjects = JSON.parse(String(init.body)).project_ids;
-    }
-    const response = await fetch(input, init);
-    if (unrouted && String(input).endsWith("/routing") && (!init?.method || init.method === "GET") && response.ok) {
-      scopedRunnerReads += 1;
-      return Response.json({ ...await response.json(), scope: "projects", project_ids: ["proj_alpha"] });
-    }
-    if (ready && String(input).endsWith("/integration") && response.ok) {
-      return Response.json({ ...await response.json(), checkout_repository: "example-org/example-repository", checkout_verified: true });
-    }
-    if (String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
-      const onboarding = await response.json();
-      onboardingReads += 1;
-      onboarding.runners = ready ? onboarding.runners : [];
-      if (capacityFull) {
-        onboarding.policy = approval;
-        onboarding.runners = [{
-          ...onboarding.runners[0],
-          exclusions: [
-            { code: "host_capacity", message: "Shared host capacity is full or paused" },
-            { code: "runner_capacity", message: "Runner capacity is full or paused" },
-          ],
-        }];
-      }
-      if (unrouted) {
-        onboarding.runners = [{
-          runner: { ...onboarding.runners[0].runner, scope: "organization", project_ids: [], display_name: "Shared build runner" },
-          exclusions: [{ code: "required_tag_missing", message: "Runner is missing required tag gpu" }],
-        }];
-      }
-      onboarding.steps = onboarding.steps.map((step: { name: string; state: string }) => ({
-        ...step,
-        state: ready ? "ready" : step.name === "Execution runner" ? "action_required" : step.state,
-      }));
-      onboarding.ready = ready;
-      return new Response(JSON.stringify(onboarding));
-    }
-    return response;
-  });
-  mount();
-  const user = userEvent.setup();
-  await screen.findByRole("button", { name: /Execution runner/ });
-  for (const step of ["Execution runner", "Local validation", "Repository configuration", "Artifact history"]) {
-    await user.click(screen.getByRole("button", { name: new RegExp(step) }));
-    expect(screen.queryByText("Your first issue")).toBeNull();
-    expect(screen.queryByLabelText("Title")).toBeNull();
-    expect(screen.queryByLabelText("What needs doing")).toBeNull();
-    expect(screen.queryByLabelText("Lane")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Create the first issue" })).toBeNull();
-  }
-  await user.click(screen.getByRole("button", { name: /Execution runner/ }));
-  const enroll = screen.getByRole("button", { name: "Enroll a runner" });
-  const forward = screen.getByRole("button", { name: ready ? "Continue" : "Skip for now" });
-  expect(enroll.classList.contains("bg-primary")).toBe(!ready);
-  expect(forward.classList.contains("bg-primary")).toBe(ready);
-  expect(screen.queryByRole("button", { name: ready ? "Skip for now" : "Continue" })).toBeNull();
-  if (unrouted) {
-    expect(screen.getAllByText("Shared build runner").length).toBeGreaterThan(0);
-    expect(screen.getByText("Runner is missing required tag gpu")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Route here" }).hasAttribute("disabled")).toBe(false);
-    await user.click(screen.getByRole("button", { name: "Route here" }));
-    await waitFor(() => expect(routedProjects).toEqual(["proj_alpha", "proj_beta"]));
-    expect(scopedRunnerReads).toBe(1);
-  }
-  if (capacityFull) {
-    expect(screen.getByText("Shared host capacity is full or paused · Runner capacity is full or paused")).toBeTruthy();
-    for (const [index, [, timeout]] of intervals.mock.calls.entries()) {
-      if (timeout === 5_000) {
-        expect(clearInterval).toHaveBeenCalledWith(intervals.mock.results[index]?.value);
-      }
-    }
-  }
-
-  await user.click(enroll);
-  expect(await screen.findByRole("dialog")).toBeTruthy();
-  await user.click(screen.getByRole("button", { name: "Cancel" }));
-  await user.click(forward);
-  await waitFor(() => expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Local validation"));
-  expect(screen.getByRole("button", { name: ready ? /Execution runner ready/ : /Execution runner action required/ }).textContent).toContain(ready ? "✓" : "2");
-  const saved = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`);
-  expect((await saved.json()).progress.revision).toBe("2");
-
-  await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Execution runner");
-  await user.click(screen.getByRole("button", { name: /Artifact history/ }));
-  if (ready) {
-    await user.click(screen.getByRole("button", { name: "Finish" }));
-    expect(onNavigate).toHaveBeenCalledWith("/work");
-  } else {
-    expect(screen.queryByRole("button", { name: "Finish" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Skip for now" }).hasAttribute("disabled")).toBe(false);
-    expect(screen.getByRole("button", { name: "Save choice" }).hasAttribute("disabled")).toBe(true);
-    await user.click(screen.getByRole("radio", { name: "Your bucket and gateway" }));
-    expect(await screen.findByLabelText("Publisher token id")).toBeTruthy();
-    const reads = onboardingReads;
-    const poll = intervals.mock.calls.find(([, timeout]) => timeout === 5_000)?.[0];
-    expect(poll).toBeTypeOf("function");
-    await act(async () => {
-      (poll as () => void)();
-      await waitFor(() => expect(onboardingReads).toBeGreaterThan(reads));
-    });
-    expect(screen.getByLabelText("Publisher token id")).toBeTruthy();
-    await user.click(screen.getByRole("radio", { name: "Your runner (local history)" }));
-    const saveChoice = screen.getByRole("button", { name: "Save choice" });
-    expect(saveChoice.classList.contains("bg-primary")).toBe(true);
-    await user.click(saveChoice);
-    expect(await screen.findByRole("button", { name: /Artifact history ready/ })).toBeTruthy();
-    const progress = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`);
-    expect((await progress.json()).progress.artifacts).toBe("local");
-  }
-});
-
-
-it.each([false, true])("leaves the last setup step only after saving with skipped steps (save fails: %s)", async (saveFails) => {
-  const onNavigate = vi.fn();
-  const mount = await mountSetup(onNavigate);
-  const fetch = globalThis.fetch;
-  const endpoint = `${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`;
-  const initial = await fetch(endpoint).then((response) => response.json());
-  const seeded = await fetch(endpoint, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ idempotency_key: "setup-last-step", progress: { ...initial.progress, artifacts: "local" } }),
-  });
-  expect(seeded.ok).toBe(true);
-  const saves: Record<string, unknown>[] = [];
-  let finishSave: (() => void) | undefined;
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-    if (String(input) === endpoint && init?.method === "PUT") {
-      saves.push(JSON.parse(String(init.body)));
-      await new Promise<void>((resolve) => { finishSave = resolve; });
-      if (saveFails) return Response.json({ code: "invalid_request", message: "Could not save setup." }, { status: 422 });
-    }
-    const response = await fetch(input, init);
-    if (String(input) === endpoint && (!init?.method || init.method === "GET")) {
-      const onboarding = await response.json();
-      return Response.json({
-        ...onboarding,
-        runners: [],
-        steps: onboarding.steps.map((step: { name: string; state: string }) => ({ ...step, state: step.name === "Artifact history" ? step.state : "action_required" })),
-        ready: false,
-      });
-    }
-    return response;
-  });
-  mount();
-  const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: /Artifact history ready/ }));
-  expect(screen.queryByRole("button", { name: "Finish" })).toBeNull();
-  await user.click(screen.getByRole("button", { name: "Continue" }));
-  await waitFor(() => expect(finishSave).toBeDefined());
-  expect(saves).toEqual([expect.objectContaining({ progress: expect.objectContaining({ artifacts: "local", repository: "", doctor: false, provider: false }) })]);
-  expect(onNavigate).not.toHaveBeenCalled();
-  await act(async () => finishSave!());
-  if (saveFails) {
-    expect(await screen.findByText("Could not save setup.")).toBeTruthy();
-    expect(onNavigate).not.toHaveBeenCalled();
-    expect(screen.getByRole("heading", { level: 1, name: "Artifact history" })).toBeTruthy();
-  } else {
-    await waitFor(() => expect(onNavigate).toHaveBeenCalledWith("/work"));
-    const saved = await fetch(endpoint).then((response) => response.json());
-    expect(saved.progress).toMatchObject({ artifacts: "local", revision: "3", repository: "", doctor: false, provider: false });
-    expect(saved.ready).toBe(false);
-  }
-  for (const step of ["Execution runner", "Local validation", "Repository configuration"]) {
-    await user.click(screen.getByRole("button", { name: new RegExp(`${step} action required`) }));
-    expect(screen.getByRole("heading", { level: 1, name: step })).toBeTruthy();
-  }
-});
-
-it.each([
   ["online", "online", "Example runner · Online"],
   ["online", "needs_attention", "Example runner · Online · Needs attention"],
   ["offline", "needs_attention", "Example runner · Offline · Needs attention"],
@@ -430,51 +238,139 @@ it.each([
     return response;
   });
   mount();
-  await userEvent.setup().click(await screen.findByRole("button", { name: /Local validation/ }));
+  await userEvent.setup().click(await screen.findByRole("button", { name: /Checkout/ }));
   expect(await screen.findByText(label)).toBeTruthy();
   if (connection_health === "offline") expect(screen.getByText(/Reconnect the runner’s computer/)).toBeTruthy();
   else expect(screen.queryByText(/Reconnect the runner’s computer/)).toBeNull();
 });
 
-
-it("finishes setup after the runner reports repository configuration", async () => {
-  const onNavigate = vi.fn();
-  const mount = await mountSetup(onNavigate);
+it.each([["projects", false], ["projects", true], ["organization", false]] as const)("preselects an eligible online runner and preserves routing when confirming (scope: %s, offline choice: %s)", async (scope, offline) => {
+  const mount = await mountSetup();
   const fetch = globalThis.fetch;
-  const descriptor = (await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_alpha/onboarding`).then((response) => response.json())).policy.policy;
+  let routed: Record<string, unknown> | undefined;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/runners/runner_selected/routing") || url.endsWith("/runners/runner_offline/routing")) {
+      if (init?.method === "PUT") {
+        routed = JSON.parse(String(init.body));
+        return Response.json(routed);
+      }
+      return Response.json({ revision: 4, display_name: "Build runner", tags: ["build"], state: "active", capacity_limit: 2, scope, project_ids: scope === "organization" ? [] : ["proj_alpha"], project_ranks: { proj_alpha: 7 } });
+    }
     const response = await fetch(input, init);
-    if (String(input).endsWith("/onboarding") && response.ok && (!init?.method || init.method === "GET")) {
+    if (url.endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
       const onboarding = await response.json();
-      const integration = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/integration`).then((result) => result.json());
-      const bound = Boolean(integration.checkout_repository);
-      const runners = bound ? onboarding.runners.slice(0, 1).map((row: { runner: object }) => ({ ...row, local_checks: { checkout: "passed", doctor: "passed", provider: "passed", observed_at: new Date().toISOString() } })) : [];
-      const steps = onboarding.steps.map((step: { name: string; state: string }) => ({ ...step, state: step.name === "Execution runner" || step.name === "Local validation" || step.name === "Repository configuration" && onboarding.progress.repository !== "" ? bound ? "ready" : "action_required" : step.state }));
-      return Response.json({ ...onboarding, runners, steps, observed_policies: bound && !onboarding.policy ? [{ policy: descriptor, runner_id: "runner_example", observed_at: new Date().toISOString() }] : [], ready: bound && steps.every((step: { state: string }) => step.state === "ready") });
+      const base = onboarding.runners[0];
+      return Response.json({ ...onboarding, ready: false, runners: [
+        { ...base, runner: { ...base.runner, runner_id: "runner_offline", display_name: "Offline runner", connection_health: "offline" } },
+        { ...base, exclusions: [{ code: "required_tag_missing", message: "Needs a tag" }], runner: { ...base.runner, runner_id: "runner_unsuitable", display_name: "Unavailable runner", connection_health: "online" } },
+        { ...base, exclusions: [{ code: "project_access_denied", message: "Route here first" }], other_project_count: 1, runner: { ...base.runner, runner_id: "runner_selected", display_name: "Build runner", connection_health: "online" } },
+      ], steps: onboarding.steps.map((step: { name: string }) => ({ ...step, state: "action_required" })) });
     }
     return response;
   });
   mount();
   const user = userEvent.setup();
+  const selected = await screen.findByRole("radio", { name: /Build runner/ });
+  expect((selected as HTMLInputElement).checked).toBe(true);
+  expect(selected.getAttribute("aria-describedby")).toBeTruthy();
+  expect(screen.getAllByText(/works on 1 other project/).length).toBeGreaterThan(0);
+  if (offline) await user.click(screen.getByRole("radio", { name: /Offline runner/ }));
+  await user.click(screen.getByRole("button", { name: offline ? "Use Offline runner" : "Use Build runner" }));
   expect(await screen.findByRole("heading", { level: 1, name: "Repository" })).toBeTruthy();
-  expect(screen.queryByLabelText("Resolved policy descriptor")).toBeNull();
-  expect(screen.queryByRole("group", { name: "Configuration files" })).toBeNull();
-  fireEvent.change(screen.getByLabelText("Which repository should Detent work on?"), { target: { value: "example-org/example-repository" } });
-  await user.click(screen.getByRole("button", { name: "Associate" }));
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
-  expect(await screen.findByRole("heading", { level: 1, name: "Execution runner" })).toBeTruthy();
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
-  expect(await screen.findByRole("heading", { level: 1, name: "Local validation" })).toBeTruthy();
-  expect(screen.getAllByText("Passed")).toHaveLength(3);
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
-  expect(await screen.findByRole("heading", { level: 1, name: "Repository configuration" })).toBeTruthy();
-  await user.click(screen.getByRole("radio", { name: "Use existing configuration files" }));
-  await user.click(screen.getByRole("button", { name: "Save configuration choice" }));
-  expect(screen.queryByRole("button", { name: "Approve settings" })).toBeNull();
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
-  expect(await screen.findByRole("heading", { level: 1, name: "Artifact history" })).toBeTruthy();
-  await user.click(screen.getByRole("radio", { name: "Your runner (local history)" }));
-  await user.click(screen.getByRole("button", { name: "Save choice" }));
-  await user.click(await screen.findByRole("button", { name: "Finish" }));
-  expect(onNavigate).toHaveBeenCalledWith("/work");
+  expect(routed).toMatchObject({ expected_revision: 4, project_ids: scope === "organization" ? [] : ["proj_alpha", "proj_beta"], project_ranks: { proj_alpha: 7 }, scope });
+});
+
+it("enrolls inline when there are no runners and advances when a connected runner appears", async () => {
+  const mount = await mountSetup();
+  const fetch = globalThis.fetch;
+  let connected = false;
+  let poll: (() => void) | undefined;
+  const setInterval = window.setInterval;
+  vi.spyOn(window, "setInterval").mockImplementation((callback, delay, ...args) => {
+    const timer = setInterval(callback, delay, ...args);
+    if (delay === 5_000 && typeof callback === "function") { poll = callback as () => void; window.clearInterval(timer); }
+    return timer as unknown as ReturnType<typeof window.setInterval>;
+  });
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const response = await fetch(input, init);
+    if (String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
+      const onboarding = await response.json();
+      return Response.json({ ...onboarding, ready: false, runners: connected ? onboarding.runners.slice(0, 1).map((entry: { runner: object }) => ({ ...entry, exclusions: [], runner: { ...entry.runner, runner_id: "runner_new", display_name: "New build runner", state: "active", connection_health: "online" } })) : [], steps: onboarding.steps.map((step: { name: string }) => ({ ...step, state: "action_required" })) });
+    }
+    return response;
+  });
+  mount();
+  expect(await screen.findByRole("region", { name: "Enroll a runner" })).toBeTruthy();
+  expect(screen.getByLabelText("Name")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Create command" })).toBeTruthy();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await userEvent.setup().click(screen.getByRole("button", { name: "Use an existing runner" }));
+  await userEvent.setup().click(screen.getByRole("button", { name: "Enroll a runner" }));
+  connected = true;
+  await act(async () => poll!());
+  expect(await screen.findByRole("heading", { level: 1, name: "Repository" })).toBeTruthy();
+  await userEvent.setup().click(screen.getByRole("button", { name: /Runner action required/ }));
+  expect((screen.getByRole("radio", { name: /New build runner/ }) as HTMLInputElement).checked).toBe(true);
+});
+
+it.each([false, true])("saves the run-files default before finishing, preserving prior progress (save fails: %s)", async (fails) => {
+  const navigate = vi.fn();
+  const mount = await mountSetup(navigate);
+  const fetch = globalThis.fetch;
+  let saved: Record<string, unknown> | undefined;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    if (String(input).endsWith("/onboarding") && init?.method === "PUT") {
+      saved = JSON.parse(String(init.body)).progress;
+      if (fails) return Response.json({ code: "invalid_request", message: "Could not save setup." }, { status: 422 });
+    }
+    const response = await fetch(input, init);
+    if (String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
+      const onboarding = await response.json();
+      return Response.json({ ...onboarding, progress: { ...onboarding.progress, doctor: true, provider: true } });
+    }
+    return response;
+  });
+  mount();
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Run files/ }));
+  expect((screen.getByRole("radio", { name: /Keep them on/ }) as HTMLInputElement).checked).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Finish setup" }));
+  await waitFor(() => expect(saved).toMatchObject({ artifacts: "local", doctor: true, provider: true }));
+  if (fails) {
+    expect(await screen.findByText("Could not save setup.")).toBeTruthy();
+    expect(navigate).not.toHaveBeenCalled();
+  } else {
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/work"));
+    expect((await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`).then((response) => response.json())).progress.artifacts).toBe("local");
+  }
+});
+
+it("shows the Ready summary and opens each step from its link", async () => {
+  const navigate = vi.fn();
+  const mount = await mountSetup(navigate);
+  const fetch = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const response = await fetch(input, init);
+    if (String(input).endsWith("/integration")) return Response.json({ ...await response.json(), checkout_repository: "example-org/example-project", checkout_verified: true });
+    if (String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
+      const onboarding = await response.json();
+      return Response.json({ ...onboarding, ready: true, progress: { ...onboarding.progress, artifacts: "local" }, runners: onboarding.runners.slice(0, 1).map((entry: { runner: object }) => ({ ...entry, runner: { ...entry.runner, display_name: "Build runner" } })), steps: onboarding.steps.map((step: object) => ({ ...step, state: "ready" })) });
+    }
+    return response;
+  });
+  const user = userEvent.setup();
+  for (const [link, heading] of [["Change Runner", "Which computer should work on beta?"], ["Change Repository", "Repository"], ["View Checkout", "Checkout"], ["Change Run files", "Where should run files go?"]]) {
+    const view = mount();
+    expect(await screen.findByRole("heading", { level: 1, name: "beta is ready for work" })).toBeTruthy();
+    expect(screen.getAllByRole("definition").some((element) => element.textContent === "Build runner")).toBe(true);
+    expect(screen.getByText("example-org/example-project", { exact: true })).toBeTruthy();
+    expect(screen.getByText("Kept on Build runner")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: link }));
+    expect(screen.getByRole("heading", { level: 1, name: heading })).toBeTruthy();
+    view.unmount();
+  }
+  mount();
+  await user.click(await screen.findByRole("button", { name: "Open Work" }));
+  expect(navigate).toHaveBeenCalledWith("/work");
 });

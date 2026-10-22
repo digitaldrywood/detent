@@ -353,7 +353,7 @@ func TestHostedProjectTools(t *testing.T) {
 				t.Fatal(err)
 			}
 			setup := onboardingRead.Data
-			if setup.Policy == nil || setup.Policy.Policy.ID != previous.Policy.ID || len(setup.ObservedPolicies) != 1 || !reflect.DeepEqual(setup.ObservedPolicies[0].Policy, candidate) {
+			if !reflect.DeepEqual([]string{setup.Steps[0].Name, setup.Steps[1].Name, setup.Steps[2].Name, setup.Steps[3].Name}, []string{"Runner", "Repository", "Checkout", "Run files"}) || setup.Policy == nil || setup.Policy.Policy.ID != previous.Policy.ID || len(setup.ObservedPolicies) != 1 || !reflect.DeepEqual(setup.ObservedPolicies[0].Policy, candidate) {
 				t.Fatalf("observed candidate = %+v", setup)
 			}
 			approve := projectCall(t, "approve_project_policy", id, "approve", operatortool.PolicyApprovalInput{ExpectedID: setup.Policy.Policy.ID, ObservedPolicyID: setup.ObservedPolicies[0].Policy.ID})

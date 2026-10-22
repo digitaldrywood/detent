@@ -188,7 +188,9 @@ export function EnrollRunnerDialog({
   fleet,
   projectIds,
   initialName = "",
+  inline = false,
 }: {
+  readonly inline?: boolean;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onEnrolled: (enrollment: PendingEnrollment) => void;
@@ -382,17 +384,8 @@ export function EnrollRunnerDialog({
     {minimumVersion ? <p className="text-xs text-muted-foreground">This Hub requires Detent {minimumVersion} or newer. Check with <code>detent version</code>; if yours is older, update with <code>detent update --yes --from-release</code>{platform === "macos" ? <> or <code>brew upgrade digitaldrywood/tap/detent</code> for Homebrew</> : null} before registering.</p> : null}
   </div>;
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPopup className="sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>Enroll a runner</DialogTitle>
-          <DialogDescription>
-            A runner takes issue runs and coordinator turns on your own machine, with your own
-            provider login. The hub never holds a provider credential.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogPanel className="flex flex-col gap-4">
+  const content = (
+    <div className="flex flex-col gap-4">
           <ol aria-label="Runner enrollment steps" className="flex gap-3 text-xs sm:gap-6">
             {["Set it up", "Run the command", "Connected"].map((label, index) => (
               <li
@@ -638,7 +631,7 @@ export function EnrollRunnerDialog({
               </p>
               {enrolledRunner !== null ? <p className="text-xs text-muted-foreground">The one-time token has been used and is no longer available. You can still copy the command with the token masked.</p> : null}
               <p className="text-xs text-muted-foreground">
-                Closing this dialog clears the command from the page. The runner still connects if you already ran it.
+                Leaving enrollment clears the command from the page. The runner still connects if you already ran it.
               </p>
             </section>
           ) : null}
@@ -649,9 +642,10 @@ export function EnrollRunnerDialog({
           {baselinePending && fleet.error !== null ? (
             <Button variant="outline" disabled={fleet.loading} onClick={() => void fleet.refresh()}>Retry runner read</Button>
           ) : null}
-        </DialogPanel>
-        <DialogFooter>
-          <DialogClose render={<Button variant="outline">{connected !== null ? "Done" : enrollment === null ? "Cancel" : "Close"}</Button>} />
+    </div>
+  );
+  const actions = (
+    <>
           {step > 0 ? <Button variant="outline" onClick={() => setStep((current) => current - 1)}>Back</Button> : null}
           {enrollment !== null && step < 2 ? (
             <Button disabled={step === 1 && connected === null} onClick={() => setStep((current) => current + 1)}>Next</Button>
@@ -660,6 +654,20 @@ export function EnrollRunnerDialog({
               {create.pending ? "Creating…" : "Create command"}
             </Button>
           ) : null}
+    </>
+  );
+  if (inline) return <section aria-label="Enroll a runner" className="flex flex-col gap-4">{content}<div className="flex justify-end gap-2">{actions}</div></section>;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogPopup className="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Enroll a runner</DialogTitle>
+          <DialogDescription>A runner takes issue runs and coordinator turns on your own machine, with your own provider login. The hub never holds a provider credential.</DialogDescription>
+        </DialogHeader>
+        <DialogPanel>{content}</DialogPanel>
+        <DialogFooter>
+          <DialogClose render={<Button variant="outline">{connected !== null ? "Done" : enrollment === null ? "Cancel" : "Close"}</Button>} />
+          {actions}
         </DialogFooter>
       </DialogPopup>
     </Dialog>
