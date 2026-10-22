@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -240,6 +241,9 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 				return decision
 			}
 		}
+		if workpadCurrent && o.implementCompletionAccepted(running, issue, decision.WorkspaceDiffStats) {
+			return decision
+		}
 		if len(decision.ProgressKinds) > 0 {
 			decision.Reason = "signature_changed"
 			return decision
@@ -374,6 +378,9 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 
 		return decision
 	}
+	if workpadCurrent && o.implementCompletionAccepted(running, issue, decision.WorkspaceDiffStats) {
+		return decision
+	}
 	if !ok {
 		if running.Attempt > 1 && len(decision.ProgressKinds) == 0 && decision.WorkpadStatus != workpad.StatusComplete {
 			decision.Outcome = store.WorkAttemptTerminalNoProgress
@@ -410,6 +417,33 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 	decision.ConsecutiveNoProgress = 1 + consecutiveImplementNoProgressAttempts(attempts, signature)
 
 	return decision
+}
+
+func (o *Orchestrator) implementCompletionAccepted(running Running, issue connector.Issue, diffStats DiffStats) bool {
+	if !implementProgressDiffStatsClean(diffStats) {
+		return false
+	}
+	signal, _ := autoPromoteIssueWorkpadSignal(issue)
+	if signal != nil && strings.TrimSpace(signal.Fields[workpad.FieldCompletionKind]) != "" {
+		return false
+	}
+	if workpad.CurrentAttemptCompletion(signal, running.WorkAttemptID, running.Generation) {
+		return true
+	}
+	cfg := gate.Effective(o.cfg.AutoPromote.Gate)
+	if cfg.Kind != gate.KindArtifact || signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured || signal.Status != workpad.StatusComplete || signal.HumanAction != "" || len(signal.Blockers) != 0 || !running.DispatchWorkpadRead {
+		return false
+	}
+	hash := artifactGateWorkpadStatusHash(issue.Comments)
+	if hash == "" || hash == running.DispatchWorkpadHash {
+		return false
+	}
+	field, value, err := artifactGateCompletionFieldUpdate(signal.Fields, cfg.Artifact)
+	if err != nil {
+		return false
+	}
+	status, present := artifactStatusFieldFromIssue(issue, field)
+	return present && strings.EqualFold(strings.TrimSpace(status), value)
 }
 
 func (o *Orchestrator) implementProgressDispatchArtifactSnapshot(ctx context.Context, issue connector.Issue) implementProgressArtifactSnapshot {

@@ -84,10 +84,13 @@ interactions are the main source of incidents, so the set may not grow.
   including native failures, no-product completions, session-brake retries and
   merge failures, refusals and unavailable-evidence waits.
   Attempts grow with capped jittered backoff; durable restoration is available
-  only where `workflowMetrics` is configured. Continuations reset only for a
-  host-observed changed PR head or committed tree against the dispatch baseline.
-  Unchanged or unavailable evidence and rejected completions
-  retain growing retries. Historical brake metadata never parks work or vetoes dispatch.
+  only where `workflowMetrics` is configured. Successful, non-rejected implement
+  continuations (generic and native) reset to attempt 1 only for a host-observed
+  changed PR head or committed tree against the dispatch baseline. Unchanged or
+  unavailable source evidence and rejected completions retain growing retries.
+  Merge-worker waits grow attempts, including after source refreshes. Accepted
+  stage and deliverable completions advance or finish without a new commit or a
+  continuation reset; arbitrary Workpad changes do not establish source progress. Historical brake metadata never parks work or vetoes dispatch.
   Budgets, usage checks, provider capacity and session ceilings remain existing
   policies, not an unconditional spend bound. An unset or disabled budget imposes
   no monetary cap; drain-mode budgets can admit already-admitted work. Provider

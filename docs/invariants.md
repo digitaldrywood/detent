@@ -182,10 +182,13 @@ the existing machine retry owner. Machine failures remain dispatchable with
 growing attempts and capped jittered backoff, including native failures,
 no-product completions, session-brake retries and merge failures, refusals and
 unavailable-evidence waits. Durable restoration requires configured
-`workflowMetrics`. Continuations reset only for a host-observed changed PR head
-or committed tree against the dispatch baseline. Unchanged or unavailable
-evidence and rejected completions
-retain growing retries. Budget/usage checks, provider capacity and session
+`workflowMetrics`. Successful, non-rejected implement continuations (generic
+and native) reset to attempt 1 only for a host-observed changed PR head or
+committed tree against the dispatch baseline. Unchanged or unavailable source
+evidence and rejected completions retain growing retries. Merge-worker waits
+grow attempts, including after source refreshes. Accepted stage and deliverable
+completions advance or finish without a new commit or a continuation reset;
+arbitrary Workpad changes do not establish source progress. Budget/usage checks, provider capacity and session
 ceilings are existing policies, not an unconditional spend bound. An unset or
 disabled budget imposes no monetary cap; drain mode can admit already-admitted
 work. Capacity limits concurrency and configured session ceilings limit one run,

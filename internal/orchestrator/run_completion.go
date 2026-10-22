@@ -652,7 +652,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	phase := "completed"
 	statusMessage := "worker completed"
 	artifactConvergence := artifactGateConvergenceRecord{}
-	if terminalState == store.WorkAttemptTerminalSuccess {
+	if terminalState == store.WorkAttemptTerminalSuccess && progress.CompletionKind != workpad.CompletionOperational {
 		artifactConvergence = o.evaluateArtifactGateConvergence(ctx, dispatchedIssue, running.Issue, running)
 	}
 	if terminalState == store.WorkAttemptTerminalSuccess && progress.Outcome == store.WorkAttemptTerminalNoProgress {
@@ -803,7 +803,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		}
 	}
 
-	if len(progress.ProgressKinds) == 0 {
+	if len(implementProgressSourceKinds(running, progress.Issue)) == 0 {
 		o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), progress.Reason)
 		return
 	}

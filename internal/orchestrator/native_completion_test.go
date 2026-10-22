@@ -180,6 +180,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	deliveryErr := &runpkg.DeliverableRecoveryError{Err: &runpkg.DeliverableCommandError{OperationClass: "pull_request", Message: "pull request publication failed"}}
 	for _, test := range []struct {
 		machineAttempt   int
+		progressCycles   bool
 		optout           bool
 		name             string
 		republish        bool
@@ -311,7 +312,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "settled head refusal retires deferred completion authority", lifecycle: "refusal", republish: true, change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, VersionError: "the final attempt diff does not identify the current Change Request head"}, states: fourLanes, statesErr: errors.New("workflow temporarily unavailable"), humanReview: &no, wantSettled: true, roundTrip: true},
 		{name: "settled policy refusal retires deferred completion authority", lifecycle: "refusal", republish: true, change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: head, VersionError: "policy mismatch", VersionCode: "policy_mismatch"}, states: landing, statesErr: errors.New("workflow temporarily unavailable"), reviewed: &yes, humanReview: &no, wantSettled: true},
 		{name: "no review missing report returns source free completion to Todo", machineAttempt: 3, lifecycle: "settle", change: &runpkg.NativeChange{}, states: fourLanes, humanReview: &no, wantSettled: true, wantContinue: true, wantState: "Todo", roundTrip: true},
-		{name: "no review failed final state returns to Todo", machineAttempt: 4, change: accepted, states: fourLanes, humanReview: &no, finalState: runpkg.FinalStateFailed, wantContinue: true, wantState: "Todo", wantTerminal: store.WorkAttemptTerminalFailure},
+		{name: "no review failed final state returns to Todo", diffStats: DiffStats{Status: "clean", HeadSHA: head, TreeSHA: "changed-tree"}, machineAttempt: 4, change: accepted, states: fourLanes, humanReview: &no, finalState: runpkg.FinalStateFailed, wantContinue: true, wantState: "Todo", wantTerminal: store.WorkAttemptTerminalFailure},
 		{name: "refusal without a safe workflow destination settles without relaning", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, VersionError: "head mismatch"}, states: hosted, humanReview: &no, wantSettled: true, roundTrip: true},
 		{name: "native release outage keeps completion ownership", lifecycle: "release", change: accepted, states: landing, reviewed: &yes, wantState: "Merging"},
 		{name: "normal provider exit renews through delayed native settlement", lifecycle: "settle", change: accepted, states: landing, reviewed: &yes, wantState: "Merging"},
@@ -324,7 +325,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "four lane reviewed change lands during drain", change: accepted, states: fourLanes, humanReview: &no, draining: true, wantDirect: true},
 		{name: "four lane reviewed optout waits for human review", change: accepted, states: fourLanes, reviewed: &yes, optout: true, humanReview: &no, wantState: "Human Review"},
 		{name: "native token ceiling uses growing retry", machineAttempt: 8, change: accepted, states: fourLanes, humanReview: &no, runErr: runpkg.ErrSessionTokenCeilingExceeded, turnStarted: true, wantContinue: true, wantState: "Todo"},
-		{name: "four lane failed run returns to Todo", machineAttempt: 5, lifecycle: "settle", roundTrip: true, change: accepted, states: fourLanes, humanReview: &no, runErr: errors.New("provider failed"), wantContinue: true, wantState: "Todo"},
+		{name: "four lane failed run returns to Todo", diffStats: DiffStats{Status: "clean", HeadSHA: head, TreeSHA: "changed-tree"}, machineAttempt: 5, lifecycle: "settle", roundTrip: true, change: accepted, states: fourLanes, humanReview: &no, runErr: errors.New("provider failed"), wantContinue: true, wantState: "Todo"},
 		{name: "four lane unreviewed version retains completion", change: waiting, states: fourLanes, humanReview: &no, wantDeferred: true},
 		{name: "four lane unfinished source settles without a Rework move", change: accepted, states: fourLanes, humanReview: &no, finalMessage: unfinishedReport, wantSettled: true},
 		{name: "reason only report settles without acceptance", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: "Source conflicts remain unresolved.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```", wantSettled: true},
@@ -387,11 +388,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "criteria gate lane outage defers without a generic permission wait", change: criterionChange(gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}, gate.CriterionEvidence{Criterion: claudeCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, updateErr: errors.New("native lane write unavailable"), wantDeferred: true, wantState: "Blocked", wantQuestion: connectorAction},
 		{name: "mixed criteria block with only unsatisfiable actions", change: criterionChange(gate.CriterionEvidence{Criterion: "Missing regression test", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionReworkFixable}, gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}, gate.CriterionEvidence{Criterion: claudeCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, wantState: "Rework"},
 		{name: "rewritten connector criterion reuses retained source and passes", change: criterionChange(gate.CriterionEvidence{Criterion: "Connector sign-in covered by local regression", Kind: gate.EvidenceTest, Reference: "connector_test.go:TestSignIn", Behavior: "The local client signs in successfully"}), states: rework, sourceState: "Rework", humanReview: &no, wantState: "Merging", wantComment: "runner lands it next"},
-		{name: "validator rework routes to Rework", retryCycles: true, change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework", Summary: "Changes requested", NotVerified: []string{"Reject invalid input"}, Findings: []gate.Finding{{Severity: "p1", Path: "input.go", Body: "Invalid input is accepted"}}}}, states: unfinishedWorkflow, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Reject invalid input", "p1 input.go: Invalid input is accepted", "Changes requested"}},
+		{name: "validator rework routes to Rework", diffStats: DiffStats{Status: "clean", HeadSHA: head, TreeSHA: "changed-tree"}, retryCycles: true, change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework", Summary: "Changes requested", NotVerified: []string{"Reject invalid input"}, Findings: []gate.Finding{{Severity: "p1", Path: "input.go", Body: "Invalid input is accepted"}}}}, states: unfinishedWorkflow, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Reject invalid input", "p1 input.go: Invalid input is accepted", "Changes requested"}},
 		{name: "exhausted source review budget retains completion routing", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework", Summary: "Shared implementation and review turn budget exhausted", NotVerified: []string{"Reject invalid input"}, Findings: []gate.Finding{{Severity: "p1", Path: "input.go", Body: "Invalid input is accepted"}}}}, states: unfinishedWorkflow, finalMessage: unfinishedReport, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Reject invalid input", "p1 input.go: Invalid input is accepted", "Shared implementation and review turn budget exhausted"}},
 		{name: "validator rework bounds long summary and retains criteria", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework", Summary: strings.Repeat("界", workpad.MaxFinalSummaryBytes), NotVerified: []string{"Reject invalid input"}}}, states: customRework, reworkState: "Fixing", humanReview: &no, wantState: "Fixing", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Reject invalid input", "…"}},
 		{name: "validator rework without findings explains gate", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, finalMessage: unfinishedReport, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"The validator requested changes"}},
-		{name: "source review rework routes to Rework", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
+		{name: "source review rework routes to Rework", diffStats: DiffStats{Status: "clean", HeadSHA: head, TreeSHA: "changed-tree"}, change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
 		{name: "acknowledged current source rework outranks summary evidence error", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, ImplementationReview: &gate.ValidatorResult{VersionID: "version", HeadSHA: head, Verdict: "rework"}, ImplementationReviewError: "summary unavailable"}, states: unfinishedWorkflow, humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Rework"},
 		{name: "source review wait retains completion ownership", change: sourceWait, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantDeferred: true, roundTrip: true},
 		{name: "source review producer failure resumes from retained completion", lifecycle: "review_source", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, ImplementationReviewError: "required source review backend unavailable"}, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", runErr: runpkg.NewSSHRunResponse(runpkg.RunResult{}, &runpkg.NativeImplementationReviewError{Err: errors.New("required source review backend unavailable")}).Err(), wantDeferred: true, roundTrip: true},
@@ -437,10 +438,10 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "malformed status report cannot accept unchanged work", change: &runpkg.NativeChange{BaseSHA: head}, lifecycle: "settle", states: fourLanes, humanReview: &no, roundTrip: true, finalMessage: "```detent-status\nschema: 99\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantSettled: true, wantContinue: true, wantState: "Todo"},
 		{name: "ordinary code fence cannot accept unchanged work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, finalMessage: "```text\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "In Review", wantComment: "no valid complete detent-status disposition"},
 		{name: "past incident prose cannot override current typed acceptance", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, finalMessage: "The previous run was blocked; inspection now verifies all acceptance.\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Done", wantComment: "nothing to review"},
-		{name: "native26 unfinished reviewed source continues implementation", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, wantState: "Rework", wantComment: "implementation remains unfinished", roundTrip: true},
-		{name: "unfinished source continues before native review", change: waiting, states: unfinishedWorkflow, finalMessage: unfinishedReport, wantState: "Rework", wantComment: "issue acceptance is not recorded"},
+		{name: "native26 unfinished reviewed source continues implementation", progressCycles: true, change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, wantState: "Rework", wantComment: "implementation remains unfinished", roundTrip: true},
+		{name: "unfinished source continues before native review", progressCycles: true, change: waiting, states: unfinishedWorkflow, finalMessage: unfinishedReport, wantState: "Rework", wantComment: "issue acceptance is not recorded"},
 		{name: "unfinished unchanged turn uses allowed implementation lane", change: &runpkg.NativeChange{BaseSHA: head}, states: unfinishedWorkflow, finalMessage: unfinishedReport, wantState: "Rework", wantComment: "further work"},
-		{name: "unfinished Rework stays runnable without a self transition", change: accepted, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: unfinishedReport, wantState: "Rework", wantSameState: true, wantComment: "implementation remains unfinished"},
+		{name: "unfinished Rework stays runnable without a self transition", progressCycles: true, change: accepted, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: unfinishedReport, wantState: "Rework", wantSameState: true, wantComment: "implementation remains unfinished"},
 		{name: "unfinished source respects configured rework name", change: accepted, states: customRework, reworkState: "Fixing", humanReview: &no, finalMessage: unfinishedReport, wantState: "Fixing", wantComment: "implementation remains unfinished"},
 		{name: "disabled Rework settles without acceptance with disabled review", change: accepted, states: noDispatchRework, humanReview: &no, finalMessage: unfinishedReport, wantSettled: true},
 		{name: "operator only Rework settles without acceptance with disabled review", change: accepted, states: operatorRework, humanReview: &no, finalMessage: unfinishedReport, wantSettled: true},
@@ -1375,11 +1376,43 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if state.Draining != test.draining || len(state.Running) != 0 {
 				t.Fatalf("completion changed drain or started work: draining=%t, running=%+v", state.Draining, state.Running)
 			}
+			if test.progressCycles {
+				scheduling.release = nil
+				beforeTree := "dispatch-tree"
+				for _, step := range []struct {
+					tree string
+					want int
+				}{
+					{"tree-1", 1},
+					{"tree-2", 1},
+					{"tree-2", 2},
+					{"tree-2", 3},
+					{"tree-3", 1},
+				} {
+					current := state.Retry[issue.ID]
+					run := Running{Issue: current.Issue, Attempt: current.Attempt, Mode: mode, StartedAt: now,
+						DispatchLoopStart: dispatchLoopStartRecord{Captured: true, Fingerprint: dispatchLoopFingerprint{WorkspaceTree: beforeTree}}}
+					event.CompletedAt = current.DueAt
+					event.Result.DiffStats = DiffStats{Status: "clean", HeadSHA: head, TreeSHA: step.tree}
+					state.Claimed[issue.ID] = Claimed{Issue: current.Issue}
+					releases := scheduling.releases
+					if !orch.completeNativeChangeRun(t.Context(), &state, event, run, FinalStateCompleted) {
+						t.Fatal("native continuation was not handled")
+					}
+					next, ok := state.Retry[issue.ID]
+					if !ok || next.Attempt != step.want || scheduling.releases != releases+1 {
+						t.Fatalf("tree %s to %s: retry=%+v, want attempt %d and one release", beforeTree, step.tree, next, step.want)
+					}
+					beforeTree = step.tree
+				}
+			}
 			if test.retryCycles {
 				scheduling.release = nil
 				for _, attempt := range []int{2, 3, 50} {
 					current := state.Retry[issue.ID].Issue
-					run := Running{Issue: current, Attempt: attempt, Mode: mode, StartedAt: now}
+					run := Running{Issue: current, Attempt: attempt, Mode: mode, StartedAt: now,
+						DispatchLoopStart: dispatchLoopStartRecord{Captured: true, Fingerprint: dispatchLoopFingerprint{WorkspaceTree: "dispatch-tree"}}}
+					event.Result.DiffStats = DiffStats{Status: "clean", HeadSHA: head, TreeSHA: fmt.Sprintf("changed-tree-%d", attempt)}
 					event.CompletedAt = state.Retry[issue.ID].DueAt
 					if !orch.completeNativeChangeRun(t.Context(), &state, event, run, FinalStateCompleted) {
 						t.Fatal("native retry was not handled")

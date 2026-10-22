@@ -215,7 +215,7 @@ func (o *Orchestrator) evaluateArtifactGateConvergence(
 		Limit:            artifactGateConvergenceLimit,
 	}
 	record.Unchanged = strings.EqualFold(record.DispatchStatus, record.CompletionStatus)
-	if !record.Unchanged {
+	if !record.Unchanged || o.implementCompletionAccepted(running, completed, running.DiffStats) {
 		return record
 	}
 

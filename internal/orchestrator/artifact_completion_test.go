@@ -25,8 +25,59 @@ func TestHandleRunResultAppliesArtifactGateWorkpadField(t *testing.T) {
 		workpadUnchanged bool
 		wantSetFields    []autoPromoteTickSetField
 		wantStatus       string
+		wantLane         string
+		clean            bool
+		initialStatus    string
+		operational      bool
+		history          []store.WorkAttempt
 		wantLogFragments []string
 	}{
+		{
+			name:          "authorized operational receipt finishes despite unchanged artifact history",
+			workpadStatus: "complete",
+			workpadFields: "fields:\n  completion_kind: operational\n  completion_evidence: Verified existing deliverable\n  completion_work_attempt_id: '42'\n  completion_generation: '3'\n",
+			initialStatus: "approved", wantStatus: "approved", wantLane: "Done", clean: true, operational: true,
+			history: []store.WorkAttempt{
+				{TerminalState: store.WorkAttemptTerminalNoProgress, WorkerMetadataJSON: `{"artifact_gate_convergence":{"status_field":"render_status","dispatch_status":"approved","completion_status":"approved","unchanged":true,"limit":3}}`},
+				{TerminalState: store.WorkAttemptTerminalNoProgress, WorkerMetadataJSON: `{"artifact_gate_convergence":{"status_field":"render_status","dispatch_status":"approved","completion_status":"approved","unchanged":true,"limit":3}}`},
+			},
+		},
+		{
+			name:          "current receipt finishes existing artifact despite unchanged history",
+			workpadStatus: "complete",
+			workpadFields: "fields:\n  completion_work_attempt_id: '42'\n  completion_generation: '3'\n",
+			initialStatus: "approved", wantStatus: "approved", wantLane: "Ready for Pickup", clean: true,
+			history: []store.WorkAttempt{
+				{TerminalState: store.WorkAttemptTerminalNoProgress, WorkerMetadataJSON: `{"artifact_gate_convergence":{"status_field":"render_status","dispatch_status":"approved","completion_status":"approved","unchanged":true,"limit":3}}`},
+				{TerminalState: store.WorkAttemptTerminalNoProgress, WorkerMetadataJSON: `{"artifact_gate_convergence":{"status_field":"render_status","dispatch_status":"approved","completion_status":"approved","unchanged":true,"limit":3}}`},
+			},
+		},
+		{
+			name:          "current no-commit artifact completion advances to wait",
+			workpadStatus: "complete",
+			workpadFields: "fields:\n  render_status: pending_review\n",
+			wantSetFields: []autoPromoteTickSetField{{issueID: "issue-artifact-completion", field: "render_status", value: "pending_review"}},
+			wantStatus:    "pending_review", wantLane: "Review", clean: true,
+		},
+		{
+			name:          "current no-commit artifact completion finishes",
+			workpadStatus: "complete",
+			workpadFields: "fields:\n  render_status: approved\n",
+			wantSetFields: []autoPromoteTickSetField{{issueID: "issue-artifact-completion", field: "render_status", value: "approved"}},
+			wantStatus:    "approved", wantLane: "Ready for Pickup", clean: true,
+		},
+		{
+			name:          "unchanged clean artifact remains unfinished",
+			workpadStatus: "in_progress",
+			wantStatus:    "recut", clean: true,
+		},
+		{
+			name:             "stale clean artifact receipt retains attempts",
+			workpadStatus:    "complete",
+			workpadFields:    "fields:\n  render_status: approved\n",
+			workpadUnchanged: true,
+			wantStatus:       "recut", clean: true,
+		},
 		{
 			name:          "applies configured wait status",
 			workpadStatus: "complete",
@@ -78,8 +129,11 @@ func TestHandleRunResultAppliesArtifactGateWorkpadField(t *testing.T) {
 			issue.Identifier = "digitaldrywood/video#42"
 			issue.Title = "Render artifact"
 			issue.State = "Production"
-			issue.Fields = map[string]string{"render_status": "recut"}
+			issue.Fields = map[string]string{"render_status": firstNonBlank(tt.initialStatus, "recut")}
 			issue.Deliverable = &connector.Deliverable{Kind: "artifact"}
+			if tt.operational {
+				issue.Description = operationalCompletionAuthorizationBody()
+			}
 			workpadBody := "## Codex Workpad\n\n### Validation\n\nCurrent attempt.\n\n```detent-status\nschema: 1\nstatus: " + tt.workpadStatus + "\n" + tt.workpadFields + "blockers: []\nhuman_action: null\n```"
 			dispatchWorkpadBody := "## Codex Workpad\n\n### Validation\n\nPrior attempt.\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"
 			if tt.workpadUnchanged {
@@ -117,29 +171,43 @@ func TestHandleRunResultAppliesArtifactGateWorkpadField(t *testing.T) {
 			})
 			var logs strings.Builder
 			orch := &Orchestrator{
-				cfg:       cfg,
-				connector: tracker,
-				logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+				cfg:          cfg,
+				connector:    tracker,
+				logger:       slog.New(slog.NewTextHandler(&logs, nil)),
+				workAttempts: &recordingWorkAttemptStore{history: tt.history},
 			}
 			state := newState(cfg)
 			state.Running[issue.ID] = Running{
 				Issue:               cloneIssue(issue),
 				Attempt:             1,
+				WorkAttemptID:       42,
+				Generation:          3,
 				DispatchWorkpadHash: artifactGateWorkpadStatusHash([]connector.IssueComment{{Body: dispatchWorkpadBody}}),
 				DispatchWorkpadRead: true,
+				DispatchProgress:    implementProgressArtifactSnapshotFromIssue(issue, true),
 				StartedAt:           now.Add(-time.Minute),
 			}
 
+			var diff DiffStats
+			if tt.clean {
+				diff = DiffStats{Status: "clean"}
+			}
 			orch.handleRunResult(context.Background(), &state, runpkg.Completion{
 				IssueID:     issue.ID,
 				CompletedAt: now,
-				Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
+				Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, DiffStats: diff},
 			})
 
 			if !reflect.DeepEqual(tracker.setFields, tt.wantSetFields) {
 				t.Fatalf("set fields = %#v, want %#v", tracker.setFields, tt.wantSetFields)
 			}
 			retry, ok := state.Retry[issue.ID]
+			if tt.wantLane != "" {
+				if ok || len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantLane {
+					t.Fatalf("accepted artifact retry=%+v updates=%+v, want %s", state.Retry, tracker.updates, tt.wantLane)
+				}
+				return
+			}
 			if !ok || retry.Attempt != 2 {
 				t.Fatalf("retry = %+v, want attempt 2 without completion evidence", retry)
 			}

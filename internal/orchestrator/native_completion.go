@@ -374,6 +374,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if machineRetry {
 		issue.State = target
 		attempt := nextAttempt(max(running.Attempt, state.Retry[issueID].Attempt))
+		if unfinished && !blocked && !publicationRefused && !reviewChangesRequested && !validatorRework && !implementationRework && !auditRework && unaddressedRefusal == "" && change != nil && change.VersionError == "" && change.VersionID != "" && len(implementProgressSourceKinds(running, issue)) > 0 {
+			attempt = 1
+		}
 		if err := o.retryMachineFailure(ctx, state, issue, attempt, event.CompletedAt, comment, running.WorkerHost); err != nil {
 			return handoff(err)
 		}
