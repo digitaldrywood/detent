@@ -38,6 +38,11 @@ exit alone never frees execution capacity. Local process journals cross the
 worker protocol only for sessions opened by that worker's channel; remote
 process identities never enter the local reaper.
 
+A completed turn's stale runtime heartbeat cannot expire an execution while
+its controller or worker cleanup still owns finalization. The existing bounded
+finalization context owns that timeout. Completed executions without a live
+local owner still expire and release their fenced claim.
+
 The lane ledger owns `UpdateIssueState` and state-field `SetIssueField` calls.
 Enumerated connector adapters implement or forward those operations without
 deciding transitions. Admission uses the injected orchestrator writer. Raw
