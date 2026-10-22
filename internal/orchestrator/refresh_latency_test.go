@@ -404,17 +404,31 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 			}
 			state := newState(cfg)
 			got := orch.operatorReturnRetiredParks(ctx, &state, roots, time.Now())
-			if len(got) != len(roots) {
-				t.Fatalf("machine conditions retained retired parks: %v", got)
+			_, dependencyRecovered := got[roots[0].ID]
+			if dependencyRecovered != independentFailure {
+				t.Fatalf("dependency recovery = %t, want %t", dependencyRecovered, independentFailure)
 			}
-			for _, root := range roots {
+			if !dependencyRecovered {
+				held := state.Blocked[roots[0].ID]
+				if len(held.BlockerEvidence) != 1 || (held.BlockerEvidence[0].Status == blockerEvidenceStatusCleared) != (mode == "human") {
+					t.Fatalf("unmet dependency lost evaluated evidence: %+v", held)
+				}
+			}
+			for _, root := range roots[1:] {
+				if _, ok := got[root.ID]; !ok {
+					t.Fatalf("machine condition retained retired park: %s", root.ID)
+				}
 				retry, ok := state.Retry[root.ID]
 				if !ok || len(retry.Issue.BlockedBy) != len(root.BlockedBy) {
 					t.Fatalf("retry lost dependency evidence for %s", root.ID)
 				}
 			}
-			if len(tracker.fetchIdentifiers) != 0 {
-				t.Fatalf("retired park recovery still queries dependency history: %v", tracker.fetchIdentifiers)
+			for _, refs := range tracker.fetchIdentifiers {
+				for _, ref := range refs {
+					if ref != "owner/repo#1" {
+						t.Fatalf("machine park queried retired predicate: %s", ref)
+					}
+				}
 			}
 
 		})

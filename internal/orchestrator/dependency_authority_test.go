@@ -140,7 +140,7 @@ func TestNativeAuthorityRecoversRemovedWorkpadDependency(t *testing.T) {
 			state := newState(o.cfg)
 			state.Blocked[waiting.ID] = Blocked{Issue: waiting, Source: BlockedSourceProjectStatus}
 			got := o.recoverCauseBlockedIssue(t.Context(), &state, waiting, time.Now())
-			if !got {
+			if got == present {
 				t.Fatalf("recovered=%t, updates=%+v", got, tracker.updates)
 			}
 			if !present && (len(tracker.updates) != 1 || tracker.updates[0].state != "Todo") {

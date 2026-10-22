@@ -337,6 +337,27 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 		}
 		return o.applyRecordedBlockerRecovery(ctx, state, issue, nil, []telemetry.BlockerEvidence{*evidence}, now)
 	}
+	signal, _ := rawIssueWorkpadSignal(issue)
+	if signal != nil && signal.Invalid == nil {
+		dependencies := workpad.CloneSignal(signal)
+		dependencies.Blockers = nil
+		for _, blocker := range signal.Blockers {
+			if blocker.Owner == workpad.BlockerOwnerOrchestrator && blocker.Predicate != nil && blocker.Predicate.Type == workpad.PredicateIssueState {
+				dependencies.Blockers = append(dependencies.Blockers, blocker)
+			}
+		}
+		recorded := o.evaluateRecordedBlockerSignal(ctx, state, issue, dependencies, nil, now)
+		if recorded.Found {
+			o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", string(BlockedRecoveryReasonDependencyBlocker), nil, "")
+			setBlockedEvidence(state, issue.ID, recorded.Evidence)
+			if recorded.Holds || recorded.Unverifiable {
+				return false
+			}
+			withDependencies, _, _ := o.issueWithCurrentWorkpadDependencyRefs(ctx, o.issueWithDependencyRefs(issue))
+			blockers := o.resolveDependencyBlockers(ctx, withDependencies)
+			return o.applyRecordedBlockerRecovery(ctx, state, withDependencies, blockers, recorded.Evidence, now)
+		}
+	}
 	if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(state.Retry[issue.ID].Attempt), now, issue.BlockerReason, ""); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("blocked recovery retry failed", "issue_id", issue.ID, "error", err)

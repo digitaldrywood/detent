@@ -270,7 +270,7 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 		{name: "condition clears", fingerprint: "config-b", wantTransition: true},
 		{name: "other current causes preserve recorded recovery order", fingerprint: "config-b", wantTransition: true, priorReworkLimit: true},
 		{name: "stored native terminal prerequisite clears next tick", dependencyState: "Done", nativeDisposition: true, wantTransition: true},
-		{name: "stored native unfinished prerequisite remains admission evidence", dependencyState: "In Progress", nativeDisposition: true, wantTransition: true},
+		{name: "stored native unfinished prerequisite retains hold evidence", dependencyState: "In Progress", nativeDisposition: true, wantStatus: blockerEvidenceStatusHolds},
 		{name: "instance-only blocker releases the issue", instanceOnly: true, wantTransition: true},
 	}
 	for _, tt := range tests {
