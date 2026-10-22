@@ -88,28 +88,30 @@ func TestHubGitHubDocumentation(t *testing.T) {
 		t.Fatal("self-hosting documentation is missing GitHub modes")
 	}
 	section, _, _ = strings.Cut(section, "\n## ")
-	source, err := os.ReadFile(filepath.Join(root, "internal", "cli", "hub.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	fileSet := token.NewFileSet()
-	file := fileSet.AddFile("hub.go", -1, len(source))
-	var lexer scanner.Scanner
-	lexer.Init(file, source, func(position token.Position, message string) {
-		t.Errorf("%s: %s", position, message)
-	}, 0)
 	literals := make(map[string]bool)
-	for {
-		_, kind, literal := lexer.Scan()
-		if kind == token.EOF {
-			break
+	for _, name := range []string{"hub.go", "cloud.go"} {
+		source, err := os.ReadFile(filepath.Join(root, "internal", "cli", name))
+		if err != nil {
+			t.Fatal(err)
 		}
-		if kind == token.STRING {
-			value, err := strconv.Unquote(literal)
-			if err != nil {
-				t.Fatal(err)
+		file := fileSet.AddFile(name, -1, len(source))
+		var lexer scanner.Scanner
+		lexer.Init(file, source, func(position token.Position, message string) {
+			t.Errorf("%s: %s", position, message)
+		}, 0)
+		for {
+			_, kind, literal := lexer.Scan()
+			if kind == token.EOF {
+				break
 			}
-			literals[value] = true
+			if kind == token.STRING {
+				value, err := strconv.Unquote(literal)
+				if err != nil {
+					t.Fatal(err)
+				}
+				literals[value] = true
+			}
 		}
 	}
 	names := regexp.MustCompile(`\bDETENT_HUB_[A-Z_]+\b|--[a-z][a-z-]*`).FindAllString(section, -1)
@@ -118,7 +120,7 @@ func TestHubGitHubDocumentation(t *testing.T) {
 	}
 	for _, name := range names {
 		if !literals[strings.TrimPrefix(name, "--")] {
-			t.Errorf("documented option %s does not exist in internal/cli/hub.go", name)
+			t.Errorf("documented option %s does not exist in internal/cli/hub.go or internal/cli/cloud.go", name)
 		}
 	}
 }
