@@ -1,0 +1,7 @@
+{
+  "code": "conversation_already_linked",
+  "message": "This conversation is already linked to an issue.",
+  "details": {
+    "existing_conversation_id": "conv_9f2c41a0b7d84e6fa1c35d92e4780b16"
+  }
+}

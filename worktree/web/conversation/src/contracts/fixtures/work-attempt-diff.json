@@ -1,0 +1,53 @@
+{
+  "id": "diff_7b4c2f1a9e604d3fa1c8b5e207d43f61",
+  "attempt_id": "att_07e3",
+  "producer": {
+    "kind": "attempt",
+    "id": "att_07e3",
+    "runner_id": "rnr_mac_studio",
+    "lease_id": "lease_6e19",
+    "fencing_token": 6
+  },
+  "generation": {
+    "source": "attempt",
+    "seq": 2
+  },
+  "base_sha": "1111111111111111111111111111111111111111",
+  "head_sha": "a41f0c2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "files": [
+    {
+      "path": "main.go",
+      "status": "modified",
+      "additions": 1,
+      "deletions": 0,
+      "binary": false,
+      "patch": "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1,3 +1,4 @@\n package main\n \n+// renew the lease before the handoff completes\n func main() {}\n",
+      "truncated": false,
+      "denied": false
+    },
+    {
+      "path": "internal/hubserver/renewal.go",
+      "status": "added",
+      "additions": 2,
+      "deletions": 0,
+      "binary": false,
+      "patch": "diff --git a/internal/hubserver/renewal.go b/internal/hubserver/renewal.go\nnew file mode 100644\n--- /dev/null\n+++ b/internal/hubserver/renewal.go\n@@ -0,0 +1,2 @@\n+package hubserver\n+\n",
+      "truncated": false,
+      "denied": false
+    },
+    {
+      "path": ".env.local",
+      "status": "modified",
+      "additions": 1,
+      "deletions": 1,
+      "binary": false,
+      "patch": "",
+      "truncated": false,
+      "denied": true
+    }
+  ],
+  "file_count": 3,
+  "patch_bytes": 396,
+  "truncated": false,
+  "created_at": "2026-09-09T10:02:44Z"
+}

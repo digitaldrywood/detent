@@ -1,0 +1,1067 @@
+package gate
+
+import (
+	"encoding/base64"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
+)
+
+const (
+	LandingPerChange      = "per_landing"
+	LandingRollingBarrier = "rolling_barrier"
+
+	KindCommand     = "command"
+	KindHumanReview = "human_review"
+	KindArtifact    = "artifact"
+
+	DefaultCommand                      = "make check"
+	DefaultApprovalLabel                = "human-approved"
+	DefaultPlanApprovalLabel            = "plan-approved"
+	DefaultPlanStop                     = "Plan Review"
+	DefaultValidatorMinScore            = 0.8
+	DefaultValidatorMaxAttempts         = 3
+	DefaultValidatorMaxInlineDiffBytes  = 64 * 1024
+	DefaultSecurityAuditMaxAttempts     = 3
+	DefaultSecurityAuditTurnTimeoutMS   = 20 * 60 * 1000
+	DefaultArtifactStatusField          = "validation_status"
+	DefaultTransientCIRetries           = 2
+	DefaultCITriggerLabelStaggerSeconds = 15
+
+	CIFailureActionSkip   = "skip"
+	CIFailureActionRework = "rework"
+
+	PlanReviewHuman     = "human"
+	PlanReviewAutomated = "automated"
+	PlanReviewBoth      = "both"
+
+	AutomatedReviewRequired = "required"
+	AutomatedReviewOptional = "optional"
+	AutomatedReviewOff      = "off"
+)
+
+type Config struct {
+	LandingMode                  string   `yaml:"landing_mode" json:"LandingMode,omitempty"`
+	Kind                         string   `yaml:"kind"`
+	Run                          string   `yaml:"run"`
+	ApprovalLabel                string   `yaml:"approval_label"`
+	AutomatedReview              string   `yaml:"automated_review"`
+	RequireAutomatedReview       *bool    `yaml:"require_automated_review"`
+	RequiredStatusChecks         []string `yaml:"required_status_checks"`
+	CITriggerLabel               string   `yaml:"ci_trigger_label"`
+	CITriggerLabelStaggerSeconds *int     `yaml:"ci_trigger_label_stagger_seconds"`
+	CIFailureAction              string   `yaml:"ci_failure_action"`
+	TransientCIRetryLimit        *int     `yaml:"transient_ci_retry_limit"`
+	// LocalStatus is the commit status context Detent posts, with state
+	// success, for a pull request head after it ran the command gate on
+	// exactly that head itself. Empty posts nothing. It must not also be a
+	// required status check, which is evaluated before the merge lane runs.
+	LocalStatus   string              `yaml:"local_status" json:"LocalStatus,omitempty"`
+	Validator     ValidatorConfig     `yaml:"validator"`
+	SecurityAudit SecurityAuditConfig `yaml:"security_audit"`
+	Artifact      ArtifactConfig      `yaml:"artifact"`
+}
+
+type ArtifactConfig struct {
+	StatusField    string   `yaml:"status_field"`
+	PassStatuses   []string `yaml:"pass_statuses"`
+	WaitStatuses   []string `yaml:"wait_statuses"`
+	ReworkStatuses []string `yaml:"rework_statuses"`
+}
+
+type ValidatorConfig struct {
+	UnverifiedCriteria string   `yaml:"unverified_criteria"`
+	Enabled            bool     `yaml:"enabled"`
+	Model              string   `yaml:"model"`
+	MinScore           float64  `yaml:"min_score"`
+	BlockOn            []string `yaml:"block_on"`
+	MaxAttempts        int      `yaml:"max_attempts"`
+	TurnTimeoutMS      int      `yaml:"turn_timeout_ms"`
+	MaxInlineDiffBytes *int     `yaml:"max_inline_diff_bytes"`
+}
+
+type SecurityAuditConfig struct {
+	Enabled       bool     `yaml:"enabled"`
+	Model         string   `yaml:"model"`
+	BlockOn       []string `yaml:"block_on"`
+	MaxAttempts   int      `yaml:"max_attempts"`
+	TurnTimeoutMS int      `yaml:"turn_timeout_ms"`
+	MaxDiffBytes  *int     `yaml:"max_diff_bytes"`
+}
+
+type PlanConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	Review        string `yaml:"review"`
+	ApprovalLabel string `yaml:"approval_label"`
+	Stop          string `yaml:"stop"`
+}
+
+type Summary struct {
+	PullRequestPresent bool
+	PullRequestURL     string
+	CIStatus           string
+	QueueEligibleCI    bool
+	ReviewState        string
+	ReviewPending      bool
+	P1Findings         []Finding
+	Validator          ValidatorResult
+	SecurityAudit      securityaudit.Evaluation
+	ArtifactStatus     string
+	LastActivityAt     *time.Time
+}
+
+type Finding struct {
+	Severity string
+	Body     string
+	URL      string
+	Path     string
+	Line     int
+}
+
+type CommandResult struct {
+	EvidenceArtifact *artifact.Reference `json:"evidence_artifact,omitempty"`
+	TimingStage      string              `json:"timing_stage,omitempty"`
+	ReceiptID        string              `json:"receipt_id,omitempty"`
+	Stage            string              `json:"stage,omitempty"`
+	Execution        string              `json:"execution,omitempty"`
+	ReusedReceiptID  string              `json:"reused_receipt_id,omitempty"`
+	StartedAt        time.Time           `json:"started_at,omitzero"`
+	FinishedAt       time.Time           `json:"finished_at,omitzero"`
+	Pipeline         *PipelineEvidence   `json:"pipeline,omitzero"`
+	Evidence         *CommandEvidence    `json:"evidence,omitempty"`
+	DurationNS       int64               `json:"duration_ns,omitempty"`
+	Command          string              `json:"command"`
+	HeadSHA          string              `json:"head_sha"`
+	TreeSHA          string              `json:"tree_sha"`
+	ExitCode         int                 `json:"exit_code"`
+	Output           string              `json:"output"`
+	OutputTruncated  bool                `json:"output_truncated,omitempty"`
+}
+
+const (
+	StageSourceFinalization        = "source_finalization"
+	StageMergeFallbackVerification = "merge_fallback_verification"
+	StageLanding                   = "landing"
+)
+
+type ValidatorResult struct {
+	AttachmentReads  []AttachmentRead    `json:"attachment_reads,omitempty"`
+	CriteriaEvidence []CriterionEvidence `json:"criteria_evidence,omitempty"`
+	NotVerified      []string            `json:"not_verified,omitempty"`
+	Commands         []CommandResult     `json:"commands,omitempty"`
+	VersionID        string              `json:"version_id,omitempty"`
+	SessionID        int64               `json:"session_id,string,omitempty"`
+	Submitted        bool
+	Verdict          string
+	Score            float64
+	Summary          string
+	Findings         []Finding
+	Repository       string
+	PRNumber         int
+	BaseSHA          string
+	HeadSHA          string
+	DiffDigest       string
+	DiffFiles        []string
+}
+
+type EvaluationOptions struct {
+	QuietDuration              time.Duration
+	AutomatedReviewWaitExpired bool
+}
+
+type Action string
+
+const (
+	ActionPass   Action = "pass"
+	ActionWait   Action = "wait"
+	ActionRework Action = "rework"
+	ActionSkip   Action = "skip"
+)
+
+const (
+	ValidatorVerdictPass   = "pass"
+	ValidatorVerdictWait   = "wait"
+	ValidatorVerdictRework = "rework"
+	ValidatorVerdictError  = "error"
+)
+
+type Reason string
+
+const (
+	ReasonReady                        Reason = "ready"
+	ReasonMissingPullRequest           Reason = "missing_pull_request"
+	ReasonCINotGreen                   Reason = "ci_not_green"
+	ReasonAutomatedReviewMissing       Reason = "automated_review_missing"
+	ReasonP1Findings                   Reason = "p1_findings"
+	ReasonAutomatedReviewNotQuiet      Reason = "automated_review_not_quiet"
+	ReasonHumanApprovalMissing         Reason = "human_approval_missing"
+	ReasonValidatorMissing             Reason = "validator_missing"
+	ReasonValidatorError               Reason = "validator_error"
+	ReasonValidatorWait                Reason = "validator_wait"
+	ReasonValidatorRework              Reason = "validator_rework"
+	ReasonValidatorScoreBelowThreshold Reason = "validator_score_below_threshold"
+	ReasonValidatorBlockedSeverity     Reason = "validator_blocked_severity"
+	ReasonSecurityAuditWait            Reason = "security_audit_wait"
+	ReasonSecurityAuditMissing         Reason = "security_audit_missing"
+	ReasonSecurityAuditFailed          Reason = "security_audit_failed"
+	ReasonSecurityAuditFindings        Reason = "security_audit_findings"
+	ReasonArtifactStatusMissing        Reason = "artifact_status_missing"
+	ReasonArtifactStatusWait           Reason = "artifact_status_wait"
+	ReasonArtifactStatusRework         Reason = "artifact_status_rework"
+	ReasonPlanDisabled                 Reason = "plan_disabled"
+)
+
+type Decision struct {
+	Action         Action
+	Reason         Reason
+	CIStatus       string
+	QuietRemaining time.Duration
+	Findings       []Finding
+}
+
+func DefaultConfig() Config {
+	return Config{
+		LandingMode:            LandingPerChange,
+		Kind:                   KindCommand,
+		Run:                    DefaultCommand,
+		ApprovalLabel:          DefaultApprovalLabel,
+		RequireAutomatedReview: new(true),
+		CIFailureAction:        CIFailureActionRework,
+		TransientCIRetryLimit:  newInt(DefaultTransientCIRetries),
+		Validator:              effectiveValidatorConfig(ValidatorConfig{}),
+		SecurityAudit:          effectiveSecurityAuditConfig(SecurityAuditConfig{Enabled: true}),
+		Artifact:               effectiveArtifactConfig(ArtifactConfig{}),
+	}
+}
+
+func DefaultPlanConfig() PlanConfig {
+	return PlanConfig{
+		Review:        PlanReviewHuman,
+		ApprovalLabel: DefaultPlanApprovalLabel,
+		Stop:          DefaultPlanStop,
+	}
+}
+
+func newInt(value int) *int {
+	return &value
+}
+
+func Effective(cfg Config) Config {
+	ciFailureActionSpecified := strings.TrimSpace(cfg.CIFailureAction) != ""
+	cfg.Kind = NormalizeKind(cfg.Kind)
+	cfg.LandingMode = NormalizeLandingMode(cfg.LandingMode)
+	cfg.Run = strings.TrimSpace(cfg.Run)
+	cfg.ApprovalLabel = normalizeLabel(cfg.ApprovalLabel)
+	cfg.AutomatedReview = NormalizeAutomatedReview(cfg.AutomatedReview)
+	cfg.RequiredStatusChecks = NormalizeRequiredStatusChecks(cfg.RequiredStatusChecks)
+	cfg.CITriggerLabel = normalizeLabel(cfg.CITriggerLabel)
+	cfg.LocalStatus = strings.TrimSpace(cfg.LocalStatus)
+	if cfg.CITriggerLabel != "" && cfg.CITriggerLabelStaggerSeconds == nil {
+		cfg.CITriggerLabelStaggerSeconds = newInt(DefaultCITriggerLabelStaggerSeconds)
+	}
+	cfg.CIFailureAction = NormalizeCIFailureAction(cfg.CIFailureAction)
+	if cfg.TransientCIRetryLimit == nil {
+		cfg.TransientCIRetryLimit = newInt(DefaultTransientCIRetries)
+	}
+	cfg.Validator = effectiveValidatorConfig(cfg.Validator)
+	cfg.SecurityAudit = effectiveSecurityAuditConfig(cfg.SecurityAudit)
+	cfg.Artifact = effectiveArtifactConfig(cfg.Artifact)
+
+	if cfg.Kind == "" {
+		cfg.Kind = KindCommand
+	}
+	if cfg.Kind == KindCommand && cfg.Run == "" {
+		cfg.Run = DefaultCommand
+	}
+	switch cfg.Kind {
+	case KindHumanReview:
+		cfg.Run = ""
+		cfg.LocalStatus = ""
+		cfg.AutomatedReview = ""
+		cfg.RequireAutomatedReview = nil
+		if cfg.ApprovalLabel == "" {
+			cfg.ApprovalLabel = DefaultApprovalLabel
+		}
+	case KindArtifact:
+		cfg.Run = ""
+		cfg.LocalStatus = ""
+		cfg.AutomatedReview = ""
+		cfg.RequireAutomatedReview = nil
+	default:
+		if cfg.AutomatedReview == "" {
+			cfg.AutomatedReview = AutomatedReviewRequired
+			if cfg.RequireAutomatedReview != nil && !*cfg.RequireAutomatedReview {
+				cfg.AutomatedReview = AutomatedReviewOff
+			}
+		}
+		switch cfg.AutomatedReview {
+		case AutomatedReviewRequired:
+			cfg.RequireAutomatedReview = new(true)
+		case AutomatedReviewOff:
+			cfg.RequireAutomatedReview = new(false)
+		case AutomatedReviewOptional:
+			cfg.RequireAutomatedReview = nil
+		}
+	}
+	if cfg.ApprovalLabel == "" {
+		cfg.ApprovalLabel = DefaultApprovalLabel
+	}
+	if !ciFailureActionSpecified {
+		cfg.CIFailureAction = defaultCIFailureAction(cfg.Kind)
+	}
+	return cfg
+}
+
+func defaultCIFailureAction(kind string) string {
+	if kind == KindCommand {
+		return CIFailureActionRework
+	}
+	return CIFailureActionSkip
+}
+
+func EffectivePlan(cfg PlanConfig) PlanConfig {
+	cfg.Review = NormalizePlanReview(cfg.Review)
+	cfg.ApprovalLabel = normalizeLabel(cfg.ApprovalLabel)
+	cfg.Stop = strings.TrimSpace(cfg.Stop)
+	if cfg.Review == "" {
+		cfg.Review = PlanReviewHuman
+	}
+	if cfg.ApprovalLabel == "" {
+		cfg.ApprovalLabel = DefaultPlanApprovalLabel
+	}
+	if cfg.Stop == "" {
+		cfg.Stop = DefaultPlanStop
+	}
+	return cfg
+}
+
+func NormalizeKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", KindCommand:
+		return KindCommand
+	case KindHumanReview, "human-review", "humanreview":
+		return KindHumanReview
+	case KindArtifact, "artifact_status", "artifact-status", "domain":
+		return KindArtifact
+	default:
+		return strings.ToLower(strings.TrimSpace(kind))
+	}
+}
+
+func NormalizePlanReview(review string) string {
+	switch strings.ToLower(strings.TrimSpace(review)) {
+	case "", PlanReviewHuman:
+		return PlanReviewHuman
+	case PlanReviewAutomated, "auto":
+		return PlanReviewAutomated
+	case PlanReviewBoth:
+		return PlanReviewBoth
+	default:
+		return strings.ToLower(strings.TrimSpace(review))
+	}
+}
+
+func NormalizeCIFailureAction(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "", CIFailureActionSkip:
+		return CIFailureActionSkip
+	case CIFailureActionRework:
+		return CIFailureActionRework
+	default:
+		return strings.ToLower(strings.TrimSpace(action))
+	}
+}
+
+func NormalizeAutomatedReview(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "":
+		return ""
+	case AutomatedReviewRequired:
+		return AutomatedReviewRequired
+	case AutomatedReviewOptional:
+		return AutomatedReviewOptional
+	case AutomatedReviewOff, "disabled", "false":
+		return AutomatedReviewOff
+	default:
+		return strings.ToLower(strings.TrimSpace(mode))
+	}
+}
+
+func AutomatedReviewMode(cfg Config) string {
+	return Effective(cfg).AutomatedReview
+}
+
+func NormalizeRequiredStatusChecks(checks []string) []string {
+	if checks == nil {
+		return nil
+	}
+	normalized := make([]string, 0, len(checks))
+	seen := make(map[string]struct{}, len(checks))
+	for _, check := range checks {
+		check = strings.TrimSpace(check)
+		if check == "" {
+			continue
+		}
+		if _, ok := seen[check]; ok {
+			continue
+		}
+		seen[check] = struct{}{}
+		normalized = append(normalized, check)
+	}
+	return normalized
+}
+
+func NormalizeLandingMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" || mode == LandingRollingBarrier {
+		return LandingPerChange
+	}
+	return mode
+}
+
+func Validate(prefix string, cfg Config) []string {
+	var problems []string
+	if mode := NormalizeLandingMode(cfg.LandingMode); mode != LandingPerChange {
+		problems = append(problems, prefix+".landing_mode must be per_landing")
+	}
+	switch NormalizeKind(cfg.Kind) {
+	case KindCommand, KindHumanReview, KindArtifact:
+	default:
+		problems = append(problems, prefix+".kind must be one of command, human_review, artifact")
+	}
+	switch NormalizeCIFailureAction(cfg.CIFailureAction) {
+	case CIFailureActionSkip, CIFailureActionRework:
+	default:
+		problems = append(problems, prefix+".ci_failure_action must be one of skip, rework")
+	}
+	switch NormalizeAutomatedReview(cfg.AutomatedReview) {
+	case "", AutomatedReviewRequired, AutomatedReviewOptional, AutomatedReviewOff:
+	default:
+		problems = append(problems, prefix+".automated_review must be one of required, optional, off")
+	}
+	if cfg.TransientCIRetryLimit != nil && *cfg.TransientCIRetryLimit < 0 {
+		problems = append(problems, prefix+".transient_ci_retry_limit must be greater than or equal to 0")
+	}
+	if cfg.CITriggerLabelStaggerSeconds != nil && *cfg.CITriggerLabelStaggerSeconds <= 0 {
+		problems = append(problems, prefix+".ci_trigger_label_stagger_seconds must be greater than 0")
+	}
+	for _, check := range cfg.RequiredStatusChecks {
+		if strings.TrimSpace(check) == "" {
+			problems = append(problems, prefix+".required_status_checks must not contain blank names")
+			break
+		}
+	}
+	if status := strings.TrimSpace(cfg.LocalStatus); status != "" {
+		if NormalizeKind(cfg.Kind) != KindCommand && NormalizeKind(cfg.Kind) != "" {
+			problems = append(problems, prefix+".local_status requires kind command")
+		}
+		if len(status) > 100 || strings.ContainsAny(status, "\r\n\t") {
+			problems = append(problems, prefix+".local_status must be a single-line status context of at most 100 characters")
+		}
+		if slices.Contains(NormalizeRequiredStatusChecks(cfg.RequiredStatusChecks), status) {
+			problems = append(problems, prefix+".local_status must not be listed in "+prefix+".required_status_checks: Detent posts it in the merge lane, after the pre-merge gate")
+		}
+	}
+	problems = append(problems, validateValidator(prefix+".validator", cfg.Validator)...)
+	problems = append(problems, validateSecurityAudit(prefix+".security_audit", cfg.SecurityAudit)...)
+	problems = append(problems, validateArtifact(prefix+".artifact", cfg.Artifact)...)
+	return problems
+}
+
+func ValidatePlan(prefix string, cfg PlanConfig) []string {
+	var problems []string
+	switch NormalizePlanReview(cfg.Review) {
+	case PlanReviewHuman, PlanReviewAutomated, PlanReviewBoth:
+	default:
+		problems = append(problems, prefix+".review must be one of human, automated, both")
+	}
+	if cfg.Enabled && strings.TrimSpace(cfg.Stop) == "" {
+		problems = append(problems, prefix+".stop must not be blank when plan.enabled is true")
+	}
+	return problems
+}
+
+func Instructions(cfg Config) string {
+	return InstructionsForGitHubHost(cfg, "")
+}
+
+func InstructionsForGitHubHost(cfg Config, hostname string) string {
+	cfg = Effective(cfg)
+	switch cfg.Kind {
+	case KindHumanReview:
+		return "Human approval is required. Keep the pull request in Human Review until a human applies label `" +
+			cfg.ApprovalLabel + "`; do not move it to Merging before that label is present."
+	case KindArtifact:
+		return "The validation gate is artifact status. Detent evaluates `" + cfg.Artifact.StatusField +
+			"` from the work item fields or deliverable validation status. Passing statuses advance the item, waiting statuses keep it in place, and rework statuses route it to rework without requiring a pull request or CI. " +
+			"At worker completion, update the configured field without shell or database commands by including it in the structured Workpad block:\n\n" +
+			"```detent-status\n" +
+			"schema: 1\n" +
+			"status: complete\n" +
+			"fields:\n" +
+			"  " + cfg.Artifact.StatusField + ": <configured status>\n" +
+			"blockers: []\n" +
+			"human_action: null\n" +
+			"```\n\n" +
+			"Allowed pass statuses: " + strings.Join(cfg.Artifact.PassStatuses, ", ") + ". Allowed wait statuses: " + strings.Join(cfg.Artifact.WaitStatuses, ", ") + ". Allowed rework statuses: " + strings.Join(cfg.Artifact.ReworkStatuses, ", ") + "."
+	default:
+		instructions := "Run `" + cfg.Run + "` from the workspace root; " +
+			requiredStatusCheckInstructions(cfg.RequiredStatusChecks) + ciTriggerLabelInstructions(cfg, hostname) +
+			"Merging smoke gate requires clean rebase, unchanged source, known current-head validation; otherwise rerun `" + cfg.Run + "`. " +
+			"Use REST backoff for CI. Workpad timings: applicable quiet-window, gate, CI, merge."
+
+		switch AutomatedReviewMode(cfg) {
+		case AutomatedReviewRequired:
+			instructions += " Current-head automated review is required before promotion."
+		case AutomatedReviewOptional:
+			instructions += " Automated review is optional: wait for it until the configured gate deadline, then promote when the remaining checks pass. Any P1 automated review findings still block promotion."
+		default:
+			instructions += " Automated review is not required for promotion, but any P1 automated review findings still block promotion."
+		}
+		if cfg.Validator.Enabled {
+			instructions += " A validator-agent review is required before promotion; its structured verdict, score, and configured blocking severities are part of the gate decision."
+		}
+		if cfg.SecurityAudit.Enabled {
+			instructions += " Audit exact SHAs."
+		}
+		return instructions
+	}
+}
+
+func ciTriggerLabelInstructions(cfg Config, hostname string) string {
+	if cfg.CITriggerLabel == "" {
+		return ""
+	}
+	staggerSeconds := 0
+	if cfg.CITriggerLabelStaggerSeconds != nil {
+		staggerSeconds = *cfg.CITriggerLabelStaggerSeconds
+	}
+	hostnameArgument := ""
+	if hostname = strings.TrimSpace(hostname); hostname != "" {
+		hostnameArgument = " --hostname-base64 " + encodeCITriggerLabelArgument(hostname)
+	}
+	return "This project uses CI trigger label `" + cfg.CITriggerLabel + "`. After every push that changes a pull request head in implementation or rework, run `detent hub ci-trigger-label --repository <owner/repo> --pull-request <number> --label-base64 " + encodeCITriggerLabelArgument(cfg.CITriggerLabel) + hostnameArgument + " --stagger-seconds " + strconv.Itoa(staggerSeconds) + "` before waiting for current-head checks, after any other CI lane labels. Detent records successful worker pushes and reapplies the configured label at completion unless it was the final CI trigger after the latest push; merging workers also reapply it immediately after deterministic head-changing pushes and whenever required checks are missing. The command removes the label if present, adds it again through GitHub's REST issue-label endpoints, and uses a host-wide lock plus persisted timestamp to serialize reapplications at least " + strconv.Itoa(staggerSeconds) + " seconds apart so concurrent workers do not stampede self-hosted CI. "
+}
+
+func encodeCITriggerLabelArgument(value string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(value))
+}
+
+func requiredStatusCheckInstructions(checks []string) string {
+	checks = NormalizeRequiredStatusChecks(checks)
+	if checks == nil {
+		return "require eligible current-head checks before promotion; skips are not passes. Merge-group-only CI must pass before merge. "
+	}
+	if len(checks) == 0 {
+		return "required_status_checks is explicitly empty: Detent defers to the base branch's native required checks. When that branch requires no checks, do not wait for a CI producer or require aggregate CI to turn green. Native required checks and red CI still block promotion and merge. "
+	}
+	return "Required checks: present, completed, successful on current PR head; missing/skipped/failed/cancelled/running blocks promotion. Native required checks and red CI still block promotion and merge. "
+}
+
+func EvaluatePlan(cfg PlanConfig, labels []string, summary Summary) Decision {
+	cfg = EffectivePlan(cfg)
+	if !cfg.Enabled {
+		return decision(ActionSkip, ReasonPlanDisabled)
+	}
+
+	if automatedReviewHasP1(summary.ReviewState) || len(summary.P1Findings) > 0 {
+		out := decision(ActionRework, ReasonP1Findings)
+		out.Findings = cloneFindings(summary.P1Findings)
+		return out
+	}
+
+	humanReady := planHumanReviewEnabled(cfg) && hasApprovalLabel(labels, cfg.ApprovalLabel)
+	automatedReady := planAutomatedReviewEnabled(cfg) && automatedReviewSubmitted(summary.ReviewState)
+	if humanReady || automatedReady {
+		return decision(ActionPass, ReasonReady)
+	}
+
+	if planHumanReviewEnabled(cfg) {
+		return decision(ActionWait, ReasonHumanApprovalMissing)
+	}
+	return decision(ActionWait, ReasonAutomatedReviewMissing)
+}
+
+func Evaluate(cfg Config, labels []string, summary Summary, now time.Time, opts EvaluationOptions) Decision {
+	cfg = Effective(cfg)
+	switch cfg.Kind {
+	case KindHumanReview:
+		return evaluateHumanReview(cfg, labels, summary)
+	case KindArtifact:
+		return evaluateArtifact(cfg.Artifact, summary)
+	default:
+		return evaluateCommand(cfg, summary, now, opts)
+	}
+}
+
+func evaluateCommand(cfg Config, summary Summary, now time.Time, opts EvaluationOptions) Decision {
+	if missingPullRequest(summary) {
+		return decision(ActionSkip, ReasonMissingPullRequest)
+	}
+	ciStatus := normalizedCIStatus(summary.CIStatus)
+	if ciStatus != "green" && (ciStatus != "pending" || !summary.QueueEligibleCI) {
+		out := decision(ciFailureAction(cfg, summary.CIStatus), ReasonCINotGreen)
+		out.CIStatus = ciStatus
+		return out
+	}
+	if automatedReviewHasP1(summary.ReviewState) || len(summary.P1Findings) > 0 {
+		out := decision(ActionRework, ReasonP1Findings)
+		out.Findings = cloneFindings(summary.P1Findings)
+		return out
+	}
+	if out, ok := EvaluateSecurityAudit(cfg.SecurityAudit, summary.SecurityAudit); ok {
+		return out
+	}
+	if out, ok := EvaluateValidator(cfg.Validator, summary.Validator); ok {
+		return out
+	}
+	if !opts.AutomatedReviewWaitExpired && automatedReviewWaits(cfg) && (summary.ReviewPending || !automatedReviewSubmitted(summary.ReviewState)) {
+		return decision(ActionWait, ReasonAutomatedReviewMissing)
+	}
+	if remaining := quietRemaining(summary, opts, now); remaining > 0 {
+		out := decision(ActionWait, ReasonAutomatedReviewNotQuiet)
+		out.QuietRemaining = remaining
+		return out
+	}
+	return decision(ActionPass, ReasonReady)
+}
+
+// EvaluateSecurityAudit evaluates trusted audit evidence independently of the source lane.
+func EvaluateSecurityAudit(cfg SecurityAuditConfig, evaluation securityaudit.Evaluation) (Decision, bool) {
+	cfg = effectiveSecurityAuditConfig(cfg)
+	if !cfg.Enabled {
+		return Decision{}, false
+	}
+	if evaluation.Allowed && evaluation.Reason == securityaudit.ReasonReady {
+		return Decision{}, false
+	}
+	if evaluation.Running {
+		return decision(ActionWait, ReasonSecurityAuditWait), true
+	}
+	switch evaluation.Reason {
+	case "", securityaudit.ReasonMissing, securityaudit.ReasonStale:
+		return decision(ActionWait, ReasonSecurityAuditMissing), true
+	case securityaudit.ReasonUnresolvedFindings:
+		out := decision(ActionRework, ReasonSecurityAuditFindings)
+		out.Findings = make([]Finding, 0, len(evaluation.Findings))
+		for _, finding := range evaluation.Findings {
+			out.Findings = append(out.Findings, Finding{
+				Severity: finding.Severity,
+				Body:     finding.Body,
+				Path:     finding.Path,
+				Line:     finding.Line,
+			})
+		}
+		return out, true
+	default:
+		return decision(ActionWait, ReasonSecurityAuditFailed), true
+	}
+}
+
+func evaluateHumanReview(cfg Config, labels []string, summary Summary) Decision {
+	if missingPullRequest(summary) {
+		return decision(ActionSkip, ReasonMissingPullRequest)
+	}
+	for _, label := range labels {
+		if normalizeLabel(label) == cfg.ApprovalLabel {
+			return decision(ActionPass, ReasonReady)
+		}
+	}
+	return decision(ActionWait, ReasonHumanApprovalMissing)
+}
+
+func evaluateArtifact(cfg ArtifactConfig, summary Summary) Decision {
+	status := normalizeArtifactStatus(summary.ArtifactStatus)
+	if status == "" {
+		return decision(ActionWait, ReasonArtifactStatusMissing)
+	}
+	if artifactStatusIn(status, cfg.ReworkStatuses) {
+		return decision(ActionRework, ReasonArtifactStatusRework)
+	}
+	if artifactStatusIn(status, cfg.PassStatuses) {
+		return decision(ActionPass, ReasonReady)
+	}
+	return decision(ActionWait, ReasonArtifactStatusWait)
+}
+
+func hasApprovalLabel(labels []string, approvalLabel string) bool {
+	approvalLabel = normalizeLabel(approvalLabel)
+	if approvalLabel == "" {
+		approvalLabel = DefaultApprovalLabel
+	}
+	for _, label := range labels {
+		if normalizeLabel(label) == approvalLabel {
+			return true
+		}
+	}
+	return false
+}
+
+func planHumanReviewEnabled(cfg PlanConfig) bool {
+	return cfg.Review == PlanReviewHuman || cfg.Review == PlanReviewBoth
+}
+
+func planAutomatedReviewEnabled(cfg PlanConfig) bool {
+	return cfg.Review == PlanReviewAutomated || cfg.Review == PlanReviewBoth
+}
+
+func decision(action Action, reason Reason) Decision {
+	return Decision{
+		Action: action,
+		Reason: reason,
+	}
+}
+
+func missingPullRequest(summary Summary) bool {
+	return !summary.PullRequestPresent && strings.TrimSpace(summary.PullRequestURL) == ""
+}
+
+func normalizedCIStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pass", "passed", "success", "successful":
+		return "green"
+	case "fail", "failed", "failure":
+		return "red"
+	default:
+		return strings.ToLower(strings.TrimSpace(status))
+	}
+}
+
+func ciFailureAction(cfg Config, status string) Action {
+	if cfg.CIFailureAction == CIFailureActionRework && definitiveCIFailure(status) {
+		return ActionRework
+	}
+	return ActionSkip
+}
+
+func definitiveCIFailure(status string) bool {
+	switch normalizedCIStatus(status) {
+	case "red":
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "cancelled", "canceled", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+func automatedReviewSubmitted(state string) bool {
+	switch strings.ToUpper(strings.TrimSpace(state)) {
+	case "APPROVED", "COMMENTED", "REQUESTED_CHANGES", "CHANGES_REQUESTED", "P2":
+		return true
+	default:
+		return false
+	}
+}
+
+func automatedReviewHasP1(state string) bool {
+	return strings.ToUpper(strings.TrimSpace(state)) == "P1"
+}
+
+func quietRemaining(summary Summary, opts EvaluationOptions, now time.Time) time.Duration {
+	if opts.QuietDuration <= 0 {
+		return 0
+	}
+	if summary.LastActivityAt == nil {
+		return opts.QuietDuration
+	}
+
+	remaining := opts.QuietDuration - now.Sub(*summary.LastActivityAt)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+func cloneFindings(findings []Finding) []Finding {
+	return append([]Finding(nil), findings...)
+}
+
+func effectiveValidatorConfig(cfg ValidatorConfig) ValidatorConfig {
+	if cfg.UnverifiedCriteria == "" {
+		cfg.UnverifiedCriteria = UnverifiedCriteriaRework
+	}
+	cfg.Model = strings.TrimSpace(cfg.Model)
+	if cfg.MinScore == 0 {
+		cfg.MinScore = DefaultValidatorMinScore
+	}
+	if cfg.MaxAttempts == 0 {
+		cfg.MaxAttempts = DefaultValidatorMaxAttempts
+	}
+	if cfg.MaxInlineDiffBytes == nil {
+		cfg.MaxInlineDiffBytes = newInt(DefaultValidatorMaxInlineDiffBytes)
+	}
+	cfg.BlockOn = normalizeSeverities(cfg.BlockOn)
+	if len(cfg.BlockOn) == 0 {
+		cfg.BlockOn = []string{"p1"}
+	}
+	return cfg
+}
+
+func effectiveSecurityAuditConfig(cfg SecurityAuditConfig) SecurityAuditConfig {
+	cfg.Model = strings.TrimSpace(cfg.Model)
+	if cfg.MaxAttempts == 0 {
+		cfg.MaxAttempts = DefaultSecurityAuditMaxAttempts
+	}
+	if cfg.TurnTimeoutMS == 0 {
+		cfg.TurnTimeoutMS = DefaultSecurityAuditTurnTimeoutMS
+	}
+	if cfg.MaxDiffBytes == nil {
+		cfg.MaxDiffBytes = newInt(securityaudit.DefaultMaxDiffBytes)
+	}
+	cfg.BlockOn = normalizeSeverities(cfg.BlockOn)
+	if len(cfg.BlockOn) == 0 {
+		cfg.BlockOn = []string{"p1", "p2"}
+	}
+	return cfg
+}
+
+func effectiveArtifactConfig(cfg ArtifactConfig) ArtifactConfig {
+	cfg.StatusField = strings.TrimSpace(cfg.StatusField)
+	if cfg.StatusField == "" {
+		cfg.StatusField = DefaultArtifactStatusField
+	}
+	cfg.PassStatuses = normalizeArtifactStatuses(cfg.PassStatuses)
+	if len(cfg.PassStatuses) == 0 {
+		cfg.PassStatuses = []string{"approved", "complete", "completed", "pass", "passed", "valid"}
+	}
+	cfg.WaitStatuses = normalizeArtifactStatuses(cfg.WaitStatuses)
+	if len(cfg.WaitStatuses) == 0 {
+		cfg.WaitStatuses = []string{"pending", "review", "reviewing", "waiting"}
+	}
+	cfg.ReworkStatuses = normalizeArtifactStatuses(cfg.ReworkStatuses)
+	if len(cfg.ReworkStatuses) == 0 {
+		cfg.ReworkStatuses = []string{"changes_requested", "failed", "invalid", "rework"}
+	}
+	return cfg
+}
+
+func validateValidator(prefix string, cfg ValidatorConfig) []string {
+	var problems []string
+	if cfg.UnverifiedCriteria != "" && cfg.UnverifiedCriteria != UnverifiedCriteriaRework && cfg.UnverifiedCriteria != UnverifiedCriteriaDisclose {
+		problems = append(problems, prefix+".unverified_criteria must be rework or pass-with-disclosure")
+	}
+	invalidScore := false
+	if cfg.MinScore < 0 || cfg.MinScore > 1 {
+		problems = append(problems, prefix+".min_score must be greater than 0 and less than or equal to 1")
+		invalidScore = true
+	}
+	for _, severity := range cfg.BlockOn {
+		if strings.TrimSpace(severity) == "" {
+			problems = append(problems, prefix+".block_on severities must not be blank")
+			break
+		}
+	}
+	if cfg.TurnTimeoutMS < 0 {
+		problems = append(problems, prefix+".turn_timeout_ms must be greater than or equal to 0")
+	}
+	if cfg.MaxAttempts < 0 {
+		problems = append(problems, prefix+".max_attempts must be greater than 0")
+	}
+	if cfg.MaxInlineDiffBytes != nil && *cfg.MaxInlineDiffBytes < 0 {
+		problems = append(problems, prefix+".max_inline_diff_bytes must be greater than or equal to 0")
+	}
+	cfg = effectiveValidatorConfig(cfg)
+	if !invalidScore && (cfg.MinScore <= 0 || cfg.MinScore > 1) {
+		problems = append(problems, prefix+".min_score must be greater than 0 and less than or equal to 1")
+	}
+	return problems
+}
+
+func validateSecurityAudit(prefix string, cfg SecurityAuditConfig) []string {
+	var problems []string
+	for _, severity := range cfg.BlockOn {
+		switch normalizeSeverity(severity) {
+		case "p1", "p2", "p3":
+		default:
+			problems = append(problems, prefix+".block_on severities must be p1, p2, or p3")
+		}
+	}
+	if cfg.MaxAttempts < 0 {
+		problems = append(problems, prefix+".max_attempts must be greater than 0")
+	}
+	if cfg.TurnTimeoutMS < 0 {
+		problems = append(problems, prefix+".turn_timeout_ms must be greater than 0")
+	}
+	if cfg.MaxDiffBytes != nil && *cfg.MaxDiffBytes <= 0 {
+		problems = append(problems, prefix+".max_diff_bytes must be greater than 0")
+	}
+	return problems
+}
+
+func validateArtifact(prefix string, cfg ArtifactConfig) []string {
+	var problems []string
+	if strings.TrimSpace(cfg.StatusField) == "" && (len(cfg.PassStatuses) > 0 || len(cfg.WaitStatuses) > 0 || len(cfg.ReworkStatuses) > 0) {
+		problems = append(problems, prefix+".status_field must not be blank")
+	}
+	problems = append(problems, validateArtifactStatuses(prefix+".pass_statuses", cfg.PassStatuses)...)
+	problems = append(problems, validateArtifactStatuses(prefix+".wait_statuses", cfg.WaitStatuses)...)
+	problems = append(problems, validateArtifactStatuses(prefix+".rework_statuses", cfg.ReworkStatuses)...)
+	return problems
+}
+
+func validateArtifactStatuses(prefix string, values []string) []string {
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return []string{prefix + " values must not be blank"}
+		}
+	}
+	return nil
+}
+
+func normalizeArtifactStatuses(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = normalizeArtifactStatus(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func normalizeArtifactStatus(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func artifactStatusIn(status string, values []string) bool {
+	status = normalizeArtifactStatus(status)
+	for _, value := range values {
+		if status == normalizeArtifactStatus(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeSeverities(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = normalizeSeverity(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func normalizeSeverity(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func EvaluateValidator(cfg ValidatorConfig, result ValidatorResult) (Decision, bool) {
+	cfg = effectiveValidatorConfig(cfg)
+	if !cfg.Enabled {
+		return Decision{}, false
+	}
+	if normalizeValidatorVerdict(result.Verdict) == ValidatorVerdictError {
+		out := decision(ActionRework, ReasonValidatorError)
+		out.Findings = cloneFindings(result.Findings)
+		return out, true
+	}
+	if !result.Submitted {
+		return decision(ActionWait, ReasonValidatorMissing), true
+	}
+
+	findings := cloneFindings(result.Findings)
+	if validatorHasBlockedSeverity(cfg, findings) {
+		out := decision(ActionRework, ReasonValidatorBlockedSeverity)
+		out.Findings = findings
+		return out, true
+	}
+	if len(result.UnsatisfiableCriteria()) > 0 && normalizeValidatorVerdict(result.Verdict) != ValidatorVerdictRework && result.Score >= cfg.MinScore {
+		return decision(ActionWait, ReasonValidatorWait), true
+	}
+	if len(result.UnsatisfiableCriteria()) > 0 || cfg.UnverifiedCriteria != UnverifiedCriteriaDisclose && len(result.NotVerified) > 0 {
+		out := decision(ActionRework, ReasonValidatorRework)
+		out.Findings = append(findings, Finding{Severity: "p2", Body: "Acceptance criteria not verified: " + strings.Join(result.NotVerified, "; ")})
+		return out, true
+	}
+
+	switch normalizeValidatorVerdict(result.Verdict) {
+	case ValidatorVerdictRework:
+		out := decision(ActionRework, ReasonValidatorRework)
+		out.Findings = findings
+		return out, true
+	case ValidatorVerdictWait:
+		return decision(ActionWait, ReasonValidatorWait), true
+	case ValidatorVerdictPass:
+	default:
+		return decision(ActionWait, ReasonValidatorWait), true
+	}
+
+	if result.Score < cfg.MinScore {
+		out := decision(ActionRework, ReasonValidatorScoreBelowThreshold)
+		out.Findings = findings
+		return out, true
+	}
+
+	return Decision{}, false
+}
+
+func validatorHasBlockedSeverity(cfg ValidatorConfig, findings []Finding) bool {
+	blocked := make(map[string]struct{}, len(cfg.BlockOn))
+	for _, severity := range cfg.BlockOn {
+		blocked[normalizeSeverity(severity)] = struct{}{}
+	}
+	for _, finding := range findings {
+		severity := normalizeSeverity(finding.Severity)
+		if severity == "" {
+			severity = severityFromFindingBody(finding.Body)
+		}
+		if _, ok := blocked[severity]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func severityFromFindingBody(body string) string {
+	upper := strings.ToUpper(body)
+	for _, severity := range []string{"P0", "P1", "P2", "P3", "P4"} {
+		if strings.Contains(upper, severity) {
+			return strings.ToLower(severity)
+		}
+	}
+	return ""
+}
+
+func normalizeValidatorVerdict(verdict string) string {
+	switch strings.ToLower(strings.TrimSpace(verdict)) {
+	case ValidatorVerdictPass, "passed", "approve", "approved", "ok":
+		return ValidatorVerdictPass
+	case ValidatorVerdictWait, "waiting", "pending", "inconclusive":
+		return ValidatorVerdictWait
+	case ValidatorVerdictRework, "fail", "failed", "failure", "request_changes", "requested_changes", "changes_requested", "needs_work":
+		return ValidatorVerdictRework
+	default:
+		return strings.ToLower(strings.TrimSpace(verdict))
+	}
+}
+
+func normalizeLabel(label string) string {
+	return strings.ToLower(strings.TrimSpace(label))
+}
+
+func automatedReviewWaits(cfg Config) bool {
+	cfg = Effective(cfg)
+	return cfg.Kind == KindCommand && cfg.AutomatedReview != AutomatedReviewOff
+}
