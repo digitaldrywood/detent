@@ -1,0 +1,1127 @@
+package github
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+)
+
+const (
+	repositoryIssuesPageSize     = 100
+	labelIssueReferenceBatchSize = 100
+	labelIssueReferencePageLimit = 10
+	labelIssueReferenceMaxAge    = time.Hour
+	labelStatusConflictState     = "Blocked"
+)
+
+const labelIssuePullRequestReferencesQuery = `
+query DetentGitHubLabelIssuePullRequestReferences($issueIds: [ID!]!) {
+  nodes(ids: $issueIds) {
+    __typename
+    ... on Issue {
+      id
+      number
+      repository { nameWithOwner }
+      timelineItems(last: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
+        nodes {
+          __typename
+          ... on LabeledEvent { createdAt label { name } actor { __typename login } }
+          ... on UnlabeledEvent { createdAt label { name } actor { __typename login } }
+        }
+      }
+      closedByPullRequestsReferences(first: 5) {
+        pageInfo { hasNextPage endCursor }
+        nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } }
+      }
+    }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}`
+
+const labelIssuePullRequestReferencesPageQuery = `
+query DetentGitHubLabelIssuePullRequestReferencesPage($issueId: ID!, $after: String!) {
+  node(id: $issueId) {
+    __typename
+    ... on Issue {
+      id
+      closedByPullRequestsReferences(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } }
+      }
+    }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}`
+
+type labelStatusResolution struct {
+	Status         string
+	ConflictLabels []string
+}
+
+type labelIssueReferenceKey struct {
+	ID           string
+	IncludeState bool
+}
+
+type labelIssueReferenceSnapshot struct {
+	UpdatedAt         time.Time
+	HydratedAt        time.Time
+	State             string
+	StageUpdatedAt    *time.Time
+	StageUpdatedActor connector.IssueActor
+	HasPR             bool
+}
+
+type repositoryStatusDriftReadOptions struct {
+	PageSize      int
+	Limit         int
+	Deterministic bool
+}
+
+func (r labelStatusResolution) conflicted() bool {
+	return len(r.ConflictLabels) > 1
+}
+
+func (c *Connector) fetchLabelIssuesByStates(ctx context.Context, stateNames []string, limit int) ([]connector.Issue, error) {
+	if !validPullRequestRepo(c.repository) {
+		return nil, ErrMissingRepository
+	}
+	stateLabels := c.statusLabelStates(stateNames)
+	if len(stateLabels) == 0 {
+		return []connector.Issue{}, nil
+	}
+
+	issues := []connector.Issue{}
+	seen := map[string]struct{}{}
+	for _, stateName := range stateNames {
+		labelName := c.statusLabelForState(stateName)
+		externalState, ok := stateLabels[normalizeLabelName(labelName)]
+		if !ok {
+			continue
+		}
+		for page := 1; ; page++ {
+			var response []restIssue
+			if err := c.client.REST(ctx, http.MethodGet, restRepositoryIssuesByLabelPath(c.repository, labelName, page), nil, &response); err != nil {
+				return nil, fmt.Errorf("fetch github label issues: %w", err)
+			}
+			if len(response) == 0 {
+				break
+			}
+			for _, item := range response {
+				if item.PullRequest != nil {
+					continue
+				}
+				ref := issueRef{Owner: c.repository.Owner, Name: c.repository.Name, Number: item.Number}
+				issue := githubIssueNodeFromREST(ref, item)
+				if strings.TrimSpace(issue.ID) == "" {
+					continue
+				}
+				if _, ok := seen[issue.ID]; ok {
+					continue
+				}
+				seen[issue.ID] = struct{}{}
+				c.cacheIssueRef(issue)
+				issues = append(issues, c.buildLabelIssue(issue, externalState))
+				if limit > 0 && len(issues) >= limit {
+					return issues, nil
+				}
+			}
+			if len(response) < repositoryIssuesPageSize {
+				break
+			}
+		}
+	}
+	return issues, nil
+}
+
+func (c *Connector) attachLabelIssuePullRequestReferences(ctx context.Context, issues []connector.Issue) error {
+	return c.attachCachedLabelIssuePullRequestReferences(ctx, issues, false)
+}
+
+func (c *Connector) attachLabelIssuePullRequestReferencesWithState(ctx context.Context, issues []connector.Issue, includeState bool) error {
+	return c.attachCachedLabelIssuePullRequestReferences(ctx, issues, includeState)
+}
+
+func (c *Connector) attachCachedLabelIssuePullRequestReferences(ctx context.Context, issues []connector.Issue, includeState bool) error {
+	pending := make([]connector.Issue, 0, len(issues))
+	indexes := make([]int, 0, len(issues))
+	cacheable := make([]bool, 0, len(issues))
+	for index := range issues {
+		issue := &issues[index]
+		eligible := c.reusableLabelIssueReferenceState(issue.State) && issue.ID != "" && issue.UpdatedAt != nil && !issue.UpdatedAt.IsZero() && issue.PRNumber == nil && issue.PullRequest == nil
+		if eligible {
+			key := labelIssueReferenceKey{ID: issue.ID, IncludeState: includeState}
+			c.labelReferencesMu.RLock()
+			snapshot, ok := c.labelReferences[key]
+			c.labelReferencesMu.RUnlock()
+			if ok && !snapshot.HasPR && snapshot.UpdatedAt.Equal(*issue.UpdatedAt) && snapshot.State == issue.State {
+				age := c.now().Sub(snapshot.HydratedAt)
+				if age >= 0 && age < labelIssueReferenceMaxAge {
+					snapshot.apply(issue)
+					continue
+				}
+			}
+		}
+		pending = append(pending, *issue)
+		indexes = append(indexes, index)
+		cacheable = append(cacheable, eligible)
+	}
+	if err := c.attachIssuePullRequestReferences(ctx, pending, true, includeState); err != nil {
+		return err
+	}
+	for i, index := range indexes {
+		issues[index] = pending[i]
+		issue := &issues[index]
+		if !cacheable[i] || issue.PullRequest != nil && issue.PullRequest.HydrationUnavailableReason != "" {
+			continue
+		}
+		key := labelIssueReferenceKey{ID: issue.ID, IncludeState: includeState}
+		snapshot := labelIssueReferenceSnapshot{
+			UpdatedAt:         *issue.UpdatedAt,
+			HydratedAt:        c.now(),
+			State:             issue.State,
+			StageUpdatedAt:    cloneGitHubTime(issue.StageUpdatedAt),
+			StageUpdatedActor: issue.StageUpdatedActor,
+			HasPR:             issue.PRNumber != nil || issue.PullRequest != nil,
+		}
+		c.labelReferencesMu.Lock()
+		if c.labelReferences == nil {
+			c.labelReferences = make(map[labelIssueReferenceKey]labelIssueReferenceSnapshot)
+		}
+		c.labelReferences[key] = snapshot
+		c.labelReferencesMu.Unlock()
+	}
+	return nil
+}
+
+func (c *Connector) reusableLabelIssueReferenceState(state string) bool {
+	if stateInList(state, c.activeStates) || !stateInList(state, c.observedStates) || normalizeStateName(state) == normalizeStateName("Human Review") || normalizeStateName(state) == normalizeStateName(c.planStop) {
+		return false
+	}
+	switch normalizeStateName(state) {
+	case normalizeStateName("Backlog"), normalizeStateName("Blocked"):
+		return true
+	default:
+		return false
+	}
+}
+
+func (snapshot labelIssueReferenceSnapshot) apply(issue *connector.Issue) {
+	issue.StageUpdatedAt = cloneGitHubTime(snapshot.StageUpdatedAt)
+	issue.StageUpdatedActor = snapshot.StageUpdatedActor
+}
+
+func (c *Connector) attachIssuePullRequestReferences(ctx context.Context, issues []connector.Issue, includeLabelTransition bool, includeState bool) error {
+	indexesByID := make(map[string][]int, len(issues))
+	ids := make([]string, 0, len(issues))
+	for index, issue := range issues {
+		id := strings.TrimSpace(issue.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := indexesByID[id]; !ok {
+			ids = append(ids, id)
+		}
+		indexesByID[id] = append(indexesByID[id], index)
+	}
+	for start := 0; start < len(ids); start += labelIssueReferenceBatchSize {
+		end := min(start+labelIssueReferenceBatchSize, len(ids))
+		batch := ids[start:end]
+		var response struct {
+			Nodes []githubIssueNode `json:"nodes"`
+		}
+		if err := c.client.GraphQLWithType(ctx, graphQLQueryPullRequests, labelIssuePullRequestReferencesQuery, map[string]any{"issueIds": batch}, &response); err != nil {
+			if state := c.pullRequestHydrationStateForError(c.repository, err); state.Reason != "" {
+				for _, id := range ids[start:] {
+					for _, index := range indexesByID[id] {
+						attachPullRequestHydrationUnavailableToIssue(&issues[index], c.repository, 0, state)
+					}
+				}
+				return nil
+			}
+			return fmt.Errorf("fetch github label issue pull request references: %w", err)
+		}
+
+		nodesByID := make(map[string]githubIssueNode, len(response.Nodes))
+		for _, node := range response.Nodes {
+			id := strings.TrimSpace(node.ID)
+			_, ok := indexesByID[id]
+			if node.TypeName != "Issue" || !ok {
+				continue
+			}
+			nodesByID[id] = node
+		}
+		for _, id := range batch {
+			if _, ok := nodesByID[id]; !ok {
+				return fmt.Errorf("fetch github label issue pull request references: %w: missing issue node %s", ErrInvalidResponse, id)
+			}
+		}
+
+		for batchIndex, id := range batch {
+			node := nodesByID[id]
+			for _, index := range indexesByID[id] {
+				if repo, number, ok := splitIssueIdentifier(issues[index].Identifier); ok && node.Number > 0 &&
+					(number != node.Number || !strings.EqualFold(repo, node.Repository.NameWithOwner)) {
+					return fmt.Errorf("fetch github issue pull request references: %w: issue identity mismatch for %s", ErrInvalidResponse, id)
+				}
+			}
+			if includeLabelTransition {
+				for _, index := range indexesByID[id] {
+					if transition, ok := currentLabelTransition(node.TimelineItems.Nodes, c.statusLabelForState(issues[index].State)); ok {
+						issues[index].StageUpdatedAt = &transition.EnteredAt
+						issues[index].StageUpdatedActor = transition.Actor
+					}
+				}
+			}
+			needsPullRequest := false
+			for _, index := range indexesByID[id] {
+				if issues[index].PRNumber == nil && issues[index].PullRequest == nil {
+					needsPullRequest = true
+					break
+				}
+			}
+			if !needsPullRequest {
+				continue
+			}
+			pullRequests, state, err := c.fetchRemainingLabelIssuePullRequestReferences(ctx, id, node.ClosedByPullRequestsReferences)
+			if err != nil {
+				return fmt.Errorf("fetch github label issue pull request references: %w", err)
+			}
+			if state.Reason != "" {
+				for _, unavailableID := range batch[batchIndex:] {
+					for _, index := range indexesByID[unavailableID] {
+						attachPullRequestHydrationUnavailableToIssue(&issues[index], c.repository, 0, state)
+					}
+				}
+				for _, unavailableID := range ids[end:] {
+					for _, index := range indexesByID[unavailableID] {
+						attachPullRequestHydrationUnavailableToIssue(&issues[index], c.repository, 0, state)
+					}
+				}
+				return nil
+			}
+			ref, ok := firstPullRequestReference(pullRequests)
+			if includeState {
+				if merged, mergedOK := mergedPullRequestReference(pullRequests); mergedOK {
+					ref, ok = merged, true
+				}
+			}
+			if !ok {
+				continue
+			}
+			for _, index := range indexesByID[id] {
+				number := ref.Number
+				issues[index].PRNumber = &number
+				issues[index].PRHeadSHA = ref.HeadSHA
+				issues[index].PRHeadCommittedAt = cloneGitHubTime(ref.HeadCommittedAt)
+				issues[index].PRRepository = ref.Repository
+				issues[index].PRSource = "github_closing_reference"
+				if includeState {
+					issues[index].PullRequest = &connector.PullRequest{Number: ref.Number, State: ref.State}
+				}
+				if issues[index].PRRepository == "" {
+					issues[index].PRRepository = pullRequestRepoName(c.repository)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Connector) RefreshPullRequestReference(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+	issues := []connector.Issue{withoutPullRequestAssociation(issue)}
+	if err := c.attachIssuePullRequestReferences(ctx, issues, false, false); err != nil {
+		return issue, fmt.Errorf("refresh github issue pull request reference: %w", err)
+	}
+	return issues[0], nil
+}
+
+func withoutPullRequestAssociation(issue connector.Issue) connector.Issue {
+	issue.PRNumber = nil
+	issue.PRRepository = ""
+	issue.PullRequest = nil
+	issue.PRSource = ""
+	issue.PRVerifiedAt = time.Time{}
+	return issue
+}
+
+func (c *Connector) RevalidatePullRequestAssociation(ctx context.Context, issue connector.Issue, includeStatus bool) (connector.Issue, error) {
+	issues := []connector.Issue{withoutPullRequestAssociation(issue)}
+	if _, ok := pullRequestRepoFromIdentifier(issue.Identifier); !ok {
+		return issue, fmt.Errorf("revalidate github pull request association: %w: missing issue repository", ErrInvalidResponse)
+	}
+	if c.usesLabelStatus() {
+		issues[0].StageUpdatedAt = nil
+		issues[0].StageUpdatedActor = connector.IssueActor{}
+	}
+	if strings.TrimSpace(issue.ID) == "" {
+		return issue, fmt.Errorf("revalidate github pull request association: %w: missing issue ID", ErrInvalidResponse)
+	}
+	if err := c.attachIssuePullRequestReferences(ctx, issues, c.usesLabelStatus(), true); err != nil {
+		return issue, err
+	}
+	fresh := issues[0]
+	if fresh.PullRequest != nil && fresh.PullRequest.HydrationUnavailableReason != "" {
+		return fresh, nil
+	}
+	if fresh.PRNumber != nil {
+		if repo, number, ok := hydratedPullRequestRef(issue); includeStatus && ok && issue.PullRequest != nil &&
+			number == *fresh.PRNumber && strings.EqualFold(pullRequestRepoName(repo), fresh.PRRepository) &&
+			strings.EqualFold(issue.PullRequest.State, fresh.PullRequest.State) {
+			fresh.PullRequest = issue.PullRequest
+		} else {
+			var err error
+			fresh, err = c.hydratePullRequest(ctx, fresh, includeStatus)
+			if err != nil {
+				return issue, err
+			}
+		}
+	} else if repo, number, ok := hydratedPullRequestRef(issue); ok {
+		issueRepo, _ := pullRequestRepoFromIdentifier(issue.Identifier)
+		if repo == issueRepo {
+			pullRequest, err := c.fetchRepositoryPullRequest(ctx, repo, number)
+			if err != nil {
+				return issue, err
+			}
+			if !includeStatus && pullRequest.Number != number {
+				return issue, fmt.Errorf("revalidate github pull request association: %w: pull request number mismatch", ErrInvalidResponse)
+			}
+			if branchMatchesIssuePrefix(pullRequest.HeadRefName, detentIssueBranchPrefix(issue.Identifier)) {
+				if includeStatus && issue.PullRequest != nil && issue.PullRequest.HeadSHA == pullRequest.HeadSHA && strings.EqualFold(issue.PullRequest.State, pullRequest.State) {
+					pr := *issue.PullRequest
+					pr.BranchName = pullRequest.HeadRefName
+					fresh.PullRequest = &pr
+				} else {
+					if includeStatus {
+						if err := c.populatePullRequestStatus(ctx, repo, &pullRequest, false); err != nil {
+							return issue, err
+						}
+					}
+					attachPullRequestToIssue(&fresh, repo, pullRequest)
+				}
+				fresh.PRNumber, fresh.PRRepository, fresh.PRSource = new(number), pullRequestRepoName(repo), "detent_branch"
+			}
+		}
+	} else if repo, ok := pullRequestRepoFromIdentifier(issue.Identifier); ok {
+		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
+		if err != nil {
+			return issue, err
+		}
+		candidates := []issuePullRequestCandidate{{Index: 0, Identifier: issue.Identifier, BranchPrefix: detentIssueBranchPrefix(issue.Identifier)}}
+		if _, err := c.attachMatchingPullRequests(ctx, repo, issues, candidates, pullRequests, false, includeStatus); err != nil {
+			return issue, err
+		}
+		fresh = issues[0]
+		if fresh.PullRequest == nil && len(pullRequests) >= pullRequestsPageLimit*pullRequestsPageSize {
+			return issue, fmt.Errorf("revalidate github pull request association: %w: branch discovery exceeded page limit", ErrInvalidResponse)
+		}
+	}
+	fresh.PRVerifiedAt = c.now().UTC()
+	return fresh, nil
+}
+
+func currentLabelTransition(events []timelineItem, labelName string) (connector.IssueStateTransition, bool) {
+	labelName = normalizeLabelName(labelName)
+	if labelName == "" {
+		return connector.IssueStateTransition{}, false
+	}
+	var enteredAt time.Time
+	var transitionActor connector.IssueActor
+	present := false
+	for _, event := range events {
+		if event.Label == nil || normalizeLabelName(event.Label.Name) != labelName {
+			continue
+		}
+		at := parseGitHubTime(event.CreatedAt)
+		switch event.TypeName {
+		case "LabeledEvent":
+			if !present && at != nil && !at.IsZero() {
+				enteredAt = at.UTC()
+				transitionActor = connector.IssueActor{Login: actorLogin(event.Actor), Kind: actorType(event.Actor)}
+			}
+			present = true
+		case "UnlabeledEvent":
+			present = false
+			transitionActor = connector.IssueActor{}
+		}
+	}
+	return connector.IssueStateTransition{EnteredAt: enteredAt, Actor: transitionActor}, present && !enteredAt.IsZero()
+}
+
+func (c *Connector) fetchRemainingLabelIssuePullRequestReferences(
+	ctx context.Context,
+	issueID string,
+	connection nodeConnection[pullRequest],
+) (nodeConnection[pullRequest], pullRequestHydrationState, error) {
+	for page := 2; connection.PageInfo.HasNextPage; page++ {
+		if page > labelIssueReferencePageLimit {
+			return nodeConnection[pullRequest]{}, pullRequestHydrationState{}, fmt.Errorf(
+				"%w: closing pull request references for issue %s exceed %d pages",
+				ErrInvalidResponse,
+				issueID,
+				labelIssueReferencePageLimit,
+			)
+		}
+		cursor := strings.TrimSpace(connection.PageInfo.EndCursor)
+		if cursor == "" {
+			return nodeConnection[pullRequest]{}, pullRequestHydrationState{}, ErrInvalidResponse
+		}
+		var response struct {
+			Node *githubIssueNode `json:"node"`
+		}
+		if err := c.client.GraphQLWithType(ctx, graphQLQueryPullRequests, labelIssuePullRequestReferencesPageQuery, map[string]any{
+			"issueId": issueID,
+			"after":   cursor,
+		}, &response); err != nil {
+			if state := c.pullRequestHydrationStateForError(c.repository, err); state.Reason != "" {
+				return nodeConnection[pullRequest]{}, state, nil
+			}
+			return nodeConnection[pullRequest]{}, pullRequestHydrationState{}, err
+		}
+		if response.Node == nil || response.Node.TypeName != "Issue" || strings.TrimSpace(response.Node.ID) != issueID {
+			return nodeConnection[pullRequest]{}, pullRequestHydrationState{}, ErrInvalidResponse
+		}
+		connection.Nodes = append(connection.Nodes, response.Node.ClosedByPullRequestsReferences.Nodes...)
+		connection.PageInfo = response.Node.ClosedByPullRequestsReferences.PageInfo
+	}
+	return connection, pullRequestHydrationState{}, nil
+}
+
+func (c *Connector) FetchStatusDrift(ctx context.Context) (connector.StatusDrift, error) {
+	drift, _, _, err := c.readRepositoryStatusDrift(ctx, repositoryStatusDriftReadOptions{
+		PageSize: repositoryIssuesPageSize,
+	})
+	if err != nil {
+		return connector.StatusDrift{}, err
+	}
+	if c.usesIssueFieldStatus() {
+		if err := c.hydrateLaneSignalIssueFieldStatuses(ctx, drift.LaneSignalCandidates); err != nil {
+			return connector.StatusDrift{}, err
+		}
+	}
+	drift.ClosedActive, err = c.readClosedActiveLabelIssues(ctx)
+	if err != nil {
+		return connector.StatusDrift{}, err
+	}
+	if c.usesLabelStatus() {
+		c.hydrateIgnoredProjectStatuses(ctx, drift.LaneSignalCandidates)
+	}
+	if err := c.attachLabelIssuePullRequestReferencesWithState(ctx, drift.OpenTerminal, true); err != nil {
+		return connector.StatusDrift{}, fmt.Errorf("hydrate open terminal issue pull requests: %w", err)
+	}
+	return drift, nil
+}
+
+func (c *Connector) readClosedActiveLabelIssues(ctx context.Context) ([]connector.Issue, error) {
+	if !c.usesLabelStatus() || len(c.activeStates) == 0 {
+		return nil, nil
+	}
+	labels := make([]string, 0, len(c.activeStates))
+	active := make(map[string]struct{}, len(c.activeStates))
+	for _, state := range c.activeStates {
+		label := c.statusLabelForState(state)
+		if label == "" {
+			continue
+		}
+		labels = append(labels, label)
+		active[normalizeStateName(state)] = struct{}{}
+	}
+	if len(labels) == 0 {
+		return nil, nil
+	}
+
+	issues := []connector.Issue{}
+	itemsRead := 0
+	for page := 1; ; page++ {
+		var response restIssueSearchResponse
+		path := restClosedActiveIssuesSearchPagePath(c.repository, labels, page, repositoryIssuesPageSize)
+		if err := c.client.REST(ctx, http.MethodGet, path, nil, &response); err != nil {
+			return nil, fmt.Errorf("fetch github closed active issue drift: %w", err)
+		}
+		itemsRead += len(response.Items)
+		for _, item := range response.Items {
+			if item.PullRequest != nil || !githubIssueClosed(item.State) {
+				continue
+			}
+			ref := issueRef{Owner: c.repository.Owner, Name: c.repository.Name, Number: item.Number}
+			node := githubIssueNodeFromREST(ref, item)
+			resolution := c.labelStatusResolutionFromLabels(node.Labels)
+			if resolution.conflicted() || resolution.Status == "" {
+				continue
+			}
+			state := c.githubToDetentState(resolution.Status)
+			if _, ok := active[normalizeStateName(state)]; !ok {
+				continue
+			}
+			c.cacheIssueRef(node)
+			issues = append(issues, c.buildLabelIssue(node, resolution.Status))
+		}
+		if len(response.Items) < repositoryIssuesPageSize || itemsRead >= response.TotalCount {
+			return issues, nil
+		}
+	}
+}
+
+func (c *Connector) readRepositoryStatusDrift(
+	ctx context.Context,
+	options repositoryStatusDriftReadOptions,
+) (connector.StatusDrift, int, bool, error) {
+	if !c.usesLabelStatus() && !c.usesIssueFieldStatus() {
+		return connector.StatusDrift{}, 0, false, nil
+	}
+	if !validPullRequestRepo(c.repository) {
+		return connector.StatusDrift{}, 0, false, ErrMissingRepository
+	}
+
+	pageSize := min(max(options.PageSize, 1), repositoryIssuesPageSize)
+	if options.Limit > 0 {
+		pageSize = min(pageSize, options.Limit)
+	}
+	drift := connector.StatusDrift{}
+	pagesRead := 0
+	itemsRead := 0
+	for page := 1; ; page++ {
+		if options.Limit > 0 && itemsRead >= options.Limit {
+			return drift, pagesRead, true, nil
+		}
+		var response []restIssue
+		path := restRepositoryOpenIssuesPagePath(c.repository, page, pageSize, options.Deterministic)
+		if err := c.client.REST(ctx, http.MethodGet, path, nil, &response); err != nil {
+			return connector.StatusDrift{}, 0, false, fmt.Errorf("fetch github repository status drift: %w", err)
+		}
+		pagesRead++
+		pageItems := response
+		if options.Limit > 0 {
+			if remaining := options.Limit - itemsRead; len(pageItems) > remaining {
+				pageItems = pageItems[:remaining]
+			}
+		}
+		itemsRead += len(pageItems)
+		for _, item := range pageItems {
+			if item.PullRequest != nil {
+				continue
+			}
+			ref := issueRef{Owner: c.repository.Owner, Name: c.repository.Name, Number: item.Number}
+			issue := githubIssueNodeFromREST(ref, item)
+			if strings.TrimSpace(issue.ID) == "" {
+				continue
+			}
+			if c.usesIssueFieldStatus() {
+				// Labels are diagnostic signals only; retain the authoritative field
+				// state without adding issues to any label reconciliation category.
+				if !c.hasConfiguredStatusLabel(issue.Labels) {
+					continue
+				}
+				c.cacheIssueRef(issue)
+				drift.LaneSignalCandidates = append(drift.LaneSignalCandidates,
+					c.buildIssue(issue, c.githubIssueStateToDetentState(issue.State), "", nil, nil))
+				continue
+			}
+			c.cacheIssueRef(issue)
+			drift.LaneSignalCandidates = append(drift.LaneSignalCandidates, c.buildLabelIssue(issue, ""))
+			if !c.hasConfiguredStatusLabel(issue.Labels) {
+				drift.UntrackedOpen = append(drift.UntrackedOpen, c.buildLabelIssue(issue, ""))
+			}
+			if terminalStatus := c.terminalStatusFromLabels(issue.Labels); terminalStatus != "" {
+				drift.OpenTerminal = append(drift.OpenTerminal, c.buildLabelIssue(issue, terminalStatus))
+			}
+		}
+		if len(pageItems) < len(response) {
+			return drift, pagesRead, true, nil
+		}
+		if len(response) < pageSize {
+			return drift, pagesRead, false, nil
+		}
+		if options.Limit > 0 && itemsRead >= options.Limit {
+			return drift, pagesRead, true, nil
+		}
+	}
+}
+
+func (c *Connector) fetchLabelIssueByRef(ctx context.Context, ref issueRef) (connector.Issue, bool, error) {
+	issue, err := c.fetchRESTIssue(ctx, ref)
+	if err != nil {
+		return connector.Issue{}, false, err
+	}
+	if strings.TrimSpace(issue.ID) == "" {
+		return connector.Issue{}, false, nil
+	}
+	c.cacheIssueRef(issue)
+	return c.buildLabelIssue(issue, c.githubIssueStateToDetentState(issue.State)), true, nil
+}
+
+func (c *Connector) normalizeLabelIssueStateRead(issue connector.Issue) connector.Issue {
+	if issue.Closed || c.hasConfiguredStatusLabelNames(issue.Labels) {
+		return issue
+	}
+	issue.State = ""
+	if issue.Fields != nil {
+		issue.Fields[c.statusField] = ""
+	}
+	return issue
+}
+
+func (c *Connector) IssueStateTransition(ctx context.Context, issue connector.Issue) (connector.IssueStateTransition, bool, error) {
+	if !c.usesLabelStatus() {
+		return connector.IssueStateTransition{}, false, nil
+	}
+	ref, ok := issueRefFromIdentifier(issue.Identifier)
+	if !ok {
+		ref, ok = issueRefFromURL(issue.URL)
+	}
+	if !ok {
+		return connector.IssueStateTransition{}, false, nil
+	}
+	targetLabel := normalizeLabelName(c.statusLabelForState(issue.State))
+	if targetLabel == "" {
+		return connector.IssueStateTransition{}, false, nil
+	}
+
+	events, err := fetchRESTList[restIssueTimelineEvent](ctx, c.client, restIssueTimelinePath(ref))
+	if err != nil {
+		return connector.IssueStateTransition{}, false, fmt.Errorf("fetch github issue timeline: %w", err)
+	}
+	var enteredAt time.Time
+	var transitionActor connector.IssueActor
+	present := false
+	for _, event := range events {
+		if event.Label == nil || normalizeLabelName(event.Label.Name) != targetLabel {
+			continue
+		}
+		switch {
+		case strings.EqualFold(strings.TrimSpace(event.Event), "labeled"):
+			if !present && event.CreatedAt != nil && !event.CreatedAt.IsZero() {
+				enteredAt = event.CreatedAt.UTC()
+				transitionActor = connector.IssueActor{
+					Login: actorLogin(event.Actor),
+					Kind:  actorType(event.Actor),
+				}
+			}
+			present = true
+		case strings.EqualFold(strings.TrimSpace(event.Event), "unlabeled"):
+			present = false
+			transitionActor = connector.IssueActor{}
+		}
+	}
+	if !present {
+		return connector.IssueStateTransition{}, false, nil
+	}
+	return connector.IssueStateTransition{
+		EnteredAt: enteredAt,
+		Actor:     transitionActor,
+	}, !enteredAt.IsZero(), nil
+}
+
+func actorType(value *actor) string {
+	if value == nil {
+		return ""
+	}
+	if actorType := strings.TrimSpace(value.Type); actorType != "" {
+		return actorType
+	}
+	return strings.TrimSpace(value.TypeName)
+}
+
+func (c *Connector) updateIssueStatusLabel(ctx context.Context, ref issueRef, issue githubIssueNode, targetState string) error {
+	targetLabel := c.statusLabelForState(targetState)
+	if targetLabel == "" {
+		return ErrStatusUpdateFailed
+	}
+
+	latest, err := c.fetchRESTIssue(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("fetch latest github status labels: %w", err)
+	}
+	if strings.TrimSpace(latest.ID) == "" {
+		return ErrStatusUpdateFailed
+	}
+	issue = latest
+
+	nextLabels := c.nonStatusLabels(issue.Labels)
+	nextLabels = append(nextLabels, targetLabel)
+
+	var response []label
+	if err := c.client.REST(ctx, http.MethodPut, restIssueLabelsPath(ref), map[string]any{
+		"labels": nextLabels,
+	}, &response); err != nil {
+		return fmt.Errorf("replace github status labels: %w", err)
+	}
+	resolution := c.labelStatusResolutionFromLabels(nodeConnection[label]{Nodes: response})
+	if len(response) == 0 || resolution.conflicted() || !stringSliceContainsFold(labelNames(nodeConnection[label]{Nodes: response}), targetLabel) {
+		return ErrStatusUpdateFailed
+	}
+	return nil
+}
+
+func (c *Connector) removeIssueStatusLabels(ctx context.Context, ref issueRef) error {
+	latest, err := c.fetchRESTIssue(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("fetch latest github status labels: %w", err)
+	}
+	if strings.TrimSpace(latest.ID) == "" {
+		return ErrStatusUpdateFailed
+	}
+
+	nextLabels := c.nonStatusLabels(latest.Labels)
+	var response []label
+	if err := c.client.REST(ctx, http.MethodPut, restIssueLabelsPath(ref), map[string]any{
+		"labels": nextLabels,
+	}, &response); err != nil {
+		return fmt.Errorf("remove github status labels: %w", err)
+	}
+	if resolution := c.labelStatusResolutionFromLabels(nodeConnection[label]{Nodes: response}); resolution.Status != "" || resolution.conflicted() {
+		return ErrStatusUpdateFailed
+	}
+	return nil
+}
+
+func (c *Connector) nonStatusLabels(labels nodeConnection[label]) []string {
+	statesByLabel := c.statusLabelStates(c.configuredStatusStates())
+	nextLabels := make([]string, 0, len(labels.Nodes))
+	seen := map[string]struct{}{}
+	for _, label := range labels.Nodes {
+		labelName := strings.TrimSpace(label.Name)
+		if _, isStatus := statesByLabel[normalizeLabelName(labelName)]; labelName == "" || isStatus {
+			continue
+		}
+		key := normalizeLabelName(labelName)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		nextLabels = append(nextLabels, labelName)
+	}
+	return nextLabels
+}
+
+func (c *Connector) EnsureLabelStateOptions(ctx context.Context) error {
+	if !validPullRequestRepo(c.repository) {
+		return ErrMissingRepository
+	}
+	existing, err := fetchRESTList[label](ctx, c.client, restRepositoryLabelsListPath(c.repository))
+	if err != nil {
+		return fmt.Errorf("fetch github labels: %w", err)
+	}
+	seen := map[string]struct{}{}
+	for _, label := range existing {
+		seen[normalizeLabelName(label.Name)] = struct{}{}
+	}
+	for _, stateName := range c.configuredStatusStates() {
+		labelName := c.statusLabelForState(stateName)
+		if labelName == "" {
+			continue
+		}
+		if _, ok := seen[normalizeLabelName(labelName)]; ok {
+			continue
+		}
+		option := statusOptionDefaults(stateName)
+		var response label
+		if err := c.client.REST(ctx, http.MethodPost, restRepositoryLabelsPath(c.repository), map[string]any{
+			"name":        labelName,
+			"color":       statusLabelColor(option.Color),
+			"description": strings.TrimSpace(option.Description),
+		}, &response); err != nil {
+			return fmt.Errorf("create github status label: %w", err)
+		}
+		if strings.TrimSpace(response.Name) == "" {
+			return ErrStatusOptionNotFound
+		}
+		seen[normalizeLabelName(labelName)] = struct{}{}
+	}
+	return nil
+}
+
+func (c *Connector) verifyLabelStatusOptions(ctx context.Context, stateNames []string) error {
+	if !validPullRequestRepo(c.repository) {
+		return ErrMissingRepository
+	}
+	existing, err := fetchRESTList[label](ctx, c.client, restRepositoryLabelsListPath(c.repository))
+	if err != nil {
+		return fmt.Errorf("fetch github labels: %w", err)
+	}
+	seen := map[string]struct{}{}
+	for _, label := range existing {
+		seen[normalizeLabelName(label.Name)] = struct{}{}
+	}
+	for _, stateName := range stateNames {
+		labelName := c.statusLabelForState(stateName)
+		if labelName == "" {
+			continue
+		}
+		if _, ok := seen[normalizeLabelName(labelName)]; !ok {
+			return fmt.Errorf("%w: %s maps to %s", ErrStatusOptionNotFound, stateName, labelName)
+		}
+	}
+	return nil
+}
+
+func (c *Connector) statusLabelStates(stateNames []string) map[string]string {
+	out := map[string]string{}
+	for _, stateName := range stateNames {
+		stateName = strings.TrimSpace(stateName)
+		if stateName == "" {
+			continue
+		}
+		externalState := c.detentToGitHubState(stateName)
+		labelName := c.statusLabelForExternalState(externalState)
+		if labelName == "" {
+			continue
+		}
+		out[normalizeLabelName(labelName)] = externalState
+	}
+	return out
+}
+
+func (c *Connector) labelStatusFromLabels(labels nodeConnection[label]) string {
+	return c.labelStatusResolutionFromLabels(labels).Status
+}
+
+func (c *Connector) labelStatusResolutionFromLabels(labels nodeConnection[label]) labelStatusResolution {
+	return c.labelStatusResolutionFromNames(labelNames(labels))
+}
+
+func (c *Connector) hasConfiguredStatusLabel(labels nodeConnection[label]) bool {
+	resolution := c.labelStatusResolutionFromLabels(labels)
+	return resolution.Status != "" || len(resolution.ConflictLabels) > 0
+}
+
+func (c *Connector) hasConfiguredStatusLabelNames(labels []string) bool {
+	resolution := c.labelStatusResolutionFromNames(labels)
+	return resolution.Status != "" || len(resolution.ConflictLabels) > 0
+}
+
+func (c *Connector) terminalStatusFromLabels(labels nodeConnection[label]) string {
+	statesByLabel := c.statusLabelStates(c.terminalStates)
+	for _, labelName := range labelNames(labels) {
+		if stateName, ok := statesByLabel[normalizeLabelName(labelName)]; ok {
+			return stateName
+		}
+	}
+	return ""
+}
+
+func (c *Connector) labelStatusResolutionFromNames(names []string) labelStatusResolution {
+	statesByLabel := c.statusLabelStates(c.configuredStatusStates())
+	seen := map[string]struct{}{}
+	matches := []string{}
+	statusName := ""
+	for _, labelName := range names {
+		key := normalizeLabelName(labelName)
+		if key == "" {
+			continue
+		}
+		stateName, ok := statesByLabel[key]
+		if !ok {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		matches = append(matches, key)
+		if statusName == "" {
+			statusName = stateName
+		}
+	}
+	if len(matches) <= 1 {
+		return labelStatusResolution{Status: statusName}
+	}
+	sort.Strings(matches)
+	return labelStatusResolution{
+		Status:         statusName,
+		ConflictLabels: matches,
+	}
+}
+
+func (c *Connector) buildLabelIssue(issue githubIssueNode, fallbackStatus string) connector.Issue {
+	resolution := c.labelStatusResolutionFromLabels(issue.Labels)
+	if resolution.conflicted() {
+		return c.buildStatusLabelConflictIssue(issue, resolution.ConflictLabels)
+	}
+	statusName := strings.TrimSpace(resolution.Status)
+	if statusName == "" {
+		statusName = strings.TrimSpace(fallbackStatus)
+	}
+	return c.buildIssue(issue, statusName, "", nil, nil)
+}
+
+func (c *Connector) buildStatusLabelConflictIssue(issue githubIssueNode, labels []string) connector.Issue {
+	out := c.buildIssue(issue, labelStatusConflictState, "", nil, nil)
+	out.BlockerReason = labelStatusConflictReason(labels)
+	return out
+}
+
+func labelStatusConflictReason(labels []string) string {
+	return "multiple configured Detent status labels: " + strings.Join(labels, ", ") + "; remove all but one status label"
+}
+
+func statusLabelConflictIssue(issue connector.Issue) bool {
+	return strings.Contains(issue.BlockerReason, "multiple configured Detent status labels")
+}
+
+func (c *Connector) labelStatusConflictSummaries(issues []connector.Issue) []string {
+	summaries := []string{}
+	for _, issue := range issues {
+		resolution := c.labelStatusResolutionFromNames(issue.Labels)
+		if !resolution.conflicted() {
+			continue
+		}
+		summaries = append(summaries, labelStatusConflictReference(issue)+" ("+strings.Join(resolution.ConflictLabels, ", ")+")")
+	}
+	return summaries
+}
+
+func labelStatusConflictReference(issue connector.Issue) string {
+	if _, number, ok := strings.Cut(strings.TrimSpace(issue.Identifier), "#"); ok && strings.TrimSpace(number) != "" {
+		return "#" + strings.TrimSpace(number)
+	}
+	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
+		return identifier
+	}
+	return strings.TrimSpace(issue.ID)
+}
+
+func (c *Connector) configuredStatusStates() []string {
+	return appendStatusStates(nil, c.activeStates, c.observedStates, c.terminalStates, []string{defaultProjectItemStatusState})
+}
+
+func (c *Connector) statusLabelForState(stateName string) string {
+	return c.statusLabelForExternalState(c.detentToGitHubState(stateName))
+}
+
+func (c *Connector) statusLabelForExternalState(stateName string) string {
+	slug := statusLabelSlug(stateName)
+	if slug == "" {
+		return ""
+	}
+	return c.statusLabelPrefix + slug
+}
+
+func statusLabelSlug(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastSeparator := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastSeparator = false
+		default:
+			if b.Len() == 0 || lastSeparator {
+				continue
+			}
+			b.WriteByte('-')
+			lastSeparator = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func statusLabelColor(color string) string {
+	switch strings.ToUpper(strings.TrimSpace(color)) {
+	case "RED":
+		return "d73a4a"
+	case "ORANGE":
+		return "d93f0b"
+	case "YELLOW":
+		return "fbca04"
+	case "PURPLE":
+		return "6f42c1"
+	case "GREEN":
+		return "0e8a16"
+	case "BLUE":
+		return "5319e7"
+	default:
+		return "cfd3d7"
+	}
+}
+
+func normalizeLabelName(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func stringSliceContainsFold(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(want)) {
+			return true
+		}
+	}
+	return false
+}
+
+func restRepositoryLabelsPath(repo pullRequestRepo) string {
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/labels"
+}
+
+func restRepositoryLabelsListPath(repo pullRequestRepo) string {
+	values := url.Values{}
+	values.Set("per_page", "100")
+	return restRepositoryLabelsPath(repo) + "?" + values.Encode()
+}
+
+func restRepositoryIssuesByLabelPath(repo pullRequestRepo, labelName string, page int) string {
+	return restRepositoryIssuesByLabelPagePath(repo, labelName, page, repositoryIssuesPageSize, false)
+}
+
+func restRepositoryIssuesByLabelPagePath(repo pullRequestRepo, labelName string, page int, pageSize int, deterministic bool) string {
+	values := url.Values{}
+	values.Set("state", "all")
+	values.Set("labels", labelName)
+	if deterministic {
+		values.Set("sort", "created")
+		values.Set("direction", "asc")
+	}
+	values.Set("per_page", strconv.Itoa(pageSize))
+	values.Set("page", strconv.Itoa(page))
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/issues?" + values.Encode()
+}
+
+func restRepositoryOpenIssuesPagePath(repo pullRequestRepo, page int, pageSize int, deterministic bool) string {
+	values := url.Values{}
+	values.Set("state", "open")
+	if deterministic {
+		values.Set("sort", "created")
+		values.Set("direction", "asc")
+	}
+	values.Set("per_page", strconv.Itoa(pageSize))
+	values.Set("page", strconv.Itoa(page))
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/issues?" + values.Encode()
+}
+
+func restClosedActiveIssuesSearchPagePath(repo pullRequestRepo, labels []string, page int, pageSize int) string {
+	terms := make([]string, 0, len(labels))
+	for _, label := range labels {
+		label = strings.TrimSpace(label)
+		if label != "" {
+			terms = append(terms, `label:"`+strings.ReplaceAll(label, `"`, `\"`)+`"`)
+		}
+	}
+	query := "repo:" + pullRequestRepoName(repo) + " is:issue is:closed"
+	if len(terms) == 1 {
+		query += " " + terms[0]
+	} else if len(terms) > 1 {
+		query += " (" + strings.Join(terms, " OR ") + ")"
+	}
+	values := url.Values{}
+	values.Set("q", query)
+	values.Set("sort", "created")
+	values.Set("order", "asc")
+	values.Set("per_page", strconv.Itoa(pageSize))
+	values.Set("page", strconv.Itoa(page))
+	return "/search/issues?" + values.Encode()
+}
+
+func restIssueLabelsPath(ref issueRef) string {
+	return restIssuePath(ref) + "/labels"
+}
+
+func restIssueLabelPath(ref issueRef, label string) string {
+	return restIssueLabelsPath(ref) + "/" + url.PathEscape(label)
+}

@@ -1,0 +1,662 @@
+package workspace
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/toolcache"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+const defaultGitRemote = "origin"
+
+var ErrMergeResolutionInvalid = errors.New("merge resolution is invalid")
+
+func (l *LocalGit) PrepareMerge(
+	ctx context.Context,
+	info Info,
+	issue Issue,
+	opts MergePrepareOptions,
+) (MergePrepareResult, error) {
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return MergePrepareResult{}, err
+	}
+	if opts.VerifyResolution {
+		return l.prepareResolvedMerge(ctx, normalized, issue, opts)
+	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return MergePrepareResult{}, fmt.Errorf("wait for source repository operation: %w", err)
+	}
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
+	remote := strings.TrimSpace(opts.Remote)
+	if remote == "" {
+		remote = defaultGitRemote
+	}
+	targetBranch := strings.TrimSpace(opts.TargetBranch)
+	if targetBranch == "" {
+		targetBranch, err = remoteDefaultBranch(ctx, normalized.Path, remote)
+		if err != nil {
+			return MergePrepareResult{}, fmt.Errorf("resolve remote default branch: %w", err)
+		}
+	}
+	targetRef := remote + "/" + targetBranch
+	fetchRefspec := "+refs/heads/" + targetBranch + ":refs/remotes/" + targetRef
+
+	if _, err := runGitAt(ctx, normalized.Path, "fetch", remote, fetchRefspec); err != nil {
+		return MergePrepareResult{}, errors.Join(
+			fmt.Errorf("git fetch %s %s: %w", remote, fetchRefspec, err),
+			abortRebaseIfInProgress(ctx, normalized.Path),
+		)
+	}
+	branch := strings.TrimSpace(normalized.Branch)
+	if branch == "" {
+		return MergePrepareResult{}, errors.New("workspace branch is required for merge fast-path push")
+	}
+	remoteHead, remoteBranchExists, err := remoteBranchHead(ctx, normalized.Path, remote, branch)
+	if err != nil {
+		return MergePrepareResult{}, errors.Join(
+			fmt.Errorf("inspect remote branch %s/%s: %w", remote, branch, err),
+			abortRebaseIfInProgress(ctx, normalized.Path),
+		)
+	}
+	localHead, err := runGitAt(ctx, normalized.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return MergePrepareResult{}, errors.Join(
+			fmt.Errorf("inspect local branch head: %w", err),
+			abortRebaseIfInProgress(ctx, normalized.Path),
+		)
+	}
+	if remoteBranchExists {
+		if err := mergeRemoteAncestor(ctx, normalized.Path, remote, remoteHead, strings.TrimSpace(localHead)); err != nil {
+			if errors.Is(err, ErrMergeResolutionInvalid) {
+				return rejectMergeHistory(ctx, normalized.Path, remoteHead, err)
+			}
+			return MergePrepareResult{}, err
+		}
+	}
+	if remoteBranchExists && strings.TrimSpace(localHead) != remoteHead && strings.TrimSpace(opts.ExpectedRemoteHead) != "" {
+		if _, err := runGitAt(ctx, normalized.Path, "merge-base", "--is-ancestor", targetRef, strings.TrimSpace(localHead)); err != nil {
+			var commandErr *CommandError
+			if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
+				return MergePrepareResult{Status: MergePrepareStatusConflict, Message: "unpublished local head requires merge-fallback resolution of the current target"}, nil
+			}
+			return MergePrepareResult{}, fmt.Errorf("inspect unpublished head target ancestry: %w", err)
+		}
+		release()
+		release = nil
+		opts.VerifyResolution = true
+		return l.prepareResolvedMerge(ctx, normalized, issue, opts)
+	}
+	originalHead := strings.TrimSpace(localHead)
+	if _, err := l.runCommit(ctx, normalized.Path, nil, "rebase", targetRef); err != nil {
+		conflicts, conflictErr := runGitAt(ctx, normalized.Path, "diff", "--name-only", "--diff-filter=U", "-z")
+		var conflictPaths []string
+		if conflictErr == nil && conflicts != "" {
+			conflictPaths = strings.Split(strings.TrimSuffix(conflicts, "\x00"), "\x00")
+		}
+		abortErr := abortRebaseIfInProgress(ctx, normalized.Path)
+		if abortErr != nil {
+			return MergePrepareResult{}, errors.Join(
+				fmt.Errorf("git rebase %s: %w", targetRef, err),
+				abortErr,
+			)
+		}
+		subjects, subjectErr := mergeTargetCommitSubjects(ctx, normalized.Path, originalHead, targetRef, conflictPaths)
+		if subjectErr != nil {
+			subjects = nil
+		}
+		return MergePrepareResult{
+			TargetCommitSubjects: subjects,
+			ConflictPaths:        conflictPaths,
+			Status:               MergePrepareStatusConflict,
+			Message:              commandErrorOutput(err),
+		}, nil
+	}
+
+	diffStat, err := l.DiffStat(ctx, normalized, issue)
+	if err != nil {
+		return MergePrepareResult{}, errors.Join(
+			fmt.Errorf("workspace diff stat after rebase: %w", err),
+			abortRebaseIfInProgress(ctx, normalized.Path),
+		)
+	}
+	if !diffStat.IsEmpty() {
+		return MergePrepareResult{Status: MergePrepareStatusDirty, DiffStat: diffStat}, nil
+	}
+
+	localHead, err = runGitAt(ctx, normalized.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return MergePrepareResult{}, fmt.Errorf("inspect rebased head: %w", err)
+	}
+	localHead = strings.TrimSpace(localHead)
+	validated := false
+	if opts.ValidateHead && strings.TrimSpace(opts.ValidationCommand) != "" {
+		// The gate can run for many minutes; other workspaces of this source
+		// repository must not wait on it.
+		release()
+		release = nil
+		if err := l.validateMergeResolution(ctx, normalized, issue, opts.ValidationCommand); err != nil {
+			if ctx.Err() != nil {
+				return MergePrepareResult{}, err
+			}
+			return l.restoreAfterFailedGate(ctx, normalized, originalHead, err)
+		}
+		release, err = l.acquireSourceOperation(ctx)
+		if err != nil {
+			return MergePrepareResult{}, fmt.Errorf("wait for source repository operation: %w", err)
+		}
+		current, err := runGitAt(ctx, normalized.Path, "rev-parse", "HEAD")
+		if err != nil {
+			return MergePrepareResult{}, fmt.Errorf("inspect validated head: %w", err)
+		}
+		after, err := l.DiffStat(ctx, normalized, issue)
+		if err != nil {
+			return MergePrepareResult{}, fmt.Errorf("workspace diff stat after gate: %w", err)
+		}
+		if strings.TrimSpace(current) != localHead || !after.IsEmpty() {
+			return MergePrepareResult{}, fmt.Errorf("%w: workspace changed while the gate ran", ErrMergeResolutionInvalid)
+		}
+		validated = true
+	}
+	headChanged := !remoteBranchExists || !strings.EqualFold(localHead, strings.TrimSpace(remoteHead))
+	pushArgs := []string{"push"}
+	if remoteBranchExists {
+		pushArgs = append(pushArgs, "--force-with-lease=refs/heads/"+branch+":"+remoteHead)
+	}
+	pushArgs = append(pushArgs, remote, localHead+":refs/heads/"+branch)
+	if _, err := runGitAt(ctx, normalized.Path, pushArgs...); err != nil {
+		return MergePrepareResult{}, errors.Join(
+			fmt.Errorf("git %s: %w", strings.Join(pushArgs, " "), err),
+			abortRebaseIfInProgress(ctx, normalized.Path),
+		)
+	}
+	return MergePrepareResult{Status: MergePrepareStatusClean, DiffStat: diffStat, HeadChanged: headChanged, HeadSHA: localHead, Validated: validated}, nil
+}
+
+// restoreAfterFailedGate puts the branch back on its published head after the
+// configured gate failed on the rebased one, and reports a conflict so the
+// merge-fallback turn resolves the integration and the validated push path
+// re-runs the gate before anything is published.
+func (l *LocalGit) restoreAfterFailedGate(ctx context.Context, info Info, originalHead string, gateErr error) (MergePrepareResult, error) {
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return MergePrepareResult{}, errors.Join(gateErr, fmt.Errorf("wait for source repository operation: %w", err))
+	}
+	defer release()
+	if _, err := runGitAt(ctx, info.Path, "reset", "--keep", originalHead); err != nil {
+		return MergePrepareResult{}, errors.Join(gateErr, fmt.Errorf("restore published head after gate failure: %w", err))
+	}
+	return MergePrepareResult{
+		Status:  MergePrepareStatusConflict,
+		Message: "The configured gate failed on the branch rebased onto the current target:\n" + gateErr.Error(),
+	}, nil
+}
+
+func remoteDefaultBranch(ctx context.Context, workspacePath string, remote string) (string, error) {
+	output, err := runGitAt(ctx, workspacePath, remoteGitArgs("ls-remote", "--symref", remote, "HEAD")...)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[0] != "ref:" || fields[2] != "HEAD" {
+			continue
+		}
+		branch := strings.TrimPrefix(fields[1], "refs/heads/")
+		if branch != fields[1] && strings.TrimSpace(branch) != "" {
+			return branch, nil
+		}
+	}
+	return "", fmt.Errorf("remote %s HEAD is not a branch", remote)
+}
+
+func remoteDefaultBranchHead(ctx context.Context, workspacePath string, remote string) (string, string, error) {
+	branch, err := remoteDefaultBranch(ctx, workspacePath, remote)
+	if err != nil {
+		return "", "", err
+	}
+	head, exists, err := remoteBranchHead(ctx, workspacePath, remote, branch)
+	if err != nil {
+		return "", "", err
+	}
+	if !exists {
+		return "", "", fmt.Errorf("remote %s default branch %s is missing", remote, branch)
+	}
+	return branch, head, nil
+}
+
+// remoteGitArgs prefixes a git command that reads the repository remote with
+// the GitHub CLI credential helper the runner checkout clones with, so a
+// runner service without a global git credential can still reach the remote.
+func remoteGitArgs(args ...string) []string {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return args
+	}
+	return append([]string{"-c", "credential.https://github.com.helper=!gh auth git-credential"}, args...)
+}
+
+func remoteBranchHead(ctx context.Context, workspacePath string, remote string, branch string) (string, bool, error) {
+	ref := "refs/heads/" + branch
+	output, err := runGitAt(ctx, workspacePath, remoteGitArgs("ls-remote", remote, ref)...)
+	if err != nil {
+		return "", false, err
+	}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[1] != ref {
+			continue
+		}
+		return fields[0], true, nil
+	}
+	return "", false, nil
+}
+
+func abortRebaseIfInProgress(ctx context.Context, workspacePath string) error {
+	inProgress, err := rebaseInProgress(ctx, workspacePath)
+	if err != nil {
+		return err
+	}
+	if !inProgress {
+		return nil
+	}
+	if _, err := runGitAt(ctx, workspacePath, "rebase", "--abort"); err != nil {
+		return fmt.Errorf("git rebase --abort: %w", err)
+	}
+	return nil
+}
+
+func rebaseInProgress(ctx context.Context, workspacePath string) (bool, error) {
+	for _, gitPath := range []string{"rebase-merge", "rebase-apply"} {
+		path, err := gitPathFor(ctx, workspacePath, gitPath)
+		if err != nil {
+			return false, err
+		}
+		if _, err := os.Stat(path); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+func gitPathFor(ctx context.Context, workspacePath string, gitPath string) (string, error) {
+	output, err := runGitAt(ctx, workspacePath, "rev-parse", "--git-path", gitPath)
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(output)
+	if path == "" {
+		return "", errors.New("git path is empty")
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(workspacePath, path)
+	}
+	return filepath.Clean(path), nil
+}
+
+func commandErrorOutput(err error) string {
+	var commandErr *CommandError
+	if errors.As(err, &commandErr) {
+		return strings.TrimSpace(commandErr.Output)
+	}
+	return strings.TrimSpace(err.Error())
+}
+
+func (l *LocalGit) prepareResolvedMerge(ctx context.Context, info Info, issue Issue, opts MergePrepareOptions) (MergePrepareResult, error) {
+	remote := strings.TrimSpace(opts.Remote)
+	if remote == "" {
+		remote = defaultGitRemote
+	}
+	target := strings.TrimSpace(opts.TargetBranch)
+	if target == "" {
+		var err error
+		target, err = remoteDefaultBranch(ctx, info.Path, remote)
+		if err != nil {
+			return MergePrepareResult{}, err
+		}
+	}
+	head, base, remoteHead, err := l.resolvedMergeHeads(ctx, info, issue, remote, target)
+	if err != nil {
+		return MergePrepareResult{}, err
+	}
+	if remoteHead != strings.TrimSpace(opts.ExpectedRemoteHead) && remoteHead != head {
+		return MergePrepareResult{}, fmt.Errorf("%w: remote branch changed before merge-fallback validation", ErrMergeResolutionInvalid)
+	}
+	if err := mergeRemoteAncestor(ctx, info.Path, remote, remoteHead, head); err != nil {
+		if errors.Is(err, ErrMergeResolutionInvalid) {
+			return rejectMergeHistory(ctx, info.Path, remoteHead, err)
+		}
+		return MergePrepareResult{}, err
+	}
+	prHead := strings.TrimSpace(opts.ExpectedRemoteHead)
+	if prHead == "" {
+		prHead = remoteHead
+	}
+	findings, err := missingMergeGoDeclarations(ctx, info.Path, head, base, prHead, opts.IssueDescription)
+	if err != nil {
+		return MergePrepareResult{}, err
+	}
+	if len(findings) > 0 {
+		return MergePrepareResult{Status: MergePrepareStatusConflict, Message: "merge resolution removes unexplained Go declarations", Findings: findings}, nil
+	}
+	if err := l.validateMergeResolution(ctx, info, issue, opts.ValidationCommand); err != nil {
+		return MergePrepareResult{}, err
+	}
+	currentHead, currentBase, currentRemote, err := l.resolvedMergeHeads(ctx, info, issue, remote, target)
+	if err != nil {
+		return MergePrepareResult{}, err
+	}
+	if currentHead != head || currentBase != base || currentRemote != remoteHead {
+		return MergePrepareResult{}, fmt.Errorf("%w: local head, target base, or remote branch changed during merge-fallback validation", ErrMergeResolutionInvalid)
+	}
+	if _, err := runGitAt(ctx, info.Path, "push", remote, head+":refs/heads/"+info.Branch); err != nil {
+		return MergePrepareResult{}, fmt.Errorf("push validated merge resolution: %w", err)
+	}
+	return MergePrepareResult{Status: MergePrepareStatusClean, HeadSHA: head, HeadChanged: remoteHead != head, Validated: strings.TrimSpace(opts.ValidationCommand) != ""}, nil
+}
+
+func (l *LocalGit) resolvedMergeHeads(ctx context.Context, info Info, issue Issue, remote, target string) (string, string, string, error) {
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return "", "", "", err
+	}
+	defer release()
+	branch, err := runGitAt(ctx, info.Path, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return "", "", "", err
+	}
+	if strings.TrimSpace(info.Branch) == "" || strings.TrimSpace(branch) != info.Branch {
+		return "", "", "", fmt.Errorf("%w: merge resolution is not on the owned workspace branch", ErrMergeResolutionInvalid)
+	}
+	inProgress, err := rebaseInProgress(ctx, info.Path)
+	if err != nil {
+		return "", "", "", err
+	}
+	if inProgress {
+		return "", "", "", fmt.Errorf("%w: merge resolution still has a rebase in progress", ErrMergeResolutionInvalid)
+	}
+	diff, err := l.DiffStat(ctx, info, issue)
+	if err != nil {
+		return "", "", "", err
+	}
+	if !diff.IsEmpty() {
+		return "", "", "", fmt.Errorf("%w: merge resolution workspace is not source-clean", ErrMergeResolutionInvalid)
+	}
+	ref := "refs/remotes/" + remote + "/" + target
+	if _, err := runGitAt(ctx, info.Path, "fetch", remote, "+refs/heads/"+target+":"+ref); err != nil {
+		return "", "", "", err
+	}
+	base, err := runGitAt(ctx, info.Path, "rev-parse", ref)
+	if err != nil {
+		return "", "", "", err
+	}
+	head, err := runGitAt(ctx, info.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return "", "", "", err
+	}
+	if _, err := runGitAt(ctx, info.Path, "merge-base", "--is-ancestor", strings.TrimSpace(base), strings.TrimSpace(head)); err != nil {
+		var commandErr *CommandError
+		if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
+			err = errors.Join(ErrMergeResolutionInvalid, err)
+		}
+		return "", "", "", fmt.Errorf("merge resolution does not contain the current target branch: %w", err)
+	}
+	remoteHead, exists, err := remoteBranchHead(ctx, info.Path, remote, info.Branch)
+	if err != nil {
+		return "", "", "", err
+	}
+	if !exists {
+		return "", "", "", fmt.Errorf("%w: merge resolution remote branch is missing", ErrMergeResolutionInvalid)
+	}
+	return strings.TrimSpace(head), strings.TrimSpace(base), remoteHead, nil
+}
+
+func (l *LocalGit) validateMergeResolution(ctx context.Context, info Info, issue Issue, command string) error {
+	if strings.TrimSpace(command) == "" {
+		return nil
+	}
+	result, err := l.runValidationCommand(ctx, info, issue, command)
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return newValidationError(ValidationStageMergeFallbackVerification, result, fmt.Errorf("exit status %d", result.ExitCode))
+	}
+	return nil
+}
+
+type ValidationProcess interface {
+	Started(context.Context, procgroup.Identity) error
+	Finished(context.Context, gate.CommandResult, error) error
+}
+
+type validationProcessOwnerKey struct{}
+type ValidationProcessOwner func(context.Context, Info, Issue, string) (ValidationProcess, error)
+
+func WithValidationProcessOwner(ctx context.Context, owner ValidationProcessOwner) context.Context {
+	return context.WithValue(ctx, validationProcessOwnerKey{}, owner)
+}
+
+func ValidationProcessOwnerFromContext(ctx context.Context) ValidationProcessOwner {
+	if ctx == nil {
+		return nil
+	}
+	owner, ok := ctx.Value(validationProcessOwnerKey{}).(ValidationProcessOwner)
+	if !ok {
+		return nil
+	}
+	return owner
+}
+
+func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {
+	result.Command = command
+	result.ExitCode = -1
+	ctx, release, err := toolcache.UseFromContext(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, release()) }()
+	selection, paged := ctx.Value(reviewOutputRangeKey{}).(ReviewOutputRange)
+	if paged && (selection.Offset < 0 || selection.Length < 1 || selection.Length > ReviewSourcePageBytes) {
+		return result, errors.New("invalid review output range")
+	}
+	scratch, err := PrepareWorkerScratch(ctx, info.Path)
+	if err != nil {
+		return result, err
+	}
+	var process ValidationProcess
+	var groupID int
+	defer func() {
+		cleanupCtx := context.WithoutCancel(ctx)
+		var cleanupErr error
+		if process != nil || toolcache.ManagedBuildFromContext(ctx) != "" {
+			cleanupErr = procgroup.Cleanup(groupID)
+			if groupID > 0 {
+				_, err := ReapWorkerArtifactPathProcesses(cleanupCtx, info.Path, scratch, procgroup.DefaultTerminationGrace)
+				cleanupErr = errors.Join(cleanupErr, err)
+			}
+		}
+		if cleanupErr == nil {
+			cleanupErr = CleanupWorkerScratch(info.Path, scratch)
+		}
+		resultErr = errors.Join(resultErr, cleanupErr)
+		if process != nil {
+			resultErr = errors.Join(resultErr, process.Finished(cleanupCtx, result, cleanupErr))
+		}
+	}()
+	if owner := ValidationProcessOwnerFromContext(ctx); owner != nil {
+		process, err = owner(ctx, info, issue, scratch)
+		if err != nil {
+			return result, fmt.Errorf("reserve host validation process: %w", err)
+		}
+	}
+	cmd := commandshell.Command(ctx, command, l.hooks.Shell)
+	cmd.Dir = info.Path
+	cmd.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
+	l.applyValidationGoBudget(ctx, cmd)
+	cmd.WaitDelay = workspaceCommandWaitDelay
+	if cache := toolcache.ManagedBuildFromContext(ctx); cache != "" {
+		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{"GOCACHE": cache}})
+	}
+	procgroup.SetTempDir(cmd, scratch)
+	procgroup.Configure(ctx, cmd)
+	result.Evidence = reviewCommandEvidence(ctx, cmd, command)
+	if !result.Evidence.Environment.Known() {
+		result.Evidence = validationEnvironment(ctx, cmd)
+	}
+	l.logger.Info("validating workspace", "workspace_path", info.Path, "command", command)
+	started := time.Now()
+	result.StartedAt = started.UTC()
+	result.Execution = "executed"
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	source := reviewOutputCapture{selection: selection}
+	diagnostics := reviewOutputCapture{selection: ReviewOutputRange{Length: 4 * 1024}}
+	if paged {
+		cmd.Stdout, cmd.Stderr = &source, &diagnostics
+	}
+	if err := cmd.Start(); err != nil {
+		return result, fmt.Errorf("start validation command: %w", err)
+	}
+	groupID = procgroup.GroupID(cmd)
+	if process != nil {
+		identity, registrationErr := procgroup.Inspect(cmd)
+		if registrationErr == nil {
+			registrationErr = process.Started(ctx, identity)
+		}
+		if registrationErr != nil {
+			return result, errors.Join(fmt.Errorf("register host validation process: %w", registrationErr), cmd.Cancel(), cmd.Wait())
+		}
+	}
+	err = cmd.Wait()
+	result.FinishedAt = time.Now().UTC()
+	result.DurationNS = time.Since(started).Nanoseconds()
+	result.Output = output.String()
+	if paged {
+		if err == nil {
+			result.Output, result.OutputTruncated = source.result()
+			if diagnostics.total > 0 {
+				result.Output += "\n[git diagnostics]\n" + string(diagnostics.page)
+			}
+		} else {
+			result.Output = string(source.page) + string(diagnostics.page)
+			result.OutputTruncated = source.total > int64(len(source.page))
+		}
+		result.OutputTruncated = result.OutputTruncated || diagnostics.total > int64(len(diagnostics.page))
+	}
+	result.Evidence.Checks = gate.CheckObservations(result.Output)
+	if ctx.Err() != nil {
+		return result, ctx.Err()
+	}
+	if err != nil {
+		var exited *exec.ExitError
+		if errors.As(err, &exited) && exited.Exited() {
+			result.ExitCode = exited.ExitCode()
+			return result, nil
+		}
+		return result, fmt.Errorf("validation command failed: %w: %s", err, result.Output)
+	}
+	result.ExitCode = 0
+	return result, nil
+}
+
+func validationEnvironment(ctx context.Context, command *exec.Cmd) *gate.CommandEvidence {
+	evidence := &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
+	probe := validationProbe(ctx, command, "go env -json")
+	if probe == nil {
+		return evidence
+	}
+	var observed struct {
+		OS           string `json:"GOHOSTOS"`
+		Architecture string `json:"GOHOSTARCH"`
+		Version      string `json:"GOVERSION"`
+	}
+	output, err := probe.Output()
+	if err == nil && json.Unmarshal(output, &observed) == nil {
+		environment := gate.CheckEnvironment{OS: observed.OS, Architecture: observed.Architecture, GoVersion: observed.Version}
+		if environment.Valid() {
+			evidence.Environment = environment
+		}
+	}
+	return evidence
+}
+
+// mergeRemoteAncestor applies the checkpoint path's no-dropped-commits rule.
+// Fetch the observed SHA so a remote advance absent from local objects is checked.
+// The normal push rejects a later divergent remote change.
+func mergeRemoteAncestor(ctx context.Context, path, remote, remoteHead, head string) error {
+	if _, err := runGitAt(ctx, path, "fetch", remote, remoteHead); err != nil {
+		return fmt.Errorf("fetch remote branch head: %w", err)
+	}
+	if _, err := runGitAt(ctx, path, "merge-base", "--is-ancestor", remoteHead, head); err != nil {
+		var commandErr *CommandError
+		if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
+			return fmt.Errorf("%w: remote branch advanced; retain local work for reconciliation", ErrMergeResolutionInvalid)
+		}
+		return fmt.Errorf("inspect remote branch ancestry: %w", err)
+	}
+	return nil
+}
+
+// rejectMergeHistory attempts to restore the observed PR head before handing off to Rework.
+// --keep refuses to discard uncommitted changes if the workspace is dirty.
+func rejectMergeHistory(ctx context.Context, path, remoteHead string, cause error) (MergePrepareResult, error) {
+	if err := abortRebaseIfInProgress(ctx, path); err != nil {
+		cause = errors.Join(cause, err)
+	}
+	if _, err := runGitAt(ctx, path, "reset", "--keep", remoteHead); err != nil {
+		cause = errors.Join(cause, fmt.Errorf("restore remote PR head: %w: %s", err, commandErrorOutput(err)))
+	}
+	return MergePrepareResult{Status: MergePrepareStatusConflict, Message: cause.Error()}, nil
+}
+
+type ValidationError struct {
+	Stage  string             `json:"stage"`
+	Result gate.CommandResult `json:"result"`
+	Output string             `json:"output"`
+	Err    error              `json:"-"`
+}
+
+const (
+	ValidationStageSourceFinalization        = gate.StageSourceFinalization
+	ValidationStageMergeFallbackVerification = gate.StageMergeFallbackVerification
+	ValidationStageLanding                   = gate.StageLanding
+)
+
+func newValidationError(stage string, result gate.CommandResult, err error) *ValidationError {
+	result.Stage = stage
+	result = tracker.PublicGateResult(result)
+	return &ValidationError{Stage: stage, Result: result, Output: result.Output, Err: err}
+}
+
+func (e *ValidationError) Error() string {
+	stage := "merge-fallback verification"
+	switch e.Stage {
+	case ValidationStageSourceFinalization:
+		stage = "source finalization"
+	case ValidationStageLanding:
+		stage = "landing"
+	case ValidationStageMergeFallbackVerification:
+		stage = "merge-fallback verification"
+	}
+	return fmt.Sprintf("%s gate failed: %v", stage, e.Err)
+}
+func (e *ValidationError) Unwrap() error { return e.Err }

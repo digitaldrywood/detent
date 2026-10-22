@@ -1,0 +1,205 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  checks: read
+  contents: write
+  statuses: read
+
+concurrency:
+  group: validated-release
+  cancel-in-progress: false
+
+jobs:
+  source:
+    name: Verify release source
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify source belongs to its release series
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          branch="release/v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          git fetch --no-tags origin "$branch:refs/remotes/origin/$branch"
+          git merge-base --is-ancestor "$GITHUB_SHA" "origin/$branch"
+
+  release:
+    name: GoReleaser
+    needs: source
+    outputs:
+      version: ${{ steps.provenance.outputs.version }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      checks: read
+      contents: write
+      statuses: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            web/conversation/package-lock.json
+            package-lock.json
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.10'
+          cache: false
+
+      - name: Verify release-branch full-suite provenance
+        id: provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TMPDIR: ${{ runner.temp }}
+          DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}
+        run: |
+          set -euo pipefail
+          tag_message="$RUNNER_TEMP/detent-release-tag-message"
+          check_runs="$RUNNER_TEMP/detent-release-check-runs.json"
+          statuses="$RUNNER_TEMP/detent-release-statuses.json"
+          rulesets="$RUNNER_TEMP/detent-release-rulesets.json"
+          default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')"
+          default_branch_ref="refs/heads/$default_branch"
+          if [ -z "$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON" ]; then
+            echo "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON must be configured as a JSON array; use [] when there are no release-only checks"
+            exit 1
+          fi
+          gh api --paginate --slurp -H "Accept: application/vnd.github+json" \
+            "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=all&per_page=100" |
+            jq '{total_count: .[0].total_count, check_runs: [.[].check_runs[]]}' > "$check_runs"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status?per_page=100" > "$statuses"
+          scripts/collect-release-rulesets.sh "$GITHUB_REPOSITORY" "$rulesets"
+          release_tag="$GITHUB_REF_NAME"
+          git fetch --force origin "+refs/tags/$release_tag:refs/tags/$release_tag"
+          DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="$(jq -c 'if type == "array" then . + ["scheduled-full-ci"] | unique else error("release requirements must be a JSON array") end' <<< "$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON")"
+          test "$(git cat-file -t "refs/tags/$release_tag")" = tag
+          git for-each-ref --format='%(contents)' "refs/tags/$release_tag" > "$tag_message"
+          go run ./tools/releaseprovenance \
+            -repository "$GITHUB_REPOSITORY" \
+            -tag "$release_tag" \
+            -commit "$GITHUB_SHA" \
+            -default-branch-ref "$default_branch_ref" \
+            -tag-message "$tag_message" \
+            -github-check-runs "$check_runs" \
+            -github-statuses "$statuses" \
+            -github-rulesets "$rulesets" \
+            -required-check-names-json "$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON" \
+            -output tmp/detent_release_provenance.json
+          echo "version=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Use binaries prebuilt by the release suite
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/release-use-prebuilt.sh "${{ steps.provenance.outputs.version }}"
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+
+      - uses: sigstore/cosign-installer@v4.1.0
+        with:
+          cosign-release: v3.0.5
+
+      - name: Install quill
+        run: go install github.com/anchore/quill/cmd/quill@v0.7.1
+
+      - name: Verify macOS signing secrets
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          for secret in MACOS_SIGN_P12 MACOS_SIGN_PASSWORD MACOS_NOTARY_KEY MACOS_NOTARY_KEY_ID MACOS_NOTARY_ISSUER_ID; do
+            if [ -z "${!secret:-}" ]; then
+              echo "$secret secret is required."
+              exit 1
+            fi
+          done
+
+      - name: Prepare minisign key
+        run: |
+          if [ -z "$MINISIGN_KEY" ]; then
+            echo "MINISIGN_KEY secret is required."
+            exit 1
+          fi
+          if [ -z "$MINISIGN_PASSWORD" ]; then
+            echo "MINISIGN_PASSWORD secret is required."
+            exit 1
+          fi
+          key_file="$RUNNER_TEMP/detent-minisign.key"
+          printf '%s' "$MINISIGN_KEY" > "$key_file"
+          chmod 600 "$key_file"
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          args: release --clean
+        env:
+          GORELEASER_CURRENT_TAG: ${{ steps.provenance.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          SCOOP_BUCKET_GITHUB_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}
+          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
+          MINISIGN_KEY_FILE: ${{ runner.temp }}/detent-minisign.key
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          QUILL_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          QUILL_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          QUILL_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          QUILL_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          QUILL_NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+
+      - name: Prepare Hub deployment artifact
+        run: |
+          set -euo pipefail
+          binaries=(tmp/goreleaser/detent_linux_amd64*/detent)
+          test "${#binaries[@]}" -eq 1
+          cp "${binaries[0]}" "$RUNNER_TEMP/detent"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-hub-binary
+          path: ${{ runner.temp }}/detent
+          if-no-files-found: error
+          retention-days: 14
+
+  staging:
+    needs: release
+    uses: ./.github/workflows/deploy-staging.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+    secrets: inherit
+
+  production:
+    needs: [release, staging]
+    uses: ./.github/workflows/deploy-production.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+    secrets: inherit
