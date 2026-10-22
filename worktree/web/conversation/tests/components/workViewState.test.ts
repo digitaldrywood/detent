@@ -1,0 +1,204 @@
+// @vitest-environment jsdom
+// The board's URL state: parse, serialize, and the round trip between them.
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  activeFilterCount,
+  DEFAULT_VIEW_STATE,
+  defaultLaneNames,
+  isDefaultViewState,
+  laneVisible,
+  parseViewState,
+  readStoredViewState,
+  serializeViewState,
+  toggleFilter,
+  toggleLane,
+  toggleCollapsed,
+  tabQuery,
+  effectiveSort,
+  writeStoredViewState,
+} from "../../src/app/work/lib/viewState.ts";
+
+const LANES = ["Backlog", "Todo", "In progress", "Review", "Done"].map((name) => ({ id: name, name, terminal: name === "Done", dispatchable: false, category: "" }));
+
+describe("the board's view state", () => {
+  it("defaults an empty query string", () => {
+    expect(parseViewState("")).toEqual(DEFAULT_VIEW_STATE);
+    expect(isDefaultViewState(DEFAULT_VIEW_STATE)).toBe(true);
+    expect(DEFAULT_VIEW_STATE.collapsed).toEqual(["Backlog"]);
+  });
+
+  it("links archived lists and preserves their filter on reload", () => {
+    const state = parseViewState("view=list&archived=true&state=Done&created_by=me");
+    expect(state.createdBy).toBe("me");
+    expect(activeFilterCount(state)).toBe(2);
+    expect(state.archived).toBe(true);
+    expect(state.view).toBe("list");
+    expect(state.state).toEqual(["Done"]);
+    expect(parseViewState(serializeViewState(state))).toEqual(state);
+    expect(isDefaultViewState(state)).toBe(false);
+    expect(parseViewState("archived=invalid").archived).toBeUndefined();
+    expect(serializeViewState({ ...DEFAULT_VIEW_STATE, archived: false })).toBe("");
+  });
+
+  it.each([
+    { tab: "active", query: { open: true, state: ["Todo", "In progress", "Review"] }, sort: "default" },
+    { tab: "backlog", query: { state: ["Backlog"] }, sort: "default" },
+    { tab: "closed", query: { open: false, state: [] }, sort: "closed" },
+    { tab: "all", query: { state: [] }, sort: "default" },
+  ])("round-trips the $tab tab and maps its server query independently of board lanes", ({ tab, query, sort }) => {
+    const state = parseViewState(`view=list&tab=${tab}&lanes=Done&state=Done`);
+    expect(tabQuery(state, LANES)).toEqual(query);
+    expect(effectiveSort(state)).toBe(sort);
+    expect(parseViewState(serializeViewState(state))).toEqual(state);
+    writeStoredViewState("tabs", state);
+    expect(readStoredViewState("tabs")).toEqual(state);
+    expect(tabQuery({ ...state, view: "board" }, LANES)).toEqual({ state: ["Done"] });
+    expect(effectiveSort({ ...state, view: "board" })).toBe("default");
+  });
+
+  it("reads every control out of the query string", () => {
+    const state = parseViewState(
+      "view=list&q=lease&state=Todo,Review&type=change_request&label=bug&assignee=example-owner&priority=High&sort=updated&lanes=Todo,Done",
+    );
+    expect(state.view).toBe("list");
+    expect(state.q).toBe("lease");
+    expect(state.state).toEqual(["Review", "Todo"]);
+    expect(state.type).toEqual(["change_request"]);
+    expect(state.label).toEqual(["bug"]);
+    expect(state.assignee).toEqual(["example-owner"]);
+    expect(state.priority).toEqual(["High"]);
+    expect(state.sort).toBe("updated");
+    expect(state.lanes).toEqual(["Done", "Todo"]);
+  });
+
+  it("falls back rather than failing on a value it does not know", () => {
+    const state = parseViewState("view=gallery&sort=vibes&tab=unknown");
+    expect(state.view).toBe("board");
+    expect(state.tab).toBe("active");
+    expect(state.sort).toBe("default");
+  });
+
+  it("omits defaults when it serializes", () => {
+    expect(serializeViewState(DEFAULT_VIEW_STATE)).toBe("");
+    expect(serializeViewState({ ...DEFAULT_VIEW_STATE, view: "list" })).toBe("view=list");
+  });
+
+  it.each(["priority", "updated", "created", "title", "closed"])("preserves an explicit %s sort", (sort) => {
+    const state = parseViewState(`sort=${sort}`);
+    expect(state.sort).toBe(sort);
+    expect(serializeViewState(state)).toBe(`sort=${sort}`);
+    expect(parseViewState(serializeViewState(state))).toEqual(state);
+  });
+
+  it("round-trips", () => {
+    const query =
+      "view=list&q=lease&state=Review%2CTodo&label=bug&assignee=example-owner&priority=High&sort=updated&lanes=Done%2CTodo";
+    expect(serializeViewState(parseViewState(query))).toBe(query);
+    expect(serializeViewState(parseViewState(`${query}&pages=legacy-cursor`))).toBe(query);
+  });
+
+  it("treats two orderings of the same filter as one URL", () => {
+    expect(serializeViewState(parseViewState("state=Review,Todo"))).toBe(
+      serializeViewState(parseViewState("state=Todo,Review")),
+    );
+  });
+
+  it("distinguishes every lane from no lane", () => {
+    expect(parseViewState("").lanes).toBeNull();
+    expect(parseViewState("lanes=").lanes).toEqual([]);
+    expect(laneVisible(parseViewState(""), LANES[1]!)).toBe(true);
+    expect(laneVisible(parseViewState("lanes="), LANES[1]!)).toBe(false);
+  });
+
+  it("derives default lanes from the current workflow, including empty active and custom lanes", () => {
+    const lanes = [...LANES, { id: "Merging", name: "Merging", terminal: false, dispatchable: false, category: "" }, { id: "Retired", name: "Retired", terminal: true, dispatchable: false, category: "" }];
+    expect(defaultLaneNames(lanes)).toEqual(["Backlog", "Todo", "In progress", "Review", "Merging"]);
+    expect(lanes.filter((lane) => laneVisible(DEFAULT_VIEW_STATE, lane)).map((lane) => lane.name)).toEqual(defaultLaneNames(lanes));
+    expect(laneVisible(parseViewState("lanes=Done"), LANES[4]!)).toBe(false);
+    expect(lanes.filter((lane) => laneVisible(parseViewState("lanes=Todo,Done,Retired"), lane)).map((lane) => lane.name)).toEqual(["Todo"]);
+    const shown = toggleLane(DEFAULT_VIEW_STATE, "Backlog", lanes);
+    writeStoredViewState("default-roundtrip", shown);
+    const restored = toggleLane(shown, "Backlog", lanes);
+    writeStoredViewState("default-roundtrip", restored);
+    expect(restored.lanes).toBeNull();
+    expect(serializeViewState(restored)).toBe("");
+    expect(readStoredViewState("default-roundtrip")).toBeNull();
+  });
+
+  it.each([
+    { saved: "1h", want: "1h" },
+    { saved: "24h", want: "24h" },
+    { saved: "7d", want: "7d" },
+    { saved: "48h", want: "24h" },
+    { saved: "14d", want: "24h" },
+    { saved: "all", want: "24h" },
+    { saved: "invalid", want: "24h" },
+  ] as const)("reads the saved $saved shipped window as $want in the URL and remembered view", ({ saved, want }) => {
+    const state = parseViewState(`completed=${saved}`);
+    expect(state.completedWindow).toBe(want);
+    expect(parseViewState(serializeViewState(state))).toEqual(state);
+    expect(serializeViewState(state).includes("completed=")).toBe(want !== "24h");
+    writeStoredViewState("window", { ...state, view: "list" });
+    expect(readStoredViewState("window")?.completedWindow).toBe(want);
+  });
+
+  it("toggles a filter value on and off and counts what is active", () => {
+    let state = toggleFilter(DEFAULT_VIEW_STATE, "label", "bug");
+    state = toggleFilter(state, "state", "Todo");
+    expect(activeFilterCount(state)).toBe(2);
+    state = toggleFilter(state, "label", "bug");
+    expect(state.label).toEqual([]);
+    expect(activeFilterCount(state)).toBe(1);
+  });
+
+  it("returns to null once the default lanes are restored", () => {
+    const hidden = toggleLane(DEFAULT_VIEW_STATE, "Backlog", LANES);
+    expect(hidden.lanes).toEqual(["Todo", "In progress", "Review"]);
+    expect(toggleLane(hidden, "Backlog", LANES).lanes).toBeNull();
+    expect(toggleLane(DEFAULT_VIEW_STATE, "Done", LANES)).toBe(DEFAULT_VIEW_STATE);
+  });
+
+  it("keeps the workflow's lane order when lanes are toggled out of order", () => {
+    let state = toggleLane(DEFAULT_VIEW_STATE, "Backlog", LANES);
+    state = toggleLane(state, "Review", LANES);
+    state = toggleLane(state, "Backlog", LANES);
+    expect(state.lanes).toEqual(["Backlog", "Todo", "In progress"]);
+  });
+
+  it("persists collapse independently of filters, including every lane expanded", () => {
+    const expanded = toggleCollapsed(DEFAULT_VIEW_STATE, "Backlog");
+    expect(expanded.collapsed).toEqual([]);
+    expect(serializeViewState(expanded)).toBe("collapsed=");
+    expect(parseViewState(serializeViewState(expanded))).toEqual(expanded);
+    const collapsed = toggleCollapsed(DEFAULT_VIEW_STATE, "Todo");
+    expect(collapsed.collapsed).toEqual(["Backlog", "Todo"]);
+    expect(serializeViewState(collapsed)).toBe("collapsed=Backlog%2CTodo");
+    expect(parseViewState("collapsed=Todo,Backlog,Todo")).toEqual(collapsed);
+    expect(activeFilterCount(collapsed)).toBe(0);
+    expect(laneVisible(collapsed, LANES[0]!)).toBe(true);
+    writeStoredViewState("collapse", collapsed);
+    expect(readStoredViewState("collapse")).toEqual(collapsed);
+    writeStoredViewState("collapse", expanded);
+    expect(readStoredViewState("collapse")).toEqual(expanded);
+    expect(toggleCollapsed(collapsed, "Todo")).toEqual(DEFAULT_VIEW_STATE);
+  });
+});
+
+describe("the remembered view", () => {
+  afterEach(() => globalThis.localStorage?.clear());
+
+  it("remembers and reads back a view per project", () => {
+    writeStoredViewState("proj_alpha", { ...DEFAULT_VIEW_STATE, view: "list", q: "lease",
+    });
+    expect(readStoredViewState("proj_alpha")?.view).toBe("list");
+    expect(readStoredViewState("proj_alpha")?.q).toBe("lease");
+    expect(readStoredViewState("proj_beta")).toBeNull();
+  });
+
+  it("forgets a view that is back to the default", () => {
+    writeStoredViewState("proj_alpha", { ...DEFAULT_VIEW_STATE, view: "list" });
+    writeStoredViewState("proj_alpha", DEFAULT_VIEW_STATE);
+    expect(readStoredViewState("proj_alpha")).toBeNull();
+  });
+});

@@ -1,0 +1,437 @@
+package web_test
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/web"
+)
+
+type nativeWebScheduling struct {
+	changeSchedulingProbe
+	source connector.Connector
+}
+
+func (s nativeWebScheduling) ConnectorForProject(string) (connector.Connector, bool) {
+	return s.source, true
+}
+
+type nativeWebFixture struct {
+	keys   map[string]string
+	mu     sync.Mutex
+	issue  tracker.NativeIssue
+	last   map[string]string
+	status int
+}
+
+func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
+	t.Helper()
+	fixture := &nativeWebFixture{issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_example", Revision: 7, Profile: "native", Number: 1}, Title: "Native collaboration", Body: "Full native body <script>unsafe()</script>", State: "Todo"}}
+	hubHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fixture.mu.Lock()
+		defer fixture.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v2/capabilities" {
+			if err := json.NewEncoder(w).Encode(map[string]any{"features": []string{tracker.NativeRuntimeEvidenceCapability}}); err != nil {
+				t.Error(err)
+			}
+			return
+		}
+		base := "/api/v2/organizations/org_example/projects/prj_example"
+		if !strings.HasPrefix(r.URL.Path, base) {
+			t.Errorf("unexpected external request %s", r.URL)
+			w.WriteHeader(404)
+			return
+		}
+		path := strings.TrimPrefix(r.URL.Path, base)
+		var response any
+		if r.Method != http.MethodGet {
+			fixture.last = map[string]string{}
+			var raw map[string]json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+				t.Error(err)
+				w.WriteHeader(400)
+				return
+			}
+			for key, value := range raw {
+				var text string
+				if json.Unmarshal(value, &text) == nil {
+					fixture.last[key] = text
+				} else {
+					fixture.last[key] = string(value)
+				}
+			}
+			fixture.last["method"], fixture.last["path"] = r.Method, path
+			status := fixture.status
+			if revision := fixture.last["expected_revision"]; revision != "" && revision != "7" {
+				status = http.StatusConflict
+			}
+			if status != 0 {
+				w.WriteHeader(status)
+				response = map[string]string{"code": "revision_conflict", "message": "Resource has changed"}
+			} else {
+				response = fixture.issue
+				if strings.HasSuffix(path, "/changes") {
+					response = tracker.ChangeRequest{ID: "change_created"}
+				}
+			}
+		} else {
+			switch path {
+			case "":
+				response = tracker.NativeProject{ID: "prj_example", OrganizationID: "org_example", Profile: "native", States: []tracker.NativeState{{Name: "Todo", Transitions: []string{"In Progress"}}, {Name: "In Progress"}}}
+			case "/labels":
+				response = map[string]any{"items": []tracker.NativeLabel{{Name: "bug", Count: 1}}}
+			case "/work-items":
+				fixture.last = map[string]string{}
+				for key, values := range r.URL.Query() {
+					fixture.last[key] = strings.Join(values, ",")
+				}
+				response = tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{fixture.issue}}
+				if r.URL.Query().Get("include") == "work" {
+					response = tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{fixture.issue}}, Work: &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{fixture.issue}, Lanes: []tracker.NativeWorkLane{{State: "Todo", Total: 1}}}}
+				}
+			case "/work-items/wi_example":
+				response = fixture.issue
+				if r.URL.Query().Get("view") == "recovery" {
+					if r.URL.Query().Get("limit") != "1" || r.URL.Query().Get("cursor") != "retained-cursor" {
+						t.Error("native recovery selectors were dropped")
+					}
+					response = tracker.NativeRecovery{Continuation: &tracker.NativeRecoveryPage{NativeReference: fixture.issue.NativeReference, Section: "discussion", RecordID: "retained-record", Data: []byte("{}"), TotalBytes: 2}}
+				}
+			case "/work-items/wi_visible":
+				response = tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_visible", OrganizationID: "org_example", ProjectID: "prj_example"}, Title: "Visible peer"}
+			case "/work-items/wi_example/history":
+				page := tracker.Page[tracker.CollaborationEvent]{Items: []tracker.CollaborationEvent{}}
+				for _, id := range fixture.issue.Dependencies {
+					page.Items = append(page.Items, tracker.CollaborationEvent{Data: tracker.CollaborationData{RelatedWorkItemID: id}})
+				}
+				response = page
+			case "/work-items/wi_example/comments":
+				response = tracker.Page[tracker.NativeComment]{Items: []tracker.NativeComment{{ID: "cmt_example", Revision: 7, Body: "Discussion <img src=x onerror=unsafe()>", Provenance: &tracker.Provenance{Provider: "github", AuthorID: "contributor"}}}, NextCursor: "next-page"}
+			case "/work-items/wi_example/runtime":
+				response = tracker.NativeRuntimeEvidence{Issue: fixture.issue, ObservedAt: time.Now().UTC(), Selection: "unavailable", Unavailable: []string{"runtime_phase_heartbeat", "historical_scheduler_decision"}}
+			case "/work-items/wi_example/runtime/github-timings":
+				fixture.last = map[string]string{"native_attempt_id": r.URL.Query().Get("native_attempt_id"), "runner_id": r.URL.Query().Get("runner_id")}
+				response = tracker.NativeGitHubTimingEvidence{ProjectID: fixture.issue.ProjectID, WorkItemID: fixture.issue.WorkItemID, AttemptID: r.URL.Query().Get("native_attempt_id"), RunnerID: r.URL.Query().Get("runner_id"), Unavailable: []string{"github_scope_timings"}}
+			case "/work-items/wi_example/attempts":
+				response = tracker.Page[tracker.NativeAttempt]{}
+			case "/work-items/wi_example/changes":
+				response = []tracker.ChangeRequest{}
+			case "/work-items/wi_example/artifacts":
+				response = []map[string]any{{"artifact_id": "artifact_example", "version_id": "version_example", "availability": "available", "kind": "diff", "revision": 1, "expires_at": "2099-01-01T00:00:00Z"}}
+			case "/work-items/wi_example/pull-requests":
+				response = []hubclient.NativePullRequestReference{{Number: 10, URL: "https://github.com/example/repo/pull/10"}}
+			case "/work-items/wi_example/versions/7":
+				response = fixture.issue
+			default:
+				w.WriteHeader(http.StatusNotFound)
+				response = map[string]string{"code": "not_found"}
+			}
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Error(err)
+		}
+	})
+	client, err := hubclient.New(hubclient.Config{URL: "http://hub.test", HTTPClient: &http.Client{Transport: nativeWebTransport{handler: hubHandler}}, TokenSource: func() string { return "hub-operator" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native("org_example", "prj_example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nativeWebServerWithClient(t, native, fixture), fixture
+}
+
+func nativeWebServerWithClient(t *testing.T, native *hubclient.NativeClient, fixture *nativeWebFixture) *web.Server {
+	t.Helper()
+	source, err := hubclient.NewNativeConnector(native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := workflowconfig.Default()
+	workflow.Tracker.Kind = workflowconfig.TrackerHubNative
+	tracked, err := projectfixture.New(project.Config{Project: globalconfig.Project{ID: "native"}, Workflow: workflowconfig.Workflow{Config: workflow}}, project.Dependencies{Scheduling: nativeWebScheduling{source: source}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := testDeps(t)
+	if err := deps.Registry.Set(tracked); err != nil {
+		t.Fatal(err)
+	}
+	backend := openWebTestStore(t)
+	deps.Connector, deps.Store = source, backend
+	fixture.keys = map[string]string{}
+	for _, scope := range []string{"read", "write"} {
+		for _, projectID := range []string{"native", "other"} {
+			key, err := apikey.NewService(backend).Create(context.Background(), apikey.CreateRequest{Name: scope + projectID, Scopes: []string{scope}, ProjectIDs: []string{projectID}, ExpiresIn: "90d"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.keys[scope+projectID] = key.Token
+		}
+	}
+	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: time.Now(), Projects: []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "native", DisplayName: "Native work"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	server, err := web.NewServer(web.Config{StaticDir: "../../static", LookupEnv: func(key string) string {
+		if key == "DETENT_API_TOKEN" {
+			return "web-secret"
+		}
+		return ""
+	}}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := server.Shutdown(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	return server
+}
+
+func TestNativeWorkForms(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, action, revision, path string
+		status                       int
+	}{
+		{"create", "create", "", "/projects/native/issues/new", 303},
+		{"edit", "edit", "7", "/projects/native/issues/wi_example/edit", 303},
+		{"stale issue", "edit", "6", "/projects/native/issues/wi_example/edit", 409},
+		{"workflow", "transition", "7", "/projects/native/issues/wi_example/edit", 303},
+		{"dependency", "dependency", "7", "/projects/native/issues/wi_example/edit", 303},
+		{"comment", "comment", "", "/projects/native/issues/wi_example/edit", 303},
+		{"comment edit", "comment_edit", "7", "/projects/native/issues/wi_example/edit", 303},
+		{"stale comment", "comment_edit", "6", "/projects/native/issues/wi_example/edit", 409},
+		{"linked change", "change", "", "/projects/native/issues/wi_example/edit", 303},
+		{"invalid action", "unknown", "7", "/projects/native/issues/wi_example/edit", 422},
+		{"invalid revision", "edit", "oops", "/projects/native/issues/wi_example/edit", 422},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server, fixture := newNativeWebServer(t)
+			form := url.Values{"action": {tt.action}, "key": {"submission"}, "revision": {tt.revision}, "title": {"Updated title"}, "body": {"My unsaved <script>text</script>"}, "state": {"In Progress"}, "related": {"wi_other"}, "operation": {"add"}, "comment": {"cmt_example"}}
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("Authorization", "Bearer web-secret")
+			res := httptest.NewRecorder()
+			server.Handler().ServeHTTP(res, req)
+			if res.Code != tt.status {
+				t.Fatalf("status = %d, want %d: %s", res.Code, tt.status, res.Body)
+			}
+			if tt.status == 409 {
+				if !strings.Contains(res.Body.String(), "Your text is preserved") || !strings.Contains(res.Body.String(), "My unsaved &lt;script&gt;") {
+					t.Fatalf("conflict lost draft: %s", res.Body)
+				}
+			}
+			if tt.status == 303 {
+				fixture.mu.Lock()
+				defer fixture.mu.Unlock()
+				if fixture.last["idempotency_key"] != "submission" {
+					t.Fatalf("mutation key = %v", fixture.last)
+				}
+				if tt.revision != "" && fixture.last["expected_revision"] != tt.revision {
+					t.Fatalf("revision changed: %v", fixture.last)
+				}
+			}
+		})
+	}
+}
+
+func TestNativeWorkReadAndBrowserAuthorization(t *testing.T) {
+	t.Parallel()
+	server, _ := newNativeWebServer(t)
+	for _, tt := range []struct{ path, want string }{
+		{"/projects/native/issues/new", "New issue"},
+		{"/projects/native/issues/wi_example", "Imported from github"},
+		{"/projects/native/issues/wi_example?cursor=next-page", "First page"},
+		{"/projects/native/issues/wi_example/edit?action=comment_edit&comment=cmt_example", "Edit comment"},
+		{"/projects/native/issues/wi_example/export", "external_references"},
+	} {
+		t.Run(tt.path, func(t *testing.T) {
+			res := httptest.NewRecorder()
+			server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			if res.Code != 200 || !strings.Contains(res.Body.String(), tt.want) {
+				t.Fatalf("response %d: %s", res.Code, res.Body)
+			}
+			if res.Header().Get("Cache-Control") != "no-store" {
+				t.Fatal("native content must not be cached")
+			}
+			if strings.Contains(res.Body.String(), "<script>unsafe()") || strings.Contains(res.Body.String(), "<img src=x") || strings.Contains(res.Body.String(), `href="https://github.com/`) {
+				t.Fatal("unsafe content or manufactured GitHub URL")
+			}
+		})
+	}
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/projects/native/issues/new", nil))
+	match := regexp.MustCompile(`name="form_token" value="([^"]+)"`).FindStringSubmatch(res.Body.String())
+	if len(match) != 2 {
+		t.Fatal("form token missing")
+	}
+	for _, tt := range []struct {
+		name, origin, token string
+		want                int
+	}{
+		{"same origin", "http://example.com", match[1], 303},
+		{"cross origin", "http://attacker.example", match[1], 403},
+		{"missing token", "http://example.com", "", 403},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			form := url.Values{"action": {"create"}, "key": {"browser-submit"}, "title": {"New issue"}, "state": {"Todo"}, "form_token": {tt.token}}
+			req := httptest.NewRequest(http.MethodPost, "/projects/native/issues/new", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("Origin", tt.origin)
+			res := httptest.NewRecorder()
+			server.Handler().ServeHTTP(res, req)
+			if res.Code != tt.want {
+				t.Fatalf("response %d: %s", res.Code, res.Body)
+			}
+		})
+	}
+}
+
+func TestNativeLinkedSourceStatus(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"pending", "complete"} {
+		t.Run(status, func(t *testing.T) {
+			server, fixture := newNativeWebServer(t)
+			fixture.issue.LinkedSource = &tracker.LinkedIssueSource{URL: "https://github.com/acme/orders/issues/12", Status: status}
+			r := httptest.NewRecorder()
+			server.Handler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/projects/native/issues/wi_example", nil))
+			want := "Awaiting source intake"
+			if status == "complete" {
+				want = "Source intake completed"
+			}
+			if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), want) || !strings.Contains(r.Body.String(), `href="https://github.com/acme/orders/issues/12"`) {
+				t.Fatalf("linked issue view: status=%d, missing %s or source link", r.Code, want)
+			}
+		})
+	}
+}
+
+func TestNativeWorkProjectScopes(t *testing.T) {
+	t.Parallel()
+	server, fixture := newNativeWebServer(t)
+	for _, tt := range []struct {
+		path, key, method string
+		status            int
+	}{
+		{"/projects/native/issues/wi_example", "readnative", "GET", 200},
+		{"/projects/native/issues/wi_example", "readother", "GET", 404},
+		{"/projects/native/issues/wi_example/export", "readother", "GET", 404},
+		{"/projects/native/issues/wi_example/changes/change_example", "readother", "GET", 404},
+		{"/projects/native/issues/wi_example/runs/attempt_example", "readother", "GET", 404},
+		{"/projects/native/issues/new", "readnative", "POST", 403},
+		{"/projects/native/issues/new", "writeother", "POST", 403},
+		{"/api/v1/state", "readnative", "GET", 403},
+		{"/api/v1/board/card?project_id=other&issue=hidden", "readnative", "GET", 403},
+		{"/api/v1/board/session/events?project_id=other&issue=hidden", "readnative", "GET", 403},
+		{"/events", "readnative", "GET", 403},
+		{"/?q=hidden", "readnative", "GET", 403},
+	} {
+		t.Run(tt.method+tt.path+tt.key, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			req.Header.Set("Authorization", "Bearer "+fixture.keys[tt.key])
+			res := httptest.NewRecorder()
+			server.Handler().ServeHTTP(res, req)
+			if res.Code != tt.status {
+				t.Fatalf("status %d, want %d: %s", res.Code, tt.status, res.Body)
+			}
+			if len(res.Result().Cookies()) != 0 {
+				t.Fatal("scoped credential received a dashboard credential cookie")
+			}
+		})
+	}
+}
+
+func TestNativeWorkUpstreamErrorsPreserveDraft(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		upstream, want int
+		message        string
+	}{
+		{403, 403, "cannot make this change"},
+		{404, 404, "not found in this project"},
+		{422, 422, "permitted workflow"},
+		{503, 502, "Hub is unavailable"},
+	} {
+		t.Run(strconv.Itoa(tt.upstream), func(t *testing.T) {
+			server, fixture := newNativeWebServer(t)
+			fixture.mu.Lock()
+			fixture.status = tt.upstream
+			fixture.mu.Unlock()
+			form := url.Values{"action": {"edit"}, "key": {"retry-key"}, "revision": {"7"}, "title": {"Keep this title"}, "body": {"Keep this body"}}
+			req := httptest.NewRequest(http.MethodPost, "/projects/native/issues/wi_example/edit", strings.NewReader(form.Encode()))
+			req.Header.Set("Authorization", "Bearer web-secret")
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			res := httptest.NewRecorder()
+			server.Handler().ServeHTTP(res, req)
+			if res.Code != tt.want {
+				t.Fatalf("status = %d, want %d", res.Code, tt.want)
+			}
+			for _, text := range []string{tt.message, "Keep this title", "Keep this body", "retry-key"} {
+				if !strings.Contains(res.Body.String(), text) {
+					t.Fatalf("missing %q in error form", text)
+				}
+			}
+		})
+	}
+}
+
+type nativeWebTransport struct{ handler http.Handler }
+
+func (r nativeWebTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response := httptest.NewRecorder()
+	r.handler.ServeHTTP(response, request)
+	return response.Result(), nil
+}
+
+func TestNativeWorkListProxiesOnlyExplicitCreators(t *testing.T) {
+	t.Parallel()
+	server, fixture := newNativeWebServer(t)
+	for _, tt := range []struct {
+		name, args string
+		status     int
+		createdBy  string
+	}{
+		{"me is refused before the Hub sees it", `{"project_id":"native","created_by":"me"}`, 400, ""},
+		{"explicit principal proxies through", `{"project_id":"native","created_by":"hosted_alice"}`, 200, "hosted_alice"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture.mu.Lock()
+			fixture.last = nil
+			fixture.mu.Unlock()
+			res := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/work_list", tt.args, map[string]string{"Authorization": "Bearer " + fixture.keys["readnative"]})
+			if res.Code != tt.status {
+				t.Fatalf("status %d, want %d: %s", res.Code, tt.status, res.Body)
+			}
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			if tt.createdBy == "" && fixture.last != nil {
+				t.Fatalf("request reached the Hub: %v", fixture.last)
+			}
+			if tt.createdBy != "" && fixture.last["created_by"] != tt.createdBy {
+				t.Fatalf("proxied created_by=%q, want %q", fixture.last["created_by"], tt.createdBy)
+			}
+		})
+	}
+}
