@@ -13,6 +13,10 @@ both hosts. Compute it from recorded history, never the dashboard or completion
 receipt averages. See [Token spend diagnosis](diagnosis.md#token-spend) for the
 authoritative sources, merge definition, and runnable audit queries.
 
+For Hub and Cloud entry credential maintenance, use the
+[key rotation and compromise runbook](key-rotation.md). It distinguishes
+re-keying stored data from revoking credentials exposed in an incident.
+
 ## Stats
 
 The two windows are the trailing 24 hours and seven days, ending at `data_time`.
