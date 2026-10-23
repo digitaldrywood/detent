@@ -48,7 +48,6 @@ func (e *nativeExecution) diagnosticOperation(operation string) func(error) {
 		if err != nil {
 			e.diagnostic.LatestError = diagnosticError(err)
 			e.diagnostic.LatestErrorCode = diagnosticErrorCode(err)
-			return
 		}
 		if e.diagnostic.HostOperation != operation && e.diagnostic.OperationPending {
 			return

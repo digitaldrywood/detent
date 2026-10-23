@@ -398,8 +398,12 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				return
 			}
 			var dropped atomic.Bool
+			var orphanRenewals atomic.Int64
 			baseTransport := h.admin.client.httpClient.Transport
 			h.admin.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(request.URL.Path, "/leases/"+string(original.ID)+"/renew") {
+					orphanRenewals.Add(1)
+				}
 				if (test.hold || test.hiddenDependency) && strings.HasSuffix(request.URL.Path, "/events") {
 					return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"unavailable"}`)), Request: request}, nil
 				}
@@ -453,8 +457,12 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 			}
 			h.claim(t, issue.ID)
 			resumed := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
-			if !sameCompletionLease(resumed.claim.lease, original) || resumed.data.Sequence != sequence || resumed.worktreeState != "dirty" || resumed.worktreeHead != checkpoint.HeadSHA {
-				t.Fatalf("reconnect replaced authority or checkpoint: lease=%s original=%s sequence=%d want=%d", resumed.claim.lease.ID, original.ID, resumed.data.Sequence, sequence)
+			if orphanRenewals.Load() != 0 || sameCompletionLease(resumed.claim.lease, original) || resumed.claim.lease.FencingToken <= original.FencingToken || resumed.data.Sequence != 0 || resumed.worktreeState != "" {
+				t.Fatal("restart adopted an ownerless execution")
+			}
+			recovery := resumed.Recovery()
+			if len(recovery.Attempts) != 1 || recovery.Attempts[0].Sequence < sequence || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Checkpoint.HeadSHA != checkpoint.HeadSHA || recovery.Attempts[0].ClaimReleasedAt == nil {
+				t.Fatal("restart lost the previous checkpoint or retained its lease")
 			}
 			if err := resumed.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 2, HeartbeatAt: time.Now(), Phase: "implementation"}); err != nil {
 				t.Fatal(err)

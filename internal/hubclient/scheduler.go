@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -331,18 +332,57 @@ func (s *Scheduler) RenewClaim(ctx context.Context, issueID string, _ time.Time)
 	return claimedIssue(issue, renewed), nil
 }
 
+func (s *Scheduler) ForgetClaim(issueID string) {
+	s.mu.Lock()
+	claim, ok := s.nativeClaims[issueID]
+	if ok {
+		delete(s.claims, issueID)
+		if claim.execution != nil {
+			claim.execution.cancelExecution(errors.Join(runner.ErrExecutionAuthorityUnavailable, orchestrator.ErrSchedulingClaimLost))
+		}
+	}
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	if claim.execution != nil {
+		if err := claim.execution.CloseWorkers(context.Background()); err != nil {
+			slog.Warn("native worker cleanup failed", "issue_id", issueID, "error", err)
+			return
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if current, ok := s.nativeClaims[issueID]; ok && current.lease.FencingToken == claim.lease.FencingToken {
+		s.forgetNativeClaim(issueID, current, orchestrator.ErrSchedulingClaimLost)
+	}
+}
+
+func (s *Scheduler) forgetNativeClaim(issueID string, claim nativeClaim, cause error) {
+	if execution := claim.execution; execution != nil {
+		execution.cancelExecution(errors.Join(runner.ErrExecutionAuthorityUnavailable, cause))
+	}
+	claim.source.client.slotFreed()
+	delete(s.claims, issueID)
+	delete(s.nativeClaims, issueID)
+	delete(s.claimPolicies, issueID)
+}
+
 func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason string) error {
 	issueID = strings.TrimSpace(issueID)
 	s.mu.Lock()
 	native, isNative := s.nativeClaims[issueID]
 	lease, ok := s.claims[issueID]
 	s.mu.Unlock()
-	if !ok {
+	if !ok && !isNative {
 		// A missing native publisher cannot prove prepared Finish settled.
 		if strings.HasPrefix(issueID, "wi_") {
 			return runner.ErrExecutionAuthorityUnavailable
 		}
 		return nil
+	}
+	if isNative {
+		lease = nativeTrackerLease(native.lease)
 	}
 	var err error
 	if isNative {

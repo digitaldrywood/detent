@@ -251,9 +251,12 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		return errors.Join(ownedArtifact.Release(), releaseCache())
 	}
 	deferred := false
+	var owner runnerpkg.WorkerLifetimeExecution
 	defer func() {
 		if !deferred {
 			runErr = errors.Join(runErr, closeWorker(context.WithoutCancel(ctx)))
+		} else if !responseReceived {
+			runErr = errors.Join(runErr, owner.CloseWorkers(context.WithoutCancel(ctx)))
 		}
 	}()
 	artifact = nil
@@ -261,7 +264,8 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		return result, r.hostFailure("local", errors.Join(childCloseErr, identityErr))
 	}
 	if request.DeferExecutionFinish {
-		owner, ok := request.Execution.(runnerpkg.WorkerLifetimeExecution)
+		var ok bool
+		owner, ok = request.Execution.(runnerpkg.WorkerLifetimeExecution)
 		if !ok {
 			return result, errors.New("claim owner cannot retain an execution worker")
 		}
@@ -287,7 +291,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	var response runnerpkg.SSHRunResponse
 	err = peer.Call(ctx, "run", &response, boot)
 	if err != nil {
-		return response.Result, r.hostFailure("local", fmt.Errorf("execution worker disconnected: %w", errors.Join(err, closeWorker(context.WithoutCancel(ctx)))))
+		return response.Result, r.hostFailure("local", fmt.Errorf("execution worker disconnected: %w", err))
 	}
 	responseReceived = true
 	var reviewErr *runnerpkg.NativeImplementationReviewError

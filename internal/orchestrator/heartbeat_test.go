@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -403,4 +404,30 @@ type heartbeatProcessStore struct {
 
 func (s *heartbeatProcessStore) ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error) {
 	return append([]store.WorkerProcess(nil), s.processes...), nil
+}
+
+func TestHeartbeatClaimLossForgetsSchedulingOwner(t *testing.T) {
+	for _, deferred := range []bool{false, true} {
+		t.Run(strconv.FormatBool(deferred), func(t *testing.T) {
+			cfg := normalizeConfig(Config{})
+			owner := &hubSchedulingSource{}
+			manager := newHeartbeatManager(cfg, nil, nil, time.Now, nil)
+			o := &Orchestrator{cfg: cfg, scheduling: owner, heartbeats: manager}
+			state := newState(cfg)
+			issue := connector.Issue{ID: "issue-lost"}
+			running := Running{Issue: issue}
+			state.Claimed[issue.ID] = Claimed{Issue: issue}
+			if deferred {
+				state.deferredCompletions[issue.ID] = deferredCompletion{Running: running}
+			} else {
+				state.Running[issue.ID] = running
+			}
+			manager.upsert(heartbeatTarget{issueID: issue.ID})
+			sequence := manager.targets[issue.ID].sequence
+			o.handleHeartbeatResult(&state, heartbeatResult{issueID: issue.ID, sequence: sequence, claimOwnerLost: true})
+			if len(owner.forgotten) != 1 || owner.forgotten[0] != issue.ID || len(state.Claimed) != 0 || len(state.Running) != 0 || len(state.deferredCompletions) != 0 || manager.current(issue.ID, sequence) {
+				t.Fatal("claim loss retained scheduling or heartbeat ownership")
+			}
+		})
+	}
 }

@@ -2238,6 +2238,9 @@ func (o *Orchestrator) retryDelay(attempt int, continuation bool) time.Duration 
 }
 
 func (o *Orchestrator) releaseClaim(state *State, issueID string) {
+	if owner, ok := o.scheduling.(interface{ ForgetClaim(string) }); ok {
+		owner.ForgetClaim(issueID)
+	}
 	o.cancelRunning(state, issueID, "orchestrator.release_claim")
 	o.heartbeats.remove(issueID)
 	delete(state.Running, issueID)

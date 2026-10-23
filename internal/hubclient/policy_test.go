@@ -459,7 +459,7 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 			if test.wantError {
 				id := "wi_" + strings.Repeat("a", 32)
 				lease := tracker.NativeLease{WorkItemID: tracker.NativeWorkItemID(id), PolicyID: test.local.ID, FencingToken: 1}
-				scheduler.nativeClaims[id] = nativeClaim{source: scheduler.nativeProjects["site"], lease: lease}
+				scheduler.nativeClaims[id] = nativeClaim{source: scheduler.nativeProjects["site"], lease: lease, execution: &nativeExecution{cancel: func(error) {}}}
 				scheduler.claims[id] = nativeTrackerLease(lease)
 				scheduler.claimPolicies[id] = claimPolicy{project: "site", descriptor: test.local}
 				scheduler.nativeHeartbeats["prj_site"] = scheduler.now()

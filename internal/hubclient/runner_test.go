@@ -567,6 +567,16 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Run("stale fencing token remains fatal", func(t *testing.T) {
+		worker := scheduler.RunExecution(string(issue.WorkItemID)).(*nativeExecution)
+		if err := worker.KeepWorker(func(context.Context) error { return nil }, nil); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := worker.CloseWorkers(t.Context()); err != nil {
+				t.Error(err)
+			}
+		}()
+
 		stale, err := NewScheduler(client, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second})
 		if err != nil {
 			t.Fatal(err)
@@ -612,10 +622,10 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	resumedLease := resumedScheduler.nativeClaims[string(issue.WorkItemID)].lease
-	if resumedLease.ID != retained.ID || resumedLease.FencingToken != retained.FencingToken {
-		t.Fatalf("incomplete interruption replaced reconnect authority: old=%+v new=%+v", retained, resumedLease)
+	if resumedLease.ID == retained.ID || resumedLease.FencingToken <= retained.FencingToken {
+		t.Fatalf("restart retained orphaned authority: old=%+v new=%+v", retained, resumedLease)
 	}
-	t.Log("genuine incomplete interruption retained its original lease/fence on reconnect")
+	t.Log("restart released orphaned authority and obtained a fresh lease")
 	resumedExecution := resumedScheduler.RunExecution(string(issue.WorkItemID))
 	if resumedExecution == nil {
 		t.Fatal("resumed claim has no native execution")
@@ -833,7 +843,7 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		case strings.HasSuffix(r.URL.Path, "/validate"):
 			_ = json.NewEncoder(w).Encode(runnerauth.Runner{})
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/work-items/wi_example"):
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/work-items/"):
 			_ = json.NewEncoder(w).Encode(tracker.NativeIssue{SchedulingEligible: new(true)})
 		case strings.HasSuffix(r.URL.Path, "/renew"):
 			var mutation tracker.NativeLeaseMutation
@@ -868,7 +878,8 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 	scheduler.nativeHeartbeats["prj_free"] = time.Now().Add(time.Hour)
 	free := scheduler.nativeProjects["free"]
 	install := func(id, policyID string, token tracker.FencingToken) nativeClaim {
-		claim := nativeClaim{source: free, lease: tracker.NativeLease{ID: "lease", WorkItemID: "wi_example", PolicyID: policyID, FencingToken: token}}
+		claim := nativeClaim{source: free, lease: tracker.NativeLease{ID: "lease", WorkItemID: tracker.NativeWorkItemID(id), PolicyID: policyID, FencingToken: token}}
+		claim.execution = &nativeExecution{scheduler: scheduler, claim: claim, workers: []func(context.Context) error{func(context.Context) error { return nil }}}
 		scheduler.mu.Lock()
 		defer scheduler.mu.Unlock()
 		scheduler.nativeClaims[id] = claim
@@ -899,13 +910,14 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 		{name: "superseded fencing token cannot reinstall", policyID: approved.ID, renewed: 1, current: 2, wantLost: true, wantToken: 2, retained: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			stale := install(tc.name, tc.policyID, tc.renewed)
+			id := "wi_" + strings.ReplaceAll(tc.name, " ", "_")
+			stale := install(id, tc.policyID, tc.renewed)
 			if tc.current != tc.renewed {
-				install(tc.name, tc.policyID, tc.current)
+				install(id, tc.policyID, tc.current)
 			}
 			result := make(chan error, 1)
 			go func() {
-				_, err := scheduler.renewNativeClaim(ctx, tc.name, stale, 0)
+				_, err := scheduler.renewNativeClaim(ctx, id, stale, 0)
 				result <- err
 			}()
 			select {
@@ -916,8 +928,16 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("lease renewal waited on another project's machine report")
 			}
+			if tc.wantLost && tc.current == tc.renewed {
+				if _, held := scheduler.claims[id]; held {
+					t.Fatal("refused policy retained renewal authority")
+				}
+				if err := stale.execution.CloseWorkers(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
 			scheduler.mu.Lock()
-			current, ok := scheduler.nativeClaims[tc.name]
+			current, ok := scheduler.nativeClaims[id]
 			scheduler.mu.Unlock()
 			if ok != tc.retained || ok && current.lease.FencingToken != tc.wantToken {
 				t.Fatalf("claim after renewal = %+v, present %t", current.lease, ok)

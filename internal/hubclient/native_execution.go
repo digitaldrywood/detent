@@ -48,6 +48,7 @@ type nativeExecution struct {
 	pending           *tracker.NativeRunEvent
 	observations      []tracker.NativeRunEvent
 	cancel            context.CancelCauseFunc
+	finalizing        int
 	// diffSource computes the stored attempt diff the execution posts before
 	// every checkpoint and before the finish (decisions section 18.5). It is
 	// nil for a run with no worktree to describe.
@@ -109,7 +110,7 @@ func (e *nativeExecution) hasWorkers() bool {
 	return len(e.workers) > 0
 }
 
-func (e *nativeExecution) closeWorkers(ctx context.Context) error {
+func (e *nativeExecution) CloseWorkers(ctx context.Context) error {
 	e.workerCloseMu.Lock()
 	defer e.workerCloseMu.Unlock()
 	e.workerMu.Lock()
@@ -128,7 +129,20 @@ func (e *nativeExecution) closeWorkers(ctx context.Context) error {
 	if len(e.workers) == 0 {
 		e.workerLauncher = nil
 	}
+	closed := len(e.workers) == 0
 	e.workerMu.Unlock()
+	e.cancelMu.Lock()
+	finalizing := e.finalizing > 0
+	e.cancelMu.Unlock()
+	if closed && !finalizing {
+		e.scheduler.mu.Lock()
+		issueID := string(e.claim.lease.WorkItemID)
+		current, exists := e.scheduler.nativeClaims[issueID]
+		if _, held := e.scheduler.claims[issueID]; !held && exists && current.lease.FencingToken == e.claim.lease.FencingToken {
+			e.scheduler.forgetNativeClaim(issueID, current, orchestrator.ErrSchedulingClaimLost)
+		}
+		e.scheduler.mu.Unlock()
+	}
 	return errors.Join(failures...)
 }
 
@@ -306,14 +320,18 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	}, nil
 }
 
-func (e *nativeExecution) unavailable(err error) error {
-	cause := errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+func (e *nativeExecution) cancelExecution(cause error) {
 	e.cancelMu.Lock()
 	cancel := e.cancel
 	e.cancelMu.Unlock()
 	if cancel != nil {
 		cancel(cause)
 	}
+}
+
+func (e *nativeExecution) unavailable(err error) error {
+	cause := errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+	e.cancelExecution(cause)
 	return cause
 }
 
@@ -478,8 +496,20 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 	return nil
 }
 
+func (e *nativeExecution) ownFinalization() func() {
+	e.cancelMu.Lock()
+	e.finalizing++
+	e.cancelMu.Unlock()
+	return func() {
+		e.cancelMu.Lock()
+		e.finalizing--
+		e.cancelMu.Unlock()
+	}
+}
+
 func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessage string, failure *tracker.NativeTerminalFailure) (err error) {
 	e.mu.Lock()
+	defer e.ownFinalization()()
 	defer func() {
 		e.mu.Unlock()
 		if err == nil {
@@ -619,6 +649,7 @@ func (e *nativeExecution) preparedFinalization() *tracker.NativeFinalization {
 
 func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 	e.mu.Lock()
+	defer e.ownFinalization()()
 	previous := e.data.Outcome
 	err := e.finish(ctx, outcome)
 	refresh := previous == "" && e.data.Outcome != ""
@@ -690,6 +721,7 @@ func (e *nativeExecution) finalizationFailure(err error) *tracker.NativeTerminal
 }
 
 func (e *nativeExecution) finishPrepared(ctx context.Context) error {
+	defer e.ownFinalization()()
 	e.mu.Lock()
 	outcome := e.preparedOutcome
 	finished := e.data.Outcome != ""
@@ -725,7 +757,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 			}
 		}
 	}
-	if err := e.closeWorkers(ctx); err != nil {
+	if err := e.CloseWorkers(ctx); err != nil {
 		return errors.Join(finishErr, err)
 	}
 	e.mu.Lock()

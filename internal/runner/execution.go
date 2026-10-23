@@ -35,6 +35,7 @@ type Execution interface {
 }
 
 type WorkerLifetimeExecution interface {
+	CloseWorkers(context.Context) error
 	KeepWorker(func(context.Context) error, func(context.Context, RunRequest) (RunResult, error)) error
 	WorkerLauncher() func(context.Context, RunRequest) (RunResult, error)
 }

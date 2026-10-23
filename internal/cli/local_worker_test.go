@@ -619,6 +619,9 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
 		}
+		if owner := scheduler.RunExecution(failed.issue.ID).(runnerpkg.WorkerLifetimeExecution); owner.WorkerLauncher() != nil {
+			t.Fatal("failed worker retained its launch and cleanup ownership")
+		}
 		if err := connection.UpdateIssueState(ctx, failed.issue.ID, "Done"); err != nil {
 			t.Fatal(err)
 		}
@@ -652,6 +655,9 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("credential revocation did not stop active execution")
+	}
+	if owner := revoked.request.Execution.(runnerpkg.WorkerLifetimeExecution); owner.WorkerLauncher() != nil {
+		t.Fatal("claim-lost worker retained its cleanup ownership")
 	}
 	if alive, err := procgroup.Alive(revoked.identity); err != nil || alive {
 		t.Fatalf("revoked worker survived cleanup: %t %v", alive, err)

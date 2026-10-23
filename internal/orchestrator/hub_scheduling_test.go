@@ -504,6 +504,7 @@ func TestHubSchedulingHeartbeatPreservesClaimedIssue(t *testing.T) {
 }
 
 type hubSchedulingSource struct {
+	forgotten       []string
 	admission       tracker.NativeAdmissionContext
 	execution       runpkg.Execution
 	issues          []connector.Issue
@@ -585,6 +586,10 @@ func (s *hubSchedulingSource) AdoptClaim(_ context.Context, issue connector.Issu
 
 func (s *hubSchedulingSource) RenewClaim(_ context.Context, _ string, _ time.Time) (Claimed, error) {
 	return Claimed{}, nil
+}
+
+func (s *hubSchedulingSource) ForgetClaim(issueID string) {
+	s.forgotten = append(s.forgotten, issueID)
 }
 
 func (s *hubSchedulingSource) ReleaseClaim(_ context.Context, _ string, _ string) error {

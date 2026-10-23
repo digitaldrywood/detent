@@ -180,9 +180,6 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 		t.Fatalf("claim = %#v, error = %v", claim, err)
 	}
 	exerciseNativeExecution(t, scheduler, native, issue.ID)
-	if _, err := scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); err != nil {
-		t.Fatal(err)
-	}
 	if err := conn.UpdateIssueState(t.Context(), issue.ID, "In Progress"); err != nil {
 		t.Fatal(err)
 	}
