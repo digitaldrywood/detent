@@ -284,9 +284,9 @@ that behavioral test references exist without duplicate package groups. The
 full behavioral invariant manifest executes only in the scheduled suite.
 Full browser, integration, race, coverage, fuzz, NilAway and generated-output validation
 run in the full suite: hourly on pinned `develop` commits, and on every
-dispatch to `release/*`; pushes to a release branch do not start it. Develop receives one full suite per SHA across
-scheduled and manual runs. Develop preflight skips completed non-cancelled
-runs regardless of conclusion; manual `force: true` or a non-`none` `fail_job`
+dispatch to `release/*`; pushes to a release branch do not start it. Develop skips repeat full suites for a SHA only after a successful run across
+scheduled and manual runs. Develop preflight deduplicates only completed
+runs with conclusion `success`; manual `force: true` or a non-`none` `fail_job`
 runs it again. The finalizer reports skipped scheduled activity without
 publishing green validation or release evidence. Release runs always validate
 their event SHA, independently of

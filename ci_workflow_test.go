@@ -80,6 +80,28 @@ func TestMakeTestTargetsIsolateAPIToken(t *testing.T) {
 	}
 }
 
+func TestCIPreflightDeduplicatesOnlySuccessfulRuns(t *testing.T) {
+	t.Parallel()
+
+	preflight := workflowBetween(t, readNormalizedFile(t, ".github/workflows/ci.yml"), "  preflight:", "\n  invariants:")
+	for _, test := range []struct {
+		name string
+		want string
+	}{
+		{name: "successful prior run", want: `and .conclusion == "success"`},
+		{name: "exclude current run", want: `(.id | tostring) != $current_run_id`},
+		{name: "force and release bypass", want: `if [[ "$force" == true || -n "$release_branch" ]]; then`},
+		{name: "failure injection forces run", want: "if [[ \"$FAIL_JOB\" != none ]]; then\n            force=true"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if !strings.Contains(preflight, test.want) {
+				t.Fatalf("CI preflight missing %q", test.want)
+			}
+		})
+	}
+}
+
 func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
 	t.Parallel()
 
