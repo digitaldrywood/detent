@@ -118,7 +118,7 @@ func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 		if len(statements) == 0 {
 			t.Fatal("background expiry refresh recorded no query")
 		}
-		plan := explainQueryPlan(t, f.service.database.reader, statements[0], []any{now.UTC().Format("2006-01-02T15:04:05.000000000Z")})
+		plan := explainQueryPlan(t, f.service.database.reader, statements[0], []any{1, now.UTC().Format("2006-01-02T15:04:05.000000000Z"), 1})
 		indexed := false
 		for _, detail := range plan {
 			if strings.Contains(detail, "SCAN native_board_items") || strings.Contains(detail, "TEMP B-TREE") {

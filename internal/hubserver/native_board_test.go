@@ -974,4 +974,26 @@ func TestNativeBoardRefreshSkipsFailingCard(t *testing.T) {
 	if err != nil || !slices.Equal(dirty, []string{string(broken)}) {
 		t.Fatalf("a failing card blocked the remaining refreshes: dirty=%v err=%v", dirty, err)
 	}
+	want := []string{string(broken)}
+	for i := range 65 {
+		id := fmt.Sprintf("wi_00000000000000000000000000000%03d", i)
+		want = append(want, id)
+		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_board_items SELECT ?,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json FROM native_board_items WHERE work_item_id=?`, id, broken); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO native_board_dirty(work_item_id) VALUES(?)", id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	slices.Sort(want)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT OR IGNORE INTO native_board_dirty(work_item_id) VALUES(?)", healthy); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		f.service.maintainNativeBoard(t.Context())
+		dirty, err = nativePageIDs(t.Context(), f.service.database.reader, "SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id")
+		if err != nil || !slices.Equal(dirty, want) {
+			t.Fatalf("persistent failures starved a later healthy card: dirty=%d want=%d err=%v", len(dirty), len(want), err)
+		}
+	}
 }
