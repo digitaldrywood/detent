@@ -9,12 +9,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -257,6 +259,60 @@ func TestAppSharedEntry(t *testing.T) {
 			t.Fatalf("status = %d: %s", response.Code, response.Body.String())
 		}
 	})
+	for _, test := range []struct {
+		name       string
+		acceptedBy string
+		status     int
+	}{
+		{name: "bootstrap completes provider-accepted invitation", acceptedBy: "user_joiner", status: http.StatusOK},
+		{name: "bootstrap refuses invitation accepted by another user", acceptedBy: "user_other", status: http.StatusForbidden},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now().UTC().Truncate(time.Second)
+			subject := "user_joiner_" + strconv.Itoa(test.status)
+			acceptedBy := test.acceptedBy
+			if acceptedBy == "user_joiner" {
+				acceptedBy = subject
+			}
+			email := subject + "@example.test"
+			joiner := hostedSecurityUser{identity: auth.Identity{Subject: subject, Email: email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: subject, OrganizationID: "org_provider", SessionID: "session_" + subject, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}}}
+			id := "invitation_" + subject
+			f.provider.mu.Lock()
+			f.provider.sessions[joiner.identity.Hosted.SessionID] = *joiner.identity.Hosted
+			f.provider.invitations[id] = auth.Invitation{ID: id, Email: email, OrganizationID: "org_provider", State: "accepted", AcceptedUserID: acceptedBy, ExpiresAt: now.Add(time.Hour)}
+			f.provider.mu.Unlock()
+			if _, err := f.provider.CreateMembership(t.Context(), subject, "org_provider", "admin"); err != nil {
+				t.Fatal(err)
+			}
+			grants := `[{"project_id":"` + string(f.project) + `","write":true,"runner":false}]`
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at,expires_at,grants_json) VALUES (?,?,'org_security','admin',?,?,?)", id, email, formatHubTime(now), now.Add(time.Hour).Format(time.RFC3339), grants); err != nil {
+				t.Fatal(err)
+			}
+			response := f.serve(t, hostedSharedRequest{user: &joiner, target: prefix + "/app/bootstrap"})
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body.String())
+			}
+			var members, accepted int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_members WHERE user_id = ? AND active = 1 AND role = 'admin'", subject).Scan(&members); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_invitations WHERE id = ? AND accepted_user_id = ?", id, subject).Scan(&accepted); err != nil {
+				t.Fatal(err)
+			}
+			want := 0
+			if test.status == http.StatusOK {
+				want = 1
+				var payload appBootstrap
+				decodeHubResponse(t, response, &payload)
+				if payload.Actor.Role != "admin" || len(payload.Projects) != 1 {
+					t.Fatalf("bootstrap = %#v", payload)
+				}
+			}
+			if members != want || accepted != want {
+				t.Fatalf("members = %d, accepted = %d, want %d", members, accepted, want)
+			}
+		})
+	}
 	t.Run("updates", func(t *testing.T) {
 		if response := f.serve(t, hostedSharedRequest{user: &member, target: prefix + "/app/updates"}); response.Code != http.StatusNotFound {
 			t.Fatalf("ungranted status = %d: %s", response.Code, response.Body.String())

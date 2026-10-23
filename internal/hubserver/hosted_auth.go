@@ -129,10 +129,15 @@ func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCred
 	}
 	var credential apiCredential
 	var status int
-	if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindBrowser {
-		credential, status, err = s.hostedSharedCredential(ctx, session, hash, claims.Role)
-	} else {
-		credential, status, err = s.hostedSessionCredential(ctx, session, hash)
+	read := func() (apiCredential, int, error) {
+		if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindBrowser {
+			return s.hostedSharedCredential(ctx, session, hash, claims.Role)
+		}
+		return s.hostedSessionCredential(ctx, session, hash)
+	}
+	credential, status, err = read()
+	if status == http.StatusForbidden && s.completePendingHostedInvitation(ctx, session) {
+		credential, status, err = read()
 	}
 	if err == nil {
 		c.Set("hub_api_credential", credential)
@@ -164,6 +169,30 @@ func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Sessi
 	}
 	membership.Role.Slug = lesserHostedRole(role, local)
 	return s.hostedMemberCredential(ctx, session, hash, membership)
+}
+
+// completePendingHostedInvitation finishes an invitation the provider accepted
+// but whose tenant membership was never written, such as a join interrupted
+// between the provider acceptance and the tenant transaction. The acceptance
+// path re-verifies the provider invitation, subject, membership and role, and
+// its conditional update admits one acceptance, so no shared lock is held
+// across the provider calls. It reports whether a pending invitation existed,
+// since a concurrent request may have completed it first.
+func (s *Service) completePendingHostedInvitation(ctx context.Context, session auth.Session) bool {
+	if session.Identity == nil || session.Identity.SupportActor != "" || session.Email == "" || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
+		return false
+	}
+	readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	var id string
+	err := s.database.reader.QueryRowContext(readCtx, "SELECT id FROM hosted_invitations WHERE email = ? AND organization_id = ? AND accepted_user_id = '' AND (expires_at = '' OR expires_at > ?) ORDER BY rowid DESC LIMIT 1", strings.ToLower(session.Email), s.config.Hosted.OrganizationID, s.config.now().UTC().Format(time.RFC3339)).Scan(&id)
+	cancel()
+	if err != nil {
+		return false
+	}
+	if err := s.acceptHostedInvitationIDFor(ctx, auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}, id); err != nil {
+		s.config.Logger.Warn("pending invitation completion refused", "invitation", id, "error", err)
+	}
+	return true
 }
 
 // lesserHostedRole returns the less privileged of two organization roles, so

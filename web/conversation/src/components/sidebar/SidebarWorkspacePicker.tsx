@@ -230,7 +230,7 @@ function AccountWorkspacePicker({ account }: { readonly account: AccountBootstra
       pending={switchTo.pending || signOut.pending}
       loading={isShared && shared.loading}
       error={listingError ?? switchTo.error?.message ?? signOut.error?.message ?? null}
-      onSignOut={account.actor.role === "reporter" ? () => void signOut.call() : undefined}
+      onSignOut={() => void signOut.call()}
       signInHref={sessionEnded ? SIGN_IN_ORGANIZATIONS : undefined}
       addHref={isShared ? ENTRY_CREATE_ORGANIZATION : "/organization"}
       platformHref={account.actor.platform_role ? PLATFORM : undefined}
