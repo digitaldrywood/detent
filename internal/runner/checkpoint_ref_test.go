@@ -84,8 +84,7 @@ func TestCheckpointRefsPushAfterCompletedTurn(t *testing.T) {
 	}
 	defer refs.halt()
 	refs.requestPush()
-	waitCtx, cancelWait := testenv.WaitContext(t)
-	defer cancelWait()
+	waitCtx := testenv.WaitContext(t, t.Context())
 	select {
 	case checkpoint := <-recorded:
 		if !checkpoint.GitRef() || checkpoint.CommitSHA != strings.Repeat("c", 40) || checkpoint.WorktreeState != "dirty" {
