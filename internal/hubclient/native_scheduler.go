@@ -866,9 +866,9 @@ func (s *Scheduler) nativeClaimError(issueID string, token tracker.FencingToken,
 			if execution := current.execution; execution != nil {
 				err = execution.unavailable(err)
 				execution.cancelMu.Lock()
-				finalizing := execution.finalizing > 0
+				publicationPending := execution.finalizing > 0 || execution.deferredPublication
 				execution.cancelMu.Unlock()
-				if execution.hasWorkers() || finalizing {
+				if execution.hasWorkers() || publicationPending {
 					s.mu.Unlock()
 					return errors.Join(orchestrator.ErrSchedulingClaimLost, err)
 				}

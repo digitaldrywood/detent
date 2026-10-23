@@ -134,9 +134,9 @@ func (e *nativeExecution) CloseWorkers(ctx context.Context) error {
 	closed := len(e.workers) == 0
 	e.workerMu.Unlock()
 	e.cancelMu.Lock()
-	finalizing := e.finalizing > 0
+	publicationPending := e.finalizing > 0 || e.deferredPublication
 	e.cancelMu.Unlock()
-	if closed && !finalizing {
+	if closed && !publicationPending {
 		e.scheduler.mu.Lock()
 		issueID := string(e.claim.lease.WorkItemID)
 		current, exists := e.scheduler.nativeClaims[issueID]

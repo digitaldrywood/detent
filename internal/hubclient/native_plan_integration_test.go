@@ -158,6 +158,8 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 	for _, test := range []struct {
 		name             string
 		abandon          bool
+		staleRenewal     bool
+		closeWorkers     bool
 		failure          string
 		planRecoveryRole string
 		resumeCase       string
@@ -165,6 +167,8 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 		{name: "automatic handoff"},
 		{name: "workspace hook failure before provider", failure: "workspace"},
 		{name: "abandon deferred planner and recover", abandon: true},
+		{name: "abandon deferred planner after stale renewal", abandon: true, staleRenewal: true},
+		{name: "abandon deferred planner after revoked worker cleanup", abandon: true, staleRenewal: true, closeWorkers: true},
 		{name: "provider failure settles before lease retirement", failure: "provider"},
 		{name: "refused start retains fenced accounting", failure: "refused"},
 		{name: "owned cleanup failure after a finished turn keeps finished work", failure: "cleanup"},
@@ -180,12 +184,12 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 			if test.failure != "workspace" {
 				t.Parallel()
 			}
-			testNativePlannerHandoff(t, test.abandon, test.failure, test.planRecoveryRole, test.resumeCase)
+			testNativePlannerHandoff(t, test.abandon, test.staleRenewal, test.closeWorkers, test.failure, test.planRecoveryRole, test.resumeCase)
 		})
 	}
 }
 
-func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryRole, resumeCase string) {
+func testNativePlannerHandoff(t *testing.T, abandon, staleRenewal, closeWorkers bool, failure, planRecoveryRole, resumeCase string) {
 	t.Helper()
 	planningRecovery := planRecoveryRole != ""
 	manualCheckpoint := failure == "recovery" && resumeCase == ""
@@ -404,7 +408,9 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		orchCfg.PollInterval = time.Hour
 		runBackend = &nativePlanObservedRunner{Runner: agent, observed: observed}
 	}
-	orch, err := orchestrator.New(orchCfg, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: runBackend, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	scheduling := &nativePlanScheduling{Scheduler: h.scheduler, renewal: make(chan struct{}, 1)}
+	scheduling.renewal <- struct{}{}
+	orch, err := orchestrator.New(orchCfg, orchestrator.Dependencies{Connector: h.connector, Scheduling: scheduling, Runner: runBackend, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,12 +455,61 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		if err := orch.UpdateRuntime(t.Context(), orchestrator.RuntimeUpdate{Config: heldConfig}); err != nil {
 			t.Fatal(err)
 		}
+		select {
+		case <-scheduling.renewal:
+		case <-testenv.WaitContext(t, t.Context()).Done():
+			t.Fatal("background renewal did not finish before explicit lease release")
+		}
+		renewalHeld := true
+		defer func() {
+			if renewalHeld {
+				scheduling.renewal <- struct{}{}
+			}
+		}()
 		// Replay Cloud's missing lease followed by supported local abandon.
 		h.scheduler.mu.Lock()
 		lease := h.scheduler.nativeClaims[issue.ID].lease
 		h.scheduler.mu.Unlock()
 		if err := h.native.Release(t.Context(), lease, "completed"); err != nil {
 			t.Fatal(err)
+		}
+		if staleRenewal {
+			h.scheduler.mu.Lock()
+			claim := h.scheduler.nativeClaims[issue.ID]
+			h.scheduler.mu.Unlock()
+			workerClosed := make(chan struct{}, 1)
+			if closeWorkers {
+				if err := claim.execution.KeepWorker(func(context.Context) error {
+					workerClosed <- struct{}{}
+					return nil
+				}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, renewalErr := h.native.Renew(t.Context(), lease, 60)
+			if renewalErr == nil {
+				t.Fatal("released lease renewed")
+			}
+			if err := h.scheduler.nativeClaimError(issue.ID, lease.FencingToken, renewalErr); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+				t.Fatalf("stale renewal = %v", err)
+			}
+			if closeWorkers {
+				if err := claim.execution.CloseWorkers(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-workerClosed:
+				default:
+					t.Fatal("revoked publisher worker was not closed")
+				}
+			}
+			h.scheduler.mu.Lock()
+			_, renewing := h.scheduler.claims[issue.ID]
+			retained := h.scheduler.nativeClaims[issue.ID].execution
+			h.scheduler.mu.Unlock()
+			if renewing || retained != claim.execution {
+				t.Fatalf("revoked deferred publisher: renewing=%v retained=%v", renewing, retained == claim.execution)
+			}
 		}
 		response, err := orch.RecoverWorkAttempt(t.Context(), orchestrator.WorkAttemptRecoveryRequest{ProjectID: "local", AttemptID: attempts[0].ID, Action: orchestrator.WorkAttemptRecoveryAbandon, Confirm: true, Reason: "native planner succeeded but its lease ended", Operator: "ops"})
 		if err != nil || response.Attempt.TerminalState != string(store.WorkAttemptTerminalAbandoned) {
@@ -476,6 +531,14 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		default:
 			t.Fatal("abandon completed without acknowledging planner termination")
 		}
+		h.scheduler.mu.Lock()
+		_, retained := h.scheduler.nativeClaims[issue.ID]
+		h.scheduler.mu.Unlock()
+		if retained {
+			t.Fatal("settled planner publisher was not retired")
+		}
+		renewalHeld = false
+		scheduling.renewal <- struct{}{}
 		current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
 		if err != nil {
 			t.Fatal(err)
@@ -746,6 +809,21 @@ func (a *nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnR
 		return result, errors.Join(err, &codex.ResponseError{Request: "turn/start", Code: -32602, Message: "input_too_large", Body: `{"error":{"code":-32602,"message":"private-prompt","data":{"code":"input_too_large","max_chars":1048576,"actual_chars":2927066,"prompt":"private-prompt","token":"private-secret","path":"/private/source","other":"private-rpc-data"}}}`})
 	}
 	return result, err
+}
+
+type nativePlanScheduling struct {
+	*Scheduler
+	renewal chan struct{}
+}
+
+func (s *nativePlanScheduling) RenewClaim(ctx context.Context, issueID string, now time.Time) (orchestrator.Claimed, error) {
+	select {
+	case <-s.renewal:
+		defer func() { s.renewal <- struct{}{} }()
+		return s.Scheduler.RenewClaim(ctx, issueID, now)
+	case <-ctx.Done():
+		return orchestrator.Claimed{}, ctx.Err()
+	}
 }
 
 type nativePlanFinish struct {
