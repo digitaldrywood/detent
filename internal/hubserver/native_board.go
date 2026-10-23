@@ -19,6 +19,7 @@ import (
 const nativeBoardReplayLimit = 2048
 
 func (s *Service) maintainNativeBoard(ctx context.Context) {
+	ctx = s.runDetailContext(ctx)
 	deadline := time.Now().Add(analyticsBackfillBudget)
 	var failed []string
 	for time.Now().Before(deadline) && ctx.Err() == nil {

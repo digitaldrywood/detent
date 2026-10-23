@@ -27,7 +27,7 @@ func (s *Service) startHealthDetector() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := s.evaluateTenantHealth(ctx); err != nil && ctx.Err() == nil {
+				if err := s.evaluateTenantHealth(s.runDetailContext(ctx)); err != nil && ctx.Err() == nil {
 					s.config.Logger.Warn("health detector evaluation failed", "error", err)
 				}
 			}
