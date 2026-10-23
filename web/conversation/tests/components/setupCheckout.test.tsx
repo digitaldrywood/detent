@@ -256,7 +256,8 @@ it.each(["no repository", "configuration needed", "policy pending", "policy repo
   mount();
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /^.*Repository (ready|action required)$/ }));
-  expect(await screen.findByLabelText("Search or type owner/name")).toBeTruthy();
+  const repositoryPicker = await screen.findByRole("combobox", { name: "Search or type owner/name" });
+  expect(repositoryPicker.getAttribute("aria-expanded")).toBe(state === "no repository" ? "true" : "false");
   await user.click(screen.getByRole("button", { name: /Checkout/ }));
   expect(approveRequests).toEqual([]);
   expect(screen.queryByLabelText("Resolved policy descriptor")).toBeNull();
