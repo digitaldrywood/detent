@@ -1,0 +1,43 @@
+package primitives
+
+// FirstRun is the only empty state allowed an accent action: nothing is
+// configured yet, so the page centers one sentence, one button, and an
+// optional dim hint.
+templ FirstRun(message string, actionLabel string, actionHref string, hint string) {
+	<div class="grid flex-1 place-items-center">
+		<div class="flex flex-col items-center gap-3">
+			<p class="text-sm text-sec">{ message }</p>
+			if actionLabel != "" {
+				<a href={ templ.SafeURL(actionHref) } class="rounded-card bg-accent px-3.5 py-1.5 text-xs font-medium text-page hover:opacity-90">{ actionLabel }</a>
+			}
+			if hint != "" {
+				<p class="text-2xs text-dim">{ hint }</p>
+			}
+		</div>
+	</div>
+}
+
+// SkeletonLanes mirrors the real lane structure on first paint only —
+// never on SSE ticks. The dt-skeleton pulse freezes under
+// prefers-reduced-motion.
+templ SkeletonLanes(lanes int) {
+	<div class="flex min-h-0 flex-1 gap-3 overflow-hidden px-5 pb-5 pt-4" aria-hidden="true" data-skeleton>
+		for range lanes {
+			<div class="flex min-w-44 flex-1 flex-col gap-2 rounded-card border border-line bg-surface p-2">
+				<div class="dt-skeleton h-2.5 w-3/5"></div>
+				<div class="dt-skeleton h-13 w-full"></div>
+				<div class="dt-skeleton h-13 w-full"></div>
+			</div>
+		}
+	</div>
+}
+
+// SkeletonPanel mirrors a panel with a few rows on first paint only.
+templ SkeletonPanel(rows int) {
+	<div class="flex flex-none flex-col gap-2 rounded-card border border-line bg-surface p-3" aria-hidden="true" data-skeleton>
+		<div class="dt-skeleton h-2.5 w-2/5"></div>
+		for range rows {
+			<div class="dt-skeleton h-10 w-full"></div>
+		}
+	</div>
+}
