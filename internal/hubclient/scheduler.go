@@ -348,8 +348,8 @@ func (s *Scheduler) ForgetClaim(issueID string) {
 	if claim.execution != nil {
 		if err := claim.execution.CloseWorkers(context.Background()); err != nil {
 			slog.Warn("native worker cleanup failed", "issue_id", issueID, "error", err)
-			return
 		}
+		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -2245,10 +2245,11 @@ func (o *Orchestrator) releaseClaim(state *State, issueID string) {
 	o.heartbeats.remove(issueID)
 	delete(state.Running, issueID)
 	delete(state.Claimed, issueID)
-	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
-	delete(state.PriorAttempts, issueID)
-	delete(state.deferredCompletions, issueID)
+	if _, deferred := state.deferredCompletions[issueID]; !deferred {
+		delete(state.Retry, issueID)
+		delete(state.PriorAttempts, issueID)
+	}
 }
 
 func (o *Orchestrator) completeTerminalRunning(

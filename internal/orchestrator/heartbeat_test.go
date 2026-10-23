@@ -419,14 +419,18 @@ func TestHeartbeatClaimLossForgetsSchedulingOwner(t *testing.T) {
 			state.Claimed[issue.ID] = Claimed{Issue: issue}
 			if deferred {
 				state.deferredCompletions[issue.ID] = deferredCompletion{Running: running}
+				state.Retry[issue.ID] = Retry{CompletionDeferred: true}
 			} else {
 				state.Running[issue.ID] = running
 			}
 			manager.upsert(heartbeatTarget{issueID: issue.ID})
 			sequence := manager.targets[issue.ID].sequence
 			o.handleHeartbeatResult(&state, heartbeatResult{issueID: issue.ID, sequence: sequence, claimOwnerLost: true})
-			if len(owner.forgotten) != 1 || owner.forgotten[0] != issue.ID || len(state.Claimed) != 0 || len(state.Running) != 0 || len(state.deferredCompletions) != 0 || manager.current(issue.ID, sequence) {
+			if len(owner.forgotten) != 1 || owner.forgotten[0] != issue.ID || len(state.Claimed) != 0 || len(state.Running) != 0 || manager.current(issue.ID, sequence) {
 				t.Fatal("claim loss retained scheduling or heartbeat ownership")
+			}
+			if _, retained := state.deferredCompletions[issue.ID]; retained != deferred || state.Retry[issue.ID].CompletionDeferred != deferred {
+				t.Fatal("claim loss discarded deferred settlement retry ownership")
 			}
 		})
 	}

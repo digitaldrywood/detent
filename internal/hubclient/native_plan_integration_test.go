@@ -408,8 +408,7 @@ func testNativePlannerHandoff(t *testing.T, abandon, staleRenewal, closeWorkers 
 		orchCfg.PollInterval = time.Hour
 		runBackend = &nativePlanObservedRunner{Runner: agent, observed: observed}
 	}
-	scheduling := &nativePlanScheduling{Scheduler: h.scheduler, renewal: make(chan struct{}, 1)}
-	scheduling.renewal <- struct{}{}
+	scheduling := &nativePlanScheduling{Scheduler: h.scheduler, forgotten: make(chan struct{}, 1)}
 	orch, err := orchestrator.New(orchCfg, orchestrator.Dependencies{Connector: h.connector, Scheduling: scheduling, Runner: runBackend, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
@@ -455,17 +454,6 @@ func testNativePlannerHandoff(t *testing.T, abandon, staleRenewal, closeWorkers 
 		if err := orch.UpdateRuntime(t.Context(), orchestrator.RuntimeUpdate{Config: heldConfig}); err != nil {
 			t.Fatal(err)
 		}
-		select {
-		case <-scheduling.renewal:
-		case <-testenv.WaitContext(t, t.Context()).Done():
-			t.Fatal("background renewal did not finish before explicit lease release")
-		}
-		renewalHeld := true
-		defer func() {
-			if renewalHeld {
-				scheduling.renewal <- struct{}{}
-			}
-		}()
 		// Replay Cloud's missing lease followed by supported local abandon.
 		h.scheduler.mu.Lock()
 		lease := h.scheduler.nativeClaims[issue.ID].lease
@@ -511,6 +499,26 @@ func testNativePlannerHandoff(t *testing.T, abandon, staleRenewal, closeWorkers 
 				t.Fatalf("revoked deferred publisher: renewing=%v retained=%v", renewing, retained == claim.execution)
 			}
 		}
+		select {
+		case <-scheduling.forgotten:
+		case <-testenv.WaitContext(t, t.Context()).Done():
+			t.Fatal("heartbeat owner loss did not forget the scheduling claim")
+		}
+		if closeWorkers {
+			transport.failTermination.Store(true)
+			_, err := orch.RecoverWorkAttempt(t.Context(), orchestrator.WorkAttemptRecoveryRequest{ProjectID: "local", AttemptID: attempts[0].ID, Action: orchestrator.WorkAttemptRecoveryAbandon, Confirm: true, Reason: "settlement unavailable", Operator: "ops"})
+			if err == nil {
+				t.Fatal("failed termination acknowledgment completed abandon")
+			}
+			h.scheduler.mu.Lock()
+			_, renewing := h.scheduler.claims[issue.ID]
+			_, retained := h.scheduler.nativeClaims[issue.ID]
+			h.scheduler.mu.Unlock()
+			if renewing || !retained {
+				t.Fatal("failed settlement lost publisher or restored renewal")
+			}
+			transport.failTermination.Store(false)
+		}
 		response, err := orch.RecoverWorkAttempt(t.Context(), orchestrator.WorkAttemptRecoveryRequest{ProjectID: "local", AttemptID: attempts[0].ID, Action: orchestrator.WorkAttemptRecoveryAbandon, Confirm: true, Reason: "native planner succeeded but its lease ended", Operator: "ops"})
 		if err != nil || response.Attempt.TerminalState != string(store.WorkAttemptTerminalAbandoned) {
 			t.Fatalf("abandon = %v, %v", response.Status, err)
@@ -537,8 +545,6 @@ func testNativePlannerHandoff(t *testing.T, abandon, staleRenewal, closeWorkers 
 		if retained {
 			t.Fatal("settled planner publisher was not retired")
 		}
-		renewalHeld = false
-		scheduling.renewal <- struct{}{}
 		current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
 		if err != nil {
 			t.Fatal(err)
@@ -813,16 +819,14 @@ func (a *nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnR
 
 type nativePlanScheduling struct {
 	*Scheduler
-	renewal chan struct{}
+	forgotten chan struct{}
 }
 
-func (s *nativePlanScheduling) RenewClaim(ctx context.Context, issueID string, now time.Time) (orchestrator.Claimed, error) {
+func (s *nativePlanScheduling) ForgetClaim(issueID string) {
+	s.Scheduler.ForgetClaim(issueID)
 	select {
-	case <-s.renewal:
-		defer func() { s.renewal <- struct{}{} }()
-		return s.Scheduler.RenewClaim(ctx, issueID, now)
-	case <-ctx.Done():
-		return orchestrator.Claimed{}, ctx.Err()
+	case s.forgotten <- struct{}{}:
+	default:
 	}
 }
 
@@ -863,12 +867,13 @@ func (r *nativePlanObservedRunner) Run(ctx context.Context, request runner.RunRe
 }
 
 type nativePlanTransport struct {
-	next         http.RoundTripper
-	native       *NativeClient
-	finished     chan<- nativePlanFinish
-	terminated   chan tracker.NativeRunData
-	blocked      chan struct{}
-	failWorkflow atomic.Bool
+	next            http.RoundTripper
+	native          *NativeClient
+	finished        chan<- nativePlanFinish
+	terminated      chan tracker.NativeRunData
+	blocked         chan struct{}
+	failWorkflow    atomic.Bool
+	failTermination atomic.Bool
 }
 
 func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -878,6 +883,9 @@ func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		default:
 		}
 		return nil, errors.New("native workflow publication unavailable")
+	}
+	if req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/events") && t.failTermination.Load() {
+		return nil, errors.New("native termination acknowledgment unavailable")
 	}
 	response, err := t.next.RoundTrip(req)
 	if err != nil || response.StatusCode >= 300 || req.Method != http.MethodPost || !strings.HasSuffix(req.URL.Path, "/events") {

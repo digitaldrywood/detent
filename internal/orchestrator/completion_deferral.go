@@ -293,6 +293,10 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 		o.releaseClaim(state, event.IssueID)
 		return
 	}
+	o.retainDeferredCompletion(ctx, state, event, running, fenceErr)
+}
+
+func (o *Orchestrator) retainDeferredCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running, fenceErr error) {
 	deferredAt := o.clockNow().UTC()
 	if deferredAt.IsZero() {
 		deferredAt = event.CompletedAt.UTC()
@@ -354,14 +358,20 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 }
 
 func (o *Orchestrator) rejectUnavailableCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running, cause error, release bool) {
+	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok && source.RunExecution(event.IssueID) == nil {
+		release = false
+	}
+	if release {
+		if err := o.abandonClaim(ctx, event.IssueID); err != nil {
+			o.retainDeferredCompletion(ctx, state, event, running, err)
+			o.heartbeats.remove(event.IssueID)
+			delete(state.Claimed, event.IssueID)
+			return
+		}
+	}
 	o.rejectWorkerCompletion(ctx, state, event, running, "worker lease is no longer active", cause)
 	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalAbandoned, workAttemptErrorInterrupted, cause.Error(), "interrupted", "native execution authority ended")
 	o.clearLiveWorkAttemptState(state, telemetry.WorkAttempt{IssueID: event.IssueID, AttemptID: running.WorkAttemptID})
-	if release {
-		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
-			o.logger.Warn("release obsolete completion claim failed", "issue_id", event.IssueID, "error", err)
-		}
-	}
 }
 
 func (o *Orchestrator) completionFenceRetryAt(state *State, err error, now time.Time, retryDelay time.Duration) time.Time {

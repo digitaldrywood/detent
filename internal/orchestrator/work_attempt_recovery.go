@@ -276,19 +276,21 @@ func (o *Orchestrator) abandonWorkAttempt(
 		MetricsJSON:            receipt.Attempt.MetricsJSON,
 		NextAction:             "retry or cleanup",
 	}
-	if err := o.workAttempts.CompleteWorkAttempt(ctx, completion); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return receipt, recoveryError(WorkAttemptRecoveryUnsupportedState, "active work attempt could not be abandoned because it is already terminal")
-		}
-		return receipt, fmt.Errorf("abandon work attempt: %w", err)
-	}
 	issueID := strings.TrimSpace(receipt.Attempt.IssueID)
 	if issueID == "" {
 		if issue, ok := o.recoveryIssue(state, receipt.Attempt); ok {
 			issueID = issue.ID
 		}
 	}
-	releaseClaimErr := o.abandonClaim(ctx, issueID)
+	if err := o.abandonClaim(ctx, issueID); err != nil {
+		return receipt, fmt.Errorf("settle abandoned work attempt: %w", err)
+	}
+	if err := o.workAttempts.CompleteWorkAttempt(ctx, completion); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return receipt, recoveryError(WorkAttemptRecoveryUnsupportedState, "active work attempt could not be abandoned because it is already terminal")
+		}
+		return receipt, fmt.Errorf("abandon work attempt: %w", err)
+	}
 	o.clearLiveWorkAttemptState(state, receipt.Attempt)
 	updated, err := o.workAttemptRecoveryReceipt(ctx, request.ProjectID, request.AttemptID, now)
 	if err != nil {
@@ -298,9 +300,6 @@ func (o *Orchestrator) abandonWorkAttempt(
 	updated.Action = request.Action
 	updated.Status = "succeeded"
 	updated.Message = "work attempt abandoned"
-	if releaseClaimErr != nil {
-		updated.Message = "work attempt abandoned; tracker lease release failed"
-	}
 	return updated, nil
 }
 
