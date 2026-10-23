@@ -370,12 +370,12 @@ test("pending invitations can be resent and revoked from their row", async ({ pa
 });
 
 for (const state of [
-  { name: "installed", installed: true, profile: "native", repository: "acme/orders", transport: true, visible: true },
-  { name: "not installed", installed: false, profile: "native", repository: "acme/orders", transport: true, visible: true },
-  { name: "long repository", installed: true, profile: "native", repository: "acme/" + "long-repository-name-".repeat(5), transport: true, visible: true },
-  { name: "compatibility project", installed: true, profile: "github_compatible", repository: "acme/orders", transport: true, visible: false },
+  { name: "installed", installed: true, profile: "native", repository: "example-org/example-project", transport: true, visible: true },
+  { name: "not installed", installed: false, profile: "native", repository: "example-org/example-project", transport: true, visible: true },
+  { name: "long repository", installed: true, profile: "native", repository: "example-org/" + "long-repository-name-".repeat(5), transport: true, visible: true },
+  { name: "compatibility project", installed: true, profile: "github_compatible", repository: "example-org/example-project", transport: true, visible: false },
   { name: "unassociated repository", installed: false, profile: "native", repository: "", transport: true, visible: false },
-  { name: "unavailable transport", installed: false, profile: "native", repository: "acme/orders", transport: false, visible: false },
+  { name: "unavailable transport", installed: false, profile: "native", repository: "example-org/example-project", transport: false, visible: false },
 ].flatMap((state) => state.visible ? [1440, 390].flatMap((width) => ["light", "dark"].map((theme) => ({ ...state, width, theme }))) : [{ ...state, width: 1440, theme: "light" }])) {
   test(`setup and integrations GitHub App installation: ${state.name} ${state.width}px ${state.theme}`, async ({ page }) => {
     await page.setViewportSize({ width: state.width, height: 1100 });

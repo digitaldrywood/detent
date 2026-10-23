@@ -1572,6 +1572,10 @@ func TestStoredHoldRequiresProvenance(t *testing.T) {
 		valid        bool
 	}{
 		{name: "current", valid: true},
+		{name: "unencodable source", prepareIssue: func(issue *connector.Issue) {
+			updatedAt := time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)
+			issue.UpdatedAt = &updatedAt
+		}},
 		{name: "missing owner", mutate: func(m *workflowLaneBlockedRecoveryMetadata) { m.Owner = "" }},
 		{name: "missing revision", mutate: func(m *workflowLaneBlockedRecoveryMetadata) { m.SourceRevision = "" }},
 		{name: "wrong revision", mutate: func(m *workflowLaneBlockedRecoveryMetadata) { m.SourceRevision = "other" }},
