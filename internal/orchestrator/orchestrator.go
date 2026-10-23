@@ -49,9 +49,6 @@ const (
 	maxMergeWorkerRunnerFailures        = 3
 	mergeWorkerCurrentHeadCIWaitTimeout = time.Hour
 
-	repeatedFailureThreshold          = 5
-	instantFailureBlockedReasonPrefix = "instant fail circuit breaker: "
-
 	repeatedFailureBlockedReasonPrefix         = "repeated failure circuit breaker: "
 	tokenCeilingBlockedReasonPrefix            = "token ceiling circuit breaker: "
 	deliverableConfigurationFailureCause       = "deliverable_configuration_failure"

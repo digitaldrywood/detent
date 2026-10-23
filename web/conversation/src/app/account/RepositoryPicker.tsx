@@ -41,7 +41,7 @@ export function RepositoryPicker({ runner, value, onChange, refresh, refreshing,
   const online = (runner?.runner.connection_health ?? runner?.runner.health) === "online";
   return <div className="space-y-2">
     <Label htmlFor="setup-repository">Search or type owner/name</Label>
-    <Combobox inline items={items} filter={null} value={validRepositoryName(query) ? query : null} inputValue={value}
+    <Combobox inline={!disabled} items={items} filter={null} value={validRepositoryName(query) ? query : null} inputValue={value}
       onInputValueChange={onChange} onValueChange={(name) => { if (name) onChange(name); }}
       open={open && !disabled} onOpenChange={setOpen} disabled={disabled}>
       <ComboboxInput id="setup-repository" ref={input} placeholder="Search or type owner/name" showTrigger={false} startAddon={<SearchIcon />} />

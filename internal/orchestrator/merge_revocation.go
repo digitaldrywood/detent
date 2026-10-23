@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -446,27 +445,6 @@ func mergeRevocationStreakFromSnapshots(state *State, issue connector.Issue) mer
 		streak.count++
 	}
 	return streak
-}
-
-func mergeRevocationLimitComment(issue connector.Issue, streak mergeRevocationStreak) string {
-	var body strings.Builder
-	body.WriteString("Detent parked this issue in Blocked after repeated identical merge eligibility revocations.")
-	body.WriteString("\n\n- reason: ")
-	body.WriteString(string(AutoPromoteReasonMergeRevocationLimit))
-	body.WriteString("\n- revocation_reason: ")
-	body.WriteString(streak.reason)
-	body.WriteString("\n- consecutive_revocations: ")
-	body.WriteString(strconv.Itoa(streak.count))
-	body.WriteString("\n- limit: ")
-	body.WriteString(strconv.Itoa(maxIdenticalMergeRevocations))
-	if issue.PullRequest != nil {
-		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
-			body.WriteString("\n- pull_request: ")
-			body.WriteString(url)
-		}
-	}
-	body.WriteString("\n- human_action: correct the repeated merge eligibility failure, then move the issue to Rework")
-	return body.String()
 }
 
 func (o *Orchestrator) routeMergeRevocation(ctx context.Context, state *State, revocation *mergeRevocation, at time.Time) {

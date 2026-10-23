@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -409,49 +408,11 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 	return true
 }
 
-func deliverableRecoveryParkReason(lookup deliverableRecoveryLookupResult) (string, string) {
-	branch := strings.TrimSpace(lookup.Branch)
-	lookupResult := strings.TrimSpace(lookup.LookupResult)
-	base := deliverableRecoveryNeedsHumanReason + ": pushed branch " + branch + " has no recoverable pull request"
-	humanAction := "open or adopt a pull request manually for pushed branch " + branch + ", then move the issue to Rework"
-	if lookup.DeliveryStateChecked && lookup.CommitsAhead == 0 {
-		base = noCommitsToDeliverReason + ": branch " + branch + " has no local commits ahead"
-		humanAction = "return the issue to Todo when implementation work is ready to resume"
-	} else if lookup.DeliveryStateChecked && !lookup.RemoteBranchExists {
-		base = deliverableRecoveryNeedsHumanReason + ": remote branch is missing for branch " + branch
-		humanAction = "push the local branch, then move the issue to Rework"
-	} else if !lookup.DeliveryStateChecked {
-		base = deliverableRecoveryNeedsHumanReason + ": delivery state check unavailable for branch " + branch
-		humanAction = "restore workspace delivery inspection, then move the issue to Rework"
-	} else if strings.HasPrefix(lookupResult, "PR lookup unavailable") {
-		base = deliverableRecoveryNeedsHumanReason + ": PR lookup unavailable for pushed branch " + branch
-		humanAction = "restore pull request lookup availability, then move the issue to Rework"
-	} else if lookup.PullRequest != nil && normalizePullRequestState(lookup.PullRequest.State) == "closed" {
-		base = deliverableRecoveryNeedsHumanReason + ": pushed branch " + branch + " has an exact-head pull request closed without merge"
-		humanAction = "reopen the exact-head pull request or open a replacement, then move the issue to Rework"
-	}
-	return base + " (hydration state: " + lookup.HydrationState + "; lookup result: " + lookupResult + ")", humanAction
-}
-
 func deliverableRecoveryReasonCode(lookup deliverableRecoveryLookupResult) string {
 	if lookup.DeliveryStateChecked && lookup.CommitsAhead == 0 {
 		return noCommitsToDeliverReason
 	}
 	return deliverableRecoveryNeedsHumanReason
-}
-
-func deliverableRecoveryCommitsAheadText(lookup deliverableRecoveryLookupResult) string {
-	if !lookup.DeliveryStateChecked {
-		return "unavailable"
-	}
-	return strconv.Itoa(lookup.CommitsAhead)
-}
-
-func deliverableRecoveryRemoteBranchText(lookup deliverableRecoveryLookupResult) string {
-	if !lookup.DeliveryStateChecked {
-		return "unavailable"
-	}
-	return strconv.FormatBool(lookup.RemoteBranchExists)
 }
 
 func deliverableRecoveryBranch(recoveryErr *runpkg.DeliverableRecoveryError, running Running) string {
@@ -464,14 +425,4 @@ func deliverableRecoveryBranch(recoveryErr *runpkg.DeliverableRecoveryError, run
 		return branch
 	}
 	return "unknown"
-}
-
-func deliverableRecoveryCommand(recoveryErr *runpkg.DeliverableRecoveryError) string {
-	var deliverableErr *runpkg.DeliverableCommandError
-	if recoveryErr != nil && errors.As(recoveryErr, &deliverableErr) && deliverableErr != nil {
-		if command := strings.TrimSpace(deliverableErr.Operation); command != "" {
-			return command
-		}
-	}
-	return "pull request creation"
 }

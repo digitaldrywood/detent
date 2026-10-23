@@ -48,7 +48,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 		if landing.Waiting && !mergeWorkerIssue(issue) {
 			issue.NativeLandingHeadSHA = landing.HeadSHA
 		}
-		o.waitForMergeWorkerRetry(ctx, state, event, running, issue, running.Attempt, landing.Refusal,
+		o.waitForMergeWorkerRetry(ctx, state, event, running, issue, landing.Refusal,
 			"merge_worker_waiting", "waiting to retry landing of ")
 		return true
 	}

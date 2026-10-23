@@ -9,7 +9,6 @@ import (
 
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
-	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestDispatchLoopStartPersistence(t *testing.T) {
@@ -82,55 +81,6 @@ func TestDispatchLoopStartPersistenceFailureFailsOpen(t *testing.T) {
 
 	if state.Running[issue.ID].DispatchLoopStart.Persisted {
 		t.Fatalf("dispatch loop start = %#v, want untrusted after persistence failure", state.Running[issue.ID].DispatchLoopStart)
-	}
-}
-
-func dispatchLoopHistoryAttempt(
-	id int64,
-	terminal store.WorkAttemptTerminalState,
-	signature autoPromoteReworkSignature,
-	diff implementProgressDiffStats,
-	progressKinds []string,
-	count int,
-) store.WorkAttempt {
-	return dispatchLoopHistoryAttemptInLane(id, terminal, signature, diff, progressKinds, count, "Rework")
-}
-
-func dispatchLoopHistoryAttemptInLane(
-	id int64,
-	terminal store.WorkAttemptTerminalState,
-	signature autoPromoteReworkSignature,
-	diff implementProgressDiffStats,
-	progressKinds []string,
-	count int,
-	lane string,
-) store.WorkAttempt {
-	if strings.TrimSpace(diff.HeadSHA) == "" {
-		diff.HeadSHA = "same-workspace-head"
-	}
-	return store.WorkAttempt{
-		ID:            id,
-		ProjectID:     "detent",
-		IssueID:       "issue-loop",
-		Identifier:    "digitaldrywood/detent#1886",
-		WorkerType:    "agent",
-		Lane:          lane,
-		Status:        store.WorkAttemptStatusTerminal,
-		TerminalState: terminal,
-		CompletedAt:   time.Date(2026, 8, 18, 14, int(id), 0, 0, time.UTC),
-		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
-			dispatchLoopStartMetadataKey: dispatchLoopTestStart(lane, signature, diff),
-			implementProgressMetadataKey: implementProgressRecord{
-				Outcome:               string(terminal),
-				Reason:                implementDependencyDeferralReason,
-				CurrentSignature:      implementProgressSignatureRecordFromSignature(signature),
-				WorkspaceDiffStats:    diff,
-				TrackerState:          lane,
-				ConsecutiveNoProgress: count,
-				NoProgressLimit:       3,
-				ProgressKinds:         progressKinds,
-			},
-		}),
 	}
 }
 

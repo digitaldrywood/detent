@@ -3,15 +3,14 @@ const path = require("node:path");
 const AxeBuilder = require("@axe-core/playwright").default;
 const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
-test.describe.configure({ mode: "serial" });
 let hub;
-test.beforeAll(async () => {
+test.beforeEach(async () => {
   test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
   hub = await startHostedHub("ai-credits", {
     env: { DETENT_HOSTED_BROWSER_AI_CREDITS: "1" },
   });
 });
-test.afterAll(async () => {
+test.afterEach(async () => {
   await hub?.stop();
 });
 
@@ -30,12 +29,12 @@ test("owner sees credits, contextual failure and history, and saves auto-fund", 
     page.getByRole("heading", { name: "AI credits", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("Credit balance", { exact: true }).locator("../.."),
-  ).toContainText("$1.250000 USD");
+    page.getByText("$1.25", { exact: true }),
+  ).toHaveAttribute("title", "$1.250000");
   await expect(
-    page.getByText("Auto-fund disabled", { exact: true }),
+    page.getByRole("button", { name: "Auto top-up needs attention", exact: true }),
   ).toBeVisible();
-  await expect(page.getByText(/Credit purchase ·/)).toBeVisible();
+  await expect(page.getByRole("table", { name: "Credit transactions" })).toContainText("Credit purchase");
   const violations = (
     await new AxeBuilder({ page }).include("#settings-ai-credits").analyze()
   ).violations;
@@ -48,24 +47,28 @@ test("owner sees credits, contextual failure and history, and saves auto-fund", 
       "ai-credits-failure-desktop.png",
     ),
   });
-  await page.getByLabel("Enable auto-fund").check();
+  await expect(page.getByRole("switch", { name: "Auto top-up", exact: true })).not.toBeChecked();
   await page.getByLabel("Top up below (USD)").fill("1.00");
   await page
-    .getByLabel("Credit pack", { exact: true })
-    .selectOption("price_credit");
+    .getByRole("combobox", { name: "Auto top-up credit pack", exact: true })
+    .click();
+  await page.getByRole("option", { name: "AI credit pack · $5.00", exact: true }).click();
   const saved = page.waitForResponse(
     (r) =>
       r.url().endsWith("/billing/credits/auto-fund") &&
       r.request().method() === "PUT",
   );
   await page
-    .getByRole("button", { name: "Save auto-fund", exact: true })
+    .getByRole("switch", { name: "Auto top-up", exact: true })
     .click();
   expect((await saved).status()).toBe(204);
   await expect(
-    page.getByText("Auto-fund disabled", { exact: true }),
+    page.getByRole("button", { name: "Auto top-up needs attention", exact: true }),
   ).toHaveCount(0);
-  await expect(page.getByLabel("Enable auto-fund")).toBeChecked();
+  await expect(page.getByRole("switch", { name: "Auto top-up", exact: true })).toBeChecked();
+  await page.reload();
+  await expect(page.getByRole("switch", { name: "Auto top-up", exact: true })).toBeChecked();
+  await expect(page.getByRole("spinbutton", { name: "Top up below (USD)" })).toHaveValue("1.00");
   await page.screenshot({
     path: path.join(
       process.env.TMPDIR || process.env.TMP || process.env.TEMP,
@@ -85,18 +88,18 @@ test("credit checkout opens Stripe without crediting a purchase", async ({
       body: "<h1>Stripe checkout fixture</h1>",
     }),
   );
-  await page.getByRole("button", { name: "Buy credits", exact: true }).click();
+  await page.getByRole("button", { name: "Buy", exact: true }).click();
   await expect(page).toHaveURL("https://checkout.stripe.com/c/pay/test_credit");
   await openBilling(page);
   await page.goto(
     new URL("/settings/billing?credits=returned", hub.fixture.url).toString(),
   );
   await expect(
-    page.getByText("Credit checkout returned", { exact: true }),
+    page.getByText("Waiting for Stripe to confirm your credits.", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("Credit balance", { exact: true }).locator("../.."),
-  ).toContainText("$1.250000 USD");
+    page.getByText("$1.25", { exact: true }),
+  ).toHaveAttribute("title", "$1.250000");
 });
 
 test("viewer cannot access credit billing", async ({ page }) => {

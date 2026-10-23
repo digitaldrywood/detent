@@ -28,14 +28,6 @@ type workAttemptRetryIntent struct {
 	ResumeState      *WorkAttemptResumeState              `json:"resume_state,omitempty"`
 }
 
-func (o *Orchestrator) recoveryIntentAcknowledgesPark(ctx context.Context, issue connector.Issue, park workflowLaneBlockedRecoveryMetadata, parkedAt time.Time) bool {
-	intent, found, err := o.latestWorkAttemptRetryIntent(ctx, issue)
-	if err != nil || !found || !intent.Configuration || intent.Park == nil || !configurationRecoveryParkCause(park.Cause) || !sameBlockedRecoveryPark(*intent.Park, park) || !intent.ParkedAt.Equal(parkedAt) {
-		return false
-	}
-	return o.validateRecoveryConfiguration(ctx, issue, intent.Park.RunMode) == nil
-}
-
 func (o *Orchestrator) latestWorkAttemptRetryIntent(ctx context.Context, issue connector.Issue) (workAttemptRetryIntent, bool, error) {
 	reader, ok := o.workflowMetrics.(WorkflowMetricsTimelineReader)
 	if !ok {
@@ -317,15 +309,6 @@ func (o *Orchestrator) reconcileIssueConfigurationHolds(ctx context.Context, sta
 				delete(state.Blocked, issue.ID)
 			}
 		}
-	}
-}
-
-func configurationRecoveryParkCause(cause string) bool {
-	switch cause {
-	case "issue_configuration", instantFailureCircuitBreakerCause, repeatedFailureCircuitBreakerCause, terminalAttemptRetryLimitCause:
-		return true
-	default:
-		return false
 	}
 }
 

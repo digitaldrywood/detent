@@ -19,8 +19,6 @@ import (
 const defaultWorkflowMetricsProjectID = "default"
 
 const (
-	workflowActionBlockedRecovery = "blocked_recovery"
-
 	workflowActionPlanReviewRework        = "plan_review_rework"
 	workflowActionReworkBreakerAutoUnpark = "rework_breaker_auto_unpark"
 	blockedCauseStatusUnrecorded          = "unrecorded"
@@ -965,7 +963,7 @@ func (m workflowLaneBlockedRecoveryMetadata) validate(issue connector.Issue, now
 }
 
 func holdSourceRevision(issue connector.Issue) string {
-	data, _ := json.Marshal(struct {
+	data, err := json.Marshal(struct {
 		ID               string
 		State            string
 		Description      string
@@ -975,6 +973,9 @@ func holdSourceRevision(issue connector.Issue) string {
 		TrackerUpdatedAt *time.Time
 		Signal           *workpad.Signal
 	}{issue.ID, issue.State, issue.Description, issue.StageUpdatedAt, issue.Metadata["hub_revision"], firstNonBlank(issue.PRHeadSHA, workflowLanePullRequestHead(issue)), issue.UpdatedAt, issue.WorkpadSignal})
+	if err != nil {
+		return workpad.ContentHash("")
+	}
 	return workpad.ContentHash(string(data))
 }
 

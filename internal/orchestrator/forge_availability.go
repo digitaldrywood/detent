@@ -411,48 +411,6 @@ func (o *Orchestrator) persistForgeAvailabilityWait(
 	)
 }
 
-func (o *Orchestrator) persistLegacyForgeAvailabilityWait(
-	ctx context.Context,
-	running Running,
-	condition ForgeCondition,
-	forgeRetry *runpkg.ForgeRetry,
-	message string,
-	existingMetadataJSON string,
-) bool {
-	updater, ok := o.workAttempts.(store.TerminalWorkAttemptStore)
-	if !ok || forgeRetry == nil || running.WorkAttemptID <= 0 {
-		return false
-	}
-	err := updater.UpdateTerminalWorkAttemptWait(ctx, store.WorkAttemptTerminalWaitUpdate{
-		AttemptID:          running.WorkAttemptID,
-		ExpectedErrorClass: deliverableConfigurationFailureCause,
-		TerminalState:      store.WorkAttemptTerminalCapacity,
-		ErrorClass:         forgeUnavailableErrorClass,
-		ErrorMessage:       message,
-		Phase:              "waiting",
-		StatusMessage:      message,
-		WorkerMetadataJSON: mergeLegacyForgeAvailabilityWaitMetadata(existingMetadataJSON, running, condition, forgeRetry),
-	})
-	if err != nil {
-		if o.logger != nil {
-			o.logger.Warn("persist legacy forge wait failed", "attempt_id", running.WorkAttemptID, "issue_id", running.Issue.ID, "error", err)
-		}
-		return false
-	}
-	return true
-}
-
-func mergeLegacyForgeAvailabilityWaitMetadata(existing string, running Running, condition ForgeCondition, forgeRetry *runpkg.ForgeRetry) string {
-	metadata := map[string]any{}
-	if json.Unmarshal([]byte(strings.TrimSpace(existing)), &metadata) != nil || metadata == nil {
-		return runningWorkAttemptMetadataJSON(running, forgeAvailabilityWaitMetadata(condition, forgeRetry))
-	}
-	for key, value := range forgeAvailabilityWaitMetadata(condition, forgeRetry) {
-		metadata[key] = value
-	}
-	return marshalWorkAttemptJSON(metadata)
-}
-
 func forgeAvailabilityWaitMetadata(condition ForgeCondition, forgeRetry *runpkg.ForgeRetry) map[string]any {
 	return map[string]any{"forge_wait": forgeWaitMetadata{
 		Host:              condition.Host,

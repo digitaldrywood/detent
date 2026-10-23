@@ -2,10 +2,11 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"math/rand/v2"
-	"sort"
+	"math/big"
 	"strings"
 	"time"
 
@@ -104,74 +105,6 @@ func terminalAttemptFailureEvidence(running Running, terminalState store.WorkAtt
 		CompletedAt:        &at,
 		WorkerMetadataJSON: runningWorkAttemptMetadataJSON(running, nil),
 	}
-}
-
-func (o *Orchestrator) recentIssueTerminalAttempts(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	limit int,
-	at time.Time,
-) ([]telemetry.WorkAttempt, bool) {
-	byID := make(map[int64]telemetry.WorkAttempt)
-	withoutID := make([]telemetry.WorkAttempt, 0)
-	add := func(attempt telemetry.WorkAttempt) {
-		if !workAttemptMatchesIssue(attempt, issue) ||
-			!strings.EqualFold(strings.TrimSpace(attempt.Status), string(store.WorkAttemptStatusTerminal)) {
-			return
-		}
-		if attempt.AttemptID > 0 {
-			byID[attempt.AttemptID] = attempt
-			return
-		}
-		withoutID = append(withoutID, attempt)
-	}
-	if state != nil {
-		for _, attempt := range state.WorkAttempts {
-			add(attempt)
-		}
-	}
-	if o != nil && o.workAttempts != nil {
-		stored, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
-			ProjectID:  strings.TrimSpace(o.cfg.Project.ID),
-			IssueID:    strings.TrimSpace(issue.ID),
-			Identifier: strings.TrimSpace(issue.Identifier),
-			IssueURL:   strings.TrimSpace(issue.URL),
-			Limit:      limit,
-		})
-		if err != nil {
-			if o.logger != nil {
-				o.logger.Warn("retry cycle work attempt history lookup failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-			}
-			return nil, false
-		}
-		for _, attempt := range stored {
-			add(telemetryWorkAttempt(attempt, at))
-		}
-	}
-	attempts := make([]telemetry.WorkAttempt, 0, len(byID)+len(withoutID))
-	for _, attempt := range byID {
-		attempts = append(attempts, attempt)
-	}
-	attempts = append(attempts, withoutID...)
-	sort.Slice(attempts, func(left, right int) bool {
-		return workAttemptCompletedAfter(attempts[left], attempts[right])
-	})
-	if limit > 0 && len(attempts) > limit {
-		attempts = attempts[:limit]
-	}
-	return attempts, true
-}
-
-func workAttemptMatchesIssue(attempt telemetry.WorkAttempt, issue connector.Issue) bool {
-	if issueID := strings.TrimSpace(issue.ID); issueID != "" && strings.TrimSpace(attempt.IssueID) == issueID {
-		return true
-	}
-	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" && strings.TrimSpace(attempt.Identifier) == identifier {
-		return true
-	}
-	issueURL := strings.TrimSpace(issue.URL)
-	return issueURL != "" && strings.TrimSpace(attempt.IssueURL) == issueURL
 }
 
 func retryCycleCauseForAttempt(attempt telemetry.WorkAttempt) string {
@@ -390,10 +323,10 @@ func workAttemptMetadataHasPushedProduct(raw string) bool {
 
 func (o *Orchestrator) retryMachineFailure(ctx context.Context, state *State, issue connector.Issue, attempt int, at time.Time, detail, host string) error {
 	if state == nil || o.connector == nil {
-		return fmt.Errorf("retry machine failure requires state and connector")
+		return errors.New("retry machine failure requires state and connector")
 	}
 	if o.terminalAttemptClaimBlocksDemotion(ctx, issue, at) {
-		return fmt.Errorf("current lease owns the retry transition")
+		return errors.New("current lease owns the retry transition")
 	}
 	target := issue.State
 	if normalizeState(target) == normalizeState(blockedStatusState) || !stateIn(target, o.cfg.ActiveStates) {
@@ -425,11 +358,11 @@ func (o *Orchestrator) retryMachineFailure(ctx context.Context, state *State, is
 			}
 		}
 		if !allowed {
-			return fmt.Errorf("no dispatchable retry lane is reachable")
+			return errors.New("no dispatchable retry lane is reachable")
 		}
 	}
 	if target == "" {
-		return fmt.Errorf("no dispatchable retry lane is configured")
+		return errors.New("no dispatchable retry lane is configured")
 	}
 	if normalizeState(target) != normalizeState(issue.State) {
 		if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, target, at, terminalAttemptWithoutWorkProductReason, workflowLaneMetadata{}); err != nil {
@@ -463,7 +396,10 @@ func (o *Orchestrator) retryMachineFailure(ctx context.Context, state *State, is
 func (o *Orchestrator) machineRetryDelay(attempt int) time.Duration {
 	delay := o.retryDelay(attempt, false)
 	if delay > 0 {
-		delay -= time.Duration(rand.Int64N(int64(delay/8) + 1))
+		offset, err := rand.Int(rand.Reader, big.NewInt(int64(delay/8)+1))
+		if err == nil {
+			delay -= time.Duration(offset.Int64())
+		}
 	}
 	return delay
 }

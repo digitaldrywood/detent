@@ -1,92 +1,12 @@
 package orchestrator
 
 import (
-	"context"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
-
-type crossHostParkConnector struct {
-	*dependencyAutoUnblockConnector
-	now            time.Time
-	commentErr     error
-	instanceLogin  string
-	updateDelay    time.Duration
-	afterUpdate    func()
-	updateErr      error
-	commentFailure func(string) error
-}
-
-func (c *crossHostParkConnector) InstanceLogin() string {
-	return c.instanceLogin
-}
-
-func (c *crossHostParkConnector) UpdateIssueState(ctx context.Context, issueID, state string) error {
-	if c.updateErr != nil {
-		return c.updateErr
-	}
-	c.now = c.now.Add(c.updateDelay)
-	if err := c.dependencyAutoUnblockConnector.UpdateIssueState(ctx, issueID, state); err != nil {
-		return err
-	}
-	for i := range c.stateIssues {
-		if c.stateIssues[i].ID == issueID {
-			c.stateIssues[i].State = state
-			c.stateIssues[i].StageUpdatedAt = timePointer(c.now)
-			c.stateIssues[i].StageUpdatedActor = connector.IssueActor{Login: "shared-user", Kind: "User"}
-		}
-	}
-	if c.afterUpdate != nil {
-		c.afterUpdate()
-	}
-	return nil
-}
-
-func (c *crossHostParkConnector) CreateComment(ctx context.Context, issueID, body string) error {
-	if c.commentFailure != nil {
-		if err := c.commentFailure(body); err != nil {
-			return err
-		}
-	}
-	if err := c.dependencyAutoUnblockConnector.CreateComment(ctx, issueID, body); err != nil {
-		return err
-	}
-	for i := range c.stateIssues {
-		if c.stateIssues[i].ID == issueID {
-			c.stateIssues[i].Comments = append(c.stateIssues[i].Comments, connector.IssueComment{
-				Body: body, AuthorLogin: "shared-user", AuthorKind: "User", AuthorAuthorized: true, CreatedAt: timePointer(c.now),
-			})
-		}
-	}
-	return nil
-}
-
-func (c *crossHostParkConnector) FetchIssueComments(_ context.Context, issue connector.Issue) ([]connector.IssueComment, error) {
-	if c.commentErr != nil {
-		return nil, c.commentErr
-	}
-	for _, current := range c.stateIssues {
-		if current.ID == issue.ID {
-			return cloneIssueComments(current.Comments), nil
-		}
-	}
-	return nil, nil
-}
-
-func (c *crossHostParkConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
-	var issues []connector.Issue
-	for _, id := range ids {
-		for _, issue := range c.stateIssues {
-			if issue.ID == id {
-				issues = append(issues, cloneIssue(issue))
-			}
-		}
-	}
-	return issues, nil
-}
 
 func TestDerivedHoldDispatchEquivalence(t *testing.T) {
 	t.Parallel()

@@ -929,22 +929,6 @@ func TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt(t *test
 	}
 }
 
-func terminalRetryFailureAttempts(issueID string, now time.Time, count int) []telemetry.WorkAttempt {
-	attempts := make([]telemetry.WorkAttempt, 0, count)
-	for index := range count {
-		attemptID := int64(count - index)
-		attempts = append(attempts, telemetry.WorkAttempt{
-			AttemptID:     attemptID,
-			IssueID:       issueID,
-			Status:        string(store.WorkAttemptStatusTerminal),
-			TerminalState: string(store.WorkAttemptTerminalFailure),
-			ErrorClass:    "runner_error",
-			CompletedAt:   timePointer(now.Add(-time.Duration(index) * time.Minute)),
-		})
-	}
-	return attempts
-}
-
 func TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibility(t *testing.T) {
 	t.Parallel()
 

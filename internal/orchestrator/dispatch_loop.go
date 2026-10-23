@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -40,21 +39,6 @@ type dispatchLoopStartRecord struct {
 	PullRequestAvailable   bool                    `json:"pull_request_available"`
 	WorkspaceDiffAvailable bool                    `json:"workspace_diff_available"`
 	WorkspaceHeadAvailable bool                    `json:"workspace_head_available"`
-}
-
-func operatorAcknowledgesRecoveryPark(event store.WorkflowPhaseEvent, metadata workflowLaneMetadata) bool {
-	if event.Reason == "operator_move" && metadata.Provenance.Origin == provenance.OriginHuman {
-		return true
-	}
-	if metadata.Provenance.Initiator == provenance.InitiatorHuman && metadata.Provenance.Basis == provenance.BasisAuthenticatedHuman {
-		return true
-	}
-	switch event.Reason {
-	case "kanban_move", "kanban_move_field":
-		return true
-	default:
-		return false
-	}
 }
 
 func resetDispatchLoopState(state *State, issue connector.Issue, acknowledgedAt time.Time) bool {
