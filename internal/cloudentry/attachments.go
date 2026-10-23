@@ -523,8 +523,6 @@ func (s *Service) sweepAttachments(ctx context.Context) {
 }
 
 func (s *Service) sweepOrganizationAttachments(ctx context.Context, organization Organization) error {
-	unlock := s.attachmentLocks.lock(organization.ID, true)
-	defer unlock()
 	status, raw, err := s.serviceCall(ctx, organization, "/internal/v1/attachments/expired", struct{}{}, nil)
 	if err != nil {
 		return err
@@ -537,7 +535,10 @@ func (s *Service) sweepOrganizationAttachments(ctx context.Context, organization
 		return err
 	}
 	for _, record := range records {
-		if err := s.removeAttachment(ctx, organization, record, "entry"); err != nil {
+		unlock := s.attachmentLocks.lock(organization.ID, true)
+		err := s.removeAttachment(ctx, organization, record, "entry")
+		unlock()
+		if err != nil {
 			return err
 		}
 	}
@@ -572,6 +573,8 @@ func (s *Service) sweepAttachmentOrphans(ctx context.Context, organization Organ
 			}
 			input = map[string]string{"id": id}
 		}
+		unlock := s.attachmentLocks.lock(organization.ID, true)
+		defer unlock()
 		exists, err := s.attachmentObjectExists(ctx, organization, endpoint, input)
 		if err != nil {
 			return err

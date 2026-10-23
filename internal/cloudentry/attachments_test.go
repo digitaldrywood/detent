@@ -2,6 +2,7 @@ package cloudentry
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
@@ -482,7 +483,8 @@ func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.service.attachments = storage
+	walks := &lockProbeStorage{Storage: storage, locks: &f.service.attachmentLocks, organization: "org_alpha"}
+	f.service.attachments = walks
 	old := time.Now().Add(-attachment.OrphanTTL - time.Hour)
 	ids := []string{"att_00000000000000000000000000000001", "att_00000000000000000000000000000002", "att_00000000000000000000000000000003"}
 	keys := []string{}
@@ -515,6 +517,10 @@ func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
 	if oldExists || !newExists || !betaExists {
 		t.Fatalf("old=%v new=%v other org=%v", oldExists, newExists, betaExists)
 	}
+	if walks.visits == 0 || walks.blocked != 0 {
+		t.Fatalf("organization readers blocked during %d of %d sweep visits", walks.blocked, walks.visits)
+	}
+	f.service.attachments = storage
 	f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleting' WHERE id='org_alpha'"); err != nil {
 		t.Fatal(err)
@@ -759,4 +765,29 @@ func exerciseAttachmentClients(t *testing.T, f entryFixture, browser, anonymous 
 			}
 		})
 	}
+}
+
+type lockProbeStorage struct {
+	attachment.Storage
+	locks        *attachmentLocks
+	organization string
+	visits       int
+	blocked      int
+}
+
+func (s *lockProbeStorage) Walk(ctx context.Context, prefix string, visit func(attachment.Object) error) error {
+	return s.Storage.Walk(ctx, prefix, func(object attachment.Object) error {
+		s.visits++
+		s.locks.mu.Lock()
+		entry := s.locks.entries[s.organization]
+		s.locks.mu.Unlock()
+		if entry != nil {
+			if entry.TryRLock() {
+				entry.RUnlock()
+			} else {
+				s.blocked++
+			}
+		}
+		return visit(object)
+	})
 }
