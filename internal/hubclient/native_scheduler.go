@@ -877,6 +877,11 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 		if err != nil {
 			return false, errors.Join(ErrUnavailable, err)
 		}
+		if alive {
+			if err := claim.execution.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{HeartbeatAt: s.now().UTC()}); err != nil {
+				return false, err
+			}
+		}
 		return alive, nil
 	}
 	return !observation.HeartbeatAt.IsZero() && s.now().Sub(observation.HeartbeatAt) < s.leaseTTL, nil
