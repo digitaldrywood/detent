@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -426,10 +427,12 @@ func decodeRunCheckpoint(ctx context.Context, raw string, result **tracker.Nativ
 	return nil
 }
 
+var errRunDetailStoreUnavailable = errors.New("run detail store unavailable in this context")
+
 func readRunDetailSegment(ctx context.Context, detail *runDetailReference) (map[string]tracker.NativeRunData, error) {
 	owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext)
 	if !ok {
-		return nil, artifact.ErrIntegrity
+		return nil, errRunDetailStoreUnavailable
 	}
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
