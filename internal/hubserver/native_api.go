@@ -85,6 +85,10 @@ func nativeNotFound() error {
 	return &nativeError{Code: "not_found", Message: "Resource was not found", status: http.StatusNotFound, publicMessage: true}
 }
 
+func nativeNotFoundAt(step string) error {
+	return &nativeError{Code: "not_found", Message: "Resource was not found", status: http.StatusNotFound, publicMessage: true, logAttributes: []any{"not_found_step", step}}
+}
+
 func nativeConflict(revision tracker.Revision) error {
 	return &nativeError{Code: "revision_conflict", Message: "Resource has changed", CurrentRevision: revision, status: http.StatusConflict, publicMessage: true}
 }

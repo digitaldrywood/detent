@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -186,7 +187,7 @@ func (s *Service) internalAPIError(c echo.Context, code string, message string, 
 }
 
 func (s *Service) refusedAPIError(c echo.Context, status int, code, reason string, response any, attributes ...any) error {
-	if status >= http.StatusBadRequest && status < http.StatusInternalServerError && status != http.StatusUnauthorized && status != http.StatusNotFound {
+	if status >= http.StatusBadRequest && status < http.StatusInternalServerError && status != http.StatusUnauthorized && (status != http.StatusNotFound || slices.Contains(attributes, any("not_found_step"))) {
 		scope := nativeRequestScope(c)
 		attributes = append([]any{"error", reason, "code", code, "refusal_code", code, "reason", reason,
 			"method", c.Request().Method, "route", c.Path(), "organization_id", string(scope.organization), "project_id", string(scope.project)}, attributes...)

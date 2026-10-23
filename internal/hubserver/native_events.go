@@ -110,8 +110,11 @@ func (s *Service) validateNativeRunOwner(ctx context.Context, tx nativeQueryer, 
 	if err != nil {
 		return tracker.NativeIssue{}, false, err
 	}
-	if !found || lease.issueID != id {
-		return tracker.NativeIssue{}, false, nativeNotFound()
+	if !found {
+		return tracker.NativeIssue{}, false, nativeNotFoundAt("event_lease_missing")
+	}
+	if lease.issueID != id {
+		return tracker.NativeIssue{}, false, nativeNotFoundAt("event_lease_other_item")
 	}
 	termination := lease.session.ReleasedAt != nil && lease.session.FencingToken == request.Data.FencingToken &&
 		request.Type == "run.finished" && request.Data.Outcome == "cancelled" && request.Data.Sequence > 0
