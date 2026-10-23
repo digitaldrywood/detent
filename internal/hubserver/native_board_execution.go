@@ -51,6 +51,9 @@ AND julianday(l.renewed_at)<=julianday(?) AND julianday(l.expires_at)>julianday(
 	if err := json.Unmarshal([]byte(configuration), &view); err != nil {
 		return nil, err
 	}
+	if err := overlayProjectConfigurationObservation(ctx, q, scope, runner, &view); err != nil {
+		return nil, err
+	}
 	d := view.Diagnostics
 	if d == nil || view.ProjectID != string(scope.project) || d.ObservedAt.Before(started) || d.ObservedAt.After(now) {
 		return execution, nil

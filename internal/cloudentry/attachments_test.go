@@ -2,6 +2,7 @@ package cloudentry
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
@@ -140,10 +141,12 @@ func newSpacesFixture(t *testing.T, public bool) *spacesFixture {
 				t.Error(err)
 			}
 		case http.MethodHead:
-			if _, ok := f.objects[key]; !ok {
+			object, ok := f.objects[key]
+			if !ok {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
+			w.Header().Set("Last-Modified", object.created.UTC().Format(http.TimeFormat))
 		case http.MethodDelete:
 			if f.failDelete {
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -482,7 +485,8 @@ func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.service.attachments = storage
+	walks := &lockProbeStorage{Storage: storage, locks: &f.service.attachmentLocks, organization: "org_alpha", refresh: map[string]func(){}}
+	f.service.attachments = walks
 	old := time.Now().Add(-attachment.OrphanTTL - time.Hour)
 	ids := []string{"att_00000000000000000000000000000001", "att_00000000000000000000000000000002", "att_00000000000000000000000000000003"}
 	keys := []string{}
@@ -500,12 +504,30 @@ func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
 		store.mu.Unlock()
 		keys = append(keys, key)
 	}
+	reused, err := attachment.Key("org_alpha", "att_00000000000000000000000000000004")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.objects[reused] = spacesObject{content: []byte("reused"), created: old}
+	store.mu.Unlock()
+	walks.refresh[reused] = func() {
+		store.mu.Lock()
+		store.objects[reused] = spacesObject{content: []byte("reused"), created: time.Now()}
+		store.mu.Unlock()
+	}
 	organization, err := f.service.readyOrganization(t.Context(), "org_alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err != nil {
 		t.Fatal(err)
+	}
+	store.mu.Lock()
+	_, reusedExists := store.objects[reused]
+	store.mu.Unlock()
+	if !reusedExists {
+		t.Fatal("sweep deleted an object refreshed after it was listed")
 	}
 	store.mu.Lock()
 	_, oldExists := store.objects[keys[0]]
@@ -515,6 +537,10 @@ func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
 	if oldExists || !newExists || !betaExists {
 		t.Fatalf("old=%v new=%v other org=%v", oldExists, newExists, betaExists)
 	}
+	if walks.visits == 0 || walks.blocked != 0 {
+		t.Fatalf("organization readers blocked during %d of %d sweep visits", walks.blocked, walks.visits)
+	}
+	f.service.attachments = storage
 	f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleting' WHERE id='org_alpha'"); err != nil {
 		t.Fatal(err)
@@ -759,4 +785,33 @@ func exerciseAttachmentClients(t *testing.T, f entryFixture, browser, anonymous 
 			}
 		})
 	}
+}
+
+type lockProbeStorage struct {
+	attachment.Storage
+	locks        *attachmentLocks
+	organization string
+	refresh      map[string]func()
+	visits       int
+	blocked      int
+}
+
+func (s *lockProbeStorage) Walk(ctx context.Context, prefix string, visit func(attachment.Object) error) error {
+	return s.Storage.Walk(ctx, prefix, func(object attachment.Object) error {
+		s.visits++
+		s.locks.mu.Lock()
+		entry := s.locks.entries[s.organization]
+		s.locks.mu.Unlock()
+		if entry != nil {
+			if entry.TryRLock() {
+				entry.RUnlock()
+			} else {
+				s.blocked++
+			}
+		}
+		if refresh := s.refresh[object.Key]; refresh != nil {
+			refresh()
+		}
+		return visit(object)
+	})
 }

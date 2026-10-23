@@ -10,24 +10,39 @@ import (
 	"github.com/digitaldrywood/detent/internal/skills"
 )
 
-func updateRunnerSkills(ctx context.Context, tx *sql.Tx, scope nativeScope, report *[]skills.ProviderSkill, now time.Time) error {
+func prepareRunnerSkills(scope nativeScope, report *[]skills.ProviderSkill) (string, error) {
 	if report == nil {
-		return nil
+		return "", nil
 	}
 	if scope.credential.Runner.RunnerID == "" {
-		return nativePublicInvalid("Skill reports require an enrolled runner")
+		return "", nativePublicInvalid("Skill reports require an enrolled runner")
 	}
 	for _, skill := range *report {
 		if !skills.ValidProviderSkill(skill) {
-			return nativePublicInvalid("Invalid runner skill metadata")
+			return "", nativePublicInvalid("Invalid runner skill metadata")
 		}
 	}
 	raw, err := json.Marshal(*report)
 	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func updateRunnerSkills(ctx context.Context, tx *sql.Tx, scope nativeScope, report *[]skills.ProviderSkill, now time.Time) error {
+	raw, err := prepareRunnerSkills(scope, report)
+	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO runner_project_skills (runner_id, project_id, skills_json, reported_at) VALUES (?, ?, ?, ?)
-		ON CONFLICT (runner_id, project_id) DO UPDATE SET skills_json = excluded.skills_json, reported_at = excluded.reported_at`, scope.credential.Runner.RunnerID, scope.project, string(raw), formatHubTime(now))
+	return storeEncodedRunnerSkills(ctx, tx, scope, raw, now)
+}
+
+func storeEncodedRunnerSkills(ctx context.Context, tx *sql.Tx, scope nativeScope, raw string, now time.Time) error {
+	if raw == "" {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO runner_project_skills (runner_id, project_id, skills_json, reported_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT (runner_id, project_id) DO UPDATE SET skills_json = excluded.skills_json, reported_at = excluded.reported_at`, scope.credential.Runner.RunnerID, scope.project, raw, formatHubTime(now))
 	return err
 }
 

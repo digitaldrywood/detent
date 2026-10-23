@@ -10,18 +10,30 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
-func updateRunnerIsolationReport(ctx context.Context, tx *sql.Tx, scope nativeScope, report isolation.Report) error {
+func prepareRunnerIsolationReport(report isolation.Report) (string, error) {
 	if report == nil {
 		report = isolation.Report{}
 	}
 	if err := report.Validate(); err != nil {
-		return nativeInvalid(err.Error())
+		return "", nativeInvalid(err.Error())
 	}
 	encoded, err := json.Marshal(report)
 	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func updateRunnerIsolationReport(ctx context.Context, tx *sql.Tx, scope nativeScope, report isolation.Report) error {
+	raw, err := prepareRunnerIsolationReport(report)
+	if err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, "UPDATE runner_identities SET backend_isolation_json = ? WHERE id = ? AND organization_id = ? AND token_id = ?", string(encoded), scope.credential.Runner.RunnerID, scope.organization, scope.credential.ID)
+	return storeEncodedRunnerIsolationReport(ctx, tx, scope, raw)
+}
+
+func storeEncodedRunnerIsolationReport(ctx context.Context, tx *sql.Tx, scope nativeScope, raw string) error {
+	result, err := tx.ExecContext(ctx, "UPDATE runner_identities SET backend_isolation_json = ? WHERE id = ? AND organization_id = ? AND token_id = ?", raw, scope.credential.Runner.RunnerID, scope.organization, scope.credential.ID)
 	return requireRunnerUpdate(result, err)
 }
 
