@@ -792,9 +792,9 @@ func TestRunDetailSegmentResolvesPreparedReferenceBeforeCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	prepared := map[string]tracker.NativeRunData{"attempt_prepared:2": {AttemptID: "attempt_prepared", Sequence: 2}}
-	owner := &runDetailContext{query: f.service.database.reader, store: store, organization: organization, cache: map[string]map[string]tracker.NativeRunData{}, reuse: map[string]*runDetailReference{}, reference: &ref, runs: prepared}
+	owner := &runDetailContext{store: store, organization: organization, cache: map[string]map[string]tracker.NativeRunData{}, reuse: map[string]*runDetailReference{}, reference: &ref, runs: prepared}
 	ctx := context.WithValue(t.Context(), runDetailContextKey{}, owner)
-	runs, err := readRunDetailSegment(ctx, newRunDetailReference(ref, organization, "attempt_prepared:2"))
+	runs, err := readRunDetailSegment(ctx, f.service.database.reader, newRunDetailReference(ref, organization, "attempt_prepared:2"))
 	if err != nil || runs["attempt_prepared:2"].Sequence != 2 {
 		t.Fatalf("prepared detail before commit = %v, %v", runs, err)
 	}
