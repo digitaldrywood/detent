@@ -17,7 +17,7 @@ internal/hubserver/chat_usage.go 2
 internal/hubserver/conversation_attachments.go 1
 internal/hubserver/conversation_coordinator_actions.go 3
 internal/hubserver/conversation_coordinator_agent.go 2
-internal/hubserver/conversation_coordinator_tools.go 6
+internal/hubserver/conversation_coordinator_tools.go 5
 internal/hubserver/conversation_preferences.go 1
 internal/hubserver/conversation_service.go 1
 internal/hubserver/conversation_store.go 10
