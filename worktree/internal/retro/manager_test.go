@@ -1,0 +1,223 @@
+package retro
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
+)
+
+func TestManagerRoutesAndDeduplicatesRecurringFindings(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	telemetry := &recordingTelemetryStore{snapshot: routingSnapshot(now)}
+	projectIssues := fakehub.New(fakehub.Config{Stateful: true})
+	productIssues := fakehub.New(fakehub.Config{Stateful: true})
+	metrics := &retroMetricsRecorder{}
+	manager, err := New(Settings{
+		ProjectID: "example",
+		Config: Config{
+			Enabled: true,
+		},
+		ProjectIssues: projectIssues,
+		ProductIssues: productIssues,
+		Metrics:       metrics,
+	}, telemetry, nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	first, err := manager.RunOnce(context.Background(), TriggerDaily)
+	if err != nil {
+		t.Fatalf("RunOnce(first) error = %v", err)
+	}
+	if first.Filed != 2 || first.Updated != 0 {
+		t.Fatalf("RunOnce(first) = %#v, want two filed", first)
+	}
+	assertSingleRetroIssue(t, projectIssues, PatternInvalidWorkpadStatus, "Proposed WORKFLOW.md change")
+	assertSingleRetroIssue(t, productIssues, PatternCompletedRedispatch, "classification: product")
+	if len(metrics.events) != 0 {
+		t.Fatalf("retro wrote lane events outside the orchestrator: %#v", metrics.events)
+	}
+
+	telemetry.snapshot.PhaseEvents = append(telemetry.snapshot.PhaseEvents, PhaseEvent{Identifier: "issue-status-c", Reason: "workpad_status_invalid", StartedAt: now.Add(time.Minute)})
+	second, err := manager.RunOnce(context.Background(), TriggerCompletion)
+	if err != nil {
+		t.Fatalf("RunOnce(second) error = %v", err)
+	}
+	if second.Filed != 0 || second.Updated != 2 {
+		t.Fatalf("RunOnce(second) = %#v, want occurrence comments for both findings", second)
+	}
+	assertSingleRetroIssue(t, projectIssues, PatternInvalidWorkpadStatus, "occurrences: 2")
+	issues, err := projectIssues.FetchIssuesByStates(t.Context(), []string{"Backlog"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	comments, err := projectIssues.FetchIssueComments(t.Context(), issues[0])
+	if err != nil || len(comments) != 1 || !strings.Contains(comments[0].Body, "occurrences: 3") {
+		t.Fatalf("occurrence comments = %+v, %v", comments, err)
+	}
+
+	assertSingleRetroIssue(t, productIssues, PatternCompletedRedispatch, "classification: product")
+}
+
+func TestManagerPreservesReviewedOutcomeOnRecurrence(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	telemetry := &recordingTelemetryStore{snapshot: routingSnapshot(now)}
+	projectIssues := fakehub.New(fakehub.Config{Stateful: true})
+	productIssues := fakehub.New(fakehub.Config{Stateful: true})
+	manager, err := New(Settings{
+		ProjectID: "example",
+		Config: Config{
+			Enabled: true,
+		},
+		ProjectIssues: projectIssues,
+		ProductIssues: productIssues,
+	}, telemetry, nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if _, err := manager.RunOnce(context.Background(), TriggerDaily); err != nil {
+		t.Fatalf("RunOnce(first) error = %v", err)
+	}
+	issues, err := projectIssues.FetchIssuesByStates(context.Background(), []string{"Backlog"})
+	if err != nil || len(issues) != 1 {
+		t.Fatalf("FetchIssuesByStates() issues=%#v error=%v, want one", issues, err)
+	}
+	reviewed := strings.Replace(issues[0].Description, "- status: pending", "- status: accepted", 1)
+	if _, err := projectIssues.UpdateIntakeIssue(context.Background(), issues[0].ID, intake.IssueDraft{Title: issues[0].Title, Body: reviewed, Labels: issues[0].Labels}); err != nil {
+		t.Fatalf("UpdateIntakeIssue() error = %v", err)
+	}
+	manager, err = New(Settings{
+		ProjectID: "example",
+		Config: Config{
+			Enabled: true,
+		},
+		ProjectIssues: projectIssues,
+		ProductIssues: productIssues,
+	}, telemetry, nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("New(restarted) error = %v", err)
+	}
+	telemetry.snapshot.PhaseEvents = append(telemetry.snapshot.PhaseEvents, PhaseEvent{Identifier: "issue-status-c", Reason: "workpad_status_invalid", StartedAt: now.Add(time.Minute)})
+
+	result, err := manager.RunOnce(context.Background(), TriggerCompletion)
+	if err != nil {
+		t.Fatalf("RunOnce(second) error = %v", err)
+	}
+	if result.Updated != 2 {
+		t.Fatalf("RunOnce(second).Updated = %d, want occurrence comments for both findings", result.Updated)
+	}
+	assertSingleRetroIssue(t, projectIssues, PatternInvalidWorkpadStatus, "- status: accepted")
+}
+
+func TestManagerEnforcesDailyCreationCap(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	telemetry := &recordingTelemetryStore{snapshot: routingSnapshot(now)}
+	manager, err := New(Settings{
+		ProjectID:     "example",
+		Config:        Config{Enabled: true, DailyIssueCap: 1},
+		ProjectIssues: fakehub.New(fakehub.Config{Stateful: true}),
+		ProductIssues: fakehub.New(fakehub.Config{Stateful: true}),
+	}, telemetry, nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := manager.RunOnce(context.Background(), TriggerDaily)
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if result.Filed != 1 || result.Capped != 1 {
+		t.Fatalf("RunOnce() = %#v, want one filed and one capped", result)
+	}
+}
+
+func TestManagerDisabledIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	telemetry := &recordingTelemetryStore{}
+	manager, err := New(Settings{ProjectID: "example", Config: Config{}}, telemetry, nil, time.Now)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	result, err := manager.RunOnce(context.Background(), TriggerDaily)
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if len(result.Findings) != 0 || telemetry.loads != 0 || len(telemetry.records) != 0 {
+		t.Fatalf("disabled run = %#v loads=%d records=%#v, want no-op", result, telemetry.loads, telemetry.records)
+	}
+}
+
+func routingSnapshot(now time.Time) Snapshot {
+	return Snapshot{
+		Attempts: []Attempt{
+			{ID: 1, Identifier: "issue-redispatch", StartedAt: now.Add(-4 * time.Minute), CompletedAt: now.Add(-3 * time.Minute), TerminalState: "success", Phase: "waiting"},
+			{ID: 2, Identifier: "issue-redispatch", StartedAt: now.Add(-2 * time.Minute), CompletedAt: now.Add(-time.Minute), TerminalState: "success"},
+		},
+		PhaseEvents: []PhaseEvent{
+			{Identifier: "issue-status-a", Reason: "workpad_status_invalid", StartedAt: now.Add(-2 * time.Minute)},
+			{Identifier: "issue-status-b", Reason: "workpad_status_invalid", StartedAt: now.Add(-time.Minute)},
+		},
+	}
+}
+
+func assertSingleRetroIssue(t *testing.T, issueStore *fakehub.Connector, pattern string, bodyContains string) {
+	t.Helper()
+	issues, err := issueStore.FetchIssuesByStates(context.Background(), []string{"Backlog"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("issues = %#v, want one", issues)
+	}
+	if !strings.Contains(issues[0].Description, "pattern: "+pattern) || !strings.Contains(issues[0].Description, bodyContains) {
+		t.Fatalf("issue body missing pattern/body text:\n%s", issues[0].Description)
+	}
+}
+
+type recordingTelemetryStore struct {
+	snapshot Snapshot
+	loads    int
+	records  []RunRecord
+}
+
+type retroMetricsRecorder struct {
+	events []workflowmetrics.PhaseEvent
+}
+
+func (r *retroMetricsRecorder) RecordWorkflowPhaseEvent(_ context.Context, event workflowmetrics.PhaseEvent) (int64, error) {
+	r.events = append(r.events, event)
+	return int64(len(r.events)), nil
+}
+
+func (s *recordingTelemetryStore) LoadRetroSnapshot(context.Context, string, time.Time) (Snapshot, error) {
+	s.loads++
+	return s.snapshot, nil
+}
+
+func (s *recordingTelemetryStore) RetroFiledOnDay(_ context.Context, _ string, day time.Time) (int, error) {
+	count := 0
+	for _, record := range s.records {
+		if record.CompletedAt.UTC().Format(time.DateOnly) == day.UTC().Format(time.DateOnly) {
+			count += record.Filed
+		}
+	}
+	return count, nil
+}
+
+func (s *recordingTelemetryStore) RecordRetroRun(_ context.Context, record RunRecord) error {
+	s.records = append(s.records, record)
+	return nil
+}

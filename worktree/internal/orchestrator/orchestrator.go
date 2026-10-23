@@ -1,0 +1,1706 @@
+package orchestrator
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/activity"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/coordination"
+	"github.com/digitaldrywood/detent/internal/efficiency"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hostpressure"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
+	releasepkg "github.com/digitaldrywood/detent/internal/release"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/staleness"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/toolcache"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+const (
+	defaultPollInterval                 = 30 * time.Second
+	defaultRunningReconcileInterval     = 2 * time.Minute
+	defaultWorkspaceCleanupIdleTTL      = 24 * time.Hour
+	defaultWorkspaceCleanupSweep        = 10 * time.Minute
+	defaultGitHubGraphQLWarnRemaining   = 500
+	defaultGitHubGraphQLMinReserve      = 1000
+	defaultGitHubRESTMinReserve         = 1000
+	defaultMaxConcurrentAgents          = 1
+	defaultMaxRetryBackoff              = 5 * time.Minute
+	defaultOverloadRetryDelay           = 45 * time.Second
+	defaultContinuationRetry            = time.Second
+	defaultFailureRetryBaseDelay        = 10 * time.Second
+	defaultFailureBreakerSameClassLimit = 5
+	defaultFailureBreakerWindow         = time.Hour
+	defaultFailureBreakerCooldown       = time.Hour
+	maxMergeWorkerRunnerFailures        = 3
+	mergeWorkerCurrentHeadCIWaitTimeout = time.Hour
+
+	repeatedFailureBlockedReasonPrefix         = "repeated failure circuit breaker: "
+	tokenCeilingBlockedReasonPrefix            = "token ceiling circuit breaker: "
+	deliverableConfigurationFailureCause       = "deliverable_configuration_failure"
+	budgetProjectionCeilingFailureCause        = "budget_projection_ceiling"
+	continuationDispatchBackoff                = 100 * time.Millisecond
+	runUpdateBufferSize                        = 128
+	maxRecentEvents                            = 50
+	blockedStatusState                         = "Blocked"
+	blockedReasonDependency                    = "blocked by non-terminal dependency"
+	mergeWorkerTerminalStateMissing            = "merge worker completed without reaching a terminal issue or pull request state"
+	mergeWorkerRetryExhaustedReason            = "merge_worker_retry_exhausted"
+	mergeWorkerCurrentHeadCIWaitExceededReason = scheduler.DecisionReasonMergeWorkerCurrentHeadCIExceeded
+	mergeWorkerDurationExceededReason          = "merge_worker_duration_exceeded"
+	mergeFallbackRequiresReworkReason          = "merge_fallback_requires_rework"
+)
+
+var (
+	ErrMissingConnector       = errors.New("orchestrator connector is required")
+	ErrSchedulingClaimLost    = errors.New("scheduling claim lost")
+	ErrSchedulingUnavailable  = errors.New("scheduling source unavailable")
+	ErrStopped                = errors.New("orchestrator stopped")
+	ErrCapacityClearQueueFull = errors.New("capacity clear already pending")
+)
+
+type Config struct {
+	IssueContract                 *workflowconfig.IssueContract
+	IssueContractRolloutAt        time.Time
+	LocalIntakeDisabled           bool
+	Policy                        policy.Descriptor
+	PollInterval                  time.Duration
+	RefreshFailureThreshold       int
+	MaxConcurrentAgents           int
+	MaxConcurrentAgentsByState    map[string]int
+	NativeLandingCapacity         int
+	DispatchPriorityByState       []string
+	DispatchPriorityByLabel       []string
+	PrioritizeUnblockers          bool
+	MergeFastPathEnabled          bool
+	MergeFairnessAge              time.Duration
+	MergeMethod                   string
+	DeliverableKind               string
+	MergeWorkerStartupTimeout     time.Duration
+	MergeWorkerMaxDuration        time.Duration
+	ResumeOrphanedSessions        bool
+	StopRunTargetState            string
+	StopRunPriorityNames          map[int]string
+	MaxConcurrentAgentsPerHost    int
+	MaxRetryBackoff               time.Duration
+	Recovery                      workflowconfig.Recovery
+	OverloadRetryDelay            time.Duration
+	NoProgressTokenLimit          int64
+	NoProgressSpendLimitUSD       float64
+	LifetimeSessionLimit          int64
+	LifetimeTokenLimit            int64
+	LifetimeLimitOverrideLabel    string
+	BillingMode                   string
+	RateWindowPacing              workflowconfig.RateWindowPacing
+	FailureBreaker                FailureBreakerConfig
+	Project                       scheduler.ProjectCandidate
+	SchedulingRepository          string
+	Claiming                      ClaimingConfig
+	AutoPromote                   AutoPromoteConfig
+	Plan                          gate.PlanConfig
+	DependencySource              string
+	StatusLabelPrefix             string
+	TrackerKind                   string
+	TrackerStatusSource           string
+	TrackerStatusField            string
+	TrackerStatusLabelPrefix      string
+	TrackerStateMap               map[string]string
+	LaneSignalStates              []string
+	DependencyAutoUnblock         DependencyAutoUnblockConfig
+	BlockedRecovery               BlockedRecoveryConfig
+	Operator                      OperatorConfig
+	BlockerAutoPromote            BlockerAutoPromoteConfig
+	AdmissionTargetState          string
+	ActiveStates                  []string
+	ObservedStates                []string
+	TerminalStates                []string
+	Authorization                 selector.Selector
+	SelectorContext               selector.Context
+	WorkerHosts                   []string
+	WorkerHostSelection           string
+	WorkerHostCaps                map[string]int
+	BudgetRefusalCooldown         time.Duration
+	WorkspaceCleanupIdleTTL       time.Duration
+	WorkspaceCleanupSweepInterval time.Duration
+	HostCache                     toolcache.Policy
+	ContinuationRetryDelay        time.Duration
+	FailureRetryBaseDelay         time.Duration
+	SelectorPersona               string
+	GitHubGraphQLWarnRemaining    int64
+	GitHubGraphQLMinReserve       int64
+	GitHubRESTMinReserve          int64
+	ForgeHost                     string
+	OutputTruncationMaxBytes      int
+	EfficiencyThresholds          efficiency.Thresholds
+	Staleness                     staleness.Config
+	StalenessDelivery             staleness.DeliveryConfig
+	StrandedActiveThreshold       time.Duration
+	DispatchStallThreshold        time.Duration
+	MemoryPressureSomeAvg60Max    float64
+	MemoryPressurePollInterval    time.Duration
+	IOPressureFullAvg10Max        float64
+	IOPressureDegradedMaxAgents   int
+	IOPressurePollInterval        time.Duration
+	CPUPressureSomeAvg10Max       float64
+	CPUPressureDegradedMaxAgents  int
+	CPUPressurePollInterval       time.Duration
+}
+
+type FailureBreakerConfig struct {
+	SameClassLimit int
+	Window         time.Duration
+	Cooldown       time.Duration
+}
+
+type ClaimingConfig struct {
+	Enabled           bool
+	OwnershipSet      bool
+	OwnershipMode     string
+	AssigneeRequired  bool
+	Owner             string
+	AssigneeLogin     string
+	OwnerField        string
+	LeaseField        string
+	LeaseTTL          time.Duration
+	HeartbeatInterval time.Duration
+}
+
+type SchedulingRequest struct {
+	BeginDiscovery          func(context.Context) (context.Context, context.CancelFunc)
+	LandingCapacity         int
+	NativeLandingBatch      bool
+	DispatchPriorityByState []string
+	DispatchPriorityByLabel []string
+	PrioritizeUnblockers    bool
+	CandidateReady          func(context.Context, connector.Issue) bool
+	CandidateKnownWait      func(connector.Issue) bool
+	CandidateAdmitted       func(connector.Issue)
+	CandidateAdmission      func(connector.Issue) (func(), bool)
+	CandidateClaimObserved  func(context.Context, connector.Issue, bool, string, *providercapacity.Requirement)
+	CandidateLimit          int
+	AdmissionLimit          int
+	ProviderRequirement     func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error)
+	Policy                  policy.Descriptor
+	ProjectID               string
+	Repository              string
+	WorkflowStates          []string
+	Filter                  connector.IssueFilterHint
+}
+
+type SchedulingSource interface {
+	HeartbeatInterval() time.Duration
+	FetchCandidateIssues(context.Context, SchedulingRequest) ([]connector.Issue, error)
+	AdoptClaim(context.Context, connector.Issue, time.Time) (Claimed, error)
+	RenewClaim(context.Context, string, time.Time) (Claimed, error)
+	ReleaseClaim(context.Context, string, string) error
+}
+
+type nativeAdmissionObserver interface {
+	ObserveNativeAdmission(string, tracker.NativeAdmissionContext)
+}
+
+type candidateChangeWaiter interface {
+	WaitCandidateChanges(context.Context, string, chan<- struct{})
+}
+
+type Dependencies struct {
+	TrimHostCache        func(context.Context, toolcache.Policy, time.Time) error
+	Connector            connector.Connector
+	Scheduling           SchedulingSource
+	Runner               Runner
+	WorkspaceReaper      WorkspaceReaper
+	WorkflowMetrics      WorkflowMetricsRecorder
+	LaneLedger           store.LaneLedgerStore
+	LaneCoordination     coordination.Store
+	Efficiency           efficiency.Recorder
+	LifecycleExporter    efficiency.LifecycleExporter
+	WorkAttempts         store.WorkAttemptStore
+	MergeRequiredChecks  store.MergeRequiredCheckStore
+	ProgressSpend        store.ProgressSpendStore
+	LifetimeUsage        LifetimeUsageStore
+	AgentResume          store.AgentResumeStore
+	OrphanSessions       store.OrphanSessionStore
+	ValidatorMemo        store.ValidatorMemoStore
+	SecurityAudits       store.SecurityAuditStore
+	StalenessWarnings    store.StalenessWarningStore
+	Activity             *activity.Broker
+	Release              releasepkg.Coordinator
+	GlobalDispatchGate   scheduler.ProjectDispatchGate
+	DispatchPacer        runpkg.DispatchPacer
+	ReadMemoryPressure   func(context.Context) (hostpressure.Sample, error)
+	ReadIOPressure       func(context.Context) (hostpressure.Sample, error)
+	ReadCPUPressure      func(context.Context) (hostpressure.Sample, error)
+	Now                  func() time.Time
+	Logger               *slog.Logger
+	Retrospector         Retrospector
+	WorkerProcesses      WorkerProcessStore
+	ReapWorkerProcess    WorkerProcessReapFunc
+	WorkerReapGrace      time.Duration
+	NewStalenessNotifier func(staleness.DeliveryConfig) (staleness.Notifier, error)
+}
+
+type WorkerProcessStore interface {
+	ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error)
+	MarkSessionWorkerProcessReaped(context.Context, int64, store.WorkerProcessReap) error
+}
+
+type WorkerProcessReapFunc func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error)
+
+type Retrospector interface {
+	Trigger(string)
+}
+
+type runDurationLimitFactory func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)
+
+type mergeWorkerStartupTimer interface {
+	Stop() bool
+}
+
+type mergeWorkerStartupTimerFactory func(time.Duration, func()) mergeWorkerStartupTimer
+
+type WorkspaceReapResult = runpkg.WorkspaceReapResult
+
+type WorkspaceReaper = runpkg.WorkspaceReaper
+
+type WorkspaceReconciler = runpkg.WorkspaceReconciler
+
+type WorkspaceReconcileResult = runpkg.WorkspaceReconcileResult
+
+type RuntimeUpdate struct {
+	Config         Config
+	Connector      connector.Connector
+	Release        releasepkg.Coordinator
+	ReplaceRelease bool
+}
+
+type Orchestrator struct {
+	nativeLandingBatch  *nativeLandingDispatchBatch
+	cfg                 Config
+	connector           connector.Connector
+	scheduling          SchedulingSource
+	workflowMetrics     WorkflowMetricsRecorder
+	laneLedger          store.LaneLedgerStore
+	laneCoordination    coordination.Store
+	laneWriteMu         sync.Mutex
+	laneWrites          map[string]coordination.LaneWrite
+	laneWriteResults    map[string]string
+	laneWriteOrigin     string
+	laneWriteAction     string
+	laneObservations    map[string]store.LaneObservation
+	efficiency          efficiency.Recorder
+	lifecycleExporter   efficiency.LifecycleExporter
+	workAttempts        store.WorkAttemptStore
+	mergeRequiredChecks store.MergeRequiredCheckStore
+	operatorStops       store.OperatorStopStore
+
+	lifetimeUsage           LifetimeUsageStore
+	agentResume             store.AgentResumeStore
+	orphanSessions          store.OrphanSessionStore
+	supervisor              *runpkg.Supervisor
+	validator               Validator
+	securityAuditor         SecurityAuditor
+	reaper                  WorkspaceReaper
+	quarantineWarnings      map[string]struct{}
+	trimHostCache           func(context.Context, toolcache.Policy, time.Time) error
+	logger                  *slog.Logger
+	globalDispatchGate      scheduler.ProjectDispatchGate
+	globalDispatchReady     chan struct{}
+	globalDispatchPending   map[string]pendingGlobalDispatch
+	readMemoryPressure      func(context.Context) (hostpressure.Sample, error)
+	readIOPressure          func(context.Context) (hostpressure.Sample, error)
+	readCPUPressure         func(context.Context) (hostpressure.Sample, error)
+	validatorMu             sync.Mutex
+	validatorWG             sync.WaitGroup
+	validatorRuns           map[string]Running
+	validatorTokenTotals    TokenTotals
+	validatorResults        map[string]validatorStageResult
+	validatorFailures       map[string]validatorStageFailure
+	validatorMemo           store.ValidatorMemoStore
+	securityAuditStore      store.SecurityAuditStore
+	securityAuditMu         sync.Mutex
+	securityAuditWG         sync.WaitGroup
+	securityAuditRuns       map[string]struct{}
+	stalenessWarningStore   store.StalenessWarningStore
+	activity                *activity.Broker
+	release                 releasepkg.Coordinator
+	capacityController      runpkg.CapacityController
+	providerCapacity        runpkg.ProviderCapacityResolver
+	workerHostChecker       runpkg.WorkerHostChecker
+	capacityStatus          runpkg.CapacityStatusController
+	capacityReader          runpkg.CapacityReader
+	validatorCapacity       runpkg.ValidatorCapacityController
+	recoveryInspector       runpkg.BlockedRecoveryInspector
+	workspaceHoldInspector  runpkg.WorkspaceBranchHoldInspector
+	dailyBudgetStatus       runpkg.DailyBudgetStatusProvider
+	issueBudgetStatus       runpkg.IssueBudgetStatusProvider
+	githubRESTBudgetProber  runpkg.GitHubRESTBudgetProber
+	githubRESTBudgetProbes  map[string]time.Time
+	now                     func() time.Time
+	retrospector            Retrospector
+	workerProcesses         WorkerProcessStore
+	reapWorkerProcess       WorkerProcessReapFunc
+	workerReapGrace         time.Duration
+	newStalenessNotifier    func(staleness.DeliveryConfig) (staleness.Notifier, error)
+	mergeWorkerLimit        runDurationLimitFactory
+	mergeWorkerStartupTimer mergeWorkerStartupTimerFactory
+	deliverableRecoveryWait func(context.Context, time.Duration) bool
+	heartbeats              *heartbeatManager
+	hydrationSkipStreaks    map[string]int
+	hydrationWarned         bool
+	ownershipStartupLogged  bool
+	dispatchStartMu         sync.Mutex
+	dispatchLifecycleMu     sync.Mutex
+	capacityClearMu         sync.Mutex
+	dispatchStarts          int
+	dispatchStartsDone      chan struct{}
+	dispatchDone            chan struct{}
+	localIntakeDisabled     atomic.Bool
+	projectID               string
+	dispatchGateSampleMu    sync.Mutex
+	dispatchGateSamples     map[dispatchGateSampleKey]time.Time
+	ciTriggerLabelMu        sync.Mutex
+	ciTriggerLabelHeads     map[string]ciTriggerLabelHead
+	initialStateReady       chan struct{}
+	initialStatePublished   sync.Once
+	drainRequests           chan drainRequest
+	forceRequests           chan forceRequest
+	recoveryRequests        chan workAttemptRecoveryRequest
+	operatorMoves           chan operatorMoveRequest
+	configUpdates           chan configUpdateRequest
+	refreshes               chan manualRefreshRequest
+	reconciles              chan targetedRefreshRequest
+	capacityClearRequests   chan capacityClearRequest
+	credentialChanges       chan backendCredentialChangeRequest
+	trackerClearRequests    chan trackerClearRequest
+	forgeClearRequests      chan forgeClearRequest
+	failureCanaryRequests   chan failureBreakerCanaryRequest
+	stopRequests            chan stopRunRequest
+	modelPermitRequests     chan modelPermitRequest
+	runResults              chan runpkg.Completion
+	runUpdates              chan runUpdate
+	validatorCapacityEvents chan validatorCapacityEvent
+	done                    chan struct{}
+	pendingStops            map[string]*pendingStopRun
+	pendingMergeRevocations map[string]mergeRevocation
+	mergeRevocationComments map[string]*mergeRevocationCommentState
+	completedStops          map[string]StopRunResult
+	refreshSeq              atomic.Uint64
+	workerGeneration        atomic.Uint64
+	latestState             atomic.Pointer[State]
+	completionState         atomic.Pointer[State]
+	latestRuntimeState      atomic.Pointer[runtimeState]
+	refreshProgress         atomic.Pointer[telemetry.RefreshProgress]
+	tickWatchdog            *tickWatchdog
+
+	workspaceCleanupResults   chan workspaceCleanupResult
+	workspaceCleanupCancel    context.CancelFunc
+	workspaceCleanupWG        sync.WaitGroup
+	workspaceCleanupRemaining *int
+}
+
+type runtimeState struct {
+	WorkAttempts []telemetry.WorkAttempt
+	Running      map[string]Running
+	Claimed      map[string]Claimed
+}
+
+type validatorStageResult struct {
+	Result    gate.ValidatorResult
+	Commented bool
+}
+
+type validatorStageFailure struct {
+	Attempt     int
+	NextRetryAt time.Time
+	Error       string
+}
+
+type modelPermitRequest struct {
+	issueID string
+	reply   chan error
+}
+
+type drainRequest struct {
+	at    time.Time
+	reply chan struct{}
+}
+
+type forceRequest struct {
+	ctx   context.Context //nolint:containedctx // ForceQuit carries caller cancellation through the event loop.
+	at    time.Time
+	reply chan error
+}
+
+type configUpdateRequest struct {
+	update RuntimeUpdate
+	reply  chan struct{}
+}
+
+type runUpdate struct {
+	progress *workerProgress
+	issueID  string
+	usage    runpkg.UsageUpdate
+	applied  chan struct{}
+}
+
+type capacityClearRequest struct {
+	immediate bool
+	scope     string
+	at        time.Time
+	reply     chan capacityClearReply
+}
+
+type capacityClearReply struct {
+	cleared []BackendOutage
+}
+
+type trackerClearRequest struct {
+	at    time.Time
+	reply chan trackerClearReply
+}
+
+type trackerClearReply struct {
+	cleared []TrackerCondition
+}
+
+type forgeClearRequest struct {
+	host  string
+	at    time.Time
+	reply chan forgeClearReply
+}
+
+type forgeClearReply struct {
+	cleared []ForgeCondition
+}
+
+type failureBreakerCanaryRequest struct {
+	at    time.Time
+	reply chan FailureBreakerCanaryResult
+}
+
+func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
+	cfg = normalizeConfig(cfg)
+	if rollout, ok := deps.WorkflowMetrics.(interface {
+		IssueContractRolloutAt(context.Context) (time.Time, error)
+	}); ok && cfg.IssueContract != nil {
+		var err error
+		cfg.IssueContractRolloutAt, err = rollout.IssueContractRolloutAt(context.Background())
+		if err != nil {
+			return nil, err
+		}
+	}
+	if deps.Connector == nil {
+		return nil, ErrMissingConnector
+	}
+	cfg = withNativeLandingLane(cfg, deps.Connector)
+
+	runner := deps.Runner
+	if runner == nil {
+		runner = FakeRunner{}
+	}
+	reaper := deps.WorkspaceReaper
+	var workerHostChecker runpkg.WorkerHostChecker
+	if candidate, ok := runner.(runpkg.WorkerHostChecker); ok {
+		workerHostChecker = candidate
+	}
+	if reaper == nil {
+		if candidate, ok := runner.(WorkspaceReaper); ok {
+			reaper = candidate
+		}
+	}
+	var validator Validator
+	if candidate, ok := runner.(Validator); ok {
+		validator = candidate
+	}
+	var securityAuditor SecurityAuditor
+	if candidate, ok := runner.(SecurityAuditor); ok {
+		securityAuditor = candidate
+	}
+	var capacityController runpkg.CapacityController
+	var providerCapacity runpkg.ProviderCapacityResolver
+	if candidate, ok := runner.(runpkg.ProviderCapacityResolver); ok {
+		providerCapacity = candidate
+	}
+	if candidate, ok := runner.(runpkg.CapacityController); ok {
+		capacityController = candidate
+	}
+	var validatorCapacity runpkg.ValidatorCapacityController
+	if candidate, ok := runner.(runpkg.ValidatorCapacityController); ok {
+		validatorCapacity = candidate
+	}
+	var blockedRecoveryInspector runpkg.BlockedRecoveryInspector
+	if candidate, ok := runner.(runpkg.BlockedRecoveryInspector); ok {
+		blockedRecoveryInspector = candidate
+	}
+	var workspaceHoldInspector runpkg.WorkspaceBranchHoldInspector
+	if candidate, ok := runner.(runpkg.WorkspaceBranchHoldInspector); ok {
+		workspaceHoldInspector = candidate
+	}
+	var capacityStatus runpkg.CapacityStatusController
+	if candidate, ok := runner.(runpkg.CapacityStatusController); ok {
+		capacityStatus = candidate
+	}
+	var capacityReader runpkg.CapacityReader
+	if candidate, ok := runner.(runpkg.CapacityReader); ok {
+		capacityReader = candidate
+	}
+	var dailyBudgetStatus runpkg.DailyBudgetStatusProvider
+	if candidate, ok := runner.(runpkg.DailyBudgetStatusProvider); ok {
+		dailyBudgetStatus = candidate
+	}
+	var issueBudgetStatus runpkg.IssueBudgetStatusProvider
+	if candidate, ok := runner.(runpkg.IssueBudgetStatusProvider); ok {
+		issueBudgetStatus = candidate
+	}
+	var githubRESTBudgetProber runpkg.GitHubRESTBudgetProber
+	if candidate, ok := runner.(runpkg.GitHubRESTBudgetProber); ok {
+		githubRESTBudgetProber = candidate
+	}
+
+	logger := deps.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	now := deps.Now
+	if now == nil {
+		now = time.Now
+	}
+	validatorMemo := deps.ValidatorMemo
+	if validatorMemo == nil {
+		if candidate, ok := deps.WorkflowMetrics.(store.ValidatorMemoStore); ok {
+			validatorMemo = candidate
+		}
+	}
+	securityAuditStore := deps.SecurityAudits
+	if securityAuditStore == nil {
+		if candidate, ok := deps.WorkflowMetrics.(store.SecurityAuditStore); ok {
+			securityAuditStore = candidate
+		}
+	}
+	agentResume := deps.AgentResume
+	if agentResume == nil {
+		if candidate, ok := deps.WorkAttempts.(store.AgentResumeStore); ok {
+			agentResume = candidate
+		}
+	}
+	orphanSessions := deps.OrphanSessions
+	if orphanSessions == nil {
+		if candidate, ok := deps.WorkAttempts.(store.OrphanSessionStore); ok {
+			orphanSessions = candidate
+		}
+	}
+	if orphanSessions == nil {
+		if candidate, ok := deps.WorkflowMetrics.(store.OrphanSessionStore); ok {
+			orphanSessions = candidate
+		}
+	}
+	if agentResume == nil {
+		if candidate, ok := deps.WorkflowMetrics.(store.AgentResumeStore); ok {
+			agentResume = candidate
+		}
+	}
+	laneLedger := deps.LaneLedger
+	if laneLedger == nil {
+		if ledger, ok := deps.WorkflowMetrics.(store.LaneLedgerStore); ok {
+			laneLedger = ledger
+		}
+	}
+	if laneLedger == nil {
+		if ledger, ok := deps.WorkAttempts.(store.LaneLedgerStore); ok {
+			laneLedger = ledger
+		}
+	}
+	lifetimeUsage := deps.LifetimeUsage
+	if lifetimeUsage == nil {
+		if candidate, ok := deps.WorkflowMetrics.(LifetimeUsageStore); ok {
+			lifetimeUsage = candidate
+		}
+	}
+	if lifetimeUsage == nil {
+		if candidate, ok := deps.WorkAttempts.(LifetimeUsageStore); ok {
+			lifetimeUsage = candidate
+		}
+	}
+	mergeRequiredChecks := deps.MergeRequiredChecks
+	if mergeRequiredChecks == nil {
+		if candidate, ok := deps.WorkAttempts.(store.MergeRequiredCheckStore); ok {
+			mergeRequiredChecks = candidate
+		}
+	}
+	if mergeRequiredChecks == nil {
+		if candidate, ok := deps.WorkflowMetrics.(store.MergeRequiredCheckStore); ok {
+			mergeRequiredChecks = candidate
+		}
+	}
+	var operatorStops store.OperatorStopStore
+	if candidate, ok := deps.WorkAttempts.(store.OperatorStopStore); ok {
+		operatorStops = candidate
+	}
+	if operatorStops == nil {
+		if candidate, ok := deps.WorkflowMetrics.(store.OperatorStopStore); ok {
+			operatorStops = candidate
+		}
+	}
+	workerProcesses := deps.WorkerProcesses
+	if workerProcesses == nil {
+		if candidate, ok := deps.WorkAttempts.(WorkerProcessStore); ok {
+			workerProcesses = candidate
+		}
+	}
+	if workerProcesses == nil {
+		if candidate, ok := deps.WorkflowMetrics.(WorkerProcessStore); ok {
+			workerProcesses = candidate
+		}
+	}
+	reapWorkerProcess := deps.ReapWorkerProcess
+	if reapWorkerProcess == nil {
+		reapWorkerProcess = procgroup.Terminate
+	}
+	workerReapGrace := deps.WorkerReapGrace
+	if workerReapGrace <= 0 {
+		workerReapGrace = procgroup.DefaultTerminationGrace
+	}
+	newStalenessNotifier := deps.NewStalenessNotifier
+	if newStalenessNotifier == nil {
+		newStalenessNotifier = staleness.NewNotifier
+	}
+	readMemoryPressure := deps.ReadMemoryPressure
+	if readMemoryPressure == nil {
+		readMemoryPressure = hostpressure.ReadMemory
+	}
+	readIOPressure := deps.ReadIOPressure
+	if readIOPressure == nil {
+		readIOPressure = hostpressure.ReadIO
+	}
+	readCPUPressure := deps.ReadCPUPressure
+	if readCPUPressure == nil {
+		readCPUPressure = hostpressure.ReadCPU
+	}
+
+	supervisor, err := runpkg.NewSupervisor(runner, runpkg.SupervisorConfig{
+		MaxRetryBackoff:       cfg.MaxRetryBackoff,
+		FailureRetryBaseDelay: cfg.FailureRetryBaseDelay,
+		OverloadRetryDelay:    cfg.OverloadRetryDelay,
+		Now:                   now,
+		Logger:                logger,
+		DispatchPacer:         deps.DispatchPacer,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	orchestrator := &Orchestrator{
+		cfg:                 cfg,
+		connector:           deps.Connector,
+		scheduling:          deps.Scheduling,
+		workflowMetrics:     deps.WorkflowMetrics,
+		laneLedger:          laneLedger,
+		laneCoordination:    deps.LaneCoordination,
+		efficiency:          deps.Efficiency,
+		lifecycleExporter:   deps.LifecycleExporter,
+		workAttempts:        deps.WorkAttempts,
+		mergeRequiredChecks: mergeRequiredChecks,
+		operatorStops:       operatorStops,
+
+		lifetimeUsage:           lifetimeUsage,
+		agentResume:             agentResume,
+		orphanSessions:          orphanSessions,
+		supervisor:              supervisor,
+		validator:               validator,
+		securityAuditor:         securityAuditor,
+		reaper:                  reaper,
+		trimHostCache:           deps.TrimHostCache,
+		logger:                  logger,
+		globalDispatchGate:      deps.GlobalDispatchGate,
+		readMemoryPressure:      readMemoryPressure,
+		readIOPressure:          readIOPressure,
+		readCPUPressure:         readCPUPressure,
+		validatorRuns:           map[string]Running{},
+		validatorResults:        map[string]validatorStageResult{},
+		validatorFailures:       map[string]validatorStageFailure{},
+		validatorMemo:           validatorMemo,
+		securityAuditStore:      securityAuditStore,
+		securityAuditRuns:       map[string]struct{}{},
+		stalenessWarningStore:   deps.StalenessWarnings,
+		activity:                deps.Activity,
+		release:                 deps.Release,
+		retrospector:            deps.Retrospector,
+		workerProcesses:         workerProcesses,
+		reapWorkerProcess:       reapWorkerProcess,
+		workerReapGrace:         workerReapGrace,
+		newStalenessNotifier:    newStalenessNotifier,
+		projectID:               cfg.Project.ID,
+		capacityController:      capacityController,
+		providerCapacity:        providerCapacity,
+		workerHostChecker:       workerHostChecker,
+		capacityStatus:          capacityStatus,
+		capacityReader:          capacityReader,
+		validatorCapacity:       validatorCapacity,
+		recoveryInspector:       blockedRecoveryInspector,
+		workspaceHoldInspector:  workspaceHoldInspector,
+		dailyBudgetStatus:       dailyBudgetStatus,
+		issueBudgetStatus:       issueBudgetStatus,
+		githubRESTBudgetProber:  githubRESTBudgetProber,
+		githubRESTBudgetProbes:  map[string]time.Time{},
+		now:                     now,
+		dispatchGateSamples:     map[dispatchGateSampleKey]time.Time{},
+		ciTriggerLabelHeads:     map[string]ciTriggerLabelHead{},
+		initialStateReady:       make(chan struct{}),
+		drainRequests:           make(chan drainRequest),
+		forceRequests:           make(chan forceRequest),
+		recoveryRequests:        make(chan workAttemptRecoveryRequest),
+		operatorMoves:           make(chan operatorMoveRequest),
+		configUpdates:           make(chan configUpdateRequest),
+		refreshes:               make(chan manualRefreshRequest, 1),
+		reconciles:              make(chan targetedRefreshRequest, 128),
+		capacityClearRequests:   make(chan capacityClearRequest, 1),
+		credentialChanges:       make(chan backendCredentialChangeRequest),
+		trackerClearRequests:    make(chan trackerClearRequest),
+		forgeClearRequests:      make(chan forgeClearRequest),
+		failureCanaryRequests:   make(chan failureBreakerCanaryRequest),
+		stopRequests:            make(chan stopRunRequest),
+		modelPermitRequests:     make(chan modelPermitRequest),
+		runResults:              make(chan runpkg.Completion, max(cfg.MaxConcurrentAgents, 1)),
+		runUpdates:              make(chan runUpdate, runUpdateBufferSize),
+		validatorCapacityEvents: make(chan validatorCapacityEvent, max(cfg.MaxConcurrentAgents, 1)),
+		done:                    make(chan struct{}),
+		pendingStops:            map[string]*pendingStopRun{},
+		pendingMergeRevocations: map[string]mergeRevocation{},
+		mergeRevocationComments: map[string]*mergeRevocationCommentState{},
+		completedStops:          map[string]StopRunResult{},
+		tickWatchdog:            newTickWatchdog(cfg.Project.ID, cfg.PollInterval, logger),
+	}
+	orchestrator.setLocalIntakeDisabled(cfg.LocalIntakeDisabled)
+	orchestrator.heartbeats = newHeartbeatManager(cfg, deps.Connector, deps.WorkAttempts, now, logger, deps.Scheduling)
+	return orchestrator, nil
+}
+
+type ciTriggerLabelHead struct {
+	HeadSHA string
+	Pending bool
+}
+
+func (o *Orchestrator) Run(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	o.globalDispatchReady = make(chan struct{}, 1)
+	o.globalDispatchPending = make(map[string]pendingGlobalDispatch)
+	defer o.cancelPendingGlobalDispatches()
+	defer func() {
+		o.capacityClearMu.Lock()
+		defer o.capacityClearMu.Unlock()
+		close(o.done)
+	}()
+	defer o.markGlobalProjectIdle()
+	watchdogCtx, stopWatchdog := context.WithCancel(ctx)
+	watchdogDone := make(chan struct{})
+	go func() {
+		defer close(watchdogDone)
+		o.tickWatchdog.Run(watchdogCtx)
+	}()
+	defer func() {
+		stopWatchdog()
+		<-watchdogDone
+	}()
+	heartbeatCtx, stopHeartbeats := context.WithCancel(ctx)
+	heartbeatsDone := make(chan struct{})
+	var heartbeatResults <-chan heartbeatResult
+	if o.heartbeats != nil {
+		heartbeatResults = o.heartbeats.results
+	}
+	go func() {
+		defer close(heartbeatsDone)
+		o.heartbeats.Run(heartbeatCtx)
+	}()
+	defer func() {
+		stopHeartbeats()
+		<-heartbeatsDone
+	}()
+
+	ticker := time.NewTicker(o.cfg.PollInterval)
+	defer ticker.Stop()
+	candidateChanges := make(chan struct{}, 1)
+	waitCtx, stopCandidateWait := context.WithCancel(ctx)
+	waitDone := make(chan struct{})
+	if waiter, ok := o.scheduling.(candidateChangeWaiter); ok {
+		go func() {
+			defer close(waitDone)
+			waiter.WaitCandidateChanges(waitCtx, o.projectID, candidateChanges)
+		}()
+	} else {
+		close(waitDone)
+	}
+	defer func() {
+		stopCandidateWait()
+		<-waitDone
+	}()
+
+	state := newState(o.cfg)
+	defer o.stopWorkspaceCleanup()
+	defer o.validatorWG.Wait()
+	defer o.securityAuditWG.Wait()
+	defer o.releaseRunningSlots(&state)
+	o.startTick(&state, time.Now())
+	o.publishState(ctx, &state)
+	recoveryTiming := newRefreshTiming(o.logger, o.cfg.Project.ID, false)
+	recoveryTiming.message = "project startup recovery timing"
+	recoveryTiming.progress = &o.refreshProgress
+	recoveryTiming.next("recovery")
+	o.recoverDurableWorkAttempts(ctx, &state, time.Now())
+	recoveryTiming.log(ctx, ctx.Err() == nil, &state)
+	o.publishState(ctx, &state)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	initialTickAt := time.Now()
+	o.startTick(&state, initialTickAt)
+	o.tick(ctx, &state, initialTickAt)
+	o.finishTick(ctx, &state)
+	o.publishState(ctx, &state)
+	resetTicker(ticker, state.PollInterval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case now := <-ticker.C:
+			state.syncWorkerProgress()
+			o.startTick(&state, now)
+			o.tick(ctx, &state, now)
+			o.finishTick(ctx, &state)
+			resetTicker(ticker, state.PollInterval)
+		case <-candidateChanges:
+			if state.Draining {
+				continue
+			}
+			state.syncWorkerProgress()
+			now := o.clockNow()
+			o.startTick(&state, now)
+			o.tick(ctx, &state, now)
+			o.finishTick(ctx, &state)
+			resetTicker(ticker, state.PollInterval)
+		case request := <-o.refreshes:
+			state.syncWorkerProgress()
+			o.startTick(&state, time.Now())
+			o.tickManual(ctx, &state, request)
+			o.finishTick(ctx, &state)
+			resetTicker(ticker, state.PollInterval)
+		case request := <-o.reconciles:
+			state.syncWorkerProgress()
+			o.startTick(&state, time.Now())
+			o.reconcileTarget(ctx, &state, request)
+			o.finishTick(ctx, &state)
+			resetTicker(ticker, state.PollInterval)
+		case request := <-o.capacityClearRequests:
+			state.syncWorkerProgress()
+			cleared := o.clearBackendCapacity(&state, request.scope, request.at, request.immediate)
+			if request.reply != nil {
+				request.reply <- capacityClearReply{cleared: cleared}
+			}
+		case request := <-o.credentialChanges:
+			state.syncWorkerProgress()
+			scheduled := o.scheduleBackendCredentialProbe(&state, request.scope, request.at)
+			request.reply <- scheduled
+			if scheduled {
+				o.startTick(&state, request.at)
+				o.tick(ctx, &state, request.at)
+				o.finishTick(ctx, &state)
+				resetTicker(ticker, state.PollInterval)
+			}
+		case request := <-o.trackerClearRequests:
+			state.syncWorkerProgress()
+			request.reply <- trackerClearReply{cleared: o.clearTrackerAvailability(&state, request.at)}
+		case request := <-o.forgeClearRequests:
+			state.syncWorkerProgress()
+			request.reply <- forgeClearReply{cleared: o.clearForgeAvailability(&state, request.host, request.at)}
+		case request := <-o.failureCanaryRequests:
+			state.syncWorkerProgress()
+			result := o.requestProjectFailureBreakerCanary(&state, request.at)
+			request.reply <- result
+			if result.Requested {
+				o.startTick(&state, time.Now())
+				o.tick(ctx, &state, request.at)
+				o.finishTick(ctx, &state)
+				resetTicker(ticker, state.PollInterval)
+			}
+		case request := <-o.stopRequests:
+			state.syncWorkerProgress()
+			before := len(state.Running)
+			o.handleStopRunRequest(ctx, &state, request)
+			if len(state.Running) < before {
+				o.refillProjectSlotsExcluding(ctx, &state, o.clockNow(), request.request.IssueID)
+			}
+		case request := <-o.modelPermitRequests:
+			state.syncWorkerProgress()
+			request.reply <- o.handleModelPermitRequest(&state, request.issueID)
+		case <-o.globalDispatchReady:
+			state.syncWorkerProgress()
+			o.dispatchGrantedRequests(ctx, &state, o.clockNow())
+		case result := <-o.workspaceCleanupResults:
+			o.finishWorkspaceCleanup(&state, result)
+		case result := <-o.runResults:
+			state.syncWorkerProgress()
+			o.startCompletion(ctx, &state)
+			o.handleQueuedRunResults(ctx, &state, result)
+			o.publishState(ctx, &state)
+			o.completionState.Store(nil)
+			continue
+		case update := <-o.runUpdates:
+			state.syncWorkerProgress()
+			o.handleRunUpdate(&state, update)
+			if update.applied != nil {
+				close(update.applied)
+			}
+		case result := <-heartbeatResults:
+			state.syncWorkerProgress()
+			before := len(state.Running)
+			o.handleHeartbeatResult(&state, result)
+			if len(state.Running) < before {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
+		case event := <-o.validatorCapacityEvents:
+			state.syncWorkerProgress()
+			o.handleValidatorCapacityEvent(&state, event)
+		case request := <-o.drainRequests:
+			stopCandidateWait()
+			o.cancelPendingGlobalDispatches()
+			state.syncWorkerProgress()
+			o.startDrain(&state, request.at)
+			o.publishState(ctx, &state)
+			request.reply <- struct{}{}
+			continue
+		case request := <-o.forceRequests:
+			state.syncWorkerProgress()
+			err := o.forceQuit(request.ctx, &state, request.at)
+			o.publishState(ctx, &state)
+			request.reply <- err
+			continue
+		case request := <-o.recoveryRequests:
+			state.syncWorkerProgress()
+			before := len(state.Running)
+			var response WorkAttemptRecoveryResponse
+			var err error
+			if request.receiptOnly {
+				response, err = o.workAttemptRecoveryReceipt(ctx, request.request.ProjectID, request.request.AttemptID, request.at)
+				if err == nil {
+					response = o.describeWorkAttemptRecovery(ctx, &state, response)
+				}
+			} else {
+				response, err = o.handleWorkAttemptRecovery(ctx, &state, request.request, request.at)
+			}
+			request.reply <- workAttemptRecoveryReply{response: response, err: err}
+			if len(state.Running) < before {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
+			if !request.receiptOnly && err == nil && response.Queued {
+				resetTicker(ticker, time.Millisecond)
+			}
+		case request := <-o.operatorMoves:
+			o.cancelPendingGlobalDispatches()
+			state.syncWorkerProgress()
+			before := len(state.Running)
+			result := o.applyOperatorMove(ctx, &state, request.request, request.at)
+			request.reply <- result.OperatorMoveResult
+			if result.ready || len(state.Running) < before {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
+		case update := <-o.configUpdates:
+			o.cancelPendingGlobalDispatches()
+			state.syncWorkerProgress()
+			previousCapacity := state.MaxConcurrentAgents
+			o.applyRuntimeUpdate(&state, update.update, ticker)
+			if state.MaxConcurrentAgents > previousCapacity {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
+			o.finishTick(ctx, &state)
+			update.reply <- struct{}{}
+		}
+		o.publishState(ctx, &state)
+	}
+}
+
+func (o *Orchestrator) TickLiveness(now time.Time) telemetry.TickLiveness {
+	if o == nil || o.tickWatchdog == nil {
+		return telemetry.TickLiveness{Status: telemetry.TickLivenessStatusInitializing}
+	}
+	return o.tickWatchdog.Snapshot(now)
+}
+
+func (o *Orchestrator) startTick(state *State, at time.Time) {
+	if o == nil {
+		return
+	}
+	state.syncWorkerProgress()
+	// Publish recovered and updated runtime ownership before tracker reads can
+	// block the actor. Existing progress pointers keep heartbeats observable.
+	o.publishRuntimeState(state)
+	if o.tickWatchdog == nil || state == nil {
+		return
+	}
+	nextRefreshAt := time.Time{}
+	if state.PollInterval > 0 {
+		nextRefreshAt = at.Add(state.PollInterval)
+	}
+	o.tickWatchdog.Advance(at, nextRefreshAt, state.PollInterval)
+}
+
+func (o *Orchestrator) finishTick(ctx context.Context, state *State) {
+	if o == nil {
+		return
+	}
+	if state != nil && state.PollInterval > 0 {
+		state.NextRefreshAt = o.clockNow().Add(state.PollInterval)
+	}
+	o.publishState(ctx, state)
+	o.refreshProgress.Store(nil)
+	if o.tickWatchdog == nil || state == nil {
+		return
+	}
+	o.tickWatchdog.Schedule(state.NextRefreshAt, state.PollInterval)
+}
+
+func (o *Orchestrator) startCompletion(ctx context.Context, state *State) {
+	cloned := o.observableDispatchState(state.clone())
+	o.snapshotDispatchModes(ctx, &cloned)
+	for id, running := range cloned.Running {
+		running.progress = nil
+		cloned.Running[id] = running
+	}
+	cloned.RuntimeObservation = telemetry.SnapshotSection{
+		Source:     telemetry.SnapshotSourceCached,
+		ObservedAt: time.Now(),
+		Complete:   true,
+	}
+	o.completionState.Store(&cloned)
+}
+
+func (o *Orchestrator) ClearBackendCapacity(ctx context.Context, scope string) ([]BackendOutage, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request := capacityClearRequest{
+		scope: strings.TrimSpace(scope),
+		at:    o.clockNow(),
+		reply: make(chan capacityClearReply, 1),
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-o.done:
+		return nil, ErrStopped
+	case o.capacityClearRequests <- request:
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-o.done:
+		return nil, ErrStopped
+	case reply := <-request.reply:
+		return reply.cleared, nil
+	}
+}
+
+func (o *Orchestrator) RequestBackendCapacityClear(ctx context.Context, scope string, immediate ...bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request := capacityClearRequest{
+		immediate: len(immediate) > 0 && immediate[0],
+		scope:     strings.TrimSpace(scope),
+		at:        o.clockNow(),
+	}
+	o.capacityClearMu.Lock()
+	defer o.capacityClearMu.Unlock()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	case o.capacityClearRequests <- request:
+		return nil
+	default:
+		return ErrCapacityClearQueueFull
+	}
+}
+
+func (o *Orchestrator) ClearTrackerAvailability(ctx context.Context) ([]TrackerCondition, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request := trackerClearRequest{
+		at:    o.clockNow(),
+		reply: make(chan trackerClearReply, 1),
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-o.done:
+		return nil, ErrStopped
+	case o.trackerClearRequests <- request:
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-o.done:
+		return nil, ErrStopped
+	case reply := <-request.reply:
+		return reply.cleared, nil
+	}
+}
+
+func (o *Orchestrator) RequestProjectFailureBreakerCanary(ctx context.Context) (FailureBreakerCanaryResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request := failureBreakerCanaryRequest{
+		at:    o.clockNow(),
+		reply: make(chan FailureBreakerCanaryResult, 1),
+	}
+	select {
+	case <-ctx.Done():
+		return FailureBreakerCanaryResult{}, ctx.Err()
+	case <-o.done:
+		return FailureBreakerCanaryResult{}, ErrStopped
+	case o.failureCanaryRequests <- request:
+	}
+	select {
+	case <-ctx.Done():
+		return FailureBreakerCanaryResult{}, ctx.Err()
+	case <-o.done:
+		return FailureBreakerCanaryResult{}, ErrStopped
+	case result := <-request.reply:
+		return result, nil
+	}
+}
+
+func resetTicker(ticker *time.Ticker, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	ticker.Reset(interval)
+}
+
+func (o *Orchestrator) UpdateConfig(ctx context.Context, cfg Config) error {
+	return o.UpdateRuntime(ctx, RuntimeUpdate{Config: cfg})
+}
+
+func (o *Orchestrator) UpdateRuntime(ctx context.Context, update RuntimeUpdate) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	previousIntakeDisabled := o.localIntakeDisabled.Load()
+	if update.Config.LocalIntakeDisabled {
+		o.setLocalIntakeDisabled(true)
+	}
+	request := configUpdateRequest{
+		update: update,
+		reply:  make(chan struct{}, 1),
+	}
+	select {
+	case <-ctx.Done():
+		o.setLocalIntakeDisabled(previousIntakeDisabled)
+		return ctx.Err()
+	case <-o.done:
+		o.setLocalIntakeDisabled(previousIntakeDisabled)
+		return ErrStopped
+	case o.configUpdates <- request:
+		return o.waitRuntimeUpdate(ctx, request)
+	}
+}
+
+func (o *Orchestrator) waitRuntimeUpdate(ctx context.Context, request configUpdateRequest) error {
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	case <-request.reply:
+		return nil
+	}
+}
+
+func (o *Orchestrator) DependencyIssues() []connector.Issue {
+	state := o.latestState.Load()
+	if state == nil {
+		return nil
+	}
+	issues := make([]connector.Issue, len(state.BoardIssues))
+	for i, issue := range state.BoardIssues {
+		issues[i] = cloneIssue(issue)
+	}
+	return issues
+}
+
+func (o *Orchestrator) State(ctx context.Context) (State, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if o.latestState.Load() == nil {
+		select {
+		case <-ctx.Done():
+			return State{}, ctx.Err()
+		case <-o.done:
+			return State{}, ErrStopped
+		case <-o.initialStateReady:
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return State{}, ctx.Err()
+	case <-o.done:
+		return State{}, ErrStopped
+	default:
+		return o.publishedState(), nil
+	}
+}
+
+func (o *Orchestrator) publishedState() State {
+	completion := o.completionState.Load()
+	var state State
+	if completion != nil {
+		state = completion.clone()
+	} else {
+		state = o.latestState.Load().clone()
+	}
+	state.LocalIntake.Enabled = o.LocalIntakeEnabled()
+	if runtime := o.latestRuntimeState.Load(); runtime != nil {
+		state.Running = cloneRunning(runtime.Running)
+		state.WorkAttempts = cloneTelemetryWorkAttempts(runtime.WorkAttempts)
+		if completion == nil {
+			state.Claimed = cloneClaimed(runtime.Claimed)
+		}
+	}
+	if completion != nil {
+		return o.observableValidatorState(state)
+	}
+	return o.observableState(state)
+}
+
+func (o *Orchestrator) observableState(state State) State {
+	return o.observableValidatorState(o.observableDispatchState(state))
+}
+
+func (o *Orchestrator) observableValidatorState(state State) State {
+	for _, running := range state.Running {
+		if running.progress != nil {
+			if heartbeat := running.progress.persisted.Load(); heartbeat != nil {
+				o.applyWorkAttemptHeartbeatSnapshot(&state, running.WorkAttemptID, *heartbeat, running.LastMessageTruncation)
+			}
+		}
+	}
+	// Validator stages already own their lifecycle in validatorRuns. Include their
+	// progress in observations without adding them to the dispatch state machine.
+	o.validatorMu.Lock()
+	state.TokenTotals = addTokenTotals(state.TokenTotals, o.validatorTokenTotals)
+	for key, running := range cloneRunning(o.validatorRuns) {
+		if state.Running == nil {
+			state.Running = make(map[string]Running)
+		}
+		state.Running["validator:"+key] = running
+	}
+	o.validatorMu.Unlock()
+	return state
+}
+
+func (o *Orchestrator) observableDispatchState(state State) State {
+	pool := o.dispatchPoolSnapshot()
+	state.PoolName = pool.Name
+	state.PoolCapacity = pool.Capacity
+	state.PoolAvailable = pool.Available
+	state.PoolDraining = pool.Draining
+	if progress := o.refreshProgress.Load(); progress != nil {
+		state.RefreshProgress = *progress
+	}
+	return state
+}
+
+func (o *Orchestrator) publishState(ctx context.Context, state *State) {
+	if o == nil || state == nil {
+		return
+	}
+	o.snapshotLocalIntake(state)
+	cloned := state.clone()
+	o.snapshotDispatchModes(ctx, &cloned)
+	o.snapshotNativeAdmission(&cloned)
+	if observer, ok := o.scheduling.(nativeAdmissionObserver); ok {
+		observer.ObserveNativeAdmission(o.cfg.Project.ID, *cloned.nativeAdmission)
+	}
+	o.publishRuntimeSnapshot(&runtimeState{
+		WorkAttempts: cloned.WorkAttempts,
+		Running:      cloned.Running,
+		Claimed:      cloned.Claimed,
+	})
+	o.latestState.Store(&cloned)
+	if o.initialStateReady != nil {
+		o.initialStatePublished.Do(func() { close(o.initialStateReady) })
+	}
+}
+
+func (o *Orchestrator) publishRuntimeState(state *State) {
+	if o == nil || state == nil {
+		return
+	}
+	o.publishRuntimeSnapshot(&runtimeState{
+		WorkAttempts: cloneTelemetryWorkAttempts(state.WorkAttempts),
+		Running:      cloneRunning(state.Running),
+		Claimed:      cloneClaimed(state.Claimed),
+	})
+}
+
+func (o *Orchestrator) publishRuntimeSnapshot(runtime *runtimeState) {
+	terminalAttempts := make(map[int64]struct{})
+	for _, attempt := range runtime.WorkAttempts {
+		if attempt.Status == string(store.WorkAttemptStatusTerminal) && attempt.AttemptID > 0 {
+			terminalAttempts[attempt.AttemptID] = struct{}{}
+		}
+	}
+	for issueID, running := range runtime.Running {
+		if _, terminal := terminalAttempts[running.WorkAttemptID]; terminal {
+			delete(runtime.Running, issueID)
+		}
+	}
+	o.latestRuntimeState.Store(runtime)
+}
+
+func (o *Orchestrator) Drain(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	o.BeginDrain()
+	if err := o.WaitForDispatchQuiesced(ctx); err != nil {
+		return err
+	}
+
+	request := drainRequest{
+		at:    time.Now().UTC(),
+		reply: make(chan struct{}, 1),
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	case o.drainRequests <- request:
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	case <-request.reply:
+		return nil
+	}
+}
+
+func (o *Orchestrator) ForceQuit(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	o.BeginDrain()
+	if err := o.WaitForDispatchQuiesced(ctx); err != nil {
+		return err
+	}
+
+	request := forceRequest{
+		ctx:   ctx,
+		at:    time.Now().UTC(),
+		reply: make(chan error, 1),
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	case o.forceRequests <- request:
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	case err := <-request.reply:
+		return err
+	}
+}
+
+func (o *Orchestrator) BeginDrain() {
+	if o == nil {
+		return
+	}
+
+	o.dispatchLifecycleMu.Lock()
+	done := o.dispatchDoneLocked()
+	select {
+	case <-done:
+		o.dispatchLifecycleMu.Unlock()
+		return
+	default:
+		close(done)
+	}
+	o.dispatchLifecycleMu.Unlock()
+	if o.globalDispatchGate != nil {
+		o.globalDispatchGate.MarkIdle(scheduler.ProjectCandidate{ID: o.projectID})
+	}
+}
+
+func (o *Orchestrator) dispatchDoneLocked() chan struct{} {
+	if o.dispatchDone == nil {
+		o.dispatchDone = make(chan struct{})
+	}
+	return o.dispatchDone
+}
+
+func (o *Orchestrator) beginDispatchDiscovery(ctx context.Context) (context.Context, context.CancelFunc) {
+	o.dispatchLifecycleMu.Lock()
+	done := o.dispatchDoneLocked()
+	o.dispatchLifecycleMu.Unlock()
+	discoveryCtx, cancel := context.WithCancel(ctx)
+	select {
+	case <-done:
+		cancel()
+	default:
+		go func() {
+			select {
+			case <-done:
+				cancel()
+			case <-discoveryCtx.Done():
+			}
+		}()
+	}
+	return discoveryCtx, cancel
+}
+
+func (o *Orchestrator) WaitForDispatchQuiesced(ctx context.Context) error {
+	if o == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	o.dispatchLifecycleMu.Lock()
+	done := o.dispatchStartsDone
+	o.dispatchLifecycleMu.Unlock()
+	if done == nil {
+		return nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
+}
+
+func (o *Orchestrator) beginDispatchStart() bool {
+	o.dispatchLifecycleMu.Lock()
+	defer o.dispatchLifecycleMu.Unlock()
+	select {
+	case <-o.dispatchDone:
+		return false
+	default:
+	}
+	if o.dispatchStarts == 0 {
+		o.dispatchStartsDone = make(chan struct{})
+	}
+	o.dispatchStarts++
+	return true
+}
+
+func (o *Orchestrator) finishDispatchStart() {
+	o.dispatchLifecycleMu.Lock()
+	defer o.dispatchLifecycleMu.Unlock()
+	o.dispatchStarts--
+	if o.dispatchStarts == 0 {
+		close(o.dispatchStartsDone)
+		o.dispatchStartsDone = nil
+	}
+}
+
+func (o *Orchestrator) dispatchQuiesced() bool {
+	if o == nil {
+		return true
+	}
+	o.dispatchLifecycleMu.Lock()
+	defer o.dispatchLifecycleMu.Unlock()
+	select {
+	case <-o.dispatchDone:
+		return true
+	default:
+		return false
+	}
+}
+
+func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ticker *time.Ticker) {
+	cfg := normalizeConfig(update.Config)
+	previousCfg := o.cfg
+	cfg.IssueContractRolloutAt = previousCfg.IssueContractRolloutAt
+	if o.cfg.Claiming.OwnershipMode != cfg.Claiming.OwnershipMode ||
+		o.cfg.Claiming.AssigneeRequired != cfg.Claiming.AssigneeRequired {
+		o.ownershipStartupLogged = false
+	}
+	if update.Connector != nil {
+		o.connector = update.Connector
+	}
+	cfg = withNativeLandingLane(cfg, o.connector)
+	o.setLocalIntakeDisabled(cfg.LocalIntakeDisabled)
+	o.cfg = cfg
+	now := time.Now
+	if o.now != nil {
+		now = o.now
+	}
+	updatedAt := now()
+	o.reloadProjectFailureBreaker(state, cfg.FailureBreaker, updatedAt)
+	o.heartbeats.configure(cfg, o.connector, o.workAttempts)
+	if update.ReplaceRelease {
+		o.release = update.Release
+		if update.Release == nil {
+			state.Release = releasepkg.Status{}
+		}
+	}
+	o.supervisor.UpdateConfig(runpkg.SupervisorConfig{
+		MaxRetryBackoff:       cfg.MaxRetryBackoff,
+		FailureRetryBaseDelay: cfg.FailureRetryBaseDelay,
+		OverloadRetryDelay:    cfg.OverloadRetryDelay,
+	})
+	state.PollInterval = cfg.PollInterval
+	state.RefreshFailureThreshold = cfg.RefreshFailureThreshold
+	state.MaxConcurrentAgents = cfg.MaxConcurrentAgents
+	state.BillingMode = cfg.BillingMode
+	state.RateWindowPacing = cfg.RateWindowPacing
+	state.StrandedActiveThreshold = cfg.StrandedActiveThreshold
+	state.DispatchStallThreshold = cfg.DispatchStallThreshold
+	refreshCachedHostPressure(state, previousCfg, cfg, updatedAt)
+	state.AutoPromoteQuietDuration = cfg.AutoPromote.QuietDuration
+	state.AutoPromote = cloneAutoPromoteConfig(cfg.AutoPromote)
+	state.ActiveStates = append([]string(nil), cfg.ActiveStates...)
+	state.TerminalStates = append([]string(nil), cfg.TerminalStates...)
+	state.StopRunTargetState = cfg.StopRunTargetState
+	state.PrioritizeUnblockers = cfg.PrioritizeUnblockers
+	state.Instance = instanceSnapshot(cfg)
+	state.Authorization = cloneSelector(cfg.Authorization)
+	state.SelectorContext = cfg.SelectorContext
+	if !state.LastRefreshAt.IsZero() && cfg.PollInterval > 0 {
+		state.NextRefreshAt = state.LastRefreshAt.Add(cfg.PollInterval)
+	}
+	ticker.Reset(cfg.PollInterval)
+}
+
+func (o *Orchestrator) startDrain(state *State, now time.Time) {
+	if state == nil {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if !state.Draining {
+		state.Draining = true
+		state.DrainStartedAt = now
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      now,
+			Event:   "shutdown_drain_started",
+			Message: "shutdown drain started",
+		})
+	}
+	o.markGlobalProjectIdle()
+}
+
+func (o *Orchestrator) forceQuit(ctx context.Context, state *State, now time.Time) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if state == nil {
+		return nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	state.Draining = true
+	if state.DrainStartedAt.IsZero() {
+		state.DrainStartedAt = now
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "shutdown_force_requested",
+		Message: "shutdown force requested",
+	})
+
+	var err error
+	for _, issueID := range sortedKeys(state.Running) {
+		o.cancelRunning(state, issueID, "orchestrator.force_quit")
+		o.heartbeats.remove(issueID)
+		err = errors.Join(err, o.abandonClaim(ctx, issueID))
+		delete(state.Running, issueID)
+		delete(state.Claimed, issueID)
+		delete(state.Retry, issueID)
+		delete(state.BudgetRefusals, issueID)
+		delete(state.PriorAttempts, issueID)
+	}
+	o.markGlobalProjectIdle()
+	return err
+}
+
+func (o *Orchestrator) abandonClaim(ctx context.Context, issueID string) error {
+	if o.scheduling != nil {
+		err := o.scheduling.ReleaseClaim(ctx, issueID, "orchestrator_release")
+		if err == nil || errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) || errors.Is(err, ErrSchedulingClaimLost) {
+			o.heartbeats.remove(issueID)
+		}
+		return err
+	}
+	if !o.cfg.Claiming.Enabled || strings.TrimSpace(o.cfg.Claiming.LeaseField) == "" {
+		return nil
+	}
+	if strings.TrimSpace(issueID) == "" || o.connector == nil {
+		return nil
+	}
+	o.heartbeats.remove(issueID)
+	if err := o.connector.SetField(ctx, issueID, o.cfg.Claiming.LeaseField, ""); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("abandon claim lease failed", "issue_id", issueID, "error", err)
+		}
+		return err
+	}
+	return nil
+}
+
+func (o *Orchestrator) cleanupDrainedRun(ctx context.Context, state *State, issueID string) {
+	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
+		o.logger.Warn("abandon completed drain claim failed", "issue_id", issueID, "error", err)
+	}
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
+
+}
