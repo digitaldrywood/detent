@@ -45,7 +45,7 @@ type Project struct {
 }
 
 func (p *Project) Evaluate() {
-	p.Steps = make([]Step, 0, 4)
+	p.Steps = nil
 	add := func(name string, ready bool, detail string) {
 		state := "action_required"
 		if ready {
