@@ -88,15 +88,6 @@ func permissionWaitCompletionAllowed(event runpkg.Completion) bool {
 	return true
 }
 
-func unsatisfiableCriteriaWait(criteria []string) permissionWaitRecord {
-	return permissionWaitRecord{
-		Question: "Rewrite each of these acceptance criteria as a pre-merge check or remove it; no repository change can satisfy them before merge:\n- " + strings.Join(criteria, "\n- "),
-		Kind:     permissionWaitCriteriaUnsatisfiable,
-		Source:   "acceptance_validator",
-		Criteria: criteria,
-	}
-}
-
 func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
 	if !permissionWaitCompletionAllowed(event) {
 		return false

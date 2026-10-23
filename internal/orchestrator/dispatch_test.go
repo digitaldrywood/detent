@@ -28,7 +28,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestRunningWorkAttemptMetadataJSONPersistsPullRequestFingerprint(t *testing.T) {
@@ -4456,18 +4455,4 @@ func TestTimedOutWorkerProbeDoesNotHoldDispatch(t *testing.T) {
 			}
 		})
 	}
-}
-
-func (c *staleReworkConnector) FetchChanges(context.Context, tracker.NativeWorkItemID) ([]tracker.ChangeRequest, error) {
-	return []tracker.ChangeRequest{c.detail.Change}, nil
-}
-func (c *staleReworkConnector) FetchChange(context.Context, tracker.NativeWorkItemID, string) (tracker.ChangeDetail, error) {
-	return c.detail, c.readErr
-}
-
-type staleReworkConnector struct {
-	*terminalRetryConnector
-	tracker.ChangeReader
-	detail  tracker.ChangeDetail
-	readErr error
 }

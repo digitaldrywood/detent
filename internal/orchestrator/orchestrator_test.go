@@ -2092,7 +2092,7 @@ func TestRunRetriesStatusLabelConflictCandidate(t *testing.T) {
 			return err
 		}
 		if len(state.SchedulerDecisions) == 0 {
-			return fmt.Errorf("awaiting unavailable-status decision")
+			return errors.New("awaiting unavailable-status decision")
 		}
 		return nil
 	})
@@ -2108,7 +2108,7 @@ func TestRunRetriesStatusLabelConflictCandidate(t *testing.T) {
 			return err
 		}
 		if _, ok := state.Retry[conflict.ID]; !ok {
-			return fmt.Errorf("awaiting retry after status recovery")
+			return errors.New("awaiting retry after status recovery")
 		}
 		return nil
 	})
@@ -4018,23 +4018,6 @@ func cloneIssues(issues []connector.Issue) []connector.Issue {
 
 func cloneConnectorComments(comments []connector.IssueComment) []connector.IssueComment {
 	return append([]connector.IssueComment(nil), comments...)
-}
-
-// instantFailureCommentConnector signals that the breaker output was recorded.
-type instantFailureCommentConnector struct {
-	*fakeConnector
-	commented chan struct{}
-}
-
-func (c *instantFailureCommentConnector) CreateComment(ctx context.Context, issueID, body string) error {
-	if err := c.fakeConnector.CreateComment(ctx, issueID, body); err != nil {
-		return err
-	}
-	select {
-	case c.commented <- struct{}{}:
-	default:
-	}
-	return nil
 }
 
 func (f *fakeConnector) HydratePullRequest(_ context.Context, issue connector.Issue) (connector.Issue, error) {

@@ -51,20 +51,6 @@ type recordedBlockerEvaluation struct {
 	HumanOwned   bool
 }
 
-// instanceOnly reports blockers that all belong to the instance. They never
-// hold an issue: the instance retries the work instead.
-func (e recordedBlockerEvaluation) instanceOnly() bool {
-	if !e.Found || e.HumanOwned || len(e.Evidence) == 0 {
-		return false
-	}
-	for _, evidence := range e.Evidence {
-		if evidence.Owner != workpad.BlockerOwnerInstance && evidence.Status != blockerEvidenceStatusCleared {
-			return false
-		}
-	}
-	return true
-}
-
 func (o *Orchestrator) evaluateRecordedBlockers(
 	ctx context.Context,
 	state *State,

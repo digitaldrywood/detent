@@ -286,16 +286,6 @@ func latestEnteredLaneReason(events []store.WorkflowPhaseEvent, lane string) (st
 	return "", false
 }
 
-type blockedRecoveryTimelineRecorder struct {
-	*autoPromoteWorkflowMetricsRecorder
-	reads int
-}
-
-func (r *blockedRecoveryTimelineRecorder) IssueWorkflowTimeline(ctx context.Context, identity store.IssueIdentity) (store.WorkflowTimeline, error) {
-	r.reads++
-	return r.autoPromoteWorkflowMetricsRecorder.IssueWorkflowTimeline(ctx, identity)
-}
-
 func TestRecoverBlockedIssuesDoesNotRecordRejectedReworkBreakerUnpark(t *testing.T) {
 	t.Parallel()
 
@@ -327,26 +317,6 @@ func TestRecoverBlockedIssuesDoesNotRecordRejectedReworkBreakerUnpark(t *testing
 	}
 }
 
-// Validator acceptance refreshes task inputs by identity before consuming a
-// cached verdict. This fixture exposes its current task without changing the
-// dependency connector used by other tests.
-type reworkBreakerTaskConnector struct {
-	*dependencyAutoUnblockConnector
-}
-
-func (c reworkBreakerTaskConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
-	var out []connector.Issue
-	for _, current := range c.stateIssues {
-		for _, id := range ids {
-			if current.ID == id {
-				out = append(out, cloneIssue(current))
-				break
-			}
-		}
-	}
-	return out, nil
-}
-
 type reworkBreakerRejectingConnector struct {
 	*dependencyAutoUnblockConnector
 }
@@ -354,25 +324,6 @@ type reworkBreakerRejectingConnector struct {
 func (c reworkBreakerRejectingConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {
 	c.updates = append(c.updates, dependencyAutoUnblockUpdate{issueID: issueID, state: state})
 	return connector.ErrStateUpdateBlocked
-}
-
-func metricsTimeline(
-	t *testing.T,
-	metrics *autoPromoteWorkflowMetricsRecorder,
-	issue connector.Issue,
-) store.WorkflowTimeline {
-	t.Helper()
-
-	timeline, err := metrics.IssueWorkflowTimeline(context.Background(), store.IssueIdentity{
-		ProjectID:  defaultWorkflowMetricsProjectID,
-		IssueID:    issue.ID,
-		Identifier: issue.Identifier,
-		IssueURL:   issue.URL,
-	})
-	if err != nil {
-		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
-	}
-	return timeline
 }
 
 func reworkBreakerRecoveryIssue(id string) connector.Issue {
@@ -435,55 +386,6 @@ func recordReworkBreakerPark(
 	}
 }
 
-func recordReworkBreakerAutoUnpark(
-	t *testing.T,
-	metrics *autoPromoteWorkflowMetricsRecorder,
-	issue connector.Issue,
-	at time.Time,
-) {
-	t.Helper()
-
-	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionReworkBreakerAutoUnpark, "pr=1585;head=parked-head")
-	if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), store.WorkflowPhaseEvent{
-		ProjectID:    defaultWorkflowMetricsProjectID,
-		IssueID:      issue.ID,
-		Identifier:   issue.Identifier,
-		IssueURL:     issue.URL,
-		PhaseType:    store.WorkflowPhaseTypeLane,
-		PhaseName:    autoPromoteMergingState,
-		Reason:       "rework_breaker_auto_unpark",
-		Status:       "entered",
-		StartedAt:    at,
-		MetadataJSON: workflowLaneMetadataJSON(issue, metadata),
-	}); err != nil {
-		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
-	}
-}
-
-func recordReworkBreakerManualBlock(
-	t *testing.T,
-	metrics *autoPromoteWorkflowMetricsRecorder,
-	issue connector.Issue,
-	at time.Time,
-) {
-	t.Helper()
-
-	if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), store.WorkflowPhaseEvent{
-		ProjectID:    defaultWorkflowMetricsProjectID,
-		IssueID:      issue.ID,
-		Identifier:   issue.Identifier,
-		IssueURL:     issue.URL,
-		PhaseType:    store.WorkflowPhaseTypeLane,
-		PhaseName:    blockedStatusState,
-		Reason:       "tracker_state_observed",
-		Status:       "entered",
-		StartedAt:    at,
-		MetadataJSON: workflowLaneMetadataJSON(issue, workflowLaneMetadata{}),
-	}); err != nil {
-		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
-	}
-}
-
 func boolInt(value bool) int {
 	if value {
 		return 1
@@ -513,32 +415,6 @@ func blockedRecoverySignatureIssue(
 	return issue
 }
 
-func recordBlockedRecoverySignatureEvent(
-	t *testing.T,
-	metrics *autoPromoteWorkflowMetricsRecorder,
-	issue connector.Issue,
-	at time.Time,
-) {
-	t.Helper()
-
-	signature := mustBlockedRecoverySignature(t, issue)
-	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionBlockedRecovery, signature)
-	if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), store.WorkflowPhaseEvent{
-		ProjectID:    defaultWorkflowMetricsProjectID,
-		IssueID:      issue.ID,
-		Identifier:   issue.Identifier,
-		IssueURL:     issue.URL,
-		PhaseType:    store.WorkflowPhaseTypeLane,
-		PhaseName:    autoPromoteReworkState,
-		Reason:       "blocked_recovery",
-		Status:       "entered",
-		StartedAt:    at,
-		MetadataJSON: workflowLaneMetadataJSON(issue, metadata),
-	}); err != nil {
-		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
-	}
-}
-
 func recordBlockedRecoveryReasonEvent(
 	t *testing.T,
 	metrics *autoPromoteWorkflowMetricsRecorder,
@@ -564,13 +440,6 @@ func recordBlockedRecoveryReasonEvent(
 	}
 }
 
-func blockedRecoveryReasonCodeForIssue(issue connector.Issue) string {
-	if issue.PullRequest != nil && connector.PullRequestConflicts(issue.PullRequest.MergeableState) {
-		return blockedRecoveryReasonMergeConflict
-	}
-	return blockedRecoveryReasonStaleBase
-}
-
 func mustBlockedRecoverySignature(t *testing.T, issue connector.Issue) string {
 	t.Helper()
 
@@ -579,12 +448,6 @@ func mustBlockedRecoverySignature(t *testing.T, issue connector.Issue) string {
 		t.Fatalf("blockedRecoverySignature() unavailable for %#v", issue.PullRequest)
 	}
 	return signature
-}
-
-func assertBlockedRecoverySignatureMetadata(t *testing.T, metrics *autoPromoteWorkflowMetricsRecorder, issue connector.Issue) {
-	t.Helper()
-
-	assertWorkflowActionSignature(t, metrics, issue, workflowActionBlockedRecovery, mustBlockedRecoverySignature(t, issue))
 }
 
 func assertWorkflowActionSignature(

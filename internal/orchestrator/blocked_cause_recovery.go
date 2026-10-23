@@ -365,24 +365,6 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	return true
 }
 
-func sameBlockedRecoveryPark(left workflowLaneBlockedRecoveryMetadata, right workflowLaneBlockedRecoveryMetadata) bool {
-	return strings.EqualFold(strings.TrimSpace(left.Owner), strings.TrimSpace(right.Owner)) &&
-		strings.TrimSpace(left.Cause) == strings.TrimSpace(right.Cause) &&
-		strings.TrimSpace(left.Predicate) == strings.TrimSpace(right.Predicate) &&
-		strings.TrimSpace(left.CauseFingerprint) == strings.TrimSpace(right.CauseFingerprint) &&
-		left.CauseFingerprintVersion == right.CauseFingerprintVersion
-}
-
-func (o *Orchestrator) mergeLaneUnavailableReason() string {
-	if !o.cfg.MergeFastPathEnabled {
-		return "merge_fast_path_disabled"
-	}
-	if !stateIn(autoPromoteMergingState, o.cfg.ActiveStates) {
-		return "merging_lane_inactive"
-	}
-	return ""
-}
-
 func (o *Orchestrator) blockedCauseHoldReason(
 	issue connector.Issue,
 	state *State,
@@ -449,14 +431,6 @@ func (o *Orchestrator) currentBlockedOperatorStop(ctx context.Context, state *St
 		normalizeState(entry.Event.PhaseName) == normalizeState(blockedStatusState) &&
 		workflowLaneEntryMatchesCurrent(issue, entry.Event) &&
 		(strings.EqualFold(strings.TrimSpace(entry.Event.Reason), string(store.WorkAttemptTerminalOperatorStopped)) || strings.TrimSpace(entry.Event.Reason) == "operator_move" && entry.Metadata.Provenance.Basis == provenance.BasisAuthenticatedHuman)
-}
-
-func breakerParkCauseFromLaneReason(reason string) (string, bool) {
-	reason = strings.TrimSpace(reason)
-	if reason == instantFailureCircuitBreakerLaneReason {
-		return instantFailureCircuitBreakerCause, true
-	}
-	return reason, breakerParkCause(reason)
 }
 
 func (o *Orchestrator) currentBlockedRecoveryPark(
@@ -537,43 +511,6 @@ func (o *Orchestrator) currentBlockedRecoveryParkedAt(
 		return issue.StageUpdatedAt.UTC(), true
 	}
 	return time.Time{}, false
-}
-
-func (o *Orchestrator) currentBlockedRecoveryParkWithLegacyRESTBudget(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-) (workflowLaneBlockedRecoveryMetadata, bool) {
-	park, ok := o.currentBlockedRecoveryPark(ctx, state, issue)
-	if ok {
-		return park, true
-	}
-	return o.currentLegacyRepeatedFailureGitHubRESTBudgetPark(ctx, issue)
-}
-
-func blockedCauseRecoverySignature(cause string, fingerprint string) string {
-	return strings.TrimSpace(cause) + ":" + strings.TrimSpace(fingerprint)
-}
-
-func blockedCauseRecoveryComment(
-	issue connector.Issue,
-	park workflowLaneBlockedRecoveryMetadata,
-	targetState string,
-	fingerprint string,
-) string {
-	comment := fmt.Sprintf(
-		"Blocked recovery predicate satisfied. Moved %s from %s to %s.\n\n- cause: %s\n- predicate: %s\n- cause_fingerprint: %s",
-		issueLabel(issue),
-		strings.TrimSpace(issue.State),
-		strings.TrimSpace(targetState),
-		strings.TrimSpace(park.Cause),
-		strings.TrimSpace(park.Predicate),
-		strings.TrimSpace(fingerprint),
-	)
-	if staleReworkPark(park) {
-		comment += "\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"
-	}
-	return comment
 }
 
 func (o *Orchestrator) recordBlockedRecoveryDecision(
@@ -782,7 +719,7 @@ func explicitHumanAction(issue connector.Issue) string {
 		return strings.TrimSpace(signal.HumanAction)
 	}
 	index := currentWorkpadCommentIndex(issue.Comments)
-	if index >= 0 && !(signal != nil && signal.Invalid == nil && signal.Source == workpad.SourceStructured && signal.Status == workpad.StatusInProgress && issue.Comments[index].AuthorAuthorized) {
+	if index >= 0 && (signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured || signal.Status != workpad.StatusInProgress || !issue.Comments[index].AuthorAuthorized) {
 		for _, comment := range issue.Comments {
 			prior, ok := workpad.SignalFromComment(comment.Body, comment.URL, dependencyIssueRepo(issue.Identifier))
 			if ok && prior != nil && prior.Invalid == nil && prior.Source == workpad.SourceStructured && strings.TrimSpace(prior.HumanAction) != "" {

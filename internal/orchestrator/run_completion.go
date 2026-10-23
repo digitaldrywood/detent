@@ -432,13 +432,12 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			refreshed, _ := o.refreshSpendProgressIssue(ctx, running.Issue)
 			running.Issue = refreshed
 		}
-		progress := implementCompletionProgressDecision{}
 		progressMetadata := map[string]any{}
 		if !interrupted && !mergeWorkerIssue(running.Issue) && strings.TrimSpace(event.Request.Mode) != runpkg.RunModePlan && strings.TrimSpace(running.Mode) != runpkg.RunModePlan {
 			if diffStatsPresent(event.Result.DiffStats) {
 				running.DiffStats = event.Result.DiffStats
 			}
-			progress = o.evaluateImplementCompletionProgress(ctx, running, event.Result.FinalState, event.Result.PullRequestUpdated)
+			progress := o.evaluateImplementCompletionProgress(ctx, running, event.Result.FinalState, event.Result.PullRequestUpdated)
 			running.Issue = progress.Issue
 			progressMetadata = implementCompletionProgressMetadata(progress)
 		}
@@ -1038,7 +1037,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	}
 	if automatedReviewPending(issue.PullRequest, o.cfg) {
 		o.requestAutomatedReview(ctx, issue)
-		o.waitForMergeWorkerRetry(ctx, state, event, running, issue, running.Attempt,
+		o.waitForMergeWorkerRetry(ctx, state, event, running, issue,
 			string(AutoPromoteReasonCodexReviewMissing), string(AutoPromoteReasonCodexReviewMissing), "Waiting for current-head review: ")
 		return true
 	}
@@ -1117,7 +1116,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			return true
 		}
 		if auditDecision.Action != "" {
-			o.waitForMergeWorkerRetry(ctx, state, event, running, issue, running.Attempt,
+			o.waitForMergeWorkerRetry(ctx, state, event, running, issue,
 				string(auditDecision.Reason), "merge_worker_gate_wait", "Waiting for security audit routing: ")
 			return true
 		}
@@ -1363,7 +1362,6 @@ func (o *Orchestrator) waitForMergeWorkerMergeability(
 		event,
 		running,
 		issue,
-		running.Attempt,
 		"waiting for GitHub mergeability computation",
 		"merge_worker_waiting_mergeability",
 		"merge worker is waiting for GitHub mergeability computation for ",
@@ -1383,7 +1381,6 @@ func (o *Orchestrator) waitForMergeWorkerRequiredCheckPropagation(
 		event,
 		running,
 		issue,
-		nextAttempt(running.Attempt),
 		"waiting for required checks to appear on the current head",
 		"merge_worker_waiting_required_check_propagation",
 		"merge worker is waiting for required checks to appear for ",
@@ -1403,7 +1400,6 @@ func (o *Orchestrator) waitForMergeWorkerCITriggerLabel(
 		event,
 		running,
 		issue,
-		running.Attempt,
 		"waiting for CI trigger label after current-head push",
 		"merge_worker_waiting_ci_trigger_label",
 		"merge worker is waiting for the CI trigger label after pushing ",
@@ -1423,7 +1419,6 @@ func (o *Orchestrator) waitForMergeWorkerPullRequestHydration(
 		event,
 		running,
 		issue,
-		running.Attempt,
 		"waiting for fresh pull request hydration",
 		"merge_worker_waiting_pull_request_hydration",
 		"merge worker is waiting for fresh pull request hydration for ",
@@ -1436,12 +1431,11 @@ func (o *Orchestrator) waitForMergeWorkerRetry(
 	event runpkg.Completion,
 	running Running,
 	issue connector.Issue,
-	attempt int,
 	retryError string,
 	eventName string,
 	eventMessage string,
 ) {
-	attempt = sourceContinuationAttempt(running, issue, event.Result, mergeWorkerTurnSucceeded(event))
+	attempt := sourceContinuationAttempt(running, issue, event.Result, mergeWorkerTurnSucceeded(event))
 	running.Issue = issue
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError,
@@ -2107,41 +2101,6 @@ func (o *Orchestrator) blockExhaustedMergeWorker(
 	err error,
 ) bool {
 	return o.retryMachineCompletion(ctx, state, event, running, attempt, errorString(err))
-}
-
-func mergeWorkerRetryExhaustedComment(issue connector.Issue, reasonCode string, attempt int, err error) string {
-	var b strings.Builder
-	if reasonCode == mergeWorkerCurrentHeadCIWaitExceededReason {
-		b.WriteString("The current-head CI wait exceeded its bounded deadline; parked this issue in Blocked to stop automatic redispatch.")
-	} else {
-		b.WriteString("Merge worker retries were exhausted; parked this issue in Blocked to stop automatic redispatch.")
-	}
-	b.WriteString("\n\n- reason: ")
-	b.WriteString(reasonCode)
-	if attempt > 0 {
-		b.WriteString("\n- attempt: ")
-		b.WriteString(strconv.Itoa(attempt))
-	}
-	if errText := errorString(err); errText != "" {
-		b.WriteString("\n- error: ")
-		b.WriteString(errText)
-	}
-	if issue.PullRequest != nil {
-		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
-			b.WriteString("\n- pull request: ")
-			b.WriteString(url)
-		}
-		if mergeableState := strings.ToLower(strings.TrimSpace(issue.PullRequest.MergeableState)); mergeableState != "" {
-			b.WriteString("\n- mergeable_state: ")
-			b.WriteString(mergeableState)
-		}
-		if ciStatus := strings.TrimSpace(issue.PullRequest.CIStatus); ciStatus != "" {
-			b.WriteString("\n- ci_status: ")
-			b.WriteString(ciStatus)
-		}
-	}
-	b.WriteString("\n\nResolve the merge failure, then move the issue back to Merging to retry.")
-	return b.String()
 }
 
 func errorString(err error) string {
