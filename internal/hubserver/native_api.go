@@ -9,6 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,7 +85,8 @@ func nativeRejection(err error, category, field string) error {
 }
 
 func nativeNotFound() error {
-	return &nativeError{Code: "not_found", Message: "Resource was not found", status: http.StatusNotFound, publicMessage: true}
+	_, file, line, _ := runtime.Caller(1)
+	return &nativeError{Code: "not_found", Message: "Resource was not found", status: http.StatusNotFound, publicMessage: true, logAttributes: []any{"not_found_source", filepath.Base(file) + ":" + strconv.Itoa(line)}}
 }
 
 func nativeNotFoundAt(step string) error {
