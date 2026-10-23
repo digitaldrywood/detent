@@ -91,18 +91,24 @@ type timedConn struct {
 
 type timedTx struct {
 	driver.Tx
-	conn   *timedConn
-	timing *writerTiming
-	start  time.Time
+	conn    *timedConn
+	timing  *writerTiming
+	request *requestTiming
+	start   time.Time
 }
 
 func (t *timedTx) Commit() error {
 	defer t.end()
+	start := time.Now()
+	defer t.request.addDB(start)
+	defer t.request.span("tx_commit", start)
 	return t.Tx.Commit()
 }
 
 func (t *timedTx) Rollback() error {
 	defer t.end()
+	start := time.Now()
+	defer t.request.addDB(start)
 	return t.Tx.Rollback()
 }
 
@@ -118,6 +124,7 @@ func (c *timedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.
 		return nil, errors.New("sqlite driver does not support contextual transactions")
 	}
 	tx, err := beginner.BeginTx(ctx, opts)
+	requestTimingFrom(ctx).addDB(start)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +133,7 @@ func (c *timedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.
 	if c.writer {
 		timing = writerTimingFrom(ctx)
 	}
-	return &timedTx{Tx: tx, conn: c, timing: timing, start: start}, nil
+	return &timedTx{Tx: tx, conn: c, timing: timing, request: requestTimingFrom(ctx), start: start}, nil
 }
 
 func (c *timedConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {

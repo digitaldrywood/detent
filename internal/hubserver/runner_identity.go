@@ -294,6 +294,58 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			}
 		}
 	}
+	receivedAt, err := s.database.currentTime()
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	var configuration preparedProjectConfiguration
+	if scope.credential.Runner.RunnerID != "" {
+		configuration, err = s.prepareProjectConfiguration(c.Request().Context(), scope, request.ProjectConfiguration, receivedAt)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
+	var admission, isolationRaw, workspaceRaw, skillsRaw, capacityRaw, checksRaw string
+	if scope.credential.Runner.RunnerID != "" {
+		admission, err = prepareRunnerAdmissionObservation(request.Admission, receivedAt)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		isolationRaw, err = prepareRunnerIsolationReport(request.BackendIsolation)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		workspaceRaw, err = prepareRunnerWorkspaceReport(request.WorkspaceCapabilities)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		skillsRaw, err = prepareRunnerSkills(scope, request.Skills)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if request.CapacityConfig != nil {
+			if err := request.CapacityConfig.Validate(); err != nil {
+				return s.nativeAPIError(c, nativeInvalid(err.Error()))
+			}
+			request.CapacityConfig.ObservedAt = receivedAt
+			raw, err := json.Marshal(request.CapacityConfig)
+			if err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			capacityRaw = string(raw)
+		}
+		if request.LocalChecks != nil {
+			if err := request.LocalChecks.Validate(); err != nil {
+				return s.nativeAPIError(c, nativeInvalid(err.Error()))
+			}
+			request.LocalChecks.ObservedAt = receivedAt
+			raw, err := json.Marshal(request.LocalChecks)
+			if err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			checksRaw = string(raw)
+		}
+	}
 	configurationIssuer, err := s.prepareProjectConfigurationIssuer(c.Request().Context(), scope, request.ProjectConfiguration)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -316,35 +368,27 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 					return nil, nativePublicInvalid("Sprite name must match the runner hostname")
 				}
 			}
-			if err := storeRunnerAdmissionObservation(ctx, tx, scope, request.Admission, now); err != nil {
+			if err := storeEncodedRunnerAdmission(ctx, tx, scope, admission); err != nil {
 				return nil, err
 			}
 			if err := s.storeRunnerUpdateObservation(ctx, tx, scope, request.Update, request.ProtocolMajor, request.Version, request.OS, request.Architecture, now); err != nil {
 				return nil, err
 			}
-			if request.CapacityConfig != nil {
-				if err := request.CapacityConfig.Validate(); err != nil {
-					return nil, nativeInvalid(err.Error())
-				}
-				request.CapacityConfig.ObservedAt = now
-				raw, err := json.Marshal(request.CapacityConfig)
-				if err != nil {
-					return nil, err
-				}
-				if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET capacity_configuration_json = ? WHERE organization_id = ? AND id = ?", string(raw), scope.organization, scope.credential.Runner.RunnerID); err != nil {
+			if capacityRaw != "" {
+				if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET capacity_configuration_json = ? WHERE organization_id = ? AND id = ?", capacityRaw, scope.organization, scope.credential.Runner.RunnerID); err != nil {
 					return nil, err
 				}
 			}
-			if err := updateRunnerIsolationReport(ctx, tx, scope, request.BackendIsolation); err != nil {
+			if err := storeEncodedRunnerIsolationReport(ctx, tx, scope, isolationRaw); err != nil {
 				return nil, err
 			}
 			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.Version, request.OS, request.Architecture, now); err != nil {
 				return nil, err
 			}
-			if err := updateRunnerWorkspaceReport(ctx, tx, scope, request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {
+			if err := storeEncodedRunnerWorkspaceReport(ctx, tx, scope, workspaceRaw, request.WorkspaceIsolation); err != nil {
 				return nil, err
 			}
-			if err := updateRunnerSkills(ctx, tx, scope, request.Skills, now); err != nil {
+			if err := storeEncodedRunnerSkills(ctx, tx, scope, skillsRaw, receivedAt); err != nil {
 				return nil, err
 			}
 			if err := updateRunnerCheckoutReport(ctx, tx, scope, request.CheckoutRepository, now); err != nil {
@@ -353,16 +397,8 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			if err := updateProviderReports(ctx, tx, scope, request.ProviderReports, now); err != nil {
 				return nil, err
 			}
-			if request.LocalChecks != nil {
-				if err := request.LocalChecks.Validate(); err != nil {
-					return nil, nativeInvalid(err.Error())
-				}
-				request.LocalChecks.ObservedAt = now
-				raw, err := json.Marshal(request.LocalChecks)
-				if err != nil {
-					return nil, err
-				}
-				_, err = tx.ExecContext(ctx, "UPDATE runner_identities SET local_checks_json = json_set(local_checks_json, ?, json(?)) WHERE id = ? AND organization_id = ?", "$."+string(scope.project), string(raw), scope.credential.Runner.RunnerID, scope.organization)
+			if checksRaw != "" {
+				_, err := tx.ExecContext(ctx, "UPDATE runner_identities SET local_checks_json = json_set(local_checks_json, ?, json(?)) WHERE id = ? AND organization_id = ?", "$."+string(scope.project), checksRaw, scope.credential.Runner.RunnerID, scope.organization)
 				if err != nil {
 					return nil, err
 				}
@@ -381,7 +417,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 					return nil, err
 				}
 			}
-			configurationRequest, err := s.runnerProjectConfiguration(ctx, tx, scope, request.ProjectConfiguration, configurationIssuer, now)
+			configurationRequest, err := s.runnerProjectConfiguration(ctx, tx, scope, configuration, configurationIssuer, now)
 			if err != nil {
 				return nil, err
 			}

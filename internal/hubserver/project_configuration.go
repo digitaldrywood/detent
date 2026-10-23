@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -83,7 +83,13 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 			continue
 		}
 		var candidate runnerauth.ProjectConfiguration
-		if json.Unmarshal([]byte(item.raw), &candidate) != nil || candidate.ProjectID != args.ProjectID || candidate.ObservedAt.Before(r.LastHeartbeatAt.Add(-runnerauth.HeartbeatTimeout)) {
+		if json.Unmarshal([]byte(item.raw), &candidate) != nil || candidate.ProjectID != args.ProjectID {
+			continue
+		}
+		if err := overlayProjectConfigurationObservation(ctx, tx, scope, item.runner, &candidate); err != nil {
+			return operatortool.Result{}, err
+		}
+		if candidate.ObservedAt.Before(r.LastHeartbeatAt.Add(-runnerauth.HeartbeatTimeout)) {
 			continue
 		}
 		var settings runnerSettings
@@ -268,14 +274,75 @@ func (s *Service) prepareProjectConfigurationIssuer(ctx context.Context, scope n
 	return issuer, nil
 }
 
-func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, scope nativeScope, observation *runnerauth.ProjectConfiguration, preparedIssuer projectConfigurationIssuer, now time.Time) (runnerauth.ProjectConfigurationRequest, error) {
+type preparedProjectConfiguration struct {
+	view         *runnerauth.ProjectConfiguration
+	digest       string
+	raw          string
+	policy       string
+	legacyRaw    sql.NullString
+	legacyDigest string
+}
+
+func (s *Service) prepareProjectConfiguration(ctx context.Context, scope nativeScope, observation *runnerauth.ProjectConfiguration, now time.Time) (preparedProjectConfiguration, error) {
+	if observation == nil {
+		return preparedProjectConfiguration{}, nil
+	}
+	if err := observation.Validate(); err != nil || observation.ProjectID != string(scope.project) {
+		return preparedProjectConfiguration{}, nativePublicInvalid("Invalid project configuration observation")
+	}
+	if observation.Diagnostics != nil {
+		observation.Diagnostics.Redact()
+		pruneExpiredProjectDiagnostics(observation.Diagnostics, now)
+	}
+	observation.ObservedAt = now
+	observation.RunnerID, observation.RunnerRevision = "", 0
+	observation.Pending = false
+	observation.LastOperation = nil
+	prepared, err := encodeProjectConfiguration(*observation)
+	if err != nil {
+		return preparedProjectConfiguration{}, err
+	}
+	if observation.SelectedPolicy != nil {
+		raw, err := json.Marshal(observation.SelectedPolicy)
+		if err != nil {
+			return preparedProjectConfiguration{}, err
+		}
+		prepared.policy = string(raw)
+	}
+	return prepareLegacyProjectConfiguration(ctx, s.database.reader, scope, prepared)
+}
+
+func pruneExpiredProjectDiagnostics(diagnostics *runnerauth.ProjectDiagnostics, now time.Time) bool {
+	previous := len(diagnostics.Records)
+	diagnostics.Records = slices.DeleteFunc(diagnostics.Records, func(record runnerauth.DiagnosticAttempt) bool {
+		return !record.OperationPending && !record.LeaseExpiresAt.After(now) && !slices.ContainsFunc(record.Membership, func(membership string) bool {
+			return membership != "durable_active"
+		})
+	})
+	return len(diagnostics.Records) != previous
+}
+
+func encodeProjectConfiguration(view runnerauth.ProjectConfiguration) (preparedProjectConfiguration, error) {
+	digest, err := projectConfigurationDigest(view)
+	if err != nil {
+		return preparedProjectConfiguration{}, err
+	}
+	raw, err := json.Marshal(view)
+	return preparedProjectConfiguration{view: &view, digest: digest, raw: string(raw)}, err
+}
+
+func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, scope nativeScope, prepared preparedProjectConfiguration, preparedIssuer projectConfigurationIssuer, now time.Time) (runnerauth.ProjectConfigurationRequest, error) {
+	observation := prepared.view
 	path := "$." + jsonPathKey(string(scope.project))
 	if observation != nil {
-		if err := observation.Validate(); err != nil || observation.ProjectID != string(scope.project) {
-			return runnerauth.ProjectConfigurationRequest{}, nativePublicInvalid("Invalid project configuration observation")
-		}
 		if observation.Diagnostics != nil {
-			observation.Diagnostics.Redact()
+			if pruneExpiredProjectDiagnostics(observation.Diagnostics, now) {
+				encoded, err := encodeProjectConfiguration(*observation)
+				if err != nil {
+					return runnerauth.ProjectConfigurationRequest{}, err
+				}
+				prepared.digest, prepared.raw = encoded.digest, encoded.raw
+			}
 			for _, admission := range observation.Diagnostics.Admissions {
 				if admission.Result != "skipped" || admission.WorkItemRevision <= 0 || admission.ObservedAt.After(now) {
 					continue
@@ -299,19 +366,11 @@ AND NOT EXISTS (SELECT 1 FROM collaboration_events
 				}
 			}
 		}
-		observation.ObservedAt = now
-		observation.RunnerID, observation.RunnerRevision = "", 0
-		observation.Pending = false
-		observation.LastOperation = nil
-		raw, err := json.Marshal(observation)
-		if err != nil {
-			return runnerauth.ProjectConfigurationRequest{}, err
-		}
-		if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET project_configuration_json = json_set(project_configuration_json, ?, json(?)) WHERE organization_id = ? AND id = ?", path, string(raw), scope.organization, scope.credential.Runner.RunnerID); err != nil {
+		if err := storePreparedProjectConfiguration(ctx, tx, scope, prepared); err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		if observation.SelectedPolicy != nil {
-			if err := storeObservedPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project), scope.credential.Runner.RunnerID, policy.Observation{Descriptor: *observation.SelectedPolicy}, now); err != nil {
+			if err := storeEncodedObservedPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project), scope.credential.Runner.RunnerID, observation.SelectedPolicy.ID, prepared.policy, "null", now); err != nil {
 				return runnerauth.ProjectConfigurationRequest{}, err
 			}
 		}
@@ -359,7 +418,10 @@ AND NOT EXISTS (SELECT 1 FROM collaboration_events
 		if err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
-		_, err = tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ?, project_configuration_json = json_set(project_configuration_json, ?, json(?)) WHERE organization_id = ? AND id = ?", string(rawSettings), path, string(raw), scope.organization, r.RunnerID)
+		if err := storeProjectConfigurationObservation(ctx, tx, scope, view); err != nil {
+			return runnerauth.ProjectConfigurationRequest{}, err
+		}
+		_, err = tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ? WHERE organization_id = ? AND id = ?", string(rawSettings), scope.organization, r.RunnerID)
 		if err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
@@ -375,6 +437,9 @@ AND NOT EXISTS (SELECT 1 FROM collaboration_events
 		}
 		var view runnerauth.ProjectConfiguration
 		if err := json.Unmarshal([]byte(raw), &view); err != nil {
+			return runnerauth.ProjectConfigurationRequest{}, err
+		}
+		if err := overlayProjectConfigurationObservation(ctx, tx, scope, r.RunnerID, &view); err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		view.RequestID, view.Applied, view.Saved, view.Pending = request.RequestID, false, false, false
@@ -414,4 +479,122 @@ func jsonPathKey(key string) string {
 		panic(err)
 	}
 	return string(raw)
+}
+
+func projectConfigurationDigest(view runnerauth.ProjectConfiguration) (string, error) {
+	view.ObservedAt = time.Time{}
+	if view.Diagnostics != nil {
+		diagnostics := *view.Diagnostics
+		diagnostics.ObservedAt, diagnostics.RuntimeObservedAt = time.Time{}, time.Time{}
+		view.Diagnostics = &diagnostics
+	}
+	raw, err := json.Marshal(view)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(raw)), nil
+}
+
+func prepareLegacyProjectConfiguration(ctx context.Context, q nativeQueryer, scope nativeScope, prepared preparedProjectConfiguration) (preparedProjectConfiguration, error) {
+	var document sql.NullString
+	err := q.QueryRowContext(ctx, `SELECT CASE WHEN o.snapshot_digest IS NULL THEN r.project_configuration_json END
+FROM runner_identities r LEFT JOIN runner_project_observations o
+ON o.organization_id=r.organization_id AND o.runner_id=r.id AND o.project_id=?
+WHERE r.organization_id=? AND r.id=?`, scope.project, scope.organization, scope.credential.Runner.RunnerID).Scan(&document)
+	if err != nil || !document.Valid {
+		return prepared, err
+	}
+	var projects map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(document.String), &projects); err != nil {
+		return preparedProjectConfiguration{}, err
+	}
+	entry, ok := projects[string(scope.project)]
+	if !ok || string(entry) == "null" {
+		return prepared, nil
+	}
+	prepared.legacyRaw = sql.NullString{String: string(entry), Valid: true}
+	var legacy runnerauth.ProjectConfiguration
+	if err := json.Unmarshal([]byte(prepared.legacyRaw.String), &legacy); err != nil {
+		return preparedProjectConfiguration{}, err
+	}
+	prepared.legacyDigest, err = projectConfigurationDigest(legacy)
+	return prepared, err
+}
+
+func storeProjectConfigurationObservation(ctx context.Context, tx *sql.Tx, scope nativeScope, view runnerauth.ProjectConfiguration) error {
+	prepared, err := encodeProjectConfiguration(view)
+	if err != nil {
+		return err
+	}
+	prepared, err = prepareLegacyProjectConfiguration(ctx, tx, scope, prepared)
+	if err != nil {
+		return err
+	}
+	return storePreparedProjectConfiguration(ctx, tx, scope, prepared)
+}
+
+func storePreparedProjectConfiguration(ctx context.Context, tx *sql.Tx, scope nativeScope, prepared preparedProjectConfiguration) error {
+	view, digest := prepared.view, prepared.digest
+	runner := scope.credential.Runner.RunnerID
+	var previous string
+	err := tx.QueryRowContext(ctx, "SELECT snapshot_digest FROM runner_project_observations WHERE organization_id = ? AND runner_id = ? AND project_id = ?", scope.organization, runner, scope.project).Scan(&previous)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if errors.Is(err, sql.ErrNoRows) && prepared.legacyRaw.Valid {
+		var raw sql.NullString
+		if err := tx.QueryRowContext(ctx, "SELECT json_extract(project_configuration_json, ?) FROM runner_identities WHERE organization_id = ? AND id = ?", "$."+jsonPathKey(string(scope.project)), scope.organization, runner).Scan(&raw); err != nil {
+			return err
+		}
+		if raw == prepared.legacyRaw {
+			previous = prepared.legacyDigest
+		}
+	}
+	if previous != digest {
+		if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET project_configuration_json = json_set(project_configuration_json, ?, json(?)) WHERE organization_id = ? AND id = ?", "$."+jsonPathKey(string(scope.project)), prepared.raw, scope.organization, runner); err != nil {
+			return err
+		}
+	}
+	var diagnostics, runtime any
+	if view.Diagnostics != nil {
+		diagnostics = formatHubTime(view.Diagnostics.ObservedAt)
+		if !view.Diagnostics.RuntimeObservedAt.IsZero() {
+			runtime = formatHubTime(view.Diagnostics.RuntimeObservedAt)
+		}
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO runner_project_observations
+(organization_id, runner_id, project_id, observed_at, diagnostics_observed_at, runtime_observed_at, snapshot_digest)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (organization_id, runner_id, project_id) DO UPDATE SET
+observed_at = excluded.observed_at, diagnostics_observed_at = excluded.diagnostics_observed_at,
+runtime_observed_at = excluded.runtime_observed_at, snapshot_digest = excluded.snapshot_digest`,
+		scope.organization, runner, scope.project, formatHubTime(view.ObservedAt), diagnostics, runtime, digest)
+	return err
+}
+
+func overlayProjectConfigurationObservation(ctx context.Context, q nativeQueryer, scope nativeScope, runner string, view *runnerauth.ProjectConfiguration) error {
+	var observed string
+	var diagnostics, runtime sql.NullString
+	err := q.QueryRowContext(ctx, "SELECT observed_at, diagnostics_observed_at, runtime_observed_at FROM runner_project_observations WHERE organization_id = ? AND runner_id = ? AND project_id = ?", scope.organization, runner, scope.project).Scan(&observed, &diagnostics, &runtime)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	view.ObservedAt, err = parseTimeValue(observed)
+	if err != nil {
+		return err
+	}
+	if view.Diagnostics != nil && diagnostics.Valid {
+		view.Diagnostics.ObservedAt, err = parseTimeValue(diagnostics.String)
+		if err != nil {
+			return err
+		}
+		view.Diagnostics.RuntimeObservedAt = time.Time{}
+		if runtime.Valid {
+			view.Diagnostics.RuntimeObservedAt, err = parseTimeValue(runtime.String)
+		}
+	}
+	return err
 }
