@@ -43,21 +43,29 @@ func (d *database) drainNativeBoardDirty(ctx context.Context, now time.Time) (bo
 }
 
 func (d *database) drainNativeBoardDirtyExcept(ctx context.Context, now time.Time, skip []string) (bool, string, error) {
-	skipped, err := json.Marshal(append([]string{}, skip...))
+	limit := strconv.Itoa(len(skip) + 1)
+	rows, err := d.reader.QueryContext(ctx, `SELECT work_item_id FROM (SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id LIMIT `+limit+`)
+UNION ALL SELECT work_item_id FROM (SELECT work_item_id FROM native_board_items
+WHERE expires_at<>'' AND expires_at<=? ORDER BY expires_at,work_item_id LIMIT `+limit+`)`, now.UTC().Format("2006-01-02T15:04:05.000000000Z"))
 	if err != nil {
 		return false, "", err
 	}
 	var id string
-	err = d.reader.QueryRowContext(ctx, `SELECT work_item_id FROM (SELECT work_item_id FROM native_board_dirty
-WHERE work_item_id NOT IN (SELECT value FROM json_each(?1)) ORDER BY work_item_id LIMIT 1)
-UNION ALL SELECT work_item_id FROM (SELECT work_item_id FROM native_board_items
-WHERE expires_at<>'' AND expires_at<=?2 AND work_item_id NOT IN (SELECT value FROM json_each(?1)) ORDER BY expires_at,work_item_id LIMIT 1)
-LIMIT 1`, string(skipped), now.UTC().Format("2006-01-02T15:04:05.000000000Z")).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, "", nil
+	for rows.Next() {
+		var candidate string
+		if err := rows.Scan(&candidate); err != nil {
+			return false, "", errors.Join(err, rows.Close())
+		}
+		if !slices.Contains(skip, candidate) {
+			id = candidate
+			break
+		}
 	}
-	if err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return false, "", err
+	}
+	if id == "" {
+		return false, "", nil
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
