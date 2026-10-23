@@ -209,6 +209,20 @@ Follow [INV-19](docs/invariants.md#inv-19--no-flaky-tests): a test that passes
 and fails on the same commit is a High defect; fix its cause or delete it the
 day it is found, never retry, wait longer, skip or quarantine it.
 
+Follow [INV-20](docs/invariants.md#inv-20--sql-never-reads-or-writes-inside-stored-json):
+Hub and store SQL never read or write inside stored JSON; fields SQL filters,
+joins, orders, aggregates, projects or updates are typed columns. Existing JSON
+query uses are migration debt: add none, migrate edited queries to typed columns,
+and lower the enforcement baseline when calls are removed. Opaque payloads are
+decoded whole by the application; new code adds none, as required by INV-18.
+
+Follow [INV-21](docs/invariants.md#inv-21--designs-hold-at-ten-thousand-tenants-and-runners):
+judge every design at 10,000 tenants and 10,000 runners. Request work is bounded
+by the request and periodic work by a fixed per-tick budget, never by fleet size
+or history; shared locks are never held across per-item network calls or object
+walks; fleet traffic is jittered. Changes to hot paths, shared locks or periodic
+jobs state their cost at that scale in the Change description.
+
 ## Validation
 
 Every change gets a per-change security audit before merge, bound to its exact
