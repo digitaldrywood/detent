@@ -304,9 +304,7 @@ AND NOT EXISTS (SELECT 1 FROM collaboration_events
 				}
 			}
 		}
-		if observation.ObservedAt.After(now) {
-			observation.ObservedAt = now
-		}
+		observation.ObservedAt = now
 		observation.RunnerID, observation.RunnerRevision = "", 0
 		observation.Pending = false
 		observation.LastOperation = nil

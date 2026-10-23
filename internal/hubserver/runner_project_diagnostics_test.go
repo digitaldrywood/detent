@@ -164,20 +164,14 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	if err := json.Unmarshal([]byte(storedJSON), &stored); err != nil || len(stored.Diagnostics.Records) != 1 {
 		t.Fatalf("stored diagnostics retained historical records: %s, %v", storedJSON, err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TEMP TRIGGER reject_configuration_rewrite BEFORE UPDATE OF project_configuration_json ON runner_identities BEGIN SELECT RAISE(ABORT, 'unchanged configuration rewritten'); END`); err != nil {
-		t.Fatal(err)
-	}
-	post()
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER reject_configuration_rewrite"); err != nil {
-		t.Fatal(err)
-	}
 	for _, runtimeFresh := range []bool{true, true, false} {
-		view.ObservedAt = view.ObservedAt.Add(time.Second)
-		view.Diagnostics.ObservedAt = view.ObservedAt
+		view.ObservedAt = now.Add(-2 * runnerauth.HeartbeatTimeout)
+		view.Diagnostics.ObservedAt = view.Diagnostics.ObservedAt.Add(time.Second)
 		view.Diagnostics.RuntimeObservedAt = time.Time{}
 		if runtimeFresh {
-			view.Diagnostics.RuntimeObservedAt = view.ObservedAt
+			view.Diagnostics.RuntimeObservedAt = view.Diagnostics.ObservedAt
 		}
+		received := f.service.config.now()
 		patches := 0
 		timing := &requestTiming{trace: func(query string, args []driver.NamedValue) {
 			if !strings.HasPrefix(query, "UPDATE runner_identities") || !strings.Contains(query, "project_configuration_json =") {
@@ -204,7 +198,7 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 			t.Fatal(err)
 		}
 		stored = runnerauth.ProjectConfiguration{}
-		if err := json.Unmarshal([]byte(storedJSON), &stored); err != nil || !stored.ObservedAt.Equal(view.ObservedAt) || !stored.Diagnostics.ObservedAt.Equal(view.Diagnostics.ObservedAt) || !stored.Diagnostics.RuntimeObservedAt.Equal(view.Diagnostics.RuntimeObservedAt) {
+		if err := json.Unmarshal([]byte(storedJSON), &stored); err != nil || stored.ObservedAt.Before(received) || !stored.Diagnostics.ObservedAt.Equal(view.Diagnostics.ObservedAt) || !stored.Diagnostics.RuntimeObservedAt.Equal(view.Diagnostics.RuntimeObservedAt) {
 			t.Fatalf("stored freshness = %s, error = %v", storedJSON, err)
 		}
 		response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/runner-diagnostics?runner_id="+r.binding.RunnerID, r.redemption.Credential, nil)
