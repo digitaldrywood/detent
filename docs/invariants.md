@@ -823,3 +823,29 @@ existing calls are baseline debt and new migrations have no allowance. The scan
 conservatively counts function calls even on parameters or literals. It does not
 recognize `->` or `->>` operators, to avoid false positives outside SQL strings;
 review enforces these operators and conversion of edited queries to typed columns.
+
+## INV-21 — Designs hold at ten thousand tenants and runners
+
+Every design is judged at 10,000 tenants and 10,000 runners, with up to 1,000
+runners, 100 projects and 1,000,000 attempts of history in one tenant. A choice
+that only works at today's size is a defect.
+
+Work per request is bounded by the size of that request. Work per periodic tick
+is bounded by a fixed budget and resumes on the next tick. Neither grows with
+tenant count, runner count, item count or history. No request or background job
+holds a lock, connection or transaction shared by other requests across
+per-item network calls or a walk over many objects; such work takes the shared
+resource per item, briefly. Periodic and fleet traffic does constant work:
+heartbeats, polls, retries and reconnects use capped jittered intervals, and the
+control plane applies per-tenant and per-runner admission limits, so one tenant
+or a synchronized fleet cannot starve the others.
+
+**Enforcement:** a Change that adds or modifies a hot path (per-request,
+per-heartbeat or per-event code), a shared lock, or a periodic job states its
+cost at INV-21 scale in its description, for example "per heartbeat: one row
+read and one row written, no history reads" or "per tick: at most 500 rows, lock
+held around one object". Review rejects such a Change without that statement or
+with cost that grows with history or fleet size. Hot-path changes attach
+benchmark evidence where a benchmark exists. A scale soak run against a seeded
+large tenant and a simulated runner fleet provides release evidence when it is
+run; it never blocks merging or releasing.
