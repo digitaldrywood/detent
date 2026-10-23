@@ -142,7 +142,7 @@ ORDER BY a.fencing_token LIMIT 5`, scope.organization, scope.project, item, sour
 	}
 	defer rows.Close()
 	for rows.Next() {
-		attempt, err := scanNativeAttempt(ctx, rows, s.config.now())
+		attempt, err := scanNativeAttempt(ctx, tx, rows, s.config.now())
 		if err != nil {
 			return result, err
 		}
@@ -739,7 +739,7 @@ ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&
 	if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
 		return event, false, err
 	}
-	if err := decodeRunHistory(ctx, data, &event.Data); err != nil {
+	if err := decodeRunHistory(ctx, tx, data, &event.Data); err != nil {
 		return event, false, err
 	}
 	event.RecordedAt, err = parseTimeValue(at)

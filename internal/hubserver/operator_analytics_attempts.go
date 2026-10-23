@@ -61,7 +61,7 @@ FROM `+analyticsAttemptsInStartedOrder(q)+` a LEFT JOIN lease_runners lr ON lr.l
 		}
 		if stored.Detail != nil {
 			var run tracker.NativeRunData
-			if err := decodeRunDetail(ctx, runRaw, &run); err != nil {
+			if err := decodeRunDetail(ctx, q, runRaw, &run); err != nil {
 				return nativeAnalyticsAttemptPopulation{}, err
 			}
 			if runtime := run.Runtime; runtime != nil {
