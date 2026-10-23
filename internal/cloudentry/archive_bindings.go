@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -186,25 +187,27 @@ func (s *Service) bindingStorage(ctx context.Context, b attachment.StorageBindin
 		}
 		return storage, nil
 	}
-	var secret attachment.Credentials
 	if b.Backend == "hosted" {
-		if s.config.Attachments == nil {
+		cfg := s.config.Attachments
+		if cfg == nil || !strings.EqualFold(b.Endpoint, cfg.Endpoint) || b.Region != cfg.Region || b.Bucket != cfg.Bucket || b.Prefix != "" {
 			return nil, artifact.ErrStorage
 		}
-		secret = attachment.Credentials{AccessKeyID: s.config.Attachments.AccessKeyID, SecretAccessKey: s.config.Attachments.SecretAccessKey}
-	} else {
-		if s.config.ArchiveCredentials == nil {
+		storage, ok := s.attachments.(attachment.ArchiveStorage)
+		if !ok {
 			return nil, artifact.ErrStorage
 		}
-		var err error
-		secret, err = s.config.ArchiveCredentials(ctx, b.Organization, b.CredentialReference)
-		if err != nil {
-			return nil, artifact.ErrStorage
-		}
+		return storage, nil
+	}
+	if s.config.ArchiveCredentials == nil {
+		return nil, artifact.ErrStorage
+	}
+	secret, err := s.config.ArchiveCredentials(ctx, b.Organization, b.CredentialReference)
+	if err != nil {
+		return nil, fmt.Errorf("archive credentials: %w: %w", artifact.ErrStorage, err)
 	}
 	storage, err := attachment.NewBindingStorage(ctx, b, secret, s.config.attachmentTransport)
 	if err != nil {
-		return nil, artifact.ErrStorage
+		return nil, fmt.Errorf("archive binding storage: %w: %w", artifact.ErrStorage, err)
 	}
 	return storage, nil
 }

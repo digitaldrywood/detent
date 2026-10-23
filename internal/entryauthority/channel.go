@@ -3,6 +3,7 @@ package entryauthority
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/rpc"
 	"os"
 	"time"
@@ -294,6 +295,7 @@ func (s *authorityServer) ReadContent(request ContentRequest, content *[]byte) e
 	}
 	result, err := s.contents.ReadContent(ctx, s.binding.Organization, request.Reference)
 	if err != nil {
+		slog.Error("archive content unavailable", "error", err)
 		return errors.New("archive content unavailable")
 	}
 	*content = result
@@ -320,6 +322,7 @@ func (s *authorityServer) Content(request ContentRequest, result *[]byte) error 
 	}
 	data, err := s.content(request)
 	if err != nil {
+		slog.Error("immutable content unavailable", "error", err)
 		return errors.New("immutable content unavailable")
 	}
 	*result = data
