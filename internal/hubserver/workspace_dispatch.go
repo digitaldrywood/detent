@@ -400,16 +400,31 @@ const notWorkspaceItemClause = `NOT EXISTS (SELECT 1 FROM workspace_items wi
 // clearing it: an older runner that does not know about workspaces would
 // otherwise revoke its own eligibility on every beat, and the freshness check
 // on last_heartbeat_at is what decides whether a stored report still counts.
-func updateRunnerWorkspaceReport(ctx context.Context, tx *sql.Tx, scope nativeScope, capabilities *workspacesession.Capabilities, isolation string) error {
+func prepareRunnerWorkspaceReport(capabilities *workspacesession.Capabilities) (string, error) {
 	if capabilities == nil {
-		return nil
+		return "", nil
 	}
 	encoded, err := json.Marshal(capabilities)
 	if err != nil {
-		return fmt.Errorf("encode runner workspace capabilities: %w", err)
+		return "", fmt.Errorf("encode runner workspace capabilities: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func updateRunnerWorkspaceReport(ctx context.Context, tx *sql.Tx, scope nativeScope, capabilities *workspacesession.Capabilities, isolation string) error {
+	raw, err := prepareRunnerWorkspaceReport(capabilities)
+	if err != nil {
+		return err
+	}
+	return storeEncodedRunnerWorkspaceReport(ctx, tx, scope, raw, isolation)
+}
+
+func storeEncodedRunnerWorkspaceReport(ctx context.Context, tx *sql.Tx, scope nativeScope, raw string, isolation string) error {
+	if raw == "" {
+		return nil
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE runner_identities SET workspace_capabilities_json = ?, workspace_isolation = ?
-WHERE id = ? AND token_id = ? AND organization_id = ?`, string(encoded), isolation,
+WHERE id = ? AND token_id = ? AND organization_id = ?`, raw, isolation,
 		scope.credential.Runner.RunnerID, scope.credential.ID, scope.organization)
 	if err != nil {
 		return fmt.Errorf("store runner workspace capabilities: %w", err)
