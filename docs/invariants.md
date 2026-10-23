@@ -773,7 +773,8 @@ by the size of history. Reads use the reader pool, never the writer
 connection.
 
 New Hub tables and columns store typed columns, never JSON documents. Existing
-JSON columns are being migrated to typed columns under this rule, and the
+JSON columns are being migrated to typed columns under this rule and
+[INV-20](#inv-20--sql-never-reads-or-writes-inside-stored-json), and the
 in-commit board card refresh is being moved to background work; no change may
 extend either.
 
@@ -797,3 +798,28 @@ passes on retry still fails the run and is reported.
 **Enforcement:** `TestINV19NoFlakeAccommodation` in `internal/invariants`
 checks the Playwright CI settings, that no browser spec skips, marks or retries
 a test, and that no Go test skips itself as flaky.
+
+## INV-20 — SQL never reads or writes inside stored JSON
+
+Hub and store SQL never use JSON functions or operators over stored data:
+`json_extract`, `->`, `->>`, `json_each`, `json_tree`, `json_set`, `json_insert`,
+`json_replace`, `json_patch`, `json_remove`, `json_object`, `json_array`,
+`json_group_*`, `json_valid`, `json_type` or `json_array_length`. This includes
+constructing JSON from stored columns. Every field SQL filters, joins, orders,
+aggregates, projects or updates is a typed column.
+
+A JSON-shaped value may only be stored as an opaque payload that the application
+decodes after reading it whole. New code adds none; [INV-18](#inv-18--hub-writes-stay-small)
+already forbids new Hub JSON columns. Existing uses are migration debt: no change
+may add one, and a change that edits a query using one moves that query to typed
+columns.
+
+**Enforcement:** `TestINV20NoSQLOverJSON` in `internal/hubserver` scans non-test
+Go files in Hub and store (including generated SQL), and `db/queries` SQL sources.
+Per-file function counts must equal `testdata/inv20_json_sql_baseline.txt`;
+reductions must lower the baseline in the same change, and increases are forbidden.
+Migrations from the INV-18 adoption cutoff (`20261015000000`) are also checked;
+existing calls are baseline debt and new migrations have no allowance. The scan
+conservatively counts function calls even on parameters or literals. It does not
+recognize `->` or `->>` operators, to avoid false positives outside SQL strings;
+review enforces these operators and conversion of edited queries to typed columns.

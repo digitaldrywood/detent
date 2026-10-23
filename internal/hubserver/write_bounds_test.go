@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"database/sql/driver"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -138,15 +139,16 @@ func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 	}
 }
 
+const inv18MigrationAdoption = "20261015000000"
+
 func TestINV18HubMigrationsUseTypedColumns(t *testing.T) {
-	const adopted = "20261015000000"
 	jsonColumn := regexp.MustCompile(`(?i)\b\w*json\w*\s+(TEXT|BLOB)\b|json_valid\s*\(`)
 	paths, err := filepath.Glob(filepath.Join("migrations", "*.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range paths {
-		if filepath.Base(path) < adopted {
+		if filepath.Base(path) < inv18MigrationAdoption {
 			continue
 		}
 		raw, err := os.ReadFile(path)
@@ -163,5 +165,91 @@ func TestINV18HubMigrationsUseTypedColumns(t *testing.T) {
 		if match := jsonColumn.FindString(up); match != "" {
 			t.Errorf("%s adds a JSON column (%q); store typed columns", filepath.Base(path), match)
 		}
+	}
+}
+
+var inv20JSONFunction = regexp.MustCompile(`(?i)\bjson_(?:extract|each|tree|set|insert|replace|patch|remove|object|array|group_\w+|valid|type|array_length)\s*\(`)
+
+func TestINV20NoSQLOverJSON(t *testing.T) {
+	raw, err := os.ReadFile("testdata/inv20_json_sql_baseline.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := make(map[string]int)
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			t.Fatalf("invalid baseline line: %q", line)
+		}
+		count, err := strconv.Atoi(fields[1])
+		if err != nil || count <= 0 {
+			t.Fatalf("invalid baseline count: %q", line)
+		}
+		if _, exists := baseline[fields[0]]; exists {
+			t.Fatalf("duplicate baseline path: %s", fields[0])
+		}
+		baseline[fields[0]] = count
+	}
+	root := filepath.Join("..", "..")
+	for _, directory := range []string{"internal/hubserver", "internal/store", "db/queries"} {
+		err := filepath.WalkDir(filepath.Join(root, directory), func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			if strings.HasSuffix(path, "_test.go") || (filepath.Ext(path) != ".go" && filepath.Ext(path) != ".sql") {
+				return nil
+			}
+			if strings.Contains(filepath.ToSlash(path), "/migrations/") && entry.Name() < inv18MigrationAdoption {
+				return nil
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			relative, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			relative = filepath.ToSlash(relative)
+			count := len(inv20JSONFunction.FindAll(raw, -1))
+			want := baseline[relative]
+			if count > want {
+				t.Errorf("%s: %d JSON SQL calls exceed baseline %d; use typed columns", relative, count, want)
+			}
+			if count < want {
+				t.Errorf("%s: %d JSON SQL calls below baseline %d; lower the baseline", relative, count, want)
+			}
+			delete(baseline, relative)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path := range baseline {
+		t.Errorf("%s no longer scanned; remove its baseline entry", path)
+	}
+}
+
+func TestINV20JSONFunctionPatterns(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  int
+	}{
+		{"JSON_EXTRACT (data, '$.id')", 1},
+		{"json_each(data), json_tree(data)", 2},
+		{"json_set(data), json_insert(data), json_replace(data), json_patch(data), json_remove(data)", 5},
+		{"json_object(data), json_array(data), json_group_array(data), json_group_object(data)", 4},
+		{"json_valid(data), json_type(data), json_array_length(data)", 3},
+		{"not_json_extract(data), json_extract_suffix(data), json_extract", 0},
+	} {
+		t.Run(test.input, func(t *testing.T) {
+			if got := len(inv20JSONFunction.FindAllString(test.input, -1)); got != test.want {
+				t.Fatalf("got %d calls, want %d", got, test.want)
+			}
+		})
 	}
 }

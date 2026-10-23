@@ -175,3 +175,10 @@ Follow [INV-18](docs/invariants.md#inv-18--hub-writes-stay-small):
 a request's write transaction writes only what that request owns and never
 rebuilds rollups or reprojects other rows; derived data is refreshed in the
 background one item per short transaction. New Hub columns are typed, never JSON.
+
+Follow [INV-20](docs/invariants.md#inv-20--sql-never-reads-or-writes-inside-stored-json):
+Hub and store SQL never read or write inside stored JSON; fields SQL filters,
+joins, orders, aggregates, projects or updates are typed columns. Existing JSON
+query uses are migration debt: add none, migrate edited queries to typed columns,
+and lower the enforcement baseline when calls are removed. Opaque payloads are
+decoded whole by the application; new code adds none, as required by INV-18.
