@@ -189,9 +189,8 @@ func (p *runnerProjects) startPreparation(ctx context.Context, cfg globalconfig.
 		run.checks.Configuration = "running"
 		emit(run.checks)
 		verification := selected
-		verification.WorkflowRef = ""
-		cfg.Projects = []globalconfig.Project{verification}
 		if progress.Repository == "generate" {
+			verification.WorkflowRef = ""
 			run.err = createRunnerStarterFiles(verification, definition.Repository)
 			if run.err != nil {
 				run.checks.Configuration = "failed"
@@ -199,9 +198,10 @@ func (p *runnerProjects) startPreparation(ctx context.Context, cfg globalconfig.
 				return
 			}
 		}
+		cfg.Projects = []globalconfig.Project{verification}
 		setupProject := project.ManagerConfigFromGlobal(cfg).Projects[0]
-		_, err = project.LoadWorkflowContext(ctx, setupProject)
-		if err == nil {
+		_, run.err = project.LoadWorkflowContext(ctx, setupProject)
+		if run.err == nil {
 			if id := cfg.Client.NativeProjects[selected.ID]; id != "" {
 				setupProject.ID = id
 			}
@@ -215,12 +215,12 @@ func (p *runnerProjects) startPreparation(ctx context.Context, cfg globalconfig.
 			}
 		}
 		setup := "pending"
-		if err == nil {
+		if run.err == nil {
 			setup = "passed"
 		}
 		run.checks = inspect(ctx, cfg, selected.ID, func(checks runnerauth.LocalChecks) { checks.Setup = setup; emit(checks) })
 		run.checks.Setup = setup
-		if run.checks.Configuration != "passed" {
+		if run.checks.Configuration != "passed" || run.err != nil {
 			return
 		}
 		var descriptor policy.Descriptor
@@ -270,10 +270,11 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 	}
 	needsApply := p.syncRuntimeLocked()
 	before := p.cfg
-	p.cfg, err = runnerProjectsForIdentity(ctx, p.cfg, p.client, identity, false, false)
+	resolved, err := runnerProjectsForIdentity(ctx, p.cfg, p.client, identity, false, false)
 	if err != nil {
 		return err
 	}
+	p.cfg = resolved
 	changed := needsApply || !reflect.DeepEqual(before, p.cfg)
 	if p.preparing == nil {
 		p.preparing = make(map[string]*runnerProjectPreparation)
@@ -391,9 +392,23 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 		return err
 	}
 	current := p.cfg
-	current.Projects = slices.DeleteFunc(slices.Clone(current.Projects), func(selected globalconfig.Project) bool {
-		return p.checks[selected.ID].Setup != "passed"
-	})
+	var registered globalconfig.Config
+	if p.runtime != nil {
+		registered = p.runtime()
+	}
+	current.Projects = nil
+	for _, selected := range p.cfg.Projects {
+		if p.checks[selected.ID].Setup == "passed" {
+			current.Projects = append(current.Projects, selected)
+			continue
+		}
+		for _, active := range registered.Projects {
+			if active.ID == selected.ID && registered.Client.NativeProjects[active.ID] == p.cfg.Client.NativeProjects[selected.ID] {
+				current.Projects = append(current.Projects, active)
+				break
+			}
+		}
+	}
 	p.mu.Unlock()
 	locked = false
 	if changed && p.apply != nil {
