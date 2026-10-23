@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,11 +17,12 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/runnerauth"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -32,15 +36,14 @@ type memoryRunDetails struct {
 }
 
 func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
+	ref, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(data))
+	if err != nil {
+		return ref, err
+	}
 	m.mu.Lock()
 	if m.fail {
 		m.mu.Unlock()
 		return attachment.ArchiveReference{}, errors.New("upload unavailable")
-	}
-	ref, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(data))
-	if err != nil {
-		m.mu.Unlock()
-		return ref, err
 	}
 	if m.data == nil {
 		m.data = make(map[string][]byte)
@@ -76,19 +79,64 @@ func TestNativeRunDetailReferences(t *testing.T) {
 	store := &memoryRunDetails{}
 	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
 	f := newDefaultNativeFixture(t, Config{RunDetails: store, now: func() time.Time { return now }})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "work")
-	worker := f.worker(t, "worker")
-	lease := claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID)
+	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Collaborate, runnerauth.Events)
+	runner.enroll(t)
+	worker := runner.redemption.Credential
+	claimed := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{
+		PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: runner.binding.MachineID, SessionID: "session",
+		TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability},
+	})
+	requireNativeStatus(t, claimed, http.StatusOK)
+	var lease tracker.NativeLease
+	decodeHubResponse(t, claimed, &lease)
 	event := nativeStartedEvent(lease)
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
+	checkSingleReader := func(name string, read func(context.Context) error) {
+		t.Helper()
+		t.Run("single reader/"+name, func(t *testing.T) {
+			reader := f.service.database.reader
+			reader.SetMaxOpenConns(1)
+			defer reader.SetMaxOpenConns(readerConnections)
+			waits := reader.Stats().WaitCount
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- read(ctx) }()
+			waitContext := testenv.WaitContext(t, t.Context())
+			for reader.Stats().WaitCount == waits {
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatal(err)
+					}
+					return
+				case <-waitContext.Done():
+					cancel()
+					<-done
+					t.Fatal("read did not finish")
+				default:
+					runtime.Gosched()
+				}
+			}
+			stack := make([]byte, 1<<20)
+			stack = stack[:runtime.Stack(stack, true)]
+			cancel()
+			<-done
+			t.Fatalf("read requested a second reader connection while holding the only connection:\n%s", stack)
+		})
+	}
 	legacy := make(map[int64]tracker.NativeRunData)
 	send := func(event tracker.NativeRunEvent, status int) {
 		t.Helper()
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), status)
 		for _, saved := range append(append([]tracker.NativeRunEvent{}, event.PriorEvents...), event) {
 			data := saved.Data
-			data.MachineID, data.SessionID = lease.MachineID, lease.SessionID
+			data.MachineID, data.SessionID, data.RunnerID = lease.MachineID, lease.SessionID, runner.binding.RunnerID
 			legacy[data.Sequence] = data
 		}
 	}
@@ -110,6 +158,26 @@ func TestNativeRunDetailReferences(t *testing.T) {
 	event.PriorEvents = nil
 	event.IdempotencyKey, event.Data.Sequence = "checkpoint-3", 6
 	send(event, http.StatusOK)
+	for _, suffix := range []string{"/routing", ""} {
+		checkSingleReader("runner"+suffix, func(ctx context.Context) error {
+			request := httptest.NewRequestWithContext(ctx, http.MethodGet, runner.identityPath()+suffix, nil)
+			if suffix == "" {
+				request = httptest.NewRequestWithContext(ctx, http.MethodGet, runner.base+"/runners", nil)
+			}
+			request.Header.Set("Authorization", "Bearer "+testHubAdminToken)
+			response := httptest.NewRecorder()
+			f.service.Handler().ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				return fmt.Errorf("request status %d: %s", response.Code, response.Body.String())
+			}
+			if !strings.Contains(response.Body.String(), string(lease.ID)) {
+				return errors.New("runner routing lost the active lease")
+			}
+			return nil
+		})
+	}
+	heartbeat := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", worker, map[string]any{"capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation})
+	requireNativeStatus(t, heartbeat, http.StatusOK)
 	event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Outcome, event.Data.Handoff = "run.finished", "finish", 7, "succeeded", nil
 	event.Data.CompletionBody = strings.Repeat("completion response\n", 2000)
 	event.Data.Usage = nil
@@ -168,11 +236,11 @@ func TestNativeRunDetailReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	var hydrated tracker.NativeRunData
-	if err := decodeRunDetail(f.service.runDetailContext(t.Context()), raw, &hydrated); err != nil {
+	if err := decodeRunDetail(f.service.runDetailContext(t.Context()), f.service.database.reader, raw, &hydrated); err != nil {
 		t.Fatal(err)
 	}
 	expected := event.Data
-	expected.MachineID, expected.SessionID = lease.MachineID, lease.SessionID
+	expected.MachineID, expected.SessionID, expected.RunnerID = lease.MachineID, lease.SessionID, runner.binding.RunnerID
 	got, err := json.Marshal(hydrated)
 	if err != nil {
 		t.Fatal(err)
@@ -227,6 +295,18 @@ func TestNativeRunDetailReferences(t *testing.T) {
 			results[name] = string(result.Content)
 		}
 		return results
+	}
+	for _, suffix := range []string{"/runtime", "/attempts", "/attempts/" + event.Data.AttemptID, "/history?limit=100"} {
+		checkSingleReader(suffix, func(ctx context.Context) error {
+			request := httptest.NewRequestWithContext(ctx, http.MethodGet, path+suffix, nil)
+			request.Header.Set("Authorization", "Bearer "+worker)
+			response := httptest.NewRecorder()
+			f.service.Handler().ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				return fmt.Errorf("request status %d: %s", response.Code, response.Body.String())
+			}
+			return nil
+		})
 	}
 	referenced := reads()
 	tx, err := f.service.database.db.BeginTx(t.Context(), nil)

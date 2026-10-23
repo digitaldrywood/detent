@@ -95,21 +95,21 @@ func archiveQuery(ctx context.Context, query nativeQueryer, item, kind, subject 
 	if _, ok := query.(*nativeArchiveQuery); ok {
 		return query, nil
 	}
-	section, found, err := state.resolve(ctx, item, kind, subject, sequence)
+	section, found, err := state.resolve(ctx, query, item, kind, subject, sequence)
 	if err != nil || !found {
 		return query, err
 	}
 	return newNativeArchiveQuery(ctx, query, &section, subject, state.first, state.last)
 }
 
-func (r *nativeArchiveRead) resolve(ctx context.Context, item, kind, subject string, sequence int64) (attachment.ArchiveSection, bool, error) {
+func (r *nativeArchiveRead) resolve(ctx context.Context, query nativeQueryer, item, kind, subject string, sequence int64) (attachment.ArchiveSection, bool, error) {
 	s, scope := r.service, r.scope
-	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
+	if _, _, err := readNativeIssue(ctx, query, scope, item); err != nil {
 		return attachment.ArchiveSection{}, false, err
 	}
 	var id string
 	var first, last int64
-	ref, err := scanNativeArchiveSection(s.database.reader.QueryRowContext(ctx, `SELECT n.section_id,n.first_sequence,n.last_sequence,
+	ref, err := scanNativeArchiveSection(query.QueryRowContext(ctx, `SELECT n.section_id,n.first_sequence,n.last_sequence,
 	coalesce(a.object_key,''),coalesce(a.sha256,''),coalesce(a.size,0),coalesce(a.uncompressed_size,0),coalesce(a.codec,''),coalesce(a.schema_version,0),coalesce(a.kind,''),coalesce(a.retention_class,'')
 FROM native_archive_sections n LEFT JOIN attachments a ON a.id=n.attachment_id AND a.organization_id=n.organization_id
 AND EXISTS (SELECT 1 FROM attachment_archive_references ar WHERE ar.attachment_id=a.id AND ar.organization_id=n.organization_id AND ar.project_id=n.project_id AND ar.work_item_id=n.work_item_id)

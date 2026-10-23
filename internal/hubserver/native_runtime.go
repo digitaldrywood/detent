@@ -466,7 +466,7 @@ func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope native
 	if err := json.Unmarshal([]byte(actor), &e.Actor); err != nil {
 		return tracker.CollaborationEvent{}, err
 	}
-	if err := decodeRunHistory(ctx, data, &e.Data); err != nil {
+	if err := decodeRunHistory(ctx, q, data, &e.Data); err != nil {
 		return tracker.CollaborationEvent{}, err
 	}
 	e.RecordedAt, err = parseTimeValue(at)
