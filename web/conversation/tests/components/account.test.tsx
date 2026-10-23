@@ -79,7 +79,7 @@ describe("the footer workspace picker", () => {
     return userEvent.setup();
   }
 
-  it.each(["owner", "admin", "member", "viewer", "reporter"])("shows workspace roles and reporter-only sign out for %s", async (role) => {
+  it.each(["owner", "admin", "member", "viewer", "reporter"])("shows workspace roles and sign out for %s", async (role) => {
     const account = decodeAccountBootstrap({
       ...accountFixture,
       actor: { ...accountFixture.actor, role },
@@ -93,7 +93,7 @@ describe("the footer workspace picker", () => {
     const menu = await screen.findByRole("menu");
     expect(within(menu).getByRole("menuitem", { name: "Another workspace" }).getAttribute("aria-description")).toBe("admin");
     expect(within(menu).getByRole("menuitem", { name: account.organization.name }).getAttribute("aria-description")).toBe(role);
-    expect(within(menu).queryByRole("menuitem", { name: "Sign out" }) !== null).toBe(role === "reporter");
+    expect(within(menu).queryByRole("menuitem", { name: "Sign out" })).not.toBeNull();
   });
 
   it.each(["admin", "support", "billing", "viewer", "", undefined])("offers the platform console only to platform staff (%s)", async (platform_role) => {
