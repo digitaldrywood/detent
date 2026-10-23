@@ -3,9 +3,11 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -539,5 +541,137 @@ func TestNativeStorageArchiveRetention(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBackgroundStorageCancellationProgress(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		archive    bool
+		aggregates int
+	}{
+		{"conversion aggregates", false, 3},
+		{"conversion rows", false, 1},
+		{"archive", true, 3},
+	} {
+		archive := test.archive
+		t.Run(test.name, func(t *testing.T) {
+			f := newStorageArchiveFixture(t)
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			var issue tracker.NativeIssue
+			for index := range 3 {
+				if index < test.aggregates {
+					issue = f.nativeFixture.create(t, fmt.Sprintf("background progress %d", index))
+				}
+				if archive {
+					f.transition(t, string(issue.WorkItemID), "Done", f.now.Add(-73*time.Hour))
+				} else {
+					tx := f.tx(t)
+					if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("output", 2048)}}, f.now); err != nil {
+						t.Fatal(err)
+					}
+					f.commit(t, tx)
+				}
+			}
+			count := func() int {
+				t.Helper()
+				query := `SELECT count(*) FROM collaboration_events WHERE json_type(data_json,'$._storage_archive')='object'`
+				if archive {
+					query = `SELECT count(*) FROM issue_storage_archives`
+				}
+				var value int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), query).Scan(&value); err != nil {
+					t.Fatal(err)
+				}
+				return value
+			}
+			run := func(ctx context.Context) error {
+				if archive {
+					return f.service.archiveClosedNativeIssues(ctx, f.now)
+				}
+				return f.service.convertLegacyStorage(ctx, f.now)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			writes := 0
+			var first, interrupted string
+			f.hook = func(r entryauthority.ContentRequest) error {
+				if !r.Write {
+					return nil
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET name=name WHERE id=?", f.project.ID); err != nil {
+					return err
+				}
+				if archive && !strings.HasSuffix(r.Reference.Key, "/issue.json.gz") {
+					return nil
+				}
+				writes++
+				if got := count(); got != writes-1 {
+					t.Fatalf("committed units=%d before unit %d", got, writes)
+				}
+				if writes == 1 {
+					first = r.Reference.Key
+				} else {
+					interrupted = r.Reference.Key
+					cancel()
+				}
+				return nil
+			}
+			if err := run(ctx); !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled run: %v", err)
+			}
+			if got := count(); got != 1 {
+				t.Fatalf("committed progress after cancellation=%d", got)
+			}
+			resumed := 0
+			f.hook = func(r entryauthority.ContentRequest) error {
+				if !r.Write || archive && !strings.HasSuffix(r.Reference.Key, "/issue.json.gz") {
+					return nil
+				}
+				if r.Reference.Key == first {
+					t.Fatal("repeated committed unit")
+				}
+				if test.aggregates > 1 && resumed == 0 && r.Reference.Key == interrupted {
+					t.Fatal("interrupted unit starved unattempted work")
+				}
+				resumed++
+				return nil
+			}
+			f.now = f.now.Add(time.Minute)
+			if err := run(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if got := count(); got != 3 || resumed != 2 {
+				t.Fatalf("resumed units=%d committed=%d", resumed, got)
+			}
+		})
+	}
+}
+
+func TestNativeRetentionCommitsEachIssue(t *testing.T) {
+	f := newStorageArchiveFixture(t)
+	for index := range 3 {
+		issue := f.nativeFixture.create(t, fmt.Sprintf("retention progress %d", index))
+		f.transition(t, string(issue.WorkItemID), "Done", f.now.Add(-31*24*time.Hour))
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER interrupt_archive BEFORE UPDATE OF archived ON issues WHEN NEW.archived=1 AND (SELECT count(*) FROM issues WHERE archived=1)=1 BEGIN SELECT RAISE(ABORT,'interrupted archive'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.expireNativeRecords(t.Context(), f.now); err == nil {
+		t.Fatal("expected archive interruption")
+	}
+	for _, want := range []int{1, 3} {
+		if want == 3 {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER interrupt_archive"); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.expireNativeRecords(t.Context(), f.now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var count int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE archived=1").Scan(&count); err != nil || count != want {
+			t.Fatalf("archived=%d want=%d err=%v", count, want, err)
+		}
 	}
 }
