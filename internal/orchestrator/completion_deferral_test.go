@@ -300,6 +300,13 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			restartedOrch.localIntakeDisabled.Store(tt.intakeOff)
 			restartedState := newState(cfg)
 			restartedOrch.recoverDurableWorkAttempts(t.Context(), &restartedState, restartAt)
+			if tt.restoreTransient {
+				_, _ = restartedOrch.fetchCandidateIssuesForTick(t.Context(), &restartedState)
+				pending := restoredAuthority.request.CompletionPending
+				if pending == nil || !pending(issue.ID) || pending("unrelated") {
+					t.Fatal("discovery lost pending restoration ownership")
+				}
+			}
 
 			if tt.expired {
 				restartedOrch.retryDeferredCompletions(t.Context(), &restartedState, restartAt)

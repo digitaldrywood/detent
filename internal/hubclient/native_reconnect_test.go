@@ -41,8 +41,11 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 		missingProcessProof bool
 		stopCheckFails      bool
 		replacement         bool
+		restorePending      bool
 	}{
 		{name: "running"},
+		{name: "pending completion restoration", restorePending: true},
+		{name: "pending interrupted completion restoration", restorePending: true, outcome: "interrupted"},
 		{name: "released source after restart", released: true},
 		{name: "released source preserves newer claim", released: true, replacement: true},
 		{name: "released interrupted source after restart", released: true, outcome: "interrupted"},
@@ -432,6 +435,19 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				return response, nil
 			})
 			h.scheduler = newScheduler()
+			if test.restorePending {
+				request := orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", CompletionPending: func(id string) bool { return id == issue.ID }}
+				if _, err := h.scheduler.FetchCandidateIssues(t.Context(), request); err != nil {
+					t.Fatal(err)
+				}
+				recovery, err := h.admin.Recovery(t.Context(), current.WorkItemID)
+				if err != nil || len(recovery.Attempts) != 1 {
+					t.Fatalf("pending restoration recovery: %+v, %v", recovery, err)
+				}
+				if attempt := recovery.Attempts[0]; attempt.ClaimReleasedAt != nil || attempt.LeaseID != original.ID || attempt.Outcome == "cancelled" || orphanRenewals.Load() != 0 {
+					t.Fatalf("discovery changed pending completion ownership: %+v", attempt)
+				}
+			}
 			if test.hold || test.hiddenDependency {
 				candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local"})
 				if test.loseRelease {

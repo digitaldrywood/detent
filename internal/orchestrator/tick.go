@@ -736,6 +736,10 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 			WorkflowStates:          states,
 			Filter:                  o.authorizationFilterHint(),
 		}
+		request.CompletionPending = func(issueID string) bool {
+			_, pending := state.deferredCompletions[issueID]
+			return pending
+		}
 		request.NativeLandingBatch = o.nativeWorkflow() && !o.cfg.Policy.Gates.GitHubPullRequest
 		if request.NativeLandingBatch {
 			request.CandidateLimit = max(request.CandidateLimit, 100)

@@ -683,7 +683,7 @@ func (s *Scheduler) releaseOrphanedNativeClaims(ctx context.Context, request orc
 		s.mu.Lock()
 		_, adopted := s.nativeClaims[string(held.WorkItemID)]
 		s.mu.Unlock()
-		if adopted {
+		if adopted || request.CompletionPending != nil && request.CompletionPending(string(held.WorkItemID)) {
 			continue
 		}
 		recovery, err := source.client.Recovery(ctx, held.WorkItemID)
@@ -754,7 +754,8 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 	claim.lease = lease
 	claim.deadline = nativeLeaseDeadline(renewStarted, lease)
 	s.mu.Lock()
-	if current, ok := s.nativeClaims[issueID]; !ok || current.lease.FencingToken != lease.FencingToken {
+	heldLease, held = s.claims[issueID]
+	if current, ok := s.nativeClaims[issueID]; !ok || current.lease.ID != lease.ID || current.lease.FencingToken != lease.FencingToken || !held || heldLease.ID != lease.ID || heldLease.FencingToken != lease.FencingToken {
 		s.mu.Unlock()
 		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
 	}
@@ -777,10 +778,13 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 	localWorker := execution.hasWorkers()
 	execution.cancelMu.Lock()
 	controller := execution.cancel != nil ||
-		execution.finalizing > 0
+		execution.finalizing > 0 || execution.deferredPublication
 	execution.cancelMu.Unlock()
 	if !execution.mu.TryLock() {
-		return controller || localWorker, nil
+		if controller || localWorker {
+			return true, nil
+		}
+		return false, ErrUnavailable
 	}
 	interrupted := execution.data.Outcome == "interrupted"
 	prepared := execution.preparedOutcome != "" && execution.data.Outcome == "" || interrupted

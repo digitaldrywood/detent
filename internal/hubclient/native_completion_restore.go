@@ -187,6 +187,7 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 		execution.finalizationSource = finalization.SourceVersion
 		execution.finalizationAttempt = finalization.SourceAttemptID
 	}
+	execution.updateDeferredPublication()
 	claim.execution = execution
 	s.mu.Lock()
 	if _, exists := s.nativeClaims[issue.ID]; exists {

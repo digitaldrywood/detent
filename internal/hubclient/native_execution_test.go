@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -475,7 +476,13 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 		lost         bool
 		wantRenewed  bool
 		wantFinished bool
+		contention   string
 	}{
+		{name: "deferred publication during completion snapshot", contention: "snapshot", controller: true, stopped: true, prepared: true, wantRenewed: true},
+		{name: "interrupted publication during completion snapshot", contention: "snapshot", outcome: "interrupted", wantRenewed: true},
+		{name: "snapshot contention without ownership evidence", contention: "unknown"},
+		{name: "preparation waiting for snapshot", contention: "prepare", wantRenewed: true},
+		{name: "finish waiting for snapshot", contention: "finish", wantRenewed: true},
 		{name: "deferred interrupted review", phase: "completed", outcome: "interrupted", wantRenewed: true},
 		{name: "published terminal attempt", phase: "completed", outcome: "failed"},
 		{name: "killed worker", phase: "implementation", localWorker: true, killed: true},
@@ -534,6 +541,9 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 				t.Fatal(err)
 			}
 			execution.data.Outcome = test.outcome
+			if test.outcome != "" {
+				execution.updateDeferredPublication()
+			}
 			if test.localWorker {
 				if err := execution.KeepWorker(func(context.Context) error { return nil }, nil); err != nil {
 					t.Fatal(err)
@@ -623,7 +633,46 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 				}
 				return
 			}
+			var finalizationDone chan error
+			if test.contention != "" {
+				execution.mu.Lock()
+				if test.contention == "prepare" || test.contention == "finish" {
+					finalizationDone = make(chan error, 1)
+					go func() {
+						if test.contention == "prepare" {
+							finalizationDone <- execution.PrepareFinish(t.Context(), "failed", "", nil)
+						} else {
+							finalizationDone <- execution.Finish(t.Context(), "failed")
+						}
+					}()
+					testenv.WaitUntil(t, t.Context(), func() error {
+						execution.cancelMu.Lock()
+						defer execution.cancelMu.Unlock()
+						if execution.finalizing == 0 {
+							return errors.New("finalization has not registered ownership")
+						}
+						return nil
+					})
+				}
+			}
 			renewed, err := h.scheduler.RenewClaim(t.Context(), issue.ID, now)
+			if test.contention != "" {
+				execution.mu.Unlock()
+				if finalizationDone != nil {
+					if finishErr := <-finalizationDone; finishErr != nil {
+						t.Fatal(finishErr)
+					}
+				}
+			}
+			if test.contention == "unknown" {
+				if !errors.Is(err, ErrUnavailable) || errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+					t.Fatalf("contended ownership = %v", err)
+				}
+				if _, held := h.scheduler.claims[issue.ID]; !held {
+					t.Fatal("contention revoked renewal authority")
+				}
+				return
+			}
 			if test.wantRenewed {
 				if err != nil || !renewed.LeaseRenewedAt.After(before.RenewedAt) {
 					t.Fatalf("lease was not renewed: %+v, %v", renewed, err)
@@ -727,7 +776,7 @@ func TestNativeExecutionContextKeepsItsOriginalFence(t *testing.T) {
 
 func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 	t.Parallel()
-	for _, operation := range []string{"renew", "renew_availability", "release", "release_finish_lost", "release_finish_ack_retry", "lost"} {
+	for _, operation := range []string{"renew", "renew_revoked", "renew_availability", "release", "release_finish_lost", "release_finish_ack_retry", "lost"} {
 		t.Run(operation, func(t *testing.T) {
 			descriptor := clientTestPolicy()
 			id := "wi_" + strings.Repeat("a", 32)
@@ -735,7 +784,7 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 			next := lease
 			next.ID, next.FencingToken = "new", 2
 			availabilityDeadline := time.Now().Add(30 * time.Second)
-			if operation == "renew_availability" {
+			if operation == "renew_availability" || operation == "renew_revoked" {
 				next = lease
 			}
 			var scheduler *Scheduler
@@ -770,6 +819,9 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 					scheduler.nativeClaims[id] = claim
 					scheduler.claims[id] = nativeTrackerLease(next)
 					scheduler.mu.Unlock()
+					if operation == "renew_revoked" {
+						scheduler.nativeClaimError(id, lease.FencingToken, orchestrator.ErrSchedulingClaimLost)
+					}
 					payload = lease
 				}
 				body, err := json.Marshal(payload)
@@ -807,6 +859,15 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 				if err != nil || !scheduler.nativeClaims[id].availabilityDeadline.Equal(availabilityDeadline) {
 					t.Fatalf("delayed renewal replaced refreshed availability: %v, %v", scheduler.nativeClaims[id].availabilityDeadline, err)
 				}
+			case "renew_revoked":
+				_, err = scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id], 0)
+				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+					t.Fatalf("revoked renewal = %v", err)
+				}
+				if _, held := scheduler.claims[id]; held || scheduler.nativeClaims[id].execution == nil {
+					t.Fatal("revoked renewal restored authority or lost cleanup")
+				}
+				return
 			case "renew":
 				_, err = scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id], 0)
 				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {

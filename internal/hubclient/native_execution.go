@@ -49,6 +49,8 @@ type nativeExecution struct {
 	observations      []tracker.NativeRunEvent
 	cancel            context.CancelCauseFunc
 	finalizing        int
+
+	deferredPublication bool
 	// diffSource computes the stored attempt diff the execution posts before
 	// every checkpoint and before the finish (decisions section 18.5). It is
 	// nil for a run with no worktree to describe.
@@ -496,6 +498,12 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 	return nil
 }
 
+func (e *nativeExecution) updateDeferredPublication() {
+	e.cancelMu.Lock()
+	e.deferredPublication = e.data.Outcome == "interrupted" || e.preparedOutcome != "" && e.data.Outcome == ""
+	e.cancelMu.Unlock()
+}
+
 func (e *nativeExecution) ownFinalization() func() {
 	e.cancelMu.Lock()
 	e.finalizing++
@@ -508,9 +516,10 @@ func (e *nativeExecution) ownFinalization() func() {
 }
 
 func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessage string, failure *tracker.NativeTerminalFailure) (err error) {
-	e.mu.Lock()
 	defer e.ownFinalization()()
+	e.mu.Lock()
 	defer func() {
+		e.updateDeferredPublication()
 		e.mu.Unlock()
 		if err == nil {
 			e.refreshReasons(ctx, false)
@@ -648,11 +657,12 @@ func (e *nativeExecution) preparedFinalization() *tracker.NativeFinalization {
 }
 
 func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
-	e.mu.Lock()
 	defer e.ownFinalization()()
+	e.mu.Lock()
 	previous := e.data.Outcome
 	err := e.finish(ctx, outcome)
 	refresh := previous == "" && e.data.Outcome != ""
+	e.updateDeferredPublication()
 	e.mu.Unlock()
 	if refresh {
 		e.refreshReasons(ctx, true)

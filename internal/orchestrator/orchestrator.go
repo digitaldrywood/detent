@@ -172,6 +172,7 @@ type ClaimingConfig struct {
 }
 
 type SchedulingRequest struct {
+	CompletionPending       func(string) bool
 	BeginDiscovery          func(context.Context) (context.Context, context.CancelFunc)
 	LandingCapacity         int
 	NativeLandingBatch      bool
