@@ -174,7 +174,10 @@ func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Sessi
 // completePendingHostedInvitation finishes an invitation the provider accepted
 // but whose tenant membership was never written, such as a join interrupted
 // between the provider acceptance and the tenant transaction. The acceptance
-// path re-verifies the provider invitation, subject, membership and role.
+// path re-verifies the provider invitation, subject, membership and role, and
+// its conditional update admits one acceptance, so no shared lock is held
+// across the provider calls. It reports whether a pending invitation existed,
+// since a concurrent request may have completed it first.
 func (s *Service) completePendingHostedInvitation(ctx context.Context, session auth.Session) bool {
 	if session.Identity == nil || session.Identity.SupportActor != "" || session.Email == "" || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
 		return false
@@ -186,11 +189,10 @@ func (s *Service) completePendingHostedInvitation(ctx context.Context, session a
 	if err != nil {
 		return false
 	}
-	if held, _ := ctx.Value(hostedMutationContext{}).(bool); !held {
-		s.hostedMutationMu.Lock()
-		defer s.hostedMutationMu.Unlock()
+	if err := s.acceptHostedInvitationIDFor(ctx, auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}, id); err != nil {
+		s.config.Logger.Warn("pending invitation completion refused", "invitation", id, "error", err)
 	}
-	return s.acceptHostedInvitationIDFor(ctx, auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}, id) == nil
+	return true
 }
 
 // lesserHostedRole returns the less privileged of two organization roles, so
