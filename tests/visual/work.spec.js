@@ -278,6 +278,7 @@ test.describe("the work board", () => {
     let sequence = 1_000_000;
     let ticks = 0;
     await page.route("**/projects/*/events?**", (route) => {
+      if (new URL(route.request().url()).searchParams.get("board") !== "true") return route.continue();
       ticks += 1;
       sequence += 1;
       return route.fulfill({

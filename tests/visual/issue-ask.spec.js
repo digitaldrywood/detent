@@ -66,7 +66,8 @@ for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844
       window.EventSource = class extends NativeEventSource {
         constructor(url, options) {
           super(url, options);
-          if (/\/projects\/[^/]+\/events$/.test(String(url))) window.projectStreams.add(this);
+          const streamURL = new URL(url, window.location.href);
+          if (/\/projects\/[^/]+\/events$/.test(streamURL.pathname) && streamURL.searchParams.has("work_item")) window.projectStreams.add(this);
         }
         close() {
           window.projectStreams.delete(this);

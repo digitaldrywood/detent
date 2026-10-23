@@ -44,7 +44,7 @@ export function RepositoryPicker({ runner, value, onChange, refresh, refreshing,
     <Combobox inline={!disabled} items={items} filter={null} value={validRepositoryName(query) ? query : null} inputValue={value}
       onInputValueChange={onChange} onValueChange={(name) => { if (name) onChange(name); }}
       open={open && !disabled} onOpenChange={setOpen} disabled={disabled}>
-      <ComboboxInput id="setup-repository" ref={input} placeholder="Search or type owner/name" showTrigger={false} startAddon={<SearchIcon />} />
+      <ComboboxInput id="setup-repository" ref={input} placeholder="Search or type owner/name" aria-expanded={open && !disabled} showTrigger={false} startAddon={<SearchIcon />} />
       {open && !disabled ? <div className="max-h-64 overflow-y-auto rounded-lg border border-border">
         <ComboboxList>
           {typed ? <ComboboxItem value={query} disabled={!validRepositoryName(query)}>Use {query} as typed</ComboboxItem>

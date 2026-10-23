@@ -1566,11 +1566,13 @@ func TestStoredHoldRequiresProvenance(t *testing.T) {
 	now := time.Now().UTC()
 	issue := terminalRetryTestIssue("provenance")
 	for _, tt := range []struct {
-		name   string
-		mutate func(*workflowLaneBlockedRecoveryMetadata)
-		valid  bool
+		name          string
+		mutate        func(*workflowLaneBlockedRecoveryMetadata)
+		valid         bool
+		invalidSource bool
 	}{
 		{name: "current", valid: true},
+		{name: "unencodable source", invalidSource: true},
 		{name: "missing owner", mutate: func(m *workflowLaneBlockedRecoveryMetadata) { m.Owner = "" }},
 		{name: "missing revision", mutate: func(m *workflowLaneBlockedRecoveryMetadata) { m.SourceRevision = "" }},
 		{name: "wrong revision", mutate: func(m *workflowLaneBlockedRecoveryMetadata) { m.SourceRevision = "other" }},
@@ -1578,6 +1580,11 @@ func TestStoredHoldRequiresProvenance(t *testing.T) {
 		{name: "missing expiry", mutate: func(m *workflowLaneBlockedRecoveryMetadata) { m.ExpiresAt = time.Time{} }},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			issue := cloneIssue(issue)
+			if tt.invalidSource {
+				updatedAt := time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+				issue.UpdatedAt = &updatedAt
+			}
 			hold := workflowLaneBlockedRecoveryMetadata{Owner: "orchestrator", SourceRevision: holdSourceRevision(issue), ExpiresAt: now.Add(time.Hour)}
 			if tt.mutate != nil {
 				tt.mutate(&hold)

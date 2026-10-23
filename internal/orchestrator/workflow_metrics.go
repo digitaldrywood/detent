@@ -974,7 +974,7 @@ func holdSourceRevision(issue connector.Issue) string {
 		Signal           *workpad.Signal
 	}{issue.ID, issue.State, issue.Description, issue.StageUpdatedAt, issue.Metadata["hub_revision"], firstNonBlank(issue.PRHeadSHA, workflowLanePullRequestHead(issue)), issue.UpdatedAt, issue.WorkpadSignal})
 	if err != nil {
-		return workpad.ContentHash("")
+		return ""
 	}
 	return workpad.ContentHash(string(data))
 }
