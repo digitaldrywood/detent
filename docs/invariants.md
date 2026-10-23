@@ -140,10 +140,11 @@ review boundaries.
 Machine failures have one retry owner. Per-issue failure, progress, spend,
 dispatch-loop, token-ceiling and workspace retry brakes are consolidated into
 it; machine failures stay dispatchable with growing attempts and capped
-jittered backoff. A retry resumes at the first step whose receipt does not
-match the current source; it never repeats a step that already succeeded for
-that source, and a source change is the only thing that sends work back to
-implementation. Only verified changed source resets the attempt count.
+jittered backoff. A retry resumes at the first step whose receipt is no
+longer valid for the current source, policy and review state; it never repeats
+a step whose receipt is still valid. A rejected review, gate or audit result,
+or new human feedback, returns work to implementation on the same source.
+Only verified changed source resets the attempt count.
 Spending limits belong to the existing budget policy, not to retry brakes;
 historical brake metadata never vetoes the next attempt, and explicit human
 action and operator stops retain their authority.
@@ -249,9 +250,10 @@ Machine-filed issues carry an origin stamp and a problem fingerprint. A new
 report of an open problem becomes an occurrence on that issue, never a
 duplicate. A report matching a closed issue is ignored, unless scheduled
 validation shows a fixed problem failing again, which starts a new issue. A
-human's Cancelled or no-dispatch decision is never overridden. Every native
-filing first returns likely duplicates and related items, and creates nothing
-until the filer explicitly confirms the issue is distinct.
+human's Cancelled or no-dispatch decision is never overridden. Interactive
+native filing first returns likely duplicates and related items, and creates
+nothing until the filer explicitly confirms the issue is distinct; machine
+reports and supported imports deduplicate by fingerprint instead.
 
 **Enforcement:** `TestMachineIssueTool` in `internal/orchestrator`;
 `TestNativeMachineDefectOccurrences` and `TestNativeReleaseStabilizationOccurrences` in `internal/hubserver` and
@@ -486,12 +488,12 @@ it adds no check, gate, configuration or runtime mechanism.
 ## INV-17 — Runners are stateless, like GitHub Actions runners
 
 A runner needs only its install configuration: the Hub URL, its identity, a
-capacity limit, one workspace root that it owns, and an installed,
-authenticated GitHub CLI. Every job on a runner acts with that runner owner's
-GitHub identity. Nothing else about the machine may change which work it can
+capacity limit, one workspace root that it owns, and a declared GitHub
+credential: a configured worker credential or, when none is configured, the
+host's authenticated GitHub CLI, whose login jobs then use. Nothing else about the machine may change which work it can
 claim or how a job behaves: not other directories, symlinks, existing
 checkouts, shell profiles, other tool logins or files left behind by earlier
-jobs. A missing or expired GitHub CLI login is an instance setup failure.
+jobs. A missing or expired declared credential is an instance setup failure.
 
 Every job starts in a workspace the runner prepares itself under its workspace
 root, from an exact commit or a Hub-stored source bundle. Work a job must keep

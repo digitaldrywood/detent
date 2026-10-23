@@ -147,10 +147,11 @@ interactions are the main source of incidents, so the set may not grow.
 - Machine failures have one retry owner with growing attempts and capped
   jittered backoff; per-issue failure, progress, spend, dispatch-loop,
   token-ceiling and workspace retry brakes are consolidated into it. A retry
-  resumes at the first step whose receipt does not match the current source and
-  never repeats a step that already succeeded for that source; only a source
-  change sends work back to implementation, and only verified changed source
-  resets the attempt count. Spending limits belong to the existing budget
+  resumes at the first step whose receipt is no longer valid for the current
+  source, policy and review state and never repeats a step whose receipt is
+  still valid; rejected review, gate or audit results and new human feedback
+  return work to implementation on the same source. Only verified changed
+  source resets the attempt count. Spending limits belong to the existing budget
   policy, not to retry brakes. Historical brake metadata never parks work or
   vetoes dispatch.
 - The orchestrator is the only writer of tracker lane state; workers report
@@ -184,7 +185,8 @@ completion contract owns tracker publication and grants workers no extra writes.
 
 Follow [INV-17](docs/invariants.md#inv-17--runners-are-stateless-like-github-actions-runners):
 a runner depends only on its install configuration (Hub URL, identity, capacity,
-workspace root, and an authenticated GitHub CLI whose login every job uses). Every job starts in a fresh workspace from an exact commit or a
+workspace root, and a declared GitHub credential: a configured worker credential
+or, when none is configured, the host's authenticated GitHub CLI). Every job starts in a fresh workspace from an exact commit or a
 Hub-stored source bundle, and work that must survive is published to the Hub.
 Never add machine-local state that later jobs depend on, configuration discovered
 by scanning the machine, or routing by where earlier work ran.

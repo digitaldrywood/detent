@@ -435,10 +435,11 @@ interactions are the main source of incidents, so the set may not grow.
 - Machine failures have one retry owner with growing attempts and capped
   jittered backoff; per-issue failure, progress, spend, dispatch-loop,
   token-ceiling and workspace retry brakes are consolidated into it. A retry
-  resumes at the first step whose receipt does not match the current source and
-  never repeats a step that already succeeded for that source; only a source
-  change sends work back to implementation, and only verified changed source
-  resets the attempt count. Spending limits belong to the existing budget
+  resumes at the first step whose receipt is no longer valid for the current
+  source, policy and review state and never repeats a step whose receipt is
+  still valid; rejected review, gate or audit results and new human feedback
+  return work to implementation on the same source. Only verified changed
+  source resets the attempt count. Spending limits belong to the existing budget
   policy, not to retry brakes. Historical brake metadata never parks work or
   vetoes dispatch.
 - The orchestrator is the only writer of tracker lane state; workers report
