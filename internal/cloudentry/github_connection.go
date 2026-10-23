@@ -115,7 +115,10 @@ func (s *Service) connectGitHub(c echo.Context) error {
 
 func validSetupReturn(value string) bool {
 	u, err := url.Parse(value)
-	return err == nil && len(value) <= 2048 && u.Scheme == "" && u.Host == "" && u.User == nil && u.Fragment == "" && !strings.ContainsAny(value, "\r\n\\") && setupReturnPath.MatchString(u.Path)
+	if err != nil || u == nil {
+		return false
+	}
+	return len(value) <= 2048 && u.Scheme == "" && u.Host == "" && u.User == nil && u.Fragment == "" && !strings.ContainsAny(value, "\r\n\\") && setupReturnPath.MatchString(u.Path)
 }
 
 func (s *Service) saveGitHubState(c echo.Context, state githubConnectionState) error {

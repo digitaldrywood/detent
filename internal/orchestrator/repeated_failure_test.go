@@ -2,6 +2,7 @@ package orchestrator_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -81,7 +82,7 @@ func TestRunRetriesRepeatedCostlyWorkerFailures(t *testing.T) {
 			return err
 		}
 		if _, ok := state.Completed[issue.ID]; !ok {
-			return fmt.Errorf("awaiting successful completion")
+			return errors.New("awaiting successful completion")
 		}
 		return nil
 	})

@@ -918,16 +918,6 @@ func dependencyBlockersMatchingRefs(blockers []dependencyBlocker, refs []connect
 	return filtered
 }
 
-func dependencyBlockersNotReady(blockers []dependencyBlocker, cfg DependencyAutoUnblockConfig, terminalStates []string) []dependencyBlocker {
-	filtered := make([]dependencyBlocker, 0, len(blockers))
-	for _, blocker := range blockers {
-		if !dependencyBlockerReady(blocker, cfg, terminalStates) {
-			filtered = append(filtered, blocker)
-		}
-	}
-	return filtered
-}
-
 func dependencyBlockersTerminal(blockers []dependencyBlocker, terminalStates []string) bool {
 	if len(blockers) == 0 {
 		return false
@@ -1162,28 +1152,6 @@ func (o *Orchestrator) workflowTimelineLaneActionSignature(
 	return o.workflowTimelineLaneMetadataMatch(ctx, issue, reason, func(metadata workflowLaneMetadata) bool {
 		return workflowLaneMetadataHasActionSignature(metadata, action, signature)
 	})
-}
-
-func (o *Orchestrator) workflowTimelineActionSignature(
-	ctx context.Context,
-	issue connector.Issue,
-	action string,
-	signature string,
-) (workflowTimelineMetadataMatch, bool) {
-	timeline, ok := o.issueWorkflowTimeline(ctx, issue)
-	if !ok {
-		return workflowTimelineMetadataMatch{}, false
-	}
-	for _, event := range timeline.Events {
-		metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
-		if !ok {
-			continue
-		}
-		if workflowLaneMetadataHasActionSignature(metadata, action, signature) {
-			return workflowTimelineMetadataMatch{Event: event, Metadata: metadata}, true
-		}
-	}
-	return workflowTimelineMetadataMatch{}, false
 }
 
 func (o *Orchestrator) latestWorkflowLaneEntry(

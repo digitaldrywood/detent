@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -307,35 +306,4 @@ func artifactGateConvergenceMetadata(record artifactGateConvergenceRecord) map[s
 
 func (o *Orchestrator) parkArtifactGateConvergence(ctx context.Context, state *State, event runpkg.Completion, running Running) {
 	o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), artifactGateConvergenceReason)
-}
-
-func artifactGateConvergenceBlockedReason(record artifactGateConvergenceRecord) string {
-	return artifactGateConvergenceBlockedReasonPrefix + fmt.Sprintf(
-		"%s remained %s after %d consecutive successful attempts",
-		strings.TrimSpace(record.StatusField),
-		strconv.Quote(strings.TrimSpace(record.CompletionStatus)),
-		record.ConsecutiveUnchanged,
-	)
-}
-
-func artifactGateConvergenceComment(issue connector.Issue, attempt int, record artifactGateConvergenceRecord) string {
-	var b strings.Builder
-	b.WriteString("Detent stopped redispatching this item after ")
-	b.WriteString(strconv.Itoa(record.ConsecutiveUnchanged))
-	b.WriteString(" consecutive successful attempts left the configured artifact gate status unchanged.")
-	b.WriteString("\n\nIssue parked in `")
-	b.WriteString(strings.TrimSpace(issue.State))
-	b.WriteString("`.")
-	b.WriteString("\n\n- issue: ")
-	b.WriteString(issueLabel(issue))
-	b.WriteString("\n- latest_attempt: ")
-	b.WriteString(strconv.Itoa(attempt))
-	b.WriteString("\n- status_field: `")
-	b.WriteString(strings.TrimSpace(record.StatusField))
-	b.WriteString("`")
-	b.WriteString("\n- unchanged_status: `")
-	b.WriteString(strings.TrimSpace(record.CompletionStatus))
-	b.WriteString("`")
-	b.WriteString("\n\nReview the artifact and set the configured field to the appropriate pass or wait status before moving the item out of Blocked. If further rework is required, correct the worker instructions before moving it back to Rework; another unchanged success will remain breaker-protected.")
-	return b.String()
 }

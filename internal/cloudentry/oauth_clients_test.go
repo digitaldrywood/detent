@@ -48,13 +48,13 @@ func TestOAuthClientMigrationAndBackfill(t *testing.T) {
 	var logs bytes.Buffer
 	s := &Service{auth: &authStore{seal: seal}, config: Config{PublicURL: testPublicURL, Logger: slog.New(slog.NewJSONHandler(&logs, nil))}}
 	registration := oauthRegistration{Name: "Assistant", AuthMethod: "client_secret_post", SecretHash: apikey.HashToken("client-secret"), RedirectURIs: []string{"https://assistant.example.test/callback", "http://localhost:12345/callback"}}
-	var ids []string
-	for range 3 {
+	ids := make([]string, 3)
+	for i := range ids {
 		sealed, err := s.sealOAuth("oauth-client", registration)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ids = append(ids, "oauth_client_"+sealed)
+		ids[i] = "oauth_client_" + sealed
 	}
 	slices.Sort(ids)
 	const broken = "oauth_client_!unreadable"

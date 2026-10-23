@@ -828,7 +828,7 @@ func assertInstanceRecoveryRetry(t *testing.T, h *nativeChangeHub, orch *orchest
 			t.Fatal(err)
 		}
 		if _, retried := state.Retry[issueID]; !retried {
-			return fmt.Errorf("recovery refusal retry is not published yet")
+			return errors.New("recovery refusal retry is not published yet")
 		}
 		return nil
 	})

@@ -6,7 +6,6 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
-	runpkg "github.com/digitaldrywood/detent/internal/runner"
 )
 
 const spendProgressReason = "spend_since_progress_circuit_breaker"
@@ -106,8 +105,4 @@ func mergeWorkAttemptMetadata(groups ...map[string]any) map[string]any {
 		}
 	}
 	return merged
-}
-
-func priorAttemptPresent(prior runpkg.PriorAttempt) bool {
-	return strings.TrimSpace(prior.Source) != "" || strings.TrimSpace(prior.Reason) != "" || prior.ExplainBeforeRetry || prior.Validator.Submitted
 }

@@ -307,13 +307,6 @@ func blockedStopReason(blocked *Blocked) string {
 	return strings.TrimSpace(blocked.StopReason)
 }
 
-func blockedRecoveryCause(blocked *Blocked) string {
-	if blocked == nil || blocked.Recovery == nil {
-		return ""
-	}
-	return blockedRecoveryMetadataCause(blocked.Recovery)
-}
-
 func blockedRecoveryMetadataCause(recovery *workflowLaneBlockedRecoveryMetadata) string {
 	if recovery == nil {
 		return ""

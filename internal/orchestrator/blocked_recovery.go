@@ -8,7 +8,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -252,72 +251,6 @@ func (o *Orchestrator) resolveBlockedRecoveryDependencies(ctx context.Context, s
 	return cohort
 }
 
-func attributeHeldBlockedRecoveryRoots(state *State) {
-	if state == nil || len(state.Blocked) == 0 {
-		return
-	}
-	byID := make(map[string]string, len(state.Blocked))
-	byIdentifier := make(map[string]string, len(state.Blocked))
-	for key, entry := range state.Blocked {
-		if id := strings.ToLower(strings.TrimSpace(entry.Issue.ID)); id != "" {
-			byID[id] = key
-		}
-		if identifier := strings.ToLower(strings.TrimSpace(entry.Issue.Identifier)); identifier != "" {
-			byIdentifier[identifier] = key
-		}
-	}
-	for key, entry := range state.Blocked {
-		if !strings.EqualFold(strings.TrimSpace(entry.RecoveryAction), "defer") {
-			continue
-		}
-		root, ok := heldBlockedRecoveryRoot(key, state.Blocked, byID, byIdentifier, map[string]struct{}{})
-		if !ok {
-			continue
-		}
-		entry.RecoveryRoot = &root
-		state.Blocked[key] = entry
-	}
-}
-
-func heldBlockedRecoveryRoot(
-	key string,
-	blocked map[string]Blocked,
-	byID map[string]string,
-	byIdentifier map[string]string,
-	seen map[string]struct{},
-) (telemetry.BlockedRecoveryRoot, bool) {
-	if _, ok := seen[key]; ok {
-		return telemetry.BlockedRecoveryRoot{}, false
-	}
-	seen[key] = struct{}{}
-	entry, ok := blocked[key]
-	if !ok {
-		return telemetry.BlockedRecoveryRoot{}, false
-	}
-	if entry.NeedsHumanAttention {
-		return telemetry.BlockedRecoveryRoot{
-			IssueID:         strings.TrimSpace(entry.Issue.ID),
-			IssueIdentifier: strings.TrimSpace(entry.Issue.Identifier),
-			IssueURL:        strings.TrimSpace(entry.Issue.URL),
-			Reason:          strings.TrimSpace(entry.RecoveryReason),
-			Remedy:          strings.TrimSpace(entry.RecoveryRemedy),
-		}, true
-	}
-	for _, ref := range entry.Issue.BlockedBy {
-		blockerKey := byID[strings.ToLower(strings.TrimSpace(ref.ID))]
-		if blockerKey == "" {
-			blockerKey = byIdentifier[strings.ToLower(strings.TrimSpace(ref.Identifier))]
-		}
-		if blockerKey == "" {
-			continue
-		}
-		if root, found := heldBlockedRecoveryRoot(blockerKey, blocked, byID, byIdentifier, seen); found {
-			return root, true
-		}
-	}
-	return telemetry.BlockedRecoveryRoot{}, false
-}
-
 func blockedRecoveryReasonAllowed(cfg BlockedRecoveryConfig, reasonCode string) bool {
 	reasonCode = normalizeBlockedRecoveryReasonCode(reasonCode)
 	for _, allowed := range cfg.ReasonCodes {
@@ -451,28 +384,6 @@ func reworkBreakerPullRequestMetadataEqual(left, right *workflowLanePullRequestM
 		strings.TrimSpace(left.HeadSHA) != "" && strings.TrimSpace(left.HeadSHA) == strings.TrimSpace(right.HeadSHA)
 }
 
-func reworkBreakerAutoUnparkReady(issue connector.Issue, park reworkBreakerPark, terminalStates []string) bool {
-	if normalizeState(issue.State) != normalizeState(blockedStatusState) || issue.Closed || reworkBreakerIssueHeld(issue, terminalStates) {
-		return false
-	}
-	if issue.StageUpdatedAt != nil && issue.StageUpdatedAt.After(workflowLaneTransitionAt(park.Event).Add(reworkBreakerStageUpdateSkew)) {
-		return false
-	}
-	pr := issue.PullRequest
-	if pr == nil || pr.Draft || normalizePullRequestState(pr.State) != "open" {
-		return false
-	}
-	if pr.Number != int(park.PRNumber) || strings.TrimSpace(pr.HeadSHA) != park.HeadSHA {
-		return false
-	}
-	if pullRequestHydrationUnavailableReason(pr) != "" || pullRequestHydrationDegradedReason(pr) != "" {
-		return false
-	}
-	return reworkBreakerCIGreen(pr) &&
-		strings.EqualFold(strings.TrimSpace(pr.MergeableState), "clean") &&
-		len(autoPromoteFindingsFromPullRequest(pr)) == 0
-}
-
 func reworkBreakerIssueHeld(issue connector.Issue, terminalStates []string) bool {
 	issue = issueWithTextDependencyRefs(issue.WithNativeWorkpadAuthority())
 	if blockedRefsUnresolved(issue.BlockedBy, terminalStates) || blockedRecoveryHumanOnly(issue) {
@@ -495,186 +406,6 @@ func blockedRefsUnresolved(refs []connector.BlockedRef, terminalStates []string)
 		}
 	}
 	return false
-}
-
-func reworkBreakerCIGreen(pr *connector.PullRequest) bool {
-	if pr == nil || len(pr.RunningChecks) > 0 || len(pr.UnstartedChecks) > 0 || len(pr.RequiredCheckFailures) > 0 {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(pr.CIStatus)) {
-	case "pass", "passed", "passing", "success", "successful":
-		return true
-	default:
-		return false
-	}
-}
-
-func (o *Orchestrator) reworkBreakerAutoPromoteGateReady(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	cfg AutoPromoteConfig,
-	now time.Time,
-) bool {
-	issueID := strings.TrimSpace(issue.ID)
-	summary := AutoPromoteSummaryFromIssue(issue)
-	summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issueID)
-	summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue)
-	summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
-	decision := EvaluateAutoPromote(issue, summary, cfg, now)
-	if decision.Reason == AutoPromoteReasonValidatorMissing {
-		validation, _, ok := o.validatorStageResult(ctx, issue)
-		if !ok {
-			return false
-		}
-		summary.Validator = validation
-		decision = EvaluateAutoPromote(issue, summary, cfg, now)
-	}
-	return decision.Action == AutoPromoteActionPromote
-}
-
-func (o *Orchestrator) applyReworkBreakerAutoUnpark(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	park reworkBreakerPark,
-	targetState string,
-	now time.Time,
-) bool {
-	issueID := strings.TrimSpace(issue.ID)
-	targetState = strings.TrimSpace(targetState)
-	if targetState == "" {
-		targetState = autoPromoteMergingState
-	}
-	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionReworkBreakerAutoUnpark, park.Signature)
-	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, targetState, now, "rework_breaker_auto_unpark", metadata); err != nil {
-		if o.logger != nil {
-			o.logger.Warn("rework breaker auto-unpark transition failed", "issue_id", issueID, "identifier", issue.Identifier, "reason", park.Reason, "signature", park.Signature, "error", err)
-		}
-		return false
-	}
-
-	body := reworkBreakerAutoUnparkComment(issue, park, targetState)
-	if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
-		o.logger.Warn("rework breaker auto-unpark comment failed", "issue_id", issueID, "identifier", issue.Identifier, "reason", park.Reason, "signature", park.Signature, "error", err)
-	}
-
-	o.clearAutoPromotedIssueDispatchMemory(state, issueID)
-	promoted := promotedIssue(issue, targetState, now)
-	if mergeWorkerIssue(promoted) {
-		o.recordMergeQueueEntered(state, promoted, now, "rework_breaker_auto_unpark")
-	}
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      now,
-		Event:   "rework_breaker_auto_unpark",
-		Message: "auto-unparked " + issueLabel(issue) + " from Blocked to " + targetState + ": " + string(park.Reason),
-	})
-	if o.logger != nil {
-		o.logger.Info("rework breaker auto-unpark", "issue_id", issueID, "identifier", issue.Identifier, "reason", park.Reason, "signature", park.Signature, "head_sha", park.HeadSHA)
-	}
-	return true
-}
-
-func reworkBreakerAutoUnparkComment(issue connector.Issue, park reworkBreakerPark, targetState string) string {
-	var b strings.Builder
-	b.WriteString("Auto-unparked this breaker-parked issue from Blocked to ")
-	b.WriteString(strings.TrimSpace(targetState))
-	b.WriteString(" after the original merge-path condition cleared.")
-	b.WriteString("\n\nPark reason: ")
-	b.WriteString(string(park.Reason))
-	fmt.Fprintf(&b, "\nLinked PR: #%d", park.PRNumber)
-	if issue.PullRequest != nil && strings.TrimSpace(issue.PullRequest.URL) != "" {
-		b.WriteString(" ")
-		b.WriteString(strings.TrimSpace(issue.PullRequest.URL))
-	}
-	b.WriteString("\nParked head: ")
-	b.WriteString(park.HeadSHA)
-	if issue.PullRequest != nil {
-		b.WriteString("\nCurrent-head CI: ")
-		b.WriteString(strings.TrimSpace(issue.PullRequest.CIStatus))
-		b.WriteString("\nMergeable state: ")
-		b.WriteString(strings.TrimSpace(issue.PullRequest.MergeableState))
-	}
-	b.WriteString("\n\nThis is the only automatic unpark permitted for this PR head. If the breaker parks it again without a new head, a human must review it.")
-	return b.String()
-}
-
-func (o *Orchestrator) applyBlockedRecovery(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	decision BlockedRecoveryDecision,
-	signature string,
-	now time.Time,
-) bool {
-	issueID := strings.TrimSpace(issue.ID)
-	targetState := strings.TrimSpace(decision.TargetState)
-	if targetState == "" {
-		targetState = autoPromoteReworkState
-	}
-	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionBlockedRecovery, signature)
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, now, "blocked_recovery", metadata); err != nil {
-		if o.logger != nil {
-			o.logger.Warn("blocked recovery transition failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "reason", decision.Reason, "signature", signature, "error", err)
-		}
-		return false
-	}
-
-	body := blockedRecoveryComment(issue, targetState, decision)
-	if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
-		o.logger.Warn("blocked recovery comment failed", "issue_id", issueID, "identifier", issue.Identifier, "target_state", targetState, "reason", decision.Reason, "error", err)
-	}
-
-	delete(state.Blocked, issueID)
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      now,
-		Event:   "blocked_recovery_transition",
-		Message: "recovered " + issueLabel(issue) + " from " + issue.State + " to " + targetState + ": " + string(decision.Reason),
-	})
-	if o.logger != nil {
-		o.logger.Info("blocked recovery transition", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "reason", decision.Reason, "signature", signature)
-	}
-	return true
-}
-
-func blockedRecoveryComment(issue connector.Issue, targetState string, decision BlockedRecoveryDecision) string {
-	var b strings.Builder
-	b.WriteString("PR maintenance is agent-recoverable.")
-	if strings.TrimSpace(issue.State) != "" && strings.TrimSpace(targetState) != "" {
-		b.WriteString(" Moved this issue from ")
-		b.WriteString(strings.TrimSpace(issue.State))
-		b.WriteString(" to ")
-		b.WriteString(strings.TrimSpace(targetState))
-		b.WriteString(".")
-	}
-	b.WriteString("\n\nReason: ")
-	b.WriteString(blockedRecoveryReasonLabel(decision.Reason))
-	if decision.Detail != "" {
-		b.WriteString(" (")
-		b.WriteString(decision.Detail)
-		b.WriteString(")")
-	}
-	if pr := issue.PullRequest; pr != nil && pr.Number > 0 {
-		fmt.Fprintf(&b, "\nLinked PR: #%d", pr.Number)
-		if url := strings.TrimSpace(pr.URL); url != "" {
-			b.WriteString(" ")
-			b.WriteString(url)
-		}
-	}
-	return b.String()
-}
-
-func blockedRecoveryReasonLabel(reason BlockedRecoveryReason) string {
-	switch reason {
-	case BlockedRecoveryReasonMergeConflicts:
-		return "merge conflicts"
-	case BlockedRecoveryReasonStaleBase:
-		return "stale base"
-	case BlockedRecoveryReasonMissingCurrentHeadCI:
-		return "missing current-head CI"
-	default:
-		return strings.ReplaceAll(string(reason), "_", " ")
-	}
 }
 
 func blockedRecoverySignature(issue connector.Issue) (string, bool) {
@@ -706,10 +437,6 @@ func blockedRecoveryNoCurrentHeadCI(pr *connector.PullRequest) bool {
 		return false
 	}
 	return pr.CheckRunCount == 0 && pr.StatusContextCount == 0
-}
-
-func blockedRecoveryReasonText(issue connector.Issue) string {
-	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(issue.BlockerReason)), " "))
 }
 
 type blockedRecoveryDependencyEvidence struct {
