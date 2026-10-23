@@ -74,7 +74,7 @@ func laneWriterAllowed(file string) bool {
 // The doctor names retired reasons only to prove they are absent from the
 // runtime store. Keep this list file-specific.
 func retiredDetectorAllowed(file string) bool {
-	return file == "internal/cli/doctor_invariant_evidence.go"
+	return file == "internal/cli/doctor_invariant_evidence.go" || file == "internal/config/retired.go"
 }
 
 func checkSources(pkg *packages.Package, root string, policy sourcePolicy) []string {
@@ -206,10 +206,11 @@ var retiredSymbolNormalizer = strings.NewReplacer("_", "", "-", "", " ", "")
 
 func retiredSymbol(text string) bool {
 	normalized := strings.ToLower(retiredSymbolNormalizer.Replace(text))
-	if normalized == "checkpointrequiresrecovery" {
+	if normalized == "checkpointrequiresrecovery" || normalized == "usdbrakes" {
 		return true
 	}
 	for _, forbidden := range []string{
+		"operatorreturnretiredparks", "returnretiredparks", "parksummary", "parkcausesummary", "parktokentotals", "parkedattemptcount", "consecutivenoprogress", "noprogresslimit", "acknowledgedparksequence", "terminalattemptfailurelimit", "dispatchlimit", "consecutivedispatches", "parkevidence", "acknowledgeparks", "creditissueprogress", "terminalattemptretrylimit", "parkcausestale", "parkevidence", "noprogresstimeoutms", "noprogresstokenlimit", "noprogressspendlimitusd", "lifetimesessionlimit", "lifetimetokenlimit", "lifetimelimitoverridelabel", "parkreviewthreshold", "dispatchloop", "enforcelifetimelimits", "legacyfailurebreakerbackenderror", "repeatedfailurecircuitbreaker", "instantfailurecircuitbreaker", "spendsinceprogresscircuitbreaker", "tokenceilingcircuitbreaker",
 		"tripinstantfailurecircuitbreaker", "triprepeatedfailurecircuitbreaker", "triptokenceilingcircuitbreaker", "parkinstantfailure", "parkrepeatedfailure", "evaluatespendprogress", "blockspendprogress", "spendprogressbaseline", "dispatchloopblockmessage",
 		"nativecandidaterecordeddependenciessatisfied", "nativereviewconversationrefusalstands", "retainunacknowledgedrecoveryparks", "trackerrecoveryparkhold", "publishtrackerrecoverypark", "issuestickyblockreason", "dependencyautounblockalreadyconsumed",
 		"externaleffectuncertain",

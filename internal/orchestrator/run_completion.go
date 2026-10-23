@@ -61,8 +61,8 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 		}
 		heartbeat := o.runningWorkAttemptHeartbeat(state, running, now)
 		if err := o.workAttempts.RecordWorkAttemptHeartbeat(context.Background(), heartbeat); err != nil {
-			if event.usage.DispatchLoopStart != nil {
-				running.DispatchLoopStart.Persisted = false
+			if event.usage.CompletionSourceStart != nil {
+				running.CompletionSourceStart.Persisted = false
 				state.Running[event.issueID] = running
 			}
 			if o.logger != nil {
@@ -108,8 +108,8 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		}
 		return
 	}
-	if !running.DispatchLoopStart.LaneAvailable && !running.DispatchLoopStart.Captured {
-		running.DispatchLoopStart = newDispatchLoopStartRecord(running.Issue, firstNonBlank(running.Mode, runpkg.RunModeImplement))
+	if !running.CompletionSourceStart.LaneAvailable && !running.CompletionSourceStart.Captured {
+		running.CompletionSourceStart = newCompletionSourceStartRecord(running.Issue, firstNonBlank(running.Mode, runpkg.RunModeImplement))
 	}
 	running = running.withProgress()
 	state.Running[event.IssueID] = running
@@ -425,11 +425,11 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		)
 		if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
 			var warning string
-			running.Issue, warning = o.refreshSpendProgressIssue(ctx, running.Issue)
+			running.Issue, warning = o.refreshCompletionEvidenceIssue(ctx, running.Issue)
 			o.scheduleCITriggerLabel(ctx, running.Issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, warning != "")
 		}
 		if !interrupted && !mergeWorkerIssue(running.Issue) && !event.Result.PullRequestHeadPushed {
-			refreshed, _ := o.refreshSpendProgressIssue(ctx, running.Issue)
+			refreshed, _ := o.refreshCompletionEvidenceIssue(ctx, running.Issue)
 			running.Issue = refreshed
 		}
 		progressMetadata := map[string]any{}
@@ -509,7 +509,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 					state,
 					running.Issue,
 					running.WorkProductPushed,
-					terminalAttemptRetryLimitCause,
+					workAttemptErrorRunner,
 					attemptCompleted,
 					running.Mode,
 					running.DiffStats,
@@ -634,7 +634,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
 		forceReapply := false
 		if pullRequestRepository(running.Issue) == "" || pullRequestNumber(running.Issue) <= 0 || running.Issue.PullRequest == nil || strings.TrimSpace(progress.CurrentSignature.HeadSHA) == "" {
-			refreshed, warning := o.refreshSpendProgressIssue(ctx, running.Issue)
+			refreshed, warning := o.refreshCompletionEvidenceIssue(ctx, running.Issue)
 			running.Issue = refreshed
 			progress.Issue = refreshed
 			forceReapply = warning != ""

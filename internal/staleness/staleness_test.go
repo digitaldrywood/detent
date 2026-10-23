@@ -44,33 +44,16 @@ func TestEvaluate(t *testing.T) {
 			wantHuman: true,
 		},
 		{
-			name: "recorded park stays quiet",
+			name: "current human action stays quiet",
 			input: Input{
 				ProjectID: "detent",
 				Items: []Item{{
-					ID:           "42",
-					State:        "Blocked",
-					EnteredAt:    now.Add(-72 * time.Hour),
-					RecordedPark: true,
+					ID:             "42",
+					State:          "Blocked",
+					EnteredAt:      now.Add(-72 * time.Hour),
+					WaitingOnHuman: true,
 				}},
 			},
-		},
-		{
-			name: "stale recorded park cause warns",
-			input: Input{
-				ProjectID: "detent",
-				Items: []Item{{
-					ID:              "43",
-					State:           "Blocked",
-					EnteredAt:       now.Add(-72 * time.Hour),
-					RecordedPark:    true,
-					ParkCauseKey:    "config-a",
-					ParkCauseStale:  true,
-					ParkCauseDetail: "the recorded config fingerprint no longer matches",
-					ParkCauseSince:  now.Add(-time.Hour),
-				}},
-			},
-			wantKinds: []string{KindParkCauseStale},
 		},
 		{
 			name: "rolling lane reentry warns without restoring lifetime residency",

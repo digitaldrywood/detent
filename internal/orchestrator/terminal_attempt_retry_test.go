@@ -17,7 +17,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
-	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -114,7 +113,7 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 				attempts.completionErr = errors.New("store unavailable")
 			}
 			cfg := normalizeConfig(Config{
-				Recovery:              workflowconfig.Recovery{TerminalAttemptRetryLimit: tt.limit},
+
 				ActiveStates:          []string{"Todo", "In Progress"},
 				TerminalStates:        []string{"Done"},
 				MaxRetryBackoff:       time.Minute,
@@ -869,7 +868,7 @@ func TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt(t *test
 		planned.ID:        cloneIssue(planned),
 		successfulPlan.ID: cloneIssue(successfulPlan),
 	}}
-	cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}, Recovery: workflowconfig.Recovery{TerminalAttemptRetryLimit: new(0)}})
+	cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}})
 	o := &Orchestrator{cfg: cfg, connector: tracker}
 	state := newState(cfg)
 	state.WorkAttempts = []telemetry.WorkAttempt{
@@ -979,7 +978,7 @@ func TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibili
 			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
 			cfg := normalizeConfig(Config{
 				ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"},
-				Recovery: workflowconfig.Recovery{TerminalAttemptRetryLimit: tt.limit},
+
 				Claiming: ClaimingConfig{Enabled: tt.foreignClaim || tt.ownClaim, AssigneeLogin: "detent-worker", LeaseField: "Lease", LeaseTTL: time.Minute},
 			})
 			o := &Orchestrator{cfg: cfg, connector: tracker}
@@ -1426,7 +1425,7 @@ func TestTerminalRetryTransitionFailures(t *testing.T) {
 			now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 			issue := terminalRetryTestIssue(tt.name)
 			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: issue}, updateErrors: map[string]error{tt.failState: errors.New("tracker unavailable")}}
-			cfg := normalizeConfig(Config{Recovery: workflowconfig.Recovery{TerminalAttemptRetryLimit: tt.limit}, ActiveStates: []string{"Todo", "In Progress"}})
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}})
 			o := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			state := newState(cfg)
 			count := 3
@@ -1436,7 +1435,7 @@ func TestTerminalRetryTransitionFailures(t *testing.T) {
 			for i := 1; i <= count; i++ {
 				state.WorkAttempts = append(state.WorkAttempts, telemetry.WorkAttempt{AttemptID: int64(i), IssueID: issue.ID, Status: string(store.WorkAttemptStatusTerminal), TerminalState: string(store.WorkAttemptTerminalFailure), ErrorClass: workAttemptErrorRunner})
 			}
-			updated, _, parked := o.demoteTerminalAttemptRetry(t.Context(), &state, issue, false, terminalAttemptRetryLimitCause, true, RunModeImplement, DiffStats{}, now)
+			updated, _, parked := o.demoteTerminalAttemptRetry(t.Context(), &state, issue, false, workAttemptErrorRunner, true, RunModeImplement, DiffStats{}, now)
 			if updated.State != tt.wantState || parked != tt.wantParked {
 				t.Fatalf("state/parked = %s/%t, want %s/%t", updated.State, parked, tt.wantState, tt.wantParked)
 			}
@@ -1483,7 +1482,7 @@ func TestBlockedRecoveryRecomputesDispatchWithoutDerivedHolds(t *testing.T) {
 				db := openWorkAttemptRecoveryStore(t, t.Context())
 				o := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: db}
 				state := newState(cfg)
-				hold := workflowLaneBlockedRecoveryMetadata{Owner: blockedRecoveryOwnerOrchestrator, Cause: terminalAttemptRetryLimitCause, SourceRevision: holdSourceRevision(issue), ExpiresAt: now.Add(time.Hour)}
+				hold := workflowLaneBlockedRecoveryMetadata{Owner: blockedRecoveryOwnerOrchestrator, Cause: workAttemptErrorRunner, SourceRevision: holdSourceRevision(issue), ExpiresAt: now.Add(time.Hour)}
 				if tt.condition == "expired" || tt.condition == "human-expired" {
 					hold.ExpiresAt = now.Add(-time.Second)
 				}
@@ -1709,9 +1708,6 @@ func TestMachineFailuresUseRetryOwner(t *testing.T) {
 		{"spend progress", func(o *Orchestrator, s *State, r Running) {
 			o.retryMachineCompletion(t.Context(), s, runpkg.Completion{CompletedAt: now}, r, 50, "no progress")
 		}},
-		{"lifetime", func(o *Orchestrator, s *State, r Running) {
-			o.parkLifetimeLimit(t.Context(), s, r.Issue, lifetimeLimitDecision{}, now)
-		}},
 		{"configuration", func(o *Orchestrator, s *State, r Running) {
 			o.blockHumanOwnedWorkerFailure(t.Context(), s, runpkg.Completion{CompletedAt: now, Err: errors.New("invalid configuration")}, r, "issue_configuration", "invalid configuration", "generated remedy", "failure")
 		}},
@@ -1761,10 +1757,10 @@ func TestMachineFailuresUseRetryOwner(t *testing.T) {
 				attempt := 9
 				for cycle, want := range []int{1, 1, 2, 3, 1} {
 					running := Running{Issue: issue, Attempt: attempt}
-					running.DispatchLoopStart.Captured = true
-					running.DispatchLoopStart.Fingerprint.PRNumber = 1
-					running.DispatchLoopStart.Fingerprint.PRHeadSHA = "head"
-					running.DispatchLoopStart.Fingerprint.WorkspaceTree = "before"
+					running.CompletionSourceStart.Captured = true
+					running.CompletionSourceStart.Fingerprint.PRNumber = 1
+					running.CompletionSourceStart.Fingerprint.PRHeadSHA = "head"
+					running.CompletionSourceStart.Fingerprint.WorkspaceTree = "before"
 					running.DiffStats = DiffStats{TreeSHA: "before"}
 					if cycle == 0 || cycle == 1 || cycle == 4 {
 						running.DiffStats.TreeSHA = "after"

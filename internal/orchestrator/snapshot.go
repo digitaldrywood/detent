@@ -94,15 +94,14 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	statusDrift := authorizedStatusDrift(s.StatusDrift, s.Authorization, s.SelectorContext)
 	boardIssueSnapshots := issueSnapshots(boardIssues, s.AutoPromoteQuietDuration, s.PollInterval, now, s.laneEntries)
 	applyIssueRuntimeIdentities(boardIssueSnapshots, s.Running, s.WorkAttempts)
-	applyIssueCompletionProgress(boardIssueSnapshots, s.WorkAttempts, s.dispatchLoopResets)
-	dispatchLoops := dispatchLoopSnapshots(boardIssueSnapshots, s.WorkAttempts, s.dispatchLoopResets)
+	applyIssueCompletionProgress(boardIssueSnapshots, s.WorkAttempts)
 	s.applyGatePendingSnapshots(boardIssueSnapshots, boardIssues)
 	s.applyAutoPromoteDecisionSnapshots(boardIssueSnapshots, boardIssues, now)
 	s.applyArtifactGateWaitDispatchSnapshots(boardIssueSnapshots, boardIssues)
 	strandedActiveIssues := strandedActiveIssueSnapshots(s, boardIssueSnapshots, now)
 	pipelineIssueSnapshots := pipelineSnapshots(pipeline, s.AutoPromoteQuietDuration, s.PollInterval, s.MergeTimings, now, s.laneEntries)
 	applyIssueRuntimeIdentities(pipelineIssueSnapshots, s.Running, s.WorkAttempts)
-	applyIssueCompletionProgress(pipelineIssueSnapshots, s.WorkAttempts, s.dispatchLoopResets)
+	applyIssueCompletionProgress(pipelineIssueSnapshots, s.WorkAttempts)
 	s.applyAutoPromoteDecisionSnapshots(pipelineIssueSnapshots, pipeline, now)
 	s.applyArtifactGateWaitDispatchSnapshots(pipelineIssueSnapshots, pipeline)
 	snapshot := telemetry.Snapshot{
@@ -134,7 +133,6 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		MemoryPressure:     s.MemoryPressure,
 		IOPressure:         s.IOPressure,
 		CPUPressure:        s.CPUPressure,
-		DispatchLoops:      dispatchLoops,
 		DispatchRecoveries: dispatchRecoverySnapshots(s.DispatchRecoveries, s.PoolName, poolCapacity),
 		LaneSignalWarnings: laneSignalWarnings(
 			s,
@@ -405,7 +403,6 @@ func failureBreakerItemCurrentState(state State, item telemetry.FailureBreakerIt
 		if item.CurrentState == "" {
 			item.CurrentState = "Blocked"
 		}
-		item.Parked = true
 		item.RecoveryAction = strings.TrimSpace(blocked.RecoveryAction)
 		item.RecoveryReason = strings.TrimSpace(blocked.RecoveryReason)
 		item.RecoveryIntentResumable = blocked.RecoveryIntentResumable
@@ -1007,7 +1004,7 @@ func applyIssueRuntimeIdentities(issues []telemetry.Issue, running map[string]Ru
 	}
 }
 
-func applyIssueCompletionProgress(issues []telemetry.Issue, attempts []telemetry.WorkAttempt, dispatchLoopResets map[string]time.Time) {
+func applyIssueCompletionProgress(issues []telemetry.Issue, attempts []telemetry.WorkAttempt) {
 	for index := range issues {
 		var latest *telemetry.WorkAttempt
 		for attemptIndex := range attempts {
@@ -1030,58 +1027,13 @@ func applyIssueCompletionProgress(issues []telemetry.Issue, attempts []telemetry
 		if !ok {
 			continue
 		}
-		consecutiveNoProgress := record.ConsecutiveNoProgress
-		if !dispatchLoopSnapshotAttemptVisible(issues[index], *latest, dispatchLoopResets) {
-			consecutiveNoProgress = 0
-		}
 		issues[index].CompletionProgress = telemetry.CompletionProgress{
-			Outcome:               strings.TrimSpace(record.Outcome),
-			Reason:                strings.TrimSpace(record.Reason),
-			Kinds:                 append([]string(nil), record.ProgressKinds...),
-			CompletionKind:        strings.TrimSpace(record.CompletionKind),
-			ConsecutiveNoProgress: consecutiveNoProgress,
-			NoProgressLimit:       record.NoProgressLimit,
+			Outcome:        strings.TrimSpace(record.Outcome),
+			Reason:         strings.TrimSpace(record.Reason),
+			Kinds:          append([]string(nil), record.ProgressKinds...),
+			CompletionKind: strings.TrimSpace(record.CompletionKind),
 		}
 	}
-}
-
-func dispatchLoopSnapshots(issues []telemetry.Issue, attempts []telemetry.WorkAttempt, dispatchLoopResets map[string]time.Time) []telemetry.DispatchLoop {
-	var loops []telemetry.DispatchLoop
-	for _, issue := range issues {
-		progress := issue.CompletionProgress
-		if progress.NoProgressLimit <= 0 || progress.ConsecutiveNoProgress < 2 {
-			continue
-		}
-		var latest *telemetry.WorkAttempt
-		for attemptIndex := range attempts {
-			attempt := &attempts[attemptIndex]
-			if !strings.EqualFold(strings.TrimSpace(attempt.Status), string(store.WorkAttemptStatusTerminal)) ||
-				!snapshotIssueMatches(issue, attempt.IssueID, attempt.Identifier, attempt.IssueURL) ||
-				!dispatchLoopSnapshotAttemptVisible(issue, *attempt, dispatchLoopResets) {
-				continue
-			}
-			if latest == nil || workAttemptCompletedAfter(*attempt, *latest) {
-				latest = attempt
-			}
-		}
-		var lastCompletedAt *time.Time
-		if latest != nil {
-			lastCompletedAt = cloneTimePointer(latest.CompletedAt)
-		}
-		loops = append(loops, telemetry.DispatchLoop{
-			ProjectID:             issue.ProjectID,
-			IssueID:               issue.ID,
-			Identifier:            issue.Identifier,
-			IssueURL:              issue.URL,
-			Title:                 issue.Title,
-			Lane:                  issue.State,
-			ConsecutiveDispatches: progress.ConsecutiveNoProgress,
-			DispatchLimit:         progress.NoProgressLimit,
-			Tripped:               progress.ConsecutiveNoProgress >= progress.NoProgressLimit,
-			LastCompletedAt:       lastCompletedAt,
-		})
-	}
-	return loops
 }
 
 func snapshotIssueMatches(issue telemetry.Issue, issueID string, identifier string, issueURL string) bool {

@@ -528,7 +528,6 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	}
 	b.WriteString("    allowed_issue_labels: []\n")
 	b.WriteString("    gate_wait_timeout_seconds: 3600\n")
-	b.WriteString("    rework_limit: 3\n")
 	b.WriteString("  skills:\n")
 	b.WriteString("    enabled: true\n")
 	b.WriteString("    path: .detent/skills\n")

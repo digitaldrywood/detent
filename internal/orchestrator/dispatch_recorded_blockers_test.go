@@ -441,7 +441,7 @@ func TestDispatchParkReasonRemainsVisible(t *testing.T) {
 		name, reason, recovery, want string
 	}{
 		{name: "park and recovery", reason: workpadBlockedUnactionedReason, recovery: "park_acknowledgement_required", want: workpadBlockedUnactionedReason + ": park_acknowledgement_required"},
-		{name: "park only", reason: noProgressLimitReason, want: noProgressLimitReason},
+		{name: "park only", reason: "no_progress_limit", want: "no_progress_limit"},
 		{name: "recovery only", recovery: "park_acknowledgement_required", want: "park_acknowledgement_required"},
 		{name: "legacy unknown hold"},
 	} {

@@ -45,7 +45,7 @@ func TestFirstHumanBlockerCompletionReachesBlocked(t *testing.T) {
 				ActiveStates:        []string{"Todo", "In Progress", "Rework"},
 				ObservedStates:      []string{"Blocked", "Human Review"},
 				TerminalStates:      []string{"Done"},
-				AutoPromote:         AutoPromoteConfig{NoProgressLimit: 3},
+				AutoPromote:         AutoPromoteConfig{},
 			})
 			metrics := &autoPromoteWorkflowMetricsRecorder{}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, workflowMetrics: metrics}

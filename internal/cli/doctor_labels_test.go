@@ -27,11 +27,10 @@ func TestCheckDoctorConfiguredLabels(t *testing.T) {
 			configure: func(cfg *workflowconfig.Config) {
 				cfg.Agent.AutoPromote.OptoutLabel = "requires-human-review"
 				cfg.Agent.MaxSessionTokenOverrideLabel = "allow-large-session"
-				cfg.Agent.LifetimeLimitOverrideLabel = "allow-lifetime-limit"
 			},
-			labels:     []string{"Requires-Human-Review", "allow-large-session", "allow-lifetime-limit"},
+			labels:     []string{"Requires-Human-Review", "allow-large-session"},
 			wantStatus: doctorOK,
-			wantDetail: []string{"verified 3 configured labels", "digitaldrywood/detent"},
+			wantDetail: []string{"verified 2 configured labels", "digitaldrywood/detent"},
 			wantReads:  1,
 		},
 		{
@@ -50,7 +49,6 @@ func TestCheckDoctorConfiguredLabels(t *testing.T) {
 			configure: func(cfg *workflowconfig.Config) {
 				cfg.Agent.AutoPromote.OptoutLabel = ""
 				cfg.Agent.MaxSessionTokenOverrideLabel = ""
-				cfg.Agent.LifetimeLimitOverrideLabel = ""
 			},
 			wantStatus: doctorOK,
 			wantDetail: []string{"no escape-hatch labels are configured"},
@@ -65,9 +63,8 @@ func TestCheckDoctorConfiguredLabels(t *testing.T) {
 			wantDetail: []string{
 				`missing label "requires-human-review" referenced by agent.auto_promote.optout_label`,
 				`missing label "allow-large-session" referenced by agent.max_session_token_override_label`,
-				`missing label "allow-lifetime-limit" referenced by agent.lifetime_limit_override_label`,
 			},
-			wantHint:  []string{"gh label create", "requires-human-review", "allow-large-session", "allow-lifetime-limit"},
+			wantHint:  []string{"gh label create", "requires-human-review", "allow-large-session"},
 			wantReads: 1,
 		},
 		{
@@ -75,7 +72,6 @@ func TestCheckDoctorConfiguredLabels(t *testing.T) {
 			configure: func(cfg *workflowconfig.Config) {
 				cfg.Agent.AutoPromote.OptoutLabel = ""
 				cfg.Agent.MaxSessionTokenOverrideLabel = "allow-large-session"
-				cfg.Agent.LifetimeLimitOverrideLabel = ""
 			},
 			wantStatus: doctorWarn,
 			wantDetail: []string{"agent.max_session_token_override_label"},
@@ -144,7 +140,8 @@ func TestCheckDoctorConfiguredLabelsUsesTrackerRepository(t *testing.T) {
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
 	cfg.Tracker.Repository = "digitaldrywood/detent"
-	cfg.Tracker.WriteProbeIssue = "digitaldrywood/scratch#1"
+	cfg.Tracker.WriteProbeIssue = "example-org/scratch#1"
+	cfg.Agent.MaxSessionTokenOverrideLabel = "allow-large-session"
 	repositories := []string{}
 	check := checkDoctorConfiguredLabels(
 		context.Background(),
@@ -154,7 +151,7 @@ func TestCheckDoctorConfiguredLabelsUsesTrackerRepository(t *testing.T) {
 		doctorDeps{
 			githubLabels: func(_ context.Context, _ workflowconfig.Config, repository string) ([]string, error) {
 				repositories = append(repositories, repository)
-				return []string{"requires-human-review", "allow-large-session", "allow-lifetime-limit"}, nil
+				return []string{"requires-human-review", "allow-large-session"}, nil
 			},
 			gitRemoteURL: func(context.Context, string) (string, error) {
 				return "https://github.com/digitaldrywood/checkout.git", nil

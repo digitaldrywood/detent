@@ -12,56 +12,6 @@ import (
 // Exercise both observations synchronously: the run loop may publish either
 // snapshot before a reader observes the park.
 
-func TestBreakerRecoveryMetadataRemembersPreviousLane(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		cause string
-	}{
-		{name: "instant failure", cause: instantFailureCircuitBreakerCause},
-		{name: "repeated failure", cause: repeatedFailureCircuitBreakerCause},
-		{name: "token ceiling", cause: "token_ceiling_circuit_breaker"},
-		{name: "terminal attempt retry", cause: terminalAttemptRetryLimitCause},
-		{name: "workspace preparation retry", cause: workspacePreparationRetryLimitCause},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			issue := dependencyAutoUnblockIssue("issue-"+strings.ReplaceAll(tt.name, " ", "-"), "In Progress")
-			orch := blockedCauseTestOrchestrator(&dependencyAutoUnblockConnector{})
-			metadata := orch.newBlockedRecoveryMetadata(
-				t.Context(),
-				issue,
-				RunModeImplement,
-				tt.cause,
-				blockedRecoveryPredicateFingerprintChange,
-				"Todo",
-				DiffStats{},
-			)
-
-			if metadata.BlockedRecovery.Predicate != blockedRecoveryPredicateBreakerCooldown {
-				t.Fatalf("predicate = %q, want breaker_cooldown_elapsed", metadata.BlockedRecovery.Predicate)
-			}
-			if metadata.BlockedRecovery.TargetState != issue.State {
-				t.Fatalf("target state = %q, want previous lane %q", metadata.BlockedRecovery.TargetState, issue.State)
-			}
-		})
-	}
-}
-
-func TestBreakerParkCauseIncludesRetryCycleLimits(t *testing.T) {
-	t.Parallel()
-
-	for _, cause := range []string{instantFailureCircuitBreakerCause, terminalAttemptRetryLimitCause, workspacePreparationRetryLimitCause} {
-		if !breakerParkCause(cause) {
-			t.Fatalf("breakerParkCause(%q) = false, want true", cause)
-		}
-	}
-}
-
 func TestBlockedCauseFingerprintTracksNormalizedLabels(t *testing.T) {
 	t.Parallel()
 
@@ -69,37 +19,14 @@ func TestBlockedCauseFingerprintTracksNormalizedLabels(t *testing.T) {
 	reordered := blockedCauseSignals{Labels: blockedCauseLabels([]string{" DETENT:BLOCKED ", "Bug", "bug"}, "detent:")}
 	withOverride := blockedCauseSignals{Labels: blockedCauseLabels([]string{"bug", "detent:blocked", "agent:max-tokens"}, "detent:")}
 
-	if blockedCauseFingerprint(noProgressLimitReason, original) != blockedCauseFingerprint(noProgressLimitReason, reordered) {
+	if blockedCauseFingerprint(workpadBlockedUnactionedReason, original) != blockedCauseFingerprint(workpadBlockedUnactionedReason, reordered) {
 		t.Fatal("status label transition changed the cause fingerprint")
 	}
-	if blockedCauseFingerprint(noProgressLimitReason, original) == blockedCauseFingerprint(noProgressLimitReason, withOverride) {
+	if blockedCauseFingerprint(workpadBlockedUnactionedReason, original) == blockedCauseFingerprint(workpadBlockedUnactionedReason, withOverride) {
 		t.Fatal("recovery-affecting label did not change the cause fingerprint")
 	}
-	if blockedCauseFingerprint(noProgressLimitReason, original) == blockedCauseFingerprint(spendProgressReason, original) {
+	if blockedCauseFingerprint(workpadBlockedUnactionedReason, original) == blockedCauseFingerprint("spend_since_progress_circuit_breaker", original) {
 		t.Fatal("failure cause did not change the cause fingerprint")
-	}
-}
-
-func TestBlockedCauseFingerprintIgnoresUnrelatedBaseForBreakerParks(t *testing.T) {
-	t.Parallel()
-
-	parked := blockedCauseSignals{ConfigFingerprint: "config-same", BaseFingerprint: "base-before", Health: "ready"}
-	current := parked
-	current.BaseFingerprint = "base-after-unrelated-merge"
-
-	for _, cause := range []string{
-		noProgressLimitReason,
-		dispatchLoopDetectedReason,
-		spendProgressReason,
-		repeatedFailureCircuitBreakerCause,
-		"token_ceiling_circuit_breaker",
-	} {
-		if blockedCauseFingerprint(cause, parked) != blockedCauseFingerprint(cause, current) {
-			t.Fatalf("breaker cause %q changed after unrelated base movement", cause)
-		}
-	}
-	if blockedCauseFingerprint(strandedUnpushedWorkReason, parked) == blockedCauseFingerprint(strandedUnpushedWorkReason, current) {
-		t.Fatal("non-breaker recovery fingerprint ignored base movement")
 	}
 }
 
@@ -174,7 +101,7 @@ func TestBlockedRecoveryMetadataSeparatesIntentFromReachability(t *testing.T) {
 		t.Context(),
 		issue,
 		RunModeImplement,
-		noProgressLimitReason,
+		workpadBlockedUnactionedReason,
 		blockedRecoveryPredicateFingerprintChange,
 		"Todo",
 		DiffStats{},

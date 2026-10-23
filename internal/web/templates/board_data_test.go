@@ -145,35 +145,6 @@ func TestBoardDetailSheetShowsRetryLimitAttemptError(t *testing.T) {
 	}
 }
 
-func TestBoardCardRendersCumulativeParkSummary(t *testing.T) {
-	t.Parallel()
-
-	first := time.Date(2026, 8, 9, 16, 6, 0, 0, time.UTC)
-	last := time.Date(2026, 8, 12, 17, 34, 57, 0, time.UTC)
-	summary, detail := boardCardParkSummary(telemetry.ParkSummary{
-		AttemptCount: 7,
-		ParkCount:    3,
-		Causes:       []telemetry.ParkCauseSummary{{Cause: "no_progress_limit", Count: 2, FirstAt: first, LastAt: last}},
-		Tokens:       telemetry.ParkTokenTotals{InputTokens: 5_247_029, CachedInputTokens: 4_978_944, OutputTokens: 25_709, ReasoningOutputTokens: 10_232},
-	})
-	for _, want := range []string{"7 attempts", "3 parks", "5.2M input", "5.0M cached", "25.7K output", "10.2K reasoning"} {
-		if !strings.Contains(summary, want) {
-			t.Fatalf("summary %q missing %q", summary, want)
-		}
-	}
-	for _, want := range []string{"no_progress_limit: 2", first.Format(time.RFC3339), last.Format(time.RFC3339)} {
-		if !strings.Contains(detail, want) {
-			t.Fatalf("detail %q missing %q", detail, want)
-		}
-	}
-	html := renderBoardComponent(t, boardCardView2(boardCardView{DomID: "card-1773", Title: "Park summary", ParkSummary: summary, ParkDetail: detail}))
-	for _, want := range []string{"no_progress_limit", "7 attempts", "3 parks"} {
-		if !strings.Contains(html, want) {
-			t.Fatalf("card HTML missing %q:\n%s", want, html)
-		}
-	}
-}
-
 func TestBoardCardRendersCompletionProgressClassification(t *testing.T) {
 	t.Parallel()
 
@@ -194,13 +165,13 @@ func TestBoardCardRendersCompletionProgressClassification(t *testing.T) {
 		},
 		{
 			name:     "prose-only no progress",
-			progress: telemetry.CompletionProgress{Outcome: telemetry.CompletionProgressOutcomeNoProgress, Reason: "completed_clean_diff_without_pull_request", ConsecutiveNoProgress: 2, NoProgressLimit: 3},
-			want:     []string{"Last turn · no progress 2/3", "completed_clean_diff_without_pull_request"},
+			progress: telemetry.CompletionProgress{Outcome: telemetry.CompletionProgressOutcomeNoProgress, Reason: "completed_clean_diff_without_pull_request"},
+			want:     []string{"Last turn · no progress", "completed_clean_diff_without_pull_request"},
 		},
 		{
 			name:     "safety no-progress overrides observed artifact",
-			progress: telemetry.CompletionProgress{Outcome: telemetry.CompletionProgressOutcomeNoProgress, Reason: "stranded_unpushed_work", Kinds: []string{"audit_artifact"}, ConsecutiveNoProgress: 3, NoProgressLimit: 3},
-			want:     []string{"Last turn · no progress 3/3", "stranded_unpushed_work"},
+			progress: telemetry.CompletionProgress{Outcome: telemetry.CompletionProgressOutcomeNoProgress, Reason: "stranded_unpushed_work", Kinds: []string{"audit_artifact"}},
+			want:     []string{"Last turn · no progress", "stranded_unpushed_work"},
 		},
 	}
 
@@ -403,7 +374,8 @@ func boardTestData() DashboardData {
 						Title:      "feat(events): SSE reconnect with resume token",
 						State:      "Blocked",
 					},
-					Error:     "needs operator approval",
+					Error:          "needs operator approval",
+					RecoveryReason: "human_action", NeedsHumanAttention: true,
 					BlockedAt: &blockedAt,
 				},
 			},
@@ -2113,18 +2085,22 @@ func TestBoardExceptionsDistinguishHeldRecoveryFromDefer(t *testing.T) {
 		wantDetail     string
 	}{
 		{
-			name: "held recovery needs review",
+			name: "typed human action needs review",
 			blocked: telemetry.Blocked{
 				Issue:               telemetry.Issue{ID: "issue-held", Identifier: "example-org/example-project#6", ProjectID: "detent", State: "Blocked"},
 				Source:              telemetry.BlockedSourceProjectStatus,
 				RecoveryAction:      "hold",
-				RecoveryReason:      "invalid_workpad_signal",
+				RecoveryReason:      "human_action",
 				RecoveryRemedy:      "Move the issue to Todo or another fresh-work lane; no pull request exists to resume.",
 				NeedsHumanAttention: true,
 				BlockedAt:           &blockedAt,
 			},
 			wantExceptions: 1,
 			wantDetail:     "fresh-work lane",
+		},
+		{
+			name:    "retired machine hold does not require human attention",
+			blocked: telemetry.Blocked{Issue: telemetry.Issue{ID: "issue-retry", ProjectID: "detent", State: "Blocked"}, Source: telemetry.BlockedSourceProjectStatus, Error: "repeated_failure_circuit_breaker", RecoveryAction: "hold", RecoveryReason: "cause_unchanged", NeedsHumanAttention: true},
 		},
 		{
 			name: "deferred dependency stays out of review",
@@ -2271,25 +2247,25 @@ func TestBoardBlockedCauseBadge(t *testing.T) {
 			wantText: "waiting - transient GitHub REST budget waiting for capacity: remaining=940/5000 reserve=1250",
 		},
 		{
-			name: "unrecorded cause needs review",
+			name: "unrecorded cause stays diagnostic",
 			card: projectKanbanCard{
 				BlockedSource: telemetry.BlockedSourceProjectStatus,
 				BlockedReason: "blocked, cause unrecorded",
 			},
-			wantKind: primitives.KindErr,
-			wantText: "Needs you · blocked, cause unrecorded",
+			wantKind: primitives.KindWarn,
+			wantText: "waiting - blocked, cause unrecorded",
 		},
 		{
-			name: "external block without tracker cause needs review",
+			name: "external block without tracker cause stays diagnostic",
 			card: projectKanbanCard{
 				BlockedSource: telemetry.BlockedSourceProjectStatus,
 				BlockedReason: staleness.ReasonBlockedOutsideDetent,
 			},
-			wantKind: primitives.KindErr,
-			wantText: "Needs you · " + staleness.ReasonBlockedOutsideDetent,
+			wantKind: primitives.KindWarn,
+			wantText: "waiting - " + staleness.ReasonBlockedOutsideDetent,
 		},
 		{
-			name: "human delivery failure needs review",
+			name: "machine delivery failure stays diagnostic",
 			card: projectKanbanCard{
 				BlockedSource:         telemetry.BlockedSourceProjectStatus,
 				BlockedReason:         "no_commits_to_deliver: branch detent/gopher-corp-example has no local commits ahead",
@@ -2297,8 +2273,8 @@ func TestBoardBlockedCauseBadge(t *testing.T) {
 				BlockedRecoveryReason: "no_commits_to_deliver",
 				BlockedRecoveryRemedy: "return the issue to Todo when implementation work is ready to resume",
 			},
-			wantKind: primitives.KindErr,
-			wantText: "Needs you · no_commits_to_deliver: branch detent/gopher-corp-example has no local commits ahead — return the issue to Todo when implementation work is ready to resume",
+			wantKind: primitives.KindWarn,
+			wantText: "waiting - no_commits_to_deliver: branch detent/gopher-corp-example has no local commits ahead — return the issue to Todo when implementation work is ready to resume",
 		},
 	}
 
@@ -2380,7 +2356,7 @@ func TestBoardBlockedCardCauseUsesStoredRecoveryState(t *testing.T) {
 		{
 			name:      "human attention",
 			action:    "hold",
-			reason:    "no_commits_to_deliver",
+			reason:    "human_action",
 			cause:     "no_commits_to_deliver: current branch has no commits ahead",
 			wantKind:  primitives.KindErr,
 			wantClass: "border-err/45",
@@ -2402,6 +2378,7 @@ func TestBoardBlockedCardCauseUsesStoredRecoveryState(t *testing.T) {
 				BlockedReason:         tt.cause,
 				BlockedRecoveryAction: tt.action,
 				BlockedRecoveryReason: tt.reason,
+				BlockedHumanAttention: tt.reason == "human_action",
 				Comments: []telemetry.IssueComment{{
 					Body: "activity feed supplied a different blocked cause",
 				}},
@@ -2443,6 +2420,7 @@ func TestBoardHumanBlockedCardsUseErrorTreatment(t *testing.T) {
 				Error:               "credentials require operator repair",
 				Source:              telemetry.BlockedSourceProjectStatus,
 				NeedsHumanAttention: true,
+				RecoveryReason:      "human_action",
 			},
 		},
 	}
@@ -2663,7 +2641,7 @@ func TestBoardCardFallsBackToDashboardProjectID(t *testing.T) {
 	// its Review link so the sheet keeps project-scoped actions.
 	blockedAt := data.Snapshot.GeneratedAt.Add(-time.Minute)
 	data.Snapshot.Blocked = []telemetry.Blocked{
-		{Issue: telemetry.Issue{Identifier: "example-org/example-project#43"}, Error: "blocked", BlockedAt: &blockedAt},
+		{Issue: telemetry.Issue{Identifier: "example-org/example-project#43"}, Error: "blocked", RecoveryReason: "human_action", NeedsHumanAttention: true, BlockedAt: &blockedAt},
 	}
 	data.Kanban.ShowBlockedAlerts = true
 	exceptions := boardExceptions(data, true)
@@ -3145,7 +3123,7 @@ func TestBoardAlertCountIncludesOnlyActionableConditions(t *testing.T) {
 		ProjectID:              "detent",
 		Class:                  "runner_error",
 		EligibleCandidateCount: &eligibleCandidates,
-		Items:                  []telemetry.FailureBreakerItem{{IssueID: "parked", Parked: true}},
+		Items:                  []telemetry.FailureBreakerItem{{IssueID: "parked"}},
 	}}
 	data.Snapshot.StalenessWarnings = []telemetry.StalenessWarning{{
 		ID:         "warning-actionable",
@@ -3189,7 +3167,6 @@ func TestBoardAlertsSurfaceCIUnavailableEvidence(t *testing.T) {
 			UnstartedCheckCount: 6,
 			PullRequestCount:    2,
 			OldestQueueSeconds:  47 * 60,
-			ParkedAttemptCount:  2,
 		}},
 	}
 
@@ -3197,7 +3174,7 @@ func TestBoardAlertsSurfaceCIUnavailableEvidence(t *testing.T) {
 	if len(alerts) != 1 || alerts[0].Kind != boardAlertKindCIUnavailable || alerts[0].Tone != primitives.KindErr {
 		t.Fatalf("boardAlerts() = %#v, want one CI-unavailable error", alerts)
 	}
-	for _, want := range []string{"6 queued checks", "2 PRs", "47m", "2 attempts parked"} {
+	for _, want := range []string{"6 queued checks", "2 PRs", "47m"} {
 		combined := alerts[0].DetailRows[0].Summary + " " + alerts[0].DetailRows[0].Detail
 		if !strings.Contains(combined, want) {
 			t.Fatalf("CI alert detail = %q, want %q", combined, want)
@@ -3859,7 +3836,6 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 			Title:        "Author beat visuals",
 			CurrentState: "Blocked",
 			AttemptCount: 5,
-			Parked:       true,
 		}},
 		WindowSeconds: 3600,
 		ResumeAt:      data.Snapshot.GeneratedAt.Add(time.Hour),
@@ -3886,7 +3862,6 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 		"Canary resumes",
 		"Backend: claude-code · kind claude_code · provider anthropic",
 		"Diagnostic class: runner_error:b6c174a86dfb",
-		"will not retry merely because the project canary is eligible",
 		localTimeToken(data.Snapshot.GeneratedAt.Add(time.Hour), LocalDateTimeZone),
 	} {
 		if !strings.Contains(html, want) {
@@ -4046,7 +4021,7 @@ func TestDiagnosticsSnapshotExplainsReadyCanaryWithoutEligibleCandidates(t *test
 		AttemptCount:           5,
 		DistinctItemCount:      1,
 		EligibleCandidateCount: &eligibleCandidates,
-		Items:                  []telemetry.FailureBreakerItem{{IssueID: "issue-1", CurrentState: "Blocked", Parked: true, AttemptCount: 5}},
+		Items:                  []telemetry.FailureBreakerItem{{IssueID: "issue-1", CurrentState: "Blocked", AttemptCount: 5}},
 		WindowSeconds:          3600,
 		ResumeAt:               data.Snapshot.GeneratedAt,
 	}}
@@ -4054,7 +4029,6 @@ func TestDiagnosticsSnapshotExplainsReadyCanaryWithoutEligibleCandidates(t *test
 	html := renderBoardComponent(t, ProjectDiagnosticsSnapshot(data))
 	for _, want := range []string{
 		"Project canary dispatch is ready, but no eligible candidate is currently available",
-		"affected Blocked item will not retry merely because the project canary is eligible",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("zero-candidate breaker evidence missing %q:\n%s", want, html)
@@ -4751,13 +4725,13 @@ func TestBoardCardSignalBudget(t *testing.T) {
 		{name: "merging", view: boardCardView{State: "Merging"}, want: "Merging"},
 		{name: "running", view: boardCardView{Running: true, RuntimeBadge: true, RuntimeCozyText: "model · high"}, want: "Running"},
 		{name: "wait diagnostics stay in details", card: projectKanbanCard{WaitDetail: "auto-promote await_review: artifact_status_wait very long internal explanation"}, want: "Waiting"},
-		{name: "operator attention", card: projectKanbanCard{BlockedReason: "credentials require operator repair"}, want: "Needs you"},
+		{name: "operator attention", card: projectKanbanCard{BlockedReason: "credentials require operator repair", BlockedHumanAttention: true, BlockedRecoveryReason: "human_action"}, want: "Needs you"},
 		{name: "gate", card: projectKanbanCard{GatePending: true}, want: "Awaiting checks"},
 		{name: "retry", view: boardCardView{Retrying: true}, want: "Awaiting retry"},
 		{name: "failed checks follow running", view: boardCardView{Running: true}, card: projectKanbanCard{CIStatus: "fail"}, want: "Running"},
 		{name: "done dependencies are historical", view: boardCardView{Done: true}, card: projectKanbanCard{Blockers: []string{"repo#1"}, CIStatus: "fail"}, want: ""},
 		{name: "terminal waits are historical", view: boardCardView{Terminal: true}, card: projectKanbanCard{WaitDetail: "former wait reason"}, want: ""},
-		{name: "idle lane does not repeat state", view: boardCardView{State: "Todo", AgeFooter: "12m", OriginDetail: "via human", ProgressSummary: "Last turn", ParkSummary: "2 parks"}, want: ""},
+		{name: "idle lane does not repeat state", view: boardCardView{State: "Todo", AgeFooter: "12m", OriginDetail: "via human", ProgressSummary: "Last turn"}, want: ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -4787,13 +4761,18 @@ func TestBoardCardSheetPreservesSupportingValues(t *testing.T) {
 	for _, count := range []int{0, 1, 8} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
 			t.Parallel()
-			card := projectKanbanCard{ProjectID: "detent", Stage: "Human Review", Title: "Busy card", WaitDetail: "auto-promote await_review: artifact_status_wait", AuthorID: "author", Origin: "human", OriginActor: "operator", ClearedBlockers: []string{"owner/completed-platform#589 (Done)"}, ParkSummary: telemetry.ParkSummary{AttemptCount: 6, ParkCount: 3}, CompletionProgress: telemetry.CompletionProgress{Outcome: "no_progress", Reason: "full progress reason"}}
+			card := projectKanbanCard{ProjectID: "detent", Stage: "Human Review", Title: "Busy card", WaitDetail: "auto-promote await_review: artifact_status_wait", AuthorID: "author", Origin: "human", OriginActor: "operator", ClearedBlockers: []string{"owner/completed-platform#589 (Done)"}, CompletionProgress: telemetry.CompletionProgress{Outcome: "no_progress", Reason: "full progress reason"}}
 			for i := range count {
 				card.Blockers = append(card.Blockers, "owner/long-release-platform-"+strconv.Itoa(i)+"#590 (In Progress)")
 			}
 			card.BlockerSummary = strings.Join(append(append([]string(nil), card.Blockers...), card.ClearedBlockers...), " · ")
 			html := renderBoardComponent(t, BoardCardSheetCore(DashboardData{}, card, false))
-			for _, value := range append(append(card.Blockers, card.ClearedBlockers...), card.WaitDetail, "6 attempts", "3 parks", "full progress reason", "@author", "via human · @operator") {
+			for _, retired := range []string{"Park history", " parks", "park_summary", "no_progress_limit"} {
+				if strings.Contains(html, retired) {
+					t.Fatalf("retired surface %q rendered", retired)
+				}
+			}
+			for _, value := range append(append(card.Blockers, card.ClearedBlockers...), card.WaitDetail, "full progress reason", "@author", "via human · @operator") {
 				if !strings.Contains(html, value) {
 					t.Fatalf("sheet missing full value %q", value)
 				}
@@ -4896,7 +4875,7 @@ func TestTodoDispatchEvidencePreservesAttention(t *testing.T) {
 	}{
 		{name: "attention", card: projectKanbanCard{AttentionLabel: "Upstream closed"}, signal: "Needs you", detail: "Upstream closed"},
 		{name: "conflict", card: projectKanbanCard{ConflictReason: "Resolve the merge conflict"}, signal: "Merge conflict", detail: "Resolve the merge conflict"},
-		{name: "operator hold", card: projectKanbanCard{BlockedReason: "Repair credentials"}, signal: "Needs you", detail: "Repair credentials"},
+		{name: "operator hold", card: projectKanbanCard{BlockedReason: "Repair credentials", BlockedHumanAttention: true, BlockedRecoveryReason: "human_action"}, signal: "Needs you", detail: "Repair credentials"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			data := boardTestData()

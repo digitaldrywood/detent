@@ -147,7 +147,6 @@ func (o *Orchestrator) parkCIUnavailableWaiters(state *State, issues []connector
 			fresh[id] = issue
 		}
 	}
-	parked := 0
 	for issueID, running := range state.Running {
 		if issue, ok := fresh[issueID]; ok {
 			running.Issue = mergeIssueTrackerFields(running.Issue, issue)
@@ -156,7 +155,6 @@ func (o *Orchestrator) parkCIUnavailableWaiters(state *State, issues []connector
 			state.Running[issueID] = running
 			continue
 		}
-		parked++
 		if running.CIStopRequested || running.stop == nil {
 			state.Running[issueID] = running
 			continue
@@ -166,12 +164,9 @@ func (o *Orchestrator) parkCIUnavailableWaiters(state *State, issues []connector
 		running.stop(runpkg.NewCancellationCause(runpkg.ErrCIUnavailable, "orchestrator.ci_availability"))
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now.UTC(),
-			Event:   "ci_unavailable_attempt_parking",
-			Message: "parking " + issueLabel(running.Issue) + " until CI checks start moving",
+			Event:   "ci_unavailable_attempt_stopped",
+			Message: "stopping " + issueLabel(running.Issue) + " until CI checks start moving",
 		})
-	}
-	if state.CIUnavailable != nil {
-		state.CIUnavailable.ParkedAttemptCount = parked
 	}
 }
 

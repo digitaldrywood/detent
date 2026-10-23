@@ -58,7 +58,7 @@ func BenchmarkRefreshMaintenance(b *testing.B) {
 					previous := tickPreviousState{pipeline: excluded}
 					orch.filterAuthorizedTickIssues(b.Context(), &state, tickFetchedIssues{candidates: excluded, status: excluded}, &previous, time.Now())
 				case "retired":
-					orch.operatorReturnRetiredParks(b.Context(), &state, blocked, time.Now())
+					orch.recoverBlockedIssues(b.Context(), &state, blocked, time.Now())
 				case "dependencies":
 					orch.operatorClearClosedDependencies(b.Context(), &state, blocked, time.Now())
 				}
@@ -411,7 +411,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				cancel()
 			}
 			state := newState(cfg)
-			got := orch.operatorReturnRetiredParks(ctx, &state, roots, time.Now())
+			got := orch.recoverBlockedIssues(ctx, &state, roots, time.Now())
 			_, dependencyRecovered := got[roots[0].ID]
 			unverifiable := mode == "missing" || mode == "failure" || mode == "budget" || mode == "discovery failure" || mode == "cancelled" || mode == "expired"
 			if dependencyRecovered != (independentFailure || unverifiable) {
@@ -443,7 +443,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				requestMu.Lock()
 				readRecovered = true
 				requestMu.Unlock()
-				later := orch.operatorReturnRetiredParks(ctx, &state, roots[:1], time.Now())
+				later := orch.recoverBlockedIssues(ctx, &state, roots[:1], time.Now())
 				if _, recovered := later[roots[0].ID]; recovered {
 					t.Fatal("successful read released an unfinished dependency")
 				}
@@ -453,7 +453,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				}
 			}
 			if mode == "missing" {
-				again := orch.operatorReturnRetiredParks(ctx, &state, roots[:1], time.Now())
+				again := orch.recoverBlockedIssues(ctx, &state, roots[:1], time.Now())
 				if _, recovered := again[roots[0].ID]; !recovered || state.Retry[roots[0].ID].Attempt != 2 {
 					t.Fatal("repeated unresolvable reference did not continue machine retry")
 				}

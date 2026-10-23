@@ -103,7 +103,7 @@ func (s *Server) readOperationsReport(ctx context.Context, now, since time.Time)
 				ref = strings.TrimSpace(issue.ID)
 			}
 			row, ok := blockedByIssue[operationsProjectIssueKey(operationsProjectScope(issue.ProjectID, snapshot.Project.ID), ref)]
-			if ok && !templates.BlockedRecoveryWaiting(row.NeedsHumanAttention, row.Source, row.RecoveryAction, row.RecoveryReason, row.Error) {
+			if ok && row.Source == telemetry.BlockedSourceOperatorStop {
 				report.Decisions = append(report.Decisions, operationsBlockedDecision(row, snapshot.Project.ID))
 				operationsMarkDecisionSeen(seen, keys)
 				decisionSeen = true
@@ -336,12 +336,12 @@ func operationsBlockedDecision(row telemetry.Blocked, fallbackProjectID string) 
 		reason = strings.ReplaceAll(strings.TrimSpace(row.RecoveryReason), "_", " ")
 	}
 	if reason == "" {
-		reason = "Blocked park has no automatic exit."
+		reason = "Operator stopped this issue."
 	}
 	if remedy := strings.TrimSpace(row.RecoveryRemedy); remedy != "" && !strings.Contains(reason, remedy) {
 		reason += " — " + remedy
 	}
-	return operations.Decision{Kind: "blocked_park", ProjectID: operationsProjectScope(row.ProjectID, fallbackProjectID), Issue: row.Identifier, Title: row.Title, Question: reason, URL: row.URL}
+	return operations.Decision{Kind: "operator_stop", ProjectID: operationsProjectScope(row.ProjectID, fallbackProjectID), Issue: row.Identifier, Title: row.Title, Question: reason, URL: row.URL}
 }
 
 type operationsHumanReviewPolicy struct {

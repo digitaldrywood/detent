@@ -165,7 +165,7 @@ func TestDispatchRetainsConfiguredModeAfterPriorSessions(t *testing.T) {
 			selector := newLaneMutationTestOrchestrator(cfg, nil, db, db, now)
 			selectionState := newState(cfg)
 			mode := selector.dispatchMode(t.Context(), &selectionState, issue)
-			metadata := marshalWorkAttemptJSON(map[string]any{dispatchLoopStartMetadataKey: newDispatchLoopStartRecord(issue, mode), "run_mode": mode})
+			metadata := marshalWorkAttemptJSON(map[string]any{completionSourceStartMetadataKey: newCompletionSourceStartRecord(issue, mode), "run_mode": mode})
 			for i := range tt.sessions {
 				if i > 0 {
 					var err error

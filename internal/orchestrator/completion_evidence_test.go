@@ -13,7 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
-func spendProgressIssueWithPR(headSHA string, mergeableState string, ciStatus string) connector.Issue {
+func completionEvidenceIssueWithPR(headSHA string, mergeableState string, ciStatus string) connector.Issue {
 	number := 214
 	return connector.Issue{
 		PRNumber: &number,
@@ -26,11 +26,11 @@ func spendProgressIssueWithPR(headSHA string, mergeableState string, ciStatus st
 	}
 }
 
-func TestRefreshSpendProgressIssue(t *testing.T) {
+func TestRefreshCompletionEvidenceIssue(t *testing.T) {
 	t.Parallel()
 
 	baseIssue := connector.Issue{ID: "issue-1276", Identifier: "digitaldrywood/detent#1276"}
-	linkedIssue := spendProgressIssueWithPR("head", "dirty", "failure")
+	linkedIssue := completionEvidenceIssueWithPR("head", "dirty", "failure")
 	linkedIssue.ID = baseIssue.ID
 	linkedIssue.Identifier = baseIssue.Identifier
 	linkedIssue.PRRepository = "digitaldrywood/detent"
@@ -52,7 +52,7 @@ func TestRefreshSpendProgressIssue(t *testing.T) {
 		{name: "refresh confirms no PR", orch: &Orchestrator{connector: &implementProgressConnector{refreshed: baseIssue}}, issue: baseIssue},
 		{
 			name: "fallback refresh discovers and hydrates PR",
-			orch: &Orchestrator{connector: spendProgressHydratingConnector{
+			orch: &Orchestrator{connector: completionEvidenceHydratingConnector{
 				Connector: fallbackTracker,
 				hydrator:  fallbackTracker,
 			}},
@@ -99,7 +99,7 @@ func TestRefreshSpendProgressIssue(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			issue, warning := tt.orch.refreshSpendProgressIssue(t.Context(), tt.issue)
+			issue, warning := tt.orch.refreshCompletionEvidenceIssue(t.Context(), tt.issue)
 			if !strings.Contains(warning, tt.wantWarning) {
 				t.Fatalf("warning = %q, want containing %q", warning, tt.wantWarning)
 			}
@@ -120,12 +120,12 @@ type connectorOnly struct {
 	connector.Connector
 }
 
-type spendProgressHydratingConnector struct {
+type completionEvidenceHydratingConnector struct {
 	connector.Connector
 	hydrator connector.PullRequestHydrator
 }
 
-func (c spendProgressHydratingConnector) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+func (c completionEvidenceHydratingConnector) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
 	return c.hydrator.HydratePullRequest(ctx, issue)
 }
 
@@ -134,7 +134,7 @@ func TestHandleRunResultAcceptsPRAdvanceBeforeWorkerError(t *testing.T) {
 
 	base := time.Date(2026, 7, 11, 16, 0, 0, 0, time.UTC)
 	createdAt := base.Add(-time.Hour)
-	runningIssue := spendProgressIssueWithPR("old-head", "dirty", "failure")
+	runningIssue := completionEvidenceIssueWithPR("old-head", "dirty", "failure")
 	runningIssue.ID = "issue-1276"
 	runningIssue.Identifier = "digitaldrywood/detent#1276"
 	runningIssue.State = "In Progress"
@@ -152,12 +152,11 @@ func TestHandleRunResultAcceptsPRAdvanceBeforeWorkerError(t *testing.T) {
 		}),
 	}}}
 	cfg := normalizeConfig(Config{
-		Project:                 scheduler.ProjectCandidate{ID: "detent"},
-		BillingMode:             "metered",
-		NoProgressSpendLimitUSD: 5,
-		ActiveStates:            []string{"In Progress"},
-		ObservedStates:          []string{"Blocked"},
-		TerminalStates:          []string{"Done"},
+		Project:        scheduler.ProjectCandidate{ID: "detent"},
+		BillingMode:    "metered",
+		ActiveStates:   []string{"In Progress"},
+		ObservedStates: []string{"Blocked"},
+		TerminalStates: []string{"Done"},
 	})
 	orch := &Orchestrator{
 		cfg:          cfg,
@@ -206,7 +205,7 @@ func TestHandleRunResultDiscoversWorkerOpenedPRBeforeWorkerError(t *testing.T) {
 	createdAt := base.Add(-8 * 24 * time.Hour)
 	runningIssue := implementProgressIssueWithoutPR()
 	runningIssue.CreatedAt = &createdAt
-	linkedIssue := spendProgressIssueWithPR("new-head", "dirty", "pending")
+	linkedIssue := completionEvidenceIssueWithPR("new-head", "dirty", "pending")
 	linkedIssue.ID = runningIssue.ID
 	linkedIssue.Identifier = runningIssue.Identifier
 	linkedIssue.PRRepository = "digitaldrywood/detent"
@@ -221,12 +220,11 @@ func TestHandleRunResultDiscoversWorkerOpenedPRBeforeWorkerError(t *testing.T) {
 	}
 	attempts := &implementProgressAttemptStore{}
 	cfg := normalizeConfig(Config{
-		Project:              scheduler.ProjectCandidate{ID: "detent"},
-		BillingMode:          "subscription",
-		NoProgressTokenLimit: 25_000_000,
-		ActiveStates:         []string{"In Progress"},
-		ObservedStates:       []string{"Blocked"},
-		TerminalStates:       []string{"Done"},
+		Project:        scheduler.ProjectCandidate{ID: "detent"},
+		BillingMode:    "subscription",
+		ActiveStates:   []string{"In Progress"},
+		ObservedStates: []string{"Blocked"},
+		TerminalStates: []string{"Done"},
 	})
 	orch := &Orchestrator{
 		cfg:          cfg,

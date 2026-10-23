@@ -49,8 +49,6 @@ const (
 	maxMergeWorkerRunnerFailures        = 3
 	mergeWorkerCurrentHeadCIWaitTimeout = time.Hour
 
-	repeatedFailureBlockedReasonPrefix         = "repeated failure circuit breaker: "
-	tokenCeilingBlockedReasonPrefix            = "token ceiling circuit breaker: "
 	deliverableConfigurationFailureCause       = "deliverable_configuration_failure"
 	budgetProjectionCeilingFailureCause        = "budget_projection_ceiling"
 	continuationDispatchBackoff                = 100 * time.Millisecond
@@ -97,13 +95,7 @@ type Config struct {
 	StopRunPriorityNames          map[int]string
 	MaxConcurrentAgentsPerHost    int
 	MaxRetryBackoff               time.Duration
-	Recovery                      workflowconfig.Recovery
 	OverloadRetryDelay            time.Duration
-	NoProgressTokenLimit          int64
-	NoProgressSpendLimitUSD       float64
-	LifetimeSessionLimit          int64
-	LifetimeTokenLimit            int64
-	LifetimeLimitOverrideLabel    string
 	BillingMode                   string
 	RateWindowPacing              workflowconfig.RateWindowPacing
 	FailureBreaker                FailureBreakerConfig
@@ -230,8 +222,6 @@ type Dependencies struct {
 	LifecycleExporter    efficiency.LifecycleExporter
 	WorkAttempts         store.WorkAttemptStore
 	MergeRequiredChecks  store.MergeRequiredCheckStore
-	ProgressSpend        store.ProgressSpendStore
-	LifetimeUsage        LifetimeUsageStore
 	AgentResume          store.AgentResumeStore
 	OrphanSessions       store.OrphanSessionStore
 	ValidatorMemo        store.ValidatorMemoStore
@@ -307,7 +297,6 @@ type Orchestrator struct {
 	mergeRequiredChecks store.MergeRequiredCheckStore
 	operatorStops       store.OperatorStopStore
 
-	lifetimeUsage           LifetimeUsageStore
 	agentResume             store.AgentResumeStore
 	orphanSessions          store.OrphanSessionStore
 	supervisor              *runpkg.Supervisor
@@ -624,17 +613,6 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 			laneLedger = ledger
 		}
 	}
-	lifetimeUsage := deps.LifetimeUsage
-	if lifetimeUsage == nil {
-		if candidate, ok := deps.WorkflowMetrics.(LifetimeUsageStore); ok {
-			lifetimeUsage = candidate
-		}
-	}
-	if lifetimeUsage == nil {
-		if candidate, ok := deps.WorkAttempts.(LifetimeUsageStore); ok {
-			lifetimeUsage = candidate
-		}
-	}
 	mergeRequiredChecks := deps.MergeRequiredChecks
 	if mergeRequiredChecks == nil {
 		if candidate, ok := deps.WorkAttempts.(store.MergeRequiredCheckStore); ok {
@@ -716,7 +694,6 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		mergeRequiredChecks: mergeRequiredChecks,
 		operatorStops:       operatorStops,
 
-		lifetimeUsage:           lifetimeUsage,
 		agentResume:             agentResume,
 		orphanSessions:          orphanSessions,
 		supervisor:              supervisor,

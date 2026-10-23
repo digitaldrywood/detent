@@ -86,7 +86,7 @@ CREATE TABLE scheduler_decisions (
 		t.Fatalf("concurrency detail = %q", concurrency.Detail)
 	}
 	redispatch := checks[1]
-	if redispatch.Status != doctorWarn || len(redispatch.RedispatchLoops) != 1 || redispatch.RedispatchLoops[0].Dispatches != 10 {
+	if redispatch.Status != doctorWarn || len(redispatch.RecompletionSources) != 1 || redispatch.RecompletionSources[0].Dispatches != 10 {
 		t.Fatalf("redispatch check = %#v, want alpha#1886 with 10 dispatches", redispatch)
 	}
 }

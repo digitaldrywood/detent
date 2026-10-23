@@ -50,7 +50,6 @@ tracker:
       - merge_conflict
       - stale_base
       - missing_current_head_ci
-    breaker_cooldown_seconds: 86400
   blocker_auto_promote:
     enabled: false
     source_states: []
@@ -70,24 +69,17 @@ deliverable:
 dependencies:
   source: merged
 recovery:
-  terminal_attempt_retry_limit: 3
 worker:
   allow_local_binding: true
 agent:
   max_turns: 20
   max_turn_duration_ms: 14400000
   max_session_duration_ms: 18000000
-  no_progress_timeout_ms: 5400000
   checkpoint_interval_ms: 0
   merge_worker_startup_timeout_ms: 240000
   merge_worker_max_duration_ms: 21600000
   max_retry_backoff_ms: 300000
   overload_retry_delay_ms: 45000
-  no_progress_token_limit: 0
-  no_progress_spend_limit_usd: 0
-  lifetime_session_limit: 60
-  lifetime_token_limit: 500000000
-  lifetime_limit_override_label: allow-lifetime-limit
   failure_breaker:
     same_class_limit: 5
     window_seconds: 3600
@@ -220,7 +212,6 @@ retro:
   enabled: false
 operator:
   actions:
-    - return_retired_parks
     - clear_closed_dependencies
     - restore_stuck_merging
   merge_wedge_seconds: 7200

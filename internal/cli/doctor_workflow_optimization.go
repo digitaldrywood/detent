@@ -40,7 +40,7 @@ const (
 	doctorWorkflowRulePinnedRouteModelRejected       = "pinned_route_model_rejected"
 	doctorWorkflowRulePinnedWorkerModelStale         = "pinned_worker_model_stale"
 	doctorWorkflowRuleSessionMultiplierKills         = "session_multiplier_ceiling_kills"
-	doctorWorkflowRuleSpendProgressBelowMedian       = "spend_progress_below_median_session_cost"
+	doctorWorkflowRuleCompletionEvidenceBelowMedian  = "spend_progress_below_median_session_cost"
 	doctorWorkflowRuleNoSessionTokenBrake            = "no_session_token_brake"
 	doctorWorkflowRuleBudgetEstimateDrift            = "budget_estimate_drift"
 	doctorWorkflowRuleSchedulerSkipRate              = "scheduler_skip_rate"
@@ -954,60 +954,6 @@ func doctorWorkflowMedianSessionCostUSDByEffort(costs map[string][]float64) map[
 	return medians
 }
 
-func doctorWorkflowSpendProgressLimitFinding(
-	projectID string,
-	workflowPath string,
-	cfg workflowconfig.Config,
-	medianCostByEffort map[string]float64,
-) (doctorWorkflowOptimizationFinding, bool) {
-	configuredLimit := cfg.Agent.NoProgressSpendLimitUSD
-	if cfg.Budget.EffectiveBillingMode() != workflowconfig.BillingModeMetered ||
-		configuredLimit <= 0 ||
-		len(medianCostByEffort) == 0 {
-		return doctorWorkflowOptimizationFinding{}, false
-	}
-	efforts := make([]string, 0, len(medianCostByEffort))
-	for effort := range medianCostByEffort {
-		efforts = append(efforts, effort)
-	}
-	slices.Sort(efforts)
-	offendingMedians := map[string]float64{}
-	effectiveLimits := map[string]float64{}
-	details := make([]string, 0, len(efforts))
-	recommendedBase := configuredLimit
-	for _, effort := range efforts {
-		median := medianCostByEffort[effort]
-		effective := workflowconfig.EffectiveNoProgressSpendLimitUSD(configuredLimit, effort)
-		if median <= 0 || effective >= median {
-			continue
-		}
-		offendingMedians[effort] = median
-		effectiveLimits[effort] = effective
-		details = append(details, fmt.Sprintf("%s (%s < %s)", effort, budget.FormatUSD(effective), budget.FormatUSD(median)))
-		candidate := median * 1.5 / workflowconfig.NoProgressSpendLimitMultiplier(effort)
-		recommendedBase = math.Max(recommendedBase, candidate)
-	}
-	if len(offendingMedians) == 0 {
-		return doctorWorkflowOptimizationFinding{}, false
-	}
-	recommendedBase = math.Ceil(recommendedBase*100) / 100
-	return doctorWorkflowFinding(
-		projectID,
-		workflowPath,
-		doctorWorkflowRuleSpendProgressBelowMedian,
-		"Notional USD progress breaker is below observed session value",
-		"effective notional USD breaker limit is below observed p50 per-session notional USD for effort tier(s): "+strings.Join(details, ", "),
-		0,
-		map[string]any{
-			"configured_base_limit_usd":             configuredLimit,
-			"effective_limit_usd_by_effort":         effectiveLimits,
-			"observed_p50_session_cost_by_effort":   offendingMedians,
-			"recommended_retry_cost_headroom_ratio": 1.5,
-		},
-		doctorWorkflowOptimizationPatch{Path: "agent.no_progress_spend_limit_usd", Value: recommendedBase},
-	), true
-}
-
 func doctorWorkflowSessionGuardTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string) ([]doctorWorkflowSessionGuardIncident, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT
@@ -1356,9 +1302,6 @@ func doctorWorkflowOptimizationFindings(
 			},
 			patches...,
 		))
-	}
-	if finding, ok := doctorWorkflowSpendProgressLimitFinding(projectID, workflowPath, cfg, metrics.MedianSessionCostUSDByEffort); ok {
-		findings = append(findings, finding)
 	}
 	if incidents := doctorWorkflowRepeatedSessionGuardIncidents(metrics.SessionMultiplierKills); len(incidents) > 0 {
 		attemptCounts := make(map[string]int64, len(incidents))

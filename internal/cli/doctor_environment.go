@@ -460,8 +460,8 @@ func checkDoctorMeteredBillingAuth(ctx context.Context, cfg globalconfig.Config,
 		if err != nil || workflow.Config.Budget.EffectiveBillingMode() != workflowconfig.BillingModeMetered {
 			continue
 		}
-		brakes := workflow.Config.USDBrakes()
-		if !brakes.BudgetCaps && !brakes.NoProgress {
+		enabled := workflow.Config.Budget.USDEnforcementEnabled()
+		if !enabled {
 			continue
 		}
 		backends := doctorRoutedCodexBackends(workflow.Config)

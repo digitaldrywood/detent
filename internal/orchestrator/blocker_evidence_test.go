@@ -393,7 +393,7 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 		{name: "clearance predates park", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: parkedAt.Add(-time.Minute), parkCause: workpadBlockedUnactionedReason},
 		{name: "human action remains", body: "status: blocked\nblockers: []\nhuman_action: approve release", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason},
 		{name: "converted generated prerequisite stays human held", body: "status: blocked\nblockers: []\nhuman_action: decide whether to publish", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason},
-		{name: "unrelated human park", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: noProgressLimitReason, wantTransition: true, wantState: "Todo"},
+		{name: "unrelated human park", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: "no_progress_limit", wantTransition: true, wantState: "Todo"},
 		{name: "unmigrated generated prerequisite remains", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, legacyBlocker: true, wantTransition: true, wantState: "Todo"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

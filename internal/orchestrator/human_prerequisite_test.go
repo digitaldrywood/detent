@@ -135,7 +135,7 @@ func TestHumanClosureIgnoresHistoricalBreakerReason(t *testing.T) {
 	tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{child}, hydratedIssues: []connector.Issue{child}, blockers: []connector.Issue{blocker}}
 	o := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{Enabled: true, SourceStates: []string{"Blocked"}, TargetState: "Todo"})
 	state := newState(o.cfg)
-	state.Blocked[child.ID] = Blocked{Issue: child, Reason: repeatedFailureCircuitBreakerCause}
+	state.Blocked[child.ID] = Blocked{Issue: child, Reason: "repeated_failure_circuit_breaker"}
 	if got := o.autoUnblockDependencyIssues(t.Context(), &state, []connector.Issue{child}, time.Now()); len(got) != 1 {
 		t.Fatal("historical reason vetoed current closure")
 	}

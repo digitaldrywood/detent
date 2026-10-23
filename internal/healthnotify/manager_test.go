@@ -168,7 +168,7 @@ func TestManagerBreakerPayloadCarriesOperatorEvidence(t *testing.T) {
 		Provider:               "anthropic",
 		EligibleCandidateCount: &eligibleCandidates,
 		Items: []telemetry.FailureBreakerItem{{
-			IssueID: "video-1", Identifier: "2026-07-10-detent-not-vibe-coding-short", IssueURL: "https://example.test/items/video-1", Title: "Author beat visuals", CurrentState: "Blocked", AttemptCount: 5, Parked: true,
+			IssueID: "video-1", Identifier: "2026-07-10-detent-not-vibe-coding-short", IssueURL: "https://example.test/items/video-1", Title: "Author beat visuals", CurrentState: "Blocked", AttemptCount: 5,
 		}},
 		ResumeAt: now.Add(time.Hour),
 	}
@@ -203,7 +203,7 @@ func TestManagerBreakerPayloadCarriesOperatorEvidence(t *testing.T) {
 		t.Fatalf("BackendOutages = %#v", breakerEvent.BackendOutages)
 	}
 	item := breakerEvent.FailureBreakers[0].Items[0]
-	if item.Title != "Author beat visuals" || item.IssueURL == "" || !item.Parked {
+	if item.Title != "Author beat visuals" || item.IssueURL == "" {
 		t.Fatalf("breaker item = %#v", item)
 	}
 }
@@ -254,7 +254,7 @@ func TestManagerNotifiesOnlyFaultTransitions(t *testing.T) {
 		{
 			name: "fully parked breaker is diagnostic",
 			snapshot: telemetry.Snapshot{FailureBreakers: []telemetry.FailureBreaker{{
-				ProjectID: "detent", EligibleCandidateCount: &zero, Items: []telemetry.FailureBreakerItem{{IssueID: "issue-1", Parked: true}},
+				ProjectID: "detent", EligibleCandidateCount: &zero, Items: []telemetry.FailureBreakerItem{{IssueID: "issue-1"}},
 			}}},
 		},
 		{

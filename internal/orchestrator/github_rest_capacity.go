@@ -27,7 +27,6 @@ const (
 	githubRESTBudgetWaitingReason            = "github_rest_budget_wait"
 	githubRESTBudgetObservationPendingReason = "github_rest_budget_observation_pending"
 
-	repeatedFailureCircuitBreakerCause    = "repeated_failure_circuit_breaker"
 	githubRESTBudgetProbeRetryInterval    = time.Minute
 	legacyGitHubRESTBudgetStageUpdateSkew = 10 * time.Second
 )
@@ -321,7 +320,7 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 		state,
 		running.Issue,
 		running.WorkProductPushed,
-		terminalAttemptRetryLimitCause,
+		workAttemptErrorRunner,
 		attemptCompleted,
 		running.Mode,
 		running.DiffStats,

@@ -57,13 +57,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		StopRunPriorityNames:       stopRunPriorityNames(cfg.Tracker.PriorityMap),
 		MaxConcurrentAgentsPerHost: positiveIntValue(cfg.Worker.MaxConcurrentAgentsPerHost),
 		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
-		Recovery:                   cfg.Recovery,
 		OverloadRetryDelay:         durationFromMillis(cfg.Agent.OverloadRetryDelayMS),
-		NoProgressTokenLimit:       cfg.Agent.NoProgressTokenLimit,
-		NoProgressSpendLimitUSD:    cfg.Agent.NoProgressSpendLimitUSD,
-		LifetimeSessionLimit:       cfg.Agent.LifetimeSessionLimit,
-		LifetimeTokenLimit:         cfg.Agent.LifetimeTokenLimit,
-		LifetimeLimitOverrideLabel: normalizeLabel(cfg.Agent.LifetimeLimitOverrideLabel),
 		BillingMode:                cfg.Budget.EffectiveBillingMode(),
 		RateWindowPacing:           cfg.Agent.RateWindowPacing.Normalized(),
 		FailureBreaker: FailureBreakerConfig{
@@ -120,11 +114,10 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			Readiness:    cfg.Tracker.DependencyAutoUnblock.Readiness,
 		}),
 		BlockedRecovery: normalizeBlockedRecoveryConfig(BlockedRecoveryConfig{
-			Enabled:         cfg.Tracker.BlockedRecovery.Enabled,
-			SourceStates:    append([]string(nil), cfg.Tracker.BlockedRecovery.SourceStates...),
-			TargetState:     cfg.Tracker.BlockedRecovery.TargetState,
-			ReasonCodes:     append([]string(nil), cfg.Tracker.BlockedRecovery.ReasonCodes...),
-			BreakerCooldown: durationFromSeconds(cfg.Tracker.BlockedRecovery.BreakerCooldownSeconds),
+			Enabled:      cfg.Tracker.BlockedRecovery.Enabled,
+			SourceStates: append([]string(nil), cfg.Tracker.BlockedRecovery.SourceStates...),
+			TargetState:  cfg.Tracker.BlockedRecovery.TargetState,
+			ReasonCodes:  append([]string(nil), cfg.Tracker.BlockedRecovery.ReasonCodes...),
 		}),
 		Operator: OperatorConfig{
 			Actions:       append([]string(nil), cfg.Operator.Actions...),
@@ -215,7 +208,6 @@ func normalizeConfig(cfg Config) Config {
 	if cfg.OverloadRetryDelay <= 0 {
 		cfg.OverloadRetryDelay = defaultOverloadRetryDelay
 	}
-	cfg.LifetimeLimitOverrideLabel = normalizeLabel(cfg.LifetimeLimitOverrideLabel)
 	if cfg.StrandedActiveThreshold <= 0 {
 		cfg.StrandedActiveThreshold = durationFromSeconds(workflowconfig.DefaultStrandedActiveThresholdSeconds)
 	}

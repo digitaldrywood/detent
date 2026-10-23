@@ -293,9 +293,6 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Deliverable.MergeMethod = workflowconfig.MergeMethodRebase
 	cfg.Deliverable.Kind = workflowconfig.DeliverableArtifact
 	cfg.Agent.OutputTruncation.MaxBytes = 4096
-	cfg.Agent.LifetimeSessionLimit = 21
-	cfg.Agent.LifetimeTokenLimit = 52_000_000
-	cfg.Agent.LifetimeLimitOverrideLabel = " Allow-Hard-Issue "
 	cfg.Identity.Name = "release-captain"
 	cfg.Identity.GitHubLogin = "detent-bot"
 	cfg.Identity.AssigneeRequired = true
@@ -307,11 +304,10 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Tracker.Claims.TTLSeconds = 300
 	cfg.Tracker.Claims.HeartbeatSeconds = 45
 	cfg.Tracker.BlockedRecovery = workflowconfig.BlockedRecovery{
-		Enabled:                true,
-		SourceStates:           []string{"Blocked", "Parked"},
-		TargetState:            "Repair",
-		ReasonCodes:            []string{"merge_conflict", "stale_base"},
-		BreakerCooldownSeconds: 12 * 60 * 60,
+		Enabled:      true,
+		SourceStates: []string{"Blocked", "Parked"},
+		TargetState:  "Repair",
+		ReasonCodes:  []string{"merge_conflict", "stale_base"},
 	}
 	cfg.Tracker.PriorityMap = workflowconfig.StringOrMap{IsMap: true, Map: map[string]any{"Critical": 1, "Normal": 3, "No priority": nil}}
 	staggerSeconds := 20
@@ -345,9 +341,6 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	if got.StrandedActiveThreshold != 42*time.Second {
 		t.Fatalf("StrandedActiveThreshold = %s, want 42s", got.StrandedActiveThreshold)
 	}
-	if got.NoProgressTokenLimit != workflowconfig.DefaultNoProgressTokenLimit {
-		t.Fatalf("NoProgressTokenLimit = %d, want %d", got.NoProgressTokenLimit, workflowconfig.DefaultNoProgressTokenLimit)
-	}
 	if len(got.WorkerHosts) != 2 || got.WorkerHosts[0] != "worker-a" || got.WorkerHosts[1] != "worker-b" {
 		t.Fatalf("WorkerHosts = %#v, want worker-a and worker-b", got.WorkerHosts)
 	}
@@ -360,8 +353,7 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	if !got.BlockedRecovery.Enabled ||
 		!slices.Equal(got.BlockedRecovery.SourceStates, []string{"blocked", "parked"}) ||
 		got.BlockedRecovery.TargetState != "Repair" ||
-		!slices.Equal(got.BlockedRecovery.ReasonCodes, []string{"merge_conflict", "stale_base"}) ||
-		got.BlockedRecovery.BreakerCooldown != 12*time.Hour {
+		!slices.Equal(got.BlockedRecovery.ReasonCodes, []string{"merge_conflict", "stale_base"}) {
 		t.Fatalf("BlockedRecovery = %#v, want configured recovery policy", got.BlockedRecovery)
 	}
 	if got.WorkspaceCleanupIdleTTL != 2*time.Hour {
@@ -401,12 +393,6 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if got.OutputTruncationMaxBytes != 4096 {
 		t.Fatalf("OutputTruncationMaxBytes = %d, want 4096", got.OutputTruncationMaxBytes)
-	}
-	if got.LifetimeSessionLimit != 21 || got.LifetimeTokenLimit != 52_000_000 {
-		t.Fatalf("lifetime limits = %d sessions/%d tokens, want 21/52000000", got.LifetimeSessionLimit, got.LifetimeTokenLimit)
-	}
-	if got.LifetimeLimitOverrideLabel != "allow-hard-issue" {
-		t.Fatalf("LifetimeLimitOverrideLabel = %q, want allow-hard-issue", got.LifetimeLimitOverrideLabel)
 	}
 	if got.SelectorContext.InstanceLogin != "detent-bot" {
 		t.Fatalf("SelectorContext.InstanceLogin = %q, want detent-bot", got.SelectorContext.InstanceLogin)

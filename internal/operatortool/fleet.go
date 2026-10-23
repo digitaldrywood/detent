@@ -35,7 +35,6 @@ const (
 	GetRunnerUpdate          = "get_runner_update"
 	GetUrgentRunnerUpdate    = "get_urgent_runner_update"
 	MarkUrgentRunnerUpdate   = "mark_urgent_runner_update"
-	ProgressCredit           = "issue_progress_credit"
 	AcknowledgeWarnings      = "acknowledge_staleness_warnings"
 	RecoverAttempt           = "recover_work_attempt"
 	UpdateFleetRunner        = "update_fleet_runner"
@@ -102,7 +101,6 @@ func FleetCatalog() []Definition {
 	add(GetRunnerUpdate, "Read enrolled runner update support, requested/applied state and observed running build provenance.", `"runner_id":`+boundedID, `"runner_id"`, true, false)
 	add(GetUrgentRunnerUpdate, "Read the organization's urgent runner release and current revision.", "", "", true, false)
 	add(MarkUrgentRunnerUpdate, "Mark a release urgent for all older runners in this organization. Drains existing sessions before updating; requires current authority.", `"change":{"type":"object","required":["expected_revision","version"],"properties":{"expected_revision":{"type":"integer","minimum":0},"version":`+boundedID+`},"additionalProperties":false}`, `"change"`, false, true)
-	add(ProgressCredit, "Credit the exact issue through the dashboard command; requires current authority.", `"reference":`+boundedID, `"project_id","reference"`, false, true)
 	add(AcknowledgeWarnings, "Acknowledge active staleness warnings for this project.", `"warning_ids":`+boundedList, `"project_id","warning_ids"`, false, false)
 	add(RecoverAttempt, "Perform an existing recovery action on an exact attempt; requires current authority.", `"attempt_id":{"type":"integer","minimum":1},"action":{"type":"string","maxLength":256,"enum":["inspect","abandon","retry_fresh","retry_resume","cleanup_workspace"]},"reason":{"type":"string","maxLength":280}`, `"project_id","attempt_id","action"`, false, true)
 	// Nested changes have the same fields and validation as the runner application.

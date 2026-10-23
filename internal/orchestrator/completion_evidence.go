@@ -8,9 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
-const spendProgressReason = "spend_since_progress_circuit_breaker"
-
-func (o *Orchestrator) spendProgressDeliverableKind(running Running) string {
+func (o *Orchestrator) completionEvidenceDeliverableKind(running Running) string {
 	if o != nil {
 		switch strings.ToLower(strings.TrimSpace(o.cfg.DeliverableKind)) {
 		case workflowconfig.DeliverableArtifact:
@@ -19,10 +17,10 @@ func (o *Orchestrator) spendProgressDeliverableKind(running Running) string {
 			return workflowconfig.DeliverablePullRequest
 		}
 	}
-	return spendProgressRunningDeliverableKind(running)
+	return completionEvidenceRunningDeliverableKind(running)
 }
 
-func spendProgressRunningDeliverableKind(running Running) string {
+func completionEvidenceRunningDeliverableKind(running Running) string {
 	values := []string{running.DeliverableKind}
 	if running.Issue.Deliverable != nil {
 		values = append(values, running.Issue.Deliverable.Kind)
@@ -38,8 +36,8 @@ func spendProgressRunningDeliverableKind(running Running) string {
 	return workflowconfig.DeliverablePullRequest
 }
 
-func (o *Orchestrator) refreshSpendProgressIssue(ctx context.Context, issue connector.Issue) (connector.Issue, string) {
-	if o.spendProgressDeliverableKind(Running{Issue: issue}) == workflowconfig.DeliverableArtifact {
+func (o *Orchestrator) refreshCompletionEvidenceIssue(ctx context.Context, issue connector.Issue) (connector.Issue, string) {
+	if o.completionEvidenceDeliverableKind(Running{Issue: issue}) == workflowconfig.DeliverableArtifact {
 		refreshed, current := o.refreshImplementCompletionIssue(ctx, issue)
 		if !current {
 			return refreshed, "artifact progress evidence refresh unavailable"

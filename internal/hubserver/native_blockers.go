@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -154,16 +153,8 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 	if _, err := validateClaimPolicy(ctx, tx, claimCandidateQuery{NativeScope: &scope, PolicyID: request.PolicyID}, attempt.MachineID); err != nil {
 		return err
 	}
-	approval, err := requireProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
-	if err != nil {
+	if _, err := requireProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project)); err != nil {
 		return err
-	}
-	workflow, err := config.ApplyNativePolicy(config.Workflow{}, approval.Policy)
-	if err != nil {
-		return err
-	}
-	if !workflow.Config.Operator.ActionEnabled(config.OperatorActionReturnRetiredParks) {
-		return policyMismatch("Recorded blocker recovery is not enabled by the selected policy")
 	}
 	history, err := readNativeBlockerHistory(ctx, tx, scope, issue)
 	if err != nil {

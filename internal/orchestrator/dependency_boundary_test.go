@@ -156,7 +156,7 @@ func TestDependencyRetryPreservesParks(t *testing.T) {
 	if !state.Retry[issue.ID].DueAt.Equal(now) {
 		t.Fatal("negative delay not bounded")
 	}
-	state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: repeatedFailureCircuitBreakerCause}
+	state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: "repeated_failure_circuit_breaker"}
 	p.parkBudgetHardHold(&state, issue.ID)
 	if _, ok := state.Blocked[issue.ID]; !ok {
 		t.Fatal("budget hold discarded independent park")
@@ -337,7 +337,7 @@ func (timer cancelUsageTimer) Stop() bool { timer.cancel(); return true }
 
 func TestWorkerUsageCancellationDuringDependencyHandoff(t *testing.T) {
 	t.Parallel()
-	for _, update := range []runner.UsageUpdate{{DispatchLoopStart: &runner.DispatchLoopStartSnapshot{}}, {WorkerGitHubActor: connector.IssueActor{Login: "worker"}}} {
+	for _, update := range []runner.UsageUpdate{{CompletionSourceStart: &runner.CompletionSourceStartSnapshot{}}, {WorkerGitHubActor: connector.IssueActor{Login: "worker"}}} {
 		ctx, cancel := context.WithCancel(t.Context())
 		o := &Orchestrator{}
 		if err := o.usageUpdateHandler(ctx, "child", cancelUsageTimer{cancel: cancel})(update); !errors.Is(err, context.Canceled) {
@@ -350,7 +350,7 @@ func TestWorkerUsageCancellationDuringDependencyHandoff(t *testing.T) {
 	o := &Orchestrator{runUpdates: make(chan runUpdate)}
 	done := make(chan error, 1)
 	go func() {
-		done <- o.usageUpdateHandler(ctx, "child", nil)(runner.UsageUpdate{DispatchLoopStart: &runner.DispatchLoopStartSnapshot{}})
+		done <- o.usageUpdateHandler(ctx, "child", nil)(runner.UsageUpdate{CompletionSourceStart: &runner.CompletionSourceStartSnapshot{}})
 	}()
 	<-o.runUpdates
 	cancel()

@@ -8,7 +8,3 @@ type staleReworkEvidence struct {
 	BaseFingerprint string   `json:"base_fingerprint,omitempty"`
 	Findings        []string `json:"findings,omitempty"`
 }
-
-func staleReworkPark(park workflowLaneBlockedRecoveryMetadata) bool {
-	return park.Cause == terminalAttemptRetryLimitCause && park.StaleRework != nil && park.Owner == blockedRecoveryOwnerOperator
-}

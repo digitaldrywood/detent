@@ -1516,10 +1516,9 @@ func TestTickAutoPromotesCompletedGateWaitWhileDispatchRunning(t *testing.T) {
 		PollInterval:        time.Minute,
 		MaxConcurrentAgents: 1,
 		AutoPromote: AutoPromoteConfig{
-			Enabled:         true,
-			QuietDuration:   0,
-			GateWaitState:   autoPromoteGateWaitSource,
-			NoProgressLimit: 3,
+			Enabled:       true,
+			QuietDuration: 0,
+			GateWaitState: autoPromoteGateWaitSource,
 			Gate: gate.Config{
 				Kind:                   gate.KindCommand,
 				RequireAutomatedReview: new(false),

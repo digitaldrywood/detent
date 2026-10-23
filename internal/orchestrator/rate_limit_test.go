@@ -973,7 +973,7 @@ func TestRunCompletionDuringGitHubRESTCapacityOutageDoesNotStrikeBreakers(t *tes
 	issue := implementProgressIssueWithoutPR()
 	cfg := normalizeConfig(Config{
 		Project:                scheduler.ProjectCandidate{ID: "detent"},
-		AutoPromote:            AutoPromoteConfig{NoProgressLimit: 3},
+		AutoPromote:            AutoPromoteConfig{},
 		ActiveStates:           []string{"Todo", "In Progress"},
 		TerminalStates:         []string{"Done", "Cancelled"},
 		GitHubRESTMinReserve:   1000,

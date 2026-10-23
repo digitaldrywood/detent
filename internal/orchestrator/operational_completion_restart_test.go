@@ -74,7 +74,7 @@ func TestOperationalBodyCompletionSurvivesRestart(t *testing.T) {
 			running.Generation = 25
 			running.StartedAt = time.Date(2026, 9, 30, 13, 50, 26, 0, time.UTC)
 			running.DiffStats = DiffStats{Status: "clean", HeadSHA: "7398f3cb78f554e5d69126b50d0cc27e3be8c35c", RecoveryStateExpected: true, RecoveryStateAvailable: true}
-			running.DispatchLoopStart = dispatchLoopTestStart(issue.State, autoPromoteReworkSignature{}, implementProgressDiffStatsFromDiffStats(running.DiffStats))
+			running.CompletionSourceStart = completionSourceTestStart(issue.State, autoPromoteReworkSignature{}, implementProgressDiffStatsFromDiffStats(running.DiffStats))
 			running.DispatchProgress = implementProgressArtifactSnapshotFromIssue(issue, true)
 			body := operationalCompletionWorkpadBody("No Detent behavior change or PR required.")
 			body = strings.Replace(body, "fields:\n", "fields:\n  completion_work_attempt_id: \"7018\"\n  completion_generation: \"25\"\n", 1)

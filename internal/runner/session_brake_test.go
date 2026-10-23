@@ -145,8 +145,7 @@ func TestRunnerGateWaitOutlivesFormerNoProgressLimit(t *testing.T) {
 		runner, err := NewRunner(Dependencies{
 			Workflow: config.Workflow{
 				Config: config.Config{Agent: config.Agent{
-					MaxTurns:            20,
-					NoProgressTimeoutMS: int(timeout / time.Millisecond),
+					MaxTurns: 20,
 				}},
 				Prompt: "Work",
 			},

@@ -27,7 +27,6 @@ type AutoPromoteConfig struct {
 	PassState             string
 	ReworkState           string
 	TerminalStates        []string
-	NoProgressLimit       int
 	WorkpadStructuredOnly bool
 	Gate                  gate.Config
 }
@@ -416,9 +415,6 @@ func normalizeAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {
 		cfg.ReworkState = autoPromoteReworkState
 	}
 	cfg.TerminalStates = normalizedStates(cfg.TerminalStates)
-	if cfg.NoProgressLimit < 0 {
-		cfg.NoProgressLimit = 0
-	}
 	cfg.Gate = gate.Effective(cfg.Gate)
 	return cfg
 }

@@ -591,12 +591,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Generation: 7, SessionID: "native-session", Tokens: runningTokens, Mode: mode, DispatchSourceState: issue.State, DispatchTargetState: issue.State, StartedAt: now.Add(-time.Minute)}
 			if test.diffStats.TreeSHA != "" {
 				running := state.Running[issue.ID]
-				running.DispatchLoopStart = dispatchLoopStartRecord{Captured: true, Fingerprint: dispatchLoopFingerprint{WorkspaceTree: "dispatch-tree"}}
+				running.CompletionSourceStart = completionSourceStartRecord{Captured: true, Fingerprint: completionSourceFingerprint{WorkspaceTree: "dispatch-tree"}}
 				state.Running[issue.ID] = running
 			}
 			if test.startHead != "" {
 				running := state.Running[issue.ID]
-				running.DispatchLoopStart = dispatchLoopStartRecord{Captured: true, WorkspaceHeadAvailable: true, Fingerprint: dispatchLoopFingerprint{WorkspaceHead: test.startHead}}
+				running.CompletionSourceStart = completionSourceStartRecord{Captured: true, WorkspaceHeadAvailable: true, Fingerprint: completionSourceFingerprint{WorkspaceHead: test.startHead}}
 				state.Running[issue.ID] = running
 			}
 			if test.machineAttempt > 0 {
@@ -976,7 +976,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 				if test.wantParked {
 					park := state.Blocked[issue.ID]
-					if park.Reason != terminalAttemptRetryLimitCause || park.Recovery == nil || park.Recovery.Owner != blockedRecoveryOwnerOperator || !strings.Contains(park.Recovery.OperatorRemedy, head) {
+					if park.Reason != workAttemptErrorRunner || park.Recovery == nil || park.Recovery.Owner != blockedRecoveryOwnerOperator || !strings.Contains(park.Recovery.OperatorRemedy, head) {
 						t.Fatalf("unchanged Rework lost its durable operator hold: %+v", park)
 					}
 					if test.wantFindings && (!strings.Contains(park.Recovery.OperatorRemedy, "finding-1") || !strings.Contains(park.Recovery.OperatorRemedy, "finding-2") || strings.Contains(park.Recovery.OperatorRemedy, "old-finding")) {
@@ -1391,7 +1391,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				} {
 					current := state.Retry[issue.ID]
 					run := Running{Issue: current.Issue, Attempt: current.Attempt, Mode: mode, StartedAt: now,
-						DispatchLoopStart: dispatchLoopStartRecord{Captured: true, Fingerprint: dispatchLoopFingerprint{WorkspaceTree: beforeTree}}}
+						CompletionSourceStart: completionSourceStartRecord{Captured: true, Fingerprint: completionSourceFingerprint{WorkspaceTree: beforeTree}}}
 					event.CompletedAt = current.DueAt
 					event.Result.DiffStats = DiffStats{Status: "clean", HeadSHA: head, TreeSHA: step.tree}
 					state.Claimed[issue.ID] = Claimed{Issue: current.Issue}
@@ -1411,7 +1411,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				for _, attempt := range []int{2, 3, 50} {
 					current := state.Retry[issue.ID].Issue
 					run := Running{Issue: current, Attempt: attempt, Mode: mode, StartedAt: now,
-						DispatchLoopStart: dispatchLoopStartRecord{Captured: true, Fingerprint: dispatchLoopFingerprint{WorkspaceTree: "dispatch-tree"}}}
+						CompletionSourceStart: completionSourceStartRecord{Captured: true, Fingerprint: completionSourceFingerprint{WorkspaceTree: "dispatch-tree"}}}
 					event.Result.DiffStats = DiffStats{Status: "clean", HeadSHA: head, TreeSHA: fmt.Sprintf("changed-tree-%d", attempt)}
 					event.CompletedAt = state.Retry[issue.ID].DueAt
 					if !orch.completeNativeChangeRun(t.Context(), &state, event, run, FinalStateCompleted) {

@@ -156,7 +156,6 @@ type Dependencies struct {
 	Efficiency                efficiency.Recorder
 	LifecycleExporter         efficiency.LifecycleExporter
 	WorkAttempts              store.WorkAttemptStore
-	ProgressSpend             store.ProgressSpendStore
 	AgentResume               store.AgentResumeStore
 	ValidatorMemo             store.ValidatorMemoStore
 	StalenessWarnings         store.StalenessWarningStore
@@ -487,7 +486,6 @@ func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, e
 		Efficiency:         deps.Efficiency,
 		LifecycleExporter:  lifecycleExporter,
 		WorkAttempts:       deps.WorkAttempts,
-		ProgressSpend:      deps.ProgressSpend,
 		AgentResume:        deps.AgentResume,
 		ValidatorMemo:      deps.ValidatorMemo,
 		StalenessWarnings:  deps.StalenessWarnings,

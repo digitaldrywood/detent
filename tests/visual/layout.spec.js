@@ -485,7 +485,7 @@ test("boosted card explains its direct downstream count", async ({ page }) => {
   await expect(tooltip).toContainText("Prerequisite for 2 blocked issues");
 });
 
-test("board elevated blockers render one compact opt-in alert", async ({
+test("board keeps historical machine failures out of human-action alerts", async ({
   page,
 }, testInfo) => {
   await openScenario(page, {
@@ -497,13 +497,14 @@ test("board elevated blockers render one compact opt-in alert", async ({
   });
 
   const exceptions = page.locator("#board-exceptions [id^='exception-']");
-  await expect(exceptions).toHaveCount(1);
-  await expect(exceptions.first()).toContainText("Needs you");
-  await expect(exceptions.first()).not.toContainText("Needs review");
-  await expect(exceptions.first()).toContainText("after_create hook exited 2");
-  await expect(page.locator("#board-exceptions")).not.toContainText(
-    "Dependency waiting",
-  );
+  await expect(exceptions).toHaveCount(0);
+  const card = page.getByRole("button", {
+    name: /Workspace hook error needs operator input/,
+  });
+  await expect(card).toBeVisible();
+  await expect(card).not.toContainText("Needs you");
+  await card.click();
+  await expect(page.getByRole("dialog")).toContainText("after_create hook exited 2");
   await attachScreenshotEvidence(page, "board-blocked-alerts.png", testInfo);
 });
 

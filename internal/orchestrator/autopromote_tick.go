@@ -677,10 +677,7 @@ func (o *Orchestrator) recentAgentTerminalAttempts(
 	if o == nil || o.workAttempts == nil {
 		return nil, nil
 	}
-	limit := normalizeAutoPromoteConfig(o.cfg.AutoPromote).NoProgressLimit + 1
-	if limit < 20 {
-		limit = 20
-	}
+	limit := 20
 	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
 		ProjectID:  strings.TrimSpace(o.cfg.Project.ID),
 		IssueID:    strings.TrimSpace(issue.ID),

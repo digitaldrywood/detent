@@ -84,7 +84,7 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 		if got := implementProgressDiffStatsClean(diffStats); got != wantClean {
 			t.Fatalf("implementProgressDiffStatsClean(%#v) = %t, want %t", diffStats, got, wantClean)
 		}
-		source := Running{DispatchLoopStart: dispatchLoopStartRecord{LaneAvailable: true, Fingerprint: dispatchLoopFingerprint{PRNumber: 1, PRHeadSHA: leftHead}}, DiffStats: diffStats}
+		source := Running{CompletionSourceStart: completionSourceStartRecord{LaneAvailable: true, Fingerprint: completionSourceFingerprint{PRNumber: 1, PRHeadSHA: leftHead}}, DiffStats: diffStats}
 		kinds := implementProgressSourceKinds(source, connector.Issue{PullRequest: &connector.PullRequest{Number: 1, HeadSHA: rightHead}})
 		wantProgress := strings.TrimSpace(leftHead) != "" && strings.TrimSpace(rightHead) != "" && strings.TrimSpace(leftHead) != strings.TrimSpace(rightHead)
 		if (len(kinds) > 0) != wantProgress {

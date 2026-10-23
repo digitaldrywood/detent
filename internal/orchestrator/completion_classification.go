@@ -97,12 +97,12 @@ func (o *Orchestrator) implementCompletionRebaseOnly(ctx context.Context, runnin
 		return false
 	}
 	before, after := running.Issue.PullRequest, decision.Issue.PullRequest
-	baseline := running.DispatchLoopStart
+	baseline := running.CompletionSourceStart
 	if baseline.PRDiffFingerprint == "" && running.WorkAttemptID > 0 && o.workAttempts != nil {
 		attempt, err := o.workAttempts.WorkAttempt(ctx, running.WorkAttemptID)
 		if err == nil {
 			var metadata struct {
-				Start dispatchLoopStartRecord `json:"dispatch_loop_start"`
+				Start completionSourceStartRecord `json:"completion_source"`
 			}
 			if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) == nil {
 				baseline = metadata.Start

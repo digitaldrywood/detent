@@ -408,7 +408,6 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 	cfg.Tracker.Endpoint = github.URL + "/graphql"
 	cfg.Agent.MaxTurns = 1
 	cfg.Agent.MaxSessionDurationMS = 30000
-	cfg.Agent.NoProgressTimeoutMS = 30000
 	// The fixture commands use POSIX syntax on every host, including Git's
 	// sh on Windows. Native default-shell behavior is covered by shell tests.
 	cfg.Codex.Shell = "sh"

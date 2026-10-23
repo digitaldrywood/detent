@@ -67,11 +67,6 @@ const (
 	AgentBackendClaudeCode   = "claude_code"
 	DefaultKnowledgeMaxBytes = 64 * 1024
 
-	DefaultNoProgressTokenLimit              = 25_000_000
-	DefaultNoProgressSpendLimitUSD           = 3.0
-	DefaultLifetimeSessionLimit              = 120
-	DefaultLifetimeTokenLimit                = 750_000_000
-	DefaultLifetimeLimitOverrideLabel        = "allow-lifetime-limit"
 	DefaultFailureBreakerSameClassLimit      = 5
 	DefaultFailureBreakerWindowSeconds       = 3600
 	DefaultFailureBreakerCooldownSeconds     = 3600
@@ -81,7 +76,6 @@ const (
 	DefaultMergeWorkerMaxDurationMS          = 6 * 60 * 60 * 1000
 	DefaultMergeFairnessAgeSeconds           = 2 * 60 * 60
 	DefaultMaxSessionDurationMS              = 2 * 60 * 60 * 1000
-	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000 // Retained only to preserve existing policy IDs.
 
 	DefaultPollingIntervalMS               = 120000
 	DefaultRefreshFailureThreshold         = 3
@@ -97,7 +91,6 @@ const (
 	DefaultStalenessWebhookTimeoutMS       = 5000
 	DefaultStrandedActiveThresholdSeconds  = 10 * 60
 	DefaultDispatchStallThresholdSeconds   = 2 * 60 * 60
-	DefaultParkReviewThreshold             = 3
 	DefaultGitHubUnstartedSeconds          = 15 * 60
 	MaxStalenessRepeatedCount              = 500
 
@@ -159,7 +152,6 @@ type Config struct {
 	Workpad           Workpad              `yaml:"workpad,omitempty"`
 	Deliverable       Deliverable          `yaml:"deliverable,omitempty"`
 	Dependencies      Dependencies         `yaml:"dependencies,omitempty"`
-	Recovery          Recovery             `yaml:"recovery,omitempty"`
 	Worker            Worker               `yaml:"worker"`
 	Agent             Agent                `yaml:"agent"`
 	Agents            Agents               `yaml:"agents"`
@@ -184,25 +176,6 @@ type Config struct {
 
 type Review struct {
 	Human bool `yaml:"human"`
-}
-
-type Recovery struct {
-	TerminalAttemptRetryLimit *int `yaml:"terminal_attempt_retry_limit,omitempty"`
-}
-
-func (r Recovery) EffectiveTerminalAttemptRetryLimit() int {
-	if r.TerminalAttemptRetryLimit == nil {
-		return 3
-	}
-	return *r.TerminalAttemptRetryLimit
-}
-
-func (r Recovery) TerminalAttemptFailureLimit() int {
-	limit := r.EffectiveTerminalAttemptRetryLimit()
-	if limit == 0 {
-		return 1
-	}
-	return max(2, limit)
 }
 
 type Tracker struct {
@@ -264,11 +237,10 @@ type DependencyAutoUnblock struct {
 }
 
 type BlockedRecovery struct {
-	Enabled                bool     `yaml:"enabled"`
-	SourceStates           []string `yaml:"source_states"`
-	TargetState            string   `yaml:"target_state"`
-	ReasonCodes            []string `yaml:"reason_codes"`
-	BreakerCooldownSeconds int      `yaml:"breaker_cooldown_seconds"`
+	Enabled      bool     `yaml:"enabled"`
+	SourceStates []string `yaml:"source_states"`
+	TargetState  string   `yaml:"target_state"`
+	ReasonCodes  []string `yaml:"reason_codes"`
 }
 
 type Dependencies struct {
@@ -359,17 +331,11 @@ type Agent struct {
 	MaxTurns                     int                          `yaml:"max_turns"`
 	MaxTurnDurationMS            int                          `yaml:"max_turn_duration_ms"`
 	MaxSessionDurationMS         int                          `yaml:"max_session_duration_ms"`
-	NoProgressTimeoutMS          int                          `yaml:"no_progress_timeout_ms"` // Legacy input; ignored since the session no-progress timer was removed.
 	CheckpointIntervalMS         int                          `yaml:"checkpoint_interval_ms"`
 	MergeWorkerStartupTimeoutMS  int                          `yaml:"merge_worker_startup_timeout_ms"`
 	MergeWorkerMaxDurationMS     int                          `yaml:"merge_worker_max_duration_ms"`
 	MaxRetryBackoffMS            int                          `yaml:"max_retry_backoff_ms"`
 	OverloadRetryDelayMS         int                          `yaml:"overload_retry_delay_ms"`
-	NoProgressTokenLimit         int64                        `yaml:"no_progress_token_limit"`
-	NoProgressSpendLimitUSD      float64                      `yaml:"no_progress_spend_limit_usd"`
-	LifetimeSessionLimit         int64                        `yaml:"lifetime_session_limit"`
-	LifetimeTokenLimit           int64                        `yaml:"lifetime_token_limit"`
-	LifetimeLimitOverrideLabel   string                       `yaml:"lifetime_limit_override_label"`
 	FailureBreaker               FailureBreaker               `yaml:"failure_breaker"`
 	MaxSessionTokens             int64                        `yaml:"max_session_tokens"`
 	MaxSessionContextMultiplier  float64                      `yaml:"max_session_context_multiplier"`
@@ -570,11 +536,6 @@ type Budget struct {
 	perIssueMaxUSDConfigured bool
 }
 
-type USDBrakes struct {
-	BudgetCaps bool
-	NoProgress bool
-}
-
 func (b Budget) EffectiveBillingMode() string {
 	if strings.EqualFold(strings.TrimSpace(b.BillingMode), BillingModeMetered) {
 		return BillingModeMetered
@@ -590,14 +551,6 @@ func (b Budget) USDEnforcementEnabled() bool {
 	return b.Enabled && b.EffectiveBillingMode() == BillingModeMetered
 }
 
-func (c Config) USDBrakes() USDBrakes {
-	metered := c.Budget.EffectiveBillingMode() == BillingModeMetered
-	return USDBrakes{
-		BudgetCaps: metered && c.Budget.Enabled,
-		NoProgress: metered && c.Agent.NoProgressSpendLimitUSD > 0,
-	}
-}
-
 const nativeReleaseWarning = "release.enabled: release automation is unavailable for tracker.kind hub_native, including deliverable.github_pull_request: true; requires tracker.kind github"
 
 func (c Config) ValidationWarnings() []string {
@@ -608,9 +561,6 @@ func (c Config) ValidationWarnings() []string {
 	}
 	if c.Workspace.legacyCacheStrategy {
 		warnings = append(warnings, "workspace.cache_strategy is unknown and ignored; remove it before the next release, which will reject it")
-	}
-	if c.USDBrakes().NoProgress {
-		warnings = append(warnings, "budget.billing_mode: metered with agent.no_progress_spend_limit_usd > 0 arms a notional USD progress brake; budget.enabled: false does not disarm it; use budget.billing_mode: subscription to make USD enforcement inert")
 	}
 	if token := strings.TrimSpace(c.Worker.GitHubToken); token != "" {
 		if IsGitHubTokenSentinel(token) {
@@ -868,7 +818,6 @@ type Observability struct {
 	RenderIntervalMS               int                     `yaml:"render_interval_ms"`
 	StrandedActiveThresholdSeconds int                     `yaml:"stranded_active_threshold_seconds"`
 	DispatchStallThresholdSeconds  int                     `yaml:"dispatch_stall_threshold_seconds"`
-	ParkReviewThreshold            int                     `yaml:"park_review_threshold"`
 	Efficiency                     EfficiencyObservability `yaml:"efficiency,omitempty"`
 	OTLP                           OTLPObservability       `yaml:"otlp,omitempty"`
 	Staleness                      StalenessObservability  `yaml:"staleness,omitempty"`
@@ -1067,7 +1016,6 @@ func (c Claims) Validate(prefix string) []string {
 }
 
 const (
-	OperatorActionReturnRetiredParks      = "return_retired_parks"
 	OperatorActionClearClosedDependencies = "clear_closed_dependencies"
 	OperatorActionRestoreStuckMerging     = "restore_stuck_merging"
 	OperatorActionMergeWhenWedged         = "merge_when_wedged"
@@ -1082,11 +1030,11 @@ type Operator struct {
 }
 
 func DefaultOperatorActions() []string {
-	return []string{OperatorActionReturnRetiredParks, OperatorActionClearClosedDependencies, OperatorActionRestoreStuckMerging}
+	return []string{OperatorActionClearClosedDependencies, OperatorActionRestoreStuckMerging}
 }
 
 func OperatorActionKinds() []string {
-	return []string{OperatorActionReturnRetiredParks, OperatorActionClearClosedDependencies, OperatorActionRestoreStuckMerging, OperatorActionMergeWhenWedged}
+	return []string{OperatorActionClearClosedDependencies, OperatorActionRestoreStuckMerging, OperatorActionMergeWhenWedged}
 }
 
 func (o *Operator) Normalize() {
@@ -1194,23 +1142,16 @@ func (b *BlockedRecovery) Normalize() {
 	}
 	b.SourceStates = normalizeStateList(b.SourceStates)
 	b.TargetState = strings.TrimSpace(b.TargetState)
-	if b.BreakerCooldownSeconds == 0 {
-		b.BreakerCooldownSeconds = 24 * 60 * 60
-	}
 	for index := range b.ReasonCodes {
 		b.ReasonCodes[index] = normalizeBlockedRecoveryReasonCode(b.ReasonCodes[index])
 	}
 }
 
 func (b BlockedRecovery) Validate(prefix string) []string {
-	breakerCooldownSeconds := b.BreakerCooldownSeconds
 	b.ReasonCodes = slices.Clone(b.ReasonCodes)
 	b.Normalize()
 
 	var problems []string
-	if breakerCooldownSeconds < 0 {
-		problems = append(problems, prefix+".breaker_cooldown_seconds must be greater than or equal to 0")
-	}
 	validateStateList(prefix+".source_states", b.SourceStates, &problems)
 	if b.Enabled {
 		if len(b.SourceStates) == 0 {
@@ -1508,7 +1449,6 @@ func Default() Config {
 	budget := defaultBudget()
 
 	return Config{
-		Recovery: Recovery{TerminalAttemptRetryLimit: new(3)},
 		Tracker: Tracker{
 			HTTPMaxIdleConns:            100,
 			HTTPMaxIdleConnsPerHost:     32,
@@ -1532,10 +1472,9 @@ func Default() Config {
 				Readiness:    DependencyReadinessTerminalOrMerged,
 			},
 			BlockedRecovery: BlockedRecovery{
-				SourceStates:           []string{"Blocked"},
-				TargetState:            "Rework",
-				ReasonCodes:            []string{"merge_conflict", "stale_base", "missing_current_head_ci"},
-				BreakerCooldownSeconds: 24 * 60 * 60,
+				SourceStates: []string{"Blocked"},
+				TargetState:  "Rework",
+				ReasonCodes:  []string{"merge_conflict", "stale_base", "missing_current_head_ci"},
 			},
 			BlockerAutoPromote: BlockerAutoPromote{
 				BlockerStates: []string{"Backlog", "Blocked", "Human Review"},
@@ -1574,16 +1513,10 @@ func Default() Config {
 			RateWindowPacing:            DefaultRateWindowPacing(),
 			MaxTurns:                    20,
 			MaxSessionDurationMS:        DefaultMaxSessionDurationMS,
-			NoProgressTimeoutMS:         DefaultNoProgressTimeoutMS,
 			MergeWorkerStartupTimeoutMS: DefaultMergeWorkerStartupTimeoutMS,
 			MergeWorkerMaxDurationMS:    DefaultMergeWorkerMaxDurationMS,
 			MaxRetryBackoffMS:           300000,
 			OverloadRetryDelayMS:        DefaultOverloadRetryDelayMS,
-			NoProgressTokenLimit:        DefaultNoProgressTokenLimit,
-			NoProgressSpendLimitUSD:     DefaultNoProgressSpendLimitUSD,
-			LifetimeSessionLimit:        DefaultLifetimeSessionLimit,
-			LifetimeTokenLimit:          DefaultLifetimeTokenLimit,
-			LifetimeLimitOverrideLabel:  DefaultLifetimeLimitOverrideLabel,
 			StopRun:                     StopRun{TargetState: "Blocked"},
 			MergeFastPath: MergeFastPath{
 				Enabled:            true,
@@ -1645,7 +1578,6 @@ func Default() Config {
 			RenderIntervalMS:               16,
 			StrandedActiveThresholdSeconds: DefaultStrandedActiveThresholdSeconds,
 			DispatchStallThresholdSeconds:  DefaultDispatchStallThresholdSeconds,
-			ParkReviewThreshold:            DefaultParkReviewThreshold,
 			Efficiency: EfficiencyObservability{
 				AnomalyTokensMultiple:   3,
 				AnomalySessionsMultiple: 3,
@@ -1725,7 +1657,6 @@ func (c *Config) Validate() error {
 	c.validateTracker(&problems)
 	problems = append(problems, c.Dependencies.Validate("dependencies")...)
 	problems = append(problems, c.Operator.Validate("operator")...)
-	validateNonNegative("recovery.terminal_attempt_retry_limit", c.Recovery.EffectiveTerminalAttemptRetryLimit(), &problems)
 	validatePollingInterval(c.Polling.IntervalMS, &problems)
 	validatePositive("polling.refresh_failure_threshold", c.Polling.RefreshFailureThreshold, &problems)
 	c.Workspace.validate(&problems)
@@ -1978,7 +1909,6 @@ func (c *Config) normalize() {
 	}
 	c.Agent.DispatchPriorityByState = normalizeStateList(c.Agent.DispatchPriorityByState)
 	c.Agent.DispatchPriorityByLabel = normalizeLabels(c.Agent.DispatchPriorityByLabel)
-	c.Agent.LifetimeLimitOverrideLabel = normalizeLabel(c.Agent.LifetimeLimitOverrideLabel)
 	c.Agent.MaxSessionTokenOverrideLabel = normalizeLabel(c.Agent.MaxSessionTokenOverrideLabel)
 	c.Agent.MaxSessionTokenOverrideField = strings.TrimSpace(c.Agent.MaxSessionTokenOverrideField)
 	c.Agent.AutoPromote.OptoutLabel = normalizeLabel(c.Agent.AutoPromote.OptoutLabel)
@@ -2394,9 +2324,6 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	if a.MaxSessionDurationMS < 0 {
 		*problems = append(*problems, prefix+".max_session_duration_ms must be greater than or equal to 0")
 	}
-	if a.NoProgressTimeoutMS < 0 {
-		*problems = append(*problems, prefix+".no_progress_timeout_ms must be greater than or equal to 0")
-	}
 	if a.CheckpointIntervalMS < 0 {
 		*problems = append(*problems, prefix+".checkpoint_interval_ms must be greater than or equal to 0")
 	}
@@ -2409,18 +2336,6 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	}
 	if a.MaxSessionContextMultiplier < 0 {
 		*problems = append(*problems, prefix+".max_session_context_multiplier must be greater than or equal to 0")
-	}
-	if a.NoProgressTokenLimit < 0 {
-		*problems = append(*problems, prefix+".no_progress_token_limit must be greater than or equal to 0")
-	}
-	if a.NoProgressSpendLimitUSD < 0 {
-		*problems = append(*problems, prefix+".no_progress_spend_limit_usd must be greater than or equal to 0")
-	}
-	if a.LifetimeSessionLimit < 0 {
-		*problems = append(*problems, prefix+".lifetime_session_limit must be greater than or equal to 0")
-	}
-	if a.LifetimeTokenLimit < 0 {
-		*problems = append(*problems, prefix+".lifetime_token_limit must be greater than or equal to 0")
 	}
 	validatePositive(prefix+".failure_breaker.same_class_limit", a.FailureBreaker.SameClassLimit, problems)
 	validatePositive(prefix+".failure_breaker.window_seconds", a.FailureBreaker.WindowSeconds, problems)
@@ -3117,7 +3032,6 @@ func (o *Observability) validate(problems *[]string) {
 	validatePositive("observability.render_interval_ms", o.RenderIntervalMS, problems)
 	validatePositive("observability.stranded_active_threshold_seconds", o.StrandedActiveThresholdSeconds, problems)
 	validatePositive("observability.dispatch_stall_threshold_seconds", o.DispatchStallThresholdSeconds, problems)
-	validatePositive("observability.park_review_threshold", o.ParkReviewThreshold, problems)
 	validatePositiveFloat("observability.efficiency.anomaly_tokens_multiple", o.Efficiency.AnomalyTokensMultiple, problems)
 	validatePositiveFloat("observability.efficiency.anomaly_sessions_multiple", o.Efficiency.AnomalySessionsMultiple, problems)
 	validatePositiveFloat("observability.efficiency.anomaly_dwell_multiple", o.Efficiency.AnomalyDwellMultiple, problems)
@@ -3140,9 +3054,6 @@ func (o *Observability) validate(problems *[]string) {
 func (o *Observability) Normalize() {
 	if o == nil {
 		return
-	}
-	if o.ParkReviewThreshold == 0 {
-		o.ParkReviewThreshold = DefaultParkReviewThreshold
 	}
 	o.OTLP.Endpoint = strings.TrimSpace(o.OTLP.Endpoint)
 	o.OTLP.ServiceName = strings.TrimSpace(o.OTLP.ServiceName)

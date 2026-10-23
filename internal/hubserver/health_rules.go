@@ -146,20 +146,12 @@ type healthWait struct {
 	Active  bool
 }
 
-type healthLimit struct {
-	Item    string
-	Project string
-	Event   string
-	Active  bool
-}
-
 type healthSnapshot struct {
 	Runners             []healthRunner
 	Projects            []healthProject
 	Waits               []healthWait
 	Rates               []healthRateProject
 	BaselineUnavailable []healthBaselineUnavailable
-	Limits              []healthLimit
 }
 
 func newHealthFinding(signal, class, kind, id, summary, action string, projects []string, evidence healthEvidence) healthFinding {
@@ -283,10 +275,6 @@ func humanWaitFinding(now time.Time, w healthWait) (healthFinding, bool) {
 	return finding, w.Active && (w.Reason != "" || !w.Since.IsZero() && now.Sub(w.Since) > healthFlowWindow)
 }
 
-func lifetimeFinding(l healthLimit) (healthFinding, bool) {
-	return newHealthFinding("lifetime_limit_hit", "instance", "work_item", l.Item, "The work item has reached its lifetime execution limit.", "The runner operator reviews the linked work item and its lifetime accounting.", []string{l.Project}, healthEvidence{EventIDs: []string{l.Event}}), l.Active
-}
-
 func evaluateHealth(now time.Time, snapshot healthSnapshot) []healthFinding {
 	findings := []healthFinding{}
 	add := func(f healthFinding, active bool) {
@@ -305,9 +293,6 @@ func evaluateHealth(now time.Time, snapshot healthSnapshot) []healthFinding {
 	}
 	for _, w := range snapshot.Waits {
 		add(humanWaitFinding(now, w))
-	}
-	for _, l := range snapshot.Limits {
-		add(lifetimeFinding(l))
 	}
 	findings = append(findings, evaluateHealthRates(now, snapshot.Rates)...)
 	slices.SortFunc(findings, func(a, b healthFinding) int {

@@ -14,7 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/observability"
-	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
@@ -537,9 +536,6 @@ func ciUnavailableConditionDetail(condition telemetry.CICondition) string {
 	if condition.OldestQueueSeconds > 0 {
 		detail += " · oldest queued " + formatDuration(float64(condition.OldestQueueSeconds))
 	}
-	if condition.ParkedAttemptCount > 0 {
-		detail += " · " + boardCountLabel(condition.ParkedAttemptCount, "attempt parked", "attempts parked")
-	}
 	return detail
 }
 
@@ -775,13 +771,7 @@ func boardFailureBreakerAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
 func actionableBoardFailureBreakers(breakers []telemetry.FailureBreaker) []telemetry.FailureBreaker {
 	actionable := make([]telemetry.FailureBreaker, 0, len(breakers))
 	for _, breaker := range breakers {
-		parkedItems := 0
-		for _, item := range breaker.Items {
-			if item.Parked {
-				parkedItems++
-			}
-		}
-		if observability.FailureBreaker(breaker.EligibleCandidateCount, len(breaker.Items), parkedItems) != observability.ClassFault {
+		if observability.FailureBreaker(breaker.EligibleCandidateCount) != observability.ClassFault {
 			continue
 		}
 		actionable = append(actionable, breaker)
@@ -1089,8 +1079,6 @@ type boardCardView struct {
 	RuntimeComfyText  string
 	RuntimeDetail     string
 	RuntimeBadge      bool
-	ParkSummary       string
-	ParkDetail        string
 	ProgressSummary   string
 	ProgressDetail    string
 	ProgressKind      primitives.Kind
@@ -1417,8 +1405,6 @@ func stalenessExceptionTitle(warning telemetry.StalenessWarning) string {
 		return "Scheduler decision is repeating"
 	case "lane_reentry":
 		return "Lane re-entry is accumulating"
-	case "park_cause_stale":
-		return "Recorded park cause needs review"
 	default:
 		if warning.WaitingOnHuman {
 			return "Human gate needs a reminder"
@@ -1677,7 +1663,6 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		view.ExtraChip = true
 	}
 	view.BlockerSummary = card.BlockerSummary
-	view.ParkSummary, view.ParkDetail = boardCardParkSummary(card.ParkSummary)
 	view.ProgressSummary, view.ProgressDetail, view.ProgressKind = boardCardCompletionProgress(card.CompletionProgress)
 	view.CreationOrigin = card.CreationOrigin
 	if view.CreationOrigin == "" {
@@ -1756,28 +1741,9 @@ func boardCardStrandedAge(seconds int64) string {
 	}
 }
 
-func boardCardParkSummary(summary telemetry.ParkSummary) (string, string) {
-	if summary.AttemptCount == 0 && summary.ParkCount == 0 && summary.Tokens == (telemetry.ParkTokenTotals{}) {
-		return "", ""
-	}
-	line := formatInt(summary.AttemptCount) + " attempts · " + formatInt(summary.ParkCount) + " parks · tokens " +
-		fleetCompactTokens(summary.Tokens.InputTokens) + " input / " +
-		fleetCompactTokens(summary.Tokens.CachedInputTokens) + " cached / " +
-		fleetCompactTokens(summary.Tokens.OutputTokens) + " output / " +
-		fleetCompactTokens(summary.Tokens.ReasoningOutputTokens) + " reasoning"
-	details := []string{line}
-	for _, cause := range summary.Causes {
-		details = append(details, cause.Cause+": "+formatInt(cause.Count)+"; first "+cause.FirstAt.Format(time.RFC3339)+"; last "+cause.LastAt.Format(time.RFC3339))
-	}
-	return line, strings.Join(details, "\n")
-}
-
 func boardCardCompletionProgress(progress telemetry.CompletionProgress) (string, string, primitives.Kind) {
 	if strings.TrimSpace(progress.Outcome) == telemetry.CompletionProgressOutcomeNoProgress {
 		summary := "Last turn · no progress"
-		if progress.ConsecutiveNoProgress > 0 && progress.NoProgressLimit > 0 {
-			summary += " " + strconv.Itoa(progress.ConsecutiveNoProgress) + "/" + strconv.Itoa(progress.NoProgressLimit)
-		}
 		return summary, summary + "; reason: " + strings.TrimSpace(progress.Reason), primitives.KindWarn
 	}
 	labels := make([]string, 0, len(progress.Kinds))
@@ -1956,7 +1922,7 @@ func boardCardHoverTitle(card boardCardView) string {
 	parts := []string{card.MoveDisabledText, card.ExtraText, card.TrackerSummary, card.TrackerObservedAt,
 		cardFactDetail(card.Facts), card.AgeFooter, card.AgeFooterTitle, card.RuntimeSummary, card.RuntimeDetail, card.RuntimeComfyText, card.RuntimeCozyText,
 		card.MergeLaneStatus, card.MergeLaneDetail, card.OriginDetail, card.Work.SyncTitle,
-		card.BlockerSummary, card.ParkSummary, card.ParkDetail, card.ProgressSummary, card.ProgressDetail, card.AuthorDetail,
+		card.BlockerSummary, card.ProgressSummary, card.ProgressDetail, card.AuthorDetail,
 		strings.Join(card.Labels, ", "), card.Effort, card.Activity, card.PRStatus}
 	var details []string
 	for _, part := range parts {
@@ -2181,35 +2147,17 @@ func boardCardBlockedWaitingText(card projectKanbanCard) string {
 	return "waiting - project status"
 }
 
-// BlockedRecoveryWaiting reports whether a Blocked park has an automatic exit.
 func BlockedRecoveryWaiting(needsHumanAttention bool, source telemetry.BlockedSource, recoveryAction string, recoveryReason string, reason string) bool {
-	if needsHumanAttention {
+	if source == telemetry.BlockedSourceOperatorStop {
+		return !operatorStopTransitionFailed(telemetry.Blocked{Source: source, RecoveryReason: recoveryReason, Error: reason})
+	}
+	switch strings.ToLower(strings.TrimSpace(recoveryReason)) {
+	case "human_blocker":
 		return false
-	}
-	if strings.EqualFold(strings.TrimSpace(reason), staleness.ReasonBlockedCauseUnrecorded) ||
-		strings.EqualFold(strings.TrimSpace(reason), staleness.ReasonBlockedOutsideDetent) {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(recoveryAction)) {
-	case "hold":
-		return false
-	case "defer":
-		return true
-	}
-	if source == telemetry.BlockedSourceOperatorStop && !operatorStopTransitionFailed(telemetry.Blocked{Source: source, RecoveryReason: recoveryReason, Error: reason}) {
-		return true
-	}
-	if strings.EqualFold(strings.TrimSpace(recoveryReason), "human_blocker") {
-		return false
-	}
-	if strings.EqualFold(strings.TrimSpace(recoveryReason), "dependency_blocker") {
-		return true
-	}
-	switch telemetry.BlockedSource(strings.TrimSpace(string(source))) {
-	case telemetry.BlockedSourceDependency, telemetry.BlockedSourceProjectStatus:
-		return true
+	case "human_action", "permission_wait":
+		return !needsHumanAttention
 	default:
-		return boardBlockedLegacyWaitingReason(reason)
+		return source != "" || strings.TrimSpace(recoveryAction) != "" || strings.TrimSpace(recoveryReason) != "" || strings.TrimSpace(reason) != ""
 	}
 }
 
@@ -2227,17 +2175,6 @@ func boardBlockedDependencyWaiting(source telemetry.BlockedSource, recoveryReaso
 		return true
 	}
 	return len(blockers) > 0
-}
-
-func boardBlockedLegacyWaitingReason(reason string) bool {
-	reason = strings.TrimSpace(reason)
-	if strings.EqualFold(reason, "blocked by non-terminal dependency") {
-		return true
-	}
-	if strings.EqualFold(reason, "blocked by project status") {
-		return true
-	}
-	return strings.HasPrefix(strings.ToLower(reason), "depends on ")
 }
 
 func boardBlockedDetail(source telemetry.BlockedSource, recoveryAction string, recoveryReason string, recoveryRemedy string, reason string) string {

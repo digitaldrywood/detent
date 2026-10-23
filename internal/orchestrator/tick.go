@@ -217,15 +217,6 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		o.reconcileClosedCompletedIssueStatuses(ctx, state, transitions.issues, now),
 	)
 	if fetched.statusOK {
-		// Capacity recovery can establish an instance outage from tracker
-		// evidence, and blocker promotion can affect current dependencies.
-		// Preserve both admission authorities before dispatch.
-		timing.step("recover_backend_capacity_blocked_issues")
-		fetched = filterReconciledTickIssues(
-			state,
-			fetched,
-			o.recoverBackendCapacityBlockedIssues(ctx, state, fetched.status, now),
-		)
 		timing.step("auto_promote_blocker_issues")
 		fetched = filterReconciledTickIssues(
 			state,
@@ -318,11 +309,11 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	// but let unrelated approved work start before provider/history fanout.
 	timing.next("blocked_maintenance")
 	if fetched.statusOK {
-		timing.step("operator_return_retired_parks")
+		timing.step("recover_blocked_issues")
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
-			o.operatorReturnRetiredParks(ctx, state, fetched.status, now),
+			o.recoverBlockedIssues(ctx, state, fetched.status, now),
 		)
 		timing.step("operator_clear_closed_dependencies")
 		dependencyIssues := fetched.status

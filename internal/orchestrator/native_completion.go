@@ -220,7 +220,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 	}
 	unfinished := publicationRefused || (reviewChangesRequested || auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "")
-	start := running.DispatchLoopStart
+	start := running.CompletionSourceStart
 	headUnchanged := !changed || start.Captured && start.WorkspaceHeadAvailable && strings.TrimSpace(change.HeadSHA) != "" && strings.TrimSpace(start.Fingerprint.WorkspaceHead) == strings.TrimSpace(change.HeadSHA)
 	staleRework := unfinished && headUnchanged && !blocked && !clearedBlockers && !humanReview && normalizeState(issue.State) == normalizeState(cfg.ReworkState) &&
 		(reviewChangesRequested || auditRework || validatorRework || implementationRework)

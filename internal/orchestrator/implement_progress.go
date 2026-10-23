@@ -25,7 +25,6 @@ const (
 	implementOperationalCompletion     = "operational_completion"
 	implementDependencyDeferralReason  = "dependency_deferral"
 	implementMergedCompletionReason    = "merged_pull_request_completion"
-	noProgressLimitReason              = "no_progress_limit"
 	strandedUnpushedWorkReason         = "stranded_unpushed_work"
 	workpadBlockedUnactionedReason     = "workpad_blocked_unactioned"
 	workspaceHeadUnavailableReason     = "workspace_head_unavailable_for_unpushed_check"
@@ -43,13 +42,11 @@ type implementCompletionProgressDecision struct {
 	FailedChecksAdded      []string
 	FailedChecksRemoved    []string
 	WorkspaceDiffStats     DiffStats
-	ConsecutiveNoProgress  int
 	WorkpadStatus          string
 	SecurityAudit          securityaudit.Evaluation
 	HumanAction            string
 	TrackerState           string
 	ConsecutiveHumanAction int
-	NoProgressLimit        int
 	BlockReason            string
 	Block                  bool
 	Warning                string
@@ -70,12 +67,10 @@ type implementProgressRecord struct {
 	FailedChecksAdded      []string                          `json:"failed_checks_added,omitempty"`
 	FailedChecksRemoved    []string                          `json:"failed_checks_removed,omitempty"`
 	WorkspaceDiffStats     implementProgressDiffStats        `json:"workspace_diffstat"`
-	ConsecutiveNoProgress  int                               `json:"consecutive_no_progress,omitempty"`
 	WorkpadStatus          string                            `json:"workpad_status,omitempty"`
 	HumanAction            string                            `json:"human_action,omitempty"`
 	TrackerState           string                            `json:"tracker_state,omitempty"`
 	ConsecutiveHumanAction int                               `json:"consecutive_human_action,omitempty"`
-	NoProgressLimit        int                               `json:"no_progress_limit,omitempty"`
 	BlockReason            string                            `json:"block_reason,omitempty"`
 	Warning                string                            `json:"warning,omitempty"`
 	DependencyDeferral     bool                              `json:"dependency_deferral,omitempty"`
@@ -83,7 +78,7 @@ type implementProgressRecord struct {
 	RejectedBlockerRefs    []string                          `json:"rejected_blocker_refs,omitempty"`
 	ProgressKinds          []string                          `json:"progress_kinds,omitempty"`
 	CompletionKind         string                            `json:"completion_kind,omitempty"`
-	DispatchLoopStart      dispatchLoopStartRecord           `json:"-"`
+	CompletionSourceStart  completionSourceStartRecord       `json:"-"`
 }
 
 type implementProgressArtifactSnapshot struct {
@@ -224,7 +219,6 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 		if operationalCompletionCandidate && (running.DiffStats.UnpushedCommits > 0 || running.DiffStats.CommitsAhead > 0) {
 			decision.Outcome = store.WorkAttemptTerminalNoProgress
 			decision.Reason = strandedUnpushedWorkReason
-			decision.ConsecutiveNoProgress = 1 + consecutiveImplementStrandedWorkAttempts(attempts, autoPromoteReworkSignature{})
 
 			return decision
 		}
@@ -236,7 +230,6 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 			} else if stranded {
 				decision.Outcome = store.WorkAttemptTerminalNoProgress
 				decision.Reason = strandedUnpushedWorkReason
-				decision.ConsecutiveNoProgress = 1 + consecutiveImplementStrandedWorkAttempts(attempts, autoPromoteReworkSignature{})
 
 				return decision
 			}
@@ -259,21 +252,13 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 				decision.Reason = "workspace_diff_fingerprint_unavailable_without_pull_request"
 				return decision
 			}
-			matchingAttempts := consecutiveImplementSameDiffAttempts(
-				attempts,
-				running.DiffStats,
-				decision.WorkpadStatus,
-				decision.HumanAction,
-			)
 			decision.Outcome = store.WorkAttemptTerminalNoProgress
 			decision.Reason = "unchanged_workspace_diff_without_pull_request"
-			decision.ConsecutiveNoProgress = 1 + matchingAttempts
 
 			return decision
 		}
 		decision.Outcome = store.WorkAttemptTerminalNoProgress
 		decision.Reason = "completed_clean_diff_without_pull_request"
-		decision.ConsecutiveNoProgress = 1 + consecutiveImplementNoProgressAttempts(attempts, autoPromoteReworkSignature{})
 
 		return decision
 	}
@@ -352,7 +337,6 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 	if decision.WorkpadStatus == workpad.StatusBlocked {
 		decision.Outcome = store.WorkAttemptTerminalNoProgress
 		decision.Reason = "workpad_blocked"
-		decision.ConsecutiveNoProgress = 1 + consecutiveImplementNoProgressAttempts(attempts, signature)
 
 		if decision.HumanAction != "" {
 			decision.ConsecutiveHumanAction = 1 + consecutiveImplementBlockedHumanActionAttempts(attempts, decision.HumanAction, decision.TrackerState)
@@ -374,7 +358,6 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 	} else if stranded {
 		decision.Outcome = store.WorkAttemptTerminalNoProgress
 		decision.Reason = strandedUnpushedWorkReason
-		decision.ConsecutiveNoProgress = 1 + consecutiveImplementStrandedWorkAttempts(attempts, signature)
 
 		return decision
 	}
@@ -405,16 +388,13 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 			decision.Reason = "workspace_diff_fingerprint_unavailable"
 			return decision
 		}
-		matchingAttempts := consecutiveImplementSameDiffAttempts(attempts, decision.WorkspaceDiffStats, decision.WorkpadStatus, decision.HumanAction)
 		decision.Outcome = store.WorkAttemptTerminalNoProgress
 		decision.Reason = "unchanged_workspace_diff"
-		decision.ConsecutiveNoProgress = 1 + matchingAttempts
 		return decision
 	}
 
 	decision.Outcome = store.WorkAttemptTerminalNoProgress
 	decision.Reason = "unchanged_signature_clean_diff"
-	decision.ConsecutiveNoProgress = 1 + consecutiveImplementNoProgressAttempts(attempts, signature)
 
 	return decision
 }
@@ -492,7 +472,7 @@ func implementProgressArtifactSnapshotFromIssue(issue connector.Issue, workpadRe
 }
 
 func implementProgressSourceKinds(running Running, issue connector.Issue) []string {
-	baseline := running.DispatchLoopStart
+	baseline := running.CompletionSourceStart
 	before := strings.TrimSpace(baseline.Fingerprint.PRHeadSHA)
 	linked := baseline.Fingerprint.PRNumber > 0
 	if !baseline.LaneAvailable && !baseline.Captured {
@@ -538,10 +518,7 @@ func (o *Orchestrator) recentImplementCompletionAttempts(
 	if o == nil || o.workAttempts == nil {
 		return nil, nil
 	}
-	limit := normalizeAutoPromoteConfig(o.cfg.AutoPromote).NoProgressLimit + 1
-	if limit < 20 {
-		limit = 20
-	}
+	limit := 20
 	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
 		ProjectID:  strings.TrimSpace(o.cfg.Project.ID),
 		IssueID:    strings.TrimSpace(issue.ID),
@@ -673,53 +650,6 @@ func latestImplementProgressSignature(attempts []store.WorkAttempt) (autoPromote
 	return autoPromoteReworkSignature{}, false
 }
 
-func consecutiveImplementNoProgressAttempts(attempts []store.WorkAttempt, current autoPromoteReworkSignature) int {
-	count := 0
-	for _, attempt := range attempts {
-		record, ok := implementProgressRecordFromAttempt(attempt)
-		if !ok || !implementProgressRecordMatchesNoProgress(record, current) {
-			return count
-		}
-		count++
-	}
-	return count
-}
-
-func consecutiveImplementSameDiffAttempts(
-	attempts []store.WorkAttempt,
-	current DiffStats,
-	workpadStatus string,
-	humanAction string,
-) int {
-	count := 0
-	for _, attempt := range attempts {
-		record, ok := implementProgressRecordFromAttempt(attempt)
-		if !ok || !implementProgressDiffFingerprintEqual(record.WorkspaceDiffStats.Fingerprint, current.Fingerprint) ||
-			!implementProgressWorkpadEqual(record, workpadStatus, humanAction) {
-			return count
-		}
-		count++
-	}
-	return count
-}
-
-func consecutiveImplementStrandedWorkAttempts(attempts []store.WorkAttempt, current autoPromoteReworkSignature) int {
-	count := 0
-	for _, attempt := range attempts {
-		record, ok := implementProgressRecordFromAttempt(attempt)
-		if !ok || !implementProgressSignatureEqual(record.CurrentSignature.signature(), current) || !implementProgressRecordedStrandedEvidence(record.WorkspaceDiffStats) {
-			return count
-		}
-		count++
-	}
-	return count
-}
-
-func implementProgressWorkpadEqual(record implementProgressRecord, workpadStatus string, humanAction string) bool {
-	return strings.TrimSpace(record.WorkpadStatus) == strings.TrimSpace(workpadStatus) &&
-		strings.TrimSpace(record.HumanAction) == strings.TrimSpace(humanAction)
-}
-
 func consecutiveImplementBlockedHumanActionAttempts(attempts []store.WorkAttempt, humanAction string, trackerState string) int {
 	humanAction = strings.TrimSpace(humanAction)
 	trackerState = normalizeState(trackerState)
@@ -737,12 +667,6 @@ func consecutiveImplementBlockedHumanActionAttempts(attempts []store.WorkAttempt
 		count++
 	}
 	return count
-}
-
-func implementProgressDiffFingerprintEqual(left string, right string) bool {
-	left = strings.TrimSpace(left)
-	right = strings.TrimSpace(right)
-	return left != "" && left == right
 }
 
 func implementProgressRecordMatchesNoProgress(record implementProgressRecord, current autoPromoteReworkSignature) bool {
@@ -771,8 +695,8 @@ func implementProgressRecordFromAttempt(attempt store.WorkAttempt) (implementPro
 
 func implementProgressRecordFromAnyAttempt(attempt store.WorkAttempt) (implementProgressRecord, bool) {
 	var root struct {
-		CompletionProgress implementProgressRecord `json:"completion_progress"`
-		DispatchLoopStart  dispatchLoopStartRecord `json:"dispatch_loop_start"`
+		CompletionProgress    implementProgressRecord     `json:"completion_progress"`
+		CompletionSourceStart completionSourceStartRecord `json:"completion_source"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(attempt.WorkerMetadataJSON)), &root); err != nil {
 		return implementProgressRecord{}, false
@@ -781,7 +705,7 @@ func implementProgressRecordFromAnyAttempt(attempt store.WorkAttempt) (implement
 	if strings.TrimSpace(record.Outcome) == "" {
 		return implementProgressRecord{}, false
 	}
-	record.DispatchLoopStart = root.DispatchLoopStart
+	record.CompletionSourceStart = root.CompletionSourceStart
 	return record, true
 }
 
@@ -795,12 +719,10 @@ func implementCompletionProgressMetadata(decision implementCompletionProgressDec
 		FailedChecksAdded:      append([]string(nil), decision.FailedChecksAdded...),
 		FailedChecksRemoved:    append([]string(nil), decision.FailedChecksRemoved...),
 		WorkspaceDiffStats:     implementProgressDiffStatsFromDiffStats(decision.WorkspaceDiffStats),
-		ConsecutiveNoProgress:  decision.ConsecutiveNoProgress,
 		WorkpadStatus:          strings.TrimSpace(decision.WorkpadStatus),
 		HumanAction:            strings.TrimSpace(decision.HumanAction),
 		TrackerState:           strings.TrimSpace(decision.TrackerState),
 		ConsecutiveHumanAction: decision.ConsecutiveHumanAction,
-		NoProgressLimit:        decision.NoProgressLimit,
 		BlockReason:            strings.TrimSpace(decision.BlockReason),
 		Warning:                strings.TrimSpace(decision.Warning),
 		DependencyDeferral:     decision.DependencyDeferral,
@@ -850,10 +772,6 @@ func implementProgressDiffStatsFromDiffStats(diffStats DiffStats) implementProgr
 		Fingerprint:                    strings.TrimSpace(diffStats.Fingerprint),
 		Status:                         strings.TrimSpace(diffStats.Status),
 	}
-}
-
-func implementProgressRecordedStrandedEvidence(diffStats implementProgressDiffStats) bool {
-	return diffStats.UnpushedCommits > 0 || len(diffStats.TrackedPaths) > 0 || len(diffStats.UntrackedPaths) > 0 || len(diffStats.CommitsNotInPullRequest) > 0
 }
 
 func implementProgressSignatureUsable(signature autoPromoteReworkSignature) bool {

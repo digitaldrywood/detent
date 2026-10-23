@@ -190,8 +190,8 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			orch.scheduling = scheduling
 			running := state.Running[issue.ID].withProgress()
 			running.progress = nil
-			running.DispatchLoopStart.Captured = true
-			running.DispatchLoopStart.Fingerprint.WorkspaceTree = "before"
+			running.CompletionSourceStart.Captured = true
+			running.CompletionSourceStart.Fingerprint.WorkspaceTree = "before"
 			state.Running[issue.ID] = running
 			orch.handleRunResult(t.Context(), &state, completion)
 			wantAttempt, upper := 4, 80*time.Second

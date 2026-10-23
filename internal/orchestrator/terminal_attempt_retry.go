@@ -18,8 +18,6 @@ import (
 
 const (
 	terminalAttemptWithoutWorkProductReason = "terminal_attempt_without_work_product"
-	terminalAttemptRetryLimitCause          = "terminal_attempt_retry_limit"
-	workspacePreparationRetryLimitCause     = "workspace_preparation_retry_limit"
 )
 
 func (o *Orchestrator) demoteTerminalAttemptRetry(
@@ -109,9 +107,9 @@ func terminalAttemptFailureEvidence(running Running, terminalState store.WorkAtt
 
 func retryCycleCauseForAttempt(attempt telemetry.WorkAttempt) string {
 	if strings.TrimSpace(attempt.ErrorClass) == workAttemptErrorWorkspace {
-		return workspacePreparationRetryLimitCause
+		return workAttemptErrorWorkspace
 	}
-	return terminalAttemptRetryLimitCause
+	return workAttemptErrorRunner
 }
 
 func (o *Orchestrator) releaseTerminalAttemptClaim(ctx context.Context, state *State, issue connector.Issue, at time.Time) {

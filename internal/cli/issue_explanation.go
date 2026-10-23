@@ -33,10 +33,6 @@ func newIssueExplainer(snapshots *hub.Hub[telemetry.Snapshot], backend store.Sto
 	if reader, ok := backend.(store.ActivityStore); ok {
 		sessions = reader
 	}
-	var parks explain.ParkSummaryReader
-	if reader, ok := backend.(store.ParkSummaryStore); ok {
-		parks = reader
-	}
 	return explain.New(explain.Dependencies{
 		Snapshots:  issueExplanationSnapshotSource{snapshots: snapshots},
 		Workflow:   backend,
@@ -45,6 +41,5 @@ func newIssueExplainer(snapshots *hub.Hub[telemetry.Snapshot], backend store.Sto
 		Scheduler:  scheduler,
 		Sessions:   sessions,
 		Admission:  backend,
-		Parks:      parks,
 	})
 }

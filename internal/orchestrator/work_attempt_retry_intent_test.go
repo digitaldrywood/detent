@@ -66,8 +66,8 @@ func TestDurableRecoveryConvergesThroughPublicAPI(t *testing.T) {
 			}
 			parked := cloneIssue(issue)
 			parked.State = "In Progress"
-			host.recordLaneTransition(ctx, parked, "Blocked", now.Add(-time.Minute), repeatedFailureCircuitBreakerCause,
-				workflowLaneMetadata{BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Owner: "human", Cause: repeatedFailureCircuitBreakerCause, CauseFingerprint: "invalid-effort-generation"}})
+			host.recordLaneTransition(ctx, parked, "Blocked", now.Add(-time.Minute), "repeated_failure_circuit_breaker",
+				workflowLaneMetadata{BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Owner: "human", Cause: "repeated_failure_circuit_breaker", CauseFingerprint: "invalid-effort-generation"}})
 			request := WorkAttemptRecoveryRequest{AttemptID: attemptID, Action: WorkAttemptRecoveryRetryFresh}
 			if boundary != "request" {
 				receipt, err := host.workAttemptRecoveryReceipt(ctx, "detent", attemptID, now)
@@ -317,7 +317,7 @@ func TestRecoveryIntentDoesNotReviveHistoricalPark(t *testing.T) {
 			host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
 			issue := recoveryTestIssue()
 			now := time.Now().UTC().Truncate(time.Second)
-			oldPark := workflowLaneBlockedRecoveryMetadata{Owner: "human", Cause: repeatedFailureCircuitBreakerCause, CauseFingerprint: "same-fingerprint"}
+			oldPark := workflowLaneBlockedRecoveryMetadata{Owner: "human", Cause: "repeated_failure_circuit_breaker", CauseFingerprint: "same-fingerprint"}
 			intent := workAttemptRetryIntent{Schema: 1, IssueID: issue.ID, Request: WorkAttemptRecoveryRequest{AttemptID: 1, Action: WorkAttemptRecoveryRetryFresh}, Configuration: true, Park: &oldPark, ParkedAt: now.Add(-time.Hour), RecordedAt: now}
 			data, err := json.Marshal(intent)
 			if err != nil {

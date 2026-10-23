@@ -18,7 +18,7 @@ func TestProtectedCodexThreadIDs(t *testing.T) {
 		{name: "resume source", resumed: true, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := openParkTestStore(t, filepath.Join(t.TempDir(), "state.db"))
+			db := openHistoryTestStore(t, filepath.Join(t.TempDir(), "state.db"))
 			at := time.Now()
 			id, err := db.StartSession(t.Context(), SessionStart{StartedAt: at, ProviderThreadID: "thread"})
 			if err != nil {

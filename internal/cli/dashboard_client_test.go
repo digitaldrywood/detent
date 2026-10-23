@@ -20,7 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -198,69 +197,6 @@ func TestDashboardReadClientExplainIssueReferences(t *testing.T) {
 				t.Fatalf("result = %#v, want %#v", got, want)
 			}
 		})
-	}
-}
-
-func TestDashboardReadClientAcknowledgesIssueParks(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
-	t.Parallel()
-
-	want := dashboardExplanationFixture(false)
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost {
-			t.Errorf("method = %q, want POST", request.Method)
-		}
-		if got := request.URL.Query().Get("reference"); got != "#1643" {
-			t.Errorf("reference = %q", got)
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(writer).Encode(want)
-	}))
-	t.Cleanup(server.Close)
-
-	got, err := dashboardClientForServer(t, server, "").AcknowledgeIssueParks(t.Context(), "detent", "#1643")
-	if err != nil {
-		t.Fatalf("AcknowledgeIssueParks() error = %v", err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("result = %#v, want %#v", got, want)
-	}
-}
-
-func TestDashboardReadClientCreditsIssueProgress(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
-	t.Parallel()
-
-	want := store.IssueProgressCredit{
-		ProjectID:  "detent",
-		IssueID:    "issue-2015",
-		Identifier: "digitaldrywood/detent#2015",
-		CreditedAt: time.Date(2026, 8, 28, 12, 34, 56, 0, time.UTC),
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/projects/detent/issues/progress-credit" {
-			t.Errorf("request = %s %s", request.Method, request.URL.Path)
-		}
-		if got := request.URL.Query().Get("reference"); got != "#2015" {
-			t.Errorf("reference = %q", got)
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(writer).Encode(want)
-	}))
-	t.Cleanup(server.Close)
-
-	got, err := dashboardClientForServer(t, server, "").CreditIssueProgress(t.Context(), "detent", "#2015")
-	if err != nil {
-		t.Fatalf("CreditIssueProgress() error = %v", err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("result = %#v, want %#v", got, want)
 	}
 }
 
@@ -536,14 +472,8 @@ func dashboardExplanationFixture(degraded bool) explain.IssueExplanation {
 		Eligibility:  explain.Eligibility{State: explain.EligibilityEligible, Refusals: []explain.EligibilityDecision{}, Source: explain.SourceAvailable},
 		Sessions:     explain.Sessions{Source: explain.SourceAvailable},
 		RequiredGate: explain.Gate{State: explain.GatePending, SourceState: explain.SourceAvailable, Failures: []string{}, Running: []string{}},
-		ParkSummary: explain.ParkSummary{
-			AttemptCount: 7,
-			ParkCount:    3,
-			Causes:       []explain.ParkCauseSummary{{Cause: "no_progress_limit", Count: 1, FirstAt: time.Date(2026, 8, 12, 17, 34, 57, 0, time.UTC), LastAt: time.Date(2026, 8, 12, 17, 34, 57, 0, time.UTC)}},
-			Tokens:       explain.ParkTokenTotals{InputTokens: 5247029, CachedInputTokens: 4978944, OutputTokens: 25709, ReasoningOutputTokens: 10232},
-		},
-		Sources:  []explain.SourceStatus{{Name: "snapshot", State: explain.SourceLive}},
-		Evidence: []explain.EvidenceReference{},
+		Sources:      []explain.SourceStatus{{Name: "snapshot", State: explain.SourceLive}},
+		Evidence:     []explain.EvidenceReference{},
 	}
 }
 
@@ -563,7 +493,7 @@ func TestIssueCommandOutputAndScoping(t *testing.T) {
 	}{
 		{name: "project required", args: []string{"#1643", "--explain"}, wantError: "--project is required"},
 		{name: "operation required", args: []string{"#1643", "--project", "detent"}, wantError: "issue operation is required"},
-		{name: "pretty projection", args: []string{"#1643", "--explain", "--project", "detent"}, stdoutTTY: true, wantPretty: []string{"Issue: digitaldrywood/detent#1643", "Lane: In Progress", "Lane degraded: true", "Lifetime attempts: 7", "Lifetime parks: 3", "Lifetime tokens: input 5247029, cached input 4978944, output 25709, reasoning 10232", "Park cause no_progress_limit: 1", "Source snapshot: unavailable (not_published)"}},
+		{name: "pretty projection", args: []string{"#1643", "--explain", "--project", "detent"}, stdoutTTY: true, wantPretty: []string{"Issue: digitaldrywood/detent#1643", "Lane: In Progress", "Lane degraded: true", "Source snapshot: unavailable (not_published)"}},
 		{name: "JSON DTO", args: []string{"#1643", "--explain", "--project", "detent"}},
 	}
 
@@ -640,81 +570,6 @@ func TestIssueCommandOutputAndScoping(t *testing.T) {
 	}
 }
 
-func TestIssueCommandCreditsProgress(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
-	t.Parallel()
-
-	credit := store.IssueProgressCredit{
-		ProjectID:  "detent",
-		IssueID:    "issue-2015",
-		Identifier: "digitaldrywood/detent#2015",
-		CreditedAt: time.Date(2026, 8, 28, 12, 34, 56, 0, time.UTC),
-	}
-	tests := []struct {
-		name      string
-		stdoutTTY bool
-	}{
-		{name: "pretty", stdoutTTY: true},
-		{name: "json"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-				if request.Method != http.MethodPost || request.URL.Path != "/api/v1/projects/detent/issues/progress-credit" {
-					t.Errorf("request = %s %s", request.Method, request.URL.Path)
-				}
-				_ = json.NewEncoder(writer).Encode(credit)
-			}))
-			t.Cleanup(server.Close)
-			parsed, err := url.Parse(server.URL)
-			if err != nil {
-				t.Fatalf("Parse() error = %v", err)
-			}
-			port, err := strconv.Atoi(parsed.Port())
-			if err != nil {
-				t.Fatalf("Atoi() error = %v", err)
-			}
-			opts := dashboardClientOptions(server.Client().Do, "", "")
-			opts.read = func(string) (globalconfig.Config, error) {
-				return globalconfig.Config{Port: &port}, nil
-			}
-			configPath := "/config/global.yaml"
-			host := parsed.Hostname()
-			cmd := newIssueCommand(&configPath, &host, &port, opts)
-			cmd.SilenceUsage = true
-			cmd.SetContext(withCommandOutputOptions(t.Context(), commandOutputOptions{
-				lookupEnv: opts.lookupEnv,
-				stdoutTTY: func() bool { return tt.stdoutTTY },
-			}))
-			var stdout bytes.Buffer
-			cmd.SetOut(&stdout)
-			cmd.SetErr(&bytes.Buffer{})
-			cmd.SetArgs([]string{"#2015", "--credit-progress", "--project", "detent"})
-			if err := cmd.Execute(); err != nil {
-				t.Fatalf("Execute() error = %v", err)
-			}
-			if tt.stdoutTTY {
-				if want := "Credited accepted progress for digitaldrywood/detent#2015 at 2026-08-28T12:34:56Z"; !strings.Contains(stdout.String(), want) {
-					t.Fatalf("stdout = %q, want containing %q", stdout.String(), want)
-				}
-				return
-			}
-			var got store.IssueProgressCredit
-			if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
-				t.Fatalf("Unmarshal() error = %v; stdout = %s", err, stdout.String())
-			}
-			if !reflect.DeepEqual(got, credit) {
-				t.Fatalf("JSON result = %#v, want %#v", got, credit)
-			}
-		})
-	}
-}
-
 func TestIssueCommandHelpCoversScopingAndJSON(t *testing.T) {
 	t.Parallel()
 
@@ -726,7 +581,7 @@ func TestIssueCommandHelpCoversScopingAndJSON(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	for _, want := range []string{"detent issue '#1643' --explain --project detent", "--credit-progress", "--format json", "--project string", "running Detent service"} {
+	for _, want := range []string{"detent issue owner/repository#123 --explain --project example-project", "--project string", "running Detent service"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("help missing %q:\n%s", want, stdout.String())
 		}

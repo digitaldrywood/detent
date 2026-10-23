@@ -74,7 +74,7 @@ func TestHeartbeatWriteDeadlineRecovery(t *testing.T) {
 				o.heartbeatRunningWorkAttempts(ctx, &State{Running: map[string]Running{"worker": running}}, now)
 			case "progress":
 				p := newWorkerProgress(running, h, backend, 4096)
-				if err := p.observe(ctx, runner.UsageUpdate{DispatchLoopStart: &runner.DispatchLoopStartSnapshot{WorkspaceDiffAvailable: true}}); err != nil {
+				if err := p.observe(ctx, runner.UsageUpdate{CompletionSourceStart: &runner.CompletionSourceStartSnapshot{WorkspaceDiffAvailable: true}}); err != nil {
 					t.Error(err)
 				}
 			}

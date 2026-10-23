@@ -110,17 +110,10 @@ func TestDetectAdditionalPatterns(t *testing.T) {
 	}
 
 	patterns := findingPatterns(Detect(snapshot, DetectorOptions{}))
-	for _, want := range []string{PatternReceiptBaseline, PatternGateWaitTimeout, PatternInvalidWorkpadStatus, PatternSlowCapacityRecovery, PatternFallbackOrphanRecovery, PatternSpendSinceProgressTrip} {
+	for _, want := range []string{PatternReceiptBaseline, PatternGateWaitTimeout, PatternInvalidWorkpadStatus, PatternSlowCapacityRecovery, PatternFallbackOrphanRecovery} {
 		if !slices.Contains(patterns, want) {
 			t.Fatalf("patterns = %v, want %s", patterns, want)
 		}
-	}
-	spend := findingByPattern(t, Detect(snapshot, DetectorOptions{}), PatternSpendSinceProgressTrip)
-	if spend.Scope != ScopeProduct || spend.Severity != SeverityCritical || spend.TokenDelta != 125000 || !Qualifies(spend, 2, SeverityCritical) {
-		t.Fatalf("spend finding = %#v, want qualifying critical trip", spend)
-	}
-	if spend.Proposal == nil || spend.Proposal.Path != "agent.no_progress_token_limit" {
-		t.Fatalf("spend proposal = %#v, want token-limit review", spend.Proposal)
 	}
 	orphan := findingByPattern(t, Detect(snapshot, DetectorOptions{}), PatternFallbackOrphanRecovery)
 	if len(orphan.Occurrences) != 3 || !Qualifies(orphan, 2, SeverityCritical) {

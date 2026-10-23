@@ -1077,12 +1077,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 	}
 	disabledBudgetWorkflow := validDoctorWorkflow(sourceRoot)
 	disabledBudgetWorkflow.Budget = parsedDisabledBudget.Config.Budget
-	omittedBudgetWorkflow := validDoctorWorkflow(sourceRoot)
-	omittedBudgetWorkflow.Budget = workflowconfig.Default().Budget
 	disabledProgressWorkflow := validDoctorWorkflow(sourceRoot)
 	disabledProgressWorkflow.Budget.BillingMode = workflowconfig.BillingModeSubscription
-	disabledProgressWorkflow.Agent.NoProgressTokenLimit = 0
-	disabledProgressWorkflow.Agent.NoProgressSpendLimitUSD = 0
 
 	tests := []struct {
 		name       string
@@ -1122,17 +1118,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: disabledBudgetWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
-		},
-		{
-			name: "inherited spend breaker warns about billing ambiguity",
-			projects: []globalconfig.Project{
-				{ID: "alpha", Workflow: "WORKFLOW.md"},
-			},
-			workflow:   workflowconfig.Workflow{Config: omittedBudgetWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "subscription billing is the default", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "source repo missing",
@@ -1141,17 +1128,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow(sourceRoot)},
 			gitErr:     errors.New("not a git worktree"),
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
-		},
-		{
-			name: "all progress brakes disabled",
-			projects: []globalconfig.Project{
-				{ID: "alpha", Workflow: "WORKFLOW.md"},
-			},
-			workflow:   workflowconfig.Workflow{Config: disabledProgressWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "billing_mode=subscription", "no user-level Codex instruction files", "no effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
 		},
 		{
 			name: "workflow and source repo valid",
@@ -1159,8 +1137,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow(sourceRoot)},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "configuration footgun:", "no user-level Codex instruction files", "effective cross-session progress brake", "recovery.terminal_attempt_retry_limit=3", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 	}
 
@@ -1290,12 +1268,6 @@ func TestCheckDoctorBillingMode(t *testing.T) {
 			wantDetail: "subscription billing is the default",
 		},
 		{
-			name:       "undeclared spend breaker warns that USD is inert",
-			spendLimit: 3,
-			wantOK:     true,
-			wantDetail: "subscription billing is the default",
-		},
-		{
 			name: "undeclared mode without USD controls does not warn",
 		},
 		{
@@ -1312,13 +1284,6 @@ func TestCheckDoctorBillingMode(t *testing.T) {
 			wantDetail: "budget.enabled=true",
 		},
 		{
-			name:       "subscription spend breaker warns that enforcement is advisory",
-			budget:     workflowconfig.Budget{BillingMode: workflowconfig.BillingModeSubscription},
-			spendLimit: 3,
-			wantOK:     true,
-			wantDetail: "agent.no_progress_spend_limit_usd=3",
-		},
-		{
 			name:   "subscription without USD controls does not warn",
 			budget: workflowconfig.Budget{BillingMode: workflowconfig.BillingModeSubscription},
 		},
@@ -1330,7 +1295,6 @@ func TestCheckDoctorBillingMode(t *testing.T) {
 
 			got, ok := checkDoctorBillingMode("detent", workflowconfig.Config{
 				Budget: tt.budget,
-				Agent:  workflowconfig.Agent{NoProgressSpendLimitUSD: tt.spendLimit},
 			}, true)
 			if ok != tt.wantOK {
 				t.Fatalf("checkDoctorBillingMode() ok = %t, want %t: %#v", ok, tt.wantOK, got)
@@ -1339,7 +1303,7 @@ func TestCheckDoctorBillingMode(t *testing.T) {
 				t.Fatalf("checkDoctorBillingMode() = %#v, want warning containing %q", got, tt.wantDetail)
 			}
 			if tt.name == "declared metered mode warns for subscription auth" {
-				for _, want := range []string{"budget.per_day_max_usd", "budget.per_issue_max_usd", "agent.no_progress_spend_limit_usd", "budget.enabled=false does not disarm", "billing_mode: subscription"} {
+				for _, want := range []string{"budget.per_day_max_usd", "budget.per_issue_max_usd", "billing_mode: subscription"} {
 					if !strings.Contains(got.Detail+" "+got.Hint, want) {
 						t.Fatalf("checkDoctorBillingMode() = %#v, want %q", got, want)
 					}
@@ -1400,7 +1364,7 @@ func TestCheckDoctorMeteredBillingAuth(t *testing.T) {
 			name:       "flat subscription warns with every armed brake",
 			account:    codex.Account{Type: "chatgpt", PlanType: "plus"},
 			wantStatus: doctorWarn,
-			wantDetail: []string{"subscription auth", "backend codex-wrapper", `command "codex-wrapper app-server"`, "budget.per_day_max_usd", "budget.per_issue_max_usd", "agent.no_progress_spend_limit_usd", "budget.enabled=false does not disarm", "billing_mode: subscription"},
+			wantDetail: []string{"subscription auth", "backend codex-wrapper", `command "codex-wrapper app-server"`, "budget.per_day_max_usd", "budget.per_issue_max_usd", "billing_mode: subscription"},
 		},
 		{
 			name:       "API key preserves metered enforcement",
@@ -1483,65 +1447,6 @@ func TestCheckDoctorMeteredBillingAuthSkipsUnroutedCodexBackend(t *testing.T) {
 	}, doctorBinaryEnvironment{})
 	if called || len(checks) != 0 {
 		t.Fatalf("checkDoctorMeteredBillingAuth() = %#v, probe called=%t; want unrouted Codex backend skipped", checks, called)
-	}
-}
-
-func TestCheckDoctorProgressBrake(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		budget     workflowconfig.Budget
-		tokenLimit int64
-		spendLimit float64
-		wantStatus doctorStatus
-		wantDetail string
-	}{
-		{
-			name:       "subscription token brake remains effective",
-			budget:     workflowconfig.Budget{BillingMode: workflowconfig.BillingModeSubscription},
-			tokenLimit: 25_000_000,
-			spendLimit: 3,
-			wantStatus: doctorOK,
-			wantDetail: "tokens=25000000; USD=3 is inert",
-		},
-		{
-			name:       "metered reports both effective brakes",
-			budget:     workflowconfig.Budget{BillingMode: workflowconfig.BillingModeMetered},
-			tokenLimit: 25_000_000,
-			spendLimit: 3,
-			wantStatus: doctorOK,
-			wantDetail: "tokens=25000000, USD=3",
-		},
-		{
-			name:       "metered USD brake is effective by itself",
-			budget:     workflowconfig.Budget{BillingMode: workflowconfig.BillingModeMetered},
-			spendLimit: 3,
-			wantStatus: doctorOK,
-			wantDetail: "USD=3",
-		},
-		{
-			name:       "all brakes disabled warns",
-			budget:     workflowconfig.Budget{BillingMode: workflowconfig.BillingModeSubscription},
-			wantStatus: doctorWarn,
-			wantDetail: "no effective cross-session progress brake",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := checkDoctorProgressBrake("detent", workflowconfig.Config{
-				Budget: tt.budget,
-				Agent: workflowconfig.Agent{
-					NoProgressTokenLimit:    tt.tokenLimit,
-					NoProgressSpendLimitUSD: tt.spendLimit,
-				},
-			})
-			if got.Status != tt.wantStatus || !strings.Contains(got.Detail, tt.wantDetail) {
-				t.Fatalf("checkDoctorProgressBrake() = %#v, want %s containing %q", got, tt.wantStatus, tt.wantDetail)
-			}
-		})
 	}
 }
 
@@ -3356,7 +3261,6 @@ func TestDoctorWorkflowDetailReportsPinnedModelAndSessionGuard(t *testing.T) {
 	cfg.Agent.MaxSessionContextMultiplier = 4
 	cfg.Agent.MaxTurnDurationMS = 900000
 	cfg.Agent.MaxSessionDurationMS = 3600000
-	cfg.Agent.NoProgressTimeoutMS = 1800000
 	cfg.Agent.MergeWorkerMaxDurationMS = 7200000
 
 	got := doctorWorkflowDetail("WORKFLOW.md", globalconfig.Project{}, cfg)
@@ -5124,34 +5028,6 @@ func TestDoctorSQLitePingErrorWrapsPingAndCloseErrors(t *testing.T) {
 	}
 	if !errors.Is(err, closeErr) {
 		t.Fatalf("doctorSQLitePingError() error = %v, want close error in chain", err)
-	}
-}
-
-func TestDoctorWorkflowSpendBreakerDetail(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		billingMode string
-		tokenLimit  int64
-		spendLimit  float64
-		want        string
-	}{
-		{name: "disabled", want: "progress-breaker=no_progress_token_limit=disabled, no_progress_spend_limit_usd=disabled"},
-		{name: "subscription", billingMode: workflowconfig.BillingModeSubscription, tokenLimit: 25_000_000, spendLimit: 7.5, want: "progress-breaker=no_progress_token_limit=25000000, no_progress_spend_limit_usd=7.50 (inert)"},
-		{name: "metered", billingMode: workflowconfig.BillingModeMetered, tokenLimit: 25_000_000, spendLimit: 7.5, want: "progress-breaker=no_progress_token_limit=25000000, no_progress_spend_limit_usd=7.50"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := workflowconfig.Config{}
-			cfg.Budget.BillingMode = tt.billingMode
-			cfg.Agent.NoProgressTokenLimit = tt.tokenLimit
-			cfg.Agent.NoProgressSpendLimitUSD = tt.spendLimit
-			if got := doctorWorkflowSpendBreakerDetail(cfg); got != tt.want {
-				t.Fatalf("doctorWorkflowSpendBreakerDetail() = %q, want %q", got, tt.want)
-			}
-		})
 	}
 }
 

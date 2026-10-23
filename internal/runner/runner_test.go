@@ -418,7 +418,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[0].LastEvent != "workspace_create_started" || !usageUpdates[0].LastEventAt.Equal(startedAt) {
 		t.Fatalf("workspace usage update = %#v, want startup progress", usageUpdates[0])
 	}
-	if usageUpdates[1].DispatchLoopStart == nil || !usageUpdates[1].DispatchLoopStart.WorkspaceDiffAvailable {
+	if usageUpdates[1].CompletionSourceStart == nil || !usageUpdates[1].CompletionSourceStart.WorkspaceDiffAvailable {
 		t.Fatalf("dispatch loop start update = %#v, want available workspace baseline", usageUpdates[1])
 	}
 	usageUpdates = usageUpdates[2:]

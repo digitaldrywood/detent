@@ -39,7 +39,7 @@ func TestLocalIntakeCohortLifecycle(t *testing.T) {
 	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "local"}, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}, AutoPromote: AutoPromoteConfig{SourceState: "Human Review", ReworkState: "Rework"}})
 	orch := &Orchestrator{cfg: cfg, projectID: "local", connector: tracker, workAttempts: attempts}
 	state := newState(cfg)
-	id, ok := orch.startDurableWorkAttempt(t.Context(), &state, admitted, 1, now, "", runpkg.RunModeImplement, dispatchLoopStartRecord{})
+	id, ok := orch.startDurableWorkAttempt(t.Context(), &state, admitted, 1, now, "", runpkg.RunModeImplement, completionSourceStartRecord{})
 	if !ok {
 		t.Fatal("initial local admission failed")
 	}
@@ -109,7 +109,7 @@ func TestLocalIntakeCohortLifecycle(t *testing.T) {
 			if !orch.localIntakeAllows(&state, issue) {
 				t.Fatal("admitted continuation suppressed")
 			}
-			id, ok := orch.startDurableWorkAttempt(t.Context(), &state, issue, 1, now, "", turn.mode, dispatchLoopStartRecord{})
+			id, ok := orch.startDurableWorkAttempt(t.Context(), &state, issue, 1, now, "", turn.mode, completionSourceStartRecord{})
 			if !ok {
 				t.Fatal("continuation attempt failed")
 			}

@@ -48,7 +48,7 @@ func TestPreTurnFailuresRetryWithoutPausingProject(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, BlockedRecovery: BlockedRecoveryConfig{BreakerCooldown: time.Minute}})
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, BlockedRecovery: BlockedRecoveryConfig{}})
 			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{}}
 			o := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: &terminalRetryWorkAttemptStore{}}
 			state := newState(cfg)

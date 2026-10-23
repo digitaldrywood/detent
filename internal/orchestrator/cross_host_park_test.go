@@ -17,12 +17,12 @@ func TestDerivedHoldDispatchEquivalence(t *testing.T) {
 		want                       int
 	}{
 		{name: "ready", want: 2},
-		{name: "instant failure", cause: instantFailureCircuitBreakerCause, want: 2},
-		{name: "repeated failure", cause: repeatedFailureCircuitBreakerCause, want: 2},
-		{name: "spend history", cause: spendProgressReason, want: 2},
-		{name: "dispatch loop", cause: dispatchLoopDetectedReason, want: 2},
+		{name: "instant failure", cause: "instant_failure_circuit_breaker", want: 2},
+		{name: "repeated failure", cause: "repeated_failure_circuit_breaker", want: 2},
+		{name: "spend history", cause: "spend_since_progress_circuit_breaker", want: 2},
+		{name: "dispatch loop", cause: "dispatch_loop_detected", want: 2},
 		{name: "token ceiling", cause: "token_ceiling_circuit_breaker", want: 2},
-		{name: "workspace retries", cause: workspacePreparationRetryLimitCause, want: 2},
+		{name: "workspace retries", cause: workAttemptErrorWorkspace, want: 2},
 		{name: "current dependency", unresolved: true},
 		{name: "current human action", human: true},
 		{name: "operator stop", stopped: true},
@@ -43,7 +43,7 @@ func TestDerivedHoldDispatchEquivalence(t *testing.T) {
 						issue.WorkpadSignal = &workpad.Signal{Status: workpad.StatusBlocked, HumanAction: "Approve scope"}
 					}
 					if !wipe {
-						issue.BlockerReason = firstNonBlank(test.cause, noProgressLimitReason)
+						issue.BlockerReason = firstNonBlank(test.cause, "no_progress_limit")
 						issue.Comments = []connector.IssueComment{{AuthorAuthorized: true, Body: "## Detent recovery park\n\n```detent-park\ninvalid\n```"}}
 					}
 					issues = append(issues, issue)
@@ -55,7 +55,7 @@ func TestDerivedHoldDispatchEquivalence(t *testing.T) {
 				state := newState(host.cfg)
 				for _, issue := range issues {
 					if !wipe {
-						recordDependencyLaneEntry(t, metrics, issue, "Blocked", firstNonBlank(test.cause, noProgressLimitReason), now, workflowLaneMetadata{BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Owner: "orchestrator", Predicate: "managed", Cause: firstNonBlank(test.cause, noProgressLimitReason)}})
+						recordDependencyLaneEntry(t, metrics, issue, "Blocked", firstNonBlank(test.cause, "no_progress_limit"), now, workflowLaneMetadata{BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Owner: "orchestrator", Predicate: "managed", Cause: firstNonBlank(test.cause, "no_progress_limit")}})
 					}
 					if test.stopped {
 						state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceOperatorStop}

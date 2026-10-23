@@ -344,7 +344,7 @@ func (o *Orchestrator) startDurableWorkAttempt(
 	now time.Time,
 	workerHost string,
 	runMode string,
-	dispatchLoopStart dispatchLoopStartRecord,
+	completionSourceStart completionSourceStartRecord,
 ) (int64, bool) {
 	if o == nil || o.workAttempts == nil {
 		return 0, true
@@ -353,8 +353,8 @@ func (o *Orchestrator) startDurableWorkAttempt(
 	if o.cfg.Policy.ID != "" {
 		metadata["policy"] = o.cfg.Policy
 	}
-	if strings.TrimSpace(runMode) == runpkg.RunModeImplement || dispatchLoopStart.PRDiffFingerprint != "" {
-		metadata[dispatchLoopStartMetadataKey] = dispatchLoopStart
+	if strings.TrimSpace(runMode) == runpkg.RunModeImplement || completionSourceStart.PRDiffFingerprint != "" {
+		metadata[completionSourceStartMetadataKey] = completionSourceStart
 	}
 	start := store.WorkAttemptStart{
 		ProjectID:              strings.TrimSpace(o.cfg.Project.ID),
@@ -1135,8 +1135,8 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 	if running.Cancellation != nil {
 		out["cancellation"] = running.Cancellation
 	}
-	if strings.TrimSpace(running.Mode) == runpkg.RunModeImplement || running.DispatchLoopStart.PRDiffFingerprint != "" {
-		out[dispatchLoopStartMetadataKey] = running.DispatchLoopStart
+	if strings.TrimSpace(running.Mode) == runpkg.RunModeImplement || running.CompletionSourceStart.PRDiffFingerprint != "" {
+		out[completionSourceStartMetadataKey] = running.CompletionSourceStart
 	}
 	for key, value := range metadata {
 		key = strings.TrimSpace(key)

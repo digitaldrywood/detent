@@ -724,7 +724,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			attempts := &implementProgressAttemptStore{history: tt.history, completionErr: tt.completionErr}
 			cfg := normalizeConfig(Config{
 				Project:                scheduler.ProjectCandidate{ID: "detent"},
-				AutoPromote:            AutoPromoteConfig{NoProgressLimit: tt.noProgressLimit},
+				AutoPromote:            AutoPromoteConfig{},
 				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
 				ObservedStates:         []string{"Human Review", "Blocked"},
 				TerminalStates:         []string{"Done", "Cancelled"},
@@ -746,7 +746,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 				StartedAt:        base.Add(-time.Minute),
 				DiffStats:        tt.diffStats,
 				DispatchProgress: implementProgressArtifactSnapshotFromIssue(tt.runningIssue, true),
-				DispatchLoopStart: dispatchLoopTestStart(
+				CompletionSourceStart: completionSourceTestStart(
 					tt.runningIssue.State,
 					autoPromoteReworkSignatureFromIssue(tt.runningIssue, AutoPromoteSummaryFromIssue(tt.runningIssue)),
 					implementProgressDiffStatsFromDiffStats(dispatchStartDiff),
@@ -785,9 +785,6 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			}
 			if record.CurrentHeadSHA != tt.wantCurrentHead {
 				t.Fatalf("current head = %q, want %q", record.CurrentHeadSHA, tt.wantCurrentHead)
-			}
-			if record.ConsecutiveNoProgress != tt.wantConsecutive {
-				t.Fatalf("consecutive no progress = %d, want %d", record.ConsecutiveNoProgress, tt.wantConsecutive)
 			}
 			if record.BlockReason != tt.wantBlockReason {
 				t.Fatalf("block reason = %q, want %q", record.BlockReason, tt.wantBlockReason)
@@ -952,7 +949,7 @@ func TestHandleRunResultResetsRetryAfterProgress(t *testing.T) {
 			attempts := &implementProgressAttemptStore{history: tt.history, historyErr: tt.historyErr}
 			cfg := normalizeConfig(Config{
 				Project:                scheduler.ProjectCandidate{ID: "detent"},
-				AutoPromote:            AutoPromoteConfig{NoProgressLimit: 3},
+				AutoPromote:            AutoPromoteConfig{},
 				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
 				ObservedStates:         []string{"Human Review", "Blocked"},
 				TerminalStates:         []string{"Done", "Cancelled"},
@@ -972,15 +969,15 @@ func TestHandleRunResultResetsRetryAfterProgress(t *testing.T) {
 			state := newState(cfg)
 			for _, attempt := range []int{3, 4} {
 				state.Running[tt.issue.ID] = Running{
-					Issue:             tt.issue,
-					Attempt:           attempt,
-					WorkAttemptID:     42,
-					Mode:              runpkg.RunModeImplement,
-					StartedAt:         base.Add(-time.Minute),
-					DiffStats:         diff,
-					DispatchProgress:  implementProgressArtifactSnapshotFromIssue(tt.issue, true),
-					CompletionLane:    tt.completionLane,
-					DispatchLoopStart: dispatchLoopStartRecord{Captured: tt.beforeTree != "", Fingerprint: dispatchLoopFingerprint{WorkspaceTree: tt.beforeTree}},
+					Issue:                 tt.issue,
+					Attempt:               attempt,
+					WorkAttemptID:         42,
+					Mode:                  runpkg.RunModeImplement,
+					StartedAt:             base.Add(-time.Minute),
+					DiffStats:             diff,
+					DispatchProgress:      implementProgressArtifactSnapshotFromIssue(tt.issue, true),
+					CompletionLane:        tt.completionLane,
+					CompletionSourceStart: completionSourceStartRecord{Captured: tt.beforeTree != "", Fingerprint: completionSourceFingerprint{WorkspaceTree: tt.beforeTree}},
 				}
 				state.Claimed[tt.issue.ID] = Claimed{Issue: tt.issue, ClaimedAt: base.Add(-time.Minute)}
 
@@ -1091,8 +1088,7 @@ func TestHandleRunResultAcceptsMergedNoDiffCompletion(t *testing.T) {
 	cfg := normalizeConfig(Config{
 		Project: scheduler.ProjectCandidate{ID: "detent"},
 		AutoPromote: AutoPromoteConfig{
-			Enabled:         true,
-			NoProgressLimit: 3,
+			Enabled: true,
 		},
 		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
 		ObservedStates:         []string{"Human Review", "Blocked"},
@@ -1137,9 +1133,6 @@ func TestHandleRunResultAcceptsMergedNoDiffCompletion(t *testing.T) {
 	record := implementProgressRecordFromCompletion(t, completion)
 	if record.Reason != implementMergedCompletionReason {
 		t.Fatalf("Reason = %q, want %s", record.Reason, implementMergedCompletionReason)
-	}
-	if record.ConsecutiveNoProgress != 0 {
-		t.Fatalf("ConsecutiveNoProgress = %d, want 0", record.ConsecutiveNoProgress)
 	}
 	if _, blocked := state.Blocked[runningIssue.ID]; blocked {
 		t.Fatalf("Blocked[%q] present after accepted merged completion", runningIssue.ID)
@@ -1230,11 +1223,10 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 			cfg := normalizeConfig(Config{
 				Project: scheduler.ProjectCandidate{ID: "detent"},
 				AutoPromote: AutoPromoteConfig{
-					Enabled:         true,
-					QuietDuration:   0,
-					GateWaitState:   autoPromoteGateWaitSource,
-					NoProgressLimit: 1,
-					Gate:            gate.Config{Kind: gate.KindCommand},
+					Enabled:       true,
+					QuietDuration: 0,
+					GateWaitState: autoPromoteGateWaitSource,
+					Gate:          gate.Config{Kind: gate.KindCommand},
 				},
 				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
 				ObservedStates:         []string{"Human Review", "Blocked"},
@@ -1446,10 +1438,9 @@ func TestHandleRunResultHoldsCompletedReworkGateWait(t *testing.T) {
 			cfg := normalizeConfig(Config{
 				Project: scheduler.ProjectCandidate{ID: "detent"},
 				AutoPromote: AutoPromoteConfig{
-					Enabled:         true,
-					GateWaitState:   autoPromoteGateWaitSource,
-					NoProgressLimit: 3,
-					Gate:            gate.Config{Kind: gate.KindCommand},
+					Enabled:       true,
+					GateWaitState: autoPromoteGateWaitSource,
+					Gate:          gate.Config{Kind: gate.KindCommand},
 				},
 				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
 				ObservedStates:         []string{"Human Review", "Blocked"},
@@ -1538,7 +1529,7 @@ func TestHandleRunResultCommentsOnObservedLaneTransition(t *testing.T) {
 	attempts := &implementProgressAttemptStore{}
 	cfg := normalizeConfig(Config{
 		Project:                scheduler.ProjectCandidate{ID: "detent"},
-		AutoPromote:            AutoPromoteConfig{NoProgressLimit: 3},
+		AutoPromote:            AutoPromoteConfig{},
 		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
 		ObservedStates:         []string{"Human Review", "Blocked"},
 		TerminalStates:         []string{"Done", "Cancelled"},
@@ -1610,7 +1601,6 @@ func TestHandleRunResultReappliesCITriggerAfterWorkerPush(t *testing.T) {
 	cfg := normalizeConfig(Config{
 		Project: scheduler.ProjectCandidate{ID: "detent"},
 		AutoPromote: AutoPromoteConfig{
-			NoProgressLimit: 3,
 			Gate: gate.Config{
 				Kind:                         gate.KindCommand,
 				RequiredStatusChecks:         []string{"Test", "Checks"},
@@ -1688,7 +1678,6 @@ func TestHandleRunResultRefreshesNewPullRequestBeforeCITrigger(t *testing.T) {
 	cfg := normalizeConfig(Config{
 		Project: scheduler.ProjectCandidate{ID: "detent"},
 		AutoPromote: AutoPromoteConfig{
-			NoProgressLimit: 3,
 			Gate: gate.Config{
 				Kind:                         gate.KindCommand,
 				RequiredStatusChecks:         []string{"Test", "Checks"},
@@ -1772,7 +1761,6 @@ func TestHandleRunResultRefreshesStalePullRequestAfterHydrationFailure(t *testin
 	cfg := normalizeConfig(Config{
 		Project: scheduler.ProjectCandidate{ID: "detent"},
 		AutoPromote: AutoPromoteConfig{
-			NoProgressLimit: 3,
 			Gate: gate.Config{
 				Kind:                         gate.KindCommand,
 				RequiredStatusChecks:         []string{"Test", "Checks"},
@@ -2040,7 +2028,7 @@ func TestEvaluateImplementCompletionProgressFailureBoundaries(t *testing.T) {
 	noPR := implementProgressIssueWithoutPR()
 	var logs bytes.Buffer
 	orch := &Orchestrator{
-		cfg:          Config{AutoPromote: AutoPromoteConfig{NoProgressLimit: 3}},
+		cfg:          Config{AutoPromote: AutoPromoteConfig{}},
 		connector:    &implementProgressConnector{},
 		workAttempts: &implementProgressAttemptStore{historyErr: errors.New("history unavailable")},
 		logger:       slog.New(slog.NewTextHandler(&logs, nil)),
@@ -2089,7 +2077,7 @@ func TestImplementProgressSourceKinds(t *testing.T) {
 		{name: "missing tree baseline", afterTree: "tree"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			running := Running{DispatchLoopStart: dispatchLoopStartRecord{Fingerprint: dispatchLoopFingerprint{PRHeadSHA: tt.before, WorkspaceTree: tt.beforeTree}, LaneAvailable: true}, DiffStats: DiffStats{TreeSHA: tt.afterTree}}
+			running := Running{CompletionSourceStart: completionSourceStartRecord{Fingerprint: completionSourceFingerprint{PRHeadSHA: tt.before, WorkspaceTree: tt.beforeTree}, LaneAvailable: true}, DiffStats: DiffStats{TreeSHA: tt.afterTree}}
 			issue := connector.Issue{PullRequest: &connector.PullRequest{HeadSHA: tt.after}}
 			got := implementProgressSourceKinds(running, issue)
 			if tt.want == "" && len(got) != 0 || tt.want != "" && (len(got) != 1 || got[0] != tt.want) {
@@ -2257,8 +2245,8 @@ func implementProgressDependencyDeferralHistoryAttempt(id int64, identifier stri
 		TerminalState: store.WorkAttemptTerminalSuccess,
 		CompletedAt:   time.Date(2026, 8, 8, 18, int(id), 0, 0, time.UTC),
 		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
-			"run_mode":                   runpkg.RunModeImplement,
-			dispatchLoopStartMetadataKey: dispatchLoopTestStart("In Progress", autoPromoteReworkSignature{}, diff),
+			"run_mode":                       runpkg.RunModeImplement,
+			completionSourceStartMetadataKey: completionSourceTestStart("In Progress", autoPromoteReworkSignature{}, diff),
 			implementProgressMetadataKey: implementProgressRecord{
 				Outcome:            string(store.WorkAttemptTerminalSuccess),
 				Reason:             implementDependencyDeferralReason,
@@ -2276,7 +2264,7 @@ func implementProgressNoPRHistoryAttempt(id int64, diffStats DiffStats, humanAct
 	if strings.TrimSpace(humanAction) != "" {
 		workpadStatus = "blocked"
 	}
-	diffStats = dispatchLoopTestRunnerDiff(diffStats)
+	diffStats = completionSourceTestRunnerDiff(diffStats)
 	lane := strings.TrimSpace(trackerState)
 	if lane == "" {
 		lane = "In Progress"
@@ -2293,8 +2281,8 @@ func implementProgressNoPRHistoryAttempt(id int64, diffStats DiffStats, humanAct
 		TerminalState: store.WorkAttemptTerminalSuccess,
 		CompletedAt:   time.Date(2026, 7, 11, 12, int(id), 0, 0, time.UTC),
 		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
-			"run_mode":                   runpkg.RunModeImplement,
-			dispatchLoopStartMetadataKey: dispatchLoopTestStart(lane, autoPromoteReworkSignature{}, implementProgressDiffStatsFromDiffStats(diffStats)),
+			"run_mode":                       runpkg.RunModeImplement,
+			completionSourceStartMetadataKey: completionSourceTestStart(lane, autoPromoteReworkSignature{}, implementProgressDiffStatsFromDiffStats(diffStats)),
 			implementProgressMetadataKey: map[string]any{
 				"outcome":            string(store.WorkAttemptTerminalSuccess),
 				"reason":             "workspace_diff_present_without_pull_request",
@@ -2341,8 +2329,8 @@ func implementProgressMetadataJSON(signature autoPromoteReworkSignature, termina
 
 func implementProgressMetadataJSONWithDiff(signature autoPromoteReworkSignature, diff implementProgressDiffStats, terminal store.WorkAttemptTerminalState) string {
 	return marshalWorkAttemptJSON(map[string]any{
-		"run_mode":                   runpkg.RunModeImplement,
-		dispatchLoopStartMetadataKey: dispatchLoopTestStart("In Progress", signature, diff),
+		"run_mode":                       runpkg.RunModeImplement,
+		completionSourceStartMetadataKey: completionSourceTestStart("In Progress", signature, diff),
 		implementProgressMetadataKey: implementProgressRecord{
 			Outcome:            string(terminal),
 			Reason:             "test_history",

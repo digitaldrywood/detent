@@ -1006,10 +1006,10 @@ type UsageUpdate struct {
 	RSSBytes              uint64
 	RSSCeilingBytes       uint64
 	RSSObservedAt         time.Time
-	DispatchLoopStart     *DispatchLoopStartSnapshot
+	CompletionSourceStart *CompletionSourceStartSnapshot
 }
 
-type DispatchLoopStartSnapshot struct {
+type CompletionSourceStartSnapshot struct {
 	WorkspaceDiffAvailable bool
 	WorkspaceHeadAvailable bool
 	DiffStats              DiffStats
@@ -1060,15 +1060,9 @@ type TokenTotals struct {
 }
 
 type PriorAttempt struct {
-	Source                  string
-	Reason                  string
-	ExplainBeforeRetry      bool
-	MissingSignal           string
-	ObservedTokens          int64
-	NoProgressTokenLimit    int64
-	ObservedSpendUSD        float64
-	NoProgressSpendLimitUSD float64
-	Validator               gate.ValidatorResult
+	Source    string
+	Reason    string
+	Validator gate.ValidatorResult
 }
 
 type FakeRunner struct{}

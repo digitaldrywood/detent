@@ -45,7 +45,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			name:                "all refs resolved after no progress limit",
 			wantTransition:      true,
 			blockers:            []connector.Issue{resolved},
-			stickyReason:        noProgressLimitReason,
+			stickyReason:        "no_progress_limit",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantWorkpadLookup:   true,
@@ -54,7 +54,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			name:                "resolved ref also has native relation",
 			wantTransition:      true,
 			blockers:            []connector.Issue{resolved},
-			stickyReason:        noProgressLimitReason,
+			stickyReason:        "no_progress_limit",
 			nativeDuplicate:     true,
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
@@ -64,7 +64,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			name:                "resolved refs after spend breaker",
 			wantTransition:      true,
 			blockers:            []connector.Issue{resolved},
-			stickyReason:        spendProgressReason,
+			stickyReason:        "spend_since_progress_circuit_breaker",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantWorkpadLookup:   true,
@@ -73,7 +73,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			name:                "resolved refs after repeated failure breaker",
 			wantTransition:      true,
 			blockers:            []connector.Issue{resolved},
-			stickyReason:        repeatedFailureCircuitBreakerCause,
+			stickyReason:        "repeated_failure_circuit_breaker",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantWorkpadLookup:   true,
@@ -81,7 +81,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 		{
 			name:                "one of several refs unresolved",
 			blockers:            []connector.Issue{resolved, unresolved},
-			stickyReason:        noProgressLimitReason,
+			stickyReason:        "no_progress_limit",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantHoldReason:      "workpad_blocker",
@@ -92,7 +92,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			name:                "resolved refs with human action",
 			blockers:            []connector.Issue{resolved},
 			humanAction:         "install production credentials",
-			stickyReason:        noProgressLimitReason,
+			stickyReason:        "no_progress_limit",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantHoldReason:      "human_action",
@@ -102,7 +102,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			name:                "resolved refs with opt-out label",
 			blockers:            []connector.Issue{resolved},
 			labels:              []string{"requires-human-review"},
-			stickyReason:        noProgressLimitReason,
+			stickyReason:        "no_progress_limit",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantHoldReason:      "human_action",
@@ -112,7 +112,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			name:                "invalid signal",
 			blockers:            []connector.Issue{resolved},
 			invalid:             &workpad.Invalid{Message: "invalid status block"},
-			stickyReason:        noProgressLimitReason,
+			stickyReason:        "no_progress_limit",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantHoldReason:      "invalid_workpad_signal",
@@ -164,14 +164,14 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 		{
 			name:                "stale blocker list from prior blocked entry",
 			blockers:            []connector.Issue{resolved},
-			stickyReason:        noProgressLimitReason,
+			stickyReason:        "no_progress_limit",
 			workpadUpdatedAt:    parkedAt.Add(-2 * time.Hour),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 		},
 		{
 			name:                  "stale non-dependency blocker from prior blocked entry",
 			recordedNonDependency: true,
-			stickyReason:          noProgressLimitReason,
+			stickyReason:          "no_progress_limit",
 			workpadUpdatedAt:      parkedAt.Add(-2 * time.Hour),
 			previousLaneStarted:   parkedAt.Add(-time.Hour),
 		},
@@ -760,7 +760,7 @@ func TestDependencyAutoUnblockIgnoresHistoricalParkAfterTrackerTimestampLag(t *t
 		workpadStatus string
 	}{
 		{name: "rework limit", reason: "rework_limit", mutationAt: parkedAt.Add(3 * time.Second)},
-		{name: "spend without pull request evidence", reason: spendProgressReason, mutationAt: parkedAt.Add(3 * time.Second)},
+		{name: "spend without pull request evidence", reason: "spend_since_progress_circuit_breaker", mutationAt: parkedAt.Add(3 * time.Second)},
 		{name: "in progress workpad owns blocked cause", reason: "rework_limit", workpadStatus: workpad.StatusInProgress},
 	}
 
@@ -867,7 +867,7 @@ func TestTickIgnoresReasonWithoutHumanIntent(t *testing.T) {
 		Identifier: "digitaldrywood/video-studio#59",
 		Source:     connector.BlockedRefSourceNative,
 	}}
-	waiting.BlockerReason = noProgressLimitReason
+	waiting.BlockerReason = "no_progress_limit"
 	parkedAt := time.Date(2026, 7, 29, 17, 0, 0, 0, time.UTC)
 	waiting.StageUpdatedAt = &parkedAt
 	blocker := dependencyAutoUnblockIssue("issue-closed-blocker", "Done")
@@ -892,7 +892,7 @@ func TestTickIgnoresReasonWithoutHumanIntent(t *testing.T) {
 		IssueURL:     waiting.URL,
 		PhaseType:    store.WorkflowPhaseTypeLane,
 		PhaseName:    "Blocked",
-		Reason:       noProgressLimitReason,
+		Reason:       "no_progress_limit",
 		Status:       "entered",
 		StartedAt:    parkedAt.Add(-time.Hour),
 		MetadataJSON: "{}",

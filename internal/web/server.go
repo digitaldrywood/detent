@@ -520,8 +520,6 @@ func (s *Server) registerRoutes() {
 	s.echo.DELETE("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideClear, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/projects/:project_id/work-attempts/:attempt_id", s.apiWorkAttemptReceipt, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/projects/:project_id/issues/explanation", s.apiIssueExplanation, apiReadAuth, apiReadScope, s.operatorAuthority)
-	s.echo.POST("/api/v1/projects/:project_id/issues/explanation", s.apiIssueParkAcknowledgement, apiMutateAuth, apiProjectWriteScope)
-	s.echo.POST("/api/v1/projects/:project_id/issues/progress-credit", s.apiIssueProgressCredit, apiMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/staleness-warnings/acknowledge", s.apiStalenessWarningsAcknowledgement, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/staleness-warnings/:warning_id/acknowledge", s.apiStalenessWarningAcknowledgement, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/work-attempts/:attempt_id/recovery", s.apiWorkAttemptRecovery, apiDashboardMutateAuth, apiProjectWriteScope)
@@ -1224,7 +1222,6 @@ func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 	updateStatus := telemetry.Update{}
 	backendOutages := []telemetry.BackendOutage{}
 	failureBreakers := []telemetry.FailureBreaker{}
-	dispatchLoops := []telemetry.DispatchLoop{}
 	trackerUnavailable := []telemetry.TrackerCondition{}
 	forgeUnavailable := []telemetry.ForgeCondition{}
 	ciUnavailable := []telemetry.CICondition{}
@@ -1274,7 +1271,6 @@ func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 			updateStatus = snapshot.Update
 			backendOutages = append(backendOutages, snapshot.BackendOutages...)
 			failureBreakers = append(failureBreakers, snapshot.FailureBreakers...)
-			dispatchLoops = append(dispatchLoops, snapshot.DispatchLoops...)
 			trackerUnavailable = append(trackerUnavailable, snapshot.TrackerUnavailable...)
 			forgeUnavailable = append(forgeUnavailable, snapshot.ForgeUnavailable...)
 			ciUnavailable = append(ciUnavailable, snapshot.CIUnavailable...)
@@ -1324,13 +1320,13 @@ func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 	faultDispatchStalls := faultDispatchStatuses(dispatchStalls)
 	actionableBreakers := faultFailureBreakers(failureBreakers)
 	actionableOutages := faultBackendOutages(backendOutages)
-	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, faultDispatchStalls, trackerUnavailable, forgeUnavailable, ciUnavailable, actionableBreakers, dispatchLoops, actionableOutages, tickLiveness, refreshFailures)
+	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, faultDispatchStalls, trackerUnavailable, forgeUnavailable, ciUnavailable, actionableBreakers, actionableOutages, tickLiveness, refreshFailures)
 	var budgets []healthBudget
 	var workflows []healthWorkflowSource
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
-		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(faultDispatchStalls) > 0 || len(actionableBreakers) > 0 || len(dispatchLoops) > 0 || len(actionableOutages) > 0 || len(laneSignalWarnings) > 0 || len(faultStalenessWarnings(stalenessWarnings)) > 0 || len(strandedActiveIssues) > 0 || len(cleanupFaults) > 0 || strings.TrimSpace(updateStatus.LastError) != "" || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || ioPressure.CapacityConstrained || ioPressure.DispatchHeld || cpuPressure.CapacityConstrained || cpuPressure.DispatchHeld || orphanedProcesses.Count > 0 {
+		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(faultDispatchStalls) > 0 || len(actionableBreakers) > 0 || len(actionableOutages) > 0 || len(laneSignalWarnings) > 0 || len(faultStalenessWarnings(stalenessWarnings)) > 0 || len(strandedActiveIssues) > 0 || len(cleanupFaults) > 0 || strings.TrimSpace(updateStatus.LastError) != "" || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || ioPressure.CapacityConstrained || ioPressure.DispatchHeld || cpuPressure.CapacityConstrained || cpuPressure.DispatchHeld || orphanedProcesses.Count > 0 {
 			status = "needs_attention"
 		}
 		if pauseExitNeedsAttention(projectHealth) {
@@ -1369,7 +1365,6 @@ func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 		CIUnavailable:          ciUnavailable,
 		BackendOutages:         backendOutages,
 		FailureBreakers:        failureBreakers,
-		DispatchLoops:          dispatchLoops,
 		LaneSignalWarnings:     laneSignalWarnings,
 		StalenessWarnings:      stalenessWarnings,
 		StrandedIssues:         strandedActiveIssues,
@@ -1405,13 +1400,7 @@ func faultDispatchStatuses(statuses []telemetry.DispatchStatus) []telemetry.Disp
 func faultFailureBreakers(breakers []telemetry.FailureBreaker) []telemetry.FailureBreaker {
 	faults := make([]telemetry.FailureBreaker, 0, len(breakers))
 	for _, breaker := range breakers {
-		parkedItems := 0
-		for _, item := range breaker.Items {
-			if item.Parked {
-				parkedItems++
-			}
-		}
-		if observability.FailureBreaker(breaker.EligibleCandidateCount, len(breaker.Items), parkedItems) == observability.ClassFault {
+		if observability.FailureBreaker(breaker.EligibleCandidateCount) == observability.ClassFault {
 			faults = append(faults, breaker)
 		}
 	}
@@ -1502,8 +1491,8 @@ func (s *Server) orphanedAgentProcesses(ctx context.Context, snapshot telemetry.
 	return summary, nil
 }
 
-func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, trackerUnavailable []telemetry.TrackerCondition, forgeUnavailable []telemetry.ForgeCondition, ciUnavailable []telemetry.CICondition, breakers []telemetry.FailureBreaker, loops []telemetry.DispatchLoop, outages []telemetry.BackendOutage, tickLiveness []telemetry.TickLiveness, refreshFailures []telemetry.RefreshFailure) []healthProject {
-	needsAttention := make(map[string]struct{}, len(stalls)+len(trackerUnavailable)+len(forgeUnavailable)+len(ciUnavailable)+len(breakers)+len(loops)+len(outages)+len(tickLiveness))
+func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, trackerUnavailable []telemetry.TrackerCondition, forgeUnavailable []telemetry.ForgeCondition, ciUnavailable []telemetry.CICondition, breakers []telemetry.FailureBreaker, outages []telemetry.BackendOutage, tickLiveness []telemetry.TickLiveness, refreshFailures []telemetry.RefreshFailure) []healthProject {
+	needsAttention := make(map[string]struct{}, len(stalls)+len(trackerUnavailable)+len(forgeUnavailable)+len(ciUnavailable)+len(breakers)+len(outages)+len(tickLiveness))
 	refreshByProject := make(map[string]telemetry.RefreshFailure, len(refreshFailures))
 	for _, stall := range stalls {
 		if projectID := strings.TrimSpace(stall.ProjectID); projectID != "" && stall.Stalled {
@@ -1527,11 +1516,6 @@ func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telem
 	}
 	for _, breaker := range breakers {
 		if projectID := strings.TrimSpace(breaker.ProjectID); projectID != "" {
-			needsAttention[projectID] = struct{}{}
-		}
-	}
-	for _, loop := range loops {
-		if projectID := strings.TrimSpace(loop.ProjectID); projectID != "" {
 			needsAttention[projectID] = struct{}{}
 		}
 	}
@@ -1876,7 +1860,6 @@ type healthResponse struct {
 	CIUnavailable          []telemetry.CICondition          `json:"ci_unavailable,omitempty"`
 	BackendOutages         []telemetry.BackendOutage        `json:"backend_outages,omitempty"`
 	FailureBreakers        []telemetry.FailureBreaker       `json:"failure_breakers,omitempty"`
-	DispatchLoops          []telemetry.DispatchLoop         `json:"dispatch_loops,omitempty"`
 	LaneSignalWarnings     []telemetry.LaneSignalWarning    `json:"lane_signal_warnings,omitempty"`
 	StalenessWarnings      []telemetry.StalenessWarning     `json:"staleness_warnings,omitempty"`
 	StrandedIssues         []telemetry.StrandedIssue        `json:"stranded_active_issues,omitempty"`

@@ -20,7 +20,6 @@ const (
 	RemoveItem             = "remove_item"
 	ListComments           = "list_comments"
 	WorkflowTimeline       = "workflow_timeline"
-	AcknowledgeParks       = "acknowledge_parks"
 	DisposeSecurityFinding = "dispose_security_finding"
 	OrderItem              = "order_item"
 	SetQueuePriority       = "set_queue_priority"
@@ -79,7 +78,6 @@ func WorkCatalog() []Definition {
 		commandDefinition(ArchiveItem, "Archive native work using current authority. Active work must be finished or stopped.", selector+revision, `"identifier","expected_revision"`, true),
 		commandDefinition(RestoreItem, "Restore archived native work with an expected revision.", selector+revision, `"identifier","expected_revision"`, false),
 		commandDefinition(RemoveItem, "Remove board membership through the orchestrator using current authority; tracker capability restrictions remain.", selector, `"identifier"`, true),
-		commandDefinition(AcknowledgeParks, "Acknowledge the item's existing park summary through the dashboard command.", selector, `"identifier"`, false),
 		commandDefinition(DisposeSecurityFinding, "Record a false-positive disposition for the exact trusted security finding using current authority.", selector+`,"repository":{"type":"string","minLength":1,"maxLength":256},"pull_request":{"type":"integer","minimum":1},"base_sha":{"type":"string","minLength":1,"maxLength":256},"head_sha":{"type":"string","minLength":1,"maxLength":256},"finding_id":{"type":"string","minLength":1,"maxLength":256},"evidence":{"type":"string","minLength":1,"maxLength":4096}`, `"identifier","repository","pull_request","base_sha","head_sha","finding_id","evidence"`, true),
 		commandDefinition(VerifyFix, "Answer whether the fix works for a native issue awaiting verification: verification pending on an issue in Done that a person filed. Only the filer, or a member and above, may answer; a Reporter answers only on issues they filed. result verified records who verified and when, and the issue stays in Done. result not_fixed requires comment describing what is still broken (embed upload_attachment references to attach screenshots), adds it to the issue, and moves the issue from Done back to Todo through the workflow owner. Optional expected_revision refuses a stale answer.", selector+revision+`,"result":{"type":"string","enum":["verified","not_fixed"]},"comment":{"type":"string","minLength":1,"maxLength":32768}`, `"identifier","result"`, false),
 		commandDefinition(OrderItem, "Set queue ordering where the deployment dashboard offers it.", selector+`,"queue_scope":{"type":"string","minLength":1,"maxLength":256},"state":{"type":"string","minLength":1,"maxLength":256},"rank":{"type":"string","minLength":1,"maxLength":256}`, `"identifier","queue_scope","state","rank"`, false),

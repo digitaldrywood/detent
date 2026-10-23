@@ -867,40 +867,6 @@ func TestBuildPromptUsesPriorAttemptWithoutRepoNotes(t *testing.T) {
 	}
 }
 
-func TestBuildPromptRequiresExplanationBeforeBreakerRetry(t *testing.T) {
-	t.Parallel()
-
-	prompt, err := BuildPrompt(config.Workflow{Prompt: "Base prompt"}, connector.Issue{
-		Identifier: "gopherguides/gopher-ai#214",
-	}, PromptOptions{PriorAttempt: PriorAttempt{
-		Source:                  "spend_since_progress_circuit_breaker",
-		Reason:                  "spend exceeded the configured limit without an accepted state change",
-		ExplainBeforeRetry:      true,
-		MissingSignal:           "lane transition or pull request signature change",
-		ObservedTokens:          25_000_000,
-		NoProgressTokenLimit:    20_000_000,
-		ObservedSpendUSD:        6.75,
-		NoProgressSpendLimitUSD: 5,
-	}})
-	if err != nil {
-		t.Fatalf("BuildPrompt() error = %v", err)
-	}
-	for _, want := range []string{
-		"### Explain before retry",
-		"first tool action must update the Workpad",
-		"Do not use any other tools",
-		"lane transition or pull request signature change",
-		"tokens since last accepted state change: 25000000",
-		"configured token limit: 20000000",
-		"notional USD since last accepted state change: $6.75",
-		"configured notional USD limit: $5.00",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("prompt missing %q:\n%s", want, prompt)
-		}
-	}
-}
-
 func TestBuildPromptRendersGateAssignsAndInstructions(t *testing.T) {
 	t.Parallel()
 

@@ -729,7 +729,6 @@ const (
 	dispatchSkipBlocked                   = scheduler.DecisionReasonBlocked
 	dispatchSkipBudgetCooldown            = scheduler.DecisionReasonBudgetCooldown
 	dispatchSkipBudgetHardHold            = scheduler.DecisionReasonBudgetHardHold
-	dispatchSkipLifetimeLimit             = scheduler.DecisionReasonLifetimeLimit
 	dispatchSkipLocalSlotUnavailable      = scheduler.DecisionReasonLocalSlotUnavailable
 	dispatchSkipWorkerHostUnavailable     = scheduler.DecisionReasonWorkerHostUnavailable
 	dispatchSkipProjectCapacityFull       = scheduler.DecisionReasonProjectCapacityFull
@@ -879,19 +878,12 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 		return dispatchableDecision{reason: dispatchSkipAlreadyClaimed}
 	}
 	if blocked, ok := state.Blocked[issue.ID]; ok {
-		reason := strings.ToLower(strings.TrimSpace(blocked.Reason))
-		if reason == lifetimeLimitReason || strings.HasPrefix(reason, lifetimeLimitBlockedReasonPrefix) {
-			return dispatchableDecision{reason: dispatchSkipLifetimeLimit}
-		}
 		detail := strings.TrimSpace(blocked.Reason)
 		if recovery := strings.TrimSpace(blocked.RecoveryReason); recovery != "" {
 			if detail != "" {
 				detail += ": "
 			}
 			detail += recovery
-		}
-		if reason == terminalAttemptRetryLimitCause && strings.TrimSpace(blocked.RecoveryRemedy) != "" {
-			detail += ": " + strings.TrimSpace(blocked.RecoveryRemedy)
 		}
 		return dispatchableDecision{reason: dispatchSkipBlocked, detail: detail}
 	}

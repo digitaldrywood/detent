@@ -38,8 +38,8 @@ func newWorkerProgress(running Running, heartbeat store.WorkAttemptHeartbeat, at
 }
 
 func applyRunningUsage(running Running, update runpkg.UsageUpdate) Running {
-	if update.DispatchLoopStart != nil {
-		running.DispatchLoopStart = dispatchLoopStartRecordFromSnapshot(running, *update.DispatchLoopStart)
+	if update.CompletionSourceStart != nil {
+		running.CompletionSourceStart = completionSourceStartRecordFromSnapshot(running, *update.CompletionSourceStart)
 	}
 
 	if update.SessionID != "" {
@@ -127,7 +127,7 @@ func (r Running) withProgress() Running {
 		RSSCeilingBytes:       p.RSSCeilingBytes,
 		Tokens:                p.Tokens,
 	})
-	r.DispatchLoopStart = p.DispatchLoopStart
+	r.CompletionSourceStart = p.CompletionSourceStart
 	return r
 }
 
@@ -141,10 +141,10 @@ func (p *workerProgress) observe(ctx context.Context, update runpkg.UsageUpdate)
 		return context.Canceled
 	}
 	running := applyRunningUsage(*p.latest.Load(), update)
-	persistCheckpoint := update.DispatchLoopStart != nil && p.attempts != nil && running.WorkAttemptID > 0
+	persistCheckpoint := update.CompletionSourceStart != nil && p.attempts != nil && running.WorkAttemptID > 0
 	visible := running
 	if persistCheckpoint {
-		visible.DispatchLoopStart.Persisted = false
+		visible.CompletionSourceStart.Persisted = false
 	}
 	p.latest.Store(&visible)
 	if !persistCheckpoint {

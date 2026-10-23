@@ -62,9 +62,10 @@ existing files remain untouched.
 This page is the reference for machine and project configuration. Each
 project's workflow continues to come from its repository.
 
-`agent.no_progress_timeout_ms` remains readable for older project files but is
-ignored. Worker sessions use their absolute duration bound, and local validation
-waits use the gate lock deadline.
+Retired per-issue progress, lifetime and retry-brake settings are rejected with
+a validation error naming the key. Remove those keys from existing configuration.
+Worker sessions use their absolute duration bound, and local validation waits
+use the gate lock deadline.
 
 Priority settings order ready work (INV-10). Stored project rank and
 `dispatch_priority_by_state`, `dispatch_priority_by_label`, and
@@ -132,7 +133,7 @@ completion gate is not a failed delivery. The existing triage
 comment records the operator reset timestamp when comment updates are supported.
 
 The former `agent.auto_promote.rework_limit` and
-`agent.auto_promote.no_progress_limit` keys are retired and have no effect.
+`agent.auto_promote.no_progress_limit` keys are retired and fail configuration validation.
 Remove them from existing configuration. There is no replacement tuning key.
 See [INV-3](invariants.md#inv-3--mechanism-moratorium) for the consolidation and
 historical-reader compatibility contract.
@@ -156,8 +157,8 @@ existing behavior, including clamping effort to the stage's ceiling.
 
 The running session keeps its resolved values across turns, checkpoints, and
 fallbacks. Later label or configuration changes do not change its limits or reset
-attempt counts or lifetime usage. Turn inactivity, no-progress limits, context
-multipliers, and token exemption settings retain their existing behavior.
+attempt counts or lifetime usage. Turn inactivity, context multipliers, and token
+exemption settings retain their existing behavior.
 `detent doctor` reports each level's effective limits for the project, plus the
 flat limits used by ineligible backends.
 
@@ -166,48 +167,11 @@ existing stage and role rules).
 
 ## Terminal attempt recovery
 
-Set `recovery.terminal_attempt_retry_limit` in `detent.yaml` or
-`detent.local.yaml` to control recovery from consecutive terminal attempts
-without a pushed work product or linked pull request:
-
-```yaml
-recovery:
-  terminal_attempt_retry_limit: 0
-```
-
-The default is `3`. The value preserves the existing consecutive-failure
-threshold for values of `2` or greater; `1` explicitly permits one recovery
-attempt, and `0` disables automatic recovery for a qualifying failure.
-
-| Setting | Failure 1 | Failure 2 | Failure 3 | Recovery after parking |
-| --- | --- | --- | --- | --- |
-| `0` | Blocked | No automatic attempt | No automatic attempt | Operator reviews the failure and moves the issue to Todo |
-| `1` | Todo; one recovery attempt | Blocked | No attempt before recovery from parking | Existing breaker cooldown |
-| `3` (default) | Todo | Todo | Blocked | Existing breaker cooldown |
-
-Thus `1` and `2` both park on the second qualifying failure. Higher values
-park on that numbered failure. Negative values are rejected. This compatibility
-rule keeps the existing default at two redispatches before parking.
-
-The zero policy persists an operator-owned hold, including the latest failure
-evidence. It also enforces the hold from the current completion when saving the
-attempt fails or no durable attempt record is available. Restarting Detent or waiting for the breaker cooldown does not release
-that hold. If the tracker rejects the Blocked transition, Detent holds the issue
-locally and retries that transition during reconciliation without starting a worker.
-Changing the setting alone does not authorize release of an existing
-operator-owned hold. Retry counts are reconstructed from durable issue attempt
-history after restart; successful attempts and pushed work reset the sequence.
-Service-restart recovery remains resumable and does not consume this limit.
-
-Durable provider capacity, GitHub REST capacity, and forge availability waits
-retain their existing handling and do not consume generic terminal retries.
-Transient overload failures remain qualifying terminal failures. Workspace
-preparation retains its separate fixed threshold of three failures. This policy
-is independent of automatic promotion, validators, and Rework limits.
-
-`detent doctor` reports the effective setting, the qualifying failure on which
-Detent parks, and whether parking requires external review or uses cooldown
-recovery. Local overlays preserve an explicit zero.
+Machine failures retry in a dispatchable lane through the shared capped-backoff
+owner. Attempts without source progress retain growing retry counts; verified
+committed or published source progress can reset the attempt count. Typed human
+actions, permission requests and explicit operator stops remain authoritative.
+The former per-issue retry-limit configuration is retired and rejected.
 
 ## Repository policy with Hub execution
 
@@ -1028,11 +992,9 @@ recent entry. Repeated entries can still raise a cumulative warning when their
 residency exceeds the lane threshold within
 `observability.staleness.lane_reentry_window_hours`. Human-gate lanes emit one
 reminder at their threshold, then remain quiet until the lane changes or
-`observability.staleness.human_gate_rearm_hours` passes. Sticky breaker and
-operator parks with a recorded cause are excluded from lane aging because the
-Blocked lane already carries their operator signal. A `park_cause_stale`
-warning replaces lane aging when recorded evidence is cleared or can no longer
-be verified.
+`observability.staleness.human_gate_rearm_hours` passes. Current typed human actions and operator stops remain visible in Blocked
+and do not generate stale-park warnings. Machine outcomes retry with capped
+backoff.
 
 Operator-facing warnings use the same authorization selector as board and
 runtime rows. Item warnings outside that selector are excluded before they are

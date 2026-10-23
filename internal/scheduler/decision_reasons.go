@@ -29,7 +29,6 @@ const (
 	DecisionReasonHydrateFailed                    = "hydrate_failed"
 	DecisionReasonInactiveState                    = "inactive_state"
 	DecisionReasonInvalidCandidate                 = "invalid_candidate"
-	DecisionReasonLifetimeLimit                    = "lifetime_limit"
 	DecisionReasonLocalSlotUnavailable             = "local_slot_unavailable"
 	DecisionReasonMergeWorkerCurrentHeadCIExceeded = "merge_worker_current_head_ci_wait_exceeded"
 	DecisionReasonMergedPullRequestPending         = "merged_pull_request_reconciliation_pending"
@@ -72,7 +71,6 @@ var emittedDecisionReasons = []string{
 	DecisionReasonHydrateFailed,
 	DecisionReasonInactiveState,
 	DecisionReasonInvalidCandidate,
-	DecisionReasonLifetimeLimit,
 	DecisionReasonLocalSlotUnavailable,
 	DecisionReasonMergeWorkerCurrentHeadCIExceeded,
 	DecisionReasonMergedPullRequestPending,

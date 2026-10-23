@@ -20,7 +20,6 @@ type nativeBehavior struct {
 	Workpad                    Workpad
 	Deliverable                Deliverable
 	Dependencies               Dependencies
-	Recovery                   Recovery
 	Agent                      Agent
 	Gate                       gate.Config
 	Plan                       gate.PlanConfig
@@ -52,7 +51,7 @@ func nativeProjectBehavior(cfg Config) nativeBehavior {
 	cfg = normalizePolicyConfig(cfg)
 	behavior := nativeBehavior{
 		Review: cfg.Review, Runners: cfg.Runners, Workpad: cfg.Workpad,
-		Deliverable: cfg.Deliverable, Dependencies: cfg.Dependencies, Recovery: cfg.Recovery,
+		Deliverable: cfg.Deliverable, Dependencies: cfg.Dependencies,
 		Agent: cfg.Agent, Gate: cfg.Gate, Plan: cfg.Plan, Budget: cfg.Budget,
 		Release: cfg.Release, Retro: cfg.Retro, Operator: cfg.Operator, BacklogAdmission: cfg.BacklogAdmission,
 		Lanes: cfg.Tracker.Lanes, Repository: cfg.Tracker.Repository, ActiveStates: cfg.Tracker.ActiveStates,
@@ -96,7 +95,7 @@ func (b nativeBehavior) apply(local Config) Config {
 	outputRoot, reviewURL := local.Deliverable.OutputRoot, local.Deliverable.ReviewURL
 	local.Deliverable = b.Deliverable
 	local.Deliverable.OutputRoot, local.Deliverable.ReviewURL = outputRoot, reviewURL
-	local.Dependencies, local.Recovery = b.Dependencies, b.Recovery
+	local.Dependencies = b.Dependencies
 	agent := local.Agent
 	local.Agent = b.Agent
 	local.Agent.MaxConcurrentAgents = agent.MaxConcurrentAgents

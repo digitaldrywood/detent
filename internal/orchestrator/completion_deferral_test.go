@@ -571,14 +571,14 @@ func completionDeferralIssue(id string, state string) connector.Issue {
 
 func completionDeferralRunning(issue connector.Issue, attemptID int64, now time.Time) Running {
 	return Running{
-		Issue:             cloneIssue(issue),
-		DispatchLoopStart: dispatchLoopStartRecord{Captured: true, Fingerprint: dispatchLoopFingerprint{WorkspaceTree: "dispatch-tree"}},
-		Attempt:           2,
-		WorkAttemptID:     attemptID,
-		Generation:        7,
-		Mode:              runpkg.RunModeImplement,
-		StartedAt:         now.Add(-time.Minute),
-		WorkerHost:        "worker-a",
+		Issue:                 cloneIssue(issue),
+		CompletionSourceStart: completionSourceStartRecord{Captured: true, Fingerprint: completionSourceFingerprint{WorkspaceTree: "dispatch-tree"}},
+		Attempt:               2,
+		WorkAttemptID:         attemptID,
+		Generation:            7,
+		Mode:                  runpkg.RunModeImplement,
+		StartedAt:             now.Add(-time.Minute),
+		WorkerHost:            "worker-a",
 	}
 }
 

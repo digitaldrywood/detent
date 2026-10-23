@@ -49,10 +49,6 @@ type AdmissionReader interface {
 	AdmissionProposalHistory(context.Context, string, string) ([]admissionmodel.Proposal, error)
 }
 
-type ParkSummaryReader interface {
-	IssueParkSummary(context.Context, store.IssueIdentity) (store.ParkSummary, error)
-}
-
 type Dependencies struct {
 	Snapshots  SnapshotSource
 	Workflow   WorkflowReader
@@ -61,7 +57,6 @@ type Dependencies struct {
 	Scheduler  SchedulerReader
 	Sessions   SessionReader
 	Admission  AdmissionReader
-	Parks      ParkSummaryReader
 	Now        func() time.Time
 }
 
@@ -73,7 +68,6 @@ type Service struct {
 	scheduler  SchedulerReader
 	sessions   SessionReader
 	admission  AdmissionReader
-	parks      ParkSummaryReader
 	now        func() time.Time
 }
 
@@ -87,8 +81,6 @@ type collectedEvidence struct {
 	schedulerDecisions []store.SchedulerDecision
 	session            *store.IssueAgentSession
 	admissionProposals []admissionmodel.Proposal
-	parkSummary        store.ParkSummary
-	parkSummaryFound   bool
 	sources            []SourceStatus
 	configuredSources  int
 	successfulSources  int
@@ -107,7 +99,6 @@ func New(deps Dependencies) *Service {
 		scheduler:  deps.Scheduler,
 		sessions:   deps.Sessions,
 		admission:  deps.Admission,
-		parks:      deps.Parks,
 		now:        now,
 	}
 }
@@ -163,9 +154,6 @@ func (s *Service) Explain(ctx context.Context, query Query) (IssueExplanation, e
 	if err := s.collectAdmission(ctx, resolvedLookup, &collected); err != nil {
 		return IssueExplanation{}, err
 	}
-	if err := s.collectParkSummary(ctx, resolvedLookup, &collected); err != nil {
-		return IssueExplanation{}, err
-	}
 
 	found := collectedHasEvidence(collected)
 	if !found && collected.configuredSources > 0 && collected.successfulSources == collected.configuredSources {
@@ -173,39 +161,6 @@ func (s *Service) Explain(ctx context.Context, query Query) (IssueExplanation, e
 	}
 
 	return buildExplanation(observedAt, identity, found, collected), nil
-}
-
-func (s *Service) collectParkSummary(ctx context.Context, identity store.IssueIdentity, collected *collectedEvidence) error {
-	if s.parks == nil {
-		collected.sources = append(collected.sources, unavailableSource("park_summary", "not_configured"))
-		return nil
-	}
-	collected.configuredSources++
-	if err := ctx.Err(); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return err
-		}
-		collected.sources = append(collected.sources, failedSource("park_summary", err))
-		return nil
-	}
-	summary, err := s.parks.IssueParkSummary(ctx, identity)
-	if errors.Is(err, store.ErrNotFound) {
-		collected.successfulSources++
-		collected.sources = append(collected.sources, availableSource("park_summary"))
-		return nil
-	}
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return context.Canceled
-		}
-		collected.sources = append(collected.sources, failedSource("park_summary", err))
-		return nil
-	}
-	collected.successfulSources++
-	collected.parkSummary = summary
-	collected.parkSummaryFound = true
-	collected.sources = append(collected.sources, availableSource("park_summary"))
-	return nil
 }
 
 func (s *Service) collectProvenanceBoundary(ctx context.Context, collected *collectedEvidence) error {

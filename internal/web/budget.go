@@ -159,7 +159,6 @@ func (c *snapshotEnrichmentCache) enrichVersion(ctx context.Context, snapshot te
 
 func (s *Server) enrichSnapshot(ctx context.Context, snapshot telemetry.Snapshot) telemetry.Snapshot {
 	snapshot.AdmissionProposals = s.snapshotAdmissionProposals(ctx, snapshot.GeneratedAt)
-	snapshot = s.snapshotParkSummaries(ctx, snapshot)
 	snapshot = s.snapshotCardHistory(ctx, snapshot)
 	snapshot = s.snapshotShippedCompletions(ctx, snapshot)
 	if cycleTime, ok := s.snapshotCycleTime(ctx, snapshot.GeneratedAt); ok {
@@ -183,58 +182,12 @@ func (s *Server) enrichSnapshot(ctx context.Context, snapshot telemetry.Snapshot
 	return snapshot
 }
 
-func (s *Server) snapshotParkSummaries(ctx context.Context, snapshot telemetry.Snapshot) telemetry.Snapshot {
-	if s.store == nil || len(snapshot.BoardIssues) == 0 {
-		return snapshot
-	}
-	reader, ok := s.store.(store.ParkSummaryStore)
-	if !ok {
-		return snapshot
-	}
-	identities := make([]store.IssueIdentity, 0, len(snapshot.BoardIssues))
-	for _, issue := range snapshot.BoardIssues {
-		identities = append(identities, boardIssueParkIdentity(issue))
-	}
-	summaries, err := reader.IssueParkSummaries(ctx, identities)
-	if err != nil {
-		s.logger.WarnContext(ctx, "issue park summary query failed", slog.Any("error", err))
-		return snapshot
-	}
-	snapshot.BoardIssues = append([]telemetry.Issue(nil), snapshot.BoardIssues...)
-	for index := range snapshot.BoardIssues {
-		if summary, ok := summaries[identities[index]]; ok {
-			snapshot.BoardIssues[index].ParkSummary = parkSummaryTelemetry(summary)
-		}
-	}
-	return snapshot
-}
-
-func boardIssueParkIdentity(issue telemetry.Issue) store.IssueIdentity {
+func boardIssueIdentity(issue telemetry.Issue) store.IssueIdentity {
 	return store.IssueIdentity{
 		ProjectID:  strings.TrimSpace(issue.ProjectID),
 		IssueID:    strings.TrimSpace(issue.ID),
 		Identifier: strings.TrimSpace(issue.Identifier),
 		IssueURL:   strings.TrimSpace(issue.URL),
-	}
-}
-
-func parkSummaryTelemetry(summary store.ParkSummary) telemetry.ParkSummary {
-	causes := make([]telemetry.ParkCauseSummary, 0, len(summary.Causes))
-	for _, cause := range summary.Causes {
-		causes = append(causes, telemetry.ParkCauseSummary{Cause: cause.Cause, Count: cause.Count, FirstAt: cause.FirstAt, LastAt: cause.LastAt})
-	}
-	return telemetry.ParkSummary{
-		AttemptCount:             summary.AttemptCount,
-		ParkCount:                summary.ParkCount,
-		AcknowledgedParkSequence: summary.AcknowledgedParkSequence,
-		AcknowledgedAt:           summary.AcknowledgedAt,
-		Causes:                   causes,
-		Tokens: telemetry.ParkTokenTotals{
-			InputTokens:           summary.Tokens.InputTokens,
-			CachedInputTokens:     summary.Tokens.CachedInputTokens,
-			OutputTokens:          summary.Tokens.OutputTokens,
-			ReasoningOutputTokens: summary.Tokens.ReasoningOutputTokens,
-		},
 	}
 }
 

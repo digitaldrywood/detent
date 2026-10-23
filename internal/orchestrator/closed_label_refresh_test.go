@@ -12,7 +12,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
-	"github.com/digitaldrywood/detent/internal/store"
 )
 
 // Exercise real label discovery with the tick and lane writer, without PR
@@ -144,8 +143,6 @@ func TestClosedLabelSnapshotsExcludedFromDispatch(t *testing.T) {
 				tracker := &statusReconcileConnector{}
 				orch := newStatusReconcileOrchestrator(tracker)
 				orch.cfg.ActiveStates = []string{lane}
-				orch.cfg.LifetimeSessionLimit = 1
-				orch.lifetimeUsage = closedLabelUsageStore{t: t}
 				issue := statusReconcileIssue("issue-2813", lane, true, reason)
 				issue.AssignedToWorker = true
 				issue.Fields["fixture"] = "hydrated"
@@ -157,14 +154,4 @@ func TestClosedLabelSnapshotsExcludedFromDispatch(t *testing.T) {
 			})
 		}
 	}
-}
-
-type closedLabelUsageStore struct {
-	lifetimeUsageStoreStub
-	t *testing.T
-}
-
-func (s closedLabelUsageStore) IssueTokenSpend(context.Context, store.IssueIdentity) (store.TokenSpend, error) {
-	s.t.Error("closed snapshot entered allowance accounting")
-	return store.TokenSpend{}, nil
 }

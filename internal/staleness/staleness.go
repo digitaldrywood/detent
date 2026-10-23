@@ -13,7 +13,6 @@ import (
 const (
 	KindLaneAging                = "lane_aging"
 	KindLaneReentry              = "lane_reentry"
-	KindParkCauseStale           = "park_cause_stale"
 	KindProjectLiveness          = "project_liveness"
 	KindMergeLiveness            = "merge_liveness"
 	KindRepeatedDecision         = "repeated_decision"
@@ -60,11 +59,6 @@ type Item struct {
 	WaitingOnHuman         bool
 	HasRecoveryPredicate   bool
 	BlockedCauseUnrecorded bool
-	RecordedPark           bool
-	ParkCauseKey           string
-	ParkCauseStale         bool
-	ParkCauseDetail        string
-	ParkCauseSince         time.Time
 	LaneVisits             []LaneVisit
 }
 
@@ -151,16 +145,7 @@ func laneWarnings(cfg Config, input Input, now time.Time) []Warning {
 		if !ok {
 			continue
 		}
-		if item.RecordedPark {
-			warning, ok := parkCauseWarning(input.ProjectID, item, now)
-			if !ok {
-				continue
-			}
-			if _, ok := seen[warning.ID]; ok {
-				continue
-			}
-			seen[warning.ID] = struct{}{}
-			warnings = append(warnings, warning)
+		if item.WaitingOnHuman && normalize(item.State) == "blocked" {
 			continue
 		}
 		if item.EnteredAt.IsZero() || item.EnteredAt.After(now) {
@@ -209,44 +194,6 @@ func laneWarnings(cfg Config, input Input, now time.Time) []Warning {
 		})
 	}
 	return warnings
-}
-
-func parkCauseWarning(projectID string, item Item, now time.Time) (Warning, bool) {
-	if !item.ParkCauseStale {
-		return Warning{}, false
-	}
-	identity := itemIdentity(item)
-	if identity == "" {
-		return Warning{}, false
-	}
-	since := item.ParkCauseSince.UTC()
-	if since.IsZero() || since.After(now) {
-		since = item.EnteredAt.UTC()
-	}
-	if since.IsZero() || since.After(now) {
-		since = now
-	}
-	detail := strings.TrimSpace(item.ParkCauseDetail)
-	if detail == "" {
-		detail = "the recorded reason for this deliberate park no longer matches current evidence"
-	}
-	key := KindParkCauseStale + "\x00" + identity + "\x00" + normalize(item.State) + "\x00" + strings.TrimSpace(item.ParkCauseKey) + "\x00" + timestampKey(item.EnteredAt)
-	return Warning{
-		ID:                   warningID(key),
-		Class:                observability.ClassDiagnostic,
-		ProjectID:            strings.TrimSpace(projectID),
-		Kind:                 KindParkCauseStale,
-		IssueID:              strings.TrimSpace(item.ID),
-		Identifier:           strings.TrimSpace(item.Identifier),
-		IssueURL:             strings.TrimSpace(item.URL),
-		Title:                strings.TrimSpace(item.Title),
-		Lane:                 strings.TrimSpace(item.State),
-		Reason:               "recorded park cause is stale",
-		Detail:               detail,
-		Since:                since,
-		AgeSeconds:           int64(now.Sub(since) / time.Second),
-		HasRecoveryPredicate: item.HasRecoveryPredicate,
-	}, true
 }
 
 func laneReentryWarning(cfg Config, projectID string, item Item, threshold LaneThreshold, now time.Time) (Warning, bool) {

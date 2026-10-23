@@ -79,12 +79,11 @@ type doctorCheck struct {
 	AuthorizationAttention     []doctorAuthorizationAttentionDiagnostic   `json:"authorization_attention,omitempty"`
 	OwnershipAttention         []doctorOwnershipAttentionDiagnostic       `json:"ownership_attention,omitempty"`
 	OrphanedAgentProcesses     *telemetry.OrphanedAgentProcesses          `json:"orphaned_agent_processes,omitempty"`
-	ParkReviews                []doctorParkReviewDiagnostic               `json:"park_reviews,omitempty"`
 	ProjectDefinition          *doctorProjectDefinitionDiagnostic         `json:"project_definition,omitempty"`
 	Capabilities               *doctorCapabilityReport                    `json:"capabilities,omitempty"`
 	WorkflowOptimization       doctorWorkflowOptimizationReport           `json:"-"`
 	ConcurrencyHistory         []doctorConcurrencyDiagnostic              `json:"concurrency_history,omitempty"`
-	RedispatchLoops            []doctorRedispatchDiagnostic               `json:"redispatch_loops,omitempty"`
+	RecompletionSources        []doctorRedispatchDiagnostic               `json:"redispatch_loops,omitempty"`
 }
 
 type doctorProjectDefinitionDiagnostic struct {

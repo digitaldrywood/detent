@@ -31,7 +31,6 @@ func TestHealthRules(t *testing.T) {
 		{"permission wait", "unanswered_human_wait", healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Attempt: "attempt", Since: now.Add(-time.Hour), Active: true}}}, healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Attempt: "attempt", Since: now, Active: true}}}},
 		{"dependency hold", "dependency_hold", healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 3, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-time.Hour), LastLanding: now.Add(-30 * time.Minute)}}}, healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 3, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-time.Hour), LastLanding: now}}}},
 		{"dependency hold without landing history", "dependency_hold", healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 1, HeldCount: 1, HeldBlockers: []string{"held"}, HoldSince: now.Add(-30 * time.Minute)}}}, healthSnapshot{Projects: []healthProject{{ID: "project", FreeSlots: 1, DependencyGated: 1, HoldSince: now.Add(-30 * time.Minute)}}}},
-		{"lifetime limit", "lifetime_limit_hit", healthSnapshot{Limits: []healthLimit{{Item: "item", Project: "project", Event: "event", Active: true}}}, healthSnapshot{Limits: []healthLimit{{Item: "item", Project: "project", Event: "recovered"}}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

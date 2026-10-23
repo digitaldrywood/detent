@@ -513,55 +513,6 @@ func TestParseWorkflowBillingMode(t *testing.T) {
 	}
 }
 
-func TestUSDBrakes(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name           string
-		billingMode    string
-		budgetEnabled  bool
-		spendLimit     float64
-		wantBudgetCaps bool
-		wantProgress   bool
-		wantWarning    bool
-	}{
-		{name: "subscription disabled without progress limit", billingMode: BillingModeSubscription},
-		{name: "subscription disabled with progress limit", billingMode: BillingModeSubscription, spendLimit: 3},
-		{name: "subscription enabled without progress limit", billingMode: BillingModeSubscription, budgetEnabled: true},
-		{name: "subscription enabled with progress limit", billingMode: BillingModeSubscription, budgetEnabled: true, spendLimit: 3},
-		{name: "metered disabled without progress limit", billingMode: BillingModeMetered},
-		{name: "metered disabled with progress limit", billingMode: BillingModeMetered, spendLimit: 3, wantProgress: true, wantWarning: true},
-		{name: "metered enabled without progress limit", billingMode: BillingModeMetered, budgetEnabled: true, wantBudgetCaps: true},
-		{name: "metered enabled with progress limit", billingMode: BillingModeMetered, budgetEnabled: true, spendLimit: 3, wantBudgetCaps: true, wantProgress: true, wantWarning: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := Config{
-				Budget: Budget{BillingMode: tt.billingMode, Enabled: tt.budgetEnabled},
-				Agent:  Agent{NoProgressSpendLimitUSD: tt.spendLimit},
-			}
-			brakes := cfg.USDBrakes()
-			if brakes.BudgetCaps != tt.wantBudgetCaps || brakes.NoProgress != tt.wantProgress {
-				t.Fatalf("USDBrakes() = %#v, want budget caps=%t progress=%t", brakes, tt.wantBudgetCaps, tt.wantProgress)
-			}
-			warnings := cfg.ValidationWarnings()
-			if got := len(warnings) > 0; got != tt.wantWarning {
-				t.Fatalf("ValidationWarnings() = %#v, want warning=%t", warnings, tt.wantWarning)
-			}
-			if tt.wantWarning {
-				warning := strings.Join(warnings, "; ")
-				for _, want := range []string{"billing_mode: metered", "agent.no_progress_spend_limit_usd", "budget.enabled: false", "billing_mode: subscription"} {
-					if !strings.Contains(warning, want) {
-						t.Fatalf("ValidationWarnings() = %q, want %q", warning, want)
-					}
-				}
-			}
-		})
-	}
-}
-
 func TestParseWorkflowMergeMethod(t *testing.T) {
 	t.Parallel()
 
@@ -636,164 +587,6 @@ func TestParseWorkflowFollowups(t *testing.T) {
 				t.Fatalf("Agent.Followups.Enabled = %t, want %t", workflow.Config.Agent.Followups.Enabled, tt.enabled)
 			}
 		})
-	}
-}
-
-func TestNoProgressSpendLimitConfiguration(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		raw     string
-		want    float64
-		wantErr string
-	}{
-		{name: "default enabled", raw: "---\ntracker:\n  kind: hub_native\n---\nPrompt\n", want: DefaultNoProgressSpendLimitUSD},
-		{name: "explicitly disabled", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  no_progress_spend_limit_usd: 0\n---\nPrompt\n", want: 0},
-		{name: "custom threshold", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  no_progress_spend_limit_usd: 8.5\n---\nPrompt\n", want: 8.5},
-		{name: "negative rejected", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  no_progress_spend_limit_usd: -1\n---\nPrompt\n", wantErr: "agent.no_progress_spend_limit_usd must be greater than or equal to 0"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			workflow, err := ParseWorkflow([]byte(tt.raw))
-			if tt.wantErr != "" {
-				if err == nil {
-					err = workflow.Config.Validate()
-				}
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("configuration error = %v, want %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("ParseWorkflow() error = %v", err)
-			}
-			if workflow.Config.Agent.NoProgressSpendLimitUSD != tt.want {
-				t.Fatalf("NoProgressSpendLimitUSD = %g, want %g", workflow.Config.Agent.NoProgressSpendLimitUSD, tt.want)
-			}
-		})
-	}
-}
-
-func TestNoProgressTokenLimitConfiguration(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		raw     string
-		want    int64
-		wantErr string
-	}{
-		{name: "default enabled", raw: "---\ntracker:\n  kind: hub_native\n---\nPrompt\n", want: DefaultNoProgressTokenLimit},
-		{name: "explicitly disabled", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  no_progress_token_limit: 0\n---\nPrompt\n"},
-		{name: "custom threshold", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  no_progress_token_limit: 40000000\n---\nPrompt\n", want: 40_000_000},
-		{name: "negative rejected", raw: "---\ntracker:\n  kind: hub_native\nagent:\n  no_progress_token_limit: -1\n---\nPrompt\n", wantErr: "agent.no_progress_token_limit must be greater than or equal to 0"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			workflow, err := ParseWorkflow([]byte(tt.raw))
-			if tt.wantErr != "" {
-				if err == nil {
-					err = workflow.Config.Validate()
-				}
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("configuration error = %v, want %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("ParseWorkflow() error = %v", err)
-			}
-			if workflow.Config.Agent.NoProgressTokenLimit != tt.want {
-				t.Fatalf("NoProgressTokenLimit = %d, want %d", workflow.Config.Agent.NoProgressTokenLimit, tt.want)
-			}
-		})
-	}
-}
-
-func TestLifetimeLimitConfiguration(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		raw          string
-		wantSessions int64
-		wantTokens   int64
-		wantOverride string
-		wantErr      string
-	}{
-		{
-			name:         "default enabled",
-			raw:          "---\ntracker:\n  kind: hub_native\n---\nPrompt\n",
-			wantSessions: DefaultLifetimeSessionLimit,
-			wantTokens:   DefaultLifetimeTokenLimit,
-			wantOverride: DefaultLifetimeLimitOverrideLabel,
-		},
-		{
-			name:         "custom values normalize override label",
-			raw:          "---\ntracker:\n  kind: hub_native\nagent:\n  lifetime_session_limit: 20\n  lifetime_token_limit: 50000000\n  lifetime_limit_cooldown_seconds: 7200\n  lifetime_limit_override_label: Allow-Hard-Issue\n---\nPrompt\n",
-			wantSessions: 20,
-			wantTokens:   50_000_000,
-			wantOverride: "allow-hard-issue",
-		},
-		{
-			name:         "limits can be disabled",
-			raw:          "---\ntracker:\n  kind: hub_native\nagent:\n  lifetime_session_limit: 0\n  lifetime_token_limit: 0\n  lifetime_limit_cooldown_seconds: 0\n---\nPrompt\n",
-			wantOverride: DefaultLifetimeLimitOverrideLabel,
-		},
-		{
-			name:    "negative sessions rejected",
-			raw:     "---\ntracker:\n  kind: hub_native\nagent:\n  lifetime_session_limit: -1\n---\nPrompt\n",
-			wantErr: "agent.lifetime_session_limit must be greater than or equal to 0",
-		},
-		{
-			name:    "negative tokens rejected",
-			raw:     "---\ntracker:\n  kind: hub_native\nagent:\n  lifetime_token_limit: -1\n---\nPrompt\n",
-			wantErr: "agent.lifetime_token_limit must be greater than or equal to 0",
-		},
-		{
-			name:         "legacy cooldown ignored with enabled limits",
-			raw:          "---\ntracker:\n  kind: hub_native\nagent:\n  lifetime_session_limit: 1\n  lifetime_limit_cooldown_seconds: 0\n---\nPrompt\n",
-			wantSessions: 1,
-			wantTokens:   DefaultLifetimeTokenLimit,
-			wantOverride: DefaultLifetimeLimitOverrideLabel,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			workflow, err := ParseWorkflow([]byte(tt.raw))
-			if tt.wantErr != "" {
-				if err == nil {
-					err = workflow.Config.Validate()
-				}
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("configuration error = %v, want containing %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("ParseWorkflow() error = %v", err)
-			}
-			agent := workflow.Config.Agent
-			if agent.LifetimeSessionLimit != tt.wantSessions || agent.LifetimeTokenLimit != tt.wantTokens || agent.LifetimeLimitOverrideLabel != tt.wantOverride {
-				t.Fatalf("lifetime config = sessions %d tokens %d override %q", agent.LifetimeSessionLimit, agent.LifetimeTokenLimit, agent.LifetimeLimitOverrideLabel)
-			}
-		})
-	}
-}
-
-func TestLifetimeLimitDefaultsSeparateHistoricalRunaways(t *testing.T) {
-	t.Parallel()
-
-	if DefaultLifetimeSessionLimit != 120 {
-		t.Fatalf("DefaultLifetimeSessionLimit = %d, want 120", DefaultLifetimeSessionLimit)
-	}
-	if DefaultLifetimeTokenLimit != 750_000_000 {
-		t.Fatalf("DefaultLifetimeTokenLimit = %d, want 750000000", DefaultLifetimeTokenLimit)
 	}
 }
 
@@ -891,34 +684,6 @@ func TestOverloadRetryDelayConfiguration(t *testing.T) {
 			}
 			if workflow.Config.Agent.OverloadRetryDelayMS != tt.want {
 				t.Fatalf("OverloadRetryDelayMS = %d, want %d", workflow.Config.Agent.OverloadRetryDelayMS, tt.want)
-			}
-		})
-	}
-}
-
-func TestEffectiveNoProgressSpendLimitUSD(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		limit  float64
-		effort string
-		want   float64
-	}{
-		{name: "disabled", limit: 0, effort: "xhigh", want: 0},
-		{name: "unknown uses base", limit: 3, want: 3},
-		{name: "low uses base", limit: 3, effort: "low", want: 3},
-		{name: "medium", limit: 3, effort: "medium", want: 4.5},
-		{name: "high", limit: 3, effort: "high", want: 9},
-		{name: "xhigh", limit: 3, effort: "xhigh", want: 18},
-		{name: "max", limit: 3, effort: "max", want: 24},
-		{name: "ultracode", limit: 3, effort: "ultracode", want: 24},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := EffectiveNoProgressSpendLimitUSD(tt.limit, tt.effort); got != tt.want {
-				t.Fatalf("EffectiveNoProgressSpendLimitUSD(%g, %q) = %g, want %g", tt.limit, tt.effort, got, tt.want)
 			}
 		})
 	}
@@ -1079,7 +844,6 @@ tracker:
     readiness: terminal_or_merged
   blocked_recovery:
     enabled: true
-    breaker_cooldown_seconds: 43200
     source_states:
       - Blocked
     target_state: Rework
@@ -1117,7 +881,6 @@ agent:
   max_concurrent_agents: 5
   max_turn_duration_ms: 900000
   max_session_duration_ms: 3600000
-  no_progress_timeout_ms: 1800000
   merge_worker_startup_timeout_ms: 180000
   merge_worker_max_duration_ms: 7200000
   max_session_tokens: 10000000
@@ -1143,8 +906,6 @@ agent:
     optout_label: Requires-Human-Review
     gate_wait_state: review
     gate_wait_timeout_seconds: 900
-    rework_limit: 3
-    no_progress_limit: 4
     allowed_issue_labels:
       - enhancement
   instructions_by_state:
@@ -1349,9 +1110,6 @@ Ticket prompt {{ issue.title }}
 	if got := cfg.Tracker.BlockedRecovery.ReasonCodes; !reflect.DeepEqual(got, []string{"merge_conflict", "stale_base", "missing_current_head_ci"}) {
 		t.Fatalf("Tracker.BlockedRecovery.ReasonCodes = %#v, want canonical reason codes", got)
 	}
-	if cfg.Tracker.BlockedRecovery.BreakerCooldownSeconds != 43200 {
-		t.Fatalf("Tracker.BlockedRecovery.BreakerCooldownSeconds = %d, want 43200", cfg.Tracker.BlockedRecovery.BreakerCooldownSeconds)
-	}
 	if !cfg.Tracker.BlockerAutoPromote.Enabled {
 		t.Fatal("Tracker.BlockerAutoPromote.Enabled = false, want true")
 	}
@@ -1372,9 +1130,6 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Agent.MaxSessionDurationMS != 3600000 {
 		t.Fatalf("Agent.MaxSessionDurationMS = %d, want 3600000", cfg.Agent.MaxSessionDurationMS)
-	}
-	if cfg.Agent.NoProgressTimeoutMS != 1800000 {
-		t.Fatalf("Agent.NoProgressTimeoutMS = %d, want 1800000", cfg.Agent.NoProgressTimeoutMS)
 	}
 	if cfg.Agent.MergeWorkerStartupTimeoutMS != 180000 {
 		t.Fatalf("Agent.MergeWorkerStartupTimeoutMS = %d, want 180000", cfg.Agent.MergeWorkerStartupTimeoutMS)
@@ -1798,9 +1553,6 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if got := cfg.Tracker.BlockedRecovery.ReasonCodes; !reflect.DeepEqual(got, []string{"merge_conflict", "stale_base", "missing_current_head_ci"}) {
 		t.Fatalf("Tracker.BlockedRecovery.ReasonCodes = %#v, want default allowlist", got)
 	}
-	if cfg.Tracker.BlockedRecovery.BreakerCooldownSeconds != 86400 {
-		t.Fatalf("Tracker.BlockedRecovery.BreakerCooldownSeconds = %d, want 86400", cfg.Tracker.BlockedRecovery.BreakerCooldownSeconds)
-	}
 	if cfg.Tracker.BlockerAutoPromote.Enabled {
 		t.Fatal("Tracker.BlockerAutoPromote.Enabled = true, want disabled by default")
 	}
@@ -1861,9 +1613,6 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Agent.MaxSessionDurationMS != DefaultMaxSessionDurationMS {
 		t.Fatalf("Agent.MaxSessionDurationMS = %d, want %d", cfg.Agent.MaxSessionDurationMS, DefaultMaxSessionDurationMS)
-	}
-	if cfg.Agent.NoProgressTimeoutMS != DefaultNoProgressTimeoutMS {
-		t.Fatalf("Agent.NoProgressTimeoutMS = %d, want legacy default %d", cfg.Agent.NoProgressTimeoutMS, DefaultNoProgressTimeoutMS)
 	}
 	if cfg.Agent.MaxSessionTokens != 0 {
 		t.Fatalf("Agent.MaxSessionTokens = %d, want disabled default", cfg.Agent.MaxSessionTokens)
@@ -1945,9 +1694,6 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Observability.DispatchStallThresholdSeconds != DefaultDispatchStallThresholdSeconds {
 		t.Fatalf("Observability.DispatchStallThresholdSeconds = %d, want %d", cfg.Observability.DispatchStallThresholdSeconds, DefaultDispatchStallThresholdSeconds)
-	}
-	if cfg.Observability.ParkReviewThreshold != DefaultParkReviewThreshold {
-		t.Fatalf("Observability.ParkReviewThreshold = %d, want %d", cfg.Observability.ParkReviewThreshold, DefaultParkReviewThreshold)
 	}
 	if cfg.Observability.Efficiency.AnomalyTokensMultiple != 3 || cfg.Observability.Efficiency.AnomalySessionsMultiple != 3 || cfg.Observability.Efficiency.AnomalyDwellMultiple != 3 {
 		t.Fatalf("Observability.Efficiency = %#v, want 3x defaults", cfg.Observability.Efficiency)
@@ -3690,13 +3436,6 @@ func TestObservabilityValidation(t *testing.T) {
 			},
 			wantErr: "observability.dispatch_stall_threshold_seconds must be greater than 0",
 		},
-		{
-			name: "nonpositive park review threshold",
-			mutate: func(cfg *Config) {
-				cfg.Observability.ParkReviewThreshold = -1
-			},
-			wantErr: "observability.park_review_threshold must be greater than 0",
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3850,7 +3589,6 @@ agent:
   max_concurrent_agents: 0
   max_turn_duration_ms: -1
   max_session_duration_ms: -1
-  no_progress_timeout_ms: -1
   merge_worker_startup_timeout_ms: -1
   merge_worker_max_duration_ms: -1
   max_session_tokens: -1
@@ -3892,7 +3630,6 @@ Prompt
 				"agent.max_concurrent_agents must be greater than 0",
 				"agent.max_turn_duration_ms must be greater than or equal to 0",
 				"agent.max_session_duration_ms must be greater than or equal to 0",
-				"agent.no_progress_timeout_ms must be greater than or equal to 0",
 				"agent.merge_worker_startup_timeout_ms must be greater than 0",
 				"agent.merge_worker_max_duration_ms must be greater than 0",
 				"agent.max_session_tokens must be greater than or equal to 0",
@@ -4058,7 +3795,6 @@ tracker:
       role: terminal
   blocked_recovery:
     enabled: true
-    breaker_cooldown_seconds: -1
     source_states: [""]
     target_state: ""
     reason_codes:
@@ -4069,7 +3805,6 @@ tracker:
 Prompt
 `,
 			want: []string{
-				"tracker.blocked_recovery.breaker_cooldown_seconds must be greater than or equal to 0",
 				"tracker.blocked_recovery.source_states state names must not be blank",
 				"tracker.blocked_recovery.target_state is required when tracker.blocked_recovery.enabled is true",
 				"tracker.blocked_recovery.reason_codes must contain only merge_conflict, stale_base, missing_current_head_ci",
@@ -4795,7 +4530,7 @@ func TestOperatorConfig(t *testing.T) {
 	}
 	explicit := Operator{Actions: []string{" Merge_When_Wedged ", "merge_when_wedged"}}
 	explicit.Normalize()
-	if !reflect.DeepEqual(explicit.Actions, []string{OperatorActionMergeWhenWedged}) || explicit.ActionEnabled(OperatorActionReturnRetiredParks) {
+	if !reflect.DeepEqual(explicit.Actions, []string{OperatorActionMergeWhenWedged}) {
 		t.Fatalf("explicit = %#v", explicit)
 	}
 	problems := Operator{Actions: []string{"file_deduped_issue"}, MergeWedgeSeconds: -1}.Validate("operator")

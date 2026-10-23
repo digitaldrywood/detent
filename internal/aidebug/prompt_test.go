@@ -40,21 +40,11 @@ func TestPromptIncludesDiscriminatingEvidence(t *testing.T) {
 			want: []string{"digitaldrywood/detent#1999", `"current_state": "In Progress"`, `"wait_reason": "blocked_by_open_issue"`},
 		},
 		{
-			name: "loop parked",
+			name: "alternating outcomes",
 			mutate: func(projection *Projection) {
-				projection.Issue.Park = ParkEvidence{Parked: true, BreakerKind: "dispatch_loop", Thresholds: map[string]int64{"dispatch_limit": 3}, ConsecutiveCounts: map[string]int64{"dispatches": 3}, ParkCount: 1, Causes: []map[string]any{{"cause": "no_progress_limit"}}}
 				projection.Issue.Attempts = []AttemptEvidence{{StartedAt: at, AttemptNumber: 1, TerminalState: "success"}, {StartedAt: at.Add(time.Minute), AttemptNumber: 2, TerminalState: "no_progress"}, {StartedAt: at.Add(2 * time.Minute), AttemptNumber: 3, TerminalState: "success"}}
 			},
-			want: []string{`"parked": true`, `"breaker_kind": "dispatch_loop"`, `"alternating_success_no_progress_pattern": true`},
-		},
-		{
-			name: "lifetime capped",
-			mutate: func(projection *Projection) {
-				projection.Project.Brakes.LifetimeSessionLimit = 120
-				projection.Project.Brakes.LifetimeTokenLimit = 750_000_000
-				projection.Issue.SchedulerDecisions = []SchedulerDecisionEvidence{{At: at, Result: "skipped", WaitReason: "lifetime_session_limit"}}
-			},
-			want: []string{`"lifetime_session_limit": 120`, `"lifetime_token_limit": 750000000`, `"wait_reason": "lifetime_session_limit"`},
+			want: []string{`"alternating_success_no_progress_pattern": true`},
 		},
 		{
 			name: "not dispatching due to capacity",
@@ -173,7 +163,6 @@ func testProjection(at time.Time) Projection {
 		ID: "I_2006", Identifier: "digitaldrywood/detent#2006", Title: "AI Debug", URL: "https://github.com/digitaldrywood/detent/issues/2006",
 		ProjectID: "detent", TrackerKind: "github", TrackerState: "In Progress", RuntimeState: "In Progress", CurrentLane: "In Progress",
 		Blocked:      BlockedEvidence{Cause: "No blocked cause is recorded.", CauseAuthor: "none", RecoveryPredicate: []map[string]any{}},
-		Park:         ParkEvidence{Thresholds: map[string]int64{}, ConsecutiveCounts: map[string]int64{}, Causes: []map[string]any{}},
 		Dependencies: []DependencyEvidence{}, Attempts: []AttemptEvidence{}, Sessions: []SessionEvidence{}, SchedulerDecisions: []SchedulerDecisionEvidence{}, SchedulerWaitCounts: map[string]int{}, LaneTransitions: []LaneTransitionEvidence{}, HookAndCIErrors: []string{},
 	}
 	projection.Project = &ProjectEvidence{ID: "detent", Repository: "digitaldrywood/detent", ConfigDestinationRepo: "digitaldrywood/detent", Authorization: map[string]any{}, GateDefinition: json.RawMessage(`{}`), Dispatch: json.RawMessage(`{}`)}

@@ -456,20 +456,9 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " backend model catalogs")
 		checks = append(checks, checkDoctorBackendModelCatalogs(ctx, id, workflow.Config, deps)...)
 	}
-	setDoctorCurrentCheck("Project " + id + " progress brake")
-	checks = append(checks, checkDoctorProgressBrake(id, workflow.Config))
-	checks = append(checks, checkDoctorTerminalAttemptRecovery(id, workflow.Config))
-	if strings.TrimSpace(storePath) != "" {
-		setDoctorCurrentCheck("Project " + id + " lifetime limits")
-		checks = append(checks, checkDoctorLifetimeLimits(ctx, id, storePath, workflow.Config, deps))
-	}
 	if strings.TrimSpace(storePath) != "" {
 		setDoctorCurrentCheck("Project " + id + " historical throughput")
 		checks = append(checks, checkDoctorHistoricalThroughput(ctx, id, storePath, workflow.Config.Agent.MaxConcurrentAgents, deps)...)
-	}
-	if strings.TrimSpace(storePath) != "" {
-		setDoctorCurrentCheck("Project " + id + " park review")
-		checks = append(checks, checkDoctorParkReview(ctx, id, storePath, workflow.Config.Observability.ParkReviewThreshold, deps))
 	}
 	setDoctorCurrentCheck("Project " + id + " workflow lint")
 	checks = append(checks, checkDoctorWorkflowLint(ctx, id, project, workflow.Config, workflow.Prompt, workflowTokenThreshold, storePath, deps)...)
@@ -1047,13 +1036,10 @@ func checkDoctorBillingMode(id string, cfg workflowconfig.Config, subscriptionAu
 	}
 	if mode == workflowconfig.BillingModeMetered {
 		if subscriptionAuth {
-			brakes := cfg.USDBrakes()
+			enabled := cfg.Budget.USDEnforcementEnabled()
 			armed := make([]string, 0, 2)
-			if brakes.BudgetCaps {
+			if enabled {
 				armed = append(armed, "budget.per_day_max_usd / budget.per_issue_max_usd")
-			}
-			if brakes.NoProgress {
-				armed = append(armed, "agent.no_progress_spend_limit_usd")
 			}
 			if len(armed) == 0 {
 				return doctorCheck{}, false
@@ -1061,8 +1047,8 @@ func checkDoctorBillingMode(id string, cfg workflowconfig.Config, subscriptionAu
 			return doctorCheck{
 				Name:   "Project " + id + " billing mode",
 				Status: doctorWarn,
-				Detail: "budget.billing_mode=metered arms notional USD brakes against subscription-auth usage: " + strings.Join(armed, ", ") + "; budget.enabled=false does not disarm agent.no_progress_spend_limit_usd",
-				Hint:   "Set budget.billing_mode: subscription to make every notional USD brake inert. Do not rely on budget.enabled: false; it only disables budget.per_day_max_usd and budget.per_issue_max_usd.",
+				Detail: "budget.billing_mode=metered arms notional USD brakes against subscription-auth usage: " + strings.Join(armed, ", ") + "",
+				Hint:   "Set budget.billing_mode: subscription to make every notional USD brake inert. budget.enabled: false also disables budget caps.",
 			}, true
 		}
 		warnings := validationWarningsWithPrefix(cfg.ValidationWarnings(), "budget.")
@@ -1083,9 +1069,6 @@ func checkDoctorBillingMode(id string, cfg workflowconfig.Config, subscriptionAu
 	controls := make([]string, 0, 2)
 	if cfg.Budget.Enabled {
 		controls = append(controls, "budget.enabled=true")
-	}
-	if cfg.Agent.NoProgressSpendLimitUSD > 0 {
-		controls = append(controls, fmt.Sprintf("agent.no_progress_spend_limit_usd=%g", cfg.Agent.NoProgressSpendLimitUSD))
 	}
 	if len(controls) == 0 {
 		return doctorCheck{}, false
@@ -1147,45 +1130,6 @@ func validationWarningsWithPrefix(warnings []string, prefix string) []string {
 		}
 	}
 	return filtered
-}
-
-func checkDoctorProgressBrake(id string, cfg workflowconfig.Config) doctorCheck {
-	mode := cfg.Budget.EffectiveBillingMode()
-	controls := make([]string, 0, 2)
-	if cfg.Agent.NoProgressTokenLimit > 0 {
-		controls = append(controls, fmt.Sprintf("tokens=%d", cfg.Agent.NoProgressTokenLimit))
-	}
-	if mode == workflowconfig.BillingModeMetered && cfg.Agent.NoProgressSpendLimitUSD > 0 {
-		controls = append(controls, fmt.Sprintf("USD=%g", cfg.Agent.NoProgressSpendLimitUSD))
-	}
-	if len(controls) == 0 {
-		return doctorCheck{
-			Name:   "Project " + id + " progress brake",
-			Status: doctorWarn,
-			Detail: "no effective cross-session progress brake is configured",
-			Hint:   "Set agent.no_progress_token_limit to a positive token budget, or use agent.no_progress_spend_limit_usd with budget.billing_mode: metered.",
-		}
-	}
-	detail := "effective cross-session progress brake: " + strings.Join(controls, ", ")
-	if mode == workflowconfig.BillingModeSubscription && cfg.Agent.NoProgressSpendLimitUSD > 0 {
-		detail += fmt.Sprintf("; USD=%g is inert in subscription mode", cfg.Agent.NoProgressSpendLimitUSD)
-	}
-	return doctorCheck{
-		Name:   "Project " + id + " progress brake",
-		Status: doctorOK,
-		Detail: detail,
-	}
-}
-
-func checkDoctorTerminalAttemptRecovery(id string, cfg workflowconfig.Config) doctorCheck {
-	limit := cfg.Recovery.EffectiveTerminalAttemptRetryLimit()
-	detail := fmt.Sprintf("recovery.terminal_attempt_retry_limit=%d; park on qualifying failure %d; workspace-preparation failure limit=3", limit, cfg.Recovery.TerminalAttemptFailureLimit())
-	if limit == 0 {
-		detail += "; external review required before another worker session; no automatic cooldown recovery"
-	} else {
-		detail += "; existing breaker cooldown recovery applies"
-	}
-	return doctorCheck{Name: "Project " + id + " terminal attempt recovery", Status: doctorOK, Detail: detail}
 }
 
 func checkDoctorDisabledBudgetCaps(id string, cfg workflowconfig.Budget) (doctorCheck, bool) {
@@ -1778,7 +1722,6 @@ func doctorWorkflowDetail(path string, project globalconfig.Project, cfg workflo
 	details = append(details, doctorWorkflowModelChoiceDetail(cfg))
 	details = append(details, doctorWorkflowSessionGuardDetail(cfg))
 	details = append(details, doctorWorkflowBillingModeDetail(cfg.Budget))
-	details = append(details, doctorWorkflowSpendBreakerDetail(cfg))
 	details = append(details, fmt.Sprintf("orphan-recovery=resume_orphaned_sessions=%t, experimental_thread_resume=%t", cfg.Agent.ResumeOrphanedSessions, cfg.Agent.ExperimentalThreadResume))
 	details = append(details, fmt.Sprintf("prioritize-unblockers=%t", cfg.Agent.PrioritizeUnblockers))
 	details = append(details, doctorAuthorizationDetail(project, cfg))
@@ -1839,21 +1782,6 @@ func doctorWorkflowSessionGuardDetail(cfg workflowconfig.Config) string {
 		tokens,
 		multiplier,
 	)
-}
-
-func doctorWorkflowSpendBreakerDetail(cfg workflowconfig.Config) string {
-	tokenLimit := "disabled"
-	if cfg.Agent.NoProgressTokenLimit > 0 {
-		tokenLimit = strconv.FormatInt(cfg.Agent.NoProgressTokenLimit, 10)
-	}
-	usdLimit := "disabled"
-	if cfg.Agent.NoProgressSpendLimitUSD > 0 {
-		usdLimit = strconv.FormatFloat(cfg.Agent.NoProgressSpendLimitUSD, 'f', 2, 64)
-		if cfg.Budget.EffectiveBillingMode() == workflowconfig.BillingModeSubscription {
-			usdLimit += " (inert)"
-		}
-	}
-	return "progress-breaker=no_progress_token_limit=" + tokenLimit + ", no_progress_spend_limit_usd=" + usdLimit
 }
 
 func doctorWorkflowFindingDetails(findings []doctorWorkflowOptimizationFinding) string {

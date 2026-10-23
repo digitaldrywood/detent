@@ -13,7 +13,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -271,7 +270,7 @@ func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativ
 		}
 		out.Coverage[7].Observed = &observed
 	}
-	for _, name := range []string{"Plan gate", "Validator gate", "Gate kind", "Merge method", "Lifetime limit"} {
+	for _, name := range []string{"Plan gate", "Validator gate", "Gate kind", "Merge method"} {
 		row := diagnosticsConfiguration{Name: name}
 		if len(values[name]) > 1 {
 			value := "Varies by project"
@@ -374,7 +373,7 @@ func diagnosticsTodoDepth(issues []analyticsResidenceIssue, states map[string]tr
 }
 
 func diagnosticsPolicyValues(ctx context.Context, q policyQuerier, scope nativeScope) (map[string]string, error) {
-	values := map[string]string{"Plan gate": "", "Validator gate": "", "Gate kind": "", "Merge method": "", "Lifetime limit": ""}
+	values := map[string]string{"Plan gate": "", "Validator gate": "", "Gate kind": "", "Merge method": ""}
 	approval, found, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
 		return nil, err
@@ -386,13 +385,6 @@ func diagnosticsPolicyValues(ctx context.Context, q policyQuerier, scope nativeS
 	values["Validator gate"] = strconv.FormatBool(approval.Policy.Gates.Validator)
 	values["Gate kind"] = approval.Policy.Gates.Kind
 	values["Merge method"] = approval.Policy.Gates.MergeMethod
-	if approval.Policy.Configuration != nil || approval.Policy.Authored != nil {
-		workflow, err := workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{}, approval.Policy)
-		if err != nil {
-			return nil, err
-		}
-		values["Lifetime limit"] = fmt.Sprintf("%d sessions", workflow.Config.Agent.LifetimeSessionLimit)
-	}
 	return values, nil
 }
 

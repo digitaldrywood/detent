@@ -771,7 +771,7 @@ func demoBoardDegradedHealthBannersSnapshot() telemetry.Snapshot {
 			ProjectID: demoPrimaryProjectID, Class: "runner_error:b6c174a86dfb", Count: 5, AttemptCount: 5, DistinctItemCount: 1,
 			Cause: "provider usage limit reached", RepresentativeError: "You've hit your limit. Try again after the provider reset.",
 			BackendID: "claude-code", BackendKind: "claude_code", Provider: "anthropic", EligibleCandidateCount: &eligibleCandidates,
-			Items:         []telemetry.FailureBreakerItem{{IssueID: "demo-blocked", Identifier: "example-org/detent-core#5280", IssueURL: "https://github.com/example-org/detent-core/issues/5280", Title: "Author beat visuals", CurrentState: "Blocked", AttemptCount: 5, Parked: true}},
+			Items:         []telemetry.FailureBreakerItem{{IssueID: "demo-blocked", Identifier: "example-org/detent-core#5280", IssueURL: "https://github.com/example-org/detent-core/issues/5280", Title: "Author beat visuals", CurrentState: "Blocked", AttemptCount: 5}},
 			BackendOutage: &capacityOutage, WindowSeconds: 3600, ResumeAt: now.Add(12 * time.Minute),
 		},
 		{
@@ -885,12 +885,7 @@ func demoBoardCardIdentitySnapshot() telemetry.Snapshot {
 		CIStatus:         "pending",
 		CodexReviewState: "CLEAN",
 	}
-	running.ParkSummary = telemetry.ParkSummary{
-		AttemptCount: 6, ParkCount: 3,
-		Tokens: telemetry.ParkTokenTotals{InputTokens: 123456, OutputTokens: 45678},
-		Causes: []telemetry.ParkCauseSummary{{Cause: "dependency_wait", Count: 3, FirstAt: snapshot.GeneratedAt.Add(-time.Hour), LastAt: snapshot.GeneratedAt}},
-	}
-	running.CompletionProgress = telemetry.CompletionProgress{Outcome: "no_progress", Reason: "artifact_status_wait: required release integration checks are still pending", ConsecutiveNoProgress: 1, NoProgressLimit: 3}
+	running.CompletionProgress = telemetry.CompletionProgress{Outcome: "no_progress", Reason: "artifact_status_wait: required release integration checks are still pending"}
 	running.Metadata = map[string]string{"hub_sync_status": "error"}
 	for i := range 8 {
 		running.BlockedBy = append(running.BlockedBy, telemetry.BlockedRef{

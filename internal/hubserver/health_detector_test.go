@@ -61,7 +61,7 @@ func TestHealthFindingStartTime(t *testing.T) {
 			wait.Item, wait.Project, wait.Active = "item", string(f.project.ID), true
 			finding, active := humanWaitFinding(now, wait)
 			if test.withoutStart {
-				finding, active = lifetimeFinding(healthLimit{Item: "item", Project: string(f.project.ID), Active: true})
+				finding = newHealthFinding("fixture", "instance", "work_item", "item", "", "", []string{string(f.project.ID)}, healthEvidence{})
 			}
 			if !active {
 				t.Fatal("finding is inactive")
@@ -624,7 +624,7 @@ func TestHealthSnapshotCurrentWaitAndLimitAuthority(t *testing.T) {
 		{name: "permission action still authoritative", want: "unanswered_human_wait"},
 		{name: "human action transition precedes final attempt update", action: true, want: "unanswered_human_wait"},
 		{name: "new human revision supersedes attempt", supersede: true},
-		{name: "lifetime transition remains current", limit: true, want: "lifetime_limit_hit"},
+		{name: "lifetime transition remains current", limit: true, want: ""},
 		{name: "recovered lifetime transition", want: ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -962,7 +962,7 @@ func TestHealthSnapshotCloudTransitionDetailAndDependencyHolds(t *testing.T) {
 			t.Fatalf("transition start=%s", finding.ConditionSince)
 		}
 	}
-	want := map[string]string{string(waiting.WorkItemID): "unanswered_human_wait", string(limited.WorkItemID): "lifetime_limit_hit"}
+	want := map[string]string{string(waiting.WorkItemID): "unanswered_human_wait"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("findings=%v want %v", got, want)
 	}

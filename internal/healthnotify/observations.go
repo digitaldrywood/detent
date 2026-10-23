@@ -234,13 +234,7 @@ func dispatchConditionClass(status telemetry.DispatchStatus) observability.Class
 }
 
 func failureBreakerNeedsOperator(breaker telemetry.FailureBreaker) bool {
-	parkedItems := 0
-	for _, item := range breaker.Items {
-		if item.Parked {
-			parkedItems++
-		}
-	}
-	return observability.FailureBreaker(breaker.EligibleCandidateCount, len(breaker.Items), parkedItems) == observability.ClassFault
+	return observability.FailureBreaker(breaker.EligibleCandidateCount) == observability.ClassFault
 }
 
 func projectIdentity(projectID string, cause string) string {

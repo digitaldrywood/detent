@@ -769,7 +769,7 @@ func TestReworkCapabilityBlockerIsBoundedWithDependentTodo(t *testing.T) {
 			issue.PullRequest.MergeableState = "dirty"
 			tracker := &implementProgressConnector{hydrated: issue, refreshed: issue}
 			attempts := &implementProgressAttemptStore{}
-			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}, AutoPromote: AutoPromoteConfig{Enabled: true, GateWaitState: autoPromoteGateWaitSource, NoProgressLimit: 3, Gate: gate.Config{Kind: gate.KindCommand}}})
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}, AutoPromote: AutoPromoteConfig{Enabled: true, GateWaitState: autoPromoteGateWaitSource, Gate: gate.Config{Kind: gate.KindCommand}}})
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
 			state := newState(cfg)
 			now := time.Date(2026, 9, 5, 19, 1, 0, 0, time.UTC)
@@ -832,7 +832,7 @@ func TestReworkGateWaitRejectsDirtyToDirtyEvidence(t *testing.T) {
 
 func TestInvalidReworkWaitPreservesIndependentParks(t *testing.T) {
 	t.Parallel()
-	for _, reason := range []string{spendProgressReason, dispatchLoopDetectedReason} {
+	for _, reason := range []string{"spend_since_progress_circuit_breaker", "dispatch_loop_detected"} {
 		t.Run(reason, func(t *testing.T) {
 			t.Parallel()
 			issue := reworkGateWaitTestIssue(workpad.StatusComplete)

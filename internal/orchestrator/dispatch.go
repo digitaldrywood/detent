@@ -292,7 +292,6 @@ func (o *Orchestrator) prepareDispatchCandidates(ctx context.Context, state *Sta
 	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
 	issues = o.filterIssueContracts(ctx, state, issues, now)
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
-	o.enforceLifetimeLimits(ctx, state, issues, now)
 	return issues
 }
 
@@ -463,7 +462,6 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 	}
 	issues = o.localIntakeIssues(state, issues)
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
-	o.enforceLifetimeLimits(ctx, state, issues, now)
 	blockerCache := make(map[string]dependencyBlocker)
 	for _, issue := range issues {
 		if o.dispatchPlanner().hardAvailableSlots(state) == 0 {
@@ -855,12 +853,12 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 
 	issue = cloneIssue(claimedIssue)
 	priorAttempt := state.PriorAttempts[issue.ID]
-	dispatchLoopStart := newDispatchLoopStartRecord(issue, runMode)
+	completionSourceStart := newCompletionSourceStartRecord(issue, runMode)
 	if (runMode == runpkg.RunModeImplement || runMode == runpkg.RunModeMerge && !mergeWorkerIssue(issue)) && issue.PullRequest != nil {
-		dispatchLoopStart.PRDiffFingerprint = o.implementCompletionDiffFingerprint(runCtx, issue)
-		dispatchLoopStart.PRMergeableState = issue.PullRequest.MergeableState
+		completionSourceStart.PRDiffFingerprint = o.implementCompletionDiffFingerprint(runCtx, issue)
+		completionSourceStart.PRMergeableState = issue.PullRequest.MergeableState
 	}
-	workAttemptID, ok := o.startDurableWorkAttempt(runCtx, state, issue, attempt, now, workerHost, runMode, dispatchLoopStart)
+	workAttemptID, ok := o.startDurableWorkAttempt(runCtx, state, issue, attempt, now, workerHost, runMode, completionSourceStart)
 	if ok {
 		if state.localAdmitted == nil {
 			state.localAdmitted = map[string]struct{}{}
@@ -903,13 +901,13 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 			}
 			o.releaseGlobalDispatchSlot(globalSlot)
 			o.completeDurableWorkAttempt(ctx, state, Running{
-				Issue:             issue,
-				Attempt:           attempt,
-				WorkAttemptID:     workAttemptID,
-				Mode:              runMode,
-				DispatchLoopStart: dispatchLoopStart,
-				StartedAt:         now,
-				WorkerHost:        workerHost,
+				Issue:                 issue,
+				Attempt:               attempt,
+				WorkAttemptID:         workAttemptID,
+				Mode:                  runMode,
+				CompletionSourceStart: completionSourceStart,
+				StartedAt:             now,
+				WorkerHost:            workerHost,
 			}, now, store.WorkAttemptTerminalFailure, workAttemptErrorStartTransition, err.Error(), "starting", "start state transition failed")
 			o.logWorkerLifecycle(issue, "worker_capacity_released",
 				telemetry.WorkAttemptIDKey, workAttemptID,
@@ -1006,7 +1004,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 	}
 	if runMode == runpkg.RunModeImplement {
-		dispatchProgress.PullRequestDiffFingerprint = dispatchLoopStart.PRDiffFingerprint
+		dispatchProgress.PullRequestDiffFingerprint = completionSourceStart.PRDiffFingerprint
 	}
 	reserveCredentialCanaryForDispatch(state, issue.ID, now)
 	generation := o.workerGeneration.Add(1)
@@ -1025,7 +1023,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		DispatchArtifactStatus: strings.TrimSpace(dispatchArtifactStatus),
 		ArtifactStatusField:    strings.TrimSpace(artifactStatusField),
 		DeliverableKind:        o.cfg.DeliverableKind,
-		DispatchLoopStart:      dispatchLoopStart,
+		CompletionSourceStart:  completionSourceStart,
 		StartedAt:              now,
 		WorkerHost:             workerHost,
 		CapacityScope:          capacityScope,
@@ -1092,9 +1090,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 			request.RetryMode = runpkg.RetryModeFresh
 			request.ResumeState = store.AgentResumeState{}
 		}
-	}
-	if priorAttempt.ExplainBeforeRetry {
-		delete(state.PriorAttempts, issue.ID)
 	}
 	o.logMergeWorkerAttempt(issue, attempt, workerHost)
 	o.logWorkerLifecycle(issue, "worker_attempt_started",
@@ -1384,7 +1379,7 @@ func (o *Orchestrator) usageUpdateHandler(
 				return err
 			}
 		}
-		if update.DispatchLoopStart != nil && progress == nil {
+		if update.CompletionSourceStart != nil && progress == nil {
 			applied := make(chan struct{})
 			select {
 			case <-ctx.Done():

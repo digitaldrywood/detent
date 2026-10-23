@@ -155,11 +155,6 @@ type ProgressSpendStore interface {
 	IssueSpendSince(context.Context, IssueSpendSinceQuery) (IssueSpendSince, error)
 }
 
-type ProgressCreditStore interface {
-	CreditIssueProgress(context.Context, IssueIdentity, time.Time) (IssueProgressCredit, error)
-	IssueProgressCredit(context.Context, IssueIdentity) (IssueProgressCredit, error)
-}
-
 type WorkflowHistoryRevisionReader interface {
 	WorkflowHistoryRevision(context.Context) (int64, error)
 }
@@ -268,13 +263,6 @@ type RuntimeEvidenceStore interface {
 type ActivityStore interface {
 	ListIssueActivity(context.Context, IssueActivityQuery) ([]IssueActivityEvent, error)
 	LatestIssueAgentSession(context.Context, IssueIdentity) (IssueAgentSession, error)
-}
-
-type ParkSummaryStore interface {
-	IssueParkSummary(context.Context, IssueIdentity) (ParkSummary, error)
-	IssueParkSummaries(context.Context, []IssueIdentity) (map[IssueIdentity]ParkSummary, error)
-	ListIssueParkSummaries(context.Context, string) ([]ParkSummary, error)
-	AcknowledgeIssueParks(context.Context, IssueIdentity, int64, time.Time) error
 }
 
 type AgentResumeStore interface {
@@ -1214,14 +1202,6 @@ type IssueSpendSince struct {
 	Sessions       int64
 	FirstSessionAt time.Time
 	LastSessionAt  time.Time
-}
-
-type IssueProgressCredit struct {
-	ProjectID  string    `json:"project_id"`
-	IssueID    string    `json:"issue_id,omitempty"`
-	Identifier string    `json:"identifier,omitempty"`
-	IssueURL   string    `json:"issue_url,omitempty"`
-	CreditedAt time.Time `json:"credited_at"`
 }
 
 type ModelTokenSpend struct {

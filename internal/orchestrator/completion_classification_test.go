@@ -274,7 +274,7 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 			if mode != tt.mode {
 				t.Fatalf("conflict repair mode = %s, want %s", mode, tt.mode)
 			}
-			start := newDispatchLoopStartRecord(before, mode)
+			start := newCompletionSourceStartRecord(before, mode)
 			start.PRDiffFingerprint = before.PullRequest.DiffFingerprint
 			start.PRMergeableState = before.PullRequest.MergeableState
 			id, ok := orch.startDurableWorkAttempt(t.Context(), &state, before, 1, time.Now(), "local", mode, start)
@@ -282,9 +282,9 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 				t.Fatal("start attempt failed")
 			}
 			// Workspace snapshots and heartbeat serialization must preserve PR evidence.
-			running := Running{Issue: before, Mode: mode, DispatchLoopStart: start}
-			running.DispatchLoopStart = dispatchLoopStartRecordFromSnapshot(running, runpkg.DispatchLoopStartSnapshot{WorkspaceDiffAvailable: true})
-			persisted := dispatchLoopStartFromMetadata(t, runningWorkAttemptMetadataJSON(running, nil))
+			running := Running{Issue: before, Mode: mode, CompletionSourceStart: start}
+			running.CompletionSourceStart = completionSourceStartRecordFromSnapshot(running, runpkg.CompletionSourceStartSnapshot{WorkspaceDiffAvailable: true})
+			persisted := completionSourceStartFromMetadata(t, runningWorkAttemptMetadataJSON(running, nil))
 			if persisted.PRDiffFingerprint != start.PRDiffFingerprint || persisted.PRMergeableState != "dirty" {
 				t.Fatalf("heartbeat baseline = %#v", persisted)
 			}

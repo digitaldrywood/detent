@@ -134,7 +134,7 @@ func TestCompletedDependencyWaitRequiresCurrentMachineSignal(t *testing.T) {
 
 func TestCompletedDependencyWaitPreservesOperatorStops(t *testing.T) {
 	t.Parallel()
-	for _, reason := range []string{repeatedFailureCircuitBreakerCause, dispatchLoopDetectedReason, workpadBlockedUnactionedReason} {
+	for _, reason := range []string{"repeated_failure_circuit_breaker", "dispatch_loop_detected", workpadBlockedUnactionedReason} {
 		t.Run(reason, func(t *testing.T) {
 			t.Parallel()
 			issue := implementProgressIssueWithoutPR()
@@ -334,7 +334,7 @@ func TestCompletedDependencyWaitPreservesSavedWork(t *testing.T) {
 			blocker := connector.Issue{ID: "blocker-2282", Identifier: "digitaldrywood/detent#2282", State: "Todo"}
 			tracker := &implementProgressConnector{refreshed: issue, hydrated: issue, resolvedBlockers: []connector.Issue{blocker}}
 			attempts := &implementProgressAttemptStore{}
-			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, AutoPromote: AutoPromoteConfig{NoProgressLimit: 3}, ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}})
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, AutoPromote: AutoPromoteConfig{}, ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}})
 			o := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
 			stats := tt.stats
 			if diffStatsPresent(stats) {
@@ -347,7 +347,7 @@ func TestCompletedDependencyWaitPreservesSavedWork(t *testing.T) {
 			} {
 				state := newState(cfg)
 				running := Running{Issue: issue, Attempt: 1, WorkAttemptID: int64(index + 1), Mode: runpkg.RunModeImplement, StartedAt: completedAt.Add(-time.Minute), WorkspacePath: t.TempDir(), DiffStats: stats,
-					DispatchLoopStart: dispatchLoopTestStart(issue.State, autoPromoteReworkSignatureFromIssue(issue, AutoPromoteSummaryFromIssue(issue)), implementProgressDiffStatsFromDiffStats(stats))}
+					CompletionSourceStart: completionSourceTestStart(issue.State, autoPromoteReworkSignatureFromIssue(issue, AutoPromoteSummaryFromIssue(issue)), implementProgressDiffStatsFromDiffStats(stats))}
 				state.Running[issue.ID] = running
 				state.Claimed[issue.ID] = Claimed{Issue: issue}
 				o.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: completedAt, Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement}, Result: runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: stats, PullRequestUpdated: tt.updatedPR}})
