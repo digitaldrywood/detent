@@ -1,0 +1,61 @@
+package cloudentry
+
+import (
+	"slices"
+	"strings"
+	"testing"
+)
+
+func TestContentSecurityPolicy(t *testing.T) {
+	t.Parallel()
+	directives := map[string][]string{}
+	for directive := range strings.SplitSeq(contentSecurity, ";") {
+		fields := strings.Fields(directive)
+		if len(fields) == 0 {
+			continue
+		}
+		if _, ok := directives[fields[0]]; ok {
+			t.Fatalf("directive %s is declared twice", fields[0])
+		}
+		directives[fields[0]] = fields[1:]
+	}
+	formSources := directives["form-action"]
+	wantFormSources := []string{"'self'", "https://checkout.stripe.com", "https://billing.stripe.com", "https://detent.build"}
+	if len(formSources) != len(wantFormSources) {
+		t.Fatalf("form destinations = %v, want %v", formSources, wantFormSources)
+	}
+	for _, source := range wantFormSources {
+		if !slices.Contains(formSources, source) {
+			t.Fatalf("form destinations omit %s: %v", source, formSources)
+		}
+	}
+	for _, test := range []struct {
+		name      string
+		directive string
+		source    string
+		allowed   bool
+	}{
+		{name: "WorkOS widgets connect", directive: "connect-src", source: "https://api.workos.com", allowed: true},
+		{name: "WorkOS avatars load", directive: "img-src", source: "https://workoscdn.com", allowed: true},
+		{name: "scripts never evaluate strings", directive: "script-src", source: "'unsafe-eval'", allowed: false},
+		{name: "connections never use wildcard hosts", directive: "connect-src", source: "*", allowed: false},
+		{name: "scripts never run inline", directive: "script-src", source: "'unsafe-inline'", allowed: false},
+		{name: "style elements come only from the bundle", directive: "style-src", source: "'unsafe-inline'", allowed: false},
+		{name: "the bundle's own stylesheets load", directive: "style-src", source: "'self'", allowed: true},
+		{name: "the diff renderer's inline style attributes apply", directive: "style-src-attr", source: "'unsafe-inline'", allowed: true},
+		{name: "objects never load", directive: "object-src", source: "'none'", allowed: true},
+		{name: "pages cannot be framed", directive: "frame-ancestors", source: "'none'", allowed: true},
+		{name: "same-origin framing stays forbidden", directive: "frame-ancestors", source: "'self'", allowed: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			sources, ok := directives[test.directive]
+			if !ok {
+				t.Fatalf("policy has no %s directive: %s", test.directive, contentSecurity)
+			}
+			if got := slices.Contains(sources, test.source); got != test.allowed {
+				t.Fatalf("%s contains %s = %v, want %v", test.directive, test.source, got, test.allowed)
+			}
+		})
+	}
+}

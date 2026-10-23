@@ -1,0 +1,61 @@
+{
+  "items": [
+    {
+      "sequence": "1",
+      "identity": {
+        "role": "implementer",
+        "backend": "codex",
+        "model": "gpt-6-astra"
+      },
+      "machine_id": "mac_studio",
+      "runner_id": "rnr_mac_studio",
+      "session_id": "sess_90",
+      "lease_id": "lease_6e19",
+      "fencing_token": "6",
+      "run_id": "run_1b8a0c2d3e4f5a6b7c8d9e0f1a2b3c4d",
+      "attempt_id": "att_07e3a0b1c2d3e4f5a6b7c8d9e0f1a2b3",
+      "policy_id": "policy_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "outcome": "interrupted",
+      "status": "interrupted",
+      "started_at": "2026-09-09T08:50:00Z",
+      "updated_at": "2026-09-09T09:14:02Z"
+    },
+    {
+      "sequence": "3",
+      "identity": {
+        "role": "implementer",
+        "backend": "codex",
+        "model": "gpt-6-astra"
+      },
+      "machine_id": "mac_studio",
+      "runner_id": "rnr_mac_studio",
+      "session_id": "sess_91",
+      "lease_id": "lease_7f2a",
+      "fencing_token": "7",
+      "run_id": "run_2c9a1b3d4e5f6a7b8c9d0e1f2a3b4c5d",
+      "attempt_id": "att_18f4a1b2c3d4e5f6a7b8c9d0e1f2a3b4",
+      "policy_id": "policy_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "artifact_ids": [
+        "artifact_aa11bb22cc33dd44ee55ff6677889900"
+      ],
+      "status": "running",
+      "started_at": "2026-09-09T10:03:00Z",
+      "updated_at": "2026-09-09T10:41:22Z",
+      "checkpoint": {
+        "resume": "resume_session",
+        "availability": "available",
+        "storage": "local_only",
+        "worktree_state": "clean",
+        "head_sha": "a41f0c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b",
+        "external_effect": "git_push",
+        "effect_state": "confirmed",
+        "effect_id": "effect_11223344556677889900aabbccddeeff",
+        "change": {
+          "change_id": "change_9988776655443322110011223344556677",
+          "version_id": "version_aabbccddeeff00112233445566778899",
+          "head_sha": "a41f0c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b"
+        }
+      }
+    }
+  ]
+}
