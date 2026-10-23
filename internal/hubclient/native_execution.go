@@ -75,6 +75,7 @@ type nativeExecution struct {
 	preparedFailure          *tracker.NativeTerminalFailure
 	runtimeDirty             bool
 	runtimeSupported         *bool
+	runtimePublishedAt       time.Time
 	// repository is the https URL of the checkout's origin, which a published
 	// version names; empty when the remote cannot be named that way.
 	repository      string
@@ -884,7 +885,7 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	}
 	data.Handoff = checkpoint
 	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: kind, SchemaVersion: 1, Data: data}
-	if e.claim.lease.RunDetailBatching && kind == "run.observed" && len(e.observations) < 7 {
+	if e.claim.lease.RunDetailBatching && kind == "run.observed" && len(e.observations) < 7 && !e.runtimeHeartbeatDue(data.Runtime) {
 		encoded, err := json.Marshal(event)
 		if err != nil {
 			return err
@@ -972,6 +973,9 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	}
 	checkpoint := e.data.Handoff
 	e.data = e.pending.Data
+	if e.data.Runtime != nil {
+		e.runtimePublishedAt = e.data.Runtime.HeartbeatAt
+	}
 	if e.data.Handoff == nil {
 		e.data.Handoff = checkpoint
 	}
