@@ -42,12 +42,7 @@ func (d *database) drainNativeBoardDirty(ctx context.Context, now time.Time) (bo
 	return more, err
 }
 
-const nativeBoardCandidateLimit = 64
-
 func (d *database) drainNativeBoardDirtyExcept(ctx context.Context, now time.Time, skip []string) (bool, string, error) {
-	if len(skip) >= nativeBoardCandidateLimit {
-		return false, "", nil
-	}
 	id, err := d.nextNativeBoardCandidate(ctx, now, skip)
 	if err != nil || id == "" {
 		return false, "", err
@@ -67,9 +62,9 @@ func (d *database) drainNativeBoardDirtyExcept(ctx context.Context, now time.Tim
 }
 
 func (d *database) nextNativeBoardCandidate(ctx context.Context, now time.Time, skip []string) (string, error) {
-	rows, err := d.reader.QueryContext(ctx, `SELECT work_item_id FROM (SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id LIMIT 64)
+	rows, err := d.reader.QueryContext(ctx, `SELECT work_item_id FROM (SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id LIMIT ?)
 UNION ALL SELECT work_item_id FROM (SELECT work_item_id FROM native_board_items
-WHERE expires_at<>'' AND expires_at<=? ORDER BY expires_at,work_item_id LIMIT 64)`, now.UTC().Format("2006-01-02T15:04:05.000000000Z"))
+WHERE expires_at<>'' AND expires_at<=? ORDER BY expires_at,work_item_id LIMIT ?)`, len(skip)+1, now.UTC().Format("2006-01-02T15:04:05.000000000Z"), len(skip)+1)
 	if err != nil {
 		return "", err
 	}
