@@ -17,6 +17,16 @@ const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
 let hub;
 
+const integrationFixture = {
+  profile: "native",
+  revision: "1",
+  intake: "disabled",
+  projection: "summary",
+  repository_enabled: true,
+  archive_completed_after_days: null,
+  archive_cancelled_after_days: null,
+};
+
 for (const viewport of [
   { name: "desktop-light", width: 1440, height: 900, theme: "light" },
   { name: "desktop-dark", width: 1440, height: 900, theme: "dark" },
@@ -26,9 +36,7 @@ for (const viewport of [
   test(`repository picker Connect GitHub no-match ${viewport.name}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.route("**/integration", async (route) => {
-      const response = await route.fetch();
-      const integration = await response.json();
-      await route.fulfill({ json: { ...integration, github_transport_available: true, checkout_repository: "", repository: "" } });
+      await route.fulfill({ json: { ...integrationFixture, github_transport_available: true, checkout_repository: "", repository: "" } });
     });
     await page.route("**/api/cloud/account/github/repositories", (route) => route.fulfill({ json: { available: true, connected: false, reconnect: false, repositories: [] } }));
     await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);
@@ -50,6 +58,7 @@ test.beforeEach(async () => {
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
+  await page.context().close();
   await hub?.stop();
   hub = undefined;
 });
@@ -385,11 +394,9 @@ for (const state of [
     const integrationURL = "**/projects/*/integration";
     let integrationReady = Promise.resolve();
     await page.route(integrationURL, async (route) => {
-      const response = await route.fetch();
-      const integration = await response.json();
       await integrationReady;
-      await route.fulfill({ response, json: {
-        ...integration,
+      await route.fulfill({ json: {
+        ...integrationFixture,
         profile: state.profile,
         intake: state.profile === "native" && state.repository ? "automatic" : "disabled",
         manual_import_enabled: false,
