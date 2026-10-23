@@ -25,7 +25,7 @@ async function installFindings(page) {
     const project = await response.json();
     await route.fulfill({ json: { ...project, states: [...project.states.filter((lane) => lane.name !== "Blocked"), { name: "Blocked", terminal: false, dispatchable: false, transitions: ["Todo"] }] } });
   });
-  await page.route(/\/work-items(?:\?.*)?$/, (route) => route.fulfill({ json: { items: route.request().url().includes(`/projects/${hub.fixture.project_id}/`) ? [actionIssue] : [] } }));
+  await page.route(/\/work-items(?:\?.*)?$/, (route) => route.fulfill({ json: { items: route.request().url().includes(`/projects/${hub.fixture.project_id}/`) ? [{ ...actionIssue, revision: pending ? actionIssue.revision : `${actionIssue.revision}-answered` }] : [] } }));
   await page.route("**/work-items/*/explanation", (route) => route.fulfill({ json: {
     observed_at: at("12"), current_lane: { name: "Blocked", freshness: "available" },
     eligibility: { state: "refused", source_state: "available" },
