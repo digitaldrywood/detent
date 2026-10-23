@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -388,23 +389,19 @@ func TestArchiveLegacyBindingSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cfg.Endpoint, cfg.Bucket = "https://8.8.8.8", "replacement"
+		cfg.Endpoint = "https://8.8.8.8"
 		current, err := f.service.currentArchiveBinding(t.Context(), organization)
 		if err != nil || current.Endpoint != "https://1.1.1.1" || current.Bucket != "private" {
 			t.Fatal("legacy binding reinterpreted hosted configuration")
 		}
-		legacy, err := f.service.archiveStorageForReference(t.Context(), organization, ref)
+		if _, err := f.service.archiveStorageForReference(t.Context(), organization, ref); !errors.Is(err, artifact.ErrStorage) {
+			t.Fatalf("mismatched legacy binding error=%v", err)
+		}
+		storage, err := attachment.NewStorage(t.Context(), cfg, store.transport)
 		if err != nil {
 			t.Fatal(err)
 		}
-		read, err := legacy.PresignArchive(t.Context(), ref)
-		if err != nil {
-			t.Fatal(err)
-		}
-		parsed, err := url.Parse(read.URL)
-		if err != nil || parsed.Host != "1.1.1.1" || parsed.Path != "/private/"+ref.Key {
-			t.Fatal("legacy reference moved to the replacement bucket")
-		}
+		f.service.attachments = storage
 		next, err := f.service.saveArchiveBinding(t.Context(), attachment.StorageBinding{Organization: organization, Backend: "hosted", Endpoint: cfg.Endpoint, Region: cfg.Region, Bucket: cfg.Bucket, CredentialReference: "hosted"}, 0)
 		if err != nil || next.ID == "" || next.Revision != 1 {
 			t.Fatal("hosted rebinding failed")
@@ -414,12 +411,12 @@ func TestArchiveLegacyBindingSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		read, err = replacement.PresignArchive(t.Context(), ref)
+		read, err := replacement.PresignArchive(t.Context(), ref)
 		if err != nil {
 			t.Fatal(err)
 		}
-		parsed, err = url.Parse(read.URL)
-		if err != nil || parsed.Host != "8.8.8.8" || parsed.Path != "/replacement/"+ref.Key {
+		parsed, err := url.Parse(read.URL)
+		if err != nil || parsed.Host != "8.8.8.8" || parsed.Path != "/private/"+ref.Key {
 			t.Fatal("new reference did not use its binding")
 		}
 	}
@@ -946,7 +943,10 @@ func TestTenantContentStorage(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
 	spaces := newSpacesFixture(t, false)
-	storage, err := attachment.NewStorage(t.Context(), spaces.config(), spaces.transport)
+	cfg := spaces.config()
+	cfg.Endpoint = "https://10.136.255.254"
+	f.service.config.Attachments = &cfg
+	storage, err := attachment.NewStorage(t.Context(), cfg, spaces.transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -976,6 +976,10 @@ func TestTenantContentStorage(t *testing.T) {
 			references = append(references, bound)
 		}
 		for index, ref := range references {
+			f.service.config.attachmentTransport = nil
+			if index > 0 {
+				f.service.config.attachmentTransport = spaces.transport
+			}
 			request := entryauthority.ContentRequest{Organization: org, Reference: ref, Write: true, Data: data}
 			for range 2 {
 				if _, err := f.service.tenantContent(t.Context(), organization, request); err != nil {
@@ -1014,5 +1018,45 @@ func TestTenantContentStorage(t *testing.T) {
 	defer spaces.mu.Unlock()
 	if len(spaces.objects) != 6 {
 		t.Fatalf("stored %d objects, want three bindings per org", len(spaces.objects))
+	}
+}
+
+func TestHostedArchiveBindingStorage(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		mutate func(*attachment.StorageBinding)
+		want   error
+	}{
+		{name: "hosted private address"},
+		{name: "customer private address", mutate: func(b *attachment.StorageBinding) { b.Backend = "s3" }, want: attachment.ErrInvalid},
+		{name: "endpoint mismatch", mutate: func(b *attachment.StorageBinding) { b.Endpoint = "https://10.0.0.1" }, want: artifact.ErrStorage},
+		{name: "region mismatch", mutate: func(b *attachment.StorageBinding) { b.Region = "other" }, want: artifact.ErrStorage},
+		{name: "bucket mismatch", mutate: func(b *attachment.StorageBinding) { b.Bucket = "other" }, want: artifact.ErrStorage},
+		{name: "prefix mismatch", mutate: func(b *attachment.StorageBinding) { b.Prefix = "other/" }, want: artifact.ErrStorage},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			store := newSpacesFixture(t, false)
+			cfg := store.config()
+			cfg.Endpoint = "https://10.136.255.254"
+			f.service.config.Attachments = &cfg
+			storage, err := attachment.NewStorage(t.Context(), cfg, store.transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.service.attachments = storage
+			f.service.config.ArchiveCredentials = func(context.Context, string, string) (attachment.Credentials, error) {
+				return attachment.Credentials{AccessKeyID: cfg.AccessKeyID, SecretAccessKey: cfg.SecretAccessKey}, nil
+			}
+			b := attachment.StorageBinding{Organization: "org_alpha", Backend: "hosted", Endpoint: cfg.Endpoint, Region: cfg.Region, Bucket: cfg.Bucket, CredentialReference: "hosted"}
+			if test.mutate != nil {
+				test.mutate(&b)
+			}
+			_, err = f.service.bindingStorage(t.Context(), b)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("binding error=%v, want %v", err, test.want)
+			}
+		})
 	}
 }
