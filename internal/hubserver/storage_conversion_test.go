@@ -298,41 +298,52 @@ func TestStorageConversionHistoricalJSONScope(t *testing.T) {
 }
 
 func TestStorageConversionByteBudgetAndVersion(t *testing.T) {
-	f := newStorageArchiveFixture(t)
-	issue := f.nativeFixture.create(t, "bounded legacy rows")
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	tx := f.tx(t)
-	for range 11 {
-		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{ReasonDetail: strings.Repeat("x", 180<<10), Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("old output", 4096)}}, f.now); err != nil {
-			t.Fatal(err)
-		}
-	}
-	f.commit(t, tx)
-	var through int64
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT max(rowid) FROM collaboration_events WHERE work_item_id=?", issue.WorkItemID).Scan(&through); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,cursor_rowid,complete,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, scope.organization, scope.project, "runs", issue.WorkItemID, 0, through, through, 1, formatHubTime(f.now)); err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []int64{5, 10, 11} {
-		var before int64
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(sum(length(CAST(data_json AS BLOB))),0) FROM collaboration_events WHERE work_item_id=? AND json_type(data_json,'$._storage_archive')='object'", issue.WorkItemID).Scan(&before); err != nil {
-			t.Fatal(err)
-		}
-		if err := f.service.convertLegacyStorage(t.Context(), f.now); err != nil {
-			t.Fatal(err)
-		}
-		var after int64
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(sum(length(CAST(data_json AS BLOB))),0) FROM collaboration_events WHERE work_item_id=? AND json_type(data_json,'$._storage_archive')='object'", issue.WorkItemID).Scan(&after); err != nil {
-			t.Fatal(err)
-		}
-		if after-before > storageConversionBytes {
-			t.Fatalf("chunk wrote %d payload bytes", after-before)
-		}
-		progress, err := readStorageConversionProgress(t.Context(), f.service.database.reader, scope)
-		if err != nil || len(progress) != 1 || progress[0].Version != storageConversionVersion || progress[0].Rows != want || progress[0].Complete != (want == 11) {
-			t.Fatalf("progress=%+v err=%v", progress, err)
-		}
+	for _, test := range []struct {
+		name              string
+		detailBytes, rows int
+		progress          []int64
+	}{
+		{"batch budget", 180 << 10, 11, []int64{5, 10, 11}},
+		{"oversized row advances", 2 << 20, 2, []int64{1, 2}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newStorageArchiveFixture(t)
+			issue := f.nativeFixture.create(t, "bounded legacy rows")
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			tx := f.tx(t)
+			for range test.rows {
+				if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{ReasonDetail: strings.Repeat("x", test.detailBytes), Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("old output", 4096)}}, f.now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.commit(t, tx)
+			var through int64
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT max(rowid) FROM collaboration_events WHERE work_item_id=?", issue.WorkItemID).Scan(&through); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,cursor_rowid,complete,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, scope.organization, scope.project, "runs", issue.WorkItemID, 0, through, through, 1, formatHubTime(f.now)); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range test.progress {
+				var before int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(sum(length(CAST(data_json AS BLOB))),0) FROM collaboration_events WHERE work_item_id=? AND json_type(data_json,'$._storage_archive')='object'", issue.WorkItemID).Scan(&before); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.convertLegacyStorage(t.Context(), f.now); err != nil {
+					t.Fatal(err)
+				}
+				var after int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(sum(length(CAST(data_json AS BLOB))),0) FROM collaboration_events WHERE work_item_id=? AND json_type(data_json,'$._storage_archive')='object'", issue.WorkItemID).Scan(&after); err != nil {
+					t.Fatal(err)
+				}
+				if after-before > int64(max(storageConversionBytes, test.detailBytes+4096)) {
+					t.Fatalf("chunk wrote %d payload bytes", after-before)
+				}
+				progress, err := readStorageConversionProgress(t.Context(), f.service.database.reader, scope)
+				if err != nil || len(progress) != 1 || progress[0].Version != storageConversionVersion || progress[0].Rows != want || progress[0].Complete != (want == int64(test.rows)) {
+					t.Fatalf("progress=%+v err=%v", progress, err)
+				}
+			}
+		})
 	}
 }

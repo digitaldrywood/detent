@@ -778,6 +778,9 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		info, created, err = l.createLandingWorktree(ctx, info, issue)
 	} else {
 		head := "HEAD"
+		if issue.FreshCheckout && issue.BaseRef != "" {
+			head = issue.BaseRef
+		}
 		if deliveryHead != "" {
 			head = deliveryHead
 		}

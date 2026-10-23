@@ -172,8 +172,9 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 		{name: "historical manual checkpoint resumes implementation", failure: "recovery"},
 		{name: "planning-enabled Todo resumes after a historical code checkpoint", failure: "recovery", planRecoveryRole: runner.RoleCode},
 		{name: "planning-enabled Todo resumes after a historical rework checkpoint", failure: "recovery", planRecoveryRole: runner.RoleRework},
-		{name: "planning-enabled clean code identity mismatch preserves current version", failure: "recovery", planRecoveryRole: runner.RoleCode, resumeCase: "identity"},
-		{name: "planning-enabled changed configuration reaches session recovery and preserves current version", failure: "recovery", planRecoveryRole: runner.RoleCode, resumeCase: "policy"},
+		{name: "planning-enabled dirty code identity mismatch preserves current version", failure: "recovery", planRecoveryRole: runner.RoleCode, resumeCase: "dirty"},
+		{name: "planning-enabled clean code identity mismatch restarts from current version", failure: "recovery", planRecoveryRole: runner.RoleCode, resumeCase: "identity"},
+		{name: "planning-enabled changed configuration restarts from current version", failure: "recovery", planRecoveryRole: runner.RoleCode, resumeCase: "policy"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.failure != "workspace" {
@@ -188,6 +189,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	t.Helper()
 	planningRecovery := planRecoveryRole != ""
 	manualCheckpoint := failure == "recovery" && resumeCase == ""
+	cleanCheckpoint := resumeCase == "identity" || resumeCase == "policy"
 	states := hubserverPlanStates()
 	if failure == "recovery" {
 		states[0].Transitions = append(states[0].Transitions, "Blocked")
@@ -243,6 +245,11 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 			nativeChangeGit(t, info.Path, "add", "README.md")
 			nativeChangeGit(t, info.Path, "commit", "-m", "preserved source")
 		}
+		if resumeCase == "dirty" {
+			if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("retained dirty source\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
 		state, err := backend.(workspace.RecoveryStateProvider).RecoveryState(t.Context(), info, workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
 		if err != nil {
 			t.Fatal(err)
@@ -267,7 +274,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 			recordedRole = planRecoveryRole
 		}
 		if resumeCase != "" {
-			if len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 || state.UnpushedCommits != 0 {
+			if resumeCase != "dirty" && (len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 || state.UnpushedCommits != 0) {
 				t.Fatalf("resume refusal setup is not clean: tracked=%d untracked=%d unpushed=%d", len(state.TrackedPaths), len(state.UntrackedPaths), state.UnpushedCommits)
 			}
 			started := time.Now().Add(-time.Minute)
@@ -305,6 +312,9 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		checkpoint := tracker.NativeCheckpoint{Resume: "manual_recovery", Availability: "available", Storage: "local_only", WorktreeState: "unpushed", HeadSHA: state.HeadSHA, WorkspaceDigest: state.WorkspaceFingerprint, ExternalEffect: "none", EffectState: "none"}
 		if resumeCase != "" {
 			checkpoint.Resume, checkpoint.WorktreeState = "resume_session", "clean"
+		}
+		if resumeCase == "dirty" {
+			checkpoint.WorktreeState = "dirty"
 		}
 		preserved = &checkpoint
 		if err := execution.Checkpoint(t.Context(), checkpoint); err != nil {
@@ -354,7 +364,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	transport := &nativePlanTransport{next: h.failChanges, native: h.native, finished: finished, terminated: make(chan tracker.NativeRunData, 1), blocked: make(chan struct{}, 1)}
 	transport.failWorkflow.Store(abandon)
 	h.native.client.httpClient.Transport = transport
-	if failure == "recovery" && !manualCheckpoint {
+	if failure == "recovery" && !manualCheckpoint && !cleanCheckpoint {
 		h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 			if planningRecovery && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/release") {
 				current, readErr := h.native.Issue(request.Context(), tracker.NativeWorkItemID(issue.ID))
@@ -390,7 +400,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	if failure == "recovery" {
 		orchCfg.ObservedStates = append(orchCfg.ObservedStates, "Blocked")
 	}
-	if planningRecovery && !manualCheckpoint {
+	if planningRecovery && !manualCheckpoint && !cleanCheckpoint {
 		orchCfg.PollInterval = time.Hour
 		runBackend = &nativePlanObservedRunner{Runner: agent, observed: observed}
 	}
@@ -411,10 +421,10 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	if failure != "" {
 		wantStates = []string{"Human Review"}
 	}
-	if failure == "recovery" && !manualCheckpoint {
+	if failure == "recovery" && !manualCheckpoint && !cleanCheckpoint {
 		wantStates = []string{"Todo"}
 	}
-	if manualCheckpoint && planningRecovery {
+	if (manualCheckpoint || cleanCheckpoint) && planningRecovery {
 		wantStates = []string{"In Progress", "Human Review"}
 	}
 	if abandon {
@@ -494,7 +504,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 			if got.err != nil {
 				t.Fatal(got.err)
 			}
-			if planningRecovery && !manualCheckpoint {
+			if planningRecovery && !manualCheckpoint && !cleanCheckpoint {
 				select {
 				case run := <-observed:
 					refusalAttemptID = run.localAttemptID
@@ -538,7 +548,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		}
 		return
 	}
-	if manualCheckpoint {
+	if manualCheckpoint || cleanCheckpoint {
 		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
 		wantCalls := int64(1)
 		if planningRecovery {
@@ -546,6 +556,11 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		}
 		if err != nil || current.Issue.State != "Human Review" || preserved == nil || provider.calls.Load() != wantCalls || len(changes) != 1 || changes[0].CurrentVersion == "" {
 			t.Fatalf("historical judgment prevented delivery or lost source: state=%s attempts=%d calls=%d changes=%d error=%v", current.Issue.State, len(current.Attempts), provider.calls.Load(), len(changes), err)
+		}
+		if cleanCheckpoint {
+			if provider.resumeVerified.Load() != 1 || changes[0].ID != preservedChanges[0].ID || changes[0].CurrentVersion == preservedChanges[0].CurrentVersion {
+				t.Fatalf("clean restart did not advance the existing Change: verified=%d changes=%v", provider.resumeVerified.Load(), changes)
+			}
 		}
 		nativeChangeGit(t, provider.workspace, "merge-base", "--is-ancestor", preserved.HeadSHA, "HEAD")
 		return

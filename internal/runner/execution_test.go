@@ -315,8 +315,8 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		{name: "provider identity missing after turn without external effect", providerNotStarted: true, providerHadTurns: true, restartSession: true, startupFailsAgain: true},
 		{name: "dirty provider never started", providerNotStarted: true, dirty: true, blocked: true},
 		{name: "startup policy changed", providerNotStarted: true, changedPolicy: true},
-		{name: "startup host changed", providerNotStarted: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Lease.MachineID = "other-host" }},
-		{name: "startup digest changed", providerNotStarted: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+		{name: "startup host changed", providerNotStarted: true, restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Lease.MachineID = "other-host" }},
+		{name: "startup digest changed", providerNotStarted: true, restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) {
 			e.recovery.Attempts[0].Checkpoint.WorkspaceDigest = "other-digest"
 		}},
 		{name: "dirty 181", dirty: true},
@@ -1074,7 +1074,7 @@ func TestNativeRecoveryDecision(t *testing.T) {
 			r.Attempts[0].Checkpoint.WorktreeState = "clean"
 			r.Attempts[0].Identity = &tracker.NativeExecutionIdentity{Role: "rework", Backend: "codex", Model: "test"}
 			r.Attempts = append(r.Attempts, tracker.NativeAttempt{Status: "failed", NativeRunData: tracker.NativeRunData{AttemptID: "failed-plan", Identity: &tracker.NativeExecutionIdentity{Role: "plan", Backend: "codex", Model: "test"}}, Checkpoint: &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean"}})
-		}, "manual_recovery", "session_restart_required", nil},
+		}, "fresh_checkout", "session_restart_required", nil},
 		{"clean startup with uncertain publication remains source", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts = append(r.Attempts, tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{MachineID: "other"}, Checkpoint: &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean", ExternalEffect: "pr_create", EffectState: "ambiguous"}})
 		}, "fresh_checkout", "publication_reconciliation_required", nil},
@@ -1371,8 +1371,15 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 		ambiguous   bool
 		automatic   bool
 		lost        bool
+		cleanRole   string
+		effect      bool
+		dirty       bool
 	}{
 		{name: "first run without worker GitHub access"},
+		{name: "clean foreign plan", interrupted: true, cleanRole: RolePlan},
+		{name: "clean foreign rework", interrupted: true, cleanRole: RoleRework},
+		{name: "effect bearing foreign checkpoint", interrupted: true, cleanRole: RolePlan, effect: true, blocked: true},
+		{name: "dirty foreign checkpoint", interrupted: true, cleanRole: RolePlan, dirty: true, blocked: true},
 		{name: "lost legacy checkpoint starts fresh", lost: true},
 		{name: "preserved planner checkpoint", local: true},
 		{name: "explicit worker GitHub access", workerAuth: true},
@@ -1401,6 +1408,18 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 				previous := &execution.recovery.Attempts[0]
 				previous.Status = "interrupted"
 				previous.Identity = &tracker.NativeExecutionIdentity{Role: "plan", Backend: "codex", Model: "test"}
+			}
+			if test.cleanRole != "" {
+				previous := &execution.recovery.Attempts[0]
+				previous.Identity.Role = test.cleanRole
+				previous.Checkpoint = &tracker.NativeCheckpoint{Storage: "local_only", Resume: "resume_session", Availability: "available", WorktreeState: "clean", HeadSHA: "recorded-head", WorkspaceDigest: "digest", ExternalEffect: "none", EffectState: "none"}
+				if test.dirty {
+					previous.Checkpoint.WorktreeState = "dirty"
+				}
+				if test.effect {
+					previous.Checkpoint.ExternalEffect, previous.Checkpoint.EffectState = "provider_turn", "pending"
+				}
+				backend.recoveryStates = []workspace.RecoveryState{{HeadSHA: "recorded-head", WorkspaceFingerprint: "digest"}}
 			}
 			if test.ambiguous {
 				execution.recovery.Attempts[0].Checkpoint.ExternalEffect = "git_push"
@@ -1463,6 +1482,9 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			request := RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan}
+			if test.cleanRole == RoleRework {
+				request.Mode, request.Issue.State = RunModeImplement, "Rework"
+			}
 			if test.fresh {
 				request.Mode, request.RetryMode = RunModeImplement, RetryModeFresh
 				if !test.automatic {
@@ -1494,6 +1516,11 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 			}
 			if errors.Is(err, ErrNativeRecoveryRequired) != test.blocked || (!test.blocked && err != nil) {
 				t.Fatalf("run error = %v", err)
+			}
+			if test.cleanRole != "" && !test.blocked {
+				if !backend.createIssue.FreshCheckout || backend.createIssue.BaseRef != "recorded-head" || !agentResumeEmpty(agent.request.Resume) {
+					t.Fatalf("clean checkpoint did not restart at recorded head: issue=%+v resume=%+v", backend.createIssue, agent.request.Resume)
+				}
 			}
 			if test.blocked && execution.started {
 				t.Fatal("unresolved checkpoint was superseded by a new attempt")

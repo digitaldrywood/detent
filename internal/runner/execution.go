@@ -913,12 +913,13 @@ func (r *Runner) nativeInterruptedResumeState(ctx context.Context, req RunReques
 	if previous == nil {
 		return store.AgentResumeState{}, nil
 	}
-	state, err := r.lookupInterruptedResumeState(ctx, req, runtime, previous)
-	if err != nil && previous.Checkpoint.GitRef() {
-		r.logWorkerEvent(req.Issue, "worker_native_session_unavailable", "error", err)
+	restartable := previous.Checkpoint.GitRef() || cleanLocalCheckpoint(previous.Checkpoint)
+	if restartable && previous.MachineID != recovery.Lease.MachineID {
 		return store.AgentResumeState{}, nil
 	}
-	if previous.Checkpoint.GitRef() && previous.MachineID != recovery.Lease.MachineID {
+	state, err := r.lookupInterruptedResumeState(ctx, req, runtime, previous)
+	if err != nil && restartable {
+		r.logWorkerEvent(req.Issue, "worker_native_session_unavailable", "error", err)
 		return store.AgentResumeState{}, nil
 	}
 	return state, err
@@ -1007,6 +1008,9 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 		if state.DetentSessionID > 0 && agentResumeStateEmpty(state) && checkpoint.WorktreeState == "clean" && checkpoint.ExternalEffect == "none" && checkpoint.EffectState == "none" {
 			interrupted = false
 		}
+	}
+	if cleanLocalCheckpoint(checkpoint) {
+		return "fresh_checkout", "session_restart_required"
 	}
 	if !sessionAvailable && (checkpointMatches || !localAvailable && checkpoint.WorktreeState == "clean") &&
 		(!agentResumeStateEmpty(state) || state.DetentSessionID == 0 && checkpoint.ExternalEffect == "none" && checkpoint.EffectState == "none") {
