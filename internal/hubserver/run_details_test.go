@@ -494,3 +494,37 @@ func TestNativeRunDetailIsolation(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeBoardRefreshReadsRunDetailReferences(t *testing.T) {
+	t.Parallel()
+	store := &memoryRunDetails{}
+	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	f := newDefaultNativeFixture(t, Config{RunDetails: store, now: func() time.Time { return now }})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	issue := f.create(t, "running work")
+	worker := f.worker(t, "worker")
+	lease := claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID)
+	event := nativeStartedEvent(lease)
+	path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+	event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "checkpoint-1", 2
+	event.Data.Handoff = nativeTestCheckpoint()
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+	if store.uploads == 0 {
+		t.Fatal("attempt detail was not stored as a reference")
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT OR IGNORE INTO native_board_dirty(work_item_id) VALUES(?)", issue.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	f.service.maintainNativeBoard(context.Background())
+	var running, dirty int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT running,(SELECT count(*) FROM native_board_dirty) FROM native_board_items WHERE work_item_id=?", issue.WorkItemID).Scan(&running, &dirty); err != nil {
+		t.Fatal(err)
+	}
+	if running != 1 || dirty != 0 {
+		t.Fatalf("background refresh could not read the referenced run detail: running=%d dirty=%d", running, dirty)
+	}
+}
