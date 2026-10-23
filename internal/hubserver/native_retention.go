@@ -2,6 +2,8 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -16,6 +18,8 @@ const (
 )
 
 func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
+	defer cancel()
 	if err := s.database.populateTimeIndexes(ctx); err != nil {
 		return err
 	}
@@ -35,49 +39,45 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 }
 
 func (s *Service) expireNativeRecords(ctx context.Context, now time.Time) error {
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM hosted_audit WHERE rowid IN (SELECT rowid FROM hosted_audit
+	if _, err := s.database.db.ExecContext(ctx, `DELETE FROM hosted_audit WHERE rowid IN (SELECT rowid FROM hosted_audit
 WHERE route LIKE 'GET %' AND status<400 AND actual_actor=effective_user AND reason=''
 AND event IN ('action','administration','key_call','billing_viewed','billing_exported') ORDER BY id LIMIT ?)`, commandReceiptPruneBatch); err != nil {
 		return fmt.Errorf("delete legacy successful audit reads: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM hosted_audit WHERE rowid IN (SELECT audit_id FROM hosted_audit_times
+	if _, err := s.database.db.ExecContext(ctx, `DELETE FROM hosted_audit WHERE rowid IN (SELECT audit_id FROM hosted_audit_times
 WHERE recorded_at_ns<? ORDER BY recorded_at_ns,audit_id LIMIT ?)`, now.Add(-hostedAuditRetention).UnixNano(), commandReceiptPruneBatch); err != nil {
 		return fmt.Errorf("expire hosted audit: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM native_commands WHERE rowid IN (SELECT rowid FROM native_commands
+	if _, err := s.database.db.ExecContext(ctx, `DELETE FROM native_commands WHERE rowid IN (SELECT rowid FROM native_commands
 WHERE (operation LIKE 'POST /%' OR operation LIKE 'PUT /%' OR operation LIKE 'PATCH /%' OR operation LIKE 'DELETE /%')
 AND operation NOT LIKE '%/conversations' AND instr(operation, '/conversations/')=0
 AND julianday(created_at)<julianday(?) LIMIT ?)`, formatHubTime(now.Add(-commandReceiptRetention)), commandReceiptPruneBatch); err != nil {
 		return fmt.Errorf("expire command receipts: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM native_duplicate_challenges WHERE rowid IN (
+	if _, err := s.database.db.ExecContext(ctx, `DELETE FROM native_duplicate_challenges WHERE rowid IN (
 SELECT rowid FROM native_duplicate_challenges WHERE consumed_at IS NOT NULL OR julianday(created_at)<=julianday(?) LIMIT ?)`, formatHubTime(now.Add(-duplicateChallengeLifetime)), commandReceiptPruneBatch); err != nil {
 		return fmt.Errorf("expire duplicate challenges: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE attachments SET deleted_at=? WHERE kind='attachment' AND deleted_at IS NULL AND work_item_id IS NULL AND julianday(created_at)<=julianday(?)", formatHubTime(now), formatHubTime(now.Add(-attachment.OrphanTTL))); err != nil {
+	if _, err := s.database.db.ExecContext(ctx, "UPDATE attachments SET deleted_at=? WHERE rowid IN (SELECT rowid FROM attachments WHERE kind='attachment' AND deleted_at IS NULL AND work_item_id IS NULL AND julianday(created_at)<=julianday(?) LIMIT ?)", formatHubTime(now), formatHubTime(now.Add(-attachment.OrphanTTL)), commandReceiptPruneBatch); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM runner_host_hours WHERE hour <= ?", formatHubTime(now.UTC().Truncate(time.Hour).Add(-720*time.Hour))); err != nil {
+	if _, err := s.database.db.ExecContext(ctx, "DELETE FROM runner_host_hours WHERE rowid IN (SELECT rowid FROM runner_host_hours WHERE hour <= ? LIMIT ?)", formatHubTime(now.UTC().Truncate(time.Hour).Add(-720*time.Hour)), commandReceiptPruneBatch); err != nil {
 		return err
 	}
 	period := "CASE WHEN ws.detent_state = 'Cancelled' THEN p.archive_cancelled_after_days ELSE p.archive_completed_after_days END"
 	restored := `(SELECT e.recorded_at FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.edited' AND json_extract(e.data_json,'$.operation')='restore' ORDER BY e.sequence DESC LIMIT 1)`
 	entered := "julianday(" + nativeTerminalEnteredAt + ")"
-	rows, err := tx.QueryContext(ctx, `SELECT i.organization_id, i.project_id, i.native_id, `+period+`
+	selection := `SELECT i.organization_id, i.project_id, i.native_id, ` + period + `
 FROM issues i JOIN projects p ON p.id=i.project_id AND p.organization_id=i.organization_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
-WHERE p.deleted_at IS NULL AND p.profile='native' AND i.archived=0 AND ws.terminal=1 AND `+period+` IS NOT NULL
-AND max(`+entered+`, COALESCE(julianday(`+restored+`), `+entered+`)) < julianday(?) - (`+period+`)
+WHERE p.deleted_at IS NULL AND p.profile='native' AND i.archived=0 AND ws.terminal=1 AND ` + period + ` IS NOT NULL
+AND max(` + entered + `, COALESCE(julianday(` + restored + `), ` + entered + `)) < julianday(?) - (` + period + `)
 AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?))
 AND NOT EXISTS (SELECT 1 FROM change_issue_links l JOIN change_requests c ON c.id=l.change_id
 WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id
 AND COALESCE(json_extract(c.record_json,'$.current_version_id'),'')<>''
 AND COALESCE(json_extract(c.record_json,'$.landed.version_id'),'')<>json_extract(c.record_json,'$.current_version_id'))
-ORDER BY i.id LIMIT 200`, formatHubTime(now), formatHubTime(now))
+`
+	rows, err := s.database.reader.QueryContext(ctx, selection+` ORDER BY i.id LIMIT 200`, formatHubTime(now), formatHubTime(now))
 	if err != nil {
 		return err
 	}
@@ -102,18 +102,35 @@ ORDER BY i.id LIMIT 200`, formatHubTime(now), formatHubTime(now))
 		return err
 	}
 	for _, item := range candidates {
-		item.scope.sourceActor = nativeIntegrationActor("auto_archive")
-		issue, _, err := readNativeIssue(ctx, tx, item.scope, item.item)
-		if err != nil {
-			return err
-		}
-		issue.Archived = true
-		data := tracker.CollaborationData{Fields: []string{"archived"}, Operation: "archive", ReasonDetail: fmt.Sprintf("Archived automatically after %d days", item.days)}
-		if _, err := persistNativeIssue(ctx, tx, item.scope, issue, "issue.edited", data, now); err != nil {
+		if err := func() error {
+			tx, err := s.database.db.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+			item.scope.sourceActor = nativeIntegrationActor("auto_archive")
+			err = tx.QueryRowContext(ctx, selection+` AND i.organization_id=? AND i.project_id=? AND i.native_id=?`, formatHubTime(now), formatHubTime(now), item.scope.organization, item.scope.project, item.item).Scan(&item.scope.organization, &item.scope.project, &item.item, &item.days)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			issue, _, err := readNativeIssue(ctx, tx, item.scope, item.item)
+			if err != nil {
+				return err
+			}
+			issue.Archived = true
+			data := tracker.CollaborationData{Fields: []string{"archived"}, Operation: "archive", ReasonDetail: fmt.Sprintf("Archived automatically after %d days", item.days)}
+			if _, err := persistNativeIssue(ctx, tx, item.scope, issue, "issue.edited", data, now); err != nil {
+				return err
+			}
+			return s.database.commit(ctx, tx)
+		}(); err != nil {
 			return err
 		}
 	}
-	return s.database.commit(ctx, tx)
+	return nil
 }
 
 func (s *Service) compactRetainedEvents(ctx context.Context, now time.Time) error {
@@ -121,12 +138,21 @@ func (s *Service) compactRetainedEvents(ctx context.Context, now time.Time) erro
 	if err != nil || len(plans) == 0 {
 		return err
 	}
+	for _, plan := range plans {
+		if err := s.compactRetainedEvent(ctx, plan, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) compactRetainedEvent(ctx context.Context, plan eventCompactionPlan, now time.Time) error {
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	conversations, removed, err := applyEventCompaction(ctx, tx, plans, now)
+	conversations, removed, err := applyEventCompaction(ctx, tx, []eventCompactionPlan{plan}, now)
 	if err != nil {
 		return err
 	}

@@ -76,6 +76,8 @@ func (s *Service) storageArchiveContent() entryauthority.ContentHandler {
 }
 
 func (s *Service) archiveClosedNativeIssues(ctx context.Context, now time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
+	defer cancel()
 	call := s.storageArchiveContent()
 	if call == nil {
 		return nil
@@ -90,9 +92,10 @@ func (s *Service) archiveClosedNativeIssues(ctx context.Context, now time.Time) 
 		}
 	}
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT i.organization_id,i.project_id,i.native_id,i.revision,i.event_sequence,`+storageArchiveConversationSequence+` FROM issues i JOIN projects p ON p.id=i.project_id AND p.organization_id=i.organization_id LEFT JOIN issue_storage_archives a ON a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.work_item_id=i.native_id
+LEFT JOIN storage_conversion_progress progress ON progress.organization_id=i.organization_id AND progress.project_id=i.project_id AND progress.family='issue_archives' AND progress.aggregate_id=i.native_id
 WHERE p.profile='native' AND p.deleted_at IS NULL AND julianday(i.terminal_entered_at)<=julianday(?) AND `+storageArchiveSafe+`
 AND (a.work_item_id IS NULL OR a.issue_revision<>i.revision OR a.event_sequence<>i.event_sequence OR a.conversation_sequence<>`+storageArchiveConversationSequence+`)
-ORDER BY i.terminal_entered_at,i.id LIMIT 4`, formatHubTime(now.Add(-issueStorageArchiveAge)), formatHubTime(now))
+ORDER BY coalesce(progress.updated_at,''),i.terminal_entered_at,i.id LIMIT 4`, formatHubTime(now.Add(-issueStorageArchiveAge)), formatHubTime(now))
 	if err != nil {
 		return err
 	}
@@ -108,12 +111,20 @@ ORDER BY i.terminal_entered_at,i.id LIMIT 4`, formatHubTime(now.Add(-issueStorag
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
+	var failures error
 	for _, c := range candidates {
+		if _, err := s.database.db.ExecContext(ctx, `INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at) VALUES(?,?,'issue_archives',?,?,0,?)
+ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET complete=0,updated_at=excluded.updated_at`, c.scope.organization, c.scope.project, c.item, storageConversionVersion, formatHubTime(now)); err != nil {
+			return errors.Join(failures, err)
+		}
 		if err := s.publishStorageArchive(ctx, c, now, call); err != nil {
-			return err
+			failures = errors.Join(failures, err)
+			if ctx.Err() != nil {
+				return failures
+			}
 		}
 	}
-	return s.retireStorageArchiveSections(ctx, now, call)
+	return errors.Join(failures, s.retireStorageArchiveSections(ctx, now, call))
 }
 
 func archiveTable(ctx context.Context, q nativeQueryer, table, condition string, args ...any) (attachment.ArchiveTable, error) {
@@ -490,6 +501,9 @@ func (s *Service) publishStorageArchive(ctx context.Context, c storageArchiveCan
 		return err
 	}
 	if _, err := write.ExecContext(ctx, `INSERT INTO issue_storage_archives(organization_id,project_id,work_item_id,issue_revision,event_sequence,conversation_sequence,attachment_id,published_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(organization_id,project_id,work_item_id) DO UPDATE SET issue_revision=excluded.issue_revision,event_sequence=excluded.event_sequence,conversation_sequence=excluded.conversation_sequence,attachment_id=excluded.attachment_id,published_at=excluded.published_at`, c.scope.organization, c.scope.project, c.item, c.revision, c.sequence, c.conversationSequence, id, formatHubTime(now)); err != nil {
+		return err
+	}
+	if _, err := write.ExecContext(ctx, `UPDATE storage_conversion_progress SET complete=1,updated_at=? WHERE organization_id=? AND project_id=? AND family='issue_archives' AND aggregate_id=?`, formatHubTime(now), c.scope.organization, c.scope.project, c.item); err != nil {
 		return err
 	}
 	return s.database.commit(ctx, write)

@@ -15,6 +15,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const backgroundStorageBudget = 2 * time.Second
+
 const storageConversionVersion = 1
 const storageConversionRows = 100
 const storageConversionBytes = 1 << 20
@@ -77,6 +79,8 @@ func (s *Service) convertLegacyStorage(ctx context.Context, now time.Time) error
 	if s.storageArchiveContent() == nil {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
+	defer cancel()
 	ctx = s.contentContext(ctx)
 	rows, err := s.database.reader.QueryContext(ctx, "SELECT organization_id,id FROM projects WHERE profile='native' AND deleted_at IS NULL ORDER BY organization_id,id")
 	if err != nil {
@@ -94,14 +98,18 @@ func (s *Service) convertLegacyStorage(ctx context.Context, now time.Time) error
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
+	var failures error
 	for _, scope := range scopes {
 		for _, family := range storageConversionFamilies {
 			if err := s.convertStorageFamily(ctx, scope, family, now); err != nil {
-				return fmt.Errorf("convert legacy %s: %w", family.name, err)
+				failures = errors.Join(failures, fmt.Errorf("convert legacy %s: %w", family.name, err))
+				if ctx.Err() != nil {
+					return failures
+				}
 			}
 		}
 	}
-	return nil
+	return failures
 }
 
 func (s *Service) convertStorageFamily(ctx context.Context, scope nativeScope, family storageConversionFamily, now time.Time) error {
@@ -113,7 +121,7 @@ func (s *Service) convertStorageFamily(ctx context.Context, scope nativeScope, f
 SELECT a.aggregate_id,a.latest FROM aggregates a LEFT JOIN storage_conversion_progress p
 ON p.organization_id=? AND p.project_id=? AND p.family=? AND p.aggregate_id=a.aggregate_id
 WHERE coalesce(p.format_version,0)<>? OR coalesce(p.complete,0)=0 OR a.latest>p.cursor_rowid
-ORDER BY a.aggregate_id`, scope.organization, scope.project, scope.organization, scope.project, family.name, scope.organization, scope.project, family.name, storageConversionVersion)
+ORDER BY coalesce(p.updated_at,''),a.aggregate_id LIMIT 4`, scope.organization, scope.project, scope.organization, scope.project, family.name, scope.organization, scope.project, family.name, storageConversionVersion)
 	if err != nil {
 		return err
 	}
@@ -133,13 +141,12 @@ ORDER BY a.aggregate_id`, scope.organization, scope.project, scope.organization,
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
-	processed := 0
+	var failures error
 	for _, a := range aggregates {
 		if _, err := s.database.db.ExecContext(ctx, `INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at) VALUES(?,?,?,?,?,?,?)
 ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
 cursor_rowid=CASE WHEN format_version<>excluded.format_version THEN 0 ELSE cursor_rowid END,
-format_version=excluded.format_version,through_rowid=max(through_rowid,excluded.through_rowid),complete=0,updated_at=excluded.updated_at
-WHERE format_version<>excluded.format_version OR through_rowid<excluded.through_rowid`, scope.organization, scope.project, family.name, a.id, storageConversionVersion, a.through, formatHubTime(now)); err != nil {
+format_version=excluded.format_version,through_rowid=max(through_rowid,excluded.through_rowid),complete=0,updated_at=excluded.updated_at`, scope.organization, scope.project, family.name, a.id, storageConversionVersion, a.through, formatHubTime(now)); err != nil {
 			return err
 		}
 		_, safe, err := storageConversionStamp(ctx, s.database.reader, scope, family, a.id, now)
@@ -150,14 +157,13 @@ WHERE format_version<>excluded.format_version OR through_rowid<excluded.through_
 			continue
 		}
 		if err := s.convertStorageAggregate(ctx, scope, family, a.id, now); err != nil {
-			return err
-		}
-		processed++
-		if processed == 4 {
-			break
+			failures = errors.Join(failures, err)
+			if ctx.Err() != nil {
+				return failures
+			}
 		}
 	}
-	return nil
+	return failures
 }
 
 func (s *Service) convertStorageAggregate(ctx context.Context, scope nativeScope, family storageConversionFamily, aggregate string, now time.Time) error {
@@ -204,7 +210,7 @@ func (s *Service) convertStorageAggregate(ctx context.Context, scope nativeScope
 			return err
 		}
 		writeBytes := len(converted) + 4096
-		if written+writeBytes > storageConversionBytes {
+		if written > 0 && written+writeBytes > storageConversionBytes {
 			return nil
 		}
 		triggerSQL := make([]string, len(family.triggers))
