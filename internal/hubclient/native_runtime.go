@@ -190,8 +190,9 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 	if previous != nil {
 		before = runtimeEvidence(*previous)
 	}
-	publish := previous == nil || len(before.Phases) == 0 && len(current.Phases) > 0 || current.Phase != before.Phase || !reflect.DeepEqual(current.WorkerLaunch, before.WorkerLaunch) || !reflect.DeepEqual(current.Identity, before.Identity) || !reflect.DeepEqual(current.Landing, before.Landing)
-	changed := previous == nil || !reflect.DeepEqual(current, before)
+	heartbeatDue := e.runtimeHeartbeatDue(&observation)
+	publish := heartbeatDue || previous == nil || len(before.Phases) == 0 && len(current.Phases) > 0 || current.Phase != before.Phase || !reflect.DeepEqual(current.WorkerLaunch, before.WorkerLaunch) || !reflect.DeepEqual(current.Identity, before.Identity) || !reflect.DeepEqual(current.Landing, before.Landing)
+	changed := heartbeatDue || previous == nil || !reflect.DeepEqual(current, before)
 	if !changed {
 		return nil
 	}
@@ -201,6 +202,11 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 		return nil
 	}
 	return e.append(ctx, "run.observed", "", nil)
+}
+
+func (e *nativeExecution) runtimeHeartbeatDue(observation *tracker.NativeRuntimeObservation) bool {
+	return observation != nil && observation.HeartbeatAt.After(e.runtimePublishedAt) &&
+		observation.HeartbeatAt.Sub(e.runtimePublishedAt) >= e.scheduler.leaseTTL/3
 }
 
 func (e *nativeExecution) activityBoundary(at time.Time, outcome string) {
