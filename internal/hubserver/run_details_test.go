@@ -683,3 +683,21 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 		}
 	}
 }
+
+func TestRunDetailSegmentResolvesPreparedReferenceBeforeCommit(t *testing.T) {
+	t.Parallel()
+	store := &memoryRunDetails{}
+	f := newDefaultNativeFixture(t, Config{RunDetails: store})
+	organization := "org_prepared"
+	ref, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := map[string]tracker.NativeRunData{"attempt_prepared:2": {AttemptID: "attempt_prepared", Sequence: 2}}
+	owner := &runDetailContext{query: f.service.database.reader, store: store, organization: organization, cache: map[string]map[string]tracker.NativeRunData{}, reuse: map[string]*runDetailReference{}, reference: &ref, runs: prepared}
+	ctx := context.WithValue(t.Context(), runDetailContextKey{}, owner)
+	runs, err := readRunDetailSegment(ctx, newRunDetailReference(ref, organization, "attempt_prepared:2"))
+	if err != nil || runs["attempt_prepared:2"].Sequence != 2 {
+		t.Fatalf("prepared detail before commit = %v, %v", runs, err)
+	}
+}

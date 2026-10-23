@@ -65,14 +65,14 @@ func requireNativeMutationLease(ctx context.Context, tx nativeQueryer, scope nat
 		return err
 	}
 	if !found {
-		return nativeNotFound()
+		return nativeNotFoundAt("mutation_lease_missing")
 	}
 	id, err := nativeIssueRowID(ctx, tx, scope, item)
 	if err != nil {
 		return err
 	}
 	if lease.issueID != id {
-		return nativeNotFound()
+		return nativeNotFoundAt("mutation_lease_other_item")
 	}
 	if err := requireCurrentLease(lease, mutation.FencingToken, now); err != nil {
 		return err

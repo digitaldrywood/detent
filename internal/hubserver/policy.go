@@ -611,7 +611,7 @@ JOIN policy_revisions p ON p.scope = lp.scope AND p.policy_id = lp.policy_id WHE
 		return err
 	}
 	if !access {
-		return nativeNotFound()
+		return nativeNotFoundAt("lease_routing_grant")
 	}
 	if state == "disabled" {
 		return &nativeError{Code: "runner_disabled", Message: "Runner is disabled", status: http.StatusConflict, publicMessage: true}

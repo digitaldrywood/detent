@@ -662,7 +662,7 @@ JOIN runner_identities r ON r.id = lr.runner_id WHERE l.lease_id = ? AND i.organ
 		return err
 	}
 	if count != 1 {
-		return nativeNotFound()
+		return nativeNotFoundAt("lease_runner_credential")
 	}
 	return nil
 }
