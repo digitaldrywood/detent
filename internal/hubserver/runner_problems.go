@@ -125,7 +125,7 @@ WHERE a.organization_id = ? AND l.lease_id IN (`+placeholders(len(projects))+`) 
 	}
 	defer rows.Close()
 	for rows.Next() {
-		attempt, err := scanNativeAttempt(ctx, rows, now)
+		attempt, err := scanNativeAttempt(ctx, db, rows, now)
 		if err != nil {
 			return err
 		}

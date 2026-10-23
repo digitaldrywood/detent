@@ -40,7 +40,7 @@ WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.checkpoi
 		if !source.Checkpoint.PreservesSource() {
 			continue
 		}
-		if err := decodeRunCheckpoint(ctx, raw, &source.Checkpoint); err != nil {
+		if err := decodeRunCheckpoint(ctx, q, raw, &source.Checkpoint); err != nil {
 			return source, err
 		}
 		if source.Checkpoint.PreservesSource() {
