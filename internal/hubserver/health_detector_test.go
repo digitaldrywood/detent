@@ -57,14 +57,17 @@ func TestHealthFindingStartTime(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "health-start")
-			wait := test.wait
-			wait.Item, wait.Project, wait.Active = "item", string(f.project.ID), true
-			finding, active := humanWaitFinding(now, wait)
+			var finding healthFinding
 			if test.withoutStart {
-				finding, active = newHealthFinding("fixture", "instance", "work_item", "item", "", "", []string{string(f.project.ID)}, healthEvidence{}), true
-			}
-			if !active {
-				t.Fatal("finding is inactive")
+				finding = newHealthFinding("fixture", "instance", "work_item", "item", "", "", []string{string(f.project.ID)}, healthEvidence{})
+			} else {
+				wait := test.wait
+				wait.Item, wait.Project, wait.Active = "item", string(f.project.ID), true
+				var active bool
+				finding, active = humanWaitFinding(now, wait)
+				if !active {
+					t.Fatal("finding is inactive")
+				}
 			}
 			applyTestHealth(t, f, now, []healthFinding{finding})
 			var opened, seen string
