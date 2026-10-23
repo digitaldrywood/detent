@@ -48,7 +48,8 @@ test.beforeEach(async () => {
   hub = await startHostedHub("account", { env: { DETENT_HOSTED_BROWSER_UNSIGNED_MEMBER: "1" } });
 });
 
-test.afterEach(async () => {
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
   await hub?.stop();
   hub = undefined;
 });
