@@ -184,7 +184,7 @@ func (o *Orchestrator) refreshBackendCapacity(ctx context.Context, state *State,
 	}
 	for _, key := range sortedKeys(state.BackendOutages) {
 		outage := state.BackendOutages[key]
-		if outage.Scope.BackendKind != workflowconfig.AgentBackendCodex && outage.Scope.BackendKind != workflowconfig.AgentBackendClaudeCode && outage.Scope.BackendKind != workflowconfig.AgentBackendPiAgent {
+		if outage.Scope.BackendKind != workflowconfig.AgentBackendCodex && outage.Scope.BackendKind != workflowconfig.AgentBackendClaudeCode && outage.Scope.BackendKind != workflowconfig.AgentBackendPiAgent && outage.Scope.BackendKind != workflowconfig.AgentBackendOpenCode {
 			continue
 		}
 		if backendCapacityProviderOutage(outage) || !outage.Scope.Hosted() || outage.ProbeIssueID != "" ||

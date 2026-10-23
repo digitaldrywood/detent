@@ -846,7 +846,7 @@ current body declarations. Remove a body declaration to remove its blocker
 `agent` is the orchestration policy: concurrency, turn and session limits,
 retry brakes, spend limits, shutdown, dispatch priority, automatic promotion,
 state-specific instructions, learned context, skill drafts, and follow-up
-work. `agents.backends` defines pluggable Codex, Claude Code, or Pi processes, while
+work. `agents.backends` defines pluggable Codex, Claude Code, Pi, or OpenCode processes, while
 `agents.routes` selects a backend and model by role or issue selector.
 
 `codex` is the legacy/default Codex backend configuration and remains the
@@ -860,6 +860,12 @@ Pi requires native-trusted isolation; sandboxed/read-only turns, resume,
 Detent dynamic tools and persisted history hydration are unsupported in this
 initial integration. See [Pi backend configuration and limitations](pi-agent.md)
 for a complete route example, authentication and an opt-in smoke test.
+
+OpenCode uses `kind: opencode`, `protocol: acp`, and `command: opencode`.
+Routes select an explicit `provider/model`, including OpenCode Go models.
+It supports scoped Detent MCP tools and requires native-trusted isolation.
+Corrections start fresh from published source and findings; persisted OpenCode
+sessions are not resumed across workspaces. See [OpenCode integration](opencode.md).
 
 Implementation workers on automatically owned Git branches request a bounded
 recovery checkpoint when a duration, turn, or no-progress limit stops them.

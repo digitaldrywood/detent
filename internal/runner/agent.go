@@ -6432,7 +6432,7 @@ func (r *Runner) logRuntimeIdentity(req RunRequest, detentSessionID int64, updat
 func runtimeIdentityProviderSessionID(backendKind string, threadID string, turnID string) string {
 	threadID = strings.TrimSpace(threadID)
 	turnID = strings.TrimSpace(turnID)
-	if strings.EqualFold(strings.TrimSpace(backendKind), config.AgentBackendClaudeCode) || strings.EqualFold(strings.TrimSpace(backendKind), config.AgentBackendPiAgent) {
+	if strings.EqualFold(strings.TrimSpace(backendKind), config.AgentBackendClaudeCode) || strings.EqualFold(strings.TrimSpace(backendKind), config.AgentBackendPiAgent) || strings.EqualFold(strings.TrimSpace(backendKind), config.AgentBackendOpenCode) {
 		return threadID
 	}
 	if threadID == "" || turnID == "" {

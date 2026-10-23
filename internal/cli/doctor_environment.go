@@ -562,6 +562,10 @@ func doctorAgentBinaryCheckJobs(ctx context.Context, cfg *globalconfig.Config, d
 		switch kind {
 		case workflowconfig.AgentBackendCodex:
 			jobs = append(jobs, doctorCodexBinaryCheckJob(deps, environment))
+		case workflowconfig.AgentBackendOpenCode:
+			jobs = append(jobs, doctorCheckJob{Name: "opencode binary", Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorBinary(jobCtx, deps, environment, "opencode", "opencode binary", "--version", "Install OpenCode v2 and run opencode auth login. OpenCode workers require native-trusted isolation.")}
+			}})
 		case workflowconfig.AgentBackendPiAgent:
 			jobs = append(jobs, doctorCheckJob{Name: "pi binary", Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorBinary(jobCtx, deps, environment, "pi", "pi binary", "--version", "Install Pi and authenticate its configured provider with pi /login. Pi workers require native-trusted isolation; RPC resume, Detent dynamic tools and persisted history are not supported.")}
