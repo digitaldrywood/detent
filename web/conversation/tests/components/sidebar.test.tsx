@@ -494,7 +494,12 @@ it("reads current human holds without promoting dependency waits or stale health
   items = [issue("wi_recent")];
   await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "2" })));
   await waitFor(() => expect(result.current.map((action) => action.id)).toEqual(["wi_recent"]));
+  const explained = mocks.getExplanation.mock.calls.length;
+  await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "2b" })));
+  await waitFor(() => expect(mocks.listWorkItems.mock.calls.length).toBeGreaterThan(3));
+  expect(mocks.getExplanation.mock.calls.length).toBe(explained);
   answered = true;
+  items = [{ ...issue("wi_recent"), revision: "answered" }];
   await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "3" })));
   await waitFor(() => expect(result.current).toEqual([]));
 });

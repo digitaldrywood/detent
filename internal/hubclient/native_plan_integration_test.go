@@ -550,14 +550,23 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	}
 	if manualCheckpoint || cleanCheckpoint {
 		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if preserved == nil {
+			t.Fatal("checkpoint recovery preserved no source")
+		}
 		wantCalls := int64(1)
 		if planningRecovery {
 			wantCalls = 2
 		}
-		if err != nil || current.Issue.State != "Human Review" || preserved == nil || provider.calls.Load() != wantCalls || len(changes) != 1 || changes[0].CurrentVersion == "" {
+		if current.Issue.State != "Human Review" || provider.calls.Load() != wantCalls || len(changes) != 1 || changes[0].CurrentVersion == "" {
 			t.Fatalf("historical judgment prevented delivery or lost source: state=%s attempts=%d calls=%d changes=%d error=%v", current.Issue.State, len(current.Attempts), provider.calls.Load(), len(changes), err)
 		}
 		if cleanCheckpoint {
+			if len(preservedChanges) != 1 {
+				t.Fatalf("clean restart requires one preserved Change, got %d", len(preservedChanges))
+			}
 			if provider.resumeVerified.Load() != 1 || changes[0].ID != preservedChanges[0].ID || changes[0].CurrentVersion == preservedChanges[0].CurrentVersion {
 				t.Fatalf("clean restart did not advance the existing Change: verified=%d changes=%v", provider.resumeVerified.Load(), changes)
 			}
