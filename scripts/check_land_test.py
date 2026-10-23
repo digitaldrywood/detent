@@ -49,6 +49,9 @@ if name == "git":
     elif args[0] == "rev-parse":
         print("head")
     sys.exit(0)
+if args[:1] == ["run"] and "--help" in args:
+    print("Usage:\n  detent hub runner [command]\n\nAvailable Commands:\n  enroll      Redeem one enrollment token\n  init        Generate a host identity\n  register    Register this host as a runner\n  renew       Refresh the host credential\n  rotate      Refresh the host credential\n")
+    sys.exit(0)
 if args[:1] == ["env"]:
     print({"GOHOSTOS": "fixture", "GOHOSTARCH": "fixture", "GOVERSION": "fixture"}[args[1]])
     sys.exit(0)
