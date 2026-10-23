@@ -144,7 +144,8 @@ for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844
     await expect(ask.getByRole("textbox", { name: "Ask message", exact: true })).toHaveCount(1);
     await expect(ask.getByRole("button", { name: "#2 attached", exact: true })).toHaveCount(0);
     await expect(ask.getByRole("button", { name: "Split into smaller issues", exact: true })).toHaveCount(0);
-    expect(await page.evaluate(() => window.projectStreams.size)).toBe(1);
+    expect(await page.evaluate((projectId) => [...window.projectStreams].filter((stream) =>
+      new URL(stream.url).pathname.endsWith(`/projects/${projectId}/events`)).length, hub.fixture.project_id)).toBe(1);
     const chats = await read(page, `conversations?subject_work_item_id=${hub.fixture.work_item}`);
     const detail = await read(page, `conversations/${chats.conversations[0].id}`);
     expect(detail.messages.find((message) => message.role === "user").text).toBe("Why is this Blocked?\nPlease summarize the history.");

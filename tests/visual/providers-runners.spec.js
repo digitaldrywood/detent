@@ -422,7 +422,7 @@ test("Sprite pool row saves its limits without exposing setup fields on the list
   await dialog.getByLabel("Idle seconds", { exact: true }).fill("600");
   await dialog.getByRole("button", { name: "Save pool", exact: true }).click();
   await expect(row).toContainText("Floor 2 · Ceiling 5 · Idle 600s");
-  expect(saved).toEqual({ min_runners: 2, max_runners: 5, idle_seconds: 600, bootstrap: spritePool.bootstrap, revision: spritePool.revision });
+  expect(saved).toEqual({ min_runners: 2, max_runners: 5, idle_seconds: 600, bootstrap: spritePool.bootstrap, revision: spritePool.revision, share_idle_capacity: false, idempotency_key: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/) });
   await page.keyboard.press("Escape");
   await expect(page.getByLabel("Minimum runners", { exact: true })).toHaveCount(0);
 });

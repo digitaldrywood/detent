@@ -76,8 +76,13 @@ for (const width of [1280, 390]) {
     await steps.getByRole("button", { name: /Checkout/ }).click();
     await expect(page.getByRole("checkbox")).toHaveCount(0);
     let configurationMissing = false;
+    let reportConfigurationMissing = false;
     await page.route("**/projects/proj_alpha/onboarding", async (route) => {
-      if (route.request().method() !== "GET") { await route.continue(); return; }
+      if (route.request().method() !== "GET") {
+        configurationMissing = reportConfigurationMissing;
+        await route.continue();
+        return;
+      }
       const response = await route.fetch();
       const data = await response.json();
       const at = new Date(Date.now() - 12_000).toISOString();
@@ -93,7 +98,7 @@ for (const width of [1280, 390]) {
       await expect(button).toBeInViewport({ ratio: 1 });
     }
     await page.screenshot({ path: testInfo.outputPath(`checkout-running-${width}.png`) });
-    configurationMissing = true;
+    reportConfigurationMissing = true;
     await page.getByRole("button", { name: "Refresh runner checks" }).click();
     await expect(checks.getByText("detent.yaml and WORKFLOW.md not found")).toBeVisible();
     await expect(page.getByRole("radio", { name: "Create starter files on Example runner" })).toBeVisible();

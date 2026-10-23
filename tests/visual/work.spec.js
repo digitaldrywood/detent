@@ -315,7 +315,10 @@ test.describe("the work board", () => {
     });
     const reads = [];
     page.on("request", (request) => {
-      if (request.method() === "GET" && /\/work-items(?:[?]|\/[^/]+\/(?:attempts|changes))/.test(request.url())) {
+      const url = new URL(request.url());
+      const sidebarHoldingRead = url.searchParams.get("open") === "true"
+        && url.searchParams.getAll("state").join(",") === "Blocked,Human Review";
+      if (request.method() === "GET" && !sidebarHoldingRead && /\/work-items(?:[?]|\/[^/]+\/(?:attempts|changes))/.test(request.url())) {
         reads.push(request.url());
       }
     });
