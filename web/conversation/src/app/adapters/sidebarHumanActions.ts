@@ -36,7 +36,31 @@ export function useSidebarHumanActions(projects: readonly BootstrapProject[]): r
     const controller = new AbortController();
     const byProject = new Map<string, readonly SidebarHumanAction[]>();
     const revisions = new Map<string, number>();
-    const refresh = async (project: BootstrapProject) => {
+    const explanations = new Map<string, { readonly key: string; readonly action: SidebarHumanAction | null }>();
+    const running = new Set<string>();
+    const pending = new Set<string>();
+    const actionFor = async (project: BootstrapProject, issue: NativeIssue): Promise<SidebarHumanAction | null> => {
+      const key = `${issue.revision}|${issue.last_activity_at ?? ""}|${issue.updated_at}|${issue.state}`;
+      const cached = explanations.get(issue.work_item_id);
+      if (cached?.key === key) return cached.action;
+      const action = pendingHumanAction(issue, await http.getExplanation(project.id, issue.work_item_id));
+      explanations.set(issue.work_item_id, { key, action });
+      return action;
+    };
+    const refresh = async (project: BootstrapProject): Promise<void> => {
+      if (running.has(project.id)) {
+        pending.add(project.id);
+        return;
+      }
+      running.add(project.id);
+      try {
+        await load(project);
+      } finally {
+        running.delete(project.id);
+      }
+      if (pending.delete(project.id) && !controller.signal.aborted) await refresh(project);
+    };
+    const load = async (project: BootstrapProject) => {
       const revision = (revisions.get(project.id) ?? 0) + 1;
       revisions.set(project.id, revision);
       try {
@@ -49,7 +73,7 @@ export function useSidebarHumanActions(projects: readonly BootstrapProject[]): r
           const page = await http.listWorkItems({ projectId: project.id, state: holding, open: true, cursor, signal: controller.signal });
           const actions = await Promise.all(page.items.map(async (issue) => {
             try {
-              return pendingHumanAction(issue, await http.getExplanation(project.id, issue.work_item_id));
+              return await actionFor(project, issue);
             } catch {
               return null;
             }
