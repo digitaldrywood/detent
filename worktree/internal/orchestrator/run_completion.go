@@ -1,0 +1,2519 @@
+package orchestrator
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/efficiency"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/provenance"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
+)
+
+const (
+	mergeWorkerRequiredChecksMissingReason = "required_checks_missing_after_head_update"
+	mergeWorkerFastPathNotReadyReason      = "merge_fast_path_head_not_ready"
+	retryWaitCurrentHeadCI                 = "current_head_ci"
+)
+
+func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
+	running, ok := state.Running[event.issueID]
+	if !ok {
+		return
+	}
+	if event.progress != nil && event.progress != running.progress {
+		return
+	}
+	running = applyRunningUsage(running, event.usage).withProgress()
+	state.Running[event.issueID] = running
+	o.trackRunningHeartbeat(state, running, state.Claimed[event.issueID], o.clockNow())
+	if event.usage.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.usage.RateLimits)
+		o.recoverBackendCapacityFromStatus(state, running, event.usage.RateLimits, event.usage.LastEventAt)
+	}
+	if event.usage.TurnCount > 0 || strings.TrimSpace(event.usage.SessionID) != "" {
+		progressedAt := event.usage.LastEventAt
+		if progressedAt.IsZero() {
+			progressedAt = o.clockNow()
+		}
+		o.recordProjectFailureBreakerProgress(state, event.issueID, progressedAt)
+		o.advanceDispatchRecovery(state, event.issueID, progressedAt)
+	}
+	if event.progress == nil && o.workAttempts != nil && running.WorkAttemptID > 0 {
+		now := event.usage.LastEventAt
+		if now.IsZero() {
+			now = time.Now()
+		}
+		heartbeat := o.runningWorkAttemptHeartbeat(state, running, now)
+		if err := o.workAttempts.RecordWorkAttemptHeartbeat(context.Background(), heartbeat); err != nil {
+			if event.usage.DispatchLoopStart != nil {
+				running.DispatchLoopStart.Persisted = false
+				state.Running[event.issueID] = running
+			}
+			if o.logger != nil {
+				o.logger.Warn("work attempt usage heartbeat failed", "attempt_id", running.WorkAttemptID, "issue_id", event.issueID, "error", err)
+			}
+		} else {
+			o.applyWorkAttemptHeartbeatSnapshot(state, running.WorkAttemptID, heartbeat, event.usage.LastMessageTruncation)
+		}
+	}
+}
+
+func (o *Orchestrator) handleQueuedRunResults(ctx context.Context, state *State, event runpkg.Completion) {
+	queued := len(o.runResults)
+	refill := false
+	var excludedIssueIDs []string
+	for {
+		state.syncWorkerProgress()
+		before := len(state.Running)
+		_, operatorStopped := o.pendingStops[event.IssueID]
+		o.handleRunResult(ctx, state, event)
+		if len(state.Running) < before {
+			refill = true
+			if operatorStopped {
+				excludedIssueIDs = append(excludedIssueIDs, event.IssueID)
+			}
+		}
+		if queued == 0 || ctx.Err() != nil {
+			break
+		}
+		event = <-o.runResults
+		queued--
+	}
+	if refill && ctx.Err() == nil {
+		o.refillProjectSlotsExcluding(ctx, state, o.clockNow(), excludedIssueIDs...)
+	}
+}
+
+func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event runpkg.Completion) {
+	running, ok := state.Running[event.IssueID]
+	if !ok {
+		if event.Request.Generation > 0 || event.Request.WorkAttemptID > 0 {
+			o.rejectWorkerCompletion(ctx, state, event, Running{}, "worker lease is no longer active", nil)
+		}
+		return
+	}
+	if !running.DispatchLoopStart.LaneAvailable && !running.DispatchLoopStart.Captured {
+		running.DispatchLoopStart = newDispatchLoopStartRecord(running.Issue, firstNonBlank(running.Mode, runpkg.RunModeImplement))
+	}
+	running = running.withProgress()
+	state.Running[event.IssueID] = running
+	if !completionMatchesRunning(event, running) {
+		o.rejectWorkerCompletion(ctx, state, event, running, "worker generation or work-attempt lease no longer owns the item", nil)
+		return
+	}
+	o.captureNativeLandingRESTUsage(state, event.Result, event.CompletedAt)
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+	}
+	// The final result includes checkpoint and recovery segments; live progress
+	// can still describe only the last segment. Use the session totals for every
+	// completion path, retaining progress when a runner has no final usage.
+	if event.Result.Tokens != (TokenTotals{}) {
+		running.Tokens = event.Result.Tokens
+	} else {
+		event.Result.Tokens = running.Tokens
+	}
+	if event.Result.NativeLanding == nil || event.Result.Compute != nil {
+		running.Compute = event.Result.Compute
+	}
+	if event.Result.NativeLanding == nil || event.Result.TokenUSD != 0 {
+		running.TokenUSD = event.Result.TokenUSD
+	}
+	if event.Result.TurnCount > 0 {
+		running.TurnCount = event.Result.TurnCount
+	}
+	state.Running[event.IssueID] = running
+	if errors.As(event.Err, &running.Cancellation) {
+		state.Running[event.IssueID] = running
+	}
+	_, nativeCompletion := o.connector.(connector.WorkflowStateReader)
+	if running.Generation > 0 {
+		refreshed, err := o.refreshCompletionLane(ctx, running)
+		if err != nil {
+			if !errors.Is(event.Err, runpkg.ErrWorkerGitHubTokenResolution) {
+				o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+				return
+			}
+		} else {
+			if _, _, err := o.observeLane(ctx, state, refreshed, event.CompletedAt); err != nil {
+				o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+				return
+			}
+			dispatchTarget := nativeCompletion && normalizeState(refreshed.State) == normalizeState(running.DispatchTargetState)
+			if normalizeState(running.Issue.State) != normalizeState(refreshed.State) ||
+				!stateIn(refreshed.State, o.cfg.ActiveStates) && !dispatchTarget {
+				running.CompletionLane = refreshed.State
+				running.CompletionAcceptedAt = event.CompletedAt.UTC()
+			}
+			running.Issue = refreshed
+			state.Running[event.IssueID] = running
+			if claimed, found := state.Claimed[event.IssueID]; found {
+				claimed.Issue = cloneIssue(refreshed)
+				state.Claimed[event.IssueID] = claimed
+			}
+		}
+	}
+	if o.retrospector != nil {
+		defer o.retrospector.Trigger("completion")
+	}
+	if o.handleOperatorStopCompletion(ctx, state, event, running) {
+		return
+	}
+	defer func() {
+		current, active := state.Running[event.IssueID]
+		if _, deferred := state.deferredCompletions[event.IssueID]; !deferred && (!active || current.done == running.done) {
+			o.heartbeats.remove(event.IssueID)
+			delete(state.Running, event.IssueID)
+			o.publishRuntimeState(state)
+		}
+	}()
+	if !running.CompletionOwnershipReleased {
+		o.releaseGlobalDispatchSlot(running.globalSlot)
+		o.logWorkerLifecycle(running.Issue, "worker_capacity_released",
+			telemetry.WorkAttemptIDKey, running.WorkAttemptID,
+			telemetry.DetentSessionIDKey, running.DetentSessionID,
+			telemetry.ProviderSessionIDKey, running.SessionID,
+			"attempt", running.Attempt,
+			"worker_host", strings.TrimSpace(running.WorkerHost),
+			"reason", "run_completed",
+		)
+		if running.cancel != nil {
+			running.cancel()
+		}
+	}
+	running.globalSlot = scheduler.Slot{}
+	running.CompletionOwnershipReleased = true
+	if !event.Result.RuntimeIdentity.IsZero() {
+		running.RuntimeIdentity = running.RuntimeIdentity.Merge(event.Result.RuntimeIdentity)
+	}
+	if event.Result.TurnStarted && running.TurnCount == 0 {
+		running.TurnCount = 1
+	}
+	running.WorkProductPushed = running.WorkProductPushed || event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated
+	running.ArtifactEvidence = event.Result.ArtifactEvidence
+	running.ForgeWriteCompleted = event.Result.ForgeWriteCompleted
+	state.Running[event.IssueID] = running
+	o.publishRuntimeState(state)
+	event.Err = classifyWorkspaceForgeReadFailure(event.Err, o.cfg.ForgeHost)
+	event.Err = o.classifyWorkerGitHubCredentialUnavailable(event.Err, running)
+	if o.handleWorkspaceDiskExhaustion(ctx, state, event, running) {
+		return
+	}
+	if running.CompletionLane != "" && running.Mode != runpkg.RunModeTriage {
+		if event.Err == nil && o.completeNativeLandingRun(ctx, state, event, running) {
+			return
+		}
+		if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
+			if err := o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt); err != nil {
+				o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+			}
+			return
+		}
+		if o.handleWorkerGitHubTokenResolutionCompletion(ctx, state, event, running) {
+			return
+		}
+		o.finishForgeAvailabilityProbe(state, event, running)
+		o.finishObservedLaneRun(ctx, state, running, event)
+		return
+	}
+	if running.ForgeProbeHost != "" && !event.Result.ForgeWriteCompleted {
+		if condition, active := forgeCondition(state, running.ForgeProbeHost); active &&
+			condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable &&
+			o.handleForgeUnavailableCompletion(ctx, state, event, running) {
+			return
+		}
+	}
+	if issueConfigurationFailure(event.Err, "", "") {
+		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, "issue_configuration", event.Err.Error(), "failed", "retry issue configuration evaluation")
+		releaseProjectFailureBreakerCanary(state, event.IssueID)
+		if !o.blockHumanOwnedWorkerFailure(ctx, state, event, running, "issue_configuration", event.Err.Error(), "correct the issue detent-agent override, then request recovery", "worker_issue_configuration_blocked") {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, event.Err)
+		}
+		return
+	}
+	if o.handleWorkerGitHubTokenResolutionCompletion(ctx, state, event, running) {
+		return
+	}
+	if mergeWorkerIssue(running.Issue) && nativeMergeQueueOwnsIssue(state, running.Issue, o.cfg) {
+		o.completeNativeMergeQueueWorker(ctx, state, event, running, running.Issue)
+		return
+	}
+	o.refreshEfficiencyReceipt(ctx, running.Issue, event.CompletedAt)
+	if o.handleModelPermitDeferred(ctx, state, event, running) {
+		return
+	}
+	if o.handleWorkspaceBranchHoldCompletion(ctx, state, event, running) {
+		return
+	}
+	credentialForgeWait := workerGitHubCredentialUnavailableError(event.Err)
+	if !credentialForgeWait && o.handleForgeUnavailableCompletion(ctx, state, event, running) {
+		return
+	}
+	deliverableLookup := deliverableRecoveryLookupResult{}
+	var deliverableRecoveryErr *runpkg.DeliverableRecoveryError
+	if commandErr, deliveryFailure := runpkg.PullRequestDeliverableFailure(event.Err); deliveryFailure && commandErr != nil && errors.As(event.Err, &deliverableRecoveryErr) && deliverableRecoveryErr != nil {
+		if diffStatsPresent(event.Result.DiffStats) {
+			running.DiffStats = event.Result.DiffStats
+		}
+		deliverableLookup = o.lookupDeliverableRecovery(ctx, running, deliverableRecoveryErr)
+		deliverableLookup = o.createDeliverableRecoveryPullRequest(ctx, running, deliverableLookup)
+		if infrastructureErr, ok := o.deliverableRecoveryInfrastructureError(running, deliverableLookup.CreateError); ok {
+			infrastructureEvent := event
+			infrastructureEvent.Err = infrastructureErr
+			if o.handleForgeUnavailableCompletion(ctx, state, infrastructureEvent, running) {
+				return
+			}
+			if o.handleTrackerUnavailableCompletion(ctx, state, infrastructureEvent, running) {
+				return
+			}
+			if o.handleGitHubRESTCapacityCompletion(ctx, state, infrastructureEvent, running) {
+				return
+			}
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, infrastructureErr)
+			return
+		}
+		if deliverableLookup.reconciles() {
+			running.Issue = deliverableRecoveryIssue(running, deliverableLookup)
+			event.Err = nil
+			if deliverableLookup.CreatedPullRequest {
+				event.Result.FinalState = running.Issue.State
+			} else {
+				event.Result.FinalState = FinalStateCompleted
+			}
+			event.Result.PullRequestUpdated = true
+			recordStateEvent(state, telemetry.ActivityEvent{
+				At:      event.CompletedAt,
+				Event:   "deliverable_recovery_reconciled",
+				Message: deliverableLookup.LookupResult + " for " + issueLabel(running.Issue),
+			})
+			telemetry.LogLifecycle(o.logger, slog.LevelInfo, telemetry.LifecycleWorkAttempt, "deliverable_recovery_reconciled", o.runningLifecycleCorrelation(running.Issue, running),
+				"workspace_branch", deliverableLookup.Branch,
+				"workspace_head_sha", deliverableLookup.HeadSHA,
+				"hydration_state", deliverableLookup.HydrationState,
+				"lookup_result", deliverableLookup.LookupResult,
+				"pull_request_number", deliverableLookup.PullRequest.Number,
+			)
+		}
+	}
+	if credentialForgeWait && event.Err != nil && o.handleForgeUnavailableCompletion(ctx, state, event, running) {
+		return
+	}
+	o.finishForgeAvailabilityProbe(state, event, running)
+	if event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 {
+		o.recordProjectFailureBreakerProgress(state, event.IssueID, event.CompletedAt)
+		o.advanceDispatchRecovery(state, event.IssueID, event.CompletedAt)
+	} else if _, capacity := githubRESTBudgetEvidenceFromError(event.Err); !capacity {
+		delay := event.RetryDelay
+		if delay <= 0 {
+			delay = o.cfg.OverloadRetryDelay
+		}
+		o.backoffDispatchRecovery(state, event.IssueID, event.CompletedAt, delay)
+	}
+	releaseDispatchRecoveryAdmission(state, event.IssueID)
+	if o.handleCIUnavailableCompletion(ctx, state, event, running) {
+		return
+	}
+	if o.handleTrackerUnavailableCompletion(ctx, state, event, running) {
+		return
+	}
+	if o.handleMergeRevocationCompletion(ctx, state, event, running) {
+		return
+	}
+	if errors.Is(event.Err, runpkg.ErrMergeWorkerStartupTimeout) && o.handlePreTurnFailure(ctx, state, event, running) {
+		return
+	}
+	if o.handleMergeWorkerStartupTimeout(ctx, state, event, running) {
+		return
+	}
+	if o.handleMergeWorkerDurationExceeded(ctx, state, event, running) {
+		return
+	}
+	if capacityErr, ok := backendcapacity.As(event.Err); ok {
+		if !nativeCompletion {
+			o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
+		}
+		if capacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
+			o.handleTransientOverload(ctx, state, event, running, capacityErr)
+			return
+		}
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalCapacity, event.Err, "backend_capacity", errorString(event.Err))
+		o.handleBackendCapacityError(ctx, state, event, running, capacityErr)
+		return
+	}
+	if o.handleSessionBrake(ctx, state, event, running) {
+		return
+	}
+	if o.handleGitHubRESTCapacityCompletion(ctx, state, event, running) {
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalCapacity, event.Err, githubRESTCapacityError, errorString(event.Err))
+		return
+	}
+	if event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 {
+		o.recoverBackendCapacity(state, running, event.CompletedAt)
+	} else {
+		o.deferBackendCapacityProbe(state, running, event.CompletedAt, event.Err)
+	}
+
+	if running.Mode != runpkg.RunModeTriage && !deliverableLookup.reconciles() && workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
+		tokens := event.Result.Tokens
+		if tokens == (TokenTotals{}) {
+			tokens = running.Tokens
+		}
+		if diffStatsPresent(event.Result.DiffStats) {
+			running.DiffStats = event.Result.DiffStats
+		}
+		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
+			telemetry.WorkAttemptIDKey, running.WorkAttemptID,
+			telemetry.DetentSessionIDKey, running.DetentSessionID,
+			telemetry.ProviderSessionIDKey, running.SessionID,
+			"attempt", running.Attempt,
+			"worker_host", strings.TrimSpace(running.WorkerHost),
+			"final_state", strings.TrimSpace(running.Issue.State),
+		)
+		if err := o.completeTerminalRunning(context.Background(), state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt); err != nil {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		}
+		return
+	}
+	if (!nativeCompletion || running.Mode == runpkg.RunModeTriage) && o.handlePreTurnFailure(ctx, state, event, running) {
+		return
+	}
+	if running.Mode == runpkg.RunModeTriage {
+		o.finishAttemptTriage(ctx, state, event, running)
+		return
+	}
+	if !nativeCompletion && o.completeRecordedInstanceBlockers(ctx, state, event, running) {
+		return
+	}
+
+	if nativeCompletion {
+		if o.completeNativeChangeRun(ctx, state, event, running, event.Result.FinalState) {
+			return
+		}
+		if o.handlePreTurnFailure(ctx, state, event, running) {
+			return
+		}
+	}
+
+	if event.Err != nil {
+		interrupted := runpkg.IsAvailabilityInterruption(event.Err)
+		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
+			telemetry.WorkAttemptIDKey, running.WorkAttemptID,
+			telemetry.DetentSessionIDKey, running.DetentSessionID,
+			telemetry.ProviderSessionIDKey, running.SessionID,
+			"attempt", running.Attempt,
+			"worker_host", strings.TrimSpace(running.WorkerHost),
+			"retry_attempt", event.RetryAttempt,
+			"retry_delay_seconds", int64(event.RetryDelay/time.Second),
+			"error", event.Err,
+		)
+		if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
+			var warning string
+			running.Issue, warning = o.refreshSpendProgressIssue(ctx, running.Issue)
+			o.scheduleCITriggerLabel(ctx, running.Issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, warning != "")
+		}
+		if !interrupted && !mergeWorkerIssue(running.Issue) && !event.Result.PullRequestHeadPushed {
+			refreshed, _ := o.refreshSpendProgressIssue(ctx, running.Issue)
+			running.Issue = refreshed
+		}
+		progressMetadata := map[string]any{}
+		if !interrupted && !mergeWorkerIssue(running.Issue) && strings.TrimSpace(event.Request.Mode) != runpkg.RunModePlan && strings.TrimSpace(running.Mode) != runpkg.RunModePlan {
+			if diffStatsPresent(event.Result.DiffStats) {
+				running.DiffStats = event.Result.DiffStats
+			}
+			progress := o.evaluateImplementCompletionProgress(ctx, running, event.Result.FinalState, event.Result.PullRequestUpdated)
+			running.Issue = progress.Issue
+			progressMetadata = implementCompletionProgressMetadata(progress)
+		}
+		terminalState := terminalStateForRun(event.Err, event.Result.FinalState)
+		errorClass := runnerWorkAttemptErrorClass(event.Err)
+		errorMessage := event.Err.Error()
+		phase := "failed"
+		statusMessage := "worker failed"
+		if interrupted {
+			phase = "cancelled"
+		}
+		if running.Cancellation != nil {
+			statusMessage = running.Cancellation.Error()
+		}
+		var projectionErr *runpkg.SessionBudgetProjectionError
+		projectionFailure := errors.As(event.Err, &projectionErr) && projectionErr != nil
+		if deliverableRecoveryErr != nil && !deliverableRecoveryMachineOwned(deliverableLookup) {
+			errorClass = deliverableRecoveryReasonCode(deliverableLookup)
+			phase = "blocked"
+			statusMessage = "branch " + deliverableRecoveryBranch(deliverableRecoveryErr, running) + " needs delivery recovery"
+		} else if projectionFailure {
+			errorClass = budgetProjectionCeilingFailureCause
+			phase = "blocked"
+			statusMessage = "session stopped at its projected budget ceiling"
+		}
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, terminalState, event.Err, errorClass, errorMessage)
+		attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(
+			progressMetadata,
+			deliverableCommandEvidenceMetadata(event.Result),
+		))
+		attempt := event.RetryAttempt
+		if interrupted {
+			attempt = running.Attempt
+		} else if attempt < 1 {
+			attempt = nextAttempt(running.Attempt)
+		}
+		if !interrupted {
+			if deliverableRecoveryMachineOwned(deliverableLookup) {
+				running.Issue = o.returnMissingDeliverableBranchToRework(ctx, state, running.Issue, deliverableLookup, event.CompletedAt)
+			} else if o.blockDeliverableRecoveryFailure(ctx, state, event, running, deliverableLookup, deliverableRecoveryErr) {
+				return
+			}
+			if projectionFailure && o.blockHumanOwnedWorkerFailure(
+				ctx,
+				state,
+				event,
+				running,
+				budgetProjectionCeilingFailureCause,
+				fmt.Sprintf("session cost %.6f USD exceeded the admitted projection %.6f USD using estimate source %q", projectionErr.ObservedCostUSD, projectionErr.ProjectedCostUSD, projectionErr.EstimateSource),
+				"inspect the preserved worktree and either narrow the task or adjust the budget policy before moving the issue to Rework",
+				"worker_budget_projection_ceiling_tripped",
+				"estimate_source", projectionErr.EstimateSource,
+			) {
+				return
+			}
+			if mergeWorkerIssue(running.Issue) {
+				o.logMergeWorkerFailure(running.Issue, "runner_failed", event.Err)
+				o.recordMergeFailed(state, running.Issue, event.CompletedAt, "runner_failed", event.Err)
+			}
+			if mergeWorkerIssue(running.Issue) && attempt > maxMergeWorkerRunnerFailures {
+				if o.blockExhaustedMergeWorker(ctx, state, running, event, mergeWorkerRetryExhaustedReason, attempt, event.Err) {
+					return
+				}
+			}
+			if terminalAttemptStateRetryDemotable(terminalState) && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
+				var parked bool
+				running.Issue, _, parked = o.demoteTerminalAttemptRetry(
+					ctx,
+					state,
+					running.Issue,
+					running.WorkProductPushed,
+					terminalAttemptRetryLimitCause,
+					attemptCompleted,
+					running.Mode,
+					running.DiffStats,
+					event.CompletedAt,
+					terminalAttemptFailureEvidence(running, terminalState, errorClass, errorMessage, event.CompletedAt),
+				)
+				if parked {
+					return
+				}
+			}
+		}
+		if !interrupted && terminalState != store.WorkAttemptTerminalCancelled {
+			o.retryMachineCompletion(ctx, state, event, running, attempt, event.Err.Error())
+			return
+		}
+		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
+		delay := event.RetryDelay
+		if delay <= 0 {
+			delay = o.retryDelay(attempt, false)
+		}
+		o.scheduleRetryAfter(
+			state,
+			running.Issue,
+			attempt,
+			event.CompletedAt,
+			delay,
+			event.Err.Error(),
+			running.WorkerHost,
+		)
+		return
+	}
+
+	if event.Request.Mode == runpkg.RunModePlan {
+		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
+			telemetry.WorkAttemptIDKey, running.WorkAttemptID,
+			telemetry.DetentSessionIDKey, running.DetentSessionID,
+			telemetry.ProviderSessionIDKey, running.SessionID,
+			"attempt", running.Attempt,
+			"worker_host", strings.TrimSpace(running.WorkerHost),
+			"mode", strings.TrimSpace(event.Request.Mode),
+			"final_state", strings.TrimSpace(event.Result.FinalState),
+		)
+		o.completePlanRunning(ctx, state, event, running)
+		return
+	}
+
+	if o.completeNativeLandingRun(ctx, state, event, running) {
+		return
+	}
+
+	// Merge mode also repairs conflicts in active lanes; only Merging owns a merge.
+	repairRun := !mergeWorkerIssue(running.Issue) && (running.Mode == runpkg.RunModeMerge || event.Request.Mode == runpkg.RunModeMerge)
+	var dependencyProgress implementCompletionProgressDecision
+	if mergeWorkerIssue(running.Issue) && mergeWorkerTurnSucceeded(event) && !state.Draining {
+		if diffStatsPresent(event.Result.DiffStats) {
+			running.DiffStats = event.Result.DiffStats
+		}
+		dependencyProgress = o.evaluateCompletedDependencyDeferral(ctx, running)
+	}
+	if (mergeWorkerIssue(running.Issue) || repairRun) && !dependencyProgress.DependencyDeferral {
+		if o.completeLatestTerminalMergeWorkerResult(ctx, state, event, running) {
+			return
+		}
+		if state.Draining {
+			releaseProjectFailureBreakerCanary(state, event.IssueID)
+			o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalCancelled, "draining", "worker stopped during drain", "cancelled", "worker stopped during drain")
+			o.cleanupDrainedRun(ctx, state, event.IssueID)
+			return
+		}
+		if !repairRun {
+			o.handleIncompleteMergeWorkerResult(ctx, state, event, running)
+			return
+		}
+	}
+
+	finalState := event.Result.FinalState
+	if finalState == "" {
+		finalState = FinalStateCompleted
+	}
+	o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(nil, finalState),
+		telemetry.WorkAttemptIDKey, running.WorkAttemptID,
+		telemetry.DetentSessionIDKey, running.DetentSessionID,
+		telemetry.ProviderSessionIDKey, running.SessionID,
+		"attempt", running.Attempt,
+		"worker_host", strings.TrimSpace(running.WorkerHost),
+		"mode", strings.TrimSpace(event.Request.Mode),
+		"final_state", strings.TrimSpace(finalState),
+	)
+	terminalState := terminalStateForRun(nil, finalState)
+	errorClass := ""
+	errorMessage := ""
+	if terminalState == store.WorkAttemptTerminalFailure {
+		errorClass = "runner_final_state"
+		errorMessage = finalState
+	}
+	if diffStatsPresent(event.Result.DiffStats) {
+		running.DiffStats = event.Result.DiffStats
+	}
+	dispatchedIssue := cloneIssue(running.Issue)
+	if terminalState == store.WorkAttemptTerminalSuccess {
+		running.Issue = o.applyArtifactGateCompletionFields(ctx, running.Issue, running.DispatchWorkpadHash, running.DispatchWorkpadRead)
+	}
+	var progress implementCompletionProgressDecision
+	if dependencyProgress.DependencyDeferral {
+		progress = dependencyProgress
+	} else {
+		progress = o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
+	}
+	// Classify current Workpad evidence before reusing a historical gate wait.
+	if terminalState == store.WorkAttemptTerminalSuccess && !repairRun && !completionWorkpadUnfinished(progress.Issue) && progress.Reason != implementProgressOutcomeNoProgress && o.completeRedundantGateWaitRun(ctx, state, event, running) {
+		releaseProjectFailureBreakerCanary(state, event.IssueID)
+		return
+	}
+	progress, gateWaitReason := completedReworkGateWaitProgress(running, progress, o.cfg, finalState)
+	running.Issue = progress.Issue
+	completionEvidence := progress.WorkspaceDiffStats
+	if !diffStatsPresent(completionEvidence) {
+		completionEvidence = running.DiffStats
+	}
+	completionCleanliness := o.evaluateCompletionCleanliness(ctx, running, running.Issue, completionEvidence)
+	completionRejected := completionCleanliness.Attempted && completionCleanliness.Outcome != completionCleanlinessAccepted
+	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
+		forceReapply := false
+		if pullRequestRepository(running.Issue) == "" || pullRequestNumber(running.Issue) <= 0 || running.Issue.PullRequest == nil || strings.TrimSpace(progress.CurrentSignature.HeadSHA) == "" {
+			refreshed, warning := o.refreshSpendProgressIssue(ctx, running.Issue)
+			running.Issue = refreshed
+			progress.Issue = refreshed
+			forceReapply = warning != ""
+			if warning != "" && o.logger != nil {
+				o.logger.Warn("worker push pull request refresh failed", "issue_id", running.Issue.ID, "identifier", running.Issue.Identifier, "warning", warning)
+			}
+		}
+		o.scheduleCITriggerLabel(ctx, running.Issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, forceReapply)
+	}
+	o.commentObservedLaneTransition(ctx, dispatchedIssue, running.Issue, event.CompletedAt)
+	if terminalState != store.WorkAttemptTerminalSuccess {
+		progress.Outcome = terminalState
+	}
+	phase := "completed"
+	statusMessage := "worker completed"
+	artifactConvergence := artifactGateConvergenceRecord{}
+	if terminalState == store.WorkAttemptTerminalSuccess && progress.CompletionKind != workpad.CompletionOperational {
+		artifactConvergence = o.evaluateArtifactGateConvergence(ctx, dispatchedIssue, running.Issue, running)
+	}
+	if terminalState == store.WorkAttemptTerminalSuccess && progress.Outcome == store.WorkAttemptTerminalNoProgress {
+		terminalState = store.WorkAttemptTerminalNoProgress
+		phase = "no_progress"
+		statusMessage = "worker completed without PR progress"
+	}
+	if artifactConvergence.Tripped {
+		phase = "blocked"
+		statusMessage = "artifact gate convergence breaker tripped"
+	}
+	if completionRejected {
+		phase = "completion_rejected"
+		statusMessage = "completion rejected because workspace is not clean"
+	}
+	if completionCleanliness.Block {
+		terminalState = store.WorkAttemptTerminalNoProgress
+		phase = "blocked"
+		statusMessage = "dirty completion requires human resolution"
+		errorClass = dirtyCompletionEscalationReason
+		errorMessage = dirtyCompletionEscalationReason
+	}
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, terminalState, nil, errorClass, errorMessage)
+	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(
+		implementCompletionProgressMetadata(progress),
+		completionCleanlinessMetadata(completionCleanliness),
+		artifactGateConvergenceMetadata(artifactConvergence),
+		deliverableCommandEvidenceMetadata(event.Result),
+		completionGateWaitMetadata(gateWaitReason, progress.Issue),
+	))
+
+	if terminalState == store.WorkAttemptTerminalNoProgress {
+		finalState = runpkg.FinalStateNoProgress
+	}
+	state.Completed[event.IssueID] = Completed{
+		Attempt:                    running.Attempt,
+		Issue:                      cloneIssue(running.Issue),
+		SessionID:                  running.SessionID,
+		StartedAt:                  running.StartedAt,
+		CompletedAt:                event.CompletedAt,
+		FinalState:                 finalState,
+		CompletionKind:             strings.TrimSpace(progress.CompletionKind),
+		GateWaitReason:             gateWaitReason,
+		successfulAttemptPersisted: attemptCompleted && terminalState == store.WorkAttemptTerminalSuccess,
+		gateWaitEvidence:           completionGateWaitEvidence(gateWaitReason, progress.Issue),
+		Tokens:                     event.Result.Tokens,
+		RuntimeIdentity:            running.RuntimeIdentity,
+	}
+	o.recordCompletionUsage(ctx, state, event, running.Issue)
+	if artifactConvergence.Tripped {
+		o.parkArtifactGateConvergence(ctx, state, event, running)
+		return
+	}
+	if completionCleanliness.Block {
+		if attemptCompleted && o.blockCompletionCleanliness(ctx, state, event, running, completionCleanliness) {
+			return
+		}
+		if !attemptCompleted {
+			recordStateEvent(state, telemetry.ActivityEvent{
+				At:      event.CompletedAt,
+				Event:   "dirty_completion_persist_failed",
+				Message: "retained claim for " + issueLabel(running.Issue) + " after dirty completion persistence failed",
+			})
+			return
+		}
+	}
+	if completionRejected {
+		if !attemptCompleted {
+			recordStateEvent(state, telemetry.ActivityEvent{
+				At:      event.CompletedAt,
+				Event:   "dirty_completion_persist_failed",
+				Message: "retained claim for " + issueLabel(running.Issue) + " after dirty completion persistence failed",
+			})
+			return
+		}
+		o.commentCompletionCleanlinessRejection(ctx, running.Issue, completionCleanliness)
+		o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), completionCleanlinessRejectionComment(completionCleanliness))
+		return
+	}
+
+	if state.Draining {
+		o.cleanupDrainedRun(ctx, state, event.IssueID)
+		return
+	}
+	if repairRun && mergeFastPathResult(event) && terminalState == store.WorkAttemptTerminalSuccess && !completionRejected && !progress.DependencyDeferral {
+		o.releaseCompletedAttemptClaim(ctx, state, running.Issue)
+		return
+	}
+	if terminalState == store.WorkAttemptTerminalSuccess &&
+		autoPromoteActiveGatePendingIssue(running.Issue, state, o.cfg, o.cfg.AutoPromote) {
+		if gateWaitReason != "" && !attemptCompleted {
+			recordStateEvent(state, telemetry.ActivityEvent{
+				At:      event.CompletedAt,
+				Event:   "rework_gate_wait_persist_failed",
+				Message: "retained claim for " + issueLabel(running.Issue) + " after Rework gate-wait persistence failed",
+			})
+			return
+		}
+		o.transitionCompletedActiveIssuesToReview(ctx, state, []connector.Issue{running.Issue}, event.CompletedAt)
+		if _, claimed := state.Claimed[event.IssueID]; claimed {
+			o.releaseCompletedAttemptClaim(ctx, state, running.Issue)
+		}
+		return
+	}
+	if event.Result.BudgetRefusal != nil && !o.cfg.subscriptionBilling() && event.Result.BudgetRefusal.Code == string(budget.ReasonPerIssueMaxUSD) {
+		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
+			o.logger.Warn("per-issue budget hold claim release failed", "issue_id", event.IssueID, "error", err)
+		}
+		delete(state.Claimed, event.IssueID)
+		delete(state.Retry, event.IssueID)
+		delete(state.PriorAttempts, event.IssueID)
+		return
+	}
+	if terminalState == store.WorkAttemptTerminalNoProgress {
+		if !attemptCompleted && o.workAttempts != nil && running.WorkAttemptID > 0 {
+			return
+		}
+		if o.blockImplementProgress(ctx, state, running, progress, event) {
+			return
+		}
+	}
+	if terminalState != store.WorkAttemptTerminalSuccess {
+		o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), firstNonBlank(errorMessage, string(terminalState)))
+		return
+	}
+	if progress.DependencyDeferral {
+		if attemptCompleted {
+			o.finishImplementDependencyDeferral(ctx, state, running.Issue, event.CompletedAt)
+		} else {
+			recordStateEvent(state, telemetry.ActivityEvent{
+				At:      event.CompletedAt,
+				Event:   "implement_dependency_deferral_persist_failed",
+				Message: "retained claim for " + issueLabel(running.Issue) + " after dependency deferral persistence failed",
+			})
+		}
+		return
+	}
+	if running.CompletionLane != "" {
+		if err := o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt); err != nil {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		}
+		return
+	}
+	if terminalState == store.WorkAttemptTerminalSuccess {
+		transition := o.transitionCompletedActiveIssuesToReview(ctx, state, []connector.Issue{running.Issue}, event.CompletedAt)
+		if _, transitioned := transition.transitioned[event.IssueID]; transitioned {
+			return
+		}
+	}
+
+	if len(implementProgressSourceKinds(running, progress.Issue)) == 0 {
+		o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), progress.Reason)
+		return
+	}
+	o.scheduleContinuationRetry(ctx, state, running.Issue, 1, event.CompletedAt, "", running.WorkerHost)
+}
+
+func deliverableCommandEvidenceMetadata(result runpkg.RunResult) map[string]any {
+	if len(result.DeliverableCommands) == 0 {
+		return nil
+	}
+	return map[string]any{"deliverable_commands": result.DeliverableCommands}
+}
+
+func (o *Orchestrator) completeRedundantGateWaitRun(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+) bool {
+	if event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated {
+		return false
+	}
+	if !autoPromoteDurableGateWaitTrackedIssue(running.Issue, o.cfg, o.cfg.AutoPromote) {
+		return false
+	}
+	attempt, ok, err := o.latestSuccessfulGateWaitAttempt(ctx, running.Issue)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"gate-wait completion history lookup failed",
+				"issue_id", running.Issue.ID,
+				"identifier", running.Issue.Identifier,
+				"error", err,
+			)
+		}
+		return false
+	}
+	if !ok {
+		return false
+	}
+
+	o.completeDurableWorkAttempt(
+		ctx,
+		state,
+		running,
+		event.CompletedAt,
+		store.WorkAttemptTerminalSuperseded,
+		"awaiting_gate",
+		"completed gate-wait work already has a successful attempt",
+		"superseded",
+		"ignored redundant gate-wait dispatch",
+	)
+	state.Completed[event.IssueID] = completedFromGateWaitAttempt(running.Issue, attempt)
+	tokens := event.Result.Tokens
+	if tokens == (TokenTotals{}) {
+		tokens = running.Tokens
+	}
+	state.TokenTotals = addTokenTotals(state.TokenTotals, tokens)
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+	}
+	if diffStatsPresent(event.Result.DiffStats) {
+		state.DiffStats[event.IssueID] = event.Result.DiffStats
+	}
+	o.releaseCompletedAttemptClaim(ctx, state, running.Issue)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "gate_wait_dispatch_superseded",
+		Message: "ignored redundant dispatch for completed gate-wait " + issueLabel(running.Issue),
+	})
+	return true
+}
+
+func (o *Orchestrator) releaseCompletedAttemptClaim(ctx context.Context, state *State, issue connector.Issue) {
+	issueID := strings.TrimSpace(issue.ID)
+	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
+		o.logger.Warn("release completed attempt claim failed", "issue_id", issueID, "error", err)
+	}
+	o.releaseClaim(state, issueID)
+}
+
+func (o *Orchestrator) commentBudgetRefusal(ctx context.Context, issueID string, refusal BudgetRefusal) {
+	if o.connector == nil {
+		return
+	}
+	body := strings.TrimSpace(refusal.Comment)
+	if body == "" {
+		body = strings.TrimSpace(refusal.Message)
+	}
+	if body == "" {
+		return
+	}
+	if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
+		o.logger.Warn(
+			"budget refusal comment failed",
+			"issue_id", issueID,
+			"identifier", refusal.Issue.Identifier,
+			"code", refusal.Code,
+			"error", err,
+		)
+	}
+}
+
+func (o *Orchestrator) operatorText(value string) string {
+	return runtimeoutput.Truncate(strings.TrimSpace(value), o.cfg.OutputTruncationMaxBytes).Value
+}
+
+func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+) bool {
+	issueID := strings.TrimSpace(event.IssueID)
+	if issueID == "" || o.connector == nil {
+		return false
+	}
+	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issueID})
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"merge_worker_terminal_state_refresh_failed",
+				"issue_id", issueID,
+				"identifier", running.Issue.Identifier,
+				"error", err,
+			)
+		}
+		return false
+	}
+	for _, issue := range issues {
+		if strings.TrimSpace(issue.ID) != issueID {
+			continue
+		}
+		issue = mergeIssueTrackerFields(running.Issue, issue)
+		if !workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
+			return o.completeProgrammaticMergeWorkerResult(ctx, state, event, running, issue)
+		}
+		tokens := event.Result.Tokens
+		if tokens == (TokenTotals{}) {
+			tokens = running.Tokens
+		}
+		if diffStatsPresent(event.Result.DiffStats) {
+			running.DiffStats = event.Result.DiffStats
+		}
+		running.Issue = issue
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
+		if err := o.completeTerminalRunning(ctx, state, issueID, running, terminalCompletedAt(issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt); err != nil {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		}
+		if event.Result.RateLimits != nil {
+			state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+		}
+		return true
+	}
+	return false
+}
+
+func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) bool {
+	if state != nil && state.Draining {
+		return false
+	}
+	if mergeWorkerIssue(running.Issue) && mergeWorkerIssue(issue) && nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
+		o.completeNativeMergeQueueWorker(ctx, state, event, running, issue)
+		return true
+	}
+	if !mergeWorkerTurnSucceeded(event) {
+		return false
+	}
+	if strings.TrimSpace(event.Result.Output) == runpkg.RunOutputMergeFallbackRework {
+		o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeFallbackRequiresReworkReason, nil, event.Result.MergeFallbackFindings)
+		return true
+	}
+	hydrator, ok := o.connector.(connector.PullRequestHydrator)
+	if !ok {
+		return false
+	}
+	refreshedIssue, err := hydrator.HydratePullRequest(ctx, issue)
+	if err != nil {
+		running.Issue = issue
+		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_pr_refresh_failed", err)
+		return true
+	}
+	issue, err = o.postValidatedGateStatus(ctx, hydrator, event, refreshedIssue)
+	if err != nil {
+		running.Issue = refreshedIssue
+		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_pr_refresh_failed", err)
+		return true
+	}
+	if mergeWorkerIssue(running.Issue) && mergeWorkerIssue(issue) && nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
+		o.completeNativeMergeQueueWorker(ctx, state, event, running, issue)
+		return true
+	}
+	if event.Result.Output == runpkg.RunOutputMergeFallbackResolved &&
+		event.Result.MergePrecheck != nil && event.Result.MergePrecheck.HeadSHA != "" &&
+		(issue.PullRequest == nil || issue.PullRequest.HeadSHA != event.Result.MergePrecheck.HeadSHA) {
+		o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeFallbackRequiresReworkReason, nil, "Pull request head changed after deterministic merge-fallback validation.")
+		return true
+	}
+	// A pre-Merging repair rejoins ordinary completion so the changed head is
+	// recorded as progress, without merge reservations, CI waits, or a merge API call.
+	if !mergeWorkerIssue(running.Issue) || !mergeWorkerIssue(issue) {
+		return false
+	}
+	if issue.PullRequest != nil && issue.PullRequest.Draft {
+		var hydrated bool
+		issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
+		if !hydrated {
+			o.waitForMergeWorkerPullRequestHydration(ctx, state, event, running, issue)
+			return true
+		}
+	}
+	if revocation, revoked := mergeRevocationForIssue(
+		issue,
+		o.cfg,
+		true,
+		autoPromoteOperationalCompletionAccepted(state, issue),
+	); revoked &&
+		mergeRevocationRequiresImmediateStop(revocation, event.Result) {
+		o.finishMergeRevocation(ctx, state, event, running, revocation)
+		return true
+	}
+	if event.Result.Output == mergeControlCheckedHeadOutput && !sameMergeControlRevision(event.Request.Issue, issue) {
+		running.Issue = issue
+		o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
+		return true
+	}
+	if automatedReviewPending(issue.PullRequest, o.cfg) {
+		o.requestAutomatedReview(ctx, issue)
+		o.waitForMergeWorkerRetry(ctx, state, event, running, issue,
+			string(AutoPromoteReasonCodexReviewMissing), string(AutoPromoteReasonCodexReviewMissing), "Waiting for current-head review: ")
+		return true
+	}
+	missingChecks := mergeWorkerMissingRequiredChecks(issue, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus)
+	streaks := o.evaluateMergeRequiredCheckStreaks(ctx, issue, missingChecks, event.CompletedAt)
+	if persistent := persistentMissingRequiredCheckStreaks(streaks); len(persistent) > 0 {
+		o.blockPersistentlyMissingRequiredChecks(ctx, state, event, running, issue, persistent)
+		return true
+	}
+	requiredChecks := gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks
+	branchPolicyOnly := requiredChecks != nil && len(requiredChecks) == 0
+	headWithoutCI := mergeWorkerCheckedPullRequest(issue) && strings.TrimSpace(issue.PullRequest.BaseRef) != "" &&
+		len(issue.PullRequest.Checks) == 0 && issue.PullRequest.CheckRunCount == 0 && issue.PullRequest.StatusContextCount == 0
+	if event.Result.PullRequestHeadPushed && (!branchPolicyOnly || !headWithoutCI) {
+		o.recordMergeReservationWait(state, issue, event.CompletedAt)
+		triggerPending := false
+		if !event.Result.CITriggerLabelReapplied {
+			triggerPending = o.scheduleCITriggerLabel(ctx, issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, false)
+		}
+		if triggerPending {
+			o.waitForMergeWorkerCITriggerLabel(ctx, state, event, running, issue)
+			return true
+		}
+		o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
+		return true
+	}
+	if mergeWorkerCheckedPullRequest(issue) &&
+		strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "behind") {
+		o.refreshMergeWorkerBase(ctx, state, event, running, issue, "pull_request_base_behind")
+		return true
+	}
+	if !mergeWorkerProgrammaticMergeReady(issue, o.cfg) {
+		if pullRequestHydrationBlocksProgress(issue.PullRequest) {
+			o.waitForMergeWorkerPullRequestHydration(ctx, state, event, running, issue)
+			return true
+		}
+		if len(missingChecks) > 0 {
+			triggerPending := o.scheduleCITriggerLabel(ctx, issue, missingChecks, running.Attempt, false, false)
+			if triggerPending || mergeWorkerMissingRequiredChecksPropagating(issue, running.Attempt, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus) {
+				o.waitForMergeWorkerRequiredCheckPropagation(ctx, state, event, running, issue)
+				return true
+			}
+			o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeWorkerRequiredChecksMissingReason, missingChecks, "")
+			return true
+		}
+		if mergeFastPathResult(event) && mergeWorkerMergeabilityPending(issue) {
+			o.waitForMergeWorkerMergeability(ctx, state, event, running, issue)
+			return true
+		}
+		if mergeFastPathResult(event) && mergeWorkerProgrammaticMergeWaiting(issue) {
+			o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
+			return true
+		}
+		if mergeFastPathResult(event) {
+			o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeWorkerFastPathNotReadyReason, nil, "")
+			return true
+		}
+		return false
+	}
+	audit := o.securityAuditEvaluation(ctx, issue)
+	if auditDecision, pending := gate.EvaluateSecurityAudit(o.cfg.AutoPromote.Gate.SecurityAudit, audit); pending {
+		if auditDecision.Reason == gate.ReasonSecurityAuditMissing {
+			o.startSecurityAuditStage(ctx, issue, event.CompletedAt)
+			audit = o.securityAuditEvaluation(ctx, issue)
+			auditDecision, _ = gate.EvaluateSecurityAudit(o.cfg.AutoPromote.Gate.SecurityAudit, audit)
+		}
+		// An audit can finish between launch and this read. A passing result
+		// proceeds directly; findings use the existing publication and Rework path.
+		if auditDecision.Reason == gate.ReasonSecurityAuditFindings {
+			if err := o.publishSecurityAuditFindings(ctx, issue, audit); err != nil {
+				running.Issue = issue
+				o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "merge_worker_rework_failed", err)
+				return true
+			}
+			o.reworkMergeWorkerResult(ctx, state, event, running, issue, string(auditDecision.Reason), nil, securityAuditFindingsComment(issue, audit, ""))
+			return true
+		}
+		if auditDecision.Action != "" {
+			o.waitForMergeWorkerRetry(ctx, state, event, running, issue,
+				string(auditDecision.Reason), "merge_worker_gate_wait", "Waiting for security audit routing: ")
+			return true
+		}
+	}
+	if len(audit.AllFindings) > 0 {
+		if err := o.publishSecurityAuditFindings(ctx, issue, audit); err != nil {
+			running.Issue = issue
+			o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "merge_worker_rework_failed", err)
+			return true
+		}
+	}
+	if gateRequiresPullRequest(o.cfg.AutoPromote.Gate) {
+		var hydrated bool
+		issue, hydrated = o.hydrateAutoPromoteReviewThreads(ctx, issue)
+		if !hydrated {
+			o.waitForMergeWorkerPullRequestHydration(ctx, state, event, running, issue)
+			return true
+		}
+		if issue.PullRequest != nil && len(issue.PullRequest.UnresolvedReviewThreads) > 0 {
+			o.reworkMergeWorkerResult(
+				ctx,
+				state,
+				event,
+				running,
+				issue,
+				string(AutoPromoteReasonUnresolvedReviewThreads),
+				nil,
+				"",
+			)
+			return true
+		}
+	}
+	merger, ok := o.connector.(connector.PullRequestMerger)
+	if !ok {
+		return false
+	}
+	issueID := strings.TrimSpace(event.IssueID)
+	repository := pullRequestRepository(issue)
+	number := pullRequestNumber(issue)
+	headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
+	if err := merger.MergePullRequest(ctx, repository, number, headSHA, o.cfg.MergeMethod); err != nil {
+		if errors.Is(err, connector.ErrPullRequestMergeQueueRequired) {
+			// The provider has established queue ownership even if the policy
+			// refresh fails. Never charge this routing correction as a retry.
+			state.nativeMergeQueueRepos[nativeMergeQueueRepositoryKey(issue)] = nativeMergeQueueRepository{Available: true}
+			o.completeNativeMergeQueueWorker(ctx, state, event, running, issue)
+			return true
+		}
+		if errors.Is(err, connector.ErrPullRequestBaseOutOfDate) {
+			o.refreshMergeWorkerBase(ctx, state, event, running, issue, "merge_api_rejected_out_of_date_base")
+			return true
+		}
+		running.Issue = issue
+		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_failed", err)
+		return true
+	}
+
+	targetState := doneStateName(o.cfg.TerminalStates)
+	mergedIssue, deliveredAt := o.programmaticMergeDelivery(issue)
+	if err := o.updateIssueStateByID(ctx, state, issueID, mergedIssue, targetState, deliveredAt, "merge_worker_programmatic_merge"); err != nil {
+		running.Issue = mergedIssue
+		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_state_update_failed", err)
+		return true
+	}
+
+	updatedAt := deliveredAt
+	mergedIssue.State = targetState
+	mergedIssue.UpdatedAt = &updatedAt
+	mergedIssue.StageUpdatedAt = &updatedAt
+	mergeTimingIssue := running.Issue
+	running.Issue = mergedIssue
+	tokens := event.Result.Tokens
+	if tokens == (TokenTotals{}) {
+		tokens = running.Tokens
+	}
+	if diffStatsPresent(event.Result.DiffStats) {
+		running.DiffStats = event.Result.DiffStats
+	}
+	if o.logger != nil {
+		o.logger.Info("merge_worker_programmatic_merge", mergeWorkerLogAttrs(mergedIssue, "target_state", targetState)...)
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      deliveredAt,
+		Event:   "merge_worker_programmatic_merge",
+		Message: "programmatically merged " + issueLabel(mergedIssue) + " and moved it to " + targetState,
+	})
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
+	if err := o.completeTerminalRunning(ctx, state, issueID, running, deliveredAt, tokens, event.CompletedAt); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+	}
+	mergeTiming := o.recordMergeCompleted(state, mergeTimingIssue, deliveredAt, targetState)
+	if completed, ok := state.Completed[issueID]; ok {
+		completed.MergeTiming = mergeTiming
+		state.Completed[issueID] = completed
+	}
+	o.logMergeWorkerSuccess(mergeTimingIssue, targetState)
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+	}
+	return true
+}
+
+func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) {
+	reconcileMergeWorkerCurrentHeadCIWait(state, issue, event.CompletedAt)
+	retryError := mergeWorkerCurrentHeadCIWaitReason(issue, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus)
+	if o.mergeWorkerCurrentHeadCIWaitExceeded(state, issue, event.CompletedAt) {
+		retryError = fmt.Sprintf("current-head CI wait exceeded %s: %s", mergeWorkerCurrentHeadCIWaitTimeout, retryError)
+	}
+	reservation := o.recordMergeReservationWait(state, issue, event.CompletedAt)
+	attempt := sourceContinuationAttempt(running, issue, event.Result, mergeWorkerTurnSucceeded(event))
+	running.Issue = issue
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
+	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError,
+		map[string]any{mergeReservationMetadataKey: reservation})
+	if err := o.retryMachineFailure(ctx, state, issue, attempt, event.CompletedAt, retryError, running.WorkerHost); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		return
+	}
+	retry := state.Retry[issue.ID]
+	retry.Wait = RetryWait{
+		Kind:                  retryWaitCurrentHeadCI,
+		StartedAt:             state.MergeTimings[strings.TrimSpace(issue.ID)].CIWaitStartedAt,
+		PollCount:             1,
+		PendingChecks:         mergeWorkerCurrentHeadCIPendingChecks(issue, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus),
+		WorkspaceCreateCount:  1,
+		WorkspaceDestroyCount: 1,
+	}
+	state.Retry[issue.ID] = retry
+	o.logMergeWorkerCurrentHeadCIWait(state, issue, retry, event.CompletedAt)
+}
+
+func (o *Orchestrator) pollMergeWorkerCurrentHeadCI(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	retry Retry,
+	now time.Time,
+) (Retry, bool, string) {
+	if retry.Wait.Kind != retryWaitCurrentHeadCI {
+		return retry, false, ""
+	}
+	if !mergeWorkerProgrammaticMergeWaiting(issue) {
+		finishMergeWorkerCurrentHeadCIWait(state, issue, now)
+		retry.Wait = RetryWait{}
+		state.Retry[issue.ID] = retry
+		return retry, false, ""
+	}
+
+	timing := reconcileMergeWorkerCurrentHeadCIWait(state, issue, now)
+	retry.Issue = cloneIssue(issue)
+	retry.Error = mergeWorkerCurrentHeadCIWaitReason(issue, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus)
+	if retry.Wait.StartedAt.IsZero() || !retry.Wait.StartedAt.Equal(timing.CIWaitStartedAt) {
+		retry.Wait.StartedAt = timing.CIWaitStartedAt
+		retry.Wait.PollCount = 0
+	}
+	retry.Wait.PollCount++
+	retry.Wait.PendingChecks = mergeWorkerCurrentHeadCIPendingChecks(issue, gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus)
+	retry.DueAt = mergeWorkerCurrentHeadCINextPollAt(retry.Wait.StartedAt, now, o.cfg.ContinuationRetryDelay)
+	state.Retry[issue.ID] = retry
+	o.logMergeWorkerCurrentHeadCIWait(state, issue, retry, now)
+
+	if !now.Before(retry.Wait.StartedAt.Add(mergeWorkerCurrentHeadCIWaitTimeout)) {
+		err := fmt.Errorf("current-head CI wait exceeded %s: %s", mergeWorkerCurrentHeadCIWaitTimeout, retry.Error)
+		running := Running{
+			Issue:      cloneIssue(issue),
+			Attempt:    retry.Attempt,
+			WorkerHost: retry.WorkerHost,
+			DiffStats:  state.DiffStats[issue.ID],
+		}
+		if o.blockExhaustedMergeWorker(ctx, state, running, runpkg.Completion{IssueID: running.Issue.ID, CompletedAt: now, Err: err}, mergeWorkerCurrentHeadCIWaitExceededReason, retry.Attempt, err) {
+			return retry, true, mergeWorkerCurrentHeadCIWaitExceededReason
+		}
+	}
+	return retry, true, dispatchSkipCurrentHeadCIWait
+}
+
+func mergeWorkerCurrentHeadCINextPollAt(startedAt, now time.Time, delay time.Duration) time.Time {
+	if delay < 0 {
+		delay = 0
+	}
+	next := now.Add(delay)
+	if !startedAt.IsZero() {
+		deadline := startedAt.Add(mergeWorkerCurrentHeadCIWaitTimeout)
+		if deadline.Before(next) {
+			next = deadline
+		}
+	}
+	if next.Before(now) {
+		return now
+	}
+	return next
+}
+
+func (o *Orchestrator) logMergeWorkerCurrentHeadCIWait(
+	state *State,
+	issue connector.Issue,
+	retry Retry,
+	now time.Time,
+) {
+	elapsed := now.Sub(retry.Wait.StartedAt)
+	if retry.Wait.StartedAt.IsZero() || elapsed < 0 {
+		elapsed = 0
+	}
+	if o.logger != nil {
+		o.logger.Info(
+			"merge_worker_waiting_current_head_ci",
+			mergeWorkerLogAttrs(
+				issue,
+				"attempt", retry.Attempt,
+				"poll_count", retry.Wait.PollCount,
+				"elapsed_wait", elapsed.String(),
+				"elapsed_wait_seconds", int64(elapsed/time.Second),
+				"pending_checks", strings.Join(retry.Wait.PendingChecks, ", "),
+				"workspace_create_count", retry.Wait.WorkspaceCreateCount,
+				"workspace_destroy_count", retry.Wait.WorkspaceDestroyCount,
+				"reason", retry.Error,
+			)...,
+		)
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "merge_worker_waiting_current_head_ci",
+		Message: fmt.Sprintf("waiting on current-head CI for %s (poll %d)", issueLabel(issue), retry.Wait.PollCount),
+	})
+}
+
+func (o *Orchestrator) waitForMergeWorkerMergeability(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) {
+	o.waitForMergeWorkerRetry(
+		ctx,
+		state,
+		event,
+		running,
+		issue,
+		"waiting for GitHub mergeability computation",
+		"merge_worker_waiting_mergeability",
+		"merge worker is waiting for GitHub mergeability computation for ",
+	)
+}
+
+func (o *Orchestrator) waitForMergeWorkerRequiredCheckPropagation(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) {
+	o.waitForMergeWorkerRetry(
+		ctx,
+		state,
+		event,
+		running,
+		issue,
+		"waiting for required checks to appear on the current head",
+		"merge_worker_waiting_required_check_propagation",
+		"merge worker is waiting for required checks to appear for ",
+	)
+}
+
+func (o *Orchestrator) waitForMergeWorkerCITriggerLabel(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) {
+	o.waitForMergeWorkerRetry(
+		ctx,
+		state,
+		event,
+		running,
+		issue,
+		"waiting for CI trigger label after current-head push",
+		"merge_worker_waiting_ci_trigger_label",
+		"merge worker is waiting for the CI trigger label after pushing ",
+	)
+}
+
+func (o *Orchestrator) waitForMergeWorkerPullRequestHydration(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) {
+	o.waitForMergeWorkerRetry(
+		ctx,
+		state,
+		event,
+		running,
+		issue,
+		"waiting for fresh pull request hydration",
+		"merge_worker_waiting_pull_request_hydration",
+		"merge worker is waiting for fresh pull request hydration for ",
+	)
+}
+
+func (o *Orchestrator) waitForMergeWorkerRetry(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+	retryError string,
+	eventName string,
+	eventMessage string,
+) {
+	attempt := sourceContinuationAttempt(running, issue, event.Result, mergeWorkerTurnSucceeded(event))
+	running.Issue = issue
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
+	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError,
+		mergeWorkAttemptMetadata(map[string]any{mergeReservationMetadataKey: state.mergeReservations[issue.ID]}, nativeLandingMetadata(event.Result.NativeLanding)))
+	o.retryMachineCompletion(ctx, state, event, running, attempt, retryError)
+	if o.logger != nil {
+		o.logger.Info(eventName, mergeWorkerLogAttrs(issue, "attempt", attempt, "reason", retryError)...)
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   eventName,
+		Message: eventMessage + issueLabel(issue),
+	})
+}
+
+func (o *Orchestrator) mergeWorkerCurrentHeadCIWaitExceeded(state *State, issue connector.Issue, completedAt time.Time) bool {
+	if state == nil || completedAt.IsZero() {
+		return false
+	}
+	timing := reconcileMergeWorkerCurrentHeadCIWait(state, issue, completedAt)
+	return !completedAt.Before(timing.CIWaitStartedAt.Add(mergeWorkerCurrentHeadCIWaitTimeout))
+}
+
+func mergeWorkerCurrentHeadCIWaitReason(issue connector.Issue, localStatus string) string {
+	const reason = "waiting for current-head CI"
+	if issue.PullRequest == nil {
+		return reason
+	}
+	if unstartedChecks := pullRequestCheckNames(issue.PullRequest.UnstartedChecks); len(unstartedChecks) > 0 {
+		return reason + ": unstarted checks: " + strings.Join(unstartedChecks, ", ")
+	}
+	pendingRequiredChecks := make([]string, 0, len(issue.PullRequest.RequiredCheckFailures))
+	for _, check := range issue.PullRequest.RequiredCheckFailures {
+		if !check.IsMissingLocalStatus(localStatus) && autoPromoteCheckPending(check) && strings.TrimSpace(check.Name) != "" {
+			pendingRequiredChecks = append(pendingRequiredChecks, check.Name)
+		}
+	}
+	if pendingRequiredChecks = uniqueStrings(pendingRequiredChecks); len(pendingRequiredChecks) > 0 {
+		return reason + ": pending required checks: " + strings.Join(pendingRequiredChecks, ", ")
+	}
+	if runningChecks := uniqueStrings(issue.PullRequest.RunningChecks); len(runningChecks) > 0 {
+		return reason + ": pending checks: " + strings.Join(runningChecks, ", ")
+	}
+	return reason
+}
+
+func mergeWorkerCurrentHeadCIPendingChecks(issue connector.Issue, localStatus string) []string {
+	return autoPromotePendingChecksFromPullRequest(issue.PullRequest, localStatus)
+}
+
+func (o *Orchestrator) refreshMergeWorkerBase(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+	reason string,
+) {
+	reservation := reserveMergeCandidate(state, issue, event.CompletedAt)
+	// A fresh clean observation can use the already checked head after a
+	// transient behind result. Only an explicit merge API rejection forces a
+	// base refresh even if GitHub still reports the PR as clean.
+	if reason == "merge_api_rejected_out_of_date_base" {
+		reservation.RefreshHeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+	} else {
+		reservation.RefreshHeadSHA = ""
+	}
+	state.mergeReservations[reservation.IssueID] = reservation
+	attempt := sourceContinuationAttempt(running, issue, event.Result, mergeWorkerTurnSucceeded(event))
+	running.Issue = issue
+	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess,
+		"", "", "waiting", "base refresh required before merge", map[string]any{mergeReservationMetadataKey: reservation})
+	o.retryMachineCompletion(ctx, state, event, running, attempt, "base refresh required before merge")
+	if o.logger != nil {
+		o.logger.Info("merge_base_refresh_required", mergeWorkerLogAttrs(issue,
+			"reason", reason, "prior_validation_invalidated", true, "reservation_expires_at", reservation.ExpiresAt)...)
+	}
+}
+
+func (o *Orchestrator) failProgrammaticMergeWorkerResult(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	reason string,
+	err error,
+) {
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, err, reason, errorString(err))
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, reason, errorString(err), "merging", "programmatic merge failed")
+	o.logMergeWorkerFailure(running.Issue, reason, err)
+	o.recordMergeFailed(state, running.Issue, event.CompletedAt, reason, err)
+	attempt := nextAttempt(running.Attempt)
+	if attempt > maxMergeWorkerRunnerFailures {
+		if o.blockExhaustedMergeWorker(ctx, state, running, event, mergeWorkerRetryExhaustedReason, attempt, err) {
+			return
+		}
+	}
+	o.retryMachineCompletion(ctx, state, event, running, attempt, errorString(err))
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "merge_worker_programmatic_merge_failed",
+		Message: "programmatic merge failed for " + issueLabel(running.Issue) + ": " + errorString(err),
+	})
+}
+
+func sourceContinuationAttempt(running Running, issue connector.Issue, result runpkg.RunResult, accepted bool) int {
+	attempt := nextAttempt(running.Attempt)
+	if !accepted {
+		return attempt
+	}
+	if diffStatsPresent(result.DiffStats) {
+		running.DiffStats = result.DiffStats
+	}
+	evidence := implementProgressReconcilePullRequestEvidence(running.DiffStats, issue.PullRequest)
+	if completionCleanlinessDirty(evidence) || evidence.RecoveryStateExpected && !evidence.RecoveryStateAvailable {
+		return attempt
+	}
+	if stranded, unavailable := implementProgressUnpushedClassification(evidence, issue.PullRequest); stranded || unavailable != "" {
+		return attempt
+	}
+	if landing := result.NativeLanding; landing != nil && (landing.RequiresRework() || landing.Refusal != "" || landing.RefusalKind != "") {
+		return attempt
+	}
+	if change := result.NativeChange; change != nil {
+		if change.Error != "" || change.VersionError != "" || change.VersionID == "" ||
+			change.Validator != nil && change.Validator.Verdict == "rework" ||
+			change.ImplementationReview != nil && change.ImplementationReview.Verdict == "rework" ||
+			change.SecurityAudit != nil && change.SecurityAudit.Verdict == "rework" {
+			return attempt
+		}
+	}
+	if len(implementProgressSourceKinds(running, issue)) > 0 {
+		return 1
+	}
+	return attempt
+}
+
+func mergeWorkerTurnSucceeded(event runpkg.Completion) bool {
+	return event.Err == nil && !strings.EqualFold(strings.TrimSpace(event.Result.FinalState), runpkg.FinalStateFailed)
+}
+
+func mergeFastPathResult(event runpkg.Completion) bool {
+	if event.Request.Mode != runpkg.RunModeMerge {
+		return false
+	}
+	switch strings.TrimSpace(event.Result.Output) {
+	case runpkg.RunOutputMergeFastPathClean, runpkg.RunOutputMergeFastPathCheckedHead, runpkg.RunOutputMergeFallbackResolved, mergeControlCheckedHeadOutput:
+		return true
+	default:
+		return false
+	}
+}
+
+func mergeWorkerProgrammaticMergeReady(issue connector.Issue, cfg Config) bool {
+	return mergeWorkerCheckedPullRequest(issue) && !automatedReviewPending(issue.PullRequest, cfg) &&
+		strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "clean")
+}
+
+func mergeWorkerCheckedPullRequest(issue connector.Issue) bool {
+	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
+		return false
+	}
+	pullRequest := issue.PullRequest
+	if pullRequestHydrationBlocksProgress(pullRequest) {
+		return false
+	}
+	if normalizePullRequestState(pullRequest.State) != "open" || pullRequest.Draft {
+		return false
+	}
+	if !mergeWorkerCIGreen(pullRequest.CIStatus) || len(pullRequest.RequiredCheckFailures) > 0 || pullRequest.MergeQueueEntry != nil {
+		return false
+	}
+	return pullRequestRepository(issue) != "" &&
+		pullRequestNumber(issue) > 0 &&
+		strings.TrimSpace(pullRequest.HeadSHA) != ""
+}
+
+func mergeWorkerMergeabilityPending(issue connector.Issue) bool {
+	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
+		return false
+	}
+	pullRequest := issue.PullRequest
+	if pullRequestHydrationBlocksProgress(pullRequest) {
+		return false
+	}
+	if normalizePullRequestState(pullRequest.State) != "open" || pullRequest.Draft {
+		return false
+	}
+	if !mergeWorkerCIGreen(pullRequest.CIStatus) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(pullRequest.MergeableState)) {
+	case "", "unknown":
+	default:
+		return false
+	}
+	return pullRequestRepository(issue) != "" &&
+		pullRequestNumber(issue) > 0 &&
+		strings.TrimSpace(pullRequest.HeadSHA) != ""
+}
+
+func mergeWorkerProgrammaticMergeWaiting(issue connector.Issue) bool {
+	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
+		return false
+	}
+	pullRequest := issue.PullRequest
+	if pullRequestHydrationBlocksProgress(pullRequest) || mergeWorkerCIFailed(pullRequest) {
+		return false
+	}
+	if normalizePullRequestState(pullRequest.State) != "open" || pullRequest.Draft {
+		return false
+	}
+	mergeable := strings.ToLower(strings.TrimSpace(pullRequest.MergeableState))
+	if mergeable != "" && mergeable != "clean" && mergeable != "unknown" && mergeable != "behind" && mergeable != "blocked" {
+		return false
+	}
+	if mergeable == "blocked" && len(pullRequest.RunningChecks) == 0 && len(pullRequest.UnstartedChecks) == 0 {
+		return false
+	}
+	if pullRequestRepository(issue) == "" || pullRequestNumber(issue) <= 0 || strings.TrimSpace(pullRequest.HeadSHA) == "" {
+		return false
+	}
+	return strings.TrimSpace(pullRequest.CIStatus) == "" || currentHeadCIStatusPending(pullRequest.CIStatus)
+}
+
+func currentHeadCIStatusPending(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending", "running", "queued", "in_progress", "waiting":
+		return true
+	default:
+		return false
+	}
+}
+
+func mergeWorkerMissingRequiredChecks(issue connector.Issue, localStatus string) []string {
+	if issue.PullRequest == nil {
+		return nil
+	}
+	checks := make([]string, 0, len(issue.PullRequest.RequiredCheckFailures))
+	seen := map[string]struct{}{}
+	for _, check := range issue.PullRequest.RequiredCheckFailures {
+		if check.IsMissingLocalStatus(localStatus) {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(check.Status), "missing") &&
+			!strings.EqualFold(strings.TrimSpace(check.Conclusion), "missing") {
+			continue
+		}
+		name := strings.TrimSpace(check.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		checks = append(checks, name)
+	}
+	return checks
+}
+
+func mergeWorkerMissingRequiredChecksPropagating(issue connector.Issue, attempt int, localStatus string) bool {
+	if len(mergeWorkerMissingRequiredChecks(issue, localStatus)) == 0 || attempt >= maxMergeWorkerRunnerFailures {
+		return false
+	}
+	if issue.PullRequest == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(issue.PullRequest.CIStatus)) {
+	case "", "pending", "running", "queued", "in_progress", "waiting":
+		return true
+	default:
+		return false
+	}
+}
+
+func (o *Orchestrator) scheduleCITriggerLabel(ctx context.Context, issue connector.Issue, checkNames []string, attempt int, afterHeadPush bool, forceReapply bool) bool {
+	cfg := gate.Effective(o.cfg.AutoPromote.Gate)
+	label := strings.TrimSpace(cfg.CITriggerLabel)
+	attrs := mergeWorkerLogAttrs(issue, "required_checks", strings.Join(checkNames, ","))
+	if label == "" {
+		if o.logger != nil {
+			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "not_configured")...)
+		}
+		return false
+	}
+	hydrator, ok := o.connector.(connector.PullRequestHydrator)
+	if !ok {
+		if o.logger != nil {
+			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "hydration_unsupported")...)
+		}
+		return false
+	}
+	refreshed, err := hydrator.HydratePullRequest(ctx, issue)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("ci_trigger_label_skipped", append(attrs, "reason", "pull_request_refresh_failed", "error", err)...)
+		}
+		return false
+	}
+	issue = refreshed
+	attrs = mergeWorkerLogAttrs(issue, "required_checks", strings.Join(checkNames, ","))
+	if pullRequestHydrationBlocksProgress(issue.PullRequest) {
+		if o.logger != nil {
+			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "pull_request_hydration_unavailable")...)
+		}
+		return false
+	}
+	checkStates, green := ciTriggerRequiredCheckStates(issue.PullRequest, cfg.RequiredStatusChecks)
+	attrs = append(attrs, "required_check_states", checkStates, "force_reapply", forceReapply)
+	if green && !forceReapply {
+		if o.logger != nil {
+			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "required_checks_green")...)
+		}
+		return false
+	}
+	repository := pullRequestRepository(issue)
+	number := pullRequestNumber(issue)
+	headSHA := ""
+	if issue.PullRequest != nil {
+		headSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+	}
+	attrs = append(attrs, "label", label)
+	if repository == "" || number <= 0 || headSHA == "" {
+		if o.logger != nil {
+			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "pull_request_identity_incomplete")...)
+		}
+		return false
+	}
+	reapplier, ok := o.connector.(connector.PullRequestLabelReapplier)
+	if !ok {
+		if o.logger != nil {
+			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "connector_unsupported")...)
+		}
+		return false
+	}
+	stagger := time.Duration(gate.DefaultCITriggerLabelStaggerSeconds) * time.Second
+	if cfg.CITriggerLabelStaggerSeconds != nil {
+		stagger = time.Duration(*cfg.CITriggerLabelStaggerSeconds) * time.Second
+	}
+	key := strings.ToLower(repository) + "#" + strconv.Itoa(number) + "|" + strings.ToLower(label)
+	o.ciTriggerLabelMu.Lock()
+	if o.ciTriggerLabelHeads == nil {
+		o.ciTriggerLabelHeads = map[string]ciTriggerLabelHead{}
+	}
+	current, exists := o.ciTriggerLabelHeads[key]
+	if exists {
+		afterHeadPush = current.HeadSHA != headSHA
+	}
+	attrs = append(attrs, "after_head_push", afterHeadPush)
+	if exists && current.HeadSHA == headSHA && (current.Pending || !forceReapply) {
+		o.ciTriggerLabelMu.Unlock()
+		reason := "already_reapplied_for_head"
+		if current.Pending {
+			reason = "reapply_pending_for_head"
+		}
+		if o.logger != nil {
+			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", reason)...)
+		}
+		return current.Pending
+	}
+	if !afterHeadPush && attempt >= maxMergeWorkerRunnerFailures {
+		o.ciTriggerLabelMu.Unlock()
+		if o.logger != nil {
+			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "attempt_limit_reached", "attempt", attempt)...)
+		}
+		return false
+	}
+	o.ciTriggerLabelHeads[key] = ciTriggerLabelHead{HeadSHA: headSHA, Pending: true}
+	o.ciTriggerLabelMu.Unlock()
+	if o.logger != nil {
+		reason := "required_checks_not_green"
+		if forceReapply {
+			reason = "forced_reapply"
+		} else if afterHeadPush {
+			reason = "after_head_push"
+		}
+		o.logger.Info("ci_trigger_label_scheduled", append(attrs, "reason", reason, "stagger", stagger, "attempt", attempt)...)
+	}
+	go o.reapplyMergeWorkerCITriggerLabel(ctx, reapplier, key, headSHA, repository, number, label, stagger, attrs)
+	return true
+}
+
+func ciTriggerRequiredCheckStates(pr *connector.PullRequest, required []string) ([]connector.PullRequestCheck, bool) {
+	required = gate.NormalizeRequiredStatusChecks(required)
+	checks := make(map[string]connector.PullRequestCheck)
+	if pr != nil {
+		for _, check := range pr.Checks {
+			checks[strings.TrimSpace(check.Name)] = check
+		}
+		for _, check := range pr.RequiredCheckFailures {
+			checks[strings.TrimSpace(check.Name)] = check
+		}
+	}
+	// Unconfigured checks may be placeholders, so only explicit required
+	// contexts can establish that the label-gated suite is green.
+	states := make([]connector.PullRequestCheck, 0, len(required))
+	green := len(required) > 0
+	for _, name := range required {
+		check, ok := checks[name]
+		if !ok {
+			check = connector.PullRequestCheck{Name: name, Status: "missing", Conclusion: "missing"}
+		}
+		status := strings.ToLower(strings.TrimSpace(check.Status))
+		if !strings.EqualFold(strings.TrimSpace(check.Conclusion), "success") ||
+			(status != "success" && status != "completed") {
+			green = false
+		}
+		states = append(states, check)
+	}
+	return states, green
+}
+
+func (o *Orchestrator) commentObservedLaneTransition(
+	ctx context.Context,
+	before connector.Issue,
+	after connector.Issue,
+	at time.Time,
+) {
+	if o == nil || strings.TrimSpace(after.ID) == "" {
+		return
+	}
+	fromState := displayStateName(before.State)
+	toState := displayStateName(after.State)
+	if fromState == "" || toState == "" || normalizeState(fromState) == normalizeState(toState) {
+		return
+	}
+	reason := "tracker_lane_transition"
+	humanAction := ""
+	blockers := []workpad.Blocker(nil)
+	if signal := after.WorkpadSignal; signal != nil && signal.Source == workpad.SourceStructured && strings.TrimSpace(signal.Status) == workpad.StatusBlocked {
+		reason = "workpad_blocked"
+		humanAction = strings.TrimSpace(signal.HumanAction)
+		blockers = signal.Blockers
+	}
+	if _, reasonCode, ok := evaluateStructuredBlockedRecovery(after, o.cfg.BlockedRecovery); ok {
+		reason = reasonCode
+	}
+	o.recordLaneTransition(ctx, before, toState, at, reason, workflowLaneMetadata{
+		Provenance: provenance.AttributionFromSource(provenance.SourceDetentAgentSession, provenance.Actor{}),
+	})
+	if o.connector == nil {
+		return
+	}
+	var body strings.Builder
+	body.WriteString("Observed this issue move from ")
+	body.WriteString(fromState)
+	body.WriteString(" to ")
+	body.WriteString(toState)
+	body.WriteString(" during worker completion.\n\n- source: tracker_refresh\n- reason: ")
+	body.WriteString(reason)
+	if humanAction != "" {
+		body.WriteString("\n- human_action: ")
+		body.WriteString(humanAction)
+	}
+	for _, blocker := range blockers {
+		ref := strings.TrimSpace(blocker.Identifier)
+		if ref == "" {
+			ref = strings.TrimSpace(blocker.Ref)
+		}
+		detail := strings.TrimSpace(blocker.Reason)
+		if ref == "" && detail == "" {
+			continue
+		}
+		body.WriteString("\n- blocker: ")
+		body.WriteString(ref)
+		if ref != "" && detail != "" {
+			body.WriteString(" — ")
+		}
+		body.WriteString(detail)
+	}
+	prURL := ""
+	if after.PullRequest != nil {
+		prURL = strings.TrimSpace(after.PullRequest.URL)
+	}
+	if prURL != "" {
+		body.WriteString("\n- pull request: ")
+		body.WriteString(prURL)
+	}
+	if err := o.connector.CreateComment(ctx, after.ID, body.String()); err != nil && o.logger != nil {
+		o.logger.Warn("observed lane transition comment failed", "issue_id", after.ID, "identifier", after.Identifier, "from_state", fromState, "target_state", toState, "reason", reason, "error", err)
+	}
+}
+
+func (o *Orchestrator) reapplyMergeWorkerCITriggerLabel(
+	ctx context.Context,
+	reapplier connector.PullRequestLabelReapplier,
+	key string,
+	headSHA string,
+	repository string,
+	number int,
+	label string,
+	stagger time.Duration,
+	attrs []any,
+) {
+	err := reapplier.ReapplyPullRequestLabel(ctx, repository, number, label, stagger)
+	o.ciTriggerLabelMu.Lock()
+	current, exists := o.ciTriggerLabelHeads[key]
+	if exists && current.HeadSHA == headSHA {
+		if err != nil {
+			delete(o.ciTriggerLabelHeads, key)
+		} else {
+			current.Pending = false
+			o.ciTriggerLabelHeads[key] = current
+		}
+	}
+	o.ciTriggerLabelMu.Unlock()
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Error("ci_trigger_label_failed", append(attrs, "stagger", stagger, "error", err)...)
+		}
+		return
+	}
+	if o.logger != nil {
+		o.logger.Info("ci_trigger_label_reapplied", append(attrs, "stagger", stagger)...)
+	}
+}
+
+func (o *Orchestrator) reworkMergeWorkerResult(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+	reason string,
+	missingChecks []string,
+	findings string,
+) {
+	issueID := strings.TrimSpace(event.IssueID)
+	running.Issue = issue
+	metadata := workflowLaneMetadata{}
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, autoPromoteReworkState, event.CompletedAt, reason, metadata); err != nil {
+		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "merge_worker_rework_failed", err)
+		return
+	}
+	if comment := mergeWorkerReworkComment(issue, reason, missingChecks, findings); comment != "" {
+		if err := o.connector.CreateComment(ctx, issueID, comment); err != nil && o.logger != nil {
+			o.logger.Warn("merge worker rework comment failed", "issue_id", issueID, "reason", reason, "error", err)
+		}
+	}
+	terminalState := store.WorkAttemptTerminalSuccess
+	errorClass := ""
+	errorMessage := ""
+	if event.Err != nil {
+		terminalState = store.WorkAttemptTerminalTimedOut
+		errorClass = reason
+		errorMessage = event.Err.Error()
+	}
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, terminalState, event.Err, errorClass, errorMessage)
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, "rework", "merge worker routed current head to Rework")
+	o.logMergeWorkerFailure(issue, reason, event.Err)
+	o.recordMergeFailed(state, issue, event.CompletedAt, reason, event.Err)
+	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
+		o.logger.Warn("abandon merge worker rework claim failed", "issue_id", issueID, "error", err)
+	}
+	o.clearAutoPromotedIssueDispatchMemory(state, issueID)
+	if state.PriorAttempts == nil {
+		state.PriorAttempts = map[string]runpkg.PriorAttempt{}
+	}
+	state.PriorAttempts[issueID] = runpkg.PriorAttempt{Source: "merge_worker", Reason: reason}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "merge_worker_routed_to_rework",
+		Message: "routed merge worker to Rework for " + issueLabel(issue) + ": " + reason,
+	})
+}
+
+func mergeWorkerReworkComment(issue connector.Issue, reason string, missingChecks []string, findings string) string {
+	var b strings.Builder
+	if normalizeState(issue.State) == normalizeState(autoPromoteReworkState) {
+		b.WriteString("Merge worker kept this issue in Rework.")
+	} else {
+		b.WriteString("Merge worker routed this issue from " + issue.State + " to Rework.")
+	}
+	b.WriteString("\n\n- reason: ")
+	b.WriteString(reason)
+	if len(missingChecks) > 0 {
+		b.WriteString("\n- missing_required_checks: ")
+		b.WriteString(strings.Join(missingChecks, ", "))
+	}
+	if findings = strings.TrimSpace(findings); findings != "" {
+		if reason == string(AutoPromoteReasonSecurityAuditFindings) {
+			b.WriteString("\n\nSecurity audit findings:\n\n```text\n")
+		} else {
+			b.WriteString("\n\nMerge-fallback findings:\n\n```text\n")
+		}
+		b.WriteString(findings)
+		b.WriteString("\n```")
+	}
+	if issue.PullRequest != nil {
+		if reason == string(AutoPromoteReasonUnresolvedReviewThreads) && len(issue.PullRequest.UnresolvedReviewThreads) > 0 {
+			b.WriteString("\n- unresolved_review_threads: ")
+			b.WriteString(strconv.Itoa(len(issue.PullRequest.UnresolvedReviewThreads)))
+			if location := pullRequestReviewThreadLocation(issue.PullRequest.UnresolvedReviewThreads[0]); location != "" {
+				b.WriteString("\n- first_unresolved_review_thread: ")
+				b.WriteString(location)
+			}
+		}
+		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
+			b.WriteString("\n- pull request: ")
+			b.WriteString(url)
+		}
+		if headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA); headSHA != "" {
+			b.WriteString("\n- head_sha: ")
+			b.WriteString(headSHA)
+		}
+		if mergeableState := strings.TrimSpace(issue.PullRequest.MergeableState); mergeableState != "" {
+			b.WriteString("\n- mergeable_state: ")
+			b.WriteString(mergeableState)
+		}
+	}
+	if reason == string(AutoPromoteReasonSecurityAuditFindings) {
+		b.WriteString("\n\nResolve the security audit findings, then complete the normal Rework gate.")
+	} else if reason == string(AutoPromoteReasonUnresolvedReviewThreads) {
+		b.WriteString("\n\nResolve the outstanding review threads, then complete the normal Rework gate.")
+	} else {
+		b.WriteString("\n\nRefresh or re-push the current PR head so required checks run, then complete the normal Rework gate.")
+	}
+	return b.String()
+}
+
+func mergeWorkerCIGreen(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "success", "green", "pass", "passed":
+		return true
+	default:
+		return false
+	}
+}
+
+func (o *Orchestrator) handleIncompleteMergeWorkerResult(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+) {
+	err := errors.New(mergeWorkerTerminalStateMissing)
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, err, workAttemptErrorMergeIncomplete, err.Error())
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, workAttemptErrorMergeIncomplete, err.Error(), "merging", "merge worker completed without terminal state")
+	o.logMergeWorkerFailure(running.Issue, "terminal_state_missing", err)
+	o.recordMergeFailed(state, running.Issue, event.CompletedAt, "terminal_state_missing", err)
+	attempt := nextAttempt(running.Attempt)
+	if attempt > maxMergeWorkerRunnerFailures {
+		if o.blockExhaustedMergeWorker(ctx, state, running, event, mergeWorkerRetryExhaustedReason, attempt, err) {
+			return
+		}
+	}
+	o.retryMachineCompletion(ctx, state, event, running, attempt, err.Error())
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "merge_worker_terminal_state_missing",
+		Message: "merge worker completed without terminal state for " + issueLabel(running.Issue),
+	})
+}
+
+func (o *Orchestrator) blockExhaustedMergeWorker(
+	ctx context.Context,
+	state *State,
+	running Running,
+	event runpkg.Completion,
+	reasonCode string,
+	attempt int,
+	err error,
+) bool {
+	return o.retryMachineCompletion(ctx, state, event, running, attempt, errorString(err))
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return strings.TrimSpace(err.Error())
+}
+
+func (o *Orchestrator) completePlanRunning(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+) {
+	cfg := gate.EffectivePlan(o.cfg.Plan)
+	issueID := strings.TrimSpace(event.IssueID)
+	issue := cloneIssue(running.Issue)
+	// Checkpoint the completed worker before any remote side effect. Recovery uses
+	// the existing completion fence, never another planner session.
+	record := newDeferredCompletion(event, running, nil, o.clockNow().UTC())
+	if !o.persistDeferredCompletion(ctx, state, record) {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, errors.New("persist completed plan failed"))
+		return
+	}
+	if err := o.publishCompletedPlan(ctx, event, &running); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		return
+	}
+	targets := []string{cfg.Stop}
+	if o.nativeWorkflow() {
+		var err error
+		targets, err = o.nativePlanTarget(ctx, issue, event.Result.Output)
+		if err != nil {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+			return
+		}
+	}
+	for _, target := range targets {
+		metadata := workflowLaneMetadata{}
+		if o.nativeWorkflow() && normalizeState(target) == normalizeState(autoPromoteReworkState) {
+			evaluation := planReviewEvaluationFromComments([]connector.IssueComment{{Body: nativePlanReviewOutput(event.Result.Output)}})
+			metadata = workflowLaneMetadataWithActionSignature(metadata, workflowActionPlanReviewRework, evaluation.Signature)
+		}
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, target, event.CompletedAt, "plan_artifact_created", metadata); err != nil {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+			return
+		}
+		issue.State = target
+		running.Issue = cloneIssue(issue)
+	}
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "plan review created")
+
+	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
+		o.logger.Warn("abandon completed plan claim failed", "issue_id", issueID, "error", err)
+	}
+	delete(state.planRework, issueID)
+	if o.nativeWorkflow() {
+		o.trackPlanReviewTransition(state, issueID, issue.State)
+	}
+	state.Completed[issueID] = Completed{
+		Issue:           issue,
+		SessionID:       running.SessionID,
+		StartedAt:       running.StartedAt,
+		CompletedAt:     event.CompletedAt,
+		FinalState:      issue.State,
+		Tokens:          event.Result.Tokens,
+		RuntimeIdentity: running.RuntimeIdentity,
+	}
+	state.TokenTotals = addTokenTotals(state.TokenTotals, event.Result.Tokens)
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+	}
+	if diffStatsPresent(event.Result.DiffStats) {
+		state.DiffStats[issueID] = event.Result.DiffStats
+	}
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "plan_review_created",
+		Message: "created plan artifact for " + issueLabel(issue) + " and moved to " + issue.State,
+	})
+}
+
+func (o *Orchestrator) scheduleRetry(
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	err string,
+	continuation bool,
+	workerHost string,
+) {
+	o.dispatchPlanner().scheduleRetry(state, issue, attempt, now, err, continuation, workerHost)
+}
+
+func (o *Orchestrator) scheduleContinuationRetry(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	err string,
+	workerHost string,
+) {
+	if releaseErr := o.abandonClaim(ctx, issue.ID); releaseErr != nil {
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      cleanupEventAt(now),
+			Event:   "claim_release_failed",
+			Message: fmt.Sprintf("claim lease release failed for %s: %v", issueLabel(issue), releaseErr),
+		})
+	}
+	o.scheduleRetry(state, issue, attempt, now, err, true, workerHost)
+	delete(state.Claimed, issue.ID)
+}
+
+func (o *Orchestrator) scheduleRetryAfter(
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	delay time.Duration,
+	err string,
+	workerHost string,
+) {
+	o.dispatchPlanner().scheduleRetryAfter(state, issue, attempt, now, delay, err, workerHost)
+}
+
+func (o *Orchestrator) retryDelay(attempt int, continuation bool) time.Duration {
+	return o.dispatchPlanner().retryDelay(attempt, continuation)
+}
+
+func (o *Orchestrator) releaseClaim(state *State, issueID string) {
+	o.cancelRunning(state, issueID, "orchestrator.release_claim")
+	o.heartbeats.remove(issueID)
+	delete(state.Running, issueID)
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
+	delete(state.deferredCompletions, issueID)
+}
+
+func (o *Orchestrator) completeTerminalRunning(
+	ctx context.Context,
+	state *State,
+	issueID string,
+	running Running,
+	completedAt time.Time,
+	tokens TokenTotals,
+	workerCompletedAt time.Time,
+) error {
+	o.clearMergeRequiredCheckStreaks(ctx, running.Issue)
+	if err := o.abandonClaim(ctx, issueID); err != nil {
+		return err
+	}
+	o.heartbeats.remove(issueID)
+	o.completeDurableWorkAttempt(ctx, state, running, workerCompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker reached terminal state")
+	o.releaseGlobalDispatchSlot(running.globalSlot)
+	if running.cancel != nil {
+		running.cancel()
+	}
+	delete(state.Running, issueID)
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
+
+	issue := o.ensureClosedCompletedRunningIssueDone(ctx, state, issueID, running.Issue, completedAt)
+	finalState := strings.TrimSpace(issue.State)
+	if finalState == "" {
+		finalState = FinalStateCompleted
+	}
+	mergeTiming := MergeTiming{}
+	if mergeWorkerIssue(running.Issue) {
+		mergeTiming = o.recordMergeCompleted(state, running.Issue, completedAt, finalState)
+	}
+	o.recordEfficiencyReceipt(ctx, issue, completedAt)
+	state.Completed[issueID] = Completed{
+		Issue:           cloneIssue(issue),
+		SessionID:       running.SessionID,
+		StartedAt:       running.StartedAt,
+		CompletedAt:     completedAt,
+		FinalState:      finalState,
+		Tokens:          tokens,
+		MergeTiming:     mergeTiming,
+		RuntimeIdentity: running.RuntimeIdentity,
+	}
+	state.TokenTotals = addTokenTotals(state.TokenTotals, tokens)
+	if diffStatsPresent(running.DiffStats) {
+		state.DiffStats[issueID] = running.DiffStats
+	}
+	if mergeWorkerIssue(running.Issue) {
+		o.logMergeWorkerSuccess(running.Issue, finalState)
+	}
+	if o.reaper == nil {
+		o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), completedAt)
+	} else {
+		o.startWorkspaceCleanup(ctx, state, completedAt)
+	}
+	return nil
+}
+
+func (o *Orchestrator) recordEfficiencyReceipt(ctx context.Context, issue connector.Issue, completedAt time.Time) {
+	if o.efficiency == nil || normalizeState(issue.State) != normalizeState(doneStateName(o.cfg.TerminalStates)) {
+		return
+	}
+	receipt, err := o.efficiency.CompleteEfficiencyReceipt(ctx, efficiency.Completion{
+		ProjectID:   o.workflowMetricsProjectID(),
+		IssueID:     issue.ID,
+		Identifier:  issue.Identifier,
+		IssueURL:    issue.URL,
+		PRNumber:    workflowMetricsPRNumber(issue),
+		CompletedAt: completedAt,
+		Thresholds:  o.cfg.EfficiencyThresholds,
+	})
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("record efficiency receipt failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+		return
+	}
+	if o.lifecycleExporter == nil {
+		return
+	}
+	if err := o.lifecycleExporter.ExportLifecycle(ctx, receipt); err != nil && o.logger != nil {
+		o.logger.Warn("export efficiency lifecycle failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+	}
+}
+
+func (o *Orchestrator) refreshEfficiencyReceipt(ctx context.Context, issue connector.Issue, observedAt time.Time) {
+	recorder, ok := o.efficiency.(efficiency.LiveRecorder)
+	if !ok || recorder == nil || stateIn(issue.State, o.cfg.TerminalStates) {
+		return
+	}
+	_, _, err := recorder.RefreshEfficiencyReceipt(ctx, efficiency.Observation{
+		ProjectID:               o.workflowMetricsProjectID(),
+		IssueID:                 issue.ID,
+		Identifier:              issue.Identifier,
+		IssueURL:                issue.URL,
+		PRNumber:                workflowMetricsPRNumber(issue),
+		ObservedAt:              observedAt,
+		RefreshIntervalSessions: 5,
+		Thresholds:              o.cfg.EfficiencyThresholds,
+	})
+	if err != nil && o.logger != nil {
+		o.logger.Warn("refresh live efficiency receipt failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+	}
+}
+
+func (o *Orchestrator) ensureClosedCompletedRunningIssueDone(ctx context.Context, state *State, issueID string, issue connector.Issue, now time.Time) connector.Issue {
+	if !issue.Closed || !closedReasonCompleted(issue.ClosedReason) {
+		return issue
+	}
+	targetState := doneStateName(o.cfg.TerminalStates)
+	if strings.TrimSpace(targetState) == "" {
+		return issue
+	}
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "closed_completed_running_done"); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("mark closed completed running issue done failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
+		}
+		return issue
+	}
+	if o.logger != nil {
+		o.logger.Info("marked closed completed running issue done", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState)
+	}
+	issue.State = targetState
+	return issue
+}
+
+func terminalCompletedAt(issue connector.Issue, terminalStates []string, fallback time.Time) time.Time {
+	if mergedAt := mergedDeliveryAt(issue, time.Time{}); !mergedAt.IsZero() {
+		return mergedAt
+	}
+	if stateIn(issue.State, terminalStates) && issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
+		return *issue.StageUpdatedAt
+	}
+	if issue.UpdatedAt != nil && !issue.UpdatedAt.IsZero() {
+		return *issue.UpdatedAt
+	}
+	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
+		return *issue.StageUpdatedAt
+	}
+	if !fallback.IsZero() {
+		return fallback
+	}
+	return time.Now().UTC()
+}
+
+func (o *Orchestrator) cancelRunning(state *State, issueID string, source ...string) {
+	running, ok := state.Running[issueID]
+	if !ok {
+		return
+	}
+	o.releaseGlobalDispatchSlot(running.globalSlot)
+	running.globalSlot = scheduler.Slot{}
+	state.Running[issueID] = running
+	cancelRunning(state, issueID, source...)
+	o.heartbeats.remove(issueID)
+}
+
+func cancelRunning(state *State, issueID string, source ...string) {
+	running, ok := state.Running[issueID]
+	if !ok || running.cancel == nil && running.stop == nil {
+		return
+	}
+	initiator := "orchestrator.cancel_running"
+	if len(source) > 0 {
+		initiator = source[0]
+	}
+	if running.stop != nil {
+		running.stop(runpkg.NewCancellationCause(context.Canceled, initiator))
+	} else {
+		running.cancel()
+	}
+	running.cancel = nil
+	running.stop = nil
+	state.Running[issueID] = running
+}
+
+func (o *Orchestrator) releaseRunningSlots(state *State) {
+	for issueID, running := range state.Running {
+		running.progress.close()
+		o.releaseGlobalDispatchSlot(running.globalSlot)
+		running.globalSlot = scheduler.Slot{}
+		state.Running[issueID] = running
+	}
+}
+
+func (o *Orchestrator) completeNativeMergeQueueWorker(ctx context.Context, state *State, event runpkg.Completion, running Running, issue connector.Issue) {
+	running.Issue = issue
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", "waiting for native merge queue")
+	o.releaseTerminalAttemptClaim(ctx, state, issue, event.CompletedAt)
+	delete(state.Running, issue.ID)
+	delete(state.Retry, issue.ID)
+	if reservation := state.mergeReservations[issue.ID]; reservation.IssueID == issue.ID {
+		delete(state.mergeReservations, issue.ID)
+	}
+	queued := o.delegateNativeMergeQueueIssues(ctx, state, mergeIssueSlices([]connector.Issue{issue}, state.Pipeline), event.CompletedAt)
+	state.Pipeline = overlayNativeMergeQueueIssues(state.Pipeline, queued)
+}
+
+// recordCompletionUsage preserves final usage for ordinary and instance-blocked completions.
+func (o *Orchestrator) recordCompletionUsage(ctx context.Context, state *State, event runpkg.Completion, issue connector.Issue) {
+	state.TokenTotals = addTokenTotals(state.TokenTotals, event.Result.Tokens)
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+	}
+	if diffStatsPresent(event.Result.DiffStats) {
+		state.DiffStats[event.IssueID] = event.Result.DiffStats
+	}
+	if event.Result.BudgetRefusal != nil && !o.cfg.subscriptionBilling() {
+		refusal := *event.Result.BudgetRefusal
+		refusal.Issue = cloneIssue(issue)
+		state.BudgetRefusals[event.IssueID] = refusal
+		o.commentBudgetRefusal(ctx, event.IssueID, refusal)
+	}
+}
+
+// postValidatedGateStatus posts the configured local gate status for the pull
+// request head when, and only when, the merge worker ran the command gate on
+// exactly that head and it passed. A head that moved since, a gate command
+// that changed since, a gate Detent did not run itself, or a project without
+// gate.local_status posts nothing, and neither does a head that already
+// carries a successful status for that context. The
+// pull request is re-read afterwards so the new status counts toward its
+// required checks. A failed post or re-read is returned so the merge worker
+// retries and validates again instead of waiting on a status that never comes.
+func (o *Orchestrator) postValidatedGateStatus(ctx context.Context, hydrator connector.PullRequestHydrator, event runpkg.Completion, issue connector.Issue) (connector.Issue, error) {
+	gateConfig := gate.Effective(o.cfg.AutoPromote.Gate)
+	statusContext := gateConfig.LocalStatus
+	head := strings.TrimSpace(event.Result.GateValidatedHead)
+	if statusContext == "" || head == "" || issue.PullRequest == nil {
+		return issue, nil
+	}
+	if strings.TrimSpace(event.Result.GateValidatedRun) != strings.TrimSpace(gateConfig.Run) {
+		o.logger.Warn("local gate status not posted: gate command changed after validation",
+			"issue_id", issue.ID, "identifier", issue.Identifier, "validated_run", event.Result.GateValidatedRun, "current_run", gateConfig.Run)
+		return issue, nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(issue.PullRequest.HeadSHA), head) {
+		o.logger.Warn("local gate status not posted: pull request head changed after validation",
+			"issue_id", issue.ID, "identifier", issue.Identifier, "validated_head", head, "pull_request_head", issue.PullRequest.HeadSHA)
+		return issue, nil
+	}
+	if slices.ContainsFunc(issue.PullRequest.Checks, func(check connector.PullRequestCheck) bool {
+		return check.Name == statusContext && check.Conclusion == "success"
+	}) {
+		return issue, nil
+	}
+	poster, ok := o.connector.(connector.CommitStatusPoster)
+	if !ok {
+		return issue, nil
+	}
+	if err := poster.PostCommitStatus(ctx, pullRequestRepository(issue), head, statusContext, "Detent ran the configured gate on this head"); err != nil {
+		return issue, fmt.Errorf("post %s status for %s: %w", statusContext, head, err)
+	}
+	refreshed, err := hydrator.HydratePullRequest(ctx, issue)
+	if err != nil {
+		return issue, fmt.Errorf("refresh pull request after posting %s: %w", statusContext, err)
+	}
+	return refreshed, nil
+}
+
+func (o *Orchestrator) retryMachineCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running, attempt int, detail string) bool {
+	if err := o.retryMachineFailure(ctx, state, running.Issue, attempt, event.CompletedAt, detail, running.WorkerHost); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+	}
+	return true
+}
