@@ -443,8 +443,11 @@ func readRunDetailSegment(ctx context.Context, detail *runDetailReference) (map[
 		return runs, nil
 	}
 	ref, err := scanAttachmentArchive(owner.query.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class,storage_binding_id,customer_owned FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, detail.AttachmentID, detail.Organization))
-	if err != nil || ref.Validate(detail.Organization) != nil {
-		return nil, fmt.Errorf("read run detail attachment: %w", artifact.ErrIntegrity)
+	if err != nil {
+		return nil, fmt.Errorf("read run detail attachment: %w", errors.Join(artifact.ErrIntegrity, err))
+	}
+	if err := ref.Validate(detail.Organization); err != nil {
+		return nil, fmt.Errorf("validate run detail attachment: %w", errors.Join(artifact.ErrIntegrity, err))
 	}
 	raw, err := owner.store.ReadDetail(ctx, detail.Organization, ref)
 	if err != nil {
