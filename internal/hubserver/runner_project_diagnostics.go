@@ -128,6 +128,9 @@ func (s *Service) readRunnerProjectDiagnostics(ctx context.Context, scope native
 				return runnerauth.DiagnosticPage{}, errProjectServiceUnavailable
 			}
 		}
+		if err := overlayProjectConfigurationObservation(ctx, tx, scope, item.id, &view); err != nil {
+			return runnerauth.DiagnosticPage{}, err
+		}
 		if view.Diagnostics != nil {
 			if visibleIssues != nil {
 				view.Diagnostics.Records = slices.DeleteFunc(view.Diagnostics.Records, func(record runnerauth.DiagnosticAttempt) bool { return !visibleIssues[record.IssueID] })

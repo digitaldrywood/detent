@@ -172,42 +172,59 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 			view.Diagnostics.RuntimeObservedAt = view.Diagnostics.ObservedAt
 		}
 		received := f.service.config.now()
-		patches := 0
-		timing := &requestTiming{trace: func(query string, args []driver.NamedValue) {
-			if !strings.HasPrefix(query, "UPDATE runner_identities") || !strings.Contains(query, "project_configuration_json =") {
-				return
+		updates := 0
+		timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+			if strings.HasPrefix(query, "UPDATE runner_identities") && strings.Contains(query, "project_configuration_json") {
+				updates++
 			}
-			if !strings.Contains(query, "json_patch(project_configuration_json") {
-				t.Errorf("unchanged snapshot issued large-document UPDATE: %s", query)
-			}
-			for _, arg := range args {
-				if value, ok := arg.Value.(string); ok && len(value) > 512 {
-					t.Errorf("timestamp UPDATE parameter has %d bytes", len(value))
-				}
-			}
-			patches++
 		}}
 		request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "rolling.current", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view})
 		response := httptest.NewRecorder()
 		f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
 		requireNativeStatus(t, response, http.StatusOK)
-		if patches != 1 {
-			t.Fatalf("timestamp updates = %d, want 1", patches)
+		if updates != 0 {
+			t.Fatalf("configuration updates = %d, want 0", updates)
 		}
 		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT json_extract(project_configuration_json, ?) FROM runner_identities WHERE id = ?", "$."+jsonPathKey(view.ProjectID), r.binding.RunnerID).Scan(&storedJSON); err != nil {
 			t.Fatal(err)
 		}
 		stored = runnerauth.ProjectConfiguration{}
-		if err := json.Unmarshal([]byte(storedJSON), &stored); err != nil || stored.ObservedAt.Before(received) || !stored.Diagnostics.ObservedAt.Equal(view.Diagnostics.ObservedAt) || !stored.Diagnostics.RuntimeObservedAt.Equal(view.Diagnostics.RuntimeObservedAt) {
-			t.Fatalf("stored freshness = %s, error = %v", storedJSON, err)
+		if err := json.Unmarshal([]byte(storedJSON), &stored); err != nil {
+			t.Fatal(err)
+		}
+		if err := overlayProjectConfigurationObservation(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, r.binding.RunnerID, &stored); err != nil {
+			t.Fatal(err)
+		}
+		if stored.ObservedAt.Before(received) || !stored.Diagnostics.ObservedAt.Equal(view.Diagnostics.ObservedAt) || !stored.Diagnostics.RuntimeObservedAt.Equal(view.Diagnostics.RuntimeObservedAt) {
+			t.Fatalf("stored freshness = %+v", stored)
 		}
 		response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/runner-diagnostics?runner_id="+r.binding.RunnerID, r.redemption.Credential, nil)
 		requireNativeStatus(t, response, http.StatusOK)
 		var page runnerauth.DiagnosticPage
 		decodeHubResponse(t, response, &page)
-		if page.Status != "available" || !page.ObservedAt.Equal(view.Diagnostics.ObservedAt) || !page.RuntimeObservedAt.Equal(view.Diagnostics.RuntimeObservedAt) {
+		if page.Status != "available" || page.ReceivedAt.Before(received) || !page.ObservedAt.Equal(view.Diagnostics.ObservedAt) || !page.RuntimeObservedAt.Equal(view.Diagnostics.RuntimeObservedAt) {
 			t.Fatalf("reader freshness = %+v", page)
 		}
+	}
+	contexts := make(chan context.Context, 1)
+	f.service.echo.GET("/api/v2/organizations/:organization/diagnostic-context-test", func(c echo.Context) error { contexts <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.base+"/diagnostic-context-test", testHubAdminToken, nil), http.StatusOK)
+	ctx := operatortool.BindConnection(<-contexts, "diagnostic-test", "fixture")
+	executor := hubProjectExecutor{f.service}
+	if err := executor.OpenConnection(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ownerArgs, err := json.Marshal(operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: r.binding.RunnerID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerResult, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.LocalProjectConfiguration, Arguments: ownerArgs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var owner runnerauth.ProjectConfiguration
+	if err := json.Unmarshal(ownerResult.Content, &owner); err != nil || owner.RunnerID != r.binding.RunnerID || !owner.ObservedAt.Equal(stored.ObservedAt) || owner.Diagnostics == nil || !owner.Diagnostics.ObservedAt.Equal(view.Diagnostics.ObservedAt) {
+		t.Fatalf("configuration owner freshness = %s, error = %v", ownerResult.Content, err)
 	}
 	view.Diagnostics.Records = view.Diagnostics.Records[:1]
 	for _, test := range []struct {
@@ -250,14 +267,6 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	decodeHubResponse(t, response, &workerPage)
 	if len(workerPage.Records) != 1 || workerPage.Records[0].LocalAttemptID != 5 || workerPage.Records[0].LatestError != "publication rejected: category=runtime_validation field=data.runtime.activity [private error text omitted]" || workerPage.Records[0].NativeAttemptID != event.Data.AttemptID || !workerPage.Records[0].OperationObservedAt.Equal(now) {
 		t.Fatalf("worker diagnostic=%+v", workerPage)
-	}
-	contexts := make(chan context.Context, 1)
-	f.service.echo.GET("/api/v2/organizations/:organization/diagnostic-context-test", func(c echo.Context) error { contexts <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.base+"/diagnostic-context-test", testHubAdminToken, nil), http.StatusOK)
-	ctx := operatortool.BindConnection(<-contexts, "diagnostic-test", "fixture")
-	executor := hubProjectExecutor{f.service}
-	if err := executor.OpenConnection(ctx); err != nil {
-		t.Fatal(err)
 	}
 	call := func(ctx context.Context, args operatortool.LocalProjectArguments) (runnerauth.DiagnosticPage, error) {
 		raw, err := json.Marshal(args)

@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -83,7 +84,13 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 			continue
 		}
 		var candidate runnerauth.ProjectConfiguration
-		if json.Unmarshal([]byte(item.raw), &candidate) != nil || candidate.ProjectID != args.ProjectID || candidate.ObservedAt.Before(r.LastHeartbeatAt.Add(-runnerauth.HeartbeatTimeout)) {
+		if json.Unmarshal([]byte(item.raw), &candidate) != nil || candidate.ProjectID != args.ProjectID {
+			continue
+		}
+		if err := overlayProjectConfigurationObservation(ctx, tx, scope, item.runner, &candidate); err != nil {
+			return operatortool.Result{}, err
+		}
+		if candidate.ObservedAt.Before(r.LastHeartbeatAt.Add(-runnerauth.HeartbeatTimeout)) {
 			continue
 		}
 		var settings runnerSettings
@@ -308,39 +315,8 @@ AND NOT EXISTS (SELECT 1 FROM collaboration_events
 		observation.RunnerID, observation.RunnerRevision = "", 0
 		observation.Pending = false
 		observation.LastOperation = nil
-		raw, err := json.Marshal(observation)
-		if err != nil {
+		if err := storeProjectConfigurationObservation(ctx, tx, scope, *observation); err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
-		}
-		var changed bool
-		err = tx.QueryRowContext(ctx, `SELECT json_remove(json_extract(project_configuration_json, ?), '$.observed_at', '$.diagnostics.observed_at', '$.diagnostics.runtime_observed_at')
-IS NOT json_remove(json(?), '$.observed_at', '$.diagnostics.observed_at', '$.diagnostics.runtime_observed_at')
-FROM runner_identities WHERE organization_id = ? AND id = ?`, path, string(raw), scope.organization, scope.credential.Runner.RunnerID).Scan(&changed)
-		if err != nil {
-			return runnerauth.ProjectConfigurationRequest{}, err
-		}
-		if changed {
-			if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET project_configuration_json = json_set(project_configuration_json, ?, json(?)) WHERE organization_id = ? AND id = ?", path, string(raw), scope.organization, scope.credential.Runner.RunnerID); err != nil {
-				return runnerauth.ProjectConfigurationRequest{}, err
-			}
-		} else {
-			metadata := map[string]any{"observed_at": observation.ObservedAt}
-			if observation.Diagnostics != nil {
-				var runtimeObservedAt *time.Time
-				if !observation.Diagnostics.RuntimeObservedAt.IsZero() {
-					runtimeObservedAt = &observation.Diagnostics.RuntimeObservedAt
-				}
-				metadata["diagnostics"] = map[string]any{"observed_at": observation.Diagnostics.ObservedAt, "runtime_observed_at": runtimeObservedAt}
-			}
-			patch, err := json.Marshal(map[string]any{observation.ProjectID: metadata})
-			if err != nil {
-				return runnerauth.ProjectConfigurationRequest{}, err
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE runner_identities
-SET project_configuration_json = json_patch(project_configuration_json, ?)
-WHERE organization_id = ? AND id = ? AND project_configuration_json IS NOT json_patch(project_configuration_json, ?)`, string(patch), scope.organization, scope.credential.Runner.RunnerID, string(patch)); err != nil {
-				return runnerauth.ProjectConfigurationRequest{}, err
-			}
 		}
 		if observation.SelectedPolicy != nil {
 			if err := storeObservedPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project), scope.credential.Runner.RunnerID, policy.Observation{Descriptor: *observation.SelectedPolicy}, now); err != nil {
@@ -391,7 +367,10 @@ WHERE organization_id = ? AND id = ? AND project_configuration_json IS NOT json_
 		if err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
-		_, err = tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ?, project_configuration_json = json_set(project_configuration_json, ?, json(?)) WHERE organization_id = ? AND id = ?", string(rawSettings), path, string(raw), scope.organization, r.RunnerID)
+		if err := storeProjectConfigurationObservation(ctx, tx, scope, view); err != nil {
+			return runnerauth.ProjectConfigurationRequest{}, err
+		}
+		_, err = tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ? WHERE organization_id = ? AND id = ?", string(rawSettings), scope.organization, r.RunnerID)
 		if err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
@@ -407,6 +386,9 @@ WHERE organization_id = ? AND id = ? AND project_configuration_json IS NOT json_
 		}
 		var view runnerauth.ProjectConfiguration
 		if err := json.Unmarshal([]byte(raw), &view); err != nil {
+			return runnerauth.ProjectConfigurationRequest{}, err
+		}
+		if err := overlayProjectConfigurationObservation(ctx, tx, scope, r.RunnerID, &view); err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		view.RequestID, view.Applied, view.Saved, view.Pending = request.RequestID, false, false, false
@@ -446,4 +428,97 @@ func jsonPathKey(key string) string {
 		panic(err)
 	}
 	return string(raw)
+}
+
+func projectConfigurationDigest(view runnerauth.ProjectConfiguration) (string, error) {
+	view.ObservedAt = time.Time{}
+	if view.Diagnostics != nil {
+		diagnostics := *view.Diagnostics
+		diagnostics.ObservedAt, diagnostics.RuntimeObservedAt = time.Time{}, time.Time{}
+		view.Diagnostics = &diagnostics
+	}
+	raw, err := json.Marshal(view)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(raw)), nil
+}
+
+func storeProjectConfigurationObservation(ctx context.Context, tx *sql.Tx, scope nativeScope, view runnerauth.ProjectConfiguration) error {
+	digest, err := projectConfigurationDigest(view)
+	if err != nil {
+		return err
+	}
+	runner := scope.credential.Runner.RunnerID
+	var previous string
+	err = tx.QueryRowContext(ctx, "SELECT snapshot_digest FROM runner_project_observations WHERE organization_id = ? AND runner_id = ? AND project_id = ?", scope.organization, runner, scope.project).Scan(&previous)
+	if errors.Is(err, sql.ErrNoRows) {
+		var raw sql.NullString
+		if err := tx.QueryRowContext(ctx, "SELECT json_extract(project_configuration_json, ?) FROM runner_identities WHERE organization_id = ? AND id = ?", "$."+jsonPathKey(string(scope.project)), scope.organization, runner).Scan(&raw); err != nil {
+			return err
+		}
+		if raw.Valid {
+			var legacy runnerauth.ProjectConfiguration
+			if err := json.Unmarshal([]byte(raw.String), &legacy); err != nil {
+				return err
+			}
+			previous, err = projectConfigurationDigest(legacy)
+			if err != nil {
+				return err
+			}
+		}
+	} else if err != nil {
+		return err
+	}
+	if previous != digest {
+		raw, err := json.Marshal(view)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET project_configuration_json = json_set(project_configuration_json, ?, json(?)) WHERE organization_id = ? AND id = ?", "$."+jsonPathKey(string(scope.project)), string(raw), scope.organization, runner); err != nil {
+			return err
+		}
+	}
+	var diagnostics, runtime any
+	if view.Diagnostics != nil {
+		diagnostics = formatHubTime(view.Diagnostics.ObservedAt)
+		if !view.Diagnostics.RuntimeObservedAt.IsZero() {
+			runtime = formatHubTime(view.Diagnostics.RuntimeObservedAt)
+		}
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO runner_project_observations
+(organization_id, runner_id, project_id, observed_at, diagnostics_observed_at, runtime_observed_at, snapshot_digest)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (organization_id, runner_id, project_id) DO UPDATE SET
+observed_at = excluded.observed_at, diagnostics_observed_at = excluded.diagnostics_observed_at,
+runtime_observed_at = excluded.runtime_observed_at, snapshot_digest = excluded.snapshot_digest`,
+		scope.organization, runner, scope.project, formatHubTime(view.ObservedAt), diagnostics, runtime, digest)
+	return err
+}
+
+func overlayProjectConfigurationObservation(ctx context.Context, q nativeQueryer, scope nativeScope, runner string, view *runnerauth.ProjectConfiguration) error {
+	var observed string
+	var diagnostics, runtime sql.NullString
+	err := q.QueryRowContext(ctx, "SELECT observed_at, diagnostics_observed_at, runtime_observed_at FROM runner_project_observations WHERE organization_id = ? AND runner_id = ? AND project_id = ?", scope.organization, runner, scope.project).Scan(&observed, &diagnostics, &runtime)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	view.ObservedAt, err = parseTimeValue(observed)
+	if err != nil {
+		return err
+	}
+	if view.Diagnostics != nil && diagnostics.Valid {
+		view.Diagnostics.ObservedAt, err = parseTimeValue(diagnostics.String)
+		if err != nil {
+			return err
+		}
+		view.Diagnostics.RuntimeObservedAt = time.Time{}
+		if runtime.Valid {
+			view.Diagnostics.RuntimeObservedAt, err = parseTimeValue(runtime.String)
+		}
+	}
+	return err
 }
