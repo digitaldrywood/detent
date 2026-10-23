@@ -2396,6 +2396,14 @@ func (a *Agents) normalize() {
 		if backend.Command == "" && backend.Kind == AgentBackendClaudeCode {
 			backend.Command = defaultClaudeCodeCommand
 		}
+		if backend.Kind == AgentBackendOpenCode {
+			if backend.Protocol == "" {
+				backend.Protocol = "acp"
+			}
+			if backend.Command == "" {
+				backend.Command = "opencode"
+			}
+		}
 		if backend.Kind == AgentBackendPiAgent {
 			if backend.Protocol == "" {
 				backend.Protocol = "rpc"
@@ -2451,14 +2459,18 @@ func (a *Agents) validate(problems *[]string) {
 		switch backend.Kind {
 		case "":
 			*problems = append(*problems, "agents.backends.kind is required")
-		case AgentBackendCodex, AgentBackendClaudeCode, AgentBackendPiAgent:
+		case AgentBackendCodex, AgentBackendClaudeCode, AgentBackendPiAgent, AgentBackendOpenCode:
 		default:
-			*problems = append(*problems, "agents.backends.kind must be one of codex, claude_code, pi_agent")
+			*problems = append(*problems, "agents.backends.kind must be one of codex, claude_code, pi_agent, opencode")
 		}
 		switch backend.Kind {
 		case AgentBackendCodex:
 			if backend.Protocol != defaultCodexProtocol {
 				*problems = append(*problems, "agents.backends.protocol must be app-server for codex")
+			}
+		case AgentBackendOpenCode:
+			if backend.Protocol != "acp" {
+				*problems = append(*problems, "agents.backends.protocol must be acp for opencode")
 			}
 		case AgentBackendPiAgent:
 			if backend.Protocol != "rpc" {
@@ -2509,6 +2521,13 @@ func normalizeAgentRouteRole(role string) string {
 
 func (b AgentBackend) validateOptions(prefix string, problems *[]string) {
 	switch b.Kind {
+	case AgentBackendOpenCode:
+		options, err := b.decodedOpenCodeOptions()
+		if err != nil {
+			*problems = append(*problems, prefix+" must decode for opencode: "+err.Error())
+			return
+		}
+		options.validate(prefix, problems)
 	case AgentBackendPiAgent:
 		options, err := b.decodedPiAgentOptions()
 		if err != nil {

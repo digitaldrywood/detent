@@ -101,8 +101,7 @@ func (r *rolloutHistoryReader) Page(ctx context.Context, query HistoryQuery) (Hi
 }
 
 func (r *rolloutHistoryReader) historyLocation(query HistoryQuery) (string, string) {
-	// Pi currently supplies live activity only; never search Codex logs for its IDs.
-	if strings.EqualFold(strings.TrimSpace(query.BackendKind), "pi_agent") {
+	if strings.EqualFold(strings.TrimSpace(query.BackendKind), "pi_agent") || strings.EqualFold(strings.TrimSpace(query.BackendKind), "opencode") {
 		return "", ""
 	}
 	if strings.Contains(strings.ToLower(query.BackendKind), "claude") {
