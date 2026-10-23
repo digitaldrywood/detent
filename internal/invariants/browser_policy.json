@@ -78,7 +78,6 @@
   ],
   "serial": [
     "tests/visual/admission-proposals.spec.js",
-    "tests/visual/ai-credits.spec.js",
     "tests/visual/ai-debug-privacy.spec.js",
     "tests/visual/card-detail-async.mobile.spec.js",
     "tests/visual/card-detail-async.spec.js",
@@ -108,7 +107,6 @@
   "beforeAll": [
     "tests/visual/active-hours.spec.js",
     "tests/visual/admission-proposals.spec.js",
-    "tests/visual/ai-credits.spec.js",
     "tests/visual/ai-debug-privacy.spec.js",
     "tests/visual/board-counts.spec.js",
     "tests/visual/board-navigation.spec.js",
@@ -117,7 +115,6 @@
     "tests/visual/card-facts.spec.js",
     "tests/visual/card-status.spec.js",
     "tests/visual/change-review.spec.js",
-    "tests/visual/chat-usage.spec.js",
     "tests/visual/chat.spec.js",
     "tests/visual/cloud-board-pagination.spec.js",
     "tests/visual/cloud-reports.spec.js",

@@ -217,8 +217,8 @@ test("an enrolled runner does not complete an unvalidated project's setup", asyn
   const fleetResponse = await page.request.get(new URL("/api/v2/organizations/org_browser_preview/fleet", hub.fixture.url).toString());
   expect(fleetResponse.ok()).toBe(true);
   expect((await fleetResponse.json()).runners.length).toBeGreaterThan(0);
-  expect(onboarding.steps.find((step) => step.name === "Execution runner").state).toBe("action_required");
-  expect(onboarding.steps.find((step) => step.name === "Local validation").state).toBe("action_required");
+  expect(onboarding.steps.find((step) => step.name === "Runner").state).toBe("action_required");
+  expect(onboarding.steps.find((step) => step.name === "Checkout").state).toBe("action_required");
   const remaining = onboarding.steps.filter((step) => step.state !== "ready").length;
   await expect(page.getByTestId("first-run-step-runner")).toHaveAttribute("data-done", "false");
   await expect(page.getByTestId("first-run-step-runner").getByRole("button", { name: "Configure runner" })).toBeVisible();

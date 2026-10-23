@@ -212,13 +212,14 @@ test("sending invitations resets the form and shows the newest invitation with i
     const created = await response.json();
     expect(created.email).toBe(email);
     expect(created.expires_at).toBeTruthy();
+    const expiry = await page.evaluate((value) => new Date(value).toLocaleDateString(), created.expires_at);
     await expect(page.getByRole("dialog", { name: "Invite members", exact: true })).toHaveCount(0);
     const row = invitations.getByRole("group", { name: /^Invitation to/ }).first();
     await expect(row).toBeVisible();
     await expect(row).toContainText(email);
-    await expect(row).toContainText(`Invited as Viewer. Expires ${new Date(created.expires_at).toLocaleDateString()}.`);
+    await expect(row).toContainText(`Invited as Viewer. Expires ${expiry}.`);
     await page.reload();
-    await expect(invitations.getByRole("group", { name: /^Invitation to/ }).first()).toContainText(`Expires ${new Date(created.expires_at).toLocaleDateString()}.`);
+    await expect(invitations.getByRole("group", { name: /^Invitation to/ }).first()).toContainText(`Expires ${expiry}.`);
   }
 });
 
@@ -255,7 +256,7 @@ test("the settings navigation is the sidebar, not a second column", async ({ pag
 
   await expectOneHeadingOne(page, "Settings");
   await expect(page.getByLabel("Settings breadcrumb")).toContainText("General");
-  await expect(page.getByText("Profile settings are temporarily unavailable. Please try again.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Profile and security settings are unavailable right now.", { exact: true })).toBeVisible();
 
   const sidebar = page.locator("[data-app-sidebar]");
   await expect(sidebar.getByRole("button", { name: "General" })).toBeVisible();
@@ -378,6 +379,7 @@ for (const state of [
 ].flatMap((state) => state.visible ? [1440, 390].flatMap((width) => ["light", "dark"].map((theme) => ({ ...state, width, theme }))) : [{ ...state, width: 1440, theme: "light" }])) {
   test(`setup and integrations GitHub App installation: ${state.name} ${state.width}px ${state.theme}`, async ({ page }) => {
     await page.setViewportSize({ width: state.width, height: 1100 });
+    await page.route("**/api/cloud/account/github/repositories", (route) => route.fulfill({ json: { available: state.transport, connected: false, reconnect: false, repositories: [] } }));
 
     const integrationURL = "**/projects/*/integration";
     let integrationReady = Promise.resolve();
@@ -406,7 +408,8 @@ for (const state of [
     await (await setupIntegration).finished();
     await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /^.*Repository (ready|action required)$/ }).click();
     if (state.repository) {
-      await expect(page.getByText(`Verified runner checkout: ${state.repository}`, { exact: true })).toBeVisible();
+      await expect(page.getByRole("combobox", { name: "Search or type owner/name" })).toHaveValue(state.repository);
+      await expect(page.getByRole("combobox", { name: "Search or type owner/name" })).toBeDisabled();
     }
     const install = page.getByRole("link", { name: "Install the Detent Cloud GitHub App" });
     if (state.visible) {
@@ -428,38 +431,38 @@ for (const state of [
     } finally {
       releaseIntegration();
     }
-    await expect(page.getByRole("heading", { name: "Repository", level: 2, exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Repository & GitHub", level: 2, exact: true })).toBeVisible();
     await page.evaluate((theme) => {
       document.documentElement.classList.toggle("dark", theme === "dark");
       document.documentElement.dataset.theme = theme;
     }, state.theme);
     if (state.visible) {
       await expect(page.getByRole("heading", { name: "GitHub App", exact: true })).toBeVisible();
-      await expect(page.getByText(state.installed ? `Installed on ${state.repository}.` : "Not installed. New issues will not reach this project until it is.", { exact: true })).toBeVisible();
-      const link = page.getByRole("link", { name: state.installed ? "Manage installation" : "Install the Detent Cloud GitHub App" });
+      await expect(page.getByText(state.installed ? "Installed" : "Not installed · new issues will not arrive", { exact: true })).toBeVisible();
+      const link = page.getByRole("link", { name: state.installed ? "Manage installation" : "Install GitHub App", exact: true });
       await expect(link).toHaveAttribute("href", "https://github.com/apps/detent-cloud/installations/new");
       await expect(link).toHaveAttribute("target", "_blank");
       await expect(link).toHaveAttribute("rel", "noopener noreferrer");
-      await expect(install).toHaveCount(state.installed ? 0 : 1);
+      await expect(page.getByRole("link", { name: "Install GitHub App", exact: true })).toHaveCount(state.installed ? 0 : 1);
       const intake = page.locator('[data-slot="settings-row"]').filter({ has: page.getByRole("heading", { name: "New issues", exact: true }) });
       await expect(intake).toContainText("Automatic");
-      await expect(intake).toContainText(state.installed ? `Every issue opened on ${state.repository} enters Triage.` : "Waiting for the GitHub App.");
+      await expect(intake).toContainText(state.installed ? "Enter Triage" : "Waiting for the GitHub App");
       await expect(page.getByRole("combobox", { name: "Intake", exact: true })).toHaveCount(0);
-      await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeDisabled();
+      await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
       await expect(page.getByRole("switch", { name: "Existing issues", exact: true })).not.toBeChecked();
       const invalidSelects = await page.locator("select").evaluateAll((selects) => selects.filter((select) =>
         !Array.from(select.options).some((option) => option.value === select.value)).length);
       expect(invalidSelects).toBe(0);
       await link.focus();
       await page.keyboard.press("Tab");
-      await expect(page.getByRole("button", { name: "About New issues", exact: true })).toBeFocused();
+      await expect(page.getByRole("link", { name: "Import issues", exact: true })).toBeFocused();
       const importSwitch = page.getByRole("switch", { name: "Existing issues", exact: true });
       await importSwitch.focus();
       await page.keyboard.press("Space");
       await expect(importSwitch).toBeChecked();
-      await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeEnabled();
+      await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
       await page.keyboard.press("Space");
-      await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeDisabled();
+      await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
       const headings = await page.getByRole("heading").allTextContents();
       const setupRows = headings.filter((title) => ["GitHub App", "New issues", "Existing issues", "Pull requests", "Work summaries", "Authority"].includes(title));
       expect(setupRows).toEqual(["GitHub App", "New issues", "Existing issues", "Pull requests", "Work summaries", "Authority"]);
@@ -470,7 +473,7 @@ for (const state of [
       }
       await page.screenshot({ path: require("node:path").join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `integrations-${state.name.replaceAll(" ", "-")}-${state.width}-${state.theme}.png`), fullPage: true });
       await page.getByRole("switch", { name: "Pull requests", exact: true }).click();
-      await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeEnabled();
+      await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
       await expectNoSeriousAxeViolations(page, `Integrations GitHub App ${state.name}`);
       if (state.width === 390) {
         // A project's Models tab shows only a summary until its owner edits an
@@ -492,23 +495,30 @@ for (const state of [
         await viewerContext.close();
       }
     } else {
-      await expect(page.getByRole("heading", { name: "GitHub App", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("heading", { name: "GitHub App", exact: true })).toBeVisible();
+      if (state.profile === "github_compatible") {
+        await expect(page.getByRole("link", { name: "Manage installation", exact: true })).toBeVisible();
+        await expect(page.getByRole("switch", { name: "Work summaries", exact: true })).toBeDisabled();
+      } else {
+        await expect(page.getByText(state.transport ? "Associate a runner checkout to configure repository integration." : "Hub GitHub integration is unavailable; PR landing uses the runner’s repository configuration.", { exact: true })).toBeVisible();
+        await expect(page.getByRole("switch", { name: "Pull requests", exact: true })).toHaveCount(0);
+      }
       await expect(install).toHaveCount(0);
       await expect(page.getByText(/Detent Cloud is (not )?installed on/)).toHaveCount(0);
     }
   });
 }
 
-test("the first-run wizard puts repository binding before the four Hub onboarding steps", async ({ page }) => {
+test("the first-run wizard orders runner, repository, checkout and run files", async ({ page }) => {
   const errors = watchConsole(page);
   await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);
 
   const steps = page.getByRole("list", { name: "Setup steps" }).getByRole("listitem");
-  await expect(steps).toHaveCount(5);
-  await expect(steps.first()).toContainText("Repository");
+  await expect(steps).toHaveCount(4);
+  await expect(steps.first()).toContainText("Runner");
   // Exactly one step is the current one, and it is reachable from the keyboard.
-  await expect(page.locator('[aria-current="step"]')).toHaveCount(1);
-  expect(await tabTo(page, "Skip for now")).toBe(true);
+  await expect(steps.locator('[aria-current="step"]')).toHaveCount(1);
+  expect(await tabTo(page, "Copy the install command")).toBe(true);
   await expectNoSeriousAxeViolations(page, "/projects/:project/setup");
   expect(errors, "console errors on the wizard").toEqual([]);
 });
@@ -535,7 +545,7 @@ for (const viewport of [
     await expect(context.getByText(project.name, { exact: true })).toBeVisible();
     await expect(page).toHaveTitle(`${project.name} setup · Detent`);
     const steps = page.getByRole("list", { name: "Setup steps" });
-    for (const label of ["Repository", "Execution runner", "Local validation", "Repository configuration", "Artifact history"]) {
+    for (const label of ["Runner", "Repository", "Checkout", "Run files"]) {
       await expect(steps.getByText(label, { exact: true })).toBeVisible();
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
@@ -547,9 +557,9 @@ for (const viewport of [
     if (viewport.width === 390) await page.keyboard.press("Escape");
 
     const tabs = page.getByRole("list", { name: "Setup steps" }).getByRole("button");
-    await expect(tabs).toHaveCount(5);
-    await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /Artifact history/ }).click();
-    await expect(page.getByRole("heading", { level: 1, name: "Artifact history" })).toBeVisible();
+    await expect(tabs).toHaveCount(4);
+    await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /Run files/ }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Where should run files go?" })).toBeVisible();
 
     // Every tab and the whole step fit inside the viewport: nothing is
     // clipped at either edge.
@@ -561,12 +571,12 @@ for (const viewport of [
     }
 
     // Clicking anywhere on a card chooses it, and the choice is visible.
-    const local = page.getByRole("radio", { name: "Your runner (local history)" });
+    const local = page.getByRole("radio", { name: /^Keep them on / });
     const selectedChoice = page.locator("[data-checked]").filter({ has: page.getByRole("radio") });
-    await page.getByText("Your runner (local history)", { exact: true }).click();
+    await page.getByText(/^Keep them on /).click();
     await expect(local).toBeChecked();
     await expect(selectedChoice).toHaveCount(1);
-    await expect(selectedChoice).toContainText("Your runner (local history)");
+    await expect(selectedChoice).toContainText("Keep them on ");
     await page.getByText("Your bucket and gateway", { exact: true }).click();
     await expect(page.getByRole("radio", { name: "Your bucket and gateway" })).toBeChecked();
     await expect(local).not.toBeChecked();
@@ -574,8 +584,8 @@ for (const viewport of [
     await expect(selectedChoice).toContainText("Your bucket and gateway");
 
     // Every step stays reachable from the tabs.
-    await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /Execution runner/ }).click();
-    await expect(page.getByRole("heading", { level: 1, name: "Execution runner" })).toBeVisible();
+    await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /Runner (ready|action required)/ }).click();
+    await expect(page.getByRole("heading", { level: 1, name: `Connect a computer to ${project.name}` })).toBeVisible();
     await expectNoSeriousAxeViolations(page, `/projects/:project/setup (${viewport.name})`);
     expect(errors, "console errors on the wizard").toEqual([]);
   });
