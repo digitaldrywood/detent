@@ -98,7 +98,7 @@ func decodeRunDetail(ctx context.Context, raw string, result *tracker.NativeRunD
 	}
 	run, found := runs[stored.Detail.Entry]
 	if !found || run.AttemptID != stored.AttemptID || run.RunID != stored.RunID || run.LeaseID != stored.LeaseID || run.FencingToken != stored.FencingToken || run.PolicyID != stored.PolicyID {
-		return artifact.ErrIntegrity
+		return fmt.Errorf("match run detail entry: %w", artifact.ErrIntegrity)
 	}
 	run.MachineID, run.SessionID, run.RunnerID = stored.MachineID, stored.SessionID, stored.RunnerID
 	run.Identity = stored.Identity
@@ -214,7 +214,7 @@ func encodeRunDetail(ctx context.Context, data tracker.NativeRunData, history bo
 	}
 	ref := newRunDetailReference(*owner.reference, owner.organization, runDetailEntry(data))
 	if _, ok := owner.runs[ref.Entry]; !ok {
-		return "", artifact.ErrIntegrity
+		return "", fmt.Errorf("find prepared run detail entry: %w", artifact.ErrIntegrity)
 	}
 	compact := compactRun(data)
 	if !history {
@@ -244,7 +244,7 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 		}
 		var run tracker.NativeRunData
 		if err := decodeRunDetail(ctx, previous, &run); err != nil {
-			return ctx, err
+			return ctx, fmt.Errorf("decode previous run detail: %w", err)
 		}
 	} else if previousErr != sql.ErrNoRows {
 		return ctx, previousErr
@@ -297,10 +297,10 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 	}
 	ref, err := owner.store.StoreDetail(ctx, string(scope.organization), raw)
 	if err != nil {
-		return ctx, err
+		return ctx, fmt.Errorf("store run detail archive: %w", err)
 	}
 	if ref.Validate(string(scope.organization)) != nil {
-		return ctx, artifact.ErrIntegrity
+		return ctx, fmt.Errorf("validate stored run detail reference: %w", artifact.ErrIntegrity)
 	}
 	owner.reference, owner.runs = &ref, runs
 	owner.organization = string(scope.organization)
@@ -421,7 +421,7 @@ func decodeRunCheckpoint(ctx context.Context, raw string, result **tracker.Nativ
 	}
 	run, ok := runs[stored.Detail.Entry]
 	if !ok || runDetailEntry(run) != stored.Detail.Entry || run.Handoff == nil {
-		return artifact.ErrIntegrity
+		return fmt.Errorf("match run checkpoint detail entry: %w", artifact.ErrIntegrity)
 	}
 	*result = run.Handoff
 	return nil
@@ -437,18 +437,18 @@ func readRunDetailSegment(ctx context.Context, detail *runDetailReference) (map[
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
 	if owner.organization != "" && owner.organization != detail.Organization {
-		return nil, artifact.ErrIntegrity
+		return nil, fmt.Errorf("match run detail organization: %w", artifact.ErrIntegrity)
 	}
 	if runs := owner.cache[detail.AttachmentID]; runs != nil {
 		return runs, nil
 	}
 	ref, err := scanAttachmentArchive(owner.query.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class,storage_binding_id,customer_owned FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, detail.AttachmentID, detail.Organization))
 	if err != nil || ref.Validate(detail.Organization) != nil {
-		return nil, artifact.ErrIntegrity
+		return nil, fmt.Errorf("read run detail attachment: %w", artifact.ErrIntegrity)
 	}
 	raw, err := owner.store.ReadDetail(ctx, detail.Organization, ref)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read run detail archive: %w", err)
 	}
 	var runs map[string]tracker.NativeRunData
 	if err := json.Unmarshal(raw, &runs); err != nil {
