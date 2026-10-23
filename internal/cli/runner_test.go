@@ -2812,3 +2812,13 @@ func TestPublishSnapshotsReportsPendingRunner(t *testing.T) {
 		<-done
 	})
 }
+
+func TestBuildOpenCodeBackend(t *testing.T) {
+	backend, err := buildAgentBackend(workflowconfig.AgentBackend{ID: "open", Kind: workflowconfig.AgentBackendOpenCode, Protocol: "acp", Command: "opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := backend.(runnerpkg.AgentToolBackend); !ok {
+		t.Fatal("OpenCode backend does not expose native worker tools")
+	}
+}

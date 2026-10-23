@@ -486,6 +486,7 @@ func optionDefault(path string) (string, string) {
 		{"Codex", config.CodexAgentBackend(config.Default().Codex).CodexOptions()},
 		{"Claude Code", claude},
 		{"Pi", (config.AgentBackend{Kind: config.AgentBackendPiAgent}).PiAgentOptions()},
+		{"OpenCode", (config.AgentBackend{Kind: config.AgentBackendOpenCode}).OpenCodeOptions()},
 	}
 	descriptions := make([]string, 0, len(variants))
 	names := make([]string, 0, len(variants))
@@ -860,7 +861,7 @@ func candidates(typ reflect.Type) []reflect.Value {
 	case reflect.String:
 		values := []string{
 			"", " ", "\n", "__invalid__", "github", "github_local", "linear",
-			"local_sqlite", "memory", "command", "artifact", "codex", "claude_code", "pi_agent",
+			"local_sqlite", "memory", "command", "artifact", "codex", "claude_code", "pi_agent", "opencode",
 			"plan", "invalid/value/extra", "0 0",
 		}
 		out := make([]reflect.Value, 0, len(values))

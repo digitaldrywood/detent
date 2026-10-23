@@ -51,7 +51,7 @@ func (c LocalChecks) Validate() error {
 		}
 	}
 	for i, kind := range c.ProviderKinds {
-		if !slices.Contains([]string{"codex", "claude_code", "claude-code", "pi_agent"}, kind) || slices.Contains(c.ProviderKinds[:i], kind) {
+		if !slices.Contains([]string{"codex", "claude_code", "claude-code", "pi_agent", "opencode"}, kind) || slices.Contains(c.ProviderKinds[:i], kind) {
 			return errors.New("local check provider is invalid")
 		}
 	}
@@ -59,7 +59,7 @@ func (c LocalChecks) Validate() error {
 }
 
 func (c LocalChecks) ProviderReady() bool {
-	return c.Provider == "passed" || c.Provider == "pending" && slices.Contains(c.ProviderKinds, "pi_agent")
+	return c.Provider == "passed" || c.Provider == "pending" && (slices.Contains(c.ProviderKinds, "pi_agent") || slices.Contains(c.ProviderKinds, "opencode"))
 }
 
 func (c LocalChecks) WorkReady() bool {

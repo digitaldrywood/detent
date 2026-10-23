@@ -1151,6 +1151,8 @@ func (r *Runner) nativeWorkTimeout(cfg config.Config, backend config.AgentBacken
 			workBudget = durationFromMillis(backend.CodexOptions().TurnTimeoutMS)
 		case config.AgentBackendClaudeCode:
 			workBudget = durationFromMillis(backend.ClaudeCodeOptions().TurnTimeoutMS)
+		case config.AgentBackendOpenCode:
+			workBudget = durationFromMillis(backend.OpenCodeOptions().TurnTimeoutMS)
 		case config.AgentBackendPiAgent:
 			workBudget = durationFromMillis(backend.PiAgentOptions().TurnTimeoutMS)
 		}

@@ -27,12 +27,6 @@ import (
 
 type configurationLog struct{ records chan slog.Record }
 
-type runtimeTransport func(*http.Request) (*http.Response, error)
-
-func (f runtimeTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	return f(request)
-}
-
 func (h configurationLog) Enabled(context.Context, slog.Level) bool { return true }
 func (h configurationLog) WithAttrs([]slog.Attr) slog.Handler       { return h }
 func (h configurationLog) WithGroup(string) slog.Handler            { return h }

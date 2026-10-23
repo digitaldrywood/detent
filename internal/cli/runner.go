@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/observability"
+	"github.com/digitaldrywood/detent/internal/opencode"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/piagent"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -473,6 +474,16 @@ func buildAgentBackend(backend workflowconfig.AgentBackend) (runnerpkg.AgentBack
 
 func buildAgentBackendWithIsolation(backend workflowconfig.AgentBackend, policies ...func() (isolation.Policy, error)) (runnerpkg.AgentBackend, error) {
 	switch backend.Kind {
+	case workflowconfig.AgentBackendOpenCode:
+		cfg := backend.OpenCodeOptions()
+		return opencode.NewAgentBackend(opencode.Options{
+			BackendID:       backend.ID,
+			IsolationPolicy: firstIsolationPolicy(policies),
+			CommandFactory: func(ctx context.Context, args []string) *exec.Cmd {
+				return buildClaudeCommandFromConfig(ctx, backend.Command, cfg.Shell, args)
+			},
+			TurnTimeout: durationFromMillis(cfg.TurnTimeoutMS), StallTimeout: durationFromMillis(cfg.StallTimeoutMS),
+		})
 	case workflowconfig.AgentBackendCodex:
 		return buildCodexAgentBackend(backend.Command, backend.CodexOptions(), policies...)
 	case workflowconfig.AgentBackendPiAgent:
@@ -489,11 +500,12 @@ func buildAgentBackendWithIsolation(backend workflowconfig.AgentBackend, policie
 	case workflowconfig.AgentBackendClaudeCode:
 		return buildClaudeAgentBackend(backend.Command, backend.ClaudeCodeOptions(), policies...)
 	default:
-		return nil, fmt.Errorf("unsupported agent backend kind %q; supported kinds: %s, %s, %s",
+		return nil, fmt.Errorf("unsupported agent backend kind %q; supported kinds: %s, %s, %s, %s",
 			backend.Kind,
 			workflowconfig.AgentBackendCodex,
 			workflowconfig.AgentBackendClaudeCode,
 			workflowconfig.AgentBackendPiAgent,
+			workflowconfig.AgentBackendOpenCode,
 		)
 	}
 }

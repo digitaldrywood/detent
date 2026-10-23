@@ -19,6 +19,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/github"
 )
 
+type runtimeTransport func(*http.Request) (*http.Response, error)
+
+func (f runtimeTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
 func TestGitHubRepositoryConnection(t *testing.T) {
 	f := newEntryFixture(t)
 	s := f.service
