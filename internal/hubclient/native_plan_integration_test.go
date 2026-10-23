@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -224,7 +223,7 @@ func testNativePlannerHandoff(t *testing.T, abandon, staleRenewal, closeWorkers 
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+	runtimeStore, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +408,8 @@ func testNativePlannerHandoff(t *testing.T, abandon, staleRenewal, closeWorkers 
 		runBackend = &nativePlanObservedRunner{Runner: agent, observed: observed}
 	}
 	scheduling := &nativePlanScheduling{Scheduler: h.scheduler, forgotten: make(chan struct{}, 1)}
-	orch, err := orchestrator.New(orchCfg, orchestrator.Dependencies{Connector: h.connector, Scheduling: scheduling, Runner: runBackend, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	attemptStore := &nativePlanAttemptStore{Store: runtimeStore}
+	orch, err := orchestrator.New(orchCfg, orchestrator.Dependencies{Connector: h.connector, Scheduling: scheduling, Runner: runBackend, WorkAttempts: attemptStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,6 +518,32 @@ func testNativePlannerHandoff(t *testing.T, abandon, staleRenewal, closeWorkers 
 				t.Fatal("failed settlement lost publisher or restored renewal")
 			}
 			transport.failTermination.Store(false)
+		}
+		if closeWorkers {
+			attemptStore.failCompletion.Store(true)
+			_, err := orch.RecoverWorkAttempt(t.Context(), orchestrator.WorkAttemptRecoveryRequest{ProjectID: "local", AttemptID: attempts[0].ID, Action: orchestrator.WorkAttemptRecoveryAbandon, Confirm: true, Operator: "ops"})
+			if err == nil || !strings.Contains(err.Error(), "local completion unavailable") {
+				t.Fatalf("local completion failure = %v", err)
+			}
+			h.scheduler.mu.Lock()
+			_, renewing := h.scheduler.claims[issue.ID]
+			publisher := h.scheduler.nativeClaims[issue.ID].execution
+			h.scheduler.mu.Unlock()
+			if renewing || publisher == nil {
+				t.Fatal("local completion failure lost settlement evidence or restored renewal")
+			}
+			remote, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil || len(remote.Attempts) != 1 || remote.Attempts[0].Outcome != "cancelled" || remote.Attempts[0].ClaimReleasedAt == nil || remote.Attempts[0].LeaseID != lease.ID || remote.Attempts[0].FencingToken != lease.FencingToken {
+				t.Fatalf("remote settlement before local retry = %+v, %v", remote.Attempts, err)
+			}
+			local, err := runtimeStore.WorkAttempt(t.Context(), attempts[0].ID)
+			if err != nil || local.Status == store.WorkAttemptStatusTerminal {
+				t.Fatalf("failed local write completed attempt: status=%s error=%v", local.Status, err)
+			}
+			h.scheduler.ForgetClaim(issue.ID)
+			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "released"); err != nil {
+				t.Fatal(err)
+			}
 		}
 		response, err := orch.RecoverWorkAttempt(t.Context(), orchestrator.WorkAttemptRecoveryRequest{ProjectID: "local", AttemptID: attempts[0].ID, Action: orchestrator.WorkAttemptRecoveryAbandon, Confirm: true, Reason: "native planner succeeded but its lease ended", Operator: "ops"})
 		if err != nil || response.Attempt.TerminalState != string(store.WorkAttemptTerminalAbandoned) {
@@ -947,4 +973,16 @@ func assertInstanceRecoveryRetry(t *testing.T, h *nativeChangeHub, orch *orchest
 	if err != nil || state.FailureBreaker.Count != 0 || len(state.Retry) != 1 || !retried || !strings.Contains(retry.Error, "native checkpoint requires recovery") {
 		t.Errorf("instance recovery refusal charged failures or skipped its retry: breaker=%d retry=%d error=%v", state.FailureBreaker.Count, len(state.Retry), err)
 	}
+}
+
+type nativePlanAttemptStore struct {
+	store.Store
+	failCompletion atomic.Bool
+}
+
+func (s *nativePlanAttemptStore) CompleteWorkAttempt(ctx context.Context, completion store.WorkAttemptCompletion) error {
+	if s.failCompletion.Swap(false) {
+		return errors.New("local completion unavailable")
+	}
+	return s.Store.CompleteWorkAttempt(ctx, completion)
 }

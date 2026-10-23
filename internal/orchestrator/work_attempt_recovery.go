@@ -282,14 +282,29 @@ func (o *Orchestrator) abandonWorkAttempt(
 			issueID = issue.ID
 		}
 	}
-	if err := o.abandonClaim(ctx, issueID); err != nil {
-		return receipt, fmt.Errorf("settle abandoned work attempt: %w", err)
-	}
-	if err := o.workAttempts.CompleteWorkAttempt(ctx, completion); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return receipt, recoveryError(WorkAttemptRecoveryUnsupportedState, "active work attempt could not be abandoned because it is already terminal")
+	complete := func() error {
+		if err := o.workAttempts.CompleteWorkAttempt(ctx, completion); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return recoveryError(WorkAttemptRecoveryUnsupportedState, "active work attempt could not be abandoned because it is already terminal")
+			}
+			return fmt.Errorf("abandon work attempt: %w", err)
 		}
-		return receipt, fmt.Errorf("abandon work attempt: %w", err)
+		return nil
+	}
+	if scheduling, ok := o.scheduling.(interface {
+		ReleaseClaimAndComplete(context.Context, string, string, func() error) error
+	}); ok {
+		if err := scheduling.ReleaseClaimAndComplete(ctx, issueID, "orchestrator_release", complete); err != nil {
+			return receipt, fmt.Errorf("settle abandoned work attempt: %w", err)
+		}
+		o.heartbeats.remove(issueID)
+	} else {
+		if err := o.abandonClaim(ctx, issueID); err != nil {
+			return receipt, fmt.Errorf("settle abandoned work attempt: %w", err)
+		}
+		if err := complete(); err != nil {
+			return receipt, err
+		}
 	}
 	o.clearLiveWorkAttemptState(state, receipt.Attempt)
 	updated, err := o.workAttemptRecoveryReceipt(ctx, request.ProjectID, request.AttemptID, now)

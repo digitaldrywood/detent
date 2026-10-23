@@ -736,6 +736,14 @@ func TestNativeMissingClaimNeverRunsUnguarded(t *testing.T) {
 	if err := scheduler.ReleaseClaim(t.Context(), "wi_"+strings.Repeat("a", 32), "completed"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 		t.Fatalf("missing native completion owner reported settlement: %v", err)
 	}
+	completed := false
+	err = scheduler.ReleaseClaimAndComplete(t.Context(), "wi_"+strings.Repeat("a", 32), "completed", func() error {
+		completed = true
+		return nil
+	})
+	if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || completed {
+		t.Fatalf("missing publisher completed local attempt: completed=%v error=%v", completed, err)
+	}
 	if err := scheduler.ReleaseClaim(t.Context(), "github-node", "completed"); err != nil {
 		t.Fatalf("legacy idempotent release = %v", err)
 	}

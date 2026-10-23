@@ -24,6 +24,7 @@ import (
 )
 
 type nativeClaim struct {
+	releaseAcknowledged  bool
 	landingCapacity      int
 	execution            *nativeExecution
 	availabilityDeadline time.Time

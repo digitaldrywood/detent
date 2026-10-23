@@ -342,7 +342,7 @@ func (s *Scheduler) ForgetClaim(issueID string) {
 		}
 	}
 	s.mu.Unlock()
-	if !ok {
+	if !ok || claim.releaseAcknowledged {
 		return
 	}
 	if claim.execution != nil {
@@ -369,6 +369,10 @@ func (s *Scheduler) forgetNativeClaim(issueID string, claim nativeClaim, cause e
 }
 
 func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason string) error {
+	return s.ReleaseClaimAndComplete(ctx, issueID, reason, nil)
+}
+
+func (s *Scheduler) ReleaseClaimAndComplete(ctx context.Context, issueID string, reason string, complete func() error) error {
 	issueID = strings.TrimSpace(issueID)
 	s.mu.Lock()
 	native, isNative := s.nativeClaims[issueID]
@@ -379,21 +383,30 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 		if strings.HasPrefix(issueID, "wi_") {
 			return runner.ErrExecutionAuthorityUnavailable
 		}
+		if complete != nil {
+			return complete()
+		}
 		return nil
 	}
 	if isNative {
+		if native.releaseAcknowledged && complete == nil {
+			return nil
+		}
 		lease = nativeTrackerLease(native.lease)
+		if complete != nil && native.execution != nil {
+			defer native.execution.ownFinalization()()
+		}
 	}
 	var err error
 	if isNative {
-		if native.execution != nil {
+		if native.execution != nil && !native.releaseAcknowledged {
 			err = native.execution.finishPrepared(ctx)
 			var rejection *nativeCompletionRejection
 			if err != nil && !errors.As(err, &rejection) {
 				return err
 			}
 		}
-		if native.execution == nil {
+		if native.execution == nil && !native.releaseAcknowledged {
 			err = native.source.client.Release(ctx, native.lease, "released")
 		}
 	} else {
@@ -403,7 +416,39 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 	if err != nil && !claimLost(err) && !errors.As(err, &rejection) {
 		return err
 	}
+	if complete != nil {
+		if err != nil {
+			return err
+		}
+		s.mu.Lock()
+		if current, ok := s.claims[issueID]; ok && (current.ID != lease.ID || current.FencingToken != lease.FencingToken) {
+			s.mu.Unlock()
+			return runner.ErrExecutionAuthorityUnavailable
+		}
+		if current, ok := s.nativeClaims[issueID]; isNative && (!ok || current.lease.ID != native.lease.ID || current.lease.FencingToken != native.lease.FencingToken || current.execution != native.execution) {
+			s.mu.Unlock()
+			return runner.ErrExecutionAuthorityUnavailable
+		}
+		if isNative {
+			native.releaseAcknowledged = true
+			s.nativeClaims[issueID] = native
+		}
+		delete(s.claims, issueID)
+		s.mu.Unlock()
+		if err := complete(); err != nil {
+			if isNative && native.execution != nil {
+				native.execution.cancelMu.Lock()
+				native.execution.deferredPublication = true
+				native.execution.cancelMu.Unlock()
+			}
+			return err
+		}
+	}
 	s.mu.Lock()
+	if current, ok := s.nativeClaims[issueID]; isNative && (!ok || current.lease.ID != native.lease.ID || current.lease.FencingToken != native.lease.FencingToken || current.execution != native.execution) {
+		s.mu.Unlock()
+		return nil
+	}
 	if current, ok := s.claims[issueID]; ok && current.FencingToken != lease.FencingToken {
 		s.mu.Unlock()
 		return nil
