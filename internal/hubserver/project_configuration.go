@@ -314,8 +314,35 @@ AND NOT EXISTS (SELECT 1 FROM collaboration_events
 		if err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET project_configuration_json = json_set(project_configuration_json, ?, json(?)) WHERE organization_id = ? AND id = ? AND json_extract(project_configuration_json, ?) IS NOT json(?)", path, string(raw), scope.organization, scope.credential.Runner.RunnerID, path, string(raw)); err != nil {
+		var changed bool
+		err = tx.QueryRowContext(ctx, `SELECT json_remove(json_extract(project_configuration_json, ?), '$.observed_at', '$.diagnostics.observed_at', '$.diagnostics.runtime_observed_at')
+IS NOT json_remove(json(?), '$.observed_at', '$.diagnostics.observed_at', '$.diagnostics.runtime_observed_at')
+FROM runner_identities WHERE organization_id = ? AND id = ?`, path, string(raw), scope.organization, scope.credential.Runner.RunnerID).Scan(&changed)
+		if err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
+		}
+		if changed {
+			if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET project_configuration_json = json_set(project_configuration_json, ?, json(?)) WHERE organization_id = ? AND id = ?", path, string(raw), scope.organization, scope.credential.Runner.RunnerID); err != nil {
+				return runnerauth.ProjectConfigurationRequest{}, err
+			}
+		} else {
+			metadata := map[string]any{"observed_at": observation.ObservedAt}
+			if observation.Diagnostics != nil {
+				var runtimeObservedAt *time.Time
+				if !observation.Diagnostics.RuntimeObservedAt.IsZero() {
+					runtimeObservedAt = &observation.Diagnostics.RuntimeObservedAt
+				}
+				metadata["diagnostics"] = map[string]any{"observed_at": observation.Diagnostics.ObservedAt, "runtime_observed_at": runtimeObservedAt}
+			}
+			patch, err := json.Marshal(map[string]any{observation.ProjectID: metadata})
+			if err != nil {
+				return runnerauth.ProjectConfigurationRequest{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE runner_identities
+SET project_configuration_json = json_patch(project_configuration_json, ?)
+WHERE organization_id = ? AND id = ? AND project_configuration_json IS NOT json_patch(project_configuration_json, ?)`, string(patch), scope.organization, scope.credential.Runner.RunnerID, string(patch)); err != nil {
+				return runnerauth.ProjectConfigurationRequest{}, err
+			}
 		}
 		if observation.SelectedPolicy != nil {
 			if err := storeObservedPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project), scope.credential.Runner.RunnerID, policy.Observation{Descriptor: *observation.SelectedPolicy}, now); err != nil {

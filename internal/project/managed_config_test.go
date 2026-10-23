@@ -249,6 +249,16 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			if before.Constraint != "" || before.SelectedPolicy == nil || before.EffectivePolicy == nil {
 				t.Fatalf("read=%+v", before)
 			}
+			refreshed := owner.Read(t.Context(), "selected")
+			if !refreshed.ObservedAt.After(before.ObservedAt) || before.Diagnostics == nil || refreshed.Diagnostics == nil || !refreshed.Diagnostics.ObservedAt.After(before.Diagnostics.ObservedAt) {
+				t.Fatal("configuration owner did not refresh observation timestamps")
+			}
+			refreshed.ObservedAt = before.ObservedAt
+			refreshed.Diagnostics.ObservedAt = before.Diagnostics.ObservedAt
+			refreshed.Diagnostics.RuntimeObservedAt = before.Diagnostics.RuntimeObservedAt
+			if !reflect.DeepEqual(before, refreshed) {
+				t.Fatal("unchanged owner records changed the configuration snapshot")
+			}
 			raw, err := json.Marshal(before)
 			if err != nil {
 				t.Fatal(err)
