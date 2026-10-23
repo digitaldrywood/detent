@@ -18,10 +18,12 @@ func TestNativeObservationDetailBatches(t *testing.T) {
 		name             string
 		observations     int
 		checkpoint, fail bool
+		heartbeat        bool
 	}{
-		{"checkpoint", 2, true, false},
-		{"bounded observation batch", 8, false, false},
-		{"failed boundary retains replay", 2, true, true},
+		{"checkpoint", 2, true, false, false},
+		{"bounded observation batch", 8, false, false, false},
+		{"failed boundary retains replay", 2, true, true, false},
+		{"heartbeat flushes partial batch", 2, false, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Now()
@@ -49,7 +51,7 @@ func TestNativeObservationDetailBatches(t *testing.T) {
 			lease := tracker.NativeLease{RunDetailBatching: true, WorkItemID: "wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ID: "lease", FencingToken: 1}
 			claim := nativeClaim{source: &NativeConnector{client: native}, lease: lease, deadline: now.Add(time.Minute)}
 			scheduler := &Scheduler{now: func() time.Time { return now }, leaseTTL: time.Minute, nativeClaims: map[string]nativeClaim{string(lease.WorkItemID): claim}}
-			execution := &nativeExecution{scheduler: scheduler, claim: claim, data: tracker.NativeRunData{AttemptID: "attempt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", RunID: "run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", LeaseID: lease.ID, FencingToken: lease.FencingToken, Sequence: 1, Runtime: &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: now}}}
+			execution := &nativeExecution{scheduler: scheduler, claim: claim, runtimePublishedAt: now, data: tracker.NativeRunData{AttemptID: "attempt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", RunID: "run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", LeaseID: lease.ID, FencingToken: lease.FencingToken, Sequence: 1, Runtime: &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: now}}}
 			for range test.observations {
 				if err := execution.append(t.Context(), "run.observed", "", nil); err != nil {
 					t.Fatal(err)
@@ -77,6 +79,16 @@ func TestNativeObservationDetailBatches(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if test.heartbeat {
+				if len(requests) != 0 {
+					t.Fatal("observation uploaded before heartbeat cadence")
+				}
+				now = now.Add(20 * time.Second)
+				execution.data.Runtime.HeartbeatAt = now
+				if err := execution.append(t.Context(), "run.observed", "", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
 			wantRequests := 1
 			if test.fail {
 				wantRequests = 2
@@ -92,7 +104,7 @@ func TestNativeObservationDetailBatches(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantPrior := test.observations
-			if !test.checkpoint {
+			if !test.checkpoint && !test.heartbeat {
 				wantPrior--
 			}
 			if len(batch.PriorEvents) != wantPrior || batch.PriorEvents[0].Data.Runtime.Phase != "implementation" {
