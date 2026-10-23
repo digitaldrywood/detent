@@ -2098,7 +2098,6 @@ budget:
 agent:
   auto_promote:
     enabled: true
-    rework_limit: 0
 gate:
   kind: command
   validator:
