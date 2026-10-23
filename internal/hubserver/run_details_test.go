@@ -25,10 +25,18 @@ type memoryRunDetails struct {
 	data       map[string][]byte
 	fail       bool
 	uploads    int
-	afterStore func()
+	afterStore func(attachment.ArchiveReference)
 }
 
 func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
+	ref, err := m.storeDetail(organization, data)
+	if err == nil && m.afterStore != nil {
+		m.afterStore(ref)
+	}
+	return ref, err
+}
+
+func (m *memoryRunDetails) storeDetail(organization string, data []byte) (attachment.ArchiveReference, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.fail {
@@ -45,9 +53,6 @@ func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, d
 		m.uploads++
 	}
 	m.data[ref.Key] = bytes.Clone(data)
-	if m.afterStore != nil {
-		m.afterStore()
-	}
 	return ref, nil
 }
 
@@ -381,7 +386,14 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 				event.PriorEvents = []tracker.NativeRunEvent{observation}
 			}
 			if test.duringUpload {
-				store.afterStore = func() {
+				store.afterStore = func(ref attachment.ArchiveReference) {
+					data, err := store.ReadDetail(t.Context(), string(f.project.OrganizationID), ref)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(data) == 0 {
+						t.Fatal("uploaded detail unavailable during upload callback")
+					}
 					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(now), lease.ID); err != nil {
 						t.Fatal(err)
 					}
