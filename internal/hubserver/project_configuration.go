@@ -496,13 +496,23 @@ func projectConfigurationDigest(view runnerauth.ProjectConfiguration) (string, e
 }
 
 func prepareLegacyProjectConfiguration(ctx context.Context, q nativeQueryer, scope nativeScope, prepared preparedProjectConfiguration) (preparedProjectConfiguration, error) {
-	err := q.QueryRowContext(ctx, `SELECT CASE WHEN o.snapshot_digest IS NULL THEN json_extract(r.project_configuration_json, ?) END
+	var document sql.NullString
+	err := q.QueryRowContext(ctx, `SELECT CASE WHEN o.snapshot_digest IS NULL THEN r.project_configuration_json END
 FROM runner_identities r LEFT JOIN runner_project_observations o
 ON o.organization_id=r.organization_id AND o.runner_id=r.id AND o.project_id=?
-WHERE r.organization_id=? AND r.id=?`, "$."+jsonPathKey(string(scope.project)), scope.project, scope.organization, scope.credential.Runner.RunnerID).Scan(&prepared.legacyRaw)
-	if err != nil || !prepared.legacyRaw.Valid {
+WHERE r.organization_id=? AND r.id=?`, scope.project, scope.organization, scope.credential.Runner.RunnerID).Scan(&document)
+	if err != nil || !document.Valid {
 		return prepared, err
 	}
+	var projects map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(document.String), &projects); err != nil {
+		return preparedProjectConfiguration{}, err
+	}
+	entry, ok := projects[string(scope.project)]
+	if !ok || string(entry) == "null" {
+		return prepared, nil
+	}
+	prepared.legacyRaw = sql.NullString{String: string(entry), Valid: true}
 	var legacy runnerauth.ProjectConfiguration
 	if err := json.Unmarshal([]byte(prepared.legacyRaw.String), &legacy); err != nil {
 		return preparedProjectConfiguration{}, err
