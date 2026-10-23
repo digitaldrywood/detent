@@ -28,7 +28,7 @@ type memoryRunDetails struct {
 	fail       bool
 	uploads    int
 	reads      int
-	afterStore func()
+	afterStore func(attachment.ArchiveReference)
 }
 
 func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
@@ -52,7 +52,7 @@ func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, d
 	afterStore := m.afterStore
 	m.mu.Unlock()
 	if afterStore != nil {
-		afterStore()
+		afterStore(ref)
 	}
 	return ref, nil
 }
@@ -388,7 +388,14 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 				event.PriorEvents = []tracker.NativeRunEvent{observation}
 			}
 			if test.duringUpload {
-				store.afterStore = func() {
+				store.afterStore = func(ref attachment.ArchiveReference) {
+					data, err := store.ReadDetail(t.Context(), string(f.project.OrganizationID), ref)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(data) == 0 {
+						t.Fatal("uploaded detail unavailable during upload callback")
+					}
 					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(now), lease.ID); err != nil {
 						t.Fatal(err)
 					}
