@@ -831,11 +831,10 @@ runners, 100 projects and 1,000,000 attempts of history in one tenant. A choice
 that only works at today's size is a defect.
 
 Work per request is bounded by the size of that request. Work per periodic tick
-is bounded by a fixed budget and resumes on the next tick. Neither grows with
-tenant count, runner count, item count or history. No request or background job
+is bounded by a fixed budget and resumes on the next tick. For a fixed request size or tick budget, the number of items processed does not grow with total tenant count, runner count, item count or history. No request or background job
 holds a lock, connection or transaction shared by other requests across
 per-item network calls or a walk over many objects; such work takes the shared
-resource per item, briefly. Periodic and fleet traffic does constant work:
+resource per item, briefly. Each heartbeat, poll, retry and reconnect processes a bounded number of items:
 heartbeats, polls, retries and reconnects use capped jittered intervals, and the
 control plane applies per-tenant and per-runner admission limits, so one tenant
 or a synchronized fleet cannot starve the others.
@@ -845,7 +844,7 @@ per-heartbeat or per-event code), a shared lock, or a periodic job states its
 cost at INV-21 scale in its description, for example "per heartbeat: one row
 read and one row written, no history reads" or "per tick: at most 500 rows, lock
 held around one object". Review rejects such a Change without that statement or
-with cost that grows with history or fleet size. Hot-path changes attach
-benchmark evidence where a benchmark exists. A scale soak run against a seeded
+with unbounded scans or fan-out over history or the fleet. Hot-path changes attach
+benchmark evidence where a benchmark exists. A manually run scale soak against a seeded
 large tenant and a simulated runner fleet provides release evidence when it is
 run; it never blocks merging or releasing.
