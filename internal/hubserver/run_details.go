@@ -439,6 +439,9 @@ func readRunDetailSegment(ctx context.Context, detail *runDetailReference) (map[
 	if owner.organization != "" && owner.organization != detail.Organization {
 		return nil, fmt.Errorf("match run detail organization: %w", artifact.ErrIntegrity)
 	}
+	if owner.reference != nil && detail.AttachmentID == newRunDetailReference(*owner.reference, owner.organization, "").AttachmentID {
+		return owner.runs, nil
+	}
 	if runs := owner.cache[detail.AttachmentID]; runs != nil {
 		return runs, nil
 	}
