@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -110,7 +111,7 @@ func refreshNativeBoardCard(ctx context.Context, tx *sql.Tx, id string, now time
 	if err == nil && !workspace {
 		issue, _, err := readNativeIssueProjection(ctx, tx, scope, id, true)
 		if err != nil {
-			return err
+			return fmt.Errorf("read issue projection: %w", err)
 		}
 		current = &tracker.NativeBoardCard{Issue: issue}
 		var latest *tracker.NativeAttempt
@@ -122,7 +123,7 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 		if err == nil {
 			attempt, err := readNativeAttemptRecord(ctx, tx, scope, id, attemptID, now)
 			if err != nil {
-				return err
+				return fmt.Errorf("read latest attempt: %w", err)
 			}
 			current.Attempt = &tracker.NativeBoardAttempt{Count: attemptCount, ID: attempt.AttemptID, Status: attempt.Status, RunnerID: attempt.RunnerID, MachineID: string(attempt.MachineID), Identity: nativeAttemptDisplayIdentity(attempt), StartedAt: attempt.StartedAt, ExpiresAt: attempt.LeaseExpiresAt}
 			latest = &attempt
@@ -131,11 +132,11 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 		}
 		current.Execution, err = readNativeBoardExecution(ctx, tx, scope, id, latest, now)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
+			return fmt.Errorf("read execution: %w", err)
 		}
 		change, found, err := readLatestNativeChangeRequest(ctx, tx, scope, id)
 		if err != nil {
-			return err
+			return fmt.Errorf("read latest change: %w", err)
 		}
 		if found {
 			key := string(scope.organization) + "/" + string(scope.project)
@@ -143,13 +144,13 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 			if !found {
 				currentPolicy, err = readChangeSummaryPolicy(ctx, tx, scope)
 				if err != nil {
-					return err
+					return fmt.Errorf("read change summary policy: %w", err)
 				}
 				policies[key] = currentPolicy
 			}
 			detail, err := readCurrentChangeDetailWithPolicy(ctx, tx, scope, change, now, &currentPolicy)
 			if err != nil {
-				return err
+				return fmt.Errorf("read change detail: %w", err)
 			}
 			var version tracker.ChangeVersion
 			if len(detail.Versions) > 0 {
