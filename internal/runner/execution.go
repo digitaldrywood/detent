@@ -1193,6 +1193,7 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error
 		return routeErr
 	}
 	request := ValidatorRequest{workspacePrepared: req.workspacePrepared, SecurityAudit: input.SecurityAudit, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request.source, _ = req.Execution.(ChangeSourceExecution)
 	if source, ok := req.Execution.(ToolExecution); ok {
 		tools, handler := source.AgentTools()
 		request.EvidenceTools = tools
@@ -1238,6 +1239,7 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (bool, 
 		return false, routeErr
 	}
 	request := ValidatorRequest{workspacePrepared: req.workspacePrepared, implementationReview: true, Discussion: input.Discussion, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request.source, _ = req.Execution.(ChangeSourceExecution)
 	if source, ok := req.Execution.(ToolExecution); ok {
 		request.EvidenceTools, request.EvidenceHandler = source.AgentTools()
 	}

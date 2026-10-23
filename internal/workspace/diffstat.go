@@ -97,6 +97,13 @@ func (l *LocalGit) SeedReviewHead(ctx context.Context, info Info, issue Issue) e
 }
 
 func fetchReviewHead(ctx context.Context, path, fallbackBranch string, issue Issue) (string, error) {
+	if issue.Source != nil {
+		if issue.Source.Version.HeadSHA != strings.TrimSpace(issue.PullRequestHeadSHA) {
+			return "", refuse(LandRefusalHeadMoved, "retained review source differs from the requested head")
+		}
+		head, err := runGitAt(ctx, path, "rev-parse", "--verify", issue.Source.Version.HeadSHA+"^{commit}")
+		return strings.TrimSpace(head), err
+	}
 	branch := strings.TrimSpace(issue.PullRequestBranch)
 	if branch == "" {
 		branch = strings.TrimSpace(fallbackBranch)

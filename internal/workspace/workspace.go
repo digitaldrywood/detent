@@ -250,6 +250,7 @@ type ResidualReconciler interface {
 }
 
 type Issue struct {
+	ReviewVersionID         string
 	ReleaseDelivery         *tracker.ReleaseDelivery
 	Source                  *ChangeSource
 	Checkpoint              *CheckpointRef
@@ -676,7 +677,11 @@ func issueKey(issue Issue) string {
 	if project := nativeProjectID(issue); project != "" {
 		issue.ProjectID = project
 	}
-	return legacyIssueKey(issue)
+	key := legacyIssueKey(issue)
+	if issue.ReviewVersionID != "" {
+		key += "-review-" + SafeKey(issue.ReviewVersionID)
+	}
+	return key
 }
 
 func legacyIssueKey(issue Issue) string {
@@ -1093,7 +1098,7 @@ func (l *LocalGit) branchName(issue Issue, key string) string {
 	if issue.WorkspaceSession {
 		return workspaceSessionBranchName(key)
 	}
-	if strings.TrimSpace(issue.BranchName) != "" {
+	if issue.ReviewVersionID == "" && strings.TrimSpace(issue.BranchName) != "" {
 		return strings.TrimSpace(issue.BranchName)
 	}
 	return autoBranchPrefix + strings.ToLower(key)
