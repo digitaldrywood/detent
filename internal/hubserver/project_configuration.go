@@ -276,6 +276,11 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 		}
 		if observation.Diagnostics != nil {
 			observation.Diagnostics.Redact()
+			observation.Diagnostics.Records = slices.DeleteFunc(observation.Diagnostics.Records, func(record runnerauth.DiagnosticAttempt) bool {
+				return !record.OperationPending && !record.LeaseExpiresAt.After(now) && !slices.ContainsFunc(record.Membership, func(membership string) bool {
+					return membership != "durable_active"
+				})
+			})
 			for _, admission := range observation.Diagnostics.Admissions {
 				if admission.Result != "skipped" || admission.WorkItemRevision <= 0 || admission.ObservedAt.After(now) {
 					continue
@@ -299,7 +304,9 @@ AND NOT EXISTS (SELECT 1 FROM collaboration_events
 				}
 			}
 		}
-		observation.ObservedAt = now
+		if observation.ObservedAt.After(now) {
+			observation.ObservedAt = now
+		}
 		observation.RunnerID, observation.RunnerRevision = "", 0
 		observation.Pending = false
 		observation.LastOperation = nil
@@ -307,7 +314,7 @@ AND NOT EXISTS (SELECT 1 FROM collaboration_events
 		if err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET project_configuration_json = json_set(project_configuration_json, ?, json(?)) WHERE organization_id = ? AND id = ?", path, string(raw), scope.organization, scope.credential.Runner.RunnerID); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET project_configuration_json = json_set(project_configuration_json, ?, json(?)) WHERE organization_id = ? AND id = ? AND json_extract(project_configuration_json, ?) IS NOT json(?)", path, string(raw), scope.organization, scope.credential.Runner.RunnerID, path, string(raw)); err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		if observation.SelectedPolicy != nil {

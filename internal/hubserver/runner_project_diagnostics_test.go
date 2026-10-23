@@ -146,6 +146,55 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 		t.Helper()
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "rolling.current", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view}), http.StatusOK)
 	}
+	for i := 1; i < runnerauth.DiagnosticRecordLimit; i++ {
+		view.Diagnostics.Records = append(view.Diagnostics.Records, runnerauth.DiagnosticAttempt{
+			Key: "local:" + strconv.Itoa(i+5), IssueID: "wi_historical", LocalAttemptID: int64(i + 5),
+			Membership: []string{"durable_active"}, LeaseExpiresAt: now.Add(-time.Hour),
+		})
+	}
+	post()
+	var stored runnerauth.ProjectConfiguration
+	var storedJSON string
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT json_extract(project_configuration_json, ?) FROM runner_identities WHERE id = ?", "$."+jsonPathKey(view.ProjectID), r.binding.RunnerID).Scan(&storedJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(storedJSON), &stored); err != nil || len(stored.Diagnostics.Records) != 1 {
+		t.Fatalf("stored diagnostics retained historical records: %s, %v", storedJSON, err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TEMP TRIGGER reject_configuration_rewrite BEFORE UPDATE OF project_configuration_json ON runner_identities BEGIN SELECT RAISE(ABORT, 'unchanged configuration rewritten'); END`); err != nil {
+		t.Fatal(err)
+	}
+	post()
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER reject_configuration_rewrite"); err != nil {
+		t.Fatal(err)
+	}
+	view.Diagnostics.Records = view.Diagnostics.Records[:1]
+	for _, test := range []struct {
+		membership string
+		expires    time.Time
+	}{
+		{"running", time.Time{}},
+		{"claimed", time.Time{}},
+		{"deferred", time.Time{}},
+		{"native_claim", time.Time{}},
+		{"durable_active", now.Add(time.Minute)},
+	} {
+		t.Run(test.membership, func(t *testing.T) {
+			view.Diagnostics.Records = append(view.Diagnostics.Records[:1], runnerauth.DiagnosticAttempt{
+				Key: "local:6", IssueID: "wi_live", LocalAttemptID: 6,
+				Membership: []string{test.membership}, LeaseExpiresAt: test.expires,
+			})
+			post()
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/runner-diagnostics?runner_id="+r.binding.RunnerID+"&issue_id=wi_live", r.redemption.Credential, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page runnerauth.DiagnosticPage
+			decodeHubResponse(t, response, &page)
+			if len(page.Records) != 1 || page.Records[0].LocalAttemptID != 6 {
+				t.Fatalf("live diagnostic missing: %+v", page)
+			}
+		})
+	}
+	view.Diagnostics.Records = view.Diagnostics.Records[:1]
 	post()
 	second := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 	second.enroll(t)
