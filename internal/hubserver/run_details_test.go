@@ -18,7 +18,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -176,6 +178,22 @@ func TestNativeRunDetailReferences(t *testing.T) {
 			return nil
 		})
 	}
+	checkSingleReader("hosted runner", func(ctx context.Context) error {
+		config := f.service.config
+		config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+		service := &Service{database: f.service.database, config: config}
+		scope := nativeScope{organization: f.project.OrganizationID, credential: apiCredential{
+			Hosted: &auth.HostedIdentity{Subject: "operator"}, HostedRole: "owner", Scope: apiScopeAdmin, HostedKeyScope: apikey.ScopeRead,
+		}}
+		routing, err := service.readRunnerRouting(f.service.runDetailContext(ctx), scope, runner.binding.RunnerID)
+		if err != nil {
+			return err
+		}
+		if len(routing.Leases) != 1 || routing.Leases[0].ID != lease.ID {
+			return errors.New("hosted runner routing lost the active lease")
+		}
+		return nil
+	})
 	heartbeat := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", worker, map[string]any{"capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation})
 	requireNativeStatus(t, heartbeat, http.StatusOK)
 	event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Outcome, event.Data.Handoff = "run.finished", "finish", 7, "succeeded", nil

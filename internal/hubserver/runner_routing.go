@@ -306,6 +306,9 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 	if err != nil {
 		return runnerauth.Runner{}, err
 	}
+	if err := tx.Commit(); err != nil {
+		return runnerauth.Runner{}, err
+	}
 	if credential.Hosted != nil && !s.appAllRunnerGrants(ctx, credential, runnerManagementProjects(runner)...) {
 		return runnerauth.Runner{}, nativeNotFound()
 	}
