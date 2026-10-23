@@ -61,7 +61,7 @@ func TestHealthFindingStartTime(t *testing.T) {
 			wait.Item, wait.Project, wait.Active = "item", string(f.project.ID), true
 			finding, active := humanWaitFinding(now, wait)
 			if test.withoutStart {
-				finding = newHealthFinding("fixture", "instance", "work_item", "item", "", "", []string{string(f.project.ID)}, healthEvidence{})
+				finding, active = newHealthFinding("fixture", "instance", "work_item", "item", "", "", []string{string(f.project.ID)}, healthEvidence{}), true
 			}
 			if !active {
 				t.Fatal("finding is inactive")
