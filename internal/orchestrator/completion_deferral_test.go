@@ -449,6 +449,129 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 	}
 }
 
+func TestNativeCompletionHandoffSurvivesRestart(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name        string
+		humanReview bool
+		runFailed   bool
+		retryRead   bool
+	}{
+		{name: "failed worker release", humanReview: true, runFailed: true},
+		{name: "failed worker retry handoff", runFailed: true, retryRead: true},
+		{name: "no product retry handoff", retryRead: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 23, 5, 49, 19, 0, time.UTC)
+			issue := connector.NewIssue()
+			issue.ID, issue.Identifier, issue.State = "native-item", "example-org/example-project#1", "In Progress"
+			cfg := completionDeferralConfig()
+			cfg.ActiveStates = []string{"Todo", "In Progress", "Rework"}
+			cfg.AutoPromote.HumanReview = &tt.humanReview
+			cfg.AutoPromote.SourceState = "In Review"
+			cfg = normalizeConfig(cfg)
+			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			native := &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: []connector.WorkflowState{
+				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "In Review"}},
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "In Review"}},
+				{Name: "In Review"}, {Name: "Done", Terminal: true},
+			}}
+			dbPath := filepath.Join(t.TempDir(), "detent.db")
+			initialStore := openCompletionDeferralStoreWithoutCleanup(t, dbPath)
+			attemptID := startCompletionDeferralAttempt(t, initialStore, issue, now)
+			other := connector.NewIssue()
+			other.ID = "unrelated-item"
+			otherID := startCompletionDeferralAttempt(t, initialStore, other, now)
+			if err := initialStore.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: otherID, CompletedAt: now, TerminalState: store.WorkAttemptTerminalSuccess}); err != nil {
+				t.Fatal(err)
+			}
+			authority := &completionRestartScheduling{hubSchedulingSource: &hubSchedulingSource{}, restored: true}
+			authority.execution = &completionRestartExecution{owner: authority}
+			if tt.retryRead {
+				reads := 0
+				native.beforeStates = func() {
+					reads++
+					if reads == 2 {
+						native.statesErr = completionDeferralAvailabilityError()
+					}
+				}
+			} else {
+				authority.releaseError = completionDeferralAvailabilityError()
+			}
+			orch := Orchestrator{cfg: cfg, connector: native, workAttempts: initialStore, scheduling: authority, now: func() time.Time { return now }}
+			state := newState(cfg)
+			state.Running[issue.ID] = completionDeferralRunning(issue, attemptID, now)
+			state.Claimed[issue.ID] = Claimed{Issue: issue}
+			event := completionDeferralEvent(issue, attemptID, now)
+			event.Result.TurnStarted = true
+			if tt.runFailed {
+				event.Err = errors.New("native worker interrupted")
+				event.Result.FinalState = runpkg.FinalStateFailed
+			}
+			running := state.Running[issue.ID]
+			running.TurnCount, running.Tokens = 1, event.Result.Tokens
+			if !orch.completeNativeChangeRun(t.Context(), &state, event, running, event.Result.FinalState) {
+				t.Fatal("native completion was not handled")
+			}
+			record, deferred := state.deferredCompletions[issue.ID]
+			receipt, err := initialStore.WorkAttempt(t.Context(), attemptID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !deferred || !record.Persisted {
+				t.Fatalf("native handoff did not durably defer: deferred=%t persisted=%t receipt_status=%s completed_at=%s", deferred, record.Persisted, receipt.Status, receipt.CompletedAt)
+			}
+			if receipt.Status != store.WorkAttemptStatusActive || !receipt.CompletedAt.IsZero() || receipt.Phase != deferredCompletionPhase {
+				t.Fatalf("still-deferable receipt was terminalized: %+v", receipt)
+			}
+			if err := initialStore.Close(); err != nil {
+				t.Fatal(err)
+			}
+			restartedStore := openCompletionDeferralStore(t, dbPath)
+			native.beforeStates, native.statesErr = nil, nil
+			restored := &completionRestartScheduling{hubSchedulingSource: &hubSchedulingSource{}}
+			restored.execution = &completionRestartExecution{owner: restored}
+			restartAt := now.Add(time.Minute)
+			restarted := Orchestrator{cfg: cfg, connector: native, workAttempts: restartedStore, scheduling: restored, now: func() time.Time { return restartAt }}
+			recovered := newState(cfg)
+			restarted.recoverDurableWorkAttempts(t.Context(), &recovered, restartAt)
+			saved, ok := recovered.deferredCompletions[issue.ID]
+			if !ok || len(recovered.deferredCompletions) != 1 || len(recovered.Running) != 0 {
+				t.Fatal("restart lost pending completion or restored an unrelated terminal attempt")
+			}
+			if saved.Request.WorkAttemptID != attemptID || saved.Request.Generation != 7 || saved.Result.DiffStats.TreeSHA != "committed-tree" || saved.Running.CompletionSourceStart.Fingerprint.WorkspaceTree != "dispatch-tree" || !saved.CompletedAt.Equal(event.CompletedAt) || saved.Error != errorString(event.Err) {
+				t.Fatalf("restart changed completion ownership or source: %+v", saved)
+			}
+			restartAt = now.Add(2 * time.Minute)
+			for range 2 {
+				if !restarted.retryDeferredCompletions(t.Context(), &recovered, restartAt) {
+					t.Fatal("recovered handoff did not settle")
+				}
+			}
+			receipt, err = restartedStore.WorkAttempt(t.Context(), attemptID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantTerminal := store.WorkAttemptTerminalSuccess
+			if tt.runFailed {
+				wantTerminal = store.WorkAttemptTerminalFailure
+			}
+			if receipt.TerminalState != wantTerminal || !receipt.CompletedAt.Equal(event.CompletedAt) || receipt.Phase == deferredCompletionPhase || restored.restores != 1 || restored.releases != 1 || restored.prepared != 0 || len(recovered.deferredCompletions) != 0 || len(recovered.Running) != 0 || len(recovered.Completed) != 0 || recovered.TokenTotals.TotalTokens != 37 {
+				t.Fatalf("completion did not settle once with original outcome: receipt=%+v restores=%d releases=%d prepared=%d deferred=%d running=%d completed=%d tokens=%d", receipt, restored.restores, restored.releases, restored.prepared, len(recovered.deferredCompletions), len(recovered.Running), len(recovered.Completed), recovered.TokenTotals.TotalTokens)
+			}
+			otherReceipt, err := restartedStore.WorkAttempt(t.Context(), otherID)
+			if err != nil || otherReceipt.TerminalState != store.WorkAttemptTerminalSuccess || !otherReceipt.CompletedAt.Equal(now) {
+				t.Fatalf("unrelated terminal history changed: %+v, %v", otherReceipt, err)
+			}
+			after := newState(cfg)
+			restarted.recoverDurableWorkAttempts(t.Context(), &after, restartAt)
+			if len(after.deferredCompletions) != 0 {
+				t.Fatal("settled completion replayed after another restart")
+			}
+		})
+	}
+}
+
 type completionRestartScheduling struct {
 	*hubSchedulingSource
 	restored         bool

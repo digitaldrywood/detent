@@ -123,6 +123,15 @@ func (s *sqliteStore) RecordWorkAttemptHeartbeat(ctx context.Context, attrs Work
 	if err != nil {
 		return fmt.Errorf("recording work attempt heartbeat: %w", err)
 	}
+	if rows == 0 {
+		attempt, err := s.WorkAttempt(ctx, attrs.AttemptID)
+		if err != nil {
+			return err
+		}
+		if !attempt.CompletedAt.IsZero() {
+			return fmt.Errorf("%w: %d", ErrWorkAttemptTerminal, attrs.AttemptID)
+		}
+	}
 	return requireAffected(rows, "work attempt", attrs.AttemptID)
 }
 

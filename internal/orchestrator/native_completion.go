@@ -58,6 +58,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	issueID := strings.TrimSpace(event.IssueID)
 	handoff := func(err error) bool {
 		o.warnNativeCompletion(issue, err)
+		running.Issue = cloneIssue(issue)
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		return true
 	}
@@ -118,9 +119,6 @@ func (o *Orchestrator) completeNativeChangeRun(
 		terminal := terminalStateForRun(event.Err, finalState)
 		class := runnerWorkAttemptErrorClass(event.Err)
 		message := errorString(event.Err)
-		o.recordProjectAttemptOutcome(state, issueID, event.CompletedAt, terminal, event.Err, class, message)
-		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, class, message, "failed", "native worker failed; source preserved", nativeChangeMetadata(change))
-		o.recordCompletionUsage(ctx, state, event, issue)
 		issue.State = target
 		if dispatchableState(states, target) && running.Cancellation == nil && !errors.Is(event.Err, context.Canceled) {
 			if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(running.Attempt), event.CompletedAt, message, running.WorkerHost); err != nil {
@@ -132,6 +130,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 			}
 			o.releaseClaim(state, issueID)
 		}
+		o.recordProjectAttemptOutcome(state, issueID, event.CompletedAt, terminal, event.Err, class, message)
+		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, class, message, "failed", "native worker failed; source preserved", nativeChangeMetadata(change))
+		o.recordCompletionUsage(ctx, state, event, issue)
 		return true
 	}
 	report, reported := runpkg.NativeCompletionSignalFromMessage(event.Result.FinalMessage)
@@ -255,12 +256,12 @@ func (o *Orchestrator) completeNativeChangeRun(
 					return handoff(fmt.Errorf("move unfinished native item to %s: %w", retryState, err))
 				}
 			}
-			o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, terminalAttemptWithoutWorkProductReason, noWorkProductMessage, "completed", "provider completed; issue acceptance is not recorded", nativeChangeMetadata(change))
-			o.recordCompletionUsage(ctx, state, event, issue)
 			issue.State = retryState
 			if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(running.Attempt), event.CompletedAt, noWorkProductMessage, running.WorkerHost); err != nil {
 				return handoff(err)
 			}
+			o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, terminalAttemptWithoutWorkProductReason, noWorkProductMessage, "completed", "provider completed; issue acceptance is not recorded", nativeChangeMetadata(change))
+			o.recordCompletionUsage(ctx, state, event, issue)
 			return true
 		}
 		if err := o.abandonClaim(ctx, issueID); err != nil {
@@ -359,6 +360,16 @@ func (o *Orchestrator) completeNativeChangeRun(
 			return handoff(err)
 		}
 	}
+	if machineRetry {
+		issue.State = target
+		attempt := nextAttempt(max(running.Attempt, state.Retry[issueID].Attempt))
+		if unfinished && !blocked && !publicationRefused && !reviewChangesRequested && !validatorRework && !implementationRework && !auditRework && unaddressedRefusal == "" && change != nil && change.VersionError == "" && change.VersionID != "" && len(implementProgressSourceKinds(running, issue)) > 0 {
+			attempt = 1
+		}
+		if err := o.retryMachineFailure(ctx, state, issue, attempt, event.CompletedAt, comment, running.WorkerHost); err != nil {
+			return handoff(err)
+		}
+	}
 	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker completed", nativeChangeMetadata(change))
 	completed := Completed{
 		Issue:                      cloneIssue(issue),
@@ -371,16 +382,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		RuntimeIdentity:            running.RuntimeIdentity,
 	}
 	o.recordCompletionUsage(ctx, state, event, issue)
-	if machineRetry {
-		issue.State = target
-		attempt := nextAttempt(max(running.Attempt, state.Retry[issueID].Attempt))
-		if unfinished && !blocked && !publicationRefused && !reviewChangesRequested && !validatorRework && !implementationRework && !auditRework && unaddressedRefusal == "" && change != nil && change.VersionError == "" && change.VersionID != "" && len(implementProgressSourceKinds(running, issue)) > 0 {
-			attempt = 1
-		}
-		if err := o.retryMachineFailure(ctx, state, issue, attempt, event.CompletedAt, comment, running.WorkerHost); err != nil {
-			return handoff(err)
-		}
-	} else {
+	if !machineRetry {
 		delete(state.Retry, issueID)
 		o.recordCompletedActiveReviewTransition(state, issue, completed, target)
 	}

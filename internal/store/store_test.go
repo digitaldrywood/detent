@@ -1125,6 +1125,40 @@ func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
 	if history[0].DetentSessionID != 737 || history[0].ProviderSessionID != "thread-737-turn-1" || history[0].RuntimeIdentity.Model() != "qwen3-coder:30b" {
 		t.Fatalf("history runtime identity = %#v, want heartbeat identity preserved at completion", history[0])
 	}
+	for _, tt := range []struct {
+		name      string
+		attemptID int64
+		wantErr   error
+	}{
+		{name: "terminal", attemptID: attemptID, wantErr: ErrWorkAttemptTerminal},
+		{name: "absent", attemptID: attemptID + 1, wantErr: ErrNotFound},
+	} {
+		t.Run(tt.name+" heartbeat", func(t *testing.T) {
+			err := backend.RecordWorkAttemptHeartbeat(ctx, WorkAttemptHeartbeat{
+				AttemptID: tt.attemptID, HeartbeatAt: base.Add(4 * time.Minute),
+				LeaseExpiresAt: base.Add(9 * time.Minute), Phase: "completion_deferred",
+				WorkerMetadataJSON: `{"deferred_completion":{}}`,
+			})
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("RecordWorkAttemptHeartbeat() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+	preserved, err := backend.WorkAttempt(ctx, attemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeJSON, err := json.Marshal(history[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterJSON, err := json.Marshal(preserved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterJSON) != string(beforeJSON) {
+		t.Fatalf("rejected heartbeat changed terminal history: before=%s after=%s", beforeJSON, afterJSON)
+	}
 
 	staleID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
 		ProjectID:      "detent",

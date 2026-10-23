@@ -38,8 +38,9 @@ const (
 const defaultBusyTimeout = 5 * time.Second
 
 var (
-	ErrNotFound        = errors.New("store record not found")
-	ErrProjectRequired = errors.New("project_id is required")
+	ErrNotFound            = errors.New("store record not found")
+	ErrWorkAttemptTerminal = errors.New("work attempt is already terminal")
+	ErrProjectRequired     = errors.New("project_id is required")
 )
 
 type Config struct {
