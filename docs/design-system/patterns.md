@@ -126,7 +126,7 @@ One `SettingsRow` per setting: title, optional help and status, and a trailing c
 
 ### Work board and issues
 
-The board keeps its own workflow semantics. [INV-13](../invariants.md#inv-13--a-board-card-is-a-title-and-one-status-line) limits an issue card to identity, title, at most one actionable status line of 48 Unicode characters, and the existing priority controls, with model and effort visibility as the invariant specifies for each density. This system adds no card metric, banner, badge or diagnostic. The orchestrator owns lane state; the board reads it.
+The board keeps its own workflow semantics. [INV-13](../invariants.md#inv-13--a-board-card-is-a-title-and-one-status-line) limits an issue card to identity, title, at most one actionable status line of 48 Unicode characters, and the existing priority controls. The identity row holds the project, issue and PR references, origin, model and configured effort, with the card menu inside it; titles wrap without a fixed height budget. The approved Cloud split footer places status and priority above a divider, then a compact muted row containing only attempt count and relative update time with small icons. Compact may hide effort before model; Cozy and Comfy retain effort. The board browser fixture checks this layout at 240, 260, 320 and 400 CSS pixels across densities and themes. This system adds no card metric, banner, badge or diagnostic. The orchestrator owns lane state; the board reads it.
 
 The issue page composes the description, `ActivityFeed`, the shared composer and the properties column, whose pickers open one at a time. Change Request review stays on the linked change page.
 

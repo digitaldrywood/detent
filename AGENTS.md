@@ -144,26 +144,15 @@ interactions are the main source of incidents, so the set may not grow.
   do not extend ownership beyond lease expiry. Expired attempts return to claim
   eligibility without a recovery park or park-clearing sweep; source custody
   and genuine human intent remain authoritative.
-- Per-issue instant/repeated failure, progress, spend-since-progress, dispatch-loop,
-  token-ceiling and workspace retry brakes use the existing machine retry state,
-  including native failures, no-product completions, session-brake retries and
-  merge failures, refusals and unavailable-evidence waits.
-  Attempts grow with capped jittered backoff; durable restoration is available
-  only where `workflowMetrics` is configured. Successful, non-rejected implement
-  continuations (generic and native) reset to attempt 1 only for a host-observed
-  changed PR head or committed tree against the dispatch baseline. Unchanged or
-  unavailable source evidence and rejected completions retain growing retries.
-  Productive merge and session-brake continuations also reset on verified changed
-  committed/published source with custody and rejection checks intact. Resumable
-  assertions and dirty-only changes do not qualify. Successful CI wait clearance
-  preserves the attempt; unproductive waits and repeated breaches grow. Accepted
-  stage and deliverable completions advance or finish without a new commit or a
-  continuation reset; arbitrary Workpad changes do not establish source progress. Historical brake metadata never parks work or vetoes dispatch.
-  Budgets, usage checks, provider capacity and session ceilings remain existing
-  policies, not an unconditional spend bound. An unset or disabled budget imposes
-  no monetary cap; drain-mode budgets can admit already-admitted work. Provider
-  capacity limits concurrency, and configured session ceilings limit individual
-  runs, not cumulative retries.
+- Machine failures have one retry owner with growing attempts and capped
+  jittered backoff; per-issue failure, progress, spend, dispatch-loop,
+  token-ceiling and workspace retry brakes are consolidated into it. A retry
+  resumes at the first step whose receipt does not match the current source and
+  never repeats a step that already succeeded for that source; only a source
+  change sends work back to implementation, and only verified changed source
+  resets the attempt count. Spending limits belong to the existing budget
+  policy, not to retry brakes. Historical brake metadata never parks work or
+  vetoes dispatch.
 - The orchestrator is the only writer of tracker lane state; workers report
   outcomes and never write lane labels.
 - This project has no human review step. Never move a Detent issue to Human
@@ -195,7 +184,7 @@ completion contract owns tracker publication and grants workers no extra writes.
 
 Follow [INV-17](docs/invariants.md#inv-17--runners-are-stateless-like-github-actions-runners):
 a runner depends only on its install configuration (Hub URL, identity, capacity,
-workspace root). Every job starts in a fresh workspace from an exact commit or a
+workspace root, and an authenticated GitHub CLI whose login every job uses). Every job starts in a fresh workspace from an exact commit or a
 Hub-stored source bundle, and work that must survive is published to the Hub.
 Never add machine-local state that later jobs depend on, configuration discovered
 by scanning the machine, or routing by where earlier work ran.
@@ -206,8 +195,9 @@ rebuilds rollups or reprojects other rows; derived data is refreshed in the
 background one item per short transaction. New Hub columns are typed, never JSON.
 
 Follow [INV-19](docs/invariants.md#inv-19--no-flaky-tests): a test that passes
-and fails on the same commit is a High defect; fix its cause or delete it the
-day it is found, never retry, wait longer, skip or quarantine it.
+and fails on the same commit is a High defect; fix its cause or delete it,
+never retry, wait longer, skip or quarantine it. A suite's overall execution
+budget may be sized from measured runtime.
 
 Follow [INV-20](docs/invariants.md#inv-20--sql-never-reads-or-writes-inside-stored-json):
 Hub and store SQL never read or write inside stored JSON; fields SQL filters,
@@ -241,7 +231,8 @@ policy must use `gate.run: make check-landing` and `gate.landing_mode: per_landi
 the operator reviews and re-approves this policy in the Hub.
 Signed commit finalization and Change publication still occur. Clean squashes
 join one ordered staging batch and push without a per-landing gate or GitHub
-API call. After
+API call; develop accepts that integration risk, and the hourly full suite and
+scheduled reporting own any resulting failure. After
 a rebase, validate the build, short Go tests for touched packages, and lint of
 touched files; a failed command returns the item to Rework with its output.
 GitHub pull-request landing retains its configured target and checks. This

@@ -135,7 +135,7 @@ comment records the operator reset timestamp when comment updates are supported.
 The former `agent.auto_promote.rework_limit` and
 `agent.auto_promote.no_progress_limit` keys are retired and fail configuration validation.
 Remove them from existing configuration. There is no replacement tuning key.
-See [INV-3](invariants.md#inv-3--mechanism-moratorium) for the consolidation and
+See [INV-3](invariants.md#inv-3--net-zero-mechanisms) for the consolidation and
 historical-reader compatibility contract.
 
 ## Session limits by complexity level

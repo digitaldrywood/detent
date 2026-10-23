@@ -432,26 +432,15 @@ interactions are the main source of incidents, so the set may not grow.
   do not extend ownership beyond lease expiry. Expired attempts return to claim
   eligibility without a recovery park or park-clearing sweep; source custody
   and genuine human intent remain authoritative.
-- Per-issue instant/repeated failure, progress, spend-since-progress, dispatch-loop,
-  token-ceiling and workspace retry brakes use the existing machine retry state,
-  including native failures, no-product completions, session-brake retries and
-  merge failures, refusals and unavailable-evidence waits.
-  Attempts grow with capped jittered backoff; durable restoration is available
-  only where `workflowMetrics` is configured. Successful, non-rejected implement
-  continuations (generic and native) reset to attempt 1 only for a host-observed
-  changed PR head or committed tree against the dispatch baseline. Unchanged or
-  unavailable source evidence and rejected completions retain growing retries.
-  Productive merge and session-brake continuations also reset on verified changed
-  committed/published source with custody and rejection checks intact. Resumable
-  assertions and dirty-only changes do not qualify. Successful CI wait clearance
-  preserves the attempt; unproductive waits and repeated breaches grow. Accepted
-  stage and deliverable completions advance or finish without a new commit or a
-  continuation reset; arbitrary Workpad changes do not establish source progress. Historical brake metadata never parks work or vetoes dispatch.
-  Budgets, usage checks, provider capacity and session ceilings remain existing
-  policies, not an unconditional spend bound. An unset or disabled budget imposes
-  no monetary cap; drain-mode budgets can admit already-admitted work. Provider
-  capacity limits concurrency, and configured session ceilings limit individual
-  runs, not cumulative retries.
+- Machine failures have one retry owner with growing attempts and capped
+  jittered backoff; per-issue failure, progress, spend, dispatch-loop,
+  token-ceiling and workspace retry brakes are consolidated into it. A retry
+  resumes at the first step whose receipt does not match the current source and
+  never repeats a step that already succeeded for that source; only a source
+  change sends work back to implementation, and only verified changed source
+  resets the attempt count. Spending limits belong to the existing budget
+  policy, not to retry brakes. Historical brake metadata never parks work or
+  vetoes dispatch.
 - The orchestrator is the only writer of tracker lane state; workers report
   outcomes and never write lane labels.
 - Do not add configuration keys, CLI subcommands, or dashboard surfaces to work
