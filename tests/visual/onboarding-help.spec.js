@@ -4,6 +4,7 @@ const path = require("node:path");
 
 let server;
 let origin;
+let context;
 
 test.beforeEach(async () => {
   server = spawn(process.execPath, ["--import", path.resolve("web/conversation/node_modules/tsx/dist/loader.mjs"), "tests/visual/onboarding-help-server.ts"], { stdio: ["pipe", "pipe", "pipe"] });
@@ -23,6 +24,11 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
+  if (context) {
+    for (const page of context.pages()) await page.unrouteAll({ behavior: "wait" });
+    await context.close();
+    context = undefined;
+  }
   if (server?.exitCode === null) {
     await new Promise((resolve) => { server.once("exit", resolve); server.stdin.end(); });
   }
@@ -54,7 +60,7 @@ async function help(page, label, content, interaction = "click", screenshot, fie
 for (const width of [1280, 390]) {
   for (const colorScheme of ["light", "dark"]) {
   test(`onboarding help explains setup and enrollment at ${width}px in ${colorScheme}`, async ({ browser }, testInfo) => {
-    const context = await browser.newContext({ viewport: { width, height: 900 }, colorScheme, hasTouch: width === 390, reducedMotion: "reduce" });
+    context = await browser.newContext({ viewport: { width, height: 900 }, colorScheme, hasTouch: width === 390, reducedMotion: "reduce" });
     const page = await context.newPage();
     const tap = width === 390 ? "tap" : "click";
     await page.goto(new URL(`/projects/proj_alpha/setup?theme=${colorScheme}`, origin).href);
@@ -75,6 +81,9 @@ for (const width of [1280, 390]) {
     await expect(page.getByRole("button", { name: "Use example-org/unlisted", exact: true })).toBeEnabled();
     await steps.getByRole("button", { name: /Checkout/ }).click();
     await expect(page.getByRole("checkbox")).toHaveCount(0);
+    const onboardingResponse = await page.request.get(new URL("/api/v2/organizations/org_mock/projects/proj_alpha/onboarding", origin).href);
+    expect(onboardingResponse.ok()).toBeTruthy();
+    const data = await onboardingResponse.json();
     let configurationMissing = false;
     let reportConfigurationMissing = false;
     await page.route("**/projects/proj_alpha/onboarding", async (route) => {
@@ -83,10 +92,8 @@ for (const width of [1280, 390]) {
         await route.continue();
         return;
       }
-      const response = await route.fetch();
-      const data = await response.json();
       const at = new Date(Date.now() - 12_000).toISOString();
-      await route.fulfill({ response, json: { ...data, runners: data.runners.slice(0, 1).map((entry) => ({ ...entry, runner: { ...entry.runner, display_name: "Example runner", connection_health: "online" }, local_checks: { checkout: "passed", configuration: configurationMissing ? "missing" : "passed", doctor: configurationMissing ? "pending" : "running", provider: "pending", observed_at: at } })), steps: data.steps.map((step) => step.name === "Checkout" ? { ...step, state: "action_required" } : step) } });
+      await route.fulfill({ json: { ...data, runners: data.runners.slice(0, 1).map((entry) => ({ ...entry, runner: { ...entry.runner, display_name: "Example runner", connection_health: "online" }, local_checks: { checkout: "passed", configuration: configurationMissing ? "missing" : "passed", doctor: configurationMissing ? "pending" : "running", provider: "pending", observed_at: at } })), steps: data.steps.map((step) => step.name === "Checkout" ? { ...step, state: "action_required" } : step) } });
     });
     await page.getByRole("button", { name: "Refresh runner checks" }).click();
     const checks = page.getByRole("list", { name: "Runner checks" });
@@ -185,8 +192,7 @@ for (const width of [1280, 390]) {
     await expect(page.getByLabel("Resolved policy descriptor", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Approve settings", exact: true })).toHaveCount(0);
     await page.route("**/projects/proj_alpha/onboarding", async (route) => {
-      const response = await route.fetch();
-      const onboarding = await response.json();
+      const onboarding = data;
       await route.fulfill({ json: { ...onboarding, ready: true, progress: { ...onboarding.progress, artifacts: "local" }, steps: onboarding.steps.map(step => ({ ...step, state: "ready" })) } });
     });
     await page.reload();
@@ -194,7 +200,6 @@ for (const width of [1280, 390]) {
     await page.screenshot({ path: testInfo.outputPath(`ready-${width}.png`) });
     await page.getByRole("button", { name: "Import issues", exact: true }).click();
     await expect(page.getByRole("region", { name: "Import GitHub issues", exact: true })).toBeVisible();
-    await context.close();
   });
 }
 }
