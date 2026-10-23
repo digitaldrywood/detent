@@ -292,11 +292,7 @@ func (s *Service) prepareProjectConfiguration(ctx context.Context, scope nativeS
 	}
 	if observation.Diagnostics != nil {
 		observation.Diagnostics.Redact()
-		observation.Diagnostics.Records = slices.DeleteFunc(observation.Diagnostics.Records, func(record runnerauth.DiagnosticAttempt) bool {
-			return !record.OperationPending && !record.LeaseExpiresAt.After(now) && !slices.ContainsFunc(record.Membership, func(membership string) bool {
-				return membership != "durable_active"
-			})
-		})
+		pruneExpiredProjectDiagnostics(observation.Diagnostics, now)
 	}
 	observation.ObservedAt = now
 	observation.RunnerID, observation.RunnerRevision = "", 0
@@ -316,6 +312,16 @@ func (s *Service) prepareProjectConfiguration(ctx context.Context, scope nativeS
 	return prepareLegacyProjectConfiguration(ctx, s.database.reader, scope, prepared)
 }
 
+func pruneExpiredProjectDiagnostics(diagnostics *runnerauth.ProjectDiagnostics, now time.Time) bool {
+	previous := len(diagnostics.Records)
+	diagnostics.Records = slices.DeleteFunc(diagnostics.Records, func(record runnerauth.DiagnosticAttempt) bool {
+		return !record.OperationPending && !record.LeaseExpiresAt.After(now) && !slices.ContainsFunc(record.Membership, func(membership string) bool {
+			return membership != "durable_active"
+		})
+	})
+	return len(diagnostics.Records) != previous
+}
+
 func encodeProjectConfiguration(view runnerauth.ProjectConfiguration) (preparedProjectConfiguration, error) {
 	digest, err := projectConfigurationDigest(view)
 	if err != nil {
@@ -330,6 +336,13 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 	path := "$." + jsonPathKey(string(scope.project))
 	if observation != nil {
 		if observation.Diagnostics != nil {
+			if pruneExpiredProjectDiagnostics(observation.Diagnostics, now) {
+				encoded, err := encodeProjectConfiguration(*observation)
+				if err != nil {
+					return runnerauth.ProjectConfigurationRequest{}, err
+				}
+				prepared.digest, prepared.raw = encoded.digest, encoded.raw
+			}
 			for _, admission := range observation.Diagnostics.Admissions {
 				if admission.Result != "skipped" || admission.WorkItemRevision <= 0 || admission.ObservedAt.After(now) {
 					continue

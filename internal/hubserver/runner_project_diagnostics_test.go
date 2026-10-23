@@ -164,6 +164,48 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	if err := json.Unmarshal([]byte(storedJSON), &stored); err != nil || len(stored.Diagnostics.Records) != 1 {
 		t.Fatalf("stored diagnostics retained historical records: %s, %v", storedJSON, err)
 	}
+	t.Run("expires after preparation", func(t *testing.T) {
+		originalClock := f.service.database.now
+		defer func() { f.service.database.now = originalClock }()
+		received := now
+		f.service.database.now = func() time.Time { return received }
+		view.Diagnostics.Records[1].LeaseExpiresAt = now.Add(time.Second)
+		defer func() { view.Diagnostics.Records[1].LeaseExpiresAt = now.Add(-time.Hour) }()
+		advanced := false
+		timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+			if strings.HasPrefix(query, "SELECT json_extract(routing_settings_json, '$.project_configuration_request')") {
+				received = now.Add(3 * time.Second)
+				advanced = true
+			}
+		}}
+		request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "rolling.current", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view})
+		response := httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
+		requireNativeStatus(t, response, http.StatusOK)
+		if !advanced {
+			t.Fatal("clock did not advance after preparation")
+		}
+		var raw, digest string
+		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT json_extract(r.project_configuration_json, ?), o.snapshot_digest
+FROM runner_identities r JOIN runner_project_observations o ON o.runner_id = r.id AND o.organization_id = r.organization_id
+WHERE r.id = ? AND o.project_id = ?`, "$."+jsonPathKey(view.ProjectID), r.binding.RunnerID, view.ProjectID).Scan(&raw, &digest); err != nil {
+			t.Fatal(err)
+		}
+		var snapshot runnerauth.ProjectConfiguration
+		if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.Diagnostics == nil || len(snapshot.Diagnostics.Records) != 1 || snapshot.Diagnostics.Records[0].Key != "local:5" {
+			t.Fatalf("stored diagnostics retained expired record: %s", raw)
+		}
+		wantDigest, err := projectConfigurationDigest(snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if digest != wantDigest {
+			t.Fatalf("stored digest = %s, want pruned snapshot digest %s", digest, wantDigest)
+		}
+	})
 	for _, runtimeFresh := range []bool{true, true, false} {
 		view.ObservedAt = now.Add(-2 * runnerauth.HeartbeatTimeout)
 		view.Diagnostics.ObservedAt = view.Diagnostics.ObservedAt.Add(time.Second)
