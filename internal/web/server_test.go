@@ -2114,13 +2114,13 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 	alertsBoard := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/", http.StatusOK, map[string]string{
 		web.DemoScenarioHeader: "fleet-kanban-blocked-alerts",
 	})
-	for _, want := range []string{`id="board-exceptions"`, "Needs you", "after_create hook exited 2"} {
+	for _, want := range []string{`id="board-lanes"`, "after_create hook exited 2"} {
 		if !strings.Contains(alertsBoard, want) {
 			t.Fatalf("blocked-alerts board scenario missing %q:\n%s", want, alertsBoard)
 		}
 	}
-	if strings.Contains(alertsBoard, "Dependency waiting") {
-		t.Fatalf("blocked-alerts board scenario should not elevate dependency waits:\n%s", alertsBoard)
+	if strings.Contains(alertsBoard, `id="board-exceptions"`) || strings.Contains(alertsBoard, "Dependency waiting") {
+		t.Fatalf("blocked-alerts board scenario should not elevate machine failures or dependency waits:\n%s", alertsBoard)
 	}
 
 	state := requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/state", http.StatusOK, map[string]string{
@@ -7141,8 +7141,11 @@ func TestStateAPIIncludesProjectFailureBreakerEvidence(t *testing.T) {
 		t.Fatalf("failure breaker evidence = %#v", breaker)
 	}
 	items := breaker["items"].([]any)
-	if len(items) != 1 || items[0].(map[string]any)["title"] != "Author beat visuals" || items[0].(map[string]any)["parked"] != true {
+	if len(items) != 1 || items[0].(map[string]any)["title"] != "Author beat visuals" || items[0].(map[string]any)["attempt_count"] != float64(5) || items[0].(map[string]any)["current_state"] != "Blocked" {
 		t.Fatalf("failure breaker items = %#v", items)
+	}
+	if _, ok := items[0].(map[string]any)["parked"]; ok {
+		t.Fatalf("failure breaker item includes retired parked field: %#v", items[0])
 	}
 	health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
 	healthBreakers := health["failure_breakers"].([]any)

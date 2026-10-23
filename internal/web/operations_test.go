@@ -226,31 +226,34 @@ func TestOperationsHumanDecisionAggregation(t *testing.T) {
 			},
 		},
 		{
-			name: "blocked park with no automatic exit",
+			name: "legacy recovery hold is not a human decision",
 			snapshot: telemetry.Snapshot{
 				BoardIssues: []telemetry.Issue{{ID: "parked", ProjectID: "detent", Identifier: "example-org/example-project#2395", Title: "Repair the parked delivery", State: "Blocked", URL: "https://github.com/example-org/example-project/issues/2395"}},
 				Blocked:     []telemetry.Blocked{{Issue: telemetry.Issue{ID: "parked", ProjectID: "detent", Identifier: "example-org/example-project#2395", Title: "Repair the parked delivery", State: "Blocked", URL: "https://github.com/example-org/example-project/issues/2395"}, Error: "credentials are unavailable", RecoveryAction: "hold", RecoveryReason: "human_blocker", RecoveryRemedy: "restore the credentials"}},
 			},
-			wantKind:     "blocked_park",
-			wantQuestion: "credentials are unavailable — restore the credentials",
 		},
 		{
-			name: "human blocker without explicit recovery action",
+			name: "legacy ownership blocker is not a human decision",
 			snapshot: telemetry.Snapshot{
 				BoardIssues: []telemetry.Issue{{ID: "unassigned", ProjectID: "detent", Identifier: "example-org/example-project#2396", Title: "Assign the parked issue", State: "Blocked", URL: "https://github.com/example-org/example-project/issues/2396"}},
 				Blocked:     []telemetry.Blocked{{Issue: telemetry.Issue{ID: "unassigned", ProjectID: "detent", Identifier: "example-org/example-project#2396", Title: "Assign the parked issue", State: "Blocked", URL: "https://github.com/example-org/example-project/issues/2396"}, Source: telemetry.BlockedSourceOwnership, Error: "issue needs an assignee under ownership_mode: assignee", RecoveryReason: "human_blocker"}},
 			},
-			wantKind:     "blocked_park",
-			wantQuestion: "issue needs an assignee under ownership_mode: assignee",
 		},
 		{
-			name: "explicit human attention overrides automatic source",
+			name: "legacy attention flag is not a human decision",
 			snapshot: telemetry.Snapshot{
 				BoardIssues: []telemetry.Issue{{ID: "credentials", ProjectID: "detent", Identifier: "example-org/example-project#2397", Title: "Restore delivery credentials", State: "Blocked", URL: "https://github.com/example-org/example-project/issues/2397"}},
 				Blocked:     []telemetry.Blocked{{Issue: telemetry.Issue{ID: "credentials", ProjectID: "detent", Identifier: "example-org/example-project#2397", Title: "Restore delivery credentials", State: "Blocked", URL: "https://github.com/example-org/example-project/issues/2397"}, Source: telemetry.BlockedSourceProjectStatus, Error: "credentials require operator repair", NeedsHumanAttention: true}},
 			},
-			wantKind:     "blocked_park",
-			wantQuestion: "credentials require operator repair",
+		},
+		{
+			name: "operator stop remains a human decision",
+			snapshot: telemetry.Snapshot{
+				BoardIssues: []telemetry.Issue{{ID: "stopped", ProjectID: "example-project", Identifier: "example-org/example-project#2398", Title: "Review stopped work", State: "Blocked"}},
+				Blocked:     []telemetry.Blocked{{Issue: telemetry.Issue{ID: "stopped", ProjectID: "example-project", Identifier: "example-org/example-project#2398", Title: "Review stopped work", State: "Blocked"}, Source: telemetry.BlockedSourceOperatorStop, Error: "Operator stopped this issue."}},
+			},
+			wantKind:     "operator_stop",
+			wantQuestion: "Operator stopped this issue.",
 		},
 		{
 			name:             "pull request review gate",
