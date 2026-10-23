@@ -19,10 +19,15 @@ const nativeBoardReplayLimit = 2048
 
 func (s *Service) maintainNativeBoard(ctx context.Context) {
 	deadline := time.Now().Add(analyticsBackfillBudget)
+	var failed []string
 	for time.Now().Before(deadline) && ctx.Err() == nil {
-		more, err := s.database.drainNativeBoardDirty(ctx, s.config.now())
+		more, id, err := s.database.drainNativeBoardDirtyExcept(ctx, s.config.now(), failed)
 		if err != nil && !errors.Is(err, context.Canceled) {
-			s.config.Logger.ErrorContext(ctx, "refresh native board card", "error", err)
+			s.config.Logger.ErrorContext(ctx, "refresh native board card", "work_item_id", id, "error", err)
+		}
+		if err != nil && id != "" && ctx.Err() == nil {
+			failed = append(failed, id)
+			continue
 		}
 		if err != nil || !more {
 			return
@@ -31,29 +36,39 @@ func (s *Service) maintainNativeBoard(ctx context.Context) {
 }
 
 func (d *database) drainNativeBoardDirty(ctx context.Context, now time.Time) (bool, error) {
+	more, _, err := d.drainNativeBoardDirtyExcept(ctx, now, nil)
+	return more, err
+}
+
+func (d *database) drainNativeBoardDirtyExcept(ctx context.Context, now time.Time, skip []string) (bool, string, error) {
+	skipped, err := json.Marshal(append([]string{}, skip...))
+	if err != nil {
+		return false, "", err
+	}
 	var id string
-	err := d.reader.QueryRowContext(ctx, `SELECT work_item_id FROM (SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id LIMIT 1)
+	err = d.reader.QueryRowContext(ctx, `SELECT work_item_id FROM (SELECT work_item_id FROM native_board_dirty
+WHERE work_item_id NOT IN (SELECT value FROM json_each(?1)) ORDER BY work_item_id LIMIT 1)
 UNION ALL SELECT work_item_id FROM (SELECT work_item_id FROM native_board_items
-WHERE expires_at<>'' AND expires_at<=? ORDER BY expires_at,work_item_id LIMIT 1)
-LIMIT 1`, now.UTC().Format("2006-01-02T15:04:05.000000000Z")).Scan(&id)
+WHERE expires_at<>'' AND expires_at<=?2 AND work_item_id NOT IN (SELECT value FROM json_each(?1)) ORDER BY expires_at,work_item_id LIMIT 1)
+LIMIT 1`, string(skipped), now.UTC().Format("2006-01-02T15:04:05.000000000Z")).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		return false, "", nil
 	}
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, err
+		return false, id, err
 	}
 	defer tx.Rollback()
 	if err := refreshNativeBoardCard(ctx, tx, id, now, map[string]changeSummaryPolicy{}); err != nil {
-		return false, err
+		return false, id, err
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM native_board_dirty WHERE work_item_id=?", id); err != nil {
-		return false, err
+		return false, id, err
 	}
-	return true, tx.Commit()
+	return true, id, tx.Commit()
 }
 
 func (d *database) commit(_ context.Context, tx *sql.Tx) error {
