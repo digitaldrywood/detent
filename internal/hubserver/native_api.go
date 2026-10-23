@@ -166,7 +166,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 		return s.refusedAPIError(c, http.StatusConflict, conflict.Code, conflict.Message, conflict)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, nativeNotFound(), "not_found_cause", err.Error())
 	}
 	if errors.Is(err, tracker.ErrInvalidClaimRequest) || errors.Is(err, tracker.ErrInvalidLeaseRequest) || errors.Is(err, tracker.ErrInvalidWorkEvent) || errors.Is(err, tracker.ErrInvalidCandidateQuery) {
 		return s.trackerAPIError(c, err)
