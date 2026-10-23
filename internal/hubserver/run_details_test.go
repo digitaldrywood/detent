@@ -30,12 +30,13 @@ type memoryRunDetails struct {
 
 func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.fail {
+		m.mu.Unlock()
 		return attachment.ArchiveReference{}, errors.New("upload unavailable")
 	}
 	ref, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(data))
 	if err != nil {
+		m.mu.Unlock()
 		return ref, err
 	}
 	if m.data == nil {
@@ -45,8 +46,10 @@ func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, d
 		m.uploads++
 	}
 	m.data[ref.Key] = bytes.Clone(data)
-	if m.afterStore != nil {
-		m.afterStore()
+	afterStore := m.afterStore
+	m.mu.Unlock()
+	if afterStore != nil {
+		afterStore()
 	}
 	return ref, nil
 }
