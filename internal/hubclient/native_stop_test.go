@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -176,7 +177,6 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	published := h.publish(t, current.WorkItemID, change.ID, nativeChangeFixtureHead("b"))
 	statusDiscovery := strings.HasSuffix(mode, "with pending status")
 	var blockDiscovery atomic.Bool
 	discoveryStarted := make(chan struct{}, 1)
@@ -224,6 +224,26 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
 	nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
 	nativeChangeGit(t, source, "push", "-u", "origin", "main")
+	baseOutput, err := exec.CommandContext(t.Context(), "git", "-C", source, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := strings.TrimSpace(string(baseOutput))
+	if err := os.WriteFile(filepath.Join(source, "retained.txt"), []byte("retained source\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nativeChangeGit(t, source, "add", "retained.txt")
+	nativeChangeGit(t, source, "commit", "-m", "retain change source")
+	headOutput, err := exec.CommandContext(t.Context(), "git", "-C", source, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := strings.TrimSpace(string(headOutput))
+	captured, err := workspace.CaptureChangeSource(t.Context(), source, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := h.publishCaptured(t, current.WorkItemID, change.ID, head, &captured, "", base)
 	local, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
 	if err != nil {
 		t.Fatal(err)
