@@ -181,7 +181,8 @@ function ShellBody(): React.ReactElement {
     () => readLastProject() ?? projects[0]?.id ?? "",
   );
   const savedProjectId = savedView === undefined ? undefined : savedView.project_id ?? "";
-  const projectId = params.project ?? params.projectId ?? context.resolvedProjectId ?? savedProjectId ?? (activePath === "/work" ? "" : selectedProjectId);
+  const requestedProject = params.project ?? params.projectId ?? context.resolvedProjectId ?? savedProjectId ?? (activePath === "/work" ? "" : selectedProjectId);
+  const projectId = client.account?.projects.find((project) => project.id === requestedProject || project.slug === requestedProject)?.id ?? requestedProject;
   React.useEffect(() => {
     setProjectIdState(projectId);
     writeLastProject(projectId);
