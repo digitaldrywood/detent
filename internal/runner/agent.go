@@ -1598,7 +1598,7 @@ func buildRunPrompt(workflow config.Workflow, req *RunRequest, mode string, prom
 // continues from and records it on the workspace issue.
 func (r *Runner) recoverRunChangeSource(ctx context.Context, req RunRequest, runWorkspace workspace.Backend, workspaceIssue *workspace.Issue, nativeLanding, sourceRecovery bool) error {
 	source, ok := req.Execution.(ChangeSourceExecution)
-	if !ok || !workspaceIssue.NativeRework && !nativeLanding && !sourceRecovery && req.Execution.Recovery().SourceVersionID == "" {
+	if !ok || !workspaceIssue.NativeRework && !nativeLanding && !sourceRecovery && req.Execution.Recovery().SourceVersionID == "" && req.Execution.Recovery().Change == nil {
 		return nil
 	}
 	if local, ok := runWorkspace.(interface {
@@ -1714,6 +1714,12 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	if req.Execution != nil && !nativeLanding && !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), workspaceIssue) {
 		workspaceIssue.Checkpoint = nativeRestorableCheckpoint(req.Execution.Recovery(), workspaceIssue.Source)
+		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil && cleanLocalCheckpoint(previous.Checkpoint) {
+			workspaceIssue.FreshCheckout = true
+			if workspaceIssue.Source == nil {
+				workspaceIssue.BaseRef = previous.Checkpoint.HeadSHA
+			}
+		}
 	}
 	var landingTarget NativeLandingTarget
 	if nativeLanding {

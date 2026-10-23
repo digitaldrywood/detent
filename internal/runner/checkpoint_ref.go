@@ -247,3 +247,7 @@ func recordCheckpointRef(ctx context.Context, c *checkpointRefs, execution Execu
 	}
 	return err
 }
+
+func cleanLocalCheckpoint(checkpoint *tracker.NativeCheckpoint) bool {
+	return checkpoint != nil && checkpoint.Storage == "local_only" && checkpoint.WorktreeState == "clean" && checkpoint.HeadSHA != "" && checkpoint.ExternalEffect == "none" && checkpoint.EffectState == "none"
+}

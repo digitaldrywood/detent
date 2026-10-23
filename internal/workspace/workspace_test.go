@@ -636,6 +636,7 @@ func TestLocalGitCreateBasesNewBranchOnFetchedRemoteDefault(t *testing.T) {
 				repository := "https://example.com/example-org/example-project"
 				runGit(t, source, "config", "remote.origin.url", repository)
 				runGit(t, source, "config", "url."+remote+".insteadOf", repository)
+				issue.FreshCheckout, issue.BaseRef = true, versionBase
 				issue.Source = &ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{
 					BaseSHA: versionBase, HeadSHA: oldHead, Repository: repository,
 				}}}
@@ -2552,8 +2553,10 @@ func TestLocalGitCreateReleasesStaleBranchHolders(t *testing.T) {
 		rebasing  bool
 		vanished  bool
 		wantFiles bool
+		recorded  bool
 	}{
 		{name: "active attached holder", wantFiles: true},
+		{name: "fresh recorded head", fresh: true, recorded: true, wantFiles: true},
 		{name: "attached holder before a fresh checkout", fresh: true, wantFiles: true},
 		{name: "holder stopped mid-rebase", fresh: true, rebasing: true, wantFiles: true},
 		{name: "holder directory deleted", fresh: true, vanished: true},
@@ -2586,7 +2589,12 @@ func TestLocalGitCreateReleasesStaleBranchHolders(t *testing.T) {
 			}
 
 			head := strings.TrimSpace(runGit(t, source, "rev-parse", branch))
-			info, err := backend.Create(t.Context(), Issue{Identifier: "DD-STALE", BranchName: branch, FreshCheckout: tt.fresh})
+			issue := Issue{Identifier: "DD-STALE", BranchName: branch, FreshCheckout: tt.fresh}
+			if tt.recorded {
+				issue.BaseRef = head
+				runGit(t, source, "commit", "--allow-empty", "-m", "advance default")
+			}
+			info, err := backend.Create(t.Context(), issue)
 			if !tt.fresh {
 				if err == nil {
 					t.Fatal("Create() succeeded with an attached branch holder")
@@ -2607,6 +2615,11 @@ func TestLocalGitCreateReleasesStaleBranchHolders(t *testing.T) {
 			}
 			if got := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); got != branch {
 				t.Fatalf("new worktree branch = %q, want %q", got, branch)
+			}
+			if tt.recorded {
+				if got := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got != head {
+					t.Fatalf("fresh head = %s, want recorded %s", got, head)
+				}
 			}
 			if !tt.wantFiles {
 				return
