@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -530,8 +531,18 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 		t.Fatalf("receipt lacks the terminal answer: %s", before[operatortool.WorkAttemptReceipt])
 	}
 	for range 2 {
-		if err := a.service.convertLegacyStorage(t.Context(), a.service.config.now()); err != nil {
-			t.Fatal(err)
+		for {
+			err := a.service.convertLegacyStorage(t.Context(), a.service.config.now())
+			if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatal(err)
+			}
+			progress, progressErr := readStorageConversionProgress(t.Context(), a.service.database.reader, a.scope)
+			if progressErr != nil {
+				t.Fatal(progressErr)
+			}
+			if err == nil && len(progress) > 0 && !slices.ContainsFunc(progress, func(p storageConversionProgress) bool { return !p.Complete }) {
+				break
+			}
 		}
 		if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
 			t.Fatal(err)
