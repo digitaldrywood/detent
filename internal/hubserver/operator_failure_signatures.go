@@ -225,7 +225,7 @@ FROM failures a WHERE 1=1`
 		}
 		data := tracker.NativeRunData{TerminalFailure: stored.TerminalFailure, Finalization: stored.Finalization}
 		if stored.Detail != nil {
-			if err := decodeRunDetail(ctx, raw, &data); err != nil {
+			if err := decodeRunDetail(ctx, q, raw, &data); err != nil {
 				return nil, false, err
 			}
 		} else if stored.Runtime != nil {

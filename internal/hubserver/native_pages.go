@@ -566,7 +566,7 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence >
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
 		data = string(resolved)
-		if err := decodeRunHistory(ctx, data, &event.Data); err != nil {
+		if err := decodeRunHistory(ctx, tx, data, &event.Data); err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
 		if event.Data.Run != nil {
