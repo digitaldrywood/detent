@@ -153,7 +153,7 @@ func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker
 				err = enqueueSlackOpened(ctx, tx, organization, id, now)
 			}
 		} else {
-			_, err = tx.ExecContext(ctx, `UPDATE health_findings SET last_seen_at=?,resolved_at=NULL,projects_json=?,summary=?,next_action=?,evidence_json=? WHERE id=? AND organization_id=?`, formatHubTime(now), string(projects), f.Summary, f.NextAction, string(evidence), id, organization)
+			_, err = tx.ExecContext(ctx, `UPDATE health_findings SET last_seen_at=?,resolved_at=NULL,projects_json=?,severity=?,summary=?,next_action=?,evidence_json=? WHERE id=? AND organization_id=?`, formatHubTime(now), string(projects), f.Severity, f.Summary, f.NextAction, string(evidence), id, organization)
 		}
 		if err != nil {
 			return nil, err

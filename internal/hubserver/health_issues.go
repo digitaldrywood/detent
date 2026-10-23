@@ -57,6 +57,25 @@ func healthIssueRequest(f healthFinding) (tracker.CreateIssue, error) {
 	return request, nil
 }
 
+func healthIssueDigest(f healthFinding) (string, error) {
+	signatures := slices.Clone(f.Evidence.Signatures)
+	slices.Sort(signatures)
+	signatures = slices.Compact(signatures)
+	material := struct {
+		Fingerprint string
+		Class       string
+		Subject     healthSubject
+		Signatures  []string `json:",omitempty"`
+		Severity    string
+	}{f.Fingerprint, f.Class, f.Subject, signatures, f.Severity}
+	raw, err := json.Marshal(material)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:]), nil
+}
+
 func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, now time.Time) ([]tracker.NativeIssue, error) {
 	type occurrence struct {
 		finding          healthFinding
@@ -68,7 +87,7 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 		reportedResolved sql.NullString
 		fingerprint      string
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT f.id,f.fingerprint,f.signal,f.class,f.subject_json,f.opened_at,f.last_seen_at,f.resolved_at,f.summary,f.next_action,f.evidence_json,
+	rows, err := tx.QueryContext(ctx, `SELECT f.id,f.fingerprint,f.signal,f.class,f.subject_json,f.opened_at,f.last_seen_at,f.resolved_at,f.severity,f.summary,f.next_action,f.evidence_json,
  p.id,COALESCE(l.work_item_id,''),COALESCE(l.reported_evidence_digest,''),l.reported_resolved_at,COALESCE(l.intake_fingerprint,'')
  FROM health_findings f JOIN projects p ON p.organization_id=f.organization_id AND p.deleted_at IS NULL AND p.profile='native'
  AND (EXISTS(SELECT 1 FROM json_each(f.projects_json) WHERE value=p.id) OR EXISTS(SELECT 1 FROM health_finding_issues WHERE finding_id=f.id AND project_id=p.id))
@@ -85,7 +104,7 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 		var o occurrence
 		var subject, opened, seen, rawEvidence string
 		f := &o.finding
-		if err := rows.Scan(&f.ID, &f.Fingerprint, &f.Signal, &f.Class, &subject, &opened, &seen, &o.resolved, &f.Summary, &f.NextAction, &rawEvidence, &o.project, &o.item, &o.reportedDigest, &o.reportedResolved, &o.fingerprint); err != nil {
+		if err := rows.Scan(&f.ID, &f.Fingerprint, &f.Signal, &f.Class, &subject, &opened, &seen, &o.resolved, &f.Severity, &f.Summary, &f.NextAction, &rawEvidence, &o.project, &o.item, &o.reportedDigest, &o.reportedResolved, &o.fingerprint); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(subject), &f.Subject); err != nil {
@@ -95,12 +114,10 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 			return nil, err
 		}
 		f.Evidence = scopeHealthEvidence(f.Evidence, o.project)
-		evidence, err := json.Marshal(f.Evidence)
+		o.digest, err = healthIssueDigest(*f)
 		if err != nil {
 			return nil, err
 		}
-		digest := sha256.Sum256(evidence)
-		o.digest = hex.EncodeToString(digest[:])
 		if f.OpenedAt, err = parseTimeValue(opened); err != nil {
 			return nil, err
 		}
@@ -145,12 +162,10 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 				next = occurrence{project: o.project}
 			}
 			next.finding, next.fingerprint = finding, finding.Fingerprint
-			evidence, err := json.Marshal(finding.Evidence)
+			next.digest, err = healthIssueDigest(finding)
 			if err != nil {
 				return nil, err
 			}
-			digest := sha256.Sum256(evidence)
-			next.digest = hex.EncodeToString(digest[:])
 			pending = append(pending, next)
 		}
 	}

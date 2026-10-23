@@ -101,15 +101,15 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 			}{
 				{name: "files", active: true},
 				{name: "unchanged observation", offset: time.Minute, active: true},
-				{name: "new evidence comments", offset: 2 * time.Minute, active: true, changed: true, comments: 1},
-				{name: "resolves", offset: 3 * time.Minute, comments: 2},
-				{name: "resolution does not repeat", offset: 4 * time.Minute, comments: 2},
-				{name: "reopens finding and comments", offset: 5 * time.Minute, active: true, comments: 3},
-				{name: "resolves again", offset: 6 * time.Minute, comments: 4},
-				{name: "later finding reuses issue", offset: 67 * time.Minute, active: true, comments: 5},
-				{name: "terminal issue stays handled", offset: 68 * time.Minute, active: true, changed: true, terminal: true, comments: 5},
-				{name: "terminal resolution stays handled", offset: 69 * time.Minute, comments: 5},
-				{name: "manual terminal suppresses later episode", offset: 130 * time.Minute, active: true, comments: 5},
+				{name: "rolling evidence does not comment", offset: 2 * time.Minute, active: true, changed: true},
+				{name: "resolves", offset: 3 * time.Minute, comments: 1},
+				{name: "resolution does not repeat", offset: 4 * time.Minute, comments: 1},
+				{name: "reopens finding and comments", offset: 5 * time.Minute, active: true, comments: 2},
+				{name: "resolves again", offset: 6 * time.Minute, comments: 3},
+				{name: "later finding reuses issue", offset: 67 * time.Minute, active: true, comments: 4},
+				{name: "terminal issue stays handled", offset: 68 * time.Minute, active: true, changed: true, terminal: true, comments: 4},
+				{name: "terminal resolution stays handled", offset: 69 * time.Minute, comments: 4},
+				{name: "manual terminal suppresses later episode", offset: 130 * time.Minute, active: true, comments: 4},
 			} {
 				t.Run(step.name, func(t *testing.T) {
 					if step.terminal && owner.WorkItemID != "" {
