@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
@@ -21,6 +24,27 @@ func TestACPHelper(t *testing.T) {
 	mode := os.Getenv("DETENT_TEST_ACP")
 	if mode == "" {
 		return
+	}
+	if mode == "hold-pipes" {
+		conn, err := net.Dial("tcp", os.Getenv("DETENT_TEST_ACP_CONTROL"))
+		if err != nil {
+			os.Exit(4)
+		}
+		_, _ = io.Copy(io.Discard, conn)
+		_ = conn.Close()
+		os.Exit(0)
+	}
+	if mode == "detached" {
+		child := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestACPHelper$")
+		child.Env = append(os.Environ(), "DETENT_TEST_ACP=hold-pipes")
+		child.Stdout, child.Stderr = os.Stdout, os.Stderr
+		procgroup.Configure(context.Background(), child)
+		if err := child.Start(); err != nil {
+			os.Exit(5)
+		}
+		if err := child.Process.Release(); err != nil {
+			os.Exit(6)
+		}
 	}
 	scanner := bufio.NewScanner(os.Stdin)
 	send := func(v any) {
@@ -50,8 +74,13 @@ func TestACPHelper(t *testing.T) {
 			}
 			result = map[string]any{"configOptions": []map[string]string{{"id": p.ConfigID, "currentValue": p.Value}}}
 		case "session/prompt":
+			if mode == "diagnostics" {
+				fmt.Fprintln(os.Stderr, "customer-secret-example")
+				send(map[string]any{"jsonrpc": "2.0", "id": r.ID, "error": map[string]any{"code": -32603, "message": "customer-secret-example"}})
+				continue
+			}
 			if mode == "region" {
-				send(map[string]any{"jsonrpc": "2.0", "id": r.ID, "error": map[string]any{"code": -32603, "message": "Upstream request failed: This Go model requires Global regions. Select Global in your workspace's Privacy settings to use it."}})
+				send(map[string]any{"jsonrpc": "2.0", "id": r.ID, "error": map[string]any{"code": -32603, "message": "customer-secret-example: This Go model requires Global regions. Select Global in your workspace's Privacy settings to use it."}})
 				continue
 			}
 			if mode == "eof" {
@@ -73,14 +102,34 @@ func TestACPHelper(t *testing.T) {
 }
 
 func TestACPTurn(t *testing.T) {
-	for _, mode := range []string{"success", "mismatch", "eof", "malformed", "callback", "cancel", "region"} {
+	for _, mode := range []string{"success", "detached", "mismatch", "eof", "malformed", "callback", "cancel", "region", "diagnostics"} {
 		t.Run(mode, func(t *testing.T) {
+			var control string
+			if mode == "detached" {
+				listener, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer listener.Close()
+				control = listener.Addr().String()
+				connection := make(chan net.Conn, 1)
+				go func() {
+					conn, _ := listener.Accept()
+					connection <- conn
+				}()
+				defer func() {
+					_ = listener.Close()
+					if conn := <-connection; conn != nil {
+						_ = conn.Close()
+					}
+				}()
+			}
 			b, err := NewAgentBackend(Options{CommandFactory: func(ctx context.Context, args []string) *exec.Cmd {
 				if len(args) != 1 || args[0] != "acp" {
 					t.Fatalf("args=%v", args)
 				}
 				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestACPHelper$")
-				cmd.Env = append(os.Environ(), "DETENT_TEST_ACP="+mode)
+				cmd.Env = append(os.Environ(), "DETENT_TEST_ACP="+mode, "DETENT_TEST_ACP_CONTROL="+control)
 				return cmd
 			}})
 			if err != nil {
@@ -90,6 +139,7 @@ func TestACPTurn(t *testing.T) {
 			var tokens int64
 			var usage runner.AgentTokenUsage
 			var completed string
+			var diagnostic string
 			callbackErr := errors.New("callback rejected")
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
@@ -109,15 +159,19 @@ func TestACPTurn(t *testing.T) {
 				}
 				if u.Type == runner.AgentUpdateTurnCompleted {
 					completed = u.Status
+					diagnostic = u.BackendErrorMessage
 				}
 				return nil
 			})
-			if mode == "success" {
+			if mode == "success" || mode == "detached" {
 				if err != nil || result.SessionID != "session-example" || text.String() != "fixture complete" || tokens != 40 || usage.InputTokens != 33 || usage.CachedInputTokens != 10 || usage.OutputTokens != 7 || usage.ReasoningOutputTokens != 2 || completed != runner.FinalStateCompleted {
 					t.Fatalf("result=%+v err=%v text=%q tokens=%d completed=%q", result, err, text.String(), tokens, completed)
 				}
 			} else if err == nil {
 				t.Fatal("failure accepted")
+			}
+			if strings.Contains(diagnostic, "customer-secret-example") || err != nil && strings.Contains(err.Error(), "customer-secret-example") {
+				t.Fatal("backend diagnostics exposed provider content")
 			}
 			if mode == "region" {
 				details, ok := b.ClassifyCapacityError(err, nil, time.Time{})
@@ -130,6 +184,66 @@ func TestACPTurn(t *testing.T) {
 			}
 			if mode == "callback" && !errors.Is(err, callbackErr) {
 				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+type deadlineContext struct{ done <-chan struct{} }
+
+func (c deadlineContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c deadlineContext) Done() <-chan struct{}       { return c.done }
+func (c deadlineContext) Value(any) any               { return nil }
+
+func (c deadlineContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+type rpcWriter func([]byte) (int, error)
+
+func (f rpcWriter) Write(p []byte) (int, error) { return f(p) }
+
+func TestACPDeadlineAttribution(t *testing.T) {
+	for _, stage := range []string{"initialize", "session/new", "session/set_config_option", "session/prompt"} {
+		t.Run(stage, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			records := make(chan scanResult, 1)
+			writer := rpcWriter(func(data []byte) (int, error) {
+				var request rpcRecord
+				if err := json.Unmarshal(data, &request); err != nil {
+					return 0, err
+				}
+				if request.Method == stage {
+					cancel()
+					return len(data), nil
+				}
+				results := map[string]string{
+					"initialize":                `{"protocolVersion":1}`,
+					"session/new":               `{"sessionId":"session"}`,
+					"session/set_config_option": `{"configOptions":[{"id":"model","currentValue":"example/model"}]}`,
+				}
+				records <- scanResult{record: rpcRecord{ID: request.ID, Result: json.RawMessage(results[request.Method])}}
+				return len(data), nil
+			})
+			backend, _ := NewAgentBackend(Options{})
+			state := &turnState{req: runner.AgentTurnRequest{Model: "example/model"}, emit: func(runner.AgentUpdate) error { return nil }}
+			err := backend.exchange(deadlineContext{ctx.Done()}, writer, records, state)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("error = %v", err)
+			}
+			details, classified := backend.ClassifyCapacityError(err, nil, time.Time{})
+			if stage == "session/prompt" {
+				if classified {
+					t.Fatal("execution timeout classified as startup failure")
+				}
+			} else if !classified || details.Kind != "startup_handshake_timeout" {
+				t.Fatalf("startup timeout attribution = %+v, %v", details, classified)
 			}
 		})
 	}

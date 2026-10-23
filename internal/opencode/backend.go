@@ -107,7 +107,7 @@ func (b *AgentBackend) argv(ctx context.Context, req runner.AgentTurnRequest) ([
 }
 
 func providerRequestError(method string, code int, message string) error {
-	failure := &infrastructureError{err: fmt.Errorf("OpenCode %s failed (%d): %s", method, code, message), startup: method != "session/prompt"}
+	failure := &infrastructureError{err: fmt.Errorf("OpenCode %s failed (%d)", method, code), startup: method != "session/prompt"}
 	if strings.Contains(message, "This Go model requires Global regions") {
 		failure.startup = true
 		failure.reason = "OpenCode workspace region policy prevents this model from running"

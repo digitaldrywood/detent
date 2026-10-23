@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -89,6 +88,9 @@ func (b *AgentBackend) exchange(ctx context.Context, input io.Writer, records <-
 	call := func(method string, params any) (json.RawMessage, error) {
 		id++
 		if err := encode(input, map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}); err != nil {
+			if method != "session/prompt" {
+				return nil, &infrastructureError{err: errors.Join(ctx.Err(), err), startup: true}
+			}
 			return nil, err
 		}
 		var timer *time.Timer
@@ -101,15 +103,18 @@ func (b *AgentBackend) exchange(ctx context.Context, input io.Writer, records <-
 		for {
 			select {
 			case <-ctx.Done():
+				if method != "session/prompt" && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					return nil, &infrastructureError{err: ctx.Err(), startup: true}
+				}
 				return nil, ctx.Err()
 			case <-stalled:
-				return nil, &infrastructureError{err: errors.New("OpenCode ACP stream stalled"), startup: s.sessionID == ""}
+				return nil, &infrastructureError{err: errors.New("OpenCode ACP stream stalled"), startup: method != "session/prompt"}
 			case item, ok := <-records:
 				if !ok {
-					return nil, &infrastructureError{err: io.ErrUnexpectedEOF, startup: s.sessionID == ""}
+					return nil, &infrastructureError{err: io.ErrUnexpectedEOF, startup: method != "session/prompt"}
 				}
 				if item.err != nil {
-					return nil, &infrastructureError{err: item.err, startup: s.sessionID == ""}
+					return nil, &infrastructureError{err: item.err, startup: method != "session/prompt"}
 				}
 				if timer != nil {
 					timer.Reset(b.options.StallTimeout)
@@ -236,7 +241,7 @@ func (b *AgentBackend) exchange(ctx context.Context, input io.Writer, records <-
 	case "max_turn_requests":
 		return runner.ErrSessionTurnLimitExceeded
 	default:
-		return fmt.Errorf("OpenCode stopped without completion: %s", end.StopReason)
+		return errors.New("OpenCode stopped without completion")
 	}
 }
 

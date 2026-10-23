@@ -86,6 +86,15 @@ func (b *AgentBackend) RunTurn(ctx context.Context, req runner.AgentTurnRequest,
 	}
 	defer closePipe(stderrReader, &turnErr)
 	defer closePipe(stderrWriter, &turnErr)
+	inputClosed := make(chan error, 1)
+	stopInputClose := context.AfterFunc(ctx, func() { inputClosed <- input.Close() })
+	defer func() {
+		if !stopInputClose() {
+			if err := <-inputClosed; err != nil && !errors.Is(err, os.ErrClosed) {
+				turnErr = errors.Join(turnErr, err)
+			}
+		}
+	}()
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = inputReader, outputWriter, stderrWriter
 	procgroup.Configure(ctx, cmd)
 	if err := procgroup.Start(cmd); err != nil {
@@ -100,9 +109,8 @@ func (b *AgentBackend) RunTurn(ctx context.Context, req runner.AgentTurnRequest,
 	records := make(chan scanResult, 16)
 	readerDone := make(chan struct{})
 	go func() { defer close(readerDone); scan(ctx, output, records) }()
-	stderr := &tailBuffer{}
 	stderrDone := make(chan error, 1)
-	go func() { _, err := io.Copy(stderr, stderrReader); stderrDone <- err }()
+	go func() { _, err := io.Copy(io.Discard, stderrReader); stderrDone <- err }()
 	defer func() {
 		var waitErr error
 		waited := false
@@ -131,15 +139,12 @@ func (b *AgentBackend) RunTurn(ctx context.Context, req runner.AgentTurnRequest,
 			turnErr = errors.Join(turnErr, &infrastructureError{err: fmt.Errorf("OpenCode ACP process exit: %w", waitErr)})
 		}
 		cancel()
-		if errors.Is(waitErr, runner.ErrAgentTurnCleanup) {
-			closePipe(stderrReader, &turnErr)
-			closePipe(output, &turnErr)
+		closePipe(stderrReader, &turnErr)
+		closePipe(output, &turnErr)
+		if err := <-stderrDone; err != nil && !errors.Is(err, os.ErrClosed) {
+			turnErr = errors.Join(turnErr, err)
 		}
-		turnErr = errors.Join(turnErr, <-stderrDone)
 		<-readerDone
-		if turnErr != nil && stderr.String() != "" {
-			turnErr = fmt.Errorf("%w; OpenCode stderr: %s", turnErr, stderr.String())
-		}
 	}()
 	if err := errors.Join(inputReader.Close(), outputWriter.Close(), stderrWriter.Close()); err != nil {
 		return result, &infrastructureError{err: err, startup: true}
@@ -175,23 +180,6 @@ func closePipe(file *os.File, result *error) {
 		*result = errors.Join(*result, err)
 	}
 }
-
-type tailBuffer struct{ buf []byte }
-
-func (b *tailBuffer) Write(p []byte) (int, error) {
-	const limit = 64 * 1024
-	n := len(p)
-	if len(p) >= limit {
-		b.buf = append(b.buf[:0], p[len(p)-limit:]...)
-		return n, nil
-	}
-	if len(b.buf)+len(p) > limit {
-		b.buf = b.buf[len(b.buf)+len(p)-limit:]
-	}
-	b.buf = append(b.buf, p...)
-	return n, nil
-}
-func (b *tailBuffer) String() string { return string(b.buf) }
 
 func encode(w io.Writer, record any) error {
 	if err := json.NewEncoder(w).Encode(record); err != nil {
