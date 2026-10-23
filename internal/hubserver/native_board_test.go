@@ -948,3 +948,30 @@ func readHostedBoardFrame(t *testing.T, scanner *bufio.Reader) tracker.NativeBoa
 		return frame
 	}
 }
+
+func TestNativeBoardRefreshSkipsFailingCard(t *testing.T) {
+	t.Parallel()
+	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	first, second := f.create(t, "First"), f.create(t, "Second")
+	drainTestNativeBoard(t, f.service)
+	broken, healthy := first.WorkItemID, second.WorkItemID
+	if broken > healthy {
+		broken, healthy = healthy, broken
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_board_items SET record_json='[1]' WHERE work_item_id=?", broken); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []tracker.NativeWorkItemID{broken, healthy} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT OR IGNORE INTO native_board_dirty(work_item_id) VALUES(?)", id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.service.maintainNativeBoard(t.Context())
+	dirty, err := nativePageIDs(t.Context(), f.service.database.reader, "SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id")
+	if err != nil || !slices.Equal(dirty, []string{string(broken)}) {
+		t.Fatalf("a failing card blocked the remaining refreshes: dirty=%v err=%v", dirty, err)
+	}
+}
