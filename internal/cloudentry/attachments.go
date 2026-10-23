@@ -575,6 +575,13 @@ func (s *Service) sweepAttachmentOrphans(ctx context.Context, organization Organ
 		}
 		unlock := s.attachmentLocks.lock(organization.ID, true)
 		defer unlock()
+		current, found, err := s.attachments.Stat(ctx, object.Key)
+		if err != nil {
+			return err
+		}
+		if !found || current.CreatedAt.After(s.config.now().Add(-attachment.OrphanTTL)) {
+			return nil
+		}
 		exists, err := s.attachmentObjectExists(ctx, organization, endpoint, input)
 		if err != nil {
 			return err
