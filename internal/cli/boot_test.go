@@ -2248,9 +2248,6 @@ tracker:
 server:
   kanban:
     mode: ` + mode + `
-agent:
-  auto_promote:
-    no_progress_limit: 0
 ---
 Test workflow prompt.
 `
