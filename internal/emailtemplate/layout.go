@@ -28,11 +28,21 @@ type Detail struct {
 	Value string
 }
 
+type Status struct {
+	Label    string
+	Resolved bool
+}
+
 type Content struct {
 	Title       string
 	Heading     string
 	Note        string
+	Subtitle    string
+	Status      *Status
+	Summary     string
+	NextAction  string
 	Details     []Detail
+	Evidence    []Detail
 	ActionLabel string
 	ActionURL   string
 	Footer      string
@@ -83,14 +93,30 @@ var layout = template.Must(template.New("email").Parse(`<!doctype html>
 </tr></table>
 </td></tr>
 <tr><td style="padding:28px;">
-{{if .Heading}}<h1 style="margin:0 0 6px;color:#71717b;font-size:12px;font-weight:600;letter-spacing:0.6px;text-transform:uppercase;">{{.Title}}</h1>
+{{if .Status}}<p style="margin:0 0 8px;font-weight:600;"><span aria-hidden="true" style="display:inline-block;width:8px;height:8px;margin-right:6px;border-radius:50%;background-color:{{if .Status.Resolved}}#00bc7d{{else}}#fe9a00{{end}};"></span>{{.Status.Label}}</p>
+<h1 style="margin:0 0 6px;color:#27272a;font-size:20px;line-height:1.4;font-weight:600;overflow-wrap:anywhere;word-break:break-word;">{{.Heading}}</h1>
+{{else if .Heading}}
+<h1 style="margin:0 0 6px;color:#71717b;font-size:12px;font-weight:600;letter-spacing:0.6px;text-transform:uppercase;">{{.Title}}</h1>
 <p style="margin:0 0 16px;color:#27272a;font-size:20px;line-height:1.4;font-weight:600;overflow-wrap:anywhere;word-break:break-word;">{{.Heading}}</p>
 {{else}}<h1 style="margin:0 0 16px;color:#27272a;font-size:20px;line-height:1.4;font-weight:600;">{{.Title}}</h1>{{end}}
 {{if .Note}}<p style="margin:0 0 16px;color:#71717b;">{{.Note}}</p>{{end}}
+{{if .Subtitle}}<p style="margin:0 0 20px;color:#71717b;overflow-wrap:anywhere;word-break:break-word;">{{.Subtitle}}</p>{{end}}
+{{if .Summary}}<p style="margin:20px 0;overflow-wrap:anywhere;word-break:break-word;">{{.Summary}}</p>{{end}}
+{{if .NextAction}}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:20px 0;"><tr><td bgcolor="#fafafa" style="padding:14px 16px;background-color:#fafafa;border:1px solid #e4e4e7;border-left:3px solid #fe9a00;border-radius:8px;">
+<p style="margin:0 0 6px;color:#71717b;font-size:12px;font-weight:600;letter-spacing:0.6px;text-transform:uppercase;">Next action</p>
+<p style="margin:0;overflow-wrap:anywhere;word-break:break-word;">{{.NextAction}}</p>
+</td></tr></table>{{end}}
 {{if .Details}}<table aria-label="Details" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #e4e4e7;border-collapse:collapse;table-layout:fixed;">
 {{range .Details}}<tr>
 <th scope="row" width="112" align="left" valign="top" style="width:112px;padding:10px 8px 10px 0;border-bottom:1px solid #e4e4e7;color:#71717b;font-weight:400;overflow-wrap:break-word;">{{.Label}}</th>
 <td valign="top" style="padding:10px 0;border-bottom:1px solid #e4e4e7;color:#27272a;overflow-wrap:anywhere;word-break:break-word;">{{.Value}}</td>
+</tr>{{end}}
+</table>{{end}}
+{{if .Evidence}}<p style="margin:24px 0 6px;color:#71717b;font-size:12px;font-weight:600;letter-spacing:0.6px;text-transform:uppercase;">Evidence</p>
+<table aria-label="Evidence counts" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #e4e4e7;border-collapse:collapse;table-layout:fixed;">
+{{range .Evidence}}<tr>
+<th scope="row" align="left" valign="top" style="padding:8px 8px 8px 0;border-bottom:1px solid #e4e4e7;color:#71717b;font-weight:400;overflow-wrap:anywhere;word-break:break-word;">{{.Label}}</th>
+<td align="right" valign="top" style="padding:8px 0;border-bottom:1px solid #e4e4e7;color:#27272a;">{{.Value}}</td>
 </tr>{{end}}
 </table>{{end}}
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:24px;"><tr>

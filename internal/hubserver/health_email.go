@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/emailtemplate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -195,7 +197,7 @@ func (s *Service) renderHealthEmail(ctx context.Context, f healthFinding) (auth.
 	slices.SortFunc(counts, func(a, b count) int { return strings.Compare(a.Name, b.Name) })
 	state, resolved := "opened", ""
 	if f.ResolvedAt != nil {
-		state, resolved = "resolved", formatHubTime(*f.ResolvedAt)
+		state, resolved = "resolved", f.ResolvedAt.UTC().Format("Jan 2, 2006 15:04 UTC")
 	}
 	link := s.config.Hosted.PublicURL + s.hostedPath("/fleet")
 	if f.Subject.Kind == "work_item" {
@@ -221,7 +223,7 @@ func (s *Service) renderHealthEmail(ctx context.Context, f healthFinding) (auth.
 		Subject:    healthEmailText(f.Subject.Kind + " " + f.Subject.ID),
 		Summary:    healthEmailText(f.Summary),
 		NextAction: healthEmailText(f.NextAction),
-		OpenedAt:   formatHubTime(f.OpenedAt),
+		OpenedAt:   f.OpenedAt.UTC().Format("Jan 2, 2006 15:04 UTC"),
 		ResolvedAt: resolved,
 		URL:        link,
 		Events:     len(f.Evidence.EventIDs),
@@ -232,5 +234,34 @@ func (s *Service) renderHealthEmail(ctx context.Context, f healthFinding) (auth.
 	if err := healthEmailTemplate.Execute(&body, data); err != nil {
 		return auth.EmailMessage{}, err
 	}
-	return auth.EmailMessage{Subject: "[Detent] " + data.Signal + ": " + data.Subject, Body: body.String()}, nil
+	details := []emailtemplate.Detail{{Label: "Opened", Value: data.OpenedAt}}
+	if data.ResolvedAt != "" {
+		details = append(details, emailtemplate.Detail{Label: "Resolved", Value: data.ResolvedAt})
+	}
+	evidence := []emailtemplate.Detail{
+		{Label: "Events", Value: strconv.Itoa(data.Events)},
+		{Label: "Attempts", Value: strconv.Itoa(data.Attempts)},
+	}
+	for _, count := range data.Counts {
+		evidence = append(evidence, emailtemplate.Detail{Label: count.Name, Value: strconv.Itoa(count.Value)})
+	}
+	message, err := emailtemplate.Render(emailtemplate.Content{
+		Title:       "Health finding",
+		Status:      &emailtemplate.Status{Label: "Finding " + data.State, Resolved: f.ResolvedAt != nil},
+		Heading:     data.Signal,
+		Subtitle:    data.Subject,
+		Summary:     data.Summary,
+		NextAction:  data.NextAction,
+		Details:     details,
+		Evidence:    evidence,
+		ActionLabel: "Open " + strings.ReplaceAll(healthEmailText(f.Subject.Kind), "_", " "),
+		ActionURL:   data.URL,
+		Footer:      "You get this because you own this Detent organization.",
+	})
+	if err != nil {
+		return auth.EmailMessage{}, err
+	}
+	message.Subject = "[Detent] " + data.Signal + ": " + data.Subject
+	message.Body = body.String()
+	return message, nil
 }
