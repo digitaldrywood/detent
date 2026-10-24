@@ -295,9 +295,9 @@ func (s *Service) validateCoordinatorMoveAnswer(ctx context.Context, scope nativ
 		return nil
 	}
 	var humanAction bool
-	err := s.database.reader.QueryRowContext(ctx, `SELECT COALESCE(json_extract(data_json, '$.disposition.human_action'), 0)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT disposition_human_action
 FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ?
-AND json_extract(data_json, '$.disposition.status') = 'blocked' ORDER BY fencing_token DESC LIMIT 1`, scope.organization, scope.project, issue.WorkItemID).Scan(&humanAction)
+AND disposition_status = 'blocked' ORDER BY fencing_token DESC LIMIT 1`, scope.organization, scope.project, issue.WorkItemID).Scan(&humanAction)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}

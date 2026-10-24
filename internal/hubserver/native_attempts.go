@@ -434,6 +434,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organi
 			return false, false, err
 		}
 	}
+	if err := updateAttemptDisposition(ctx, tx, data.AttemptID, data); err != nil {
+		return false, false, err
+	}
 	if err := updateAttemptHotProjection(ctx, tx, data.AttemptID, update.status, data); err != nil {
 		return false, false, err
 	}
