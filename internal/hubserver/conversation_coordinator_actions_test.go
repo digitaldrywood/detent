@@ -183,7 +183,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					operatorSQL(t, f, `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at) VALUES (?, 'org_security', ?, ?, 'archive-lease', 1, ?, 1, 'succeeded', ?, ?, ?)`, "attempt_"+string(id), f.project, id, "run_"+string(id), string(data), now, now)
+					operatorSQL(t, f, `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at,disposition_status,disposition_human_action) VALUES (?, 'org_security', ?, ?, 'archive-lease', 1, ?, 1, 'succeeded', ?, ?, ?, 'blocked', ?)`, "attempt_"+string(id), f.project, id, "run_"+string(id), string(data), now, now, humanPark && outcome != "human park recorded on submit")
 					operatorSQL(t, f, "UPDATE leases SET released_at=? WHERE lease_id='archive-lease'", now)
 				}
 				if tool == "propose_stop_run" {
@@ -825,7 +825,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					operatorSQL(t, f, "CREATE TRIGGER move_answer_failure BEFORE UPDATE OF workflow_state_id ON issues BEGIN SELECT RAISE(ABORT, 'transition failed'); END")
 				}
 				if outcome == "human park recorded on submit" {
-					operatorSQL(t, f, "UPDATE native_attempts SET data_json=json_set(data_json,'$.disposition.human_action',json('true')) WHERE work_item_id=?", id)
+					operatorSQL(t, f, "UPDATE native_attempts SET disposition_human_action=1,data_json=json_set(data_json,'$.disposition.human_action',json('true')) WHERE work_item_id=?", id)
 				}
 				response = f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
 				changed := outcome == "human answer" || outcome == "dependency park" || outcome == "full access" || outcome == "preserve access" || outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
