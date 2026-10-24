@@ -253,6 +253,11 @@ func readCloudAttachment(ctx context.Context, query nativeQueryer, scope nativeS
 			return attachment.Metadata{}, err
 		}
 		ownsUpload := record.Uploader == scope.actor().PrincipalID || record.Uploader == scope.credential.ID
+		if !visible {
+			if err := query.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM release_audit_parts WHERE organization_id=? AND project_id=? AND attachment_id=?)", scope.organization, scope.project, record.ID).Scan(&visible); err != nil {
+				return attachment.Metadata{}, err
+			}
+		}
 		if !visible && !ownsUpload {
 			if err := query.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM api_tokens t JOIN hosted_members m ON m.user_id=t.hosted_user_id AND m.membership_id=t.hosted_membership_id WHERE t.id=? AND t.hosted_organization_id=? AND t.key_kind='personal' AND m.principal_id=?)", record.Uploader, scope.organization, scope.actor().PrincipalID).Scan(&ownsUpload); err != nil {
 				return attachment.Metadata{}, err

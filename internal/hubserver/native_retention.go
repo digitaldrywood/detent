@@ -58,7 +58,7 @@ AND julianday(created_at)<julianday(?) LIMIT ?)`, formatHubTime(now.Add(-command
 SELECT rowid FROM native_duplicate_challenges WHERE consumed_at IS NOT NULL OR julianday(created_at)<=julianday(?) LIMIT ?)`, formatHubTime(now.Add(-duplicateChallengeLifetime)), commandReceiptPruneBatch); err != nil {
 		return fmt.Errorf("expire duplicate challenges: %w", err)
 	}
-	if _, err := s.database.db.ExecContext(ctx, "UPDATE attachments SET deleted_at=? WHERE rowid IN (SELECT rowid FROM attachments WHERE kind='attachment' AND deleted_at IS NULL AND work_item_id IS NULL AND julianday(created_at)<=julianday(?) LIMIT ?)", formatHubTime(now), formatHubTime(now.Add(-attachment.OrphanTTL)), commandReceiptPruneBatch); err != nil {
+	if _, err := s.database.db.ExecContext(ctx, "UPDATE attachments SET deleted_at=? WHERE rowid IN (SELECT rowid FROM attachments WHERE kind='attachment' AND deleted_at IS NULL AND work_item_id IS NULL AND julianday(created_at)<=julianday(?) AND NOT EXISTS (SELECT 1 FROM release_audit_parts WHERE attachment_id=attachments.id) LIMIT ?)", formatHubTime(now), formatHubTime(now.Add(-attachment.OrphanTTL)), commandReceiptPruneBatch); err != nil {
 		return err
 	}
 	if _, err := s.database.db.ExecContext(ctx, "DELETE FROM runner_host_hours WHERE rowid IN (SELECT rowid FROM runner_host_hours WHERE hour <= ? LIMIT ?)", formatHubTime(now.UTC().Truncate(time.Hour).Add(-720*time.Hour)), commandReceiptPruneBatch); err != nil {

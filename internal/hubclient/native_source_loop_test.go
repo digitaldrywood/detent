@@ -32,18 +32,28 @@ type sourceRepairAgent struct {
 
 type sourceLoopWorkspace struct {
 	*workspace.LocalGit
-	beforeRuns   int
-	afterRuns    int
-	checkpointed chan struct{}
+	beforeRuns       int
+	afterRuns        int
+	reviewBeforeRuns int
+	reviewAfterRuns  int
+	checkpointed     chan struct{}
 }
 
 func (w *sourceLoopWorkspace) BeforeRun(ctx context.Context, info workspace.Info, issue workspace.Issue) error {
-	w.beforeRuns++
+	if issue.ReviewVersionID != "" {
+		w.reviewBeforeRuns++
+	} else {
+		w.beforeRuns++
+	}
 	return w.LocalGit.BeforeRun(ctx, info, issue)
 }
 
 func (w *sourceLoopWorkspace) AfterRun(ctx context.Context, info workspace.Info, issue workspace.Issue) {
-	w.afterRuns++
+	if issue.ReviewVersionID != "" {
+		w.reviewAfterRuns++
+	} else {
+		w.afterRuns++
+	}
 	w.LocalGit.AfterRun(ctx, info, issue)
 }
 
@@ -76,6 +86,10 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 	if a.workspaceHooks.beforeRuns != 1 || a.workspaceHooks.afterRuns != 0 {
 		return runner.AgentTurnResult{}, errors.New("source workspace hooks ran outside the enclosing execution lifecycle")
 	}
+	review := strings.Contains(request.Prompt, "Detent validator-agent") || strings.Contains(request.Prompt, "independent Detent implementation reviewer")
+	if review && (request.Workspace == a.workspace || a.workspaceHooks.reviewBeforeRuns != a.workspaceHooks.reviewAfterRuns+1) {
+		return runner.AgentTurnResult{}, errors.New("review workspace hooks ran outside the independent review lifecycle")
+	}
 	if strings.Contains(request.Prompt, "Detent's independent security auditor") {
 		a.calls++
 		if request.Resume.ThreadID != "" || request.Resume.SessionID != "" || request.Workspace == a.workspace {
@@ -93,7 +107,6 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 		}
 		return runner.AgentTurnResult{ThreadID: "thread-audit", TurnID: "audit-turn", AuthenticationMode: "api_key"}, nil
 	}
-	review := strings.Contains(request.Prompt, "Detent validator-agent") || strings.Contains(request.Prompt, "independent Detent implementation reviewer")
 	if !review && a.writableCalls > 0 {
 		if request.Resume.ThreadID != "thread-native" || !strings.Contains(request.Prompt, "Checked") {
 			return runner.AgentTurnResult{}, errors.New("repair lost implementation resume or review findings")
@@ -199,6 +212,9 @@ func TestNativeSourceReviewLoop(t *testing.T) {
 			}
 			if loopWorkspace.beforeRuns != 1 || loopWorkspace.afterRuns != 1 {
 				t.Fatalf("workspace lifecycle: before=%d after=%d", loopWorkspace.beforeRuns, loopWorkspace.afterRuns)
+			}
+			if loopWorkspace.reviewBeforeRuns == 0 || loopWorkspace.reviewBeforeRuns != loopWorkspace.reviewAfterRuns {
+				t.Fatalf("review workspace lifecycle: before=%d after=%d", loopWorkspace.reviewBeforeRuns, loopWorkspace.reviewAfterRuns)
 			}
 			for index, request := range provider.requests {
 				if request.MaxTurns != test.limit-index {
