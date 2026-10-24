@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -103,12 +105,17 @@ func (s *Service) setProjectIconCommand(ctx context.Context, scope nativeScope, 
 		icon.ImageKey = conversation.NewAttachmentID()
 		digest := sha256.Sum256(content)
 		icon.ImageSHA256 = hex.EncodeToString(digest[:])
-		if err := store.PutIcon(ctx, string(scope.organization), icon.ImageKey, content); err != nil {
+		record = &attachment.Metadata{ID: icon.ImageKey, Name: "project-icon.png", ContentType: "image/png", Size: int64(len(content)), SHA256: icon.ImageSHA256, Width: 128, Height: 128}
+		if err := s.accountProjectIcon(ctx, scope, *record); err != nil {
 			return nil, err
 		}
-		record = &attachment.Metadata{ID: icon.ImageKey, Name: "project-icon.png", ContentType: "image/png", Size: int64(len(content)), SHA256: icon.ImageSHA256, Width: 128, Height: 128}
+		if err := store.PutIcon(ctx, string(scope.organization), icon.ImageKey, content); err != nil {
+			return nil, s.cleanupProjectIcon(ctx, scope, record.ID, fmt.Errorf("upload project icon: %w", err))
+		}
 	}
-	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	applied := false
+	raw, err := s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		applied = true
 		current, err := readProjectIntegration(ctx, tx, scope)
 		if err != nil {
 			return nil, err
@@ -122,14 +129,7 @@ func (s *Service) setProjectIconCommand(ctx context.Context, scope nativeScope, 
 			}
 		}
 		if record != nil {
-			before, err := s.database.hostedConsumption(ctx, tx, now, "collaboration_bytes", "usage_windows")
-			if err != nil {
-				return nil, err
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,width,height,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, record.ID, scope.organization, scope.project, scope.credential.ID, record.Name, record.ContentType, record.Size, record.SHA256, record.Width, record.Height, formatHubTime(now)); err != nil {
-				return nil, err
-			}
-			if err := s.database.checkHostedGrowth(ctx, tx, before, now, false, "collaboration_bytes", "usage_windows"); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE attachments SET retention_class='organization' WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NULL`, scope.organization, scope.project, record.ID); err != nil {
 				return nil, err
 			}
 		}
@@ -138,4 +138,43 @@ func (s *Service) setProjectIconCommand(ctx context.Context, scope nativeScope, 
 		}
 		return readProjectIntegration(ctx, tx, scope)
 	})
+	if record != nil && (err != nil || !applied) {
+		err = s.cleanupProjectIcon(ctx, scope, record.ID, err)
+	}
+	return raw, err
+}
+
+func (s *Service) accountProjectIcon(ctx context.Context, scope nativeScope, record attachment.Metadata) error {
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin project icon accounting: %w", err)
+	}
+	defer tx.Rollback()
+	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
+		return fmt.Errorf("authorize project icon accounting: %w", err)
+	}
+	now := s.config.now()
+	before, err := s.database.hostedConsumption(ctx, tx, now, "collaboration_bytes", "usage_windows")
+	if err != nil {
+		return fmt.Errorf("read project icon usage: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,width,height,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, record.ID, scope.organization, scope.project, scope.credential.ID, record.Name, record.ContentType, record.Size, record.SHA256, record.Width, record.Height, formatHubTime(now)); err != nil {
+		return fmt.Errorf("account project icon: %w", err)
+	}
+	if err := s.database.checkHostedGrowth(ctx, tx, before, now, false, "collaboration_bytes", "usage_windows"); err != nil {
+		return fmt.Errorf("check project icon quota: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit project icon accounting: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) cleanupProjectIcon(ctx context.Context, scope nativeScope, id string, err error) error {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if _, deleteErr := s.database.db.ExecContext(cleanup, `UPDATE attachments SET deleted_at=? WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NULL`, formatHubTime(s.config.now()), scope.organization, scope.project, id); deleteErr != nil {
+		return errors.Join(err, fmt.Errorf("tombstone uncommitted project icon: %w", deleteErr))
+	}
+	return err
 }

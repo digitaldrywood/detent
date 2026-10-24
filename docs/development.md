@@ -341,6 +341,10 @@ npx playwright install chromium
 make visual-e2e
 ```
 
+`make visual-e2e` builds the binaries and app assets first. Running
+`npx playwright test` directly uses whatever `make build` last produced, so
+rebuild after app changes.
+
 Every host runs the same browser journeys and outcome assertions. UI changes
 attach screenshots (light/dark, desktop/390 as relevant) to the issue or PR as
 review evidence for human or AI comparison against the approved design.
