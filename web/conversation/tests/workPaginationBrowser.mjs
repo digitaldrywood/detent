@@ -21,6 +21,7 @@ await build({
   alias: {
     "node:crypto": join(output, "crypto.js"),
     "lucide-react/dynamic": resolve(root, "src/browser/lucideDynamicIcon.tsx"),
+    "lucide-react/dynamicIconImports": resolve(root, "node_modules/lucide-react/dynamicIconImports.mjs"),
     lucide: resolve(root, "node_modules/lucide/dist/esm/lucide/src/lucide.js"),
   },
   minify: true,
