@@ -1098,7 +1098,11 @@ func (l *LocalGit) branchName(issue Issue, key string) string {
 	if issue.WorkspaceSession {
 		return workspaceSessionBranchName(key)
 	}
-	if issue.ReviewVersionID == "" && strings.TrimSpace(issue.BranchName) != "" {
+	if issue.ReviewVersionID != "" {
+		digest := sha256.Sum256([]byte(l.root))
+		return fmt.Sprintf("%s%s-%x", autoBranchPrefix, strings.ToLower(key), digest[:6])
+	}
+	if strings.TrimSpace(issue.BranchName) != "" {
 		return strings.TrimSpace(issue.BranchName)
 	}
 	return autoBranchPrefix + strings.ToLower(key)

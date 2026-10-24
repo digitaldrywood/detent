@@ -3694,8 +3694,20 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					}
 				}
 				freshChanges, err := filepath.Glob(filepath.Join(freshRoot, "*", "CHANGE.md"))
-				if err != nil || len(freshChanges) != 1 || filepath.Dir(freshChanges[0]) == provider.workspace {
+				wantWorkspaces := 1
+				if freshSourceReview || test.validator != "" {
+					wantWorkspaces++
+				}
+				if err != nil || len(freshChanges) != wantWorkspaces {
 					t.Fatalf("resume did not restore source into a fresh workspace: paths=%v error=%v", freshChanges, err)
+				}
+				for _, path := range freshChanges {
+					directory := filepath.Dir(path)
+					head, err := exec.CommandContext(t.Context(), "git", "-C", directory, "rev-parse", "HEAD").Output()
+					if err != nil || strings.TrimSpace(string(head)) != change.HeadSHA || directory == provider.workspace {
+						t.Fatalf("resumed workspace lost fresh immutable source: path=%s head=%s error=%v", directory, head, err)
+					}
+					nativeChangeGit(t, directory, "diff", "--exit-code", change.HeadSHA, "--", "CHANGE.md")
 				}
 				resumedOwner := resumedExecution.(*nativeExecution)
 				stored := original.Versions[0]
