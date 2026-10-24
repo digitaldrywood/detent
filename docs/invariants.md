@@ -612,3 +612,22 @@ with unbounded scans or fan-out over history or the fleet. Hot-path changes atta
 benchmark evidence where a benchmark exists. A manually run scale soak against a seeded
 large tenant and a simulated runner fleet provides release evidence when it is
 run; it never blocks merging or releasing.
+
+## INV-22 — Tests never use production credentials or systems
+
+No test, fixture, harness, smoke run or development environment uses an active
+production credential or reaches a production system. A production credential
+is one that consumes real usage or quota, or acts on production data: email
+delivery, model provider, production Hub, tracker and deploy keys. Sandbox and
+test-mode credentials, such as Stripe test keys or a WorkOS development
+environment, are allowed. A production key may stay in a development
+environment file only commented out, for reference.
+
+Code under test that reads a credential from the process environment is
+isolated from the developer's shell: its test package clears that variable or
+injects a fake sender or client before any test runs.
+
+**Enforcement:** a test package whose code under test reads a credential from
+the environment clears it in `TestMain` or injects a fake. Review rejects a
+Change that enables a production credential in any development, test or CI
+environment, or a test that can open a connection to a production endpoint.
