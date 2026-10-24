@@ -140,7 +140,7 @@ func TestSchedulerLeaseHoldOutlivesReleasedLease(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "lost":
-				err := scheduler.nativeClaimError(id, lease.FencingToken, &APIError{Status: http.StatusConflict, Code: "stale_fencing_token"})
+				err := scheduler.nativeClaimError(t.Context(), id, lease.FencingToken, &APIError{Status: http.StatusConflict, Code: "stale_fencing_token"})
 				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
 					t.Fatalf("claim loss = %v", err)
 				}

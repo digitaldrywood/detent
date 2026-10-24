@@ -620,11 +620,41 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if github {
 		landed.CI = &tracker.NativeLandingCIReceipt{HeadSHA: head, PullRequest: 7, State: "success", RequiredChecks: []string{"Full CI"}, TriggerLabel: "run-full-ci", Triggered: true}
 	}
+	mergeExecution := nativeLanding.(*nativeExecution)
+	workerStopped := false
+	if err := mergeExecution.KeepWorker(func(context.Context) error {
+		workerStopped = true
+		return nil
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	landingClient := mergeExecution.claim.source.client.client.httpClient
+	transport := landingClient.Transport
+	landingClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		response, err := transport.RoundTrip(request)
+		if err == nil && response.StatusCode == http.StatusOK && strings.HasSuffix(request.URL.Path, "/landing") {
+			if _, renewErr := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); renewErr != nil {
+				t.Errorf("renewing while the landing response is pending: %v", renewErr)
+			}
+		}
+		return response, err
+	})
+	t.Cleanup(func() { landingClient.Transport = transport })
 	if err := execution.RecordLanding(guarded, landed); err != nil {
 		t.Fatal(err)
 	}
+	landingClient.Transport = transport
 	if err := execution.RecordLanding(guarded, landed); err != nil {
 		t.Fatalf("recording the landing again: %v", err)
+	}
+	if state := h.state(t, issue.ID); state != "Done" {
+		t.Fatalf("after recording landing the item is in %s, want Done", state)
+	}
+	if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); err != nil {
+		t.Fatalf("renewing the attempt that landed the terminal item: %v", err)
+	}
+	if err := guarded.Err(); err != nil || workerStopped {
+		t.Fatalf("landing heartbeat cancelled the merge worker: stopped=%v error=%v", workerStopped, err)
 	}
 	if github {
 		at := time.Now().UTC()
@@ -658,6 +688,13 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
 	if err != nil || evidence.Attempt.Sequence != sequence || !reflect.DeepEqual(*evidence.Attempt.Runtime.Landing, landedReceipt) {
 		t.Fatalf("landing replay changed receipt: %#v, error %v", evidence, err)
+	}
+	usage := tracker.NativeUsage{Provider: "openai", Model: "test", Input: 123, Output: 45}
+	if err := mergeExecution.RecordUsage(guarded, usage); err != nil {
+		t.Fatal(err)
+	}
+	if err := mergeExecution.PrepareFinish(guarded, "succeeded", "", nil); err != nil {
+		t.Fatal(err)
 	}
 	if err := nativeLanding.Finish(guarded, "succeeded"); err != nil {
 		t.Fatal(err)
@@ -720,6 +757,26 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	}
 	if linked && (intakeCalls != 1 || sourceCalls != 0) {
 		t.Fatalf("source calls across implementation and native landing: intake=%d, runner=%d; want 1 and 0", intakeCalls, sourceCalls)
+	}
+	if workerStopped {
+		t.Fatal("merge worker was stopped before completion")
+	}
+	if err := mergeExecution.CloseWorkers(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
+	if err != nil || evidence.Attempt == nil {
+		t.Fatalf("reading released landing attempt: %v", err)
+	}
+	attempt := evidence.Attempt
+	if attempt.Status != "succeeded" || attempt.Outcome != "succeeded" || attempt.ClaimReleasedAt == nil || evidence.CurrentLease != nil {
+		t.Fatalf("landing completion retained its slot or lost usage: attempt=%+v lease=%+v", attempt, evidence.CurrentLease)
+	}
+	if len(attempt.Usage) != 1 || attempt.Usage[0].Provider != "openai" || attempt.Usage[0].Model != "test" || attempt.Usage[0].Input != 123 || attempt.Usage[0].Output != 45 {
+		t.Fatalf("landing completion lost usage: %+v", attempt.Usage)
 	}
 }
 

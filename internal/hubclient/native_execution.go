@@ -70,6 +70,7 @@ type nativeExecution struct {
 	role                     string
 	conversationContinuation bool
 	settled                  bool
+	landed                   bool
 	change                   *runner.NativeChange
 	finalizationSource       *tracker.NativeChangeReference
 	finalizationAttempt      string
@@ -119,7 +120,7 @@ func (e *nativeExecution) hasWorkers() bool {
 }
 
 func (e *nativeExecution) CloseWorkers(ctx context.Context) error {
-	defer e.scheduler.cleanupNativeClaim(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken)
+	defer e.scheduler.cleanupNativeClaim(context.WithoutCancel(ctx), string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken)
 	e.workerCloseMu.Lock()
 	defer e.workerCloseMu.Unlock()
 	e.workerMu.Lock()
@@ -316,7 +317,7 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 		e.cancelMu.Lock()
 		e.cancel = nil
 		e.cancelMu.Unlock()
-		e.scheduler.cleanupNativeClaim(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken)
+		e.scheduler.cleanupNativeClaim(context.WithoutCancel(ctx), string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken)
 	}, nil
 }
 
@@ -335,9 +336,9 @@ func (e *nativeExecution) cancelExecution(cause error) {
 	}
 }
 
-func (e *nativeExecution) executionError(err error) error {
+func (e *nativeExecution) executionError(ctx context.Context, err error) error {
 	if nativeAuthorityLost(err) {
-		err = e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
+		err = e.scheduler.nativeClaimError(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
 	}
 	if errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
 		return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
@@ -347,15 +348,15 @@ func (e *nativeExecution) executionError(err error) error {
 
 func (e *nativeExecution) Validate(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
-		return e.validationError(errors.Join(err, context.Cause(ctx)))
+		return e.validationError(ctx, errors.Join(err, context.Cause(ctx)))
 	}
 	if e.remaining() <= 0 {
 		if err := e.renew(ctx, 0); err != nil {
-			return e.validationError(err)
+			return e.validationError(ctx, err)
 		}
 	}
 	if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.PolicyID); err != nil {
-		return e.validationError(err)
+		return e.validationError(ctx, err)
 	}
 	return nil
 }
@@ -371,12 +372,12 @@ func (e *nativeExecution) renew(ctx context.Context, landingCapacity int) error 
 	return err
 }
 
-func (e *nativeExecution) validationError(err error) error {
+func (e *nativeExecution) validationError(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
-	err = e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
-	err = e.executionError(err)
+	err = e.scheduler.nativeClaimError(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
+	err = e.executionError(ctx, err)
 	if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 		return e.unavailable(err)
 	}
@@ -539,7 +540,7 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 		e.applySecurityAuditHumanAction(e.change.SecurityAudit)
 	}
 	if err := e.prepareFinish(ctx, outcome); err != nil {
-		err = e.executionError(err)
+		err = e.executionError(ctx, err)
 		err = errors.Join(err, nativeEffectError(ctx))
 		if outcome == "succeeded" && e.ownsChangeCompletion() && nativeTransportUnavailable(err) && nativeEffectError(ctx) == nil {
 			if e.change == nil {
@@ -582,7 +583,7 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 		}
 		if e.storedSeq != finish {
 			if err := e.postDiff(ctx, finish); err != nil && e.ownsChangeCompletion() {
-				err = e.executionError(err)
+				err = e.executionError(ctx, err)
 				if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 					return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 				}
@@ -596,7 +597,7 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 			}
 		}
 		if err := e.settle(ctx, outcome, finish); err != nil {
-			err = e.executionError(err)
+			err = e.executionError(ctx, err)
 			if nativeEffectError(ctx) != nil {
 				return err
 			}
@@ -739,7 +740,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 		if publicationUnavailable && expectedState != "" {
 			issue, err := e.claim.source.client.Issue(ctx, e.claim.lease.WorkItemID)
 			if err != nil {
-				finishErr = e.executionError(err)
+				finishErr = e.executionError(ctx, err)
 			} else if !strings.EqualFold(expectedState, issue.State) {
 				outcome = "cancelled"
 			}
@@ -949,7 +950,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	defer func() { done(err) }()
 	if e.remaining() <= 0 {
 		if err := e.renew(ctx, 0); err != nil {
-			return e.executionError(err)
+			return e.executionError(ctx, err)
 		}
 	}
 	if failure := e.pending.Data.TerminalFailure; failure != nil && failure.Stage == "event_publication" && e.pending.Data.Runtime == nil && e.data.Sequence > 0 {
@@ -959,7 +960,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 		}
 		var attempt tracker.NativeAttempt
 		if err := e.claim.source.client.client.request(ctx, http.MethodGet, e.claim.source.client.base()+path+"/attempts/"+e.data.AttemptID, nil, &attempt); err != nil {
-			return e.executionError(err)
+			return e.executionError(ctx, err)
 		}
 		if attempt.LeaseID != e.claim.lease.ID || attempt.FencingToken != e.claim.lease.FencingToken || attempt.RunID != e.data.RunID || attempt.PolicyID != e.data.PolicyID || attempt.Sequence != e.data.Sequence {
 			return e.unavailable(runner.ErrExecutionAuthorityUnavailable)
@@ -1004,7 +1005,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 			}
 			return &nativeCompletionRejection{failure: failure}
 		}
-		return e.executionError(err)
+		return e.executionError(ctx, err)
 	}
 	checkpoint := e.data.Handoff
 	e.data = e.pending.Data

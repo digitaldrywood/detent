@@ -67,16 +67,27 @@ func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandi
 // RecordLanding tells the hub the commit the base branch advanced to. The
 // idempotency key is the attempt's, so a retried report records one landing.
 func (e *nativeExecution) RecordLanding(ctx context.Context, landing runner.NativeLanding) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.recordLanding(ctx, landing)
+}
+
+func (e *nativeExecution) recordLanding(ctx context.Context, landing runner.NativeLanding) error {
 	if e.claim.source == nil || e.claim.source.client == nil {
 		return runner.ErrExecutionAuthorityUnavailable
 	}
 	if !landing.Landed {
 		return errors.New("only a landed version is recorded")
 	}
+	receipt := &tracker.NativeLandingReceipt{SecurityAudit: landing.SecurityAudit, Pipeline: landing.Pipeline, PipelineDropped: landing.PipelineDropped, Path: landing.Path, Packages: landing.Packages, ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Gate: landing.Gate, Landed: true, Rebased: landing.Rebased}
 	_, err := e.claim.source.client.LandChangeVersion(ctx, e.claim.lease.WorkItemID, landing.ChangeID, landing.VersionID, tracker.LandChangeVersion{
 		Mutation: tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":landing", LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
-		Receipt:  &tracker.NativeLandingReceipt{SecurityAudit: landing.SecurityAudit, Pipeline: landing.Pipeline, PipelineDropped: landing.PipelineDropped, Path: landing.Path, Packages: landing.Packages, ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Gate: landing.Gate, Landed: true, Rebased: landing.Rebased},
+		Receipt:  receipt,
 		MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Rebased: landing.Rebased,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	e.landed = true
+	return nil
 }
