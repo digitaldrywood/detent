@@ -1,0 +1,38 @@
+{
+  "organization": {
+    "id": "org_secondary_example",
+    "name": "Secondary Example Organization"
+  },
+  "organizations": [
+    {
+      "id": "org_secondary_example",
+      "name": "Secondary Example Organization",
+      "public_url": "https://secondary.example.org",
+      "current": true
+    }
+  ],
+  "actor": {
+    "principal_id": "tok_support",
+    "subject": "support@example.com",
+    "email": "support@example.com",
+    "role": "admin",
+    "can_manage": true,
+    "can_manage_runners": false
+  },
+  "projects": [],
+  "support": {
+    "actor": "support@example.com",
+    "reason": "Investigating a stuck lease reported in ticket 4471",
+    "expires_at": "2026-09-10T22:30:00Z"
+  },
+  "csrf_token": "csrf_support",
+  "capabilities": {
+    "coordinator": false,
+    "attachments": false
+  },
+  "feature": {
+    "conversation": true
+  },
+  "plan": null,
+  "api_base": "/api/v2/organizations/org_secondary_example"
+}

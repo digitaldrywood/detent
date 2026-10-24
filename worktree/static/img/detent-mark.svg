@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Detent">
+  <path fill="#3730A3" fill-rule="evenodd"
+        d="M22 15 H50 C73 15 87 31 87 50 C87 69 73 85 50 85 H22 Z
+           M41 32 H50 C63 32 70 41 70 50 C70 59 63 68 50 68 H41 Z"/>
+  <circle cx="51.5" cy="55.5" r="7.4" fill="#3730A3"/>
+</svg>

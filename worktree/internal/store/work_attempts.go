@@ -1,0 +1,842 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/store/sqlc"
+)
+
+const defaultSchedulerDecisionLimit = 50
+
+func (s *sqliteStore) StartWorkAttempt(ctx context.Context, attrs WorkAttemptStart) (int64, error) {
+	projectID := strings.TrimSpace(attrs.ProjectID)
+	if projectID == "" {
+		return 0, errors.New("project_id is required")
+	}
+	workerType := strings.TrimSpace(attrs.WorkerType)
+	if workerType == "" {
+		return 0, errors.New("worker_type is required")
+	}
+	startedAt, err := requiredTimestamp("started_at", attrs.StartedAt)
+	if err != nil {
+		return 0, err
+	}
+	leaseExpiresAt, err := optionalTimestamp("lease_expires_at", attrs.LeaseExpiresAt)
+	if err != nil {
+		return 0, err
+	}
+	attemptNumber := attrs.AttemptNumber
+	if attemptNumber <= 0 {
+		attemptNumber = 1
+	}
+	runtimeIdentityJSON, err := marshalRuntimeIdentity(attrs.RuntimeIdentity)
+	if err != nil {
+		return 0, err
+	}
+
+	attempt, err := s.queries.CreateWorkAttempt(ctx, sqlc.CreateWorkAttemptParams{
+		ProjectID:              projectID,
+		IssueID:                nullString(attrs.IssueID),
+		Identifier:             nullString(attrs.Identifier),
+		IssueURL:               nullString(attrs.IssueURL),
+		PrNumber:               nullOptionalInt64(attrs.PRNumber),
+		Repo:                   nullString(attrs.Repo),
+		WorkerType:             workerType,
+		WorkerHost:             nullString(attrs.WorkerHost),
+		Lane:                   nullString(attrs.Lane),
+		AttemptNumber:          int64(attemptNumber),
+		Status:                 string(WorkAttemptStatusActive),
+		StartedAt:              startedAt,
+		LeaseExpiresAt:         leaseExpiresAt,
+		HeartbeatAt:            sql.NullString{String: startedAt, Valid: true},
+		Phase:                  nullString(attrs.Phase),
+		StatusMessage:          nullString(attrs.StatusMessage),
+		CurrentStep:            nullOptionalInt64(attrs.CurrentStep),
+		TotalSteps:             nullOptionalInt64(attrs.TotalSteps),
+		ProgressPercent:        nullOptionalInt64(attrs.ProgressPercent),
+		CurrentCommand:         nullString(attrs.CurrentCommand),
+		WaitReason:             nullString(attrs.WaitReason),
+		GithubRateSnapshotJson: jsonObjectOrDefault(attrs.GitHubRateSnapshotJSON),
+		CiState:                nullString(attrs.CIState),
+		CapacitySnapshotJson:   jsonObjectOrDefault(attrs.CapacitySnapshotJSON),
+		WorkerMetadataJson:     jsonObjectOrDefault(attrs.WorkerMetadataJSON),
+		MetricsJson:            jsonObjectOrDefault(attrs.MetricsJSON),
+		NextAction:             nullString(attrs.NextAction),
+		DetentSessionID:        nullPositiveInt64(attrs.DetentSessionID),
+		ProviderSessionID:      nullString(attrs.ProviderSessionID),
+		RuntimeIdentityJson:    runtimeIdentityJSON,
+		OwnerGeneration:        s.ownerGeneration(),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("starting work attempt: %w", err)
+	}
+	return attempt.ID, nil
+}
+
+func (s *sqliteStore) RecordWorkAttemptHeartbeat(ctx context.Context, attrs WorkAttemptHeartbeat) error {
+	if attrs.AttemptID <= 0 {
+		return errors.New("attempt_id is required")
+	}
+	heartbeatAt, err := optionalTimestamp("heartbeat_at", attrs.HeartbeatAt)
+	if err != nil {
+		return err
+	}
+	leaseExpiresAt, err := optionalTimestamp("lease_expires_at", attrs.LeaseExpiresAt)
+	if err != nil {
+		return err
+	}
+	runtimeIdentityJSON, err := marshalRuntimeIdentity(attrs.RuntimeIdentity)
+	if err != nil {
+		return err
+	}
+
+	rows, err := s.queries.UpdateWorkAttemptHeartbeat(ctx, sqlc.UpdateWorkAttemptHeartbeatParams{
+		HeartbeatAt:            heartbeatAt,
+		LeaseExpiresAt:         leaseExpiresAt,
+		Phase:                  nullString(attrs.Phase),
+		StatusMessage:          nullString(attrs.StatusMessage),
+		CurrentStep:            nullOptionalInt64(attrs.CurrentStep),
+		TotalSteps:             nullOptionalInt64(attrs.TotalSteps),
+		ProgressPercent:        nullOptionalInt64(attrs.ProgressPercent),
+		CurrentCommand:         nullString(attrs.CurrentCommand),
+		WaitReason:             nullString(attrs.WaitReason),
+		GithubRateSnapshotJson: jsonObjectOrDefault(attrs.GitHubRateSnapshotJSON),
+		CiState:                nullString(attrs.CIState),
+		CapacitySnapshotJson:   jsonObjectOrDefault(attrs.CapacitySnapshotJSON),
+		WorkerMetadataJson:     jsonObjectOrDefault(attrs.WorkerMetadataJSON),
+		MetricsJson:            jsonObjectOrDefault(attrs.MetricsJSON),
+		NextAction:             nullString(attrs.NextAction),
+		ErrorClass:             nullString(attrs.ErrorClass),
+		ErrorMessage:           nullString(attrs.ErrorMessage),
+		DetentSessionID:        nullPositiveInt64(attrs.DetentSessionID),
+		ProviderSessionID:      nullString(attrs.ProviderSessionID),
+		RuntimeIdentityJson:    runtimeIdentityJSON,
+		WorkAttemptID:          attrs.AttemptID,
+	})
+	if err != nil {
+		return fmt.Errorf("recording work attempt heartbeat: %w", err)
+	}
+	if rows == 0 {
+		attempt, err := s.WorkAttempt(ctx, attrs.AttemptID)
+		if err != nil {
+			return err
+		}
+		if !attempt.CompletedAt.IsZero() {
+			return fmt.Errorf("%w: %d", ErrWorkAttemptTerminal, attrs.AttemptID)
+		}
+	}
+	return requireAffected(rows, "work attempt", attrs.AttemptID)
+}
+
+func (s *sqliteStore) CompleteWorkAttempt(ctx context.Context, attrs WorkAttemptCompletion) error {
+	if attrs.AttemptID <= 0 {
+		return errors.New("attempt_id is required")
+	}
+	completedAt, err := requiredTimestamp("completed_at", attrs.CompletedAt)
+	if err != nil {
+		return err
+	}
+	status := attrs.Status
+	if status == "" {
+		status = WorkAttemptStatusTerminal
+	}
+	if status != WorkAttemptStatusTerminal {
+		return fmt.Errorf("status = %q, want %q", status, WorkAttemptStatusTerminal)
+	}
+	terminalState := attrs.TerminalState
+	if terminalState == "" {
+		return errors.New("terminal_state is required")
+	}
+	runtimeIdentityJSON, err := marshalRuntimeIdentity(attrs.RuntimeIdentity)
+	if err != nil {
+		return err
+	}
+
+	queries := s.queries
+	var tx *sql.Tx
+	if strings.TrimSpace(attrs.SessionFinalState) != "" {
+		tx, err = s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin work attempt completion: %w", err)
+		}
+		defer func() {
+			_ = tx.Rollback()
+		}()
+		queries = queries.WithTx(tx)
+	}
+
+	rows, err := queries.CompleteWorkAttempt(ctx, sqlc.CompleteWorkAttemptParams{
+		Status:                 string(status),
+		TerminalState:          nullString(string(terminalState)),
+		CompletedAt:            sql.NullString{String: completedAt, Valid: true},
+		HeartbeatAt:            sql.NullString{String: completedAt, Valid: true},
+		LeaseExpiresAt:         sql.NullString{},
+		ErrorClass:             nullString(attrs.ErrorClass),
+		ErrorMessage:           nullString(attrs.ErrorMessage),
+		Phase:                  nullString(attrs.Phase),
+		StatusMessage:          nullString(attrs.StatusMessage),
+		WaitReason:             nullString(attrs.WaitReason),
+		GithubRateSnapshotJson: jsonObjectOrDefault(attrs.GitHubRateSnapshotJSON),
+		CiState:                nullString(attrs.CIState),
+		CapacitySnapshotJson:   jsonObjectOrDefault(attrs.CapacitySnapshotJSON),
+		WorkerMetadataJson:     completionMetadataJSON(attrs.WorkerMetadataJSON),
+		MetricsJson:            jsonObjectOrDefault(attrs.MetricsJSON),
+		NextAction:             nullString(attrs.NextAction),
+		DetentSessionID:        nullPositiveInt64(attrs.DetentSessionID),
+		ProviderSessionID:      nullString(attrs.ProviderSessionID),
+		RuntimeIdentityJson:    runtimeIdentityJSON,
+		WorkAttemptID:          attrs.AttemptID,
+	})
+	if err != nil {
+		return fmt.Errorf("completing work attempt: %w", err)
+	}
+	if err := requireAffected(rows, "work attempt", attrs.AttemptID); err != nil {
+		return err
+	}
+	if tx == nil {
+		return nil
+	}
+	if err := queries.UpdateCodexSessionFinalStateByWorkAttempt(ctx, sqlc.UpdateCodexSessionFinalStateByWorkAttemptParams{
+		FinalState:    nullString(attrs.SessionFinalState),
+		CompletedAt:   sql.NullString{String: completedAt, Valid: true},
+		WorkAttemptID: nullPositiveInt64(attrs.AttemptID),
+	}); err != nil {
+		return fmt.Errorf("updating work attempt session final state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit work attempt completion: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) WorkAttempt(ctx context.Context, id int64) (WorkAttempt, error) {
+	if id <= 0 {
+		return WorkAttempt{}, ErrNotFound
+	}
+	row, err := s.queries.GetWorkAttempt(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return WorkAttempt{}, ErrNotFound
+		}
+		return WorkAttempt{}, fmt.Errorf("reading work attempt: %w", err)
+	}
+	return workAttemptFromRow(row)
+}
+
+func (s *sqliteStore) UpdateTerminalWorkAttemptWait(ctx context.Context, attrs WorkAttemptTerminalWaitUpdate) error {
+	if attrs.AttemptID <= 0 {
+		return errors.New("attempt_id is required")
+	}
+	if strings.TrimSpace(attrs.ExpectedErrorClass) == "" {
+		return errors.New("expected_error_class is required")
+	}
+	if attrs.TerminalState == "" {
+		return errors.New("terminal_state is required")
+	}
+	rows, err := s.queries.UpdateTerminalWorkAttemptWait(ctx, sqlc.UpdateTerminalWorkAttemptWaitParams{
+		TerminalState:      nullString(string(attrs.TerminalState)),
+		ErrorClass:         nullString(attrs.ErrorClass),
+		ErrorMessage:       nullString(attrs.ErrorMessage),
+		Phase:              nullString(attrs.Phase),
+		StatusMessage:      nullString(attrs.StatusMessage),
+		WorkerMetadataJson: completionMetadataJSON(attrs.WorkerMetadataJSON),
+		WorkAttemptID:      attrs.AttemptID,
+		ExpectedErrorClass: nullString(attrs.ExpectedErrorClass),
+	})
+	if err != nil {
+		return fmt.Errorf("updating terminal work attempt wait: %w", err)
+	}
+	return requireAffected(rows, "work attempt", attrs.AttemptID)
+}
+
+func (s *sqliteStore) ListActiveWorkAttempts(ctx context.Context, query WorkAttemptQuery) ([]WorkAttempt, error) {
+	excluded := emptyGenerations
+	if query.ExcludeLiveForeignGenerations {
+		var err error
+		excluded, err = s.liveForeignGenerationsJSON(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	rows, err := s.queries.ListActiveWorkAttempts(ctx, sqlc.ListActiveWorkAttemptsParams{
+		FilterProjectID:        strings.TrimSpace(query.ProjectID),
+		LiveForeignGenerations: excluded,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing active work attempts: %w", err)
+	}
+	attempts := make([]WorkAttempt, 0, len(rows))
+	for _, row := range rows {
+		attempt, err := workAttemptFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		attempts = append(attempts, attempt)
+	}
+	return attempts, nil
+}
+
+func (s *sqliteStore) ListRecentTerminalWorkAttempts(ctx context.Context, query WorkAttemptHistoryQuery) ([]WorkAttempt, error) {
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.queries.ListRecentTerminalWorkAttempts(ctx, sqlc.ListRecentTerminalWorkAttemptsParams{
+		FilterProjectID:  strings.TrimSpace(query.ProjectID),
+		FilterWorkerType: strings.TrimSpace(query.WorkerType),
+		IssueID:          strings.TrimSpace(query.IssueID),
+		Identifier:       strings.TrimSpace(query.Identifier),
+		IssueURL:         strings.TrimSpace(query.IssueURL),
+		ResultLimit:      int64(limit),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing recent terminal work attempts: %w", err)
+	}
+	return workAttemptsFromRows(rows)
+}
+
+func (s *sqliteStore) ListPendingForgeAvailabilityWaits(ctx context.Context, projectID string) ([]WorkAttempt, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil, errors.New("project_id is required")
+	}
+	rows, err := s.queries.ListPendingForgeAvailabilityWaits(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("listing pending forge availability waits: %w", err)
+	}
+	return workAttemptsFromRows(rows)
+}
+
+func (s *sqliteStore) ListPendingWorkAttemptCapacityReleases(ctx context.Context, projectID string) ([]WorkAttempt, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil, errors.New("project_id is required")
+	}
+	excluded, err := s.liveForeignGenerationsJSON(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListPendingWorkAttemptCapacityReleases(ctx, sqlc.ListPendingWorkAttemptCapacityReleasesParams{
+		ProjectID:              projectID,
+		LiveForeignGenerations: excluded,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing pending work attempt capacity releases: %w", err)
+	}
+	return workAttemptsFromRows(rows)
+}
+
+func (s *sqliteStore) ClearWorkAttemptCapacityRelease(ctx context.Context, attemptID int64) error {
+	if attemptID <= 0 {
+		return errors.New("attempt_id is required")
+	}
+	if err := s.queries.ClearWorkAttemptCapacityRelease(ctx, attemptID); err != nil {
+		return fmt.Errorf("clearing work attempt capacity release: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) UpdateOperatorStop(ctx context.Context, attrs OperatorStopUpdate) error {
+	if attrs.AttemptID <= 0 {
+		return ErrNotFound
+	}
+	updated, err := s.queries.UpdateOperatorStop(ctx, sqlc.UpdateOperatorStopParams{
+		Phase:              nullString(attrs.Phase),
+		StatusMessage:      nullString(attrs.StatusMessage),
+		WorkerMetadataJson: attrs.WorkerMetadataJSON,
+		NextAction:         nullString(attrs.NextAction),
+		WorkAttemptID:      attrs.AttemptID,
+	})
+	if err != nil {
+		return fmt.Errorf("updating operator stop: %w", err)
+	}
+	if updated == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *sqliteStore) ListPendingOperatorStops(ctx context.Context, projectID string) ([]WorkAttempt, error) {
+	excluded, err := s.liveForeignGenerationsJSON(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListPendingOperatorStops(ctx, sqlc.ListPendingOperatorStopsParams{
+		ProjectID:              strings.TrimSpace(projectID),
+		LiveForeignGenerations: excluded,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing pending operator stops: %w", err)
+	}
+	return workAttemptsFromRows(rows)
+}
+
+func (s *sqliteStore) TimeoutExpiredWorkAttempts(ctx context.Context, attrs WorkAttemptTimeout) ([]WorkAttempt, error) {
+	now, err := requiredTimestamp("now", attrs.Now)
+	if err != nil {
+		return nil, err
+	}
+	terminalState := attrs.TerminalState
+	if terminalState == "" {
+		terminalState = WorkAttemptTerminalTimedOut
+	}
+	errorClass := attrs.ErrorClass
+	if strings.TrimSpace(errorClass) == "" {
+		errorClass = "lease_expired"
+	}
+	errorMessage := attrs.ErrorMessage
+	if strings.TrimSpace(errorMessage) == "" {
+		errorMessage = "work attempt lease expired"
+	}
+	excludedIDs := attrs.ExcludeAttemptIDs
+	if excludedIDs == nil {
+		excludedIDs = []int64{}
+	}
+	excluded, err := json.Marshal(excludedIDs)
+	if err != nil {
+		return nil, fmt.Errorf("encoding excluded work attempts: %w", err)
+	}
+	confirmedGone, err := json.Marshal(attrs.ConfirmedGoneAttemptIDs)
+	if err != nil {
+		return nil, fmt.Errorf("encoding processless work attempts: %w", err)
+	}
+	liveForeign, err := s.liveForeignGenerationsJSON(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.TimeoutExpiredWorkAttempts(ctx, sqlc.TimeoutExpiredWorkAttemptsParams{
+		ExcludeAttemptIds:       string(excluded),
+		ConfirmedGoneAttemptIds: string(confirmedGone),
+		Status:                  string(WorkAttemptStatusTerminal),
+		TerminalState:           nullString(string(terminalState)),
+		CompletedAt:             sql.NullString{String: now, Valid: true},
+		HeartbeatAt:             sql.NullString{String: now, Valid: true},
+		ErrorClass:              nullString(errorClass),
+		ErrorMessage:            nullString(errorMessage),
+		Phase:                   nullString("recovered"),
+		StatusMessage:           nullString(errorMessage),
+		FilterProjectID:         strings.TrimSpace(attrs.ProjectID),
+		LeaseExpiresAt:          sql.NullString{String: now, Valid: true},
+		LiveForeignGenerations:  liveForeign,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("timing out expired work attempts: %w", err)
+	}
+	return workAttemptsFromRows(rows)
+}
+
+func (s *sqliteStore) RecordSchedulerDecision(ctx context.Context, attrs SchedulerDecision) (int64, error) {
+	projectID := strings.TrimSpace(attrs.ProjectID)
+	if projectID == "" {
+		return 0, errors.New("project_id is required")
+	}
+	decisionAt, err := requiredTimestamp("decision_at", attrs.DecisionAt)
+	if err != nil {
+		return 0, err
+	}
+	result := attrs.Result
+	if result == "" {
+		if attrs.Selected {
+			result = SchedulerDecisionResultSelected
+		} else {
+			result = SchedulerDecisionResultSkipped
+		}
+	}
+	selected := attrs.Selected || result == SchedulerDecisionResultSelected
+
+	decision, err := s.queries.CreateSchedulerDecision(ctx, sqlc.CreateSchedulerDecisionParams{
+		ProjectID:              projectID,
+		IssueID:                nullString(attrs.IssueID),
+		Identifier:             nullString(attrs.Identifier),
+		IssueURL:               nullString(attrs.IssueURL),
+		PrNumber:               nullOptionalInt64(attrs.PRNumber),
+		Repo:                   nullString(attrs.Repo),
+		Lane:                   nullString(attrs.Lane),
+		QueuePosition:          nonNegative(int64(attrs.QueuePosition)),
+		Result:                 string(result),
+		Reason:                 nullString(attrs.Reason),
+		Selected:               boolInt64(selected),
+		Retry:                  boolInt64(attrs.Retry),
+		AttemptNumber:          nonNegative(int64(attrs.AttemptNumber)),
+		WorkerHost:             nullString(attrs.WorkerHost),
+		DecisionAt:             decisionAt,
+		WaitReason:             nullString(attrs.WaitReason),
+		CapacitySnapshotJson:   jsonObjectOrDefault(attrs.CapacitySnapshotJSON),
+		GithubRateSnapshotJson: jsonObjectOrDefault(attrs.GitHubRateSnapshotJSON),
+		MetadataJson:           jsonObjectOrDefault(attrs.MetadataJSON),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("recording scheduler decision: %w", err)
+	}
+	return decision.ID, nil
+}
+
+func (s *sqliteStore) RecordSchedulerDecisions(ctx context.Context, decisions []SchedulerDecision) ([]int64, error) {
+	if len(decisions) == 0 {
+		return nil, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("starting scheduler evidence transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	writer := &sqliteStore{queries: s.queries.WithTx(tx)}
+	ids := make([]int64, 0, len(decisions))
+	for _, decision := range decisions {
+		id, err := writer.RecordSchedulerDecision(ctx, decision)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing scheduler evidence: %w", err)
+	}
+	return ids, nil
+}
+
+func (s *sqliteStore) ListRecentSchedulerDecisions(ctx context.Context, query SchedulerDecisionQuery) ([]SchedulerDecision, error) {
+	limit := query.Limit
+	if limit <= 0 {
+		limit = defaultSchedulerDecisionLimit
+	}
+	var rows []sqlc.SchedulerDecision
+	var err error
+	if projectID := strings.TrimSpace(query.ProjectID); projectID != "" {
+		rows, err = s.queries.ListRecentProjectSchedulerDecisions(ctx, sqlc.ListRecentProjectSchedulerDecisionsParams{
+			ProjectID: projectID,
+			Limit:     int64(limit),
+		})
+	} else {
+		rows, err = s.queries.ListRecentSchedulerDecisions(ctx, int64(limit))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing scheduler decisions: %w", err)
+	}
+	decisions := make([]SchedulerDecision, 0, len(rows))
+	for _, row := range rows {
+		decision, err := schedulerDecisionFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		decisions = append(decisions, decision)
+	}
+	return decisions, nil
+}
+
+func (s *sqliteStore) ListIssueSchedulerDecisions(ctx context.Context, query IssueSchedulerDecisionQuery) ([]SchedulerDecision, error) {
+	identity := normalizeIssueIdentity(query.Identity)
+	if identity.ProjectID == "" {
+		return nil, ErrProjectRequired
+	}
+	if identity.IssueID == "" && identity.Identifier == "" && identity.IssueURL == "" {
+		return []SchedulerDecision{}, nil
+	}
+	limit := query.Limit
+	if limit <= 0 {
+		limit = defaultSchedulerDecisionLimit
+	}
+	rows, err := s.queries.ListIssueSchedulerDecisions(ctx, sqlc.ListIssueSchedulerDecisionsParams{
+		ProjectID:  identity.ProjectID,
+		IssueID:    identity.IssueID,
+		Identifier: identity.Identifier,
+		IssueURL:   identity.IssueURL,
+		Limit:      int64(limit),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing issue scheduler decisions: %w", err)
+	}
+	decisions := make([]SchedulerDecision, 0, len(rows))
+	for _, row := range rows {
+		decision, err := schedulerDecisionFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		decisions = append(decisions, decision)
+	}
+	return decisions, nil
+}
+
+func (s *sqliteStore) RecordProjectDispatchStatus(ctx context.Context, status ProjectDispatchStatus) error {
+	projectID := strings.TrimSpace(status.ProjectID)
+	if projectID == "" {
+		return errors.New("project_id is required")
+	}
+	observedAt, err := requiredTimestamp("observed_at", status.ObservedAt)
+	if err != nil {
+		return err
+	}
+	allSkippedSince, err := nullableTimestamp("all_skipped_since", status.AllSkippedSince)
+	if err != nil {
+		return err
+	}
+	lastSelectedAt, err := nullableTimestamp("last_selected_at", status.LastSelectedAt)
+	if err != nil {
+		return err
+	}
+	row, err := s.queries.UpsertProjectDispatchStatus(ctx, sqlc.UpsertProjectDispatchStatusParams{
+		ProjectID:              projectID,
+		CandidateCount:         nonNegative(int64(status.CandidateCount)),
+		EligibleCandidateCount: nonNegative(int64(status.EligibleCandidateCount)),
+		CandidateFingerprint:   strings.TrimSpace(status.CandidateFingerprint),
+		SelectedCount:          nonNegative(int64(status.SelectedCount)),
+		SkippedCount:           nonNegative(int64(status.SkippedCount)),
+		WaitReason:             nullString(status.WaitReason),
+		WaitReasonCode:         nullString(status.WaitReasonCode),
+		AllSkippedSince:        allSkippedSince,
+		LastSelectedAt:         lastSelectedAt,
+		ObservedAt:             observedAt,
+	})
+	if err != nil {
+		return fmt.Errorf("recording project dispatch status: %w", err)
+	}
+	if _, err := projectDispatchStatusFromRow(row); err != nil {
+		return fmt.Errorf("reading recorded project dispatch status: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) ProjectDispatchStatus(ctx context.Context, projectID string) (ProjectDispatchStatus, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return ProjectDispatchStatus{}, errors.New("project_id is required")
+	}
+	row, err := s.queries.GetProjectDispatchStatus(ctx, projectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProjectDispatchStatus{}, ErrNotFound
+	}
+	if err != nil {
+		return ProjectDispatchStatus{}, fmt.Errorf("reading project dispatch status: %w", err)
+	}
+	status, err := projectDispatchStatusFromRow(row)
+	if err != nil {
+		return ProjectDispatchStatus{}, fmt.Errorf("decoding project dispatch status: %w", err)
+	}
+	return status, nil
+}
+
+func projectDispatchStatusFromRow(row sqlc.ProjectDispatchStatus) (ProjectDispatchStatus, error) {
+	allSkippedSince, err := parseOptionalTimestamp("all_skipped_since", row.AllSkippedSince)
+	if err != nil {
+		return ProjectDispatchStatus{}, err
+	}
+	lastSelectedAt, err := parseOptionalTimestamp("last_selected_at", row.LastSelectedAt)
+	if err != nil {
+		return ProjectDispatchStatus{}, err
+	}
+	observedAt, err := parseTimestamp("observed_at", row.ObservedAt)
+	if err != nil {
+		return ProjectDispatchStatus{}, err
+	}
+	return ProjectDispatchStatus{
+		ProjectID:              row.ProjectID,
+		CandidateCount:         int(row.CandidateCount),
+		EligibleCandidateCount: int(row.EligibleCandidateCount),
+		CandidateFingerprint:   row.CandidateFingerprint,
+		SelectedCount:          int(row.SelectedCount),
+		SkippedCount:           int(row.SkippedCount),
+		WaitReason:             row.WaitReason.String,
+		WaitReasonCode:         row.WaitReasonCode.String,
+		AllSkippedSince:        optionalTimePointer(allSkippedSince),
+		LastSelectedAt:         optionalTimePointer(lastSelectedAt),
+		ObservedAt:             observedAt,
+	}, nil
+}
+
+func optionalTimePointer(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	return &value
+}
+
+func workAttemptsFromRows(rows []sqlc.WorkAttempt) ([]WorkAttempt, error) {
+	attempts := make([]WorkAttempt, 0, len(rows))
+	for _, row := range rows {
+		attempt, err := workAttemptFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		attempts = append(attempts, attempt)
+	}
+	return attempts, nil
+}
+
+func workAttemptFromRow(row sqlc.WorkAttempt) (WorkAttempt, error) {
+	startedAt, err := parseTimestamp("started_at", row.StartedAt)
+	if err != nil {
+		return WorkAttempt{}, err
+	}
+	leaseExpiresAt, err := parseOptionalTimestamp("lease_expires_at", row.LeaseExpiresAt)
+	if err != nil {
+		return WorkAttempt{}, err
+	}
+	heartbeatAt, err := parseOptionalTimestamp("heartbeat_at", row.HeartbeatAt)
+	if err != nil {
+		return WorkAttempt{}, err
+	}
+	completedAt, err := parseOptionalTimestamp("completed_at", row.CompletedAt)
+	if err != nil {
+		return WorkAttempt{}, err
+	}
+	runtimeIdentity, err := unmarshalRuntimeIdentity(row.RuntimeIdentityJson)
+	if err != nil {
+		return WorkAttempt{}, err
+	}
+
+	attempt := WorkAttempt{
+		ID:                     row.ID,
+		ProjectID:              row.ProjectID,
+		IssueID:                row.IssueID.String,
+		Identifier:             row.Identifier.String,
+		IssueURL:               row.IssueURL.String,
+		PRNumber:               optionalInt64Pointer(row.PrNumber),
+		Repo:                   row.Repo.String,
+		WorkerType:             row.WorkerType,
+		WorkerHost:             row.WorkerHost.String,
+		Lane:                   row.Lane.String,
+		AttemptNumber:          int(row.AttemptNumber),
+		Status:                 WorkAttemptStatus(row.Status),
+		StartedAt:              startedAt,
+		LeaseExpiresAt:         leaseExpiresAt,
+		HeartbeatAt:            heartbeatAt,
+		CompletedAt:            completedAt,
+		TerminalState:          WorkAttemptTerminalState(row.TerminalState.String),
+		ErrorClass:             row.ErrorClass.String,
+		ErrorMessage:           row.ErrorMessage.String,
+		Phase:                  row.Phase.String,
+		StatusMessage:          row.StatusMessage.String,
+		CurrentStep:            optionalInt64Pointer(row.CurrentStep),
+		TotalSteps:             optionalInt64Pointer(row.TotalSteps),
+		ProgressPercent:        optionalInt64Pointer(row.ProgressPercent),
+		CurrentCommand:         row.CurrentCommand.String,
+		WaitReason:             row.WaitReason.String,
+		GitHubRateSnapshotJSON: jsonObjectOrDefault(row.GithubRateSnapshotJson),
+		CIState:                row.CiState.String,
+		CapacitySnapshotJSON:   jsonObjectOrDefault(row.CapacitySnapshotJson),
+		WorkerMetadataJSON:     jsonObjectOrDefault(row.WorkerMetadataJson),
+		MetricsJSON:            jsonObjectOrDefault(row.MetricsJson),
+		NextAction:             row.NextAction.String,
+		ProviderSessionID:      row.ProviderSessionID.String,
+		RuntimeIdentity:        runtimeIdentity,
+	}
+	if row.DetentSessionID.Valid {
+		attempt.DetentSessionID = row.DetentSessionID.Int64
+	}
+	if row.OwnerGeneration.Valid {
+		attempt.OwnerGeneration = row.OwnerGeneration.Int64
+	}
+	return attempt, nil
+}
+
+func marshalRuntimeIdentity(identity agentidentity.Identity) (string, error) {
+	raw, err := json.Marshal(identity.Normalize())
+	if err != nil {
+		return "", fmt.Errorf("marshal runtime identity: %w", err)
+	}
+	return string(raw), nil
+}
+
+func unmarshalRuntimeIdentity(raw string) (agentidentity.Identity, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "{}" {
+		return agentidentity.Identity{}, nil
+	}
+	var identity agentidentity.Identity
+	if err := json.Unmarshal([]byte(raw), &identity); err != nil {
+		return agentidentity.Identity{}, fmt.Errorf("unmarshal runtime identity: %w", err)
+	}
+	return identity.Normalize(), nil
+}
+
+func schedulerDecisionFromRow(row sqlc.SchedulerDecision) (SchedulerDecision, error) {
+	decisionAt, err := parseTimestamp("decision_at", row.DecisionAt)
+	if err != nil {
+		return SchedulerDecision{}, err
+	}
+
+	return SchedulerDecision{
+		ID:                     row.ID,
+		ProjectID:              row.ProjectID,
+		IssueID:                row.IssueID.String,
+		Identifier:             row.Identifier.String,
+		IssueURL:               row.IssueURL.String,
+		PRNumber:               optionalInt64Pointer(row.PrNumber),
+		Repo:                   row.Repo.String,
+		Lane:                   row.Lane.String,
+		QueuePosition:          int(row.QueuePosition),
+		Result:                 SchedulerDecisionResult(row.Result),
+		Reason:                 row.Reason.String,
+		Selected:               row.Selected != 0,
+		Retry:                  row.Retry != 0,
+		AttemptNumber:          int(row.AttemptNumber),
+		WorkerHost:             row.WorkerHost.String,
+		DecisionAt:             decisionAt,
+		WaitReason:             row.WaitReason.String,
+		CapacitySnapshotJSON:   jsonObjectOrDefault(row.CapacitySnapshotJson),
+		GitHubRateSnapshotJSON: jsonObjectOrDefault(row.GithubRateSnapshotJson),
+		MetadataJSON:           jsonObjectOrDefault(row.MetadataJson),
+	}, nil
+}
+
+func parseOptionalTimestamp(name string, value sql.NullString) (time.Time, error) {
+	if !value.Valid || strings.TrimSpace(value.String) == "" {
+		return time.Time{}, nil
+	}
+	return parseTimestamp(name, value.String)
+}
+
+func optionalInt64Pointer(value sql.NullInt64) *int64 {
+	if !value.Valid {
+		return nil
+	}
+	v := value.Int64
+	return &v
+}
+
+func jsonObjectOrDefault(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "{}"
+	}
+	return trimmed
+}
+
+func completionMetadataJSON(value string) string {
+	return jsonObjectOrDefault(value)
+}
+
+func boolInt64(value bool) int64 {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func (s *sqliteStore) ListLocalAdmittedIssueIDs(ctx context.Context, projectID string) ([]string, error) {
+	excluded, err := s.liveForeignGenerationsJSON(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListLocalAdmittedIssueIDs(ctx, sqlc.ListLocalAdmittedIssueIDsParams{
+		ProjectID:              strings.TrimSpace(projectID),
+		LiveForeignGenerations: excluded,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing local admitted issues: %w", err)
+	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.Valid && row.String != "" {
+			ids = append(ids, row.String)
+		}
+	}
+	return ids, nil
+}
