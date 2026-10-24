@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -85,6 +86,7 @@ func TestActivityIssueRead(t *testing.T) {
 		reset                      bool
 	}{
 		{name: "two overlapping attempts yield one running issue", entries: []entry{{"Ready", 0}, {"Build", 20}}, live: true, attempts: 2, worked: 80},
+		{name: "live terminal candidates are deduplicated ordered and capped", entries: []entry{{"Ready", 0}, {"Shipped", 90}}, live: true, finished: true, attempts: 1, worked: 70},
 		{name: "parked holding issue without live attempt omitted", entries: []entry{{"Ready", 0}, {"Waiting", 20}}, attempts: 1},
 		{name: "active issue without live attempt omitted", entries: []entry{{"Ready", 0}}, attempts: 1},
 		{name: "custom terminal in window with no attempts included", entries: []entry{{"Ready", 0}, {"Shipped", 90}}, finished: true},
@@ -191,6 +193,36 @@ func TestActivityIssueRead(t *testing.T) {
 			}
 			assertActivityQueryPlan(t, db, activityIssueSamplesQuery, []any{scope.organization, project, ids[0], activityIssueHistoryLimit + 1}, "analytics_activity_issue_edges")
 			assertActivityQueryPlan(t, db, activityIssueCandidatesQuery, []any{sql.Named("org", scope.organization), sql.Named("project", project), sql.Named("from", formatHubTime(base)), sql.Named("now", formatHubTime(now)), sql.Named("limit", 100)}, "issues_activity_terminal")
+			if tt.live && tt.finished {
+				slices.Sort(ids)
+				for _, newer := range []bool{false, true} {
+					stamp := now
+					if newer {
+						stamp = stamp.Add(time.Second)
+					}
+					if _, err := db.ExecContext(t.Context(), `UPDATE issues SET updated_at=?,terminal_entered_at=? WHERE native_id=?`, formatHubTime(stamp), formatHubTime(base.Add(95*time.Second)), ids[1]); err != nil {
+						t.Fatal(err)
+					}
+					for _, limit := range []int{1, 2, 3} {
+						got, err := readActivityIssueCandidates(t.Context(), db, string(scope.organization), project, base, now, limit)
+						if err != nil {
+							t.Fatal(err)
+						}
+						want := slices.Clone(ids)
+						if newer {
+							slices.Reverse(want)
+						}
+						want = want[:min(len(want), limit)]
+						var actual []string
+						for _, candidate := range got {
+							actual = append(actual, candidate.issue.WorkItemID)
+						}
+						if !slices.Equal(actual, want) {
+							t.Fatalf("newer=%t limit=%d candidates=%v want=%v", newer, limit, actual, want)
+						}
+					}
+				}
+			}
 
 			out := operatortool.ActivityReport{OrganizationID: string(scope.organization), ObservedAt: now, Window: operatortool.AnalyticsWindow{From: base.Add(50 * time.Second), To: now}}
 			ctx := t.Context()
@@ -209,7 +241,9 @@ func TestActivityIssueRead(t *testing.T) {
 				want = 1
 			}
 			if tt.finished {
-				rows = out.FinishedIssues
+				if !tt.live {
+					rows = out.FinishedIssues
+				}
 				want = 2
 				if tt.reporter {
 					want = 1

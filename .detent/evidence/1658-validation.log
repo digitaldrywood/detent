@@ -1,0 +1,7 @@
+f4f55477324acd8213396fb88502b4f20408afba
+go version go1.26.10 linux/amd64
+add7ceea2dd7fcceac2301dfde256b35d637a62afa588d3fff03d1657527e505  internal/hubserver/operator_activity_issues.go
+1ccab565280ad0d3f03fa368975d8d01e71be6f8eae36d1d7ce6be07488527c8  internal/hubserver/operator_activity_issues_test.go
+GOTOOLCHAIN=go1.26.10 GOMAXPROCS=4 go test -p=4 -short -timeout=240s ./internal/hubserver -count=1
+ok  	github.com/digitaldrywood/detent/internal/hubserver	18.768s
+GOTOOLCHAIN=go1.26.10 GOMAXPROCS=4 go vet -p=4 ./internal/hubserver
