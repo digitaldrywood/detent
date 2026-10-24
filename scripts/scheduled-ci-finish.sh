@@ -99,6 +99,26 @@ if [ "$head_sha" != "$CI_DEVELOP_SHA" ]; then
   exit 0
 fi
 
+required_checks="${DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON:-[]}"
+required_checks="$(jq -ce '
+  if type == "array" and all(.[]; type == "string" and length > 0)
+  then . + ["scheduled-full-ci", "release-security-audit"] | unique
+  else error("release requirements must be an array of nonempty names") end
+' <<< "$required_checks")"
+
+required_statuses() {
+  gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$CI_DEVELOP_SHA/status?per_page=100" |
+    jq -ce --arg sha "$CI_DEVELOP_SHA" --argjson required "$required_checks" '
+      select(all(.[]; .sha == $sha))
+      | [.[].statuses[]] as $statuses
+      | [$required[] as $name
+          | ($statuses | map(select(.context == $name)) | max_by(.id))
+          | select(.state == "success" and (.id | type == "number") and .id > 0)
+          | {name: .context, status: "completed", conclusion: "success", status_id: .id}]
+      | select(length == ($required | length))
+    '
+}
+
 git fetch --tags --force origin
 for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list "$series.*"); do
   if [[ "$existing" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$(git cat-file -t "refs/tags/$existing")" = tag ]; then
@@ -106,16 +126,13 @@ for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list "$series.*"); do
     if [[ "$existing_message" == *'"name":"scheduled-full-ci"'* ]]; then
       existing_provenance="${existing_message#*<!-- detent-release-provenance:}"
       existing_provenance="${existing_provenance%% -->*}"
-      existing_status="$(jq -er --arg repository "$GITHUB_REPOSITORY" --arg tag "$existing" --arg commit "$CI_DEVELOP_SHA" '
-        select(.schema == 1 and .repository == $repository and .tag == $tag and .commit == $commit)
-        | [.checks[] | select(.name == "scheduled-full-ci" and .status == "completed" and .conclusion == "success")]
-        | select(length == 1) | .[0].status_id | select(type == "number" and . > 0)
-      ' <<< "$existing_provenance")"
-      existing_evidence="$(gh api "repos/$GITHUB_REPOSITORY/commits/$CI_DEVELOP_SHA/status")"
-      if ! jq -e --arg commit "$CI_DEVELOP_SHA" --argjson status_id "$existing_status" '
-        .sha == $commit and any(.statuses[]; .context == "scheduled-full-ci" and .id == $status_id and .state == "success")
-      ' <<< "$existing_evidence" > /dev/null; then
-        echo "Release $existing evidence is missing or superseded; refusing to redispatch its immutable tag." >&2
+      if ! checks="$(required_statuses)" || ! jq -e \
+        --arg repository "$GITHUB_REPOSITORY" --arg tag "$existing" --arg commit "$CI_DEVELOP_SHA" \
+        --argjson checks "$checks" '
+          .schema == 1 and .repository == $repository and .tag == $tag and .commit == $commit
+          and (.checks | sort_by(.name)) == ($checks | sort_by(.name))
+        ' <<< "$existing_provenance" > /dev/null; then
+        echo "Release $existing required status evidence is missing, failed, superseded, or incompatible with its provenance; refusing to redispatch its immutable tag." >&2
         false
       fi
       echo "Validated release $existing already contains $CI_DEVELOP_SHA; preserving its tag and checking release dispatch."
@@ -127,20 +144,10 @@ for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list "$series.*"); do
     fi
   fi
 done
-status_id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$CI_DEVELOP_SHA" -f state=success -f context=scheduled-full-ci -f target_url="$run_url" -f description='Full release validation passed' --jq .id)"
-required_checks="${DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON:-[]}"
-jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' <<< "$required_checks" > /dev/null
-required_names="$(jq -r '.[] | select(. != "scheduled-full-ci")' <<< "$required_checks")"
-if [ -n "$required_names" ]; then
-  statuses="$(gh api "repos/$GITHUB_REPOSITORY/commits/$CI_DEVELOP_SHA/status")"
-  while IFS= read -r name; do
-    if ! jq -e --arg sha "$CI_DEVELOP_SHA" --arg name "$name" '
-      .sha == $sha and any(.statuses[]; .context == $name and .state == "success")
-    ' <<< "$statuses" > /dev/null; then
-      echo "Release $series awaits required status $name on $CI_DEVELOP_SHA; not tagging."
-      exit 0
-    fi
-  done <<< "$required_names"
+gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$CI_DEVELOP_SHA" -f state=success -f context=scheduled-full-ci -f target_url="$run_url" -f description='Full release validation passed' > /dev/null
+if ! checks="$(required_statuses)"; then
+  echo "Release $series awaits required status release-security-audit and all configured checks on $CI_DEVELOP_SHA; missing, failed, or superseded evidence; not tagging."
+  exit 0
 fi
 git config user.name 'github-actions[bot]'
 git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -151,11 +158,13 @@ else
   tag="$series.0"
 fi
 
+provenance="$(jq -cn --arg repository "$GITHUB_REPOSITORY" --arg tag "$tag" --arg commit "$CI_DEVELOP_SHA" --argjson checks "$checks" \
+  '{schema:1, repository:$repository, tag:$tag, commit:$commit, checks:$checks}')"
 message_file="$scratch_dir/scheduled-ci-tag-message"
 cat > "$message_file" <<EOF
 Validated release build $tag
 
-<!-- detent-release-provenance:{"schema":1,"repository":"$GITHUB_REPOSITORY","tag":"$tag","commit":"$CI_DEVELOP_SHA","checks":[{"name":"scheduled-full-ci","status":"completed","conclusion":"success","status_id":$status_id}]} -->
+<!-- detent-release-provenance:$provenance -->
 EOF
 git tag -a "$tag" "$CI_DEVELOP_SHA" -F "$message_file"
 git push origin "refs/tags/$tag"
