@@ -752,25 +752,25 @@ func nativeAdmissionCapacityFull(err error) bool {
 
 func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim nativeClaim, landingCapacity int) (orchestrator.Claimed, error) {
 	if claim.lost {
-		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, orchestrator.ErrSchedulingClaimLost)
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, orchestrator.ErrSchedulingClaimLost)
 	}
 	if err := s.checkClaimPolicyApproval(ctx, issueID, claim.lease.PolicyID); err != nil {
-		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
 	}
 	if err := s.ensureNativeMachine(ctx, claim.source); err != nil {
-		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
 	}
 	renewable, err := s.nativeClaimRenewable(ctx, claim)
 	if err != nil {
-		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
 	}
 	if !renewable {
-		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, orchestrator.ErrSchedulingClaimLost)
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, orchestrator.ErrSchedulingClaimLost)
 	}
 	renewStarted := s.now()
 	lease, err := claim.source.client.renew(ctx, claim.lease, int64(s.leaseTTL/time.Second), landingCapacity)
 	if err != nil {
-		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
 	}
 	claim.lease = lease
 	claim.deadline = nativeLeaseDeadline(renewStarted, lease)
@@ -785,7 +785,7 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 	s.claims[issueID] = nativeTrackerLease(lease)
 	s.mu.Unlock()
 	if err := s.checkClaimRunner(ctx, issueID, claim.lease.PolicyID); err != nil {
-		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
 	}
 	return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(lease)), nil
 }
@@ -911,12 +911,12 @@ func nativeLeaseDeadline(started time.Time, lease tracker.NativeLease) time.Time
 	return started.Add(lease.ExpiresAt.Sub(lease.ServerTime))
 }
 
-func (s *Scheduler) nativeClaimError(issueID string, token tracker.FencingToken, err error) error {
+func (s *Scheduler) nativeClaimError(ctx context.Context, issueID string, token tracker.FencingToken, err error) error {
 	var apiErr *APIError
 	lostAuthority := errors.As(err, &apiErr) && apiErr != nil &&
 		(apiErr.Code == "policy_mismatch" || apiErr.Code == "selector_no_match")
 	if nativeAuthorityLost(err) || lostAuthority {
-		if s.invalidateNativeClaim(issueID, token, err) {
+		if s.invalidateNativeClaim(ctx, issueID, token, err) {
 			return errors.Join(orchestrator.ErrSchedulingClaimLost, runner.ErrExecutionAuthorityUnavailable, err)
 		}
 		return errors.Join(orchestrator.ErrSchedulingClaimLost, err)
@@ -924,7 +924,7 @@ func (s *Scheduler) nativeClaimError(issueID string, token tracker.FencingToken,
 	return err
 }
 
-func (s *Scheduler) invalidateNativeClaim(issueID string, token tracker.FencingToken, cause error) bool {
+func (s *Scheduler) invalidateNativeClaim(ctx context.Context, issueID string, token tracker.FencingToken, cause error) bool {
 	s.mu.Lock()
 	if current, ok := s.nativeClaims[issueID]; ok && current.lease.FencingToken == token {
 		current.lost = true
@@ -940,6 +940,16 @@ func (s *Scheduler) invalidateNativeClaim(issueID string, token tracker.FencingT
 				return true
 			}
 		}
+		s.mu.Unlock()
+		if err := current.source.client.release(ctx, current.lease, "cancelled", true); err != nil && !nativeLeaseLost(err) {
+			slog.Default().Warn("native claim release unavailable", "work_item_id", issueID, "error", err)
+			return true
+		}
+		s.mu.Lock()
+		if successor, ok := s.nativeClaims[issueID]; !ok || successor.lease.ID != current.lease.ID || successor.lease.FencingToken != token {
+			s.mu.Unlock()
+			return false
+		}
 		current.source.client.slotFreed()
 		delete(s.claims, issueID)
 		delete(s.nativeClaims, issueID)
@@ -954,16 +964,16 @@ func (s *Scheduler) ForgetClaim(issueID string) {
 	claim, ok := s.nativeClaims[issueID]
 	s.mu.Unlock()
 	if ok {
-		s.invalidateNativeClaim(issueID, claim.lease.FencingToken, orchestrator.ErrSchedulingClaimLost)
+		s.invalidateNativeClaim(context.Background(), issueID, claim.lease.FencingToken, orchestrator.ErrSchedulingClaimLost)
 	}
 }
 
-func (s *Scheduler) cleanupNativeClaim(issueID string, token tracker.FencingToken) {
+func (s *Scheduler) cleanupNativeClaim(ctx context.Context, issueID string, token tracker.FencingToken) {
 	s.mu.Lock()
 	claim, ok := s.nativeClaims[issueID]
 	s.mu.Unlock()
 	if ok && claim.lost && claim.lease.FencingToken == token {
-		s.invalidateNativeClaim(issueID, token, orchestrator.ErrSchedulingClaimLost)
+		s.invalidateNativeClaim(ctx, issueID, token, orchestrator.ErrSchedulingClaimLost)
 	}
 }
 
