@@ -626,6 +626,15 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err := execution.RecordLanding(guarded, landed); err != nil {
 		t.Fatalf("recording the landing again: %v", err)
 	}
+	if state := h.state(t, issue.ID); state != "Done" {
+		t.Fatalf("after recording landing the item is in %s, want Done", state)
+	}
+	if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); err != nil {
+		t.Fatalf("renewing the attempt that landed the terminal item: %v", err)
+	}
+	if err := guarded.Err(); err != nil {
+		t.Fatalf("landing heartbeat cancelled the merge worker: %v", err)
+	}
 	if github {
 		at := time.Now().UTC()
 		elapsed := int64(time.Millisecond)

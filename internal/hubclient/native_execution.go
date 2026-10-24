@@ -70,6 +70,7 @@ type nativeExecution struct {
 	role                     string
 	conversationContinuation bool
 	settled                  bool
+	landed                   bool
 	change                   *runner.NativeChange
 	finalizationSource       *tracker.NativeChangeReference
 	finalizationAttempt      string

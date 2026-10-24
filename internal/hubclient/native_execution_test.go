@@ -598,6 +598,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 		phase        string
 		age          time.Duration
 		terminal     bool
+		landed       bool
 		lane         string
 		dependency   bool
 		pending      bool
@@ -628,6 +629,12 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 		{name: "worker heartbeat stale", phase: "implementation", age: 90 * time.Second},
 		{name: "terminal work item", phase: "implementation", terminal: true},
 		{name: "terminal work item retains running worker cleanup", phase: "implementation", terminal: true, localWorker: true, wantRetained: true},
+		{name: "landing attempt finishes terminal item", phase: "merging", terminal: true, landed: true, wantRenewed: true},
+		{name: "landing receipt does not renew dead worker", phase: "merging", terminal: true, landed: true, age: 90 * time.Second},
+		{name: "landing receipt does not renew mismatched process", phase: "merging", terminal: true, landed: true, localWorker: true, staleProcess: true, wantRetained: true},
+		{name: "recovered landing attempt finishes terminal item", phase: "merging", terminal: true, landed: true, recovered: true, wantRenewed: true},
+		{name: "recovered landing receipt does not renew stale worker", phase: "merging", terminal: true, landed: true, recovered: true, age: 90 * time.Second},
+		{name: "landing receipt preserves operator hold", phase: "merging", lane: "Blocked", landed: true},
 		{name: "recovered completed worker", phase: "completed", recovered: true},
 		{name: "recovered stale worker", phase: "implementation", age: 90 * time.Second, recovered: true},
 		{name: "recovered operator hold", phase: "implementation", lane: "Blocked", recovered: true},
@@ -658,6 +665,9 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 			}
 			h.scheduler.now = func() time.Time { return now }
 			observation := tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: test.phase, HeartbeatAt: now.Add(-test.age), WorkerLaunch: &tracker.NativeWorkerLaunch{PID: identity.PID, GroupID: identity.GroupID, ProcessStart: identity.StartedAt, PolicyID: h.descriptor.ID, ExecutionVersion: "test", ControlVersion: "test", ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), Protocol: 1, SelectedAt: now}}
+			if test.landed {
+				observation.Landing = &tracker.NativeLandingReceipt{Landed: true, ChangeID: "change_landed", VersionID: "version_landed", HeadSHA: strings.Repeat("a", 40), MergeSHA: strings.Repeat("b", 40)}
+			}
 			if test.staleProcess {
 				observation.WorkerLaunch.ProcessStart = identity.StartedAt.Add(time.Second)
 			}

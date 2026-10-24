@@ -791,8 +791,13 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 }
 
 func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim) (bool, error) {
+	issue, err := claim.source.client.Issue(ctx, claim.lease.WorkItemID)
+	if err != nil {
+		return false, err
+	}
 	var observation *tracker.NativeRuntimeObservation
 	localWorker := false
+	landed := false
 	if execution := claim.execution; execution != nil {
 		localWorker = execution.hasWorkers()
 		execution.cancelMu.Lock()
@@ -805,6 +810,7 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 			return true, nil
 		}
 		pending = execution.pending != nil || execution.data.Outcome != ""
+		landed = execution.landed
 		if execution.data.Runtime != nil {
 			runtime := *execution.data.Runtime
 			observation = &runtime
@@ -843,31 +849,30 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 			}
 		}
 	}
-	issue, err := claim.source.client.Issue(ctx, claim.lease.WorkItemID)
-	if err != nil {
-		return false, err
-	}
-	if issue.SchedulingEligible != nil {
-		if !*issue.SchedulingEligible {
-			return false, nil
-		}
-	} else {
-		if issue.Terminal || issue.Archived || !issue.DependencyReady {
-			return false, nil
-		}
-		project, err := claim.source.client.Project(ctx)
-		if err != nil {
-			return false, err
-		}
-		dispatchable := false
-		for _, state := range project.States {
-			if strings.EqualFold(state.Name, issue.State) {
-				dispatchable = state.Dispatchable && !state.Terminal && !state.OperatorOnly
-				break
+	landed = landed || observation != nil && observation.Landing != nil && observation.Landing.Landed
+	if !issue.Terminal || issue.Archived || !landed {
+		if issue.SchedulingEligible != nil {
+			if !*issue.SchedulingEligible {
+				return false, nil
 			}
-		}
-		if !dispatchable {
-			return false, nil
+		} else {
+			if issue.Terminal || issue.Archived || !issue.DependencyReady {
+				return false, nil
+			}
+			project, err := claim.source.client.Project(ctx)
+			if err != nil {
+				return false, err
+			}
+			dispatchable := false
+			for _, state := range project.States {
+				if strings.EqualFold(state.Name, issue.State) {
+					dispatchable = state.Dispatchable && !state.Terminal && !state.OperatorOnly
+					break
+				}
+			}
+			if !dispatchable {
+				return false, nil
+			}
 		}
 	}
 	if observation == nil || observation.LocalAttemptID == 0 || observation.Generation == 0 {
