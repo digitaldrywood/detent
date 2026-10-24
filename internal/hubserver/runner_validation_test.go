@@ -120,7 +120,18 @@ func TestRunnerEnrollmentScopeRevocationAndCollisions(t *testing.T) {
 	live := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim)
 	live.enroll(t)
 	for _, path := range []string{other.base, "/api/v2/organizations/" + string(organization.ID) + "/runners/" + live.binding.RunnerID} {
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, live.redemption.Credential, nil), http.StatusNotFound)
+		for _, test := range []struct {
+			name, token string
+			status      int
+		}{
+			{"valid credential outside scope", live.redemption.Credential, http.StatusNotFound},
+			{"revoked credential before resource lookup", r.redemption.Credential, http.StatusUnauthorized},
+			{"invalid credential before resource lookup", "invalid", http.StatusUnauthorized},
+		} {
+			t.Run(path+"/"+test.name, func(t *testing.T) {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, test.token, nil), test.status)
+			})
+		}
 	}
 }
 
