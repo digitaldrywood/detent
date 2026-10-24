@@ -24,6 +24,29 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+func TestReworkPreparationOutcome(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		status workspace.MergePrepareStatus
+		err    error
+		want   string
+	}{
+		{name: "clean", status: workspace.MergePrepareStatusClean, want: "clean"},
+		{name: "conflict", status: workspace.MergePrepareStatusConflict, want: "conflict"},
+		{name: "dirty", status: workspace.MergePrepareStatusDirty, want: "dirty"},
+		{name: "missing result", want: "rework"},
+		{name: "failed clean result", status: workspace.MergePrepareStatusClean, err: errors.New("fetch failed"), want: "rework"},
+		{name: "failed dirty result", status: workspace.MergePrepareStatusDirty, err: errors.New("lease expired"), want: "rework"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := reworkPreparationOutcome(test.status, test.err); got != test.want {
+				t.Fatalf("pipeline outcome = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 type resolvingReworkAgent struct {
 	fakeCodexClient
 	preserved     bool
