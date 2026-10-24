@@ -60,6 +60,92 @@ func (c *nativeWorkflowConnector) WorkflowStates(context.Context) ([]connector.W
 	return c.states, c.statesErr
 }
 
+func TestNativeInstanceBlockerCompletion(t *testing.T) {
+	t.Parallel()
+	const report = "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - owner: instance\n    reason: Supply the CI job logs through the native evidence path\n    unverifiable: true\nhuman_action: null\n```"
+	const predicateReport = "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - owner: instance\n    reason: Wait for the instance configuration to change\n    predicate:\n      type: config_fingerprint\n      fingerprint: previous-config\nhuman_action: null\n```"
+	benchBlocker := "  - owner: instance\n    reason: Pair the staging bench\n"
+	multiple := strings.Replace(report, "human_action: null", benchBlocker+"human_action: null", 1)
+	reordered := strings.Replace(report, "  - owner: instance", benchBlocker+"  - owner: instance", 1)
+	for _, tt := range []struct {
+		name       string
+		first      string
+		second     string
+		diff       DiffStats
+		wantHuman  bool
+		historyErr error
+	}{
+		{name: "repeated blocker on unchanged source", wantHuman: true},
+		{name: "multiple blockers reordered", first: multiple, second: reordered, wantHuman: true},
+		{name: "typed instance predicate keeps retry owner", first: predicateReport, second: predicateReport},
+		{name: "changed head", diff: DiffStats{Status: "clean", HeadSHA: "new-head", TreeSHA: "tree"}},
+		{name: "changed tree", diff: DiffStats{Status: "clean", HeadSHA: "head", TreeSHA: "new-tree"}},
+		{name: "changed workspace diff", diff: DiffStats{Status: "changed", HeadSHA: "head", TreeSHA: "tree", FilesChanged: 1, Fingerprint: "new-diff"}},
+		{name: "unavailable source", diff: DiffStats{Status: "clean"}},
+		{name: "changed blocker", second: strings.ReplaceAll(report, "CI job logs", "paired bench")},
+		{name: "history unavailable", historyErr: errors.New("history unavailable")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := completionTransitionIssue("In Progress", "")
+			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			tracker := &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: []connector.WorkflowState{
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Rework", "Blocked"}},
+				{Name: "Rework", Dispatchable: true, Transitions: []string{"Blocked"}},
+				{Name: "Blocked", Transitions: []string{"Rework"}},
+			}}
+			cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}})
+			cfg.AutoPromote.HumanReview = new(false)
+			attempts := &recordingWorkAttemptStore{}
+			o := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+			state := newState(cfg)
+			now := time.Now()
+			for turn := range 2 {
+				diff := DiffStats{Status: "clean", HeadSHA: "head", TreeSHA: "tree"}
+				message := firstNonBlank(tt.first, report)
+				if turn == 1 {
+					if diffStatsPresent(tt.diff) {
+						diff = tt.diff
+					}
+					message = firstNonBlank(tt.second, report)
+					prior := attempts.completions[0]
+					attempts.history = []store.WorkAttempt{{ID: prior.AttemptID, TerminalState: prior.TerminalState, WorkerMetadataJSON: prior.WorkerMetadataJSON}}
+					attempts.historyErr = tt.historyErr
+				}
+				state.Running[issue.ID] = Running{Issue: issue, Mode: runpkg.RunModeImplement, WorkAttemptID: int64(turn + 1), TurnCount: 1, Attempt: turn + 1}
+				state.Claimed[issue.ID] = Claimed{Issue: issue}
+				o.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now.Add(time.Duration(turn) * time.Minute), Result: runpkg.RunResult{FinalState: FinalStateCompleted, FinalMessage: message, DiffStats: diff}})
+				if turn == 1 && tt.historyErr != nil {
+					if _, deferred := state.deferredCompletions[issue.ID]; !deferred || len(attempts.completions) != 1 {
+						t.Fatalf("history failure lost completion: deferred=%v receipts=%v", state.deferredCompletions, attempts.completions)
+					}
+					return
+				}
+				wantHuman := turn == 1 && tt.wantHuman
+				blocked, held := state.Blocked[issue.ID]
+				_, retry := state.Retry[issue.ID]
+				if held != wantHuman || retry == wantHuman {
+					t.Fatalf("turn %d: blocked=%+v retry=%t updates=%+v", turn, blocked, retry, tick.updates)
+				}
+				if wantHuman {
+					if explicitHumanAction(blocked.Issue) == "" || !strings.Contains(explicitHumanAction(blocked.Issue), "CI job logs") || len(tick.updates) != 1 || tick.updates[0].state != "Blocked" {
+						t.Fatalf("human action lost: blocked=%+v updates=%+v", blocked, tick.updates)
+					}
+					decision := o.liveDispatchPlanner(t.Context(), nil).dispatchableIssueDecision(blocked.Issue, &state, false, now.Add(time.Hour), "")
+					if decision.dispatchable {
+						t.Fatal("human action dispatched another provider turn")
+					}
+				} else if len(tick.updates) != 0 {
+					t.Fatalf("instance retry changed lane: %+v", tick.updates)
+				}
+				if len(attempts.completions) != turn+1 {
+					t.Fatalf("completion receipts = %+v", attempts.completions)
+				}
+			}
+		})
+	}
+}
+
 // TestNativeChangeRunCompletion drives a successful native run's completion
 // through the success path: the orchestrator moves the item along the hub
 // workflow through the lane ledger and releases the claim instead of
