@@ -406,25 +406,23 @@ func encodeRunCheckpoint(ctx context.Context, data tracker.NativeRunData) (strin
 	return marshalNative(storedRunCheckpoint{NativeCheckpoint: data.Handoff, Detail: newRunDetailReference(*owner.reference, owner.organization, runDetailEntry(data))})
 }
 
-func decodeRunCheckpoint(ctx context.Context, raw string, result **tracker.NativeCheckpoint) error {
+func decodeRunCheckpoint(ctx context.Context, raw string) (*tracker.NativeCheckpoint, error) {
 	var stored storedRunCheckpoint
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		return err
+		return nil, err
 	}
 	if stored.Detail == nil {
-		*result = stored.NativeCheckpoint
-		return nil
+		return stored.NativeCheckpoint, nil
 	}
 	runs, err := readRunDetailSegment(ctx, stored.Detail)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	run, ok := runs[stored.Detail.Entry]
 	if !ok || runDetailEntry(run) != stored.Detail.Entry || run.Handoff == nil {
-		return fmt.Errorf("match run checkpoint detail entry: %w", artifact.ErrIntegrity)
+		return nil, fmt.Errorf("match run checkpoint detail entry: %w", artifact.ErrIntegrity)
 	}
-	*result = run.Handoff
-	return nil
+	return run.Handoff, nil
 }
 
 var errRunDetailStoreUnavailable = errors.New("run detail store unavailable in this context")

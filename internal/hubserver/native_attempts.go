@@ -460,8 +460,8 @@ func requireNativePRPublication(ctx context.Context, tx nativeQueryer, scope nat
 	if err := tx.QueryRowContext(ctx, "SELECT checkpoint_json FROM native_attempts WHERE id=?", data.AttemptID).Scan(&raw); err != nil {
 		return err
 	}
-	var checkpoint *tracker.NativeCheckpoint
-	if err := decodeRunCheckpoint(ctx, raw, &checkpoint); err != nil {
+	checkpoint, err := decodeRunCheckpoint(ctx, raw)
+	if err != nil {
 		return err
 	}
 	if checkpoint == nil || checkpoint.ExternalEffect != "pr_create" || checkpoint.EffectState != "confirmed" || checkpoint.EffectID != publication.EffectID("pr_create") || checkpoint.Change == nil || *checkpoint.Change != publication.SourceVersion || checkpoint.HeadSHA != publication.HeadSHA {
@@ -657,9 +657,11 @@ func scanNativeAttempt(ctx context.Context, rows *sql.Rows, now time.Time) (trac
 		return attempt, err
 	}
 	if checkpoint.Valid {
-		if err := decodeRunCheckpoint(ctx, checkpoint.String, &attempt.Checkpoint); err != nil {
+		decoded, err := decodeRunCheckpoint(ctx, checkpoint.String)
+		if err != nil {
 			return attempt, err
 		}
+		attempt.Checkpoint = decoded
 	}
 	if err := json.Unmarshal([]byte(artifacts), &attempt.ArtifactIDs); err != nil {
 		return attempt, err
