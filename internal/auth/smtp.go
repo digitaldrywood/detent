@@ -18,23 +18,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/emailtemplate"
 )
 
 const smtpTimeout = 10 * time.Second
 
-type EmailMessage struct {
-	To           string
-	Subject      string
-	Body         string
-	HTMLBody     string
-	InlineImages []InlineImage
-}
+type EmailMessage = emailtemplate.Message
 
-type InlineImage struct {
-	ContentID   string
-	ContentType string
-	Data        []byte
-}
+type InlineImage = emailtemplate.InlineImage
 
 type EmailSender interface {
 	SendEmail(context.Context, EmailMessage) error
@@ -92,7 +84,20 @@ func NewSMTPSender(cfg SMTPConfig) (SMTPSender, error) {
 }
 
 func (s *smtpSender) SendMagicLink(ctx context.Context, message Message) error {
-	return s.SendEmail(ctx, EmailMessage{To: message.To, Subject: "Your Detent sign-in link", Body: magicLinkBody(message)})
+	email, err := emailtemplate.Render(emailtemplate.Content{
+		Title:       "Sign in to Detent",
+		Note:        "Use this button to sign in. This link can be used once and expires at " + message.ExpiresAt.UTC().Format("Jan 2, 2006 15:04:05 UTC") + ".",
+		ActionLabel: "Sign in",
+		ActionURL:   message.URL,
+		Footer:      "If you didn't request this, you can ignore this email.",
+	})
+	if err != nil {
+		return err
+	}
+	email.To = message.To
+	email.Subject = "Your Detent sign-in link"
+	email.Body = magicLinkBody(message)
+	return s.SendEmail(ctx, email)
 }
 
 func (s *smtpSender) SendEmail(ctx context.Context, message EmailMessage) (err error) {

@@ -18,6 +18,7 @@ func TestRender(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			message, err := Render(Content{
 				Title: "Title " + test.value, Heading: "Heading " + test.value,
+				Note:        "Note " + test.value,
 				Details:     []Detail{{Label: "Label " + test.value, Value: "Value " + test.value}, {Label: "Time", Value: "Oct 22, 2026 20:52 UTC"}},
 				ActionLabel: "Action " + test.value, ActionURL: "https://example.test/open?one=1&two=%3Cscript%3E",
 				Footer: "Footer " + test.value,
@@ -25,7 +26,7 @@ func TestRender(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, field := range []string{"Title", "Heading", "Label", "Value", "Action", "Footer"} {
+			for _, field := range []string{"Title", "Heading", "Note", "Label", "Value", "Action", "Footer"} {
 				if !strings.Contains(message.HTMLBody, field+" "+test.escaped) {
 					t.Fatalf("missing escaped %s: %s", field, message.HTMLBody)
 				}
