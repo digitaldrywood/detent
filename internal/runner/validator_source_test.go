@@ -90,6 +90,8 @@ func TestNativeReviewPreservesImplementingSource(t *testing.T) {
 			if test.transferred {
 				published = filepath.Join(t.TempDir(), "published")
 				runRunnerGit(t, source, "clone", "--no-local", source, published)
+				runRunnerGit(t, published, "config", "user.name", "Test User")
+				runRunnerGit(t, published, "config", "user.email", "test@example.com")
 			}
 			attemptDiffFile(t, published, "README.md", "published immutable source\n")
 			runRunnerGit(t, published, "add", "README.md")
