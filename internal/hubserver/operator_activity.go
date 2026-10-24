@@ -112,6 +112,9 @@ func (s *Service) readActivityReport(ctx context.Context, credential apiCredenti
 	for _, attempt := range append(slices.Clone(out.Running), out.Finished...) {
 		out.Partial = out.Partial || attempt.Partial
 	}
+	if err := readActivityIssues(ctx, tx, projects, r, &out); err != nil {
+		return out, err
+	}
 	return out, nil
 }
 

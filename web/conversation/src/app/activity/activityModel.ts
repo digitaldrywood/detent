@@ -1,10 +1,12 @@
 import type { FleetRunner } from "../../contracts/account.ts";
-import type { ActivityReport } from "../../contracts/activity.ts";
+import type {
+  ActivityIssue,
+  ActivityReport,
+} from "../../contracts/activity.ts";
 import { formatDuration } from "../../runtime/support/orchestrationTiming.ts";
 
 export type ActivityAttempt = ActivityReport["running"][number];
-export const STAGES = ["Plan", "Code", "Review", "Merge"] as const;
-export type Group = "none" | "runner" | "project" | "stage";
+export type Group = "none" | "runner" | "project" | "lane";
 export type Sort = "attention" | "longest" | "started" | "number";
 export const runnerName = (runner: FleetRunner) =>
   runner.display_name || runner.hostname;
@@ -18,112 +20,92 @@ export const runnerCategory = (runner: FleetRunner) =>
       : "idle"
     : "offline";
 
-export function stageInfo(attempt: ActivityAttempt) {
-  const stage = attempt.stage?.toLowerCase();
-  const index =
-    stage === "plan"
-      ? 0
-      : stage === "code" || stage === "rework"
-        ? 1
-        : stage === "review" || stage === "validate"
-          ? 2
-          : stage === "merge"
-            ? 3
-            : -1;
-  return {
-    index,
-    key: stage === "rework" ? "code" : stage === "validate" ? "review" : stage,
-    label:
-      stage === "rework"
-        ? "Rework"
-        : index < 0
-          ? "Stage unavailable"
-          : (STAGES.at(index) ?? "Stage unavailable"),
-  };
-}
+export type { ActivityIssue };
+export type ActivityLane = ActivityIssue["lanes"][number];
 
-function displayDuration(seconds: number) {
+export function displayDuration(seconds: number) {
   return formatDuration(
     seconds < 60 ? seconds * 1000 : Math.floor(seconds / 60) * 60_000,
   );
 }
 
-export function timing(
-  attempt: ActivityAttempt,
+export function issueTiming(
+  issue: ActivityIssue,
   report: ActivityReport,
   now: number,
   finished: boolean,
 ) {
-  const stage = stageInfo(attempt);
-  const typical = report.typical_durations.find(
-    (row) => row.project_id === attempt.project_id && row.stage === stage.key,
-  );
-  const baselineAvailable = typical !== undefined && !typical.partial;
-  const seconds = finished
-    ? attempt.stage_duration_seconds
-    : attempt.stage_started_at
-      ? Math.max(0, (now - Date.parse(attempt.stage_started_at)) / 1000)
-      : attempt.stage_elapsed_seconds === undefined
-        ? undefined
-        : attempt.stage_elapsed_seconds +
-          Math.max(0, (now - Date.parse(report.observed_at)) / 1000);
-  const slow =
-    seconds !== undefined &&
-    baselineAvailable &&
-    seconds > typical.p90_seconds;
-  const fast =
-    finished &&
-    seconds !== undefined &&
-    baselineAvailable &&
-    seconds <= typical.p50_seconds / 2;
-  const duration =
-    seconds === undefined ? "Time unavailable" : displayDuration(seconds);
-  const cancelled =
-    attempt.outcome === "cancelled" || attempt.outcome === "interrupted";
-  const progress =
-    seconds === undefined
+  const elapsed =
+    finished || !issue.clock_started_at
       ? 0
-      : finished && !cancelled
-        ? 1
-        : baselineAvailable && typical.p90_seconds > 0
-          ? Math.min(cancelled ? 0.75 : 1, seconds / typical.p90_seconds)
-          : cancelled
-            ? 0.5
-            : 0;
-  const tone =
-    finished && attempt.outcome === "failed"
-      ? "error"
-      : slow
-        ? "warning"
-        : finished && attempt.outcome === "succeeded"
-          ? "success"
-          : finished
-            ? "muted"
-            : "working";
-  const baseline = typical?.partial
-    ? `Typical time in ${attempt.project_name} is unavailable because the baseline is incomplete.`
-    : typical
-      ? `Typical in ${attempt.project_name}: ${displayDuration(typical.p50_seconds)} median, ${displayDuration(typical.p90_seconds)} for the slowest 10%.`
-      : `Typical time in ${attempt.project_name} is unavailable.`;
-  const description = `${stage.label} for ${duration}. ${baseline}`;
-  const label = `${stage.index < 0 ? "Stage unavailable" : `Stage ${stage.index + 1} of 4, ${stage.label}`}, ${duration}${attempt.outcome ? `, ${attempt.outcome}` : ""}${slow ? ", slow" : fast ? ", fast" : ""}. ${baseline}`;
+      : Math.max(0, (now - Date.parse(report.observed_at)) / 1000);
+  const total = issue.total_seconds + elapsed;
+  const typical = report.issue_typical_durations?.find(
+    (row) => row.project_id === issue.project_id,
+  );
+  const baseline = typical && !typical.partial && typical.total.count > 0;
+  const slow =
+    !!issue.clock_started_at && !!baseline && total > typical.total.p90_seconds;
+  const worked = Math.min(
+    total,
+    issue.worked_seconds + (issue.worked_running ? elapsed : 0),
+  );
+  const share = total > 0 ? Math.min(1, Math.max(0, worked / total)) : 0;
+  const baselineText = baseline
+    ? `Typical in ${issue.project_name}: ${displayDuration(typical.total.p50_seconds)} median, ${displayDuration(typical.total.p90_seconds)} for the slowest 10%.`
+    : `Typical time in ${issue.project_name} is unavailable.`;
   return {
-    stageLabel: stage.label,
-    ...stage,
-    seconds,
-    typical,
+    total,
+    worked,
+    waiting: Math.max(0, total - worked),
+    share,
     slow,
-    fast,
-    duration,
-    progress,
-    tone,
-    description,
-    label,
+    elapsed,
+    workedTone: share < 0.5 ? "warning" : "working",
+    typical,
+    baselineText,
   } as const;
 }
 
+export function laneTiming(
+  lane: ActivityLane,
+  issue: ActivityIssue,
+  report: ActivityReport,
+  now: number,
+  finished: boolean,
+) {
+  const metrics = issueTiming(issue, report, now, finished);
+  const seconds =
+    lane.seconds + (lane.current && !finished ? metrics.elapsed : 0);
+  const typical = metrics.typical?.lanes[lane.name];
+  const baseline =
+    metrics.typical && !metrics.typical.partial && typical && typical.count > 0;
+  const slow = !!baseline && seconds > typical.p90_seconds;
+  const baselineText = baseline
+    ? `Typical in ${issue.project_name}: ${displayDuration(typical.p50_seconds)} median, ${displayDuration(typical.p90_seconds)} for the slowest 10%.`
+    : `Typical time in ${issue.project_name} is unavailable.`;
+  return {
+    seconds,
+    slow,
+    baselineText,
+    visited: lane.entries > 0,
+    tone: slow ? "warning" : lane.current && !finished ? "working" : "muted",
+  } as const;
+}
+
+export function issueMeta(issue: ActivityIssue, finished: boolean) {
+  return {
+    prefix: finished
+      ? (issue.terminal_lane ?? issue.current_lane)
+      : `in ${issue.clock_lane} since`,
+    at: finished
+      ? (issue.finished_at ?? issue.clock_started_at)
+      : issue.clock_started_at,
+  };
+}
+
 export function activityGroups(
-  attempts: readonly ActivityAttempt[],
+  issues: readonly ActivityIssue[],
   report: ActivityReport,
   runners: readonly FleetRunner[],
   project: string,
@@ -134,31 +116,43 @@ export function activityGroups(
   finished: boolean,
 ) {
   const names = new Map(runners.map((row) => [row.id, runnerName(row)]));
-  const rows = attempts
+  const rows = issues
     .filter(
       (row) =>
         (!project || row.project_id === project) &&
-        (!runner || row.runner_id === runner),
+        (!runner || row.runner_ids.includes(runner)),
     )
     .toSorted((a, b) => {
-      const aTiming = timing(a, report, now, finished);
-      const bTiming = timing(b, report, now, finished);
-      const byTime = (bTiming.seconds ?? -1) - (aTiming.seconds ?? -1);
+      const aTime = issueTiming(a, report, now, finished);
+      const bTime = issueTiming(b, report, now, finished);
+      const byTime = bTime.total - aTime.total;
       const primary = finished
-        ? Date.parse(b.finished_at ?? b.started_at) -
-          Date.parse(a.finished_at ?? a.started_at)
+        ? Date.parse(b.finished_at ?? b.clock_started_at ?? "") -
+          Date.parse(a.finished_at ?? a.clock_started_at ?? "")
         : sort === "attention"
-          ? Number(bTiming.slow) - Number(aTiming.slow) || byTime
+          ? Number(
+              bTime.slow ||
+                b.lanes.some(
+                  (lane) => laneTiming(lane, b, report, now, false).slow,
+                ),
+            ) -
+              Number(
+                aTime.slow ||
+                  a.lanes.some(
+                    (lane) => laneTiming(lane, a, report, now, false).slow,
+                  ),
+              ) || byTime
           : sort === "longest"
             ? byTime
             : sort === "started"
-              ? Date.parse(b.started_at) - Date.parse(a.started_at)
+              ? Date.parse(b.clock_started_at ?? "") -
+                Date.parse(a.clock_started_at ?? "")
               : a.number - b.number;
-      return primary || a.attempt_id.localeCompare(b.attempt_id);
+      return primary || a.work_item_id.localeCompare(b.work_item_id);
     });
   const groups = new Map<
     string,
-    { id: string; label: string; rows: ActivityAttempt[] }
+    { id: string; label: string; rows: ActivityIssue[] }
   >();
   for (const row of rows) {
     const id =
@@ -166,27 +160,20 @@ export function activityGroups(
         ? row.runner_id
         : group === "project"
           ? row.project_id
-          : group === "stage"
-            ? (stageInfo(row).key ?? "unknown")
+          : group === "lane"
+            ? row.current_lane
             : "all";
     const label =
       group === "runner"
         ? (names.get(id) ?? id)
         : group === "project"
           ? row.project_name
-          : group === "stage"
-            ? (STAGES.find((stage) => stage.toLowerCase() === id) ??
-              "Stage unavailable")
+          : group === "lane"
+            ? row.current_lane
             : "";
     const entry = groups.get(id) ?? { id, label, rows: [] };
     entry.rows.push(row);
     groups.set(id, entry);
   }
-  const result = [...groups.values()];
-  if (group !== "stage") return result;
-  const rank = (id: string) => {
-    const index = STAGES.findIndex((stage) => stage.toLowerCase() === id);
-    return index < 0 ? STAGES.length : index;
-  };
-  return result.toSorted((a, b) => rank(a.id) - rank(b.id));
+  return [...groups.values()];
 }

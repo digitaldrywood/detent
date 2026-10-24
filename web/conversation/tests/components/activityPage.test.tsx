@@ -15,8 +15,10 @@ import {
 } from "../../src/app/activity/ActivityPage.tsx";
 import {
   activityGroups,
-  timing,
-  type ActivityAttempt,
+  issueTiming,
+  laneTiming,
+  issueMeta,
+  type ActivityIssue,
 } from "../../src/app/activity/activityModel.ts";
 import { subscribeProjectEvents } from "../../src/app/work/lib/projectEvents.ts";
 import {
@@ -105,8 +107,8 @@ const runners = [
 ];
 function attempt(
   number: number,
-  fields: Partial<ActivityAttempt> = {},
-): ActivityAttempt {
+  fields: Partial<ActivityIssue> = {},
+): ActivityIssue {
   return {
     work_item_id: `wi_${number}`,
     number,
@@ -114,12 +116,15 @@ function attempt(
     project_id: "detent",
     project_name: "detent",
     runner_id: "runner_a",
-    attempt_id: `attempt_${number}`,
-    stage: "code",
-    stage_started_at: at(10),
-    stage_elapsed_seconds: 600,
-    started_at: at(20),
-    workspace_ids: [],
+    clock_started_at: at(20), clock_lane: "Todo", current_lane: "In Progress",
+    total_seconds: 1200, worked_seconds: 600,
+    runner_ids: [fields.runner_id ?? "runner_a"],
+    lanes: [
+      { name: "Todo", role: "active", seconds: 600, entries: 1, current: false },
+      { name: "In Progress", role: "active", seconds: 600, entries: 1, current: true },
+      { name: "Merging", role: "active", seconds: 0, entries: 0, current: false },
+    ],
+    worked_by_role: [{ role: "security_audit", attempts: 2, seconds: 600, running: true }],
     session_id: `session_${number}`,
     partial: false,
     ...fields,
@@ -132,55 +137,48 @@ function report(fields: Partial<ActivityReport> = {}): ActivityReport {
     window: { from: at(1440), to: at(0), bucket_ns: 0 },
     population_limit: 1000,
     partial: false,
-    running: [
+    running: [],
+    finished: [],
+    running_issues: [
       attempt(1, {
-        stage: "review",
-        stage_started_at: at(31),
+        total_seconds: 1860,
+        current_lane: "Reviewing",
         change_id: "change_1",
         pull_request_url: "https://example.test/pull/4611",
       }),
       attempt(2, {
         runner_id: "runner_b",
-        stage: "plan",
-        stage_started_at: at(3),
-        started_at: at(5),
+        total_seconds: 180, clock_started_at: at(5),
         project_id: "other",
         project_name: "other",
       }),
       attempt(3, {
-        stage: "rework",
-        stage_started_at: at(14),
+        total_seconds: 840, clock_started_at: at(25), current_lane: "Repair",
         pull_request_url: "https://example.test/pull/4612",
       }),
     ],
-    finished: [
+    finished_issues: [
       attempt(4, {
-        outcome: "succeeded",
+        terminal_lane: "Done",
         finished_at: at(4),
-        stage_duration_seconds: 180,
+        total_seconds: 180,
       }),
       attempt(5, {
-        outcome: "failed",
+        terminal_lane: "Done",
         finished_at: at(12),
-        stage_duration_seconds: 2100,
+        total_seconds: 2100,
       }),
       attempt(6, {
-        outcome: "cancelled",
+        terminal_lane: "Cancelled",
         finished_at: at(18),
-        stage_duration_seconds: 300,
+        total_seconds: 300,
       }),
     ],
-    typical_durations: ["detent", "other"].flatMap((project_id) =>
-      ["plan", "code", "review", "merge"].map((stage) => ({
-        project_id,
-        stage,
-        count: 20,
-        seconds: 600,
-        p50_seconds: 600,
-        p90_seconds: 1200,
-        partial: false,
-      })),
-    ),
+    typical_durations: [],
+    issue_typical_durations: ["detent", "other"].map((project_id) => ({
+      project_id, partial: false, total: { count: 20, seconds: 600, p50_seconds: 600, p90_seconds: 1200 },
+      lanes: { "In Progress": { count: 20, seconds: 600, p50_seconds: 600, p90_seconds: 1200 } },
+    })),
     ...fields,
   };
 }
@@ -210,7 +208,7 @@ function View({
     />
   );
 }
-const jobTable = () => screen.getByRole("table", { name: "Running jobs" });
+const jobTable = () => screen.getByRole("table", { name: "Working issues" });
 const issueNumbers = () =>
   within(jobTable())
     .getAllByRole("link", { name: /^#\d/ })
@@ -252,116 +250,45 @@ it("keeps the Activity scope and project picker consistent across organization c
   expect(scope().textContent).toContain("All projects");
 });
 
-describe("Activity stage timing", () => {
+describe("Activity issue timing", () => {
   it.each([
-    ["at p90", "code", 1200, false, "succeeded", false, false, 1, "working"],
-    ["above p90", "code", 1201, false, "succeeded", true, false, 1, "warning"],
-    ["half median", "code", 300, true, "succeeded", false, true, 1, "success"],
-    [
-      "below half median",
-      "code",
-      299,
-      true,
-      "succeeded",
-      false,
-      true,
-      1,
-      "success",
-    ],
-    [
-      "above half median",
-      "code",
-      301,
-      true,
-      "succeeded",
-      false,
-      false,
-      1,
-      "success",
-    ],
-    ["rework", "rework", 600, false, "succeeded", false, false, 1, "working"],
-    [
-      "failure wins over slow",
-      "review",
-      1201,
-      true,
-      "failed",
-      true,
-      false,
-      2,
-      "error",
-    ],
-    ["cancelled", "plan", 300, true, "cancelled", false, true, 0, "muted"],
-    ["partial slow baseline", "code", 1201, false, "succeeded", false, false, 1, "working", true],
-    ["partial fast baseline", "code", 300, true, "succeeded", false, false, 1, "success", true],
-    ["partial cancelled baseline", "plan", 300, true, "cancelled", false, false, 0, "muted", true],
-  ] as const)(
-    "handles %s",
-    (_name, stage, seconds, finished, outcome, slow, fast, index, tone, partial?: boolean) => {
-      const row = attempt(1, {
-        stage,
-        stage_started_at: new Date(NOW - seconds * 1000).toISOString(),
-        stage_duration_seconds: seconds,
-        ...(finished ? { outcome } : {}),
-      });
-      const fixture = report();
-      const result = timing(row, report({
-        typical_durations: fixture.typical_durations.map((baseline) => ({ ...baseline, partial: partial === true })),
-      }), NOW, finished);
-      expect({
-        slow: result.slow,
-        fast: result.fast,
-        index: result.index,
-        tone: result.tone,
-      }).toEqual({ slow, fast, index, tone });
-      expect(result.label).toContain(`Stage ${index + 1} of 4`);
-      expect(result.description).toContain(partial
-        ? "Typical time in detent is unavailable because the baseline is incomplete."
-        : "Typical in detent: 10m median, 20m for the slowest 10%.");
-      if (partial) {
-        expect(result.label).not.toMatch(/, (slow|fast)/);
-        expect(result.progress).toBe(finished ? outcome === "cancelled" ? 0.5 : 1 : 0);
-      } else if (outcome === "cancelled") expect(result.progress).toBe(0.25);
-    },
-  );
-  it("uses elapsed snapshots when a stage start is missing and never fabricates missing timing", () => {
-    const snapshot = attempt(1, {
-      stage_started_at: undefined,
-      stage_elapsed_seconds: 600,
-    });
-    expect(timing(snapshot, report(), NOW + 60_000, false).duration).toBe(
-      "11m",
-    );
-    const missing = timing(
-      attempt(1, {
-        stage: undefined,
-        stage_started_at: undefined,
-        stage_elapsed_seconds: undefined,
-      }),
-      report({ typical_durations: [] }),
-      NOW,
-      false,
-    );
-    expect(missing.label).toContain("Stage unavailable, Time unavailable");
-    expect(missing.slow).toBe(false);
-    expect(missing.progress).toBe(0);
+    ["at p90", 1200, false, false],
+    ["above p90", 1201, false, true],
+    ["partial baseline", 1201, true, false],
+  ])("handles %s for total and lane time", (_name, seconds, partial, slow) => {
+    const row = attempt(1, { total_seconds: seconds as number });
+    const fixture = report();
+    const data = report({ issue_typical_durations: fixture.issue_typical_durations!.map((value) => ({ ...value, partial: partial as boolean })) });
+    expect(issueTiming(row, data, NOW, true).slow).toBe(slow);
+    expect(laneTiming({ ...row.lanes[1]!, seconds: seconds as number }, row, data, NOW, true).slow).toBe(slow);
+  });
+  it.each([[0, 0, 0, "warning"], [100, 49, 0.49, "warning"], [100, 50, 0.5, "working"], [100, 120, 1, "working"]] as const)("bounds worked share for %s total and %s worked", (total, worked, share, tone) => {
+    const metrics = issueTiming(attempt(1, { total_seconds: total, worked_seconds: worked }), report(), NOW, true);
+    expect(metrics.share).toBe(share);
+    expect(metrics.workedTone).toBe(tone);
+  });
+  it("advances total and the union of live work once between observations", () => {
+    const row=attempt(1,{total_seconds:1200,worked_seconds:600,worked_running:true});
+    const live=issueTiming(row,report(),NOW+60_000,false);
+    expect(live.total).toBe(1260); expect(live.worked).toBe(660);
+    expect(issueTiming(row,report(),NOW+60_000,true).worked).toBe(600);
+  });
+  it("never marks issues or lanes slow without a baseline and names configured lanes in meta text", () => {
+    const row = attempt(1, { total_seconds: 9000, clock_lane: "Ready" });
+    const data = report({ issue_typical_durations: [] });
+    expect(issueTiming(row, data, NOW, false).slow).toBe(false);
+    expect(laneTiming(row.lanes[0]!, row, data, NOW, false).slow).toBe(false);
+    expect(issueMeta(row, false)).toEqual({ prefix: "in Ready since", at: row.clock_started_at });
+    expect(issueMeta({ ...row, terminal_lane: "Cancelled", finished_at: at(4) }, true)).toEqual({ prefix: "Cancelled", at: at(4) });
   });
 });
 
-it("discloses incomplete activity and suppresses speed claims from partial baselines", () => {
+it("discloses partial activity and suppresses slow claims from an incomplete baseline", () => {
   const fixture = report();
-  render(<View initial={report({
-    partial: true,
-    typical_durations: fixture.typical_durations.map((baseline) => ({ ...baseline, partial: true })),
-  })} />);
+  render(<View initial={report({ partial: true, issue_typical_durations: fixture.issue_typical_durations!.map((row) => ({ ...row, partial: true })) })} />);
   expect(screen.getByText("Activity is incomplete; some attempts or timing data may be missing.")).toBeTruthy();
   expect(screen.queryByText(/slower than usual/)).toBeNull();
-  expect(screen.queryByText(/ · (slow|fast)$/)).toBeNull();
-  const review = screen.getByRole("img", { name: /Stage 3 of 4, Review, 31m/ });
-  expect(review.getAttribute("aria-label")).toContain("baseline is incomplete");
-  expect(review.getAttribute("aria-label")).not.toContain(", slow");
-  const chip = screen.getByRole("button", { name: "Filter by Alpha" });
-  expect(chip.querySelector(".text-warning-foreground")).toBeNull();
+  expect(screen.queryByText(/Stage unavailable/)).toBeNull();
 });
 
 it.each([
@@ -421,7 +348,7 @@ it("filters projects and runners, toggles runner chips, and retains stable issue
 it("applies every grouping and sorting option", async () => {
   render(<View />);
   for (const [option, expected] of [
-    ["Longest in stage", ["#1", "#3", "#2"]],
+    ["Longest total", ["#1", "#3", "#2"]],
     ["Most recently started", ["#2", "#1", "#3"]],
     ["Issue number", ["#1", "#2", "#3"]],
     ["Needs attention first", ["#1", "#3", "#2"]],
@@ -430,9 +357,9 @@ it("applies every grouping and sorting option", async () => {
     expect(issueNumbers()).toEqual(expected);
   }
   for (const [option, labels] of [
-    ["Runner", ["Alpha · 2 jobs", "Beta · 1 job"]],
-    ["Project", ["detent · 2 jobs", "other · 1 job"]],
-    ["Stage", ["Plan · 1 job", "Code · 1 job", "Review · 1 job"]],
+    ["Runner", ["Alpha · 2 issues", "Beta · 1 issue"]],
+    ["Project", ["detent · 2 issues", "other · 1 issue"]],
+    ["Lane", ["Reviewing · 1 issue", "Repair · 1 issue", "In Progress · 1 issue"]],
   ] as const) {
     await choose("Group", option);
     const headers = within(jobTable())
@@ -441,98 +368,42 @@ it("applies every grouping and sorting option", async () => {
     expect(headers).toEqual(labels);
   }
   expect(
-    within(screen.getByRole("table", { name: "Finished attempts" }))
+    within(screen.getByRole("table", { name: "Finished issues" }))
       .getAllByRole("link", { name: /^#\d/ })
       .map((link) => link.textContent),
   ).toEqual(["#4 Job 4", "#5 Job 5", "#6 Job 6"]);
   await choose("Group", "None");
-  expect(within(jobTable()).queryByText("Alpha · 2 jobs")).toBeNull();
-  const grouped = activityGroups(
-    [
-      attempt(7, { stage: "merge" }),
-      attempt(8, { stage: "plan" }),
-      attempt(9, { stage: undefined }),
-    ],
-    report(),
-    runners,
-    "",
-    "",
-    "stage",
-    "number",
-    NOW,
-    false,
-  );
-  expect(grouped.map((entry) => entry.label)).toEqual([
-    "Plan",
-    "Merge",
-    "Stage unavailable",
-  ]);
+  expect(within(jobTable()).queryByText("Alpha · 2 issues")).toBeNull();
+  const grouped = activityGroups([attempt(7, { current_lane: "Build" }), attempt(8, { current_lane: "Verify" })], report(), runners, "", "", "lane", "number", NOW, false);
+  expect(grouped.map((entry) => entry.label)).toEqual(["Build", "Verify"]);
 });
 
-it("renders outcomes, accessible stage timing, slow chips and full tooltip text", async () => {
+it("renders terminal outcomes, configured lane timing and role details", async () => {
   render(<View />);
-  const slow = screen.getByRole("img", {
-    name: /Stage 3 of 4, Review, 31m, slow/,
-  });
-  expect(
-    screen.getByRole("button", { name: "Filter by Alpha" }).textContent,
-  ).toContain("3");
-  const finishes = screen.getByRole("table", { name: "Finished attempts" });
-  expect(within(finishes).getByText("succeeded")).toBeTruthy();
-  expect(
-    within(finishes)
-      .getByText("failed")
-      .classList.contains("text-error-foreground"),
-  ).toBe(true);
-  expect(within(finishes).getByText("cancelled")).toBeTruthy();
-  expect(within(finishes).getByText("3m · fast")).toBeTruthy();
-  expect(within(finishes).getByText("35m · slow")).toBeTruthy();
-  expect(
-    screen.getByRole("img", { name: /Stage 2 of 4, Rework, 14m/ }),
-  ).toBeTruthy();
-  act(() => {
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
-    slow.focus();
-  });
-  const popup = await screen.findByText(
-    "Review for 31m. Typical in detent: 10m median, 20m for the slowest 10%.",
-  );
-  expect(popup.textContent).toBe(
-    "Review for 31m. Typical in detent: 10m median, 20m for the slowest 10%.",
-  );
-  const relative = screen.getByRole("button", { name: /finished 4m ago/ });
-  act(() => relative.focus());
-  expect(await screen.findByText(/9th October 2026/)).toBeTruthy();
+  const finishes = screen.getByRole("table", { name: "Finished issues" });
+  expect(within(finishes).getAllByRole("button", { name: /Done/ }).length).toBe(2);
+  expect(within(finishes).getByRole("button", { name: /Cancelled/ })).toBeTruthy();
+  const lane = screen.getAllByLabelText(/In Progress, 10m/)[0]!;
+  act(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" })); lane.focus(); });
+  expect(await screen.findByText(/Typical in detent: 10m median, 20m for the slowest 10%/)).toBeTruthy();
+  const worked = screen.getByLabelText("Worked 10m, 32%");
+  act(() => worked.focus());
+  expect(await screen.findByText("Worked 10m · waiting 21m")).toBeTruthy();
+  expect(screen.getByText("security_audit · running")).toBeTruthy();
+
 });
 
-it("advances relative times and stage durations without a read, toggles every timestamp, and cleans up its clock", () => {
-  vi.restoreAllMocks();
-  vi.useFakeTimers();
-  vi.setSystemTime(NOW);
+it("advances lane durations without a read, toggles timestamps and cleans up its clock", () => {
+  vi.restoreAllMocks(); vi.useFakeTimers(); vi.setSystemTime(NOW);
   const view = render(<View />);
-  expect(screen.getByRole("button", { name: /finished 4m ago/ })).toBeTruthy();
+  expect(screen.getByRole("button", { name: /Done 4m ago/ })).toBeTruthy();
   act(() => vi.advanceTimersByTime(60_000));
-  expect(screen.getByRole("button", { name: /finished 5m ago/ })).toBeTruthy();
-  expect(
-    screen.getByRole("img", { name: /Stage 3 of 4, Review, 32m/ }),
-  ).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: /finished 5m ago/ }));
-  expect(
-    screen.queryByRole("button", { name: /ago; show all times/ }),
-  ).toBeNull();
-  expect(
-    screen.getAllByRole("button", {
-      name: /at .*; show all times as relative times/,
-    }),
-  ).toHaveLength(6);
-  const time = screen.getAllByRole("button", {
-    name: /finished at .*; show all times as relative times/,
-  })[0]!;
-  fireEvent.click(time);
-  expect(screen.getByRole("button", { name: /finished 5m ago/ })).toBeTruthy();
-  expect(mocks.api.activity).not.toHaveBeenCalled();
-  view.unmount();
-  expect(vi.getTimerCount()).toBe(0);
+  expect(screen.getByRole("button", { name: /Done 5m ago/ })).toBeTruthy();
+  expect(screen.getAllByLabelText(/In Progress, 11m/).length).toBeGreaterThan(0);
+  fireEvent.click(screen.getByRole("button", { name: /Done 5m ago/ }));
+  expect(screen.queryByRole("button", { name: /ago; show all times/ })).toBeNull();
+  expect(screen.getAllByRole("button", { name: /at .*; show all times as relative times/ })).toHaveLength(6);
+  expect(mocks.api.activity).not.toHaveBeenCalled(); view.unmount(); expect(vi.getTimerCount()).toBe(0);
 });
 
 it.each(["loading", "error", "empty", "no-match"] as const)(
@@ -545,7 +416,7 @@ it.each(["loading", "error", "empty", "no-match"] as const)(
           state === "error" ? "Activity is temporarily unavailable." : null
         }
         hosts={state === "empty" ? [] : runners}
-        initial={report({ running: [] })}
+        initial={report({ running_issues: [] })}
       />,
     );
     if (state === "loading")
@@ -589,7 +460,7 @@ it("refreshes pickup and finish rows through reused project streams, tracks all 
   const retained = subscribeProjectEvents(mocks.http, "detent", {
     activity: () => {},
   });
-  let current = report({ running: [], finished: [] });
+  let current = report({ running_issues: [], finished: [] });
   mocks.api.activity.mockImplementation(async () => current);
   mocks.api.fleet.mockResolvedValue({ runners });
   const view = render(<ActivityRoute />);
@@ -602,7 +473,7 @@ it("refreshes pickup and finish rows through reused project streams, tracks all 
     ),
   );
   expect(screen.getByText("Live")).toBeTruthy();
-  current = report({ running: [attempt(10)], finished: [] });
+  current = report({ running_issues: [attempt(10)], finished: [] });
   act(() => {
     for (let i = 0; i < 100; i++) {
       ProjectEvents.sources.forEach((source) => source.dispatchEvent(new MessageEvent("activity", { data: String(i) })));
@@ -611,16 +482,16 @@ it("refreshes pickup and finish rows through reused project streams, tracks all 
   expect(mocks.api.activity).toHaveBeenCalledOnce();
   await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
   expect(screen.getByRole("link", { name: "#10 Job 10" })).toBeTruthy();
-  expect(screen.getByText("1 job")).toBeTruthy();
+  expect(screen.getByText("1 issue")).toBeTruthy();
   let finishRequest: ((value: ActivityReport) => void) | undefined;
   mocks.api.activity.mockImplementationOnce(() => new Promise<ActivityReport>((resolve) => { finishRequest = resolve; }));
   current = report({
-    running: [],
-    finished: [
+    running_issues: [],
+    finished_issues: [
       attempt(10, {
-        outcome: "succeeded",
+        terminal_lane: "Done",
         finished_at: at(0),
-        stage_duration_seconds: 600,
+        total_seconds: 600,
       }),
     ],
   });
@@ -638,7 +509,7 @@ it("refreshes pickup and finish rows through reused project streams, tracks all 
   expect(screen.getByText("Nothing is running for this filter.")).toBeTruthy();
   expect(mocks.api.activity).toHaveBeenCalledTimes(4);
   expect(
-    within(screen.getByRole("region", { name: "Recent finishes" })).getByRole(
+    within(screen.getByRole("region", { name: "Finished" })).getByRole(
       "link",
       { name: "#10 Job 10" },
     ),
@@ -708,11 +579,11 @@ it.each(["activity", "fleet"] as const)("recovers a stalled %s read across remou
   vi.stubGlobal("EventSource", ProjectEvents);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   ProjectEvents.sources = [];
-  mocks.api.activity.mockResolvedValue(report({ running: [attempt(20)] }));
+  mocks.api.activity.mockResolvedValue(report({ running_issues: [attempt(20)] }));
   mocks.api.fleet.mockResolvedValue({ runners });
   let finishStalled: (() => void) | undefined;
   mocks.api[stalled].mockImplementationOnce(() => new Promise((resolve) => {
-    finishStalled = () => resolve(stalled === "activity" ? report({ running: [attempt(10)] }) : { runners });
+    finishStalled = () => resolve(stalled === "activity" ? report({ running_issues: [attempt(10)] }) : { runners });
   }));
   const first = render(<ActivityRoute />);
   await act(async () => {});

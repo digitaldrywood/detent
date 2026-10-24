@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { GitPullRequestIcon, TerminalIcon } from "lucide-react";
 import { RunnerStatusDot } from "../../components/RunnerStatusDot.tsx";
-import { StageProgress } from "../../components/StageProgress.tsx";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -46,14 +45,20 @@ import {
   runnerCapacity,
   runnerCategory,
   runnerName,
-  STAGES,
-  timing,
-  type ActivityAttempt,
+  displayDuration,
+  issueTiming,
+  laneTiming,
+  issueMeta,
+  type ActivityIssue,
   type Group,
   type Sort,
 } from "./activityModel.ts";
 
-import { activityKey, observeActivity, type ActivityState } from "./activityResource.ts";
+import {
+  activityKey,
+  observeActivity,
+  type ActivityState,
+} from "./activityResource.ts";
 
 export function ActivityRoute() {
   usePageTitle("Activity");
@@ -62,17 +67,29 @@ export function ActivityRoute() {
   const http = useWorkHttp();
   const [project, setProject] = useState("");
   const [live, setLive] = useState(false);
-  const [state, setState] = useState<ActivityState & { readonly api?: object }>({ report: null, runners: [], pending: true, error: null });
+  const [state, setState] = useState<ActivityState & { readonly api?: object }>(
+    { report: null, runners: [], pending: true, error: null },
+  );
   useEffect(() => {
     const projects = (bootstrap?.projects ?? [])
       .filter((row) => !project || row.id === project)
       .map((row) => row.id);
     const connected = new Set<string>();
     setLive(false);
-    const resource = observeActivity(api, activityKey(project, projects), project, (next) =>
-      setState((previous) => next.report === null && next.pending && previous.api === api && previous.report !== null
-        ? { ...previous, pending: true, error: null }
-        : { ...next, api }));
+    const resource = observeActivity(
+      api,
+      activityKey(project, projects),
+      project,
+      (next) =>
+        setState((previous) =>
+          next.report === null &&
+          next.pending &&
+          previous.api === api &&
+          previous.report !== null
+            ? { ...previous, pending: true, error: null }
+            : { ...next, api },
+        ),
+    );
     const refreshVisible = resource.refresh;
     const unsubscribe = projects.map((id) =>
       subscribeProjectEvents(http, id, {
@@ -185,8 +202,7 @@ export function ActivityView({
     const timer = setInterval(() => setNow(Date.now()), 15_000);
     return () => clearInterval(timer);
   }, []);
-  const scope =
-    projects.find((row) => row.id === project)?.name ?? allProjects;
+  const scope = projects.find((row) => row.id === project)?.name ?? allProjects;
   const selectedRunner = runners.find((row) => row.id === runner);
   const working = runners.filter(
     (row) => runnerCategory(row) === "working",
@@ -196,9 +212,16 @@ export function ActivityView({
   const used = hosts.reduce((sum, host) => sum + host.used, 0);
   const slots = hosts.reduce((sum, host) => sum + host.capacity, 0);
   const slowRunners = new Set(
-    report?.running
-      .filter((row) => timing(row, report, now, false).slow)
-      .map((row) => row.runner_id),
+    (report?.running_issues ?? [])
+      .filter(
+        (row) =>
+          report &&
+          (issueTiming(row, report, now, false).slow ||
+            row.lanes.some(
+              (lane) => laneTiming(lane, row, report, now, false).slow,
+            )),
+      )
+      .flatMap((row) => row.runner_ids),
   );
   const orderedRunners = runners.toSorted(
     (a, b) =>
@@ -217,7 +240,9 @@ export function ActivityView({
           />
         }
       >
-        {prefix}{" "}
+        <span className={prefix === "Done" ? "text-success-foreground" : ""}>
+          {prefix}
+        </span>{" "}
         <time dateTime={at}>
           {clock
             ? `at ${formatShortTimestamp(at, timestampFormat)}`
@@ -229,18 +254,63 @@ export function ActivityView({
       </TooltipPopup>
     </Tooltip>
   );
-  const renderRow = (attempt: ActivityAttempt, finished: boolean) => {
+  const renderRow = (issue: ActivityIssue, finished: boolean) => {
     if (!report) return null;
-    const metrics = timing(attempt, report, now, finished);
-    const host = runners.find((row) => row.id === attempt.runner_id);
-    const prNumber = attempt.pull_request_url?.match(
+    const metrics = issueTiming(issue, report, now, finished);
+    const meta = issueMeta(issue, finished);
+    const totalDetail = (
+      <>
+        <div>Total {displayDuration(metrics.total)}</div>
+        <div>
+          Since it entered {issue.clock_lane}{" "}
+          {issue.clock_started_at
+            ? formatChatTimestampTooltip(
+                issue.clock_started_at,
+                timestampFormat,
+              )
+            : "at an unavailable time"}
+        </div>
+        <div>{metrics.baselineText}</div>
+      </>
+    );
+    const workedDetail = (
+      <>
+        <div>
+          Worked {displayDuration(metrics.worked)} · waiting{" "}
+          {displayDuration(metrics.waiting)}
+        </div>
+        <table className="mt-2 w-full text-xs">
+          <thead>
+            <tr>
+              <th className="text-left font-normal">Role</th>
+              <th className="px-3 font-normal">Attempts</th>
+              <th className="text-right font-normal">Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            {issue.worked_by_role.map((role) => (
+              <tr key={role.role}>
+                <td>
+                  {role.role}
+                  {role.running ? " · running" : ""}
+                </td>
+                <td className="px-3 text-center">{role.attempts}</td>
+                <td className="text-right">{displayDuration(role.seconds)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </>
+    );
+    const host = runners.find((row) => row.id === issue.runner_id);
+    const prNumber = issue.pull_request_url?.match(
       /\/pull\/(\d+)(?:[/?#]|$)/,
     )?.[1];
     return (
       <div
         role="row"
-        key={attempt.attempt_id}
-        className="grid min-w-0 grid-cols-1 gap-2 border-b border-border py-3 md:grid-cols-[minmax(0,1fr)_12rem] md:gap-x-6 md:py-2 @[900px]/activity:grid-cols-[minmax(0,1fr)_8rem_12rem_13.5rem] @[900px]/activity:items-center"
+        key={issue.work_item_id}
+        className="grid min-w-0 grid-cols-1 gap-2 border-b border-border py-3 @[1100px]/activity:grid-cols-[minmax(12rem,1fr)_8rem_minmax(16rem,1.2fr)_4.5rem_6.5rem_10rem] @[1100px]/activity:items-center @[1100px]/activity:gap-x-6 @[1100px]/activity:py-2"
       >
         <div role="cell" className="min-w-0">
           <Tooltip>
@@ -248,89 +318,192 @@ export function ActivityView({
               render={
                 <Link
                   to="/work/i/$workItemId"
-                  params={{ workItemId: attempt.work_item_id }}
+                  params={{ workItemId: issue.work_item_id }}
                   className="block truncate text-sm hover:underline"
                 />
               }
             >
-              <span className="text-muted-foreground">#{attempt.number}</span>{" "}
-              {attempt.title}
+              <span className="text-muted-foreground">#{issue.number}</span>{" "}
+              {issue.title}
             </TooltipTrigger>
-            <TooltipPopup>{attempt.title}</TooltipPopup>
+            <TooltipPopup>{issue.title}</TooltipPopup>
           </Tooltip>
-          <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1 text-xs text-muted-foreground">
-            <span>{attempt.project_name} ·</span>
-            {timeButton(
-              finished
-                ? (attempt.finished_at ?? attempt.started_at)
-                : attempt.started_at,
-              finished ? "finished" : "attempt started",
-            )}
+          <div className="mt-0.5 flex min-w-0 items-center gap-x-1 text-xs text-muted-foreground">
+            <span className="min-w-0 truncate">{issue.project_name} ·</span>
+            <span
+              className={
+                finished && issue.terminal_lane === "Done"
+                  ? "text-success-foreground"
+                  : ""
+              }
+            >
+              {meta.at
+                ? timeButton(meta.at, meta.prefix)
+                : "Timing unavailable"}
+            </span>
           </div>
         </div>
-        <div
-          role="cell"
-          className="flex min-w-0 items-center gap-2 text-xs md:col-start-1 md:row-start-2 @[900px]/activity:col-auto @[900px]/activity:row-auto"
-        >
+        <div role="cell" className="flex min-w-0 items-center gap-2 text-xs">
           <RunnerStatusDot runner={host} />
-          <span
-            className="truncate"
-            title={host ? runnerName(host) : attempt.runner_id}
-          >
-            {host ? runnerName(host) : attempt.runner_id}
+          <Tooltip>
+            <TooltipTrigger
+              render={<span className="min-w-0 truncate" tabIndex={0} />}
+            >
+              {host
+                ? runnerName(host)
+                : issue.runner_id || "Runner unavailable"}
+              {issue.runner_ids.length > 1
+                ? ` +${issue.runner_ids.length - 1}`
+                : ""}
+            </TooltipTrigger>
+            <TooltipPopup>
+              {issue.runner_ids
+                .map((id) => {
+                  const runner = runners.find((row) => row.id === id);
+                  return runner ? runnerName(runner) : id;
+                })
+                .join(", ")}
+            </TooltipPopup>
+          </Tooltip>
+          <span className="ms-auto flex shrink-0 items-center gap-1 tabular-nums @[1100px]/activity:hidden">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    tabIndex={0}
+                    className={
+                      metrics.slow
+                        ? "font-medium text-warning-foreground"
+                        : "font-medium"
+                    }
+                  />
+                }
+              >
+                {issue.clock_started_at ? displayDuration(metrics.total) : "—"}
+              </TooltipTrigger>
+              <TooltipPopup>{totalDetail}</TooltipPopup>
+            </Tooltip>{" "}
+            total ·
+            <Tooltip>
+              <TooltipTrigger render={<span tabIndex={0} />}>
+                {displayDuration(metrics.worked)} worked
+              </TooltipTrigger>
+              <TooltipPopup>{workedDetail}</TooltipPopup>
+            </Tooltip>
           </span>
         </div>
-        <div
-          role="cell"
-          className="min-w-0 space-y-1 md:col-start-2 md:row-span-2 md:row-start-1 @[900px]/activity:col-auto @[900px]/activity:row-auto @[900px]/activity:row-span-1"
-        >
-          <div className="flex items-baseline justify-between gap-2 text-xs">
-            <span>
-              {metrics.stageLabel}
-              {finished && attempt.outcome ? (
-                <>
-                  {" "}
-                  <span
-                    className={
-                      attempt.outcome === "failed"
-                        ? "text-error-foreground"
-                        : attempt.outcome === "succeeded"
-                          ? "text-success-foreground"
-                          : "text-muted-foreground"
-                    }
+        <div role="cell" className="flex min-w-0 gap-1">
+          {issue.lanes.map((lane) => {
+            const metric = laneTiming(lane, issue, report, now, finished);
+            return (
+              <Tooltip key={lane.name}>
+                <TooltipTrigger
+                  render={
+                    <div
+                      tabIndex={0}
+                      className="min-w-0 flex-1 rounded-xs text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={`${lane.name}, ${metric.visited ? displayDuration(metric.seconds) : "not visited"}. ${metric.baselineText}`}
+                    />
+                  }
+                >
+                  <div
+                    className={`flex min-w-0 gap-1 ${metric.visited ? "text-muted-foreground" : "text-muted-foreground/60"}`}
                   >
-                    {attempt.outcome}
-                  </span>
-                </>
-              ) : null}
-            </span>
-            <span
-              className={`shrink-0 tabular-nums ${metrics.slow ? "text-warning-foreground" : metrics.fast ? "text-success-foreground" : "text-muted-foreground"}`}
+                    <span className="truncate">{lane.name}</span>
+                    {lane.entries > 1 ? (
+                      <span className="shrink-0">×{lane.entries}</span>
+                    ) : null}
+                  </div>
+                  <div
+                    className={`tabular-nums ${metric.slow ? "text-warning-foreground" : !metric.visited ? "text-muted-foreground/60" : ""}`}
+                  >
+                    {metric.visited ? displayDuration(metric.seconds) : "—"}
+                  </div>
+                  <div
+                    className="mt-0.5 h-1 overflow-hidden rounded-full bg-muted"
+                    aria-hidden
+                  >
+                    <div
+                      className={`h-full rounded-full ${metric.tone === "warning" ? "bg-warning" : metric.tone === "working" ? "bg-info" : "bg-muted-foreground/60"}`}
+                      style={{
+                        width: metric.visited ? "100%" : "0%",
+                        ...(lane.role === "holding"
+                          ? {
+                              backgroundImage:
+                                "repeating-linear-gradient(135deg, transparent, transparent 2px, var(--background) 2px, var(--background) 4px)",
+                            }
+                          : {}),
+                      }}
+                    />
+                  </div>
+                </TooltipTrigger>
+                <TooltipPopup>
+                  <div>
+                    {lane.name} · {displayDuration(metric.seconds)}
+                  </div>
+                  <div>{metric.baselineText}</div>
+                </TooltipPopup>
+              </Tooltip>
+            );
+          })}
+        </div>
+        <div role="cell" className="hidden text-right @[1100px]/activity:block">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span
+                  tabIndex={0}
+                  aria-label={`Total ${displayDuration(metrics.total)}`}
+                  className={`text-sm font-medium tabular-nums ${metrics.slow ? "text-warning-foreground" : ""}`}
+                />
+              }
             >
-              {metrics.duration}
-              {metrics.slow ? " · slow" : metrics.fast ? " · fast" : ""}
-            </span>
-          </div>
-          <StageProgress
-            steps={STAGES}
-            currentStep={metrics.index}
-            progress={metrics.progress}
-            tone={metrics.tone}
-            label={metrics.label}
-            description={metrics.description}
-          />
+              {issue.clock_started_at ? displayDuration(metrics.total) : "—"}
+            </TooltipTrigger>
+            <TooltipPopup>{totalDetail}</TooltipPopup>
+          </Tooltip>
+        </div>
+        <div role="cell" className="hidden text-right @[1100px]/activity:block">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <div
+                  tabIndex={0}
+                  aria-label={`Worked ${displayDuration(metrics.worked)}, ${Math.round(metrics.share * 100)}%`}
+                  className="text-xs tabular-nums"
+                />
+              }
+            >
+              <span className="font-medium">
+                {displayDuration(metrics.worked)}
+              </span>{" "}
+              <span className="text-muted-foreground">
+                {Math.round(metrics.share * 100)}%
+              </span>
+              <div
+                className="mt-1 h-1 overflow-hidden rounded-full bg-muted"
+                aria-hidden
+              >
+                <div
+                  className={`h-full rounded-full ${metrics.workedTone === "warning" ? "bg-warning" : "bg-info"}`}
+                  style={{ width: `${metrics.share * 100}%` }}
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipPopup>{workedDetail}</TooltipPopup>
+          </Tooltip>
         </div>
         <div
           role="cell"
-          className="flex items-center gap-3 text-xs md:col-span-2 @[900px]/activity:col-span-1"
+          className="hidden items-center gap-3 text-xs @[1100px]/activity:flex"
         >
-          <span className="w-24 shrink-0">
-            {attempt.change_id ? (
+          <span className="shrink-0">
+            {issue.change_id ? (
               <Link
                 to="/work/i/$workItemId/changes/$changeId"
                 params={{
-                  workItemId: attempt.work_item_id,
-                  changeId: attempt.change_id,
+                  workItemId: issue.work_item_id,
+                  changeId: issue.change_id,
                 }}
                 className="inline-flex items-center gap-1.5 hover:underline"
               >
@@ -340,9 +513,9 @@ export function ActivityView({
                 />
                 {prNumber ? `PR #${prNumber}` : "Change"}
               </Link>
-            ) : attempt.pull_request_url ? (
+            ) : issue.pull_request_url ? (
               <a
-                href={attempt.pull_request_url}
+                href={issue.pull_request_url}
                 className="inline-flex items-center gap-1.5 hover:underline"
               >
                 <GitPullRequestIcon
@@ -357,11 +530,11 @@ export function ActivityView({
               </span>
             )}
           </span>
-          <span className="w-20 shrink-0">
-            {attempt.session_id ? (
+          <span className="shrink-0">
+            {issue.session_id ? (
               <Link
                 to="/work/i/$workItemId"
-                params={{ workItemId: attempt.work_item_id }}
+                params={{ workItemId: issue.work_item_id }}
                 search={{ panel: "conversation" }}
                 className="inline-flex items-center gap-1.5 hover:underline"
               >
@@ -382,7 +555,7 @@ export function ActivityView({
   const section = (finished: boolean) => {
     if (!report) return null;
     const groups = activityGroups(
-      finished ? report.finished : report.running,
+      finished ? (report.finished_issues ?? []) : (report.running_issues ?? []),
       report,
       runners,
       project,
@@ -394,9 +567,21 @@ export function ActivityView({
     );
     const rows = groups.flatMap((entry) => entry.rows);
     const slow = rows.filter(
-      (row) => timing(row, report, now, finished).slow,
+      (row) =>
+        issueTiming(row, report, now, finished).slow ||
+        row.lanes.some(
+          (lane) => laneTiming(lane, row, report, now, finished).slow,
+        ),
     ).length;
-    const title = finished ? "Recent finishes" : "Running now";
+    const title = finished ? "Finished" : "Working now";
+    const outcomes = new Map<string, number>();
+    for (const row of rows) {
+      if (row.terminal_lane)
+        outcomes.set(
+          row.terminal_lane,
+          (outcomes.get(row.terminal_lane) ?? 0) + 1,
+        );
+    }
     return (
       <section
         aria-label={title}
@@ -405,15 +590,25 @@ export function ActivityView({
         <div className="mb-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
           <h2 className="text-sm font-medium text-muted-foreground">{title}</h2>
           <span>
-            {rows.length}{" "}
+            {rows.length} {rows.length === 1 ? "issue" : "issues"}
             {finished
-              ? rows.length === 1
-                ? "attempt"
-                : "attempts"
-              : rows.length === 1
-                ? "job"
-                : "jobs"}
+              ? ` in ${Math.round((Date.parse(report.window.to) - Date.parse(report.window.from)) / 86_400_000)} days`
+              : ""}
           </span>
+          {finished
+            ? [...outcomes].map(([lane, count]) => (
+                <span
+                  key={lane}
+                  className={
+                    lane === "Done"
+                      ? "text-success-foreground"
+                      : "text-muted-foreground"
+                  }
+                >
+                  {count} {lane.toLowerCase()}
+                </span>
+              ))
+            : null}
           {slow > 0 ? (
             <span className="text-warning-foreground">
               {slow} slower than usual
@@ -429,19 +624,27 @@ export function ActivityView({
         ) : (
           <div
             role="table"
-            aria-label={finished ? "Finished attempts" : "Running jobs"}
+            aria-label={finished ? "Finished issues" : "Working issues"}
           >
             <div
               role="row"
-              className="hidden grid-cols-[minmax(0,1fr)_8rem_12rem_13.5rem] gap-x-6 border-b border-border pb-1 text-xs text-muted-foreground @[900px]/activity:grid"
+              className="hidden grid-cols-[minmax(12rem,1fr)_8rem_minmax(16rem,1.2fr)_4.5rem_6.5rem_10rem] gap-x-6 border-b border-border pb-1 text-xs text-muted-foreground @[1100px]/activity:grid"
             >
               {[
                 "Issue",
                 "Runner",
-                finished ? "Stage and outcome" : "Stage",
+                "Time in each lane",
+                "Total",
+                "Worked",
                 "Links",
               ].map((label) => (
-                <span role="columnheader" key={label}>
+                <span
+                  role="columnheader"
+                  key={label}
+                  className={
+                    label === "Total" || label === "Worked" ? "text-right" : ""
+                  }
+                >
                   {label}
                 </span>
               ))}
@@ -455,13 +658,7 @@ export function ActivityView({
                   >
                     <span role="cell">
                       {entry.label} · {entry.rows.length}{" "}
-                      {finished
-                        ? entry.rows.length === 1
-                          ? "attempt"
-                          : "attempts"
-                        : entry.rows.length === 1
-                          ? "job"
-                          : "jobs"}
+                      {entry.rows.length === 1 ? "issue" : "issues"}
                     </span>
                   </div>
                 ) : null}
@@ -486,10 +683,14 @@ export function ActivityView({
           <WorkspaceBreadcrumbSeparator />
           <WorkspaceBreadcrumbItem current={!runner} className="shrink">
             <Tooltip>
-              <TooltipTrigger render={<span className="truncate" tabIndex={0} />}>
+              <TooltipTrigger
+                render={<span className="truncate" tabIndex={0} />}
+              >
                 {scope}
               </TooltipTrigger>
-              <TooltipPopup side="bottom" className="max-w-80">{scope}</TooltipPopup>
+              <TooltipPopup side="bottom" className="max-w-80">
+                {scope}
+              </TooltipPopup>
             </Tooltip>
           </WorkspaceBreadcrumbItem>
           {runner ? (
@@ -554,7 +755,7 @@ export function ActivityView({
                         { value: "none", label: "None" },
                         { value: "runner", label: "Runner" },
                         { value: "project", label: "Project" },
-                        { value: "stage", label: "Stage" },
+                        { value: "lane", label: "Lane" },
                       ]}
                     />
                   </div>
@@ -566,7 +767,7 @@ export function ActivityView({
                       onChange={setSort}
                       options={[
                         { value: "attention", label: "Needs attention first" },
-                        { value: "longest", label: "Longest in stage" },
+                        { value: "longest", label: "Longest total" },
                         { value: "started", label: "Most recently started" },
                         { value: "number", label: "Issue number" },
                       ]}
@@ -610,9 +811,10 @@ export function ActivityView({
               </div>
             ) : (
               <>
-                {report?.partial ? (
+                {report?.partial || report?.issues_partial ? (
                   <p className="text-sm text-muted-foreground">
-                    Activity is incomplete; some attempts or timing data may be missing.
+                    Activity is incomplete; some attempts or timing data may be
+                    missing.
                   </p>
                 ) : null}
                 <section aria-label="Runners" className="space-y-2">
