@@ -39,8 +39,10 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 		transfer        bool
 		transferCode    bool
 		workerOwnership bool
+		planning        bool
 	}{
 		{name: "same policy"},
+		{name: "planning enabled Rework restores missing published head before provider", planning: true},
 		{name: "retained source waits for writer cleanup before replacement", workerOwnership: true},
 		{name: "updated policy", updatePolicy: true},
 		{name: "operator republished same tree", republish: true},
@@ -117,7 +119,7 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer runtimeStore.Close()
-				agent, err := runner.NewRunner(runner.Dependencies{Store: runtimeStore, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
+				agent, err := runner.NewRunner(runner.Dependencies{Store: runtimeStore, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -273,6 +275,9 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 			}
 			providerB := &committingAgent{validator: "pass", complete: true}
 			providerB.duringTurn = func() {
+				if identity := h.scheduler.RunExecution(issue.ID).(*nativeExecution).data.Identity; !test.transferCode && (identity == nil || identity.Role != runner.RoleRework) {
+					t.Fatalf("Rework provider identity = %+v, want role=rework", identity)
+				}
 				expectedFiles := map[string]string{"CHANGE.md": "changed\n"}
 				if test.transferCode {
 					if got := head(providerB.workspace); got != recovered.Version.HeadSHA {

@@ -1613,10 +1613,7 @@ func (r *Runner) recoverRunChangeSource(ctx context.Context, req RunRequest, run
 
 	recovered, recoverErr := source.RecoverChangeSource(ctx)
 	if recoverErr != nil && !checkpointRefCoversChangeSource(recoverErr, req.Execution.Recovery(), nativeLanding, false) {
-		if errors.Is(recoverErr, ErrChangeSourceVersionSuperseded) {
-			recoverErr = fmt.Errorf("%w: %w", ErrNativeRecoveryRequired, recoverErr)
-		}
-		return fmt.Errorf("recover native Change source: %w", recoverErr)
+		return fmt.Errorf("%w: recover native Change source: %w", ErrNativeRecoveryRequired, recoverErr)
 	}
 	if recoverErr != nil {
 		r.logWorkerEvent(req.Issue, "worker_change_source_from_checkpoint_ref", "error", recoverErr)

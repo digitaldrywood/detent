@@ -485,6 +485,10 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		if failure == nil {
 			failure = result.terminalFailure
 		}
+		if failure != nil && failure.ErrorClass == "source_recovery" && !result.TurnStarted {
+			failure.Stage = "workspace_preparation"
+			*failure = failure.Public()
+		}
 		err := prepared.PrepareFinish(prepareCtx, outcome, result.FinalMessage, failure)
 		prepareCancel()
 		if err != nil {
