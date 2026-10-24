@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -42,7 +43,9 @@ func platformMailConfig(t *testing.T, sender auth.EmailSender, output *logBuffer
 		SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), Provider: newFakeProvider(),
 		StateDir: t.TempDir(), clientFS: fstest.MapFS{}, platformEmailSender: sender,
 		Logger: slog.New(slog.NewJSONHandler(output, nil)),
-		now:    func() time.Time { return time.Date(2026, 10, 19, 16, 0, 0, 0, time.UTC) },
+		now: func() time.Time {
+			return time.Date(2026, 10, 19, 18, 0, 0, 759375872, time.FixedZone("fixture", 2*60*60))
+		},
 	}
 }
 
@@ -53,9 +56,11 @@ func TestPlatformNotifications(t *testing.T) {
 		historical       bool
 		paid             bool
 		customBase       bool
+		escaping         bool
 	}{
 		{name: "signup", event: "signup", key: "fake-key"},
 		{name: "organization", event: "organization", key: "fake-key"},
+		{name: "escaped organization", event: "organization", key: "fake-key", escaping: true},
 		{name: "custom base organization", event: "organization", key: "fake-key", customBase: true},
 		{name: "paid organization", event: "organization", key: "fake-key", paid: true},
 		{name: "signup sender error", event: "signup", key: "fake-key", sendError: true},
@@ -105,6 +110,12 @@ func TestPlatformNotifications(t *testing.T) {
 				t.Fatalf("skip logs=%d want %d: %s", got, wantSkips, startup)
 			}
 			ids := map[string]string{}
+			organizationName := func(subject string) string {
+				if test.escaping {
+					return "Example <script>alert(1)</script> & " + subject
+				}
+				return "Example " + subject
+			}
 			trigger := func(subject string) {
 				t.Helper()
 				email := subject + "@example.test"
@@ -123,7 +134,7 @@ func TestPlatformNotifications(t *testing.T) {
 					if test.paid {
 						price = "price_team"
 					}
-					id, err := s.createOrganizationFor(t.Context(), accountSession{Subject: subject, Email: email}, "Example "+subject, "creation_key_"+subject, price)
+					id, err := s.createOrganizationFor(t.Context(), accountSession{Subject: subject, Email: email}, organizationName(subject), "creation_key_"+subject, price)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -163,15 +174,19 @@ func TestPlatformNotifications(t *testing.T) {
 					t.Fatalf("non-admin recipient: %s", message.To)
 				}
 				seen[message.To+message.Subject]++
-				if !strings.Contains(message.Body, "Time: 2026-10-19T16:00:00Z") {
-					t.Fatalf("missing event time: %s", message.Body)
+				if !strings.Contains(message.Body, "Time: Oct 19, 2026 16:00 UTC") || !strings.Contains(message.HTMLBody, "Oct 19, 2026 16:00 UTC") || strings.Contains(message.HTMLBody, "<script>") {
+					t.Fatalf("missing formatted event time or unsafe HTML: %+v", message)
 				}
 				matched := false
 				for _, subject := range []string{"user_alpha", "user_beta"} {
 					email := subject + "@example.test"
+					var target, action, title string
+					var textFacts, htmlFacts []string
 					if test.event == "signup" && message.Subject == "New sign-up: "+email {
-						matched = strings.Contains(message.Body, cfg.PublicURL+"/platform/users/"+email)
-					} else if test.event == "organization" && message.Subject == "New organization: Example "+subject {
+						target, action, title = cfg.PublicURL+"/platform/users/"+email, "Open user", "New sign-up"
+						textFacts = []string{"Email: " + email}
+						htmlFacts = []string{email}
+					} else if test.event == "organization" && message.Subject == "New organization: "+organizationName(subject) {
 						plan := "free"
 						if test.customBase {
 							plan = "pilot_free"
@@ -179,7 +194,22 @@ func TestPlatformNotifications(t *testing.T) {
 						if test.paid {
 							plan = "team"
 						}
-						matched = strings.Contains(message.Body, "Creator: "+email) && strings.Contains(message.Body, "Plan: "+plan) && strings.Contains(message.Body, cfg.PublicURL+"/platform/tenants/"+ids[subject])
+						target, action, title = cfg.PublicURL+"/platform/tenants/"+ids[subject], "Open organization", "New organization"
+						textFacts = []string{"Organization: " + organizationName(subject), "Creator: " + email, "Plan: " + plan}
+						htmlFacts = []string{html.EscapeString(organizationName(subject)), email, ">" + plan + "</td>"}
+					} else {
+						continue
+					}
+					matched = true
+					for _, fact := range append(textFacts, target) {
+						if !strings.Contains(message.Body, fact) {
+							t.Fatalf("plain text missing %q: %s", fact, message.Body)
+						}
+					}
+					for _, fact := range append(htmlFacts, `href="`+target+`"`, action, title) {
+						if !strings.Contains(message.HTMLBody, fact) {
+							t.Fatalf("HTML missing %q: %s", fact, message.HTMLBody)
+						}
 					}
 				}
 				if !matched {
