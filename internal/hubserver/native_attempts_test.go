@@ -640,6 +640,14 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 			t.Fatalf("fixture is not a legitimate runtime: %v", err)
 		}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, finish), http.StatusOK)
+		var dispositionStatus string
+		var dispositionHumanAction bool
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT disposition_status,disposition_human_action FROM native_attempts WHERE id=?", finish.Data.AttemptID).Scan(&dispositionStatus, &dispositionHumanAction); err != nil {
+			t.Fatal(err)
+		}
+		if dispositionStatus != "blocked" || !dispositionHumanAction {
+			t.Fatalf("typed disposition=%s/%v", dispositionStatus, dispositionHumanAction)
+		}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 		fences = append(fences, lease.FencingToken)
 	}
