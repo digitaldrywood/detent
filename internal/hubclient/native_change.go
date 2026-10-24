@@ -119,7 +119,7 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 					change.VersionError += ": " + err.Error()
 				} else {
 					landing := runner.NativeLanding{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
-					if err := e.RecordLanding(ctx, landing); err != nil {
+					if err := e.recordLanding(ctx, landing); err != nil {
 						change.Error = err.Error()
 						return err
 					}

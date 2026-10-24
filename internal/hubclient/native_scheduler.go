@@ -940,6 +940,16 @@ func (s *Scheduler) invalidateNativeClaim(issueID string, token tracker.FencingT
 				return true
 			}
 		}
+		s.mu.Unlock()
+		if err := current.source.client.release(context.Background(), current.lease, "cancelled", true); err != nil && !nativeLeaseLost(err) {
+			slog.Default().Warn("native claim release unavailable", "work_item_id", issueID, "error", err)
+			return true
+		}
+		s.mu.Lock()
+		if successor, ok := s.nativeClaims[issueID]; !ok || successor.lease.ID != current.lease.ID || successor.lease.FencingToken != token {
+			s.mu.Unlock()
+			return false
+		}
 		current.source.client.slotFreed()
 		delete(s.claims, issueID)
 		delete(s.nativeClaims, issueID)
