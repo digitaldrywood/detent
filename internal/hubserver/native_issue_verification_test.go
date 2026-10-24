@@ -294,6 +294,9 @@ func TestNativeIssueVerificationListAndEmail(t *testing.T) {
 	} {
 		got := 0
 		for _, message := range messages {
+			if strings.Contains(message.HTMLBody, "Your issue is Done. Please verify it.") != strings.Contains(message.Subject, "Please verify #") {
+				t.Fatal("HTML verification request does not match current verification state")
+			}
 			if message.To == v.users[test.user].identity.Email && strings.Contains(message.Subject, "Please verify #"+strconv.Itoa(test.issue.Number)+":") {
 				got++
 				if !strings.Contains(message.Body, "Please verify #"+strconv.Itoa(test.issue.Number)) || !strings.Contains(message.Body, "Todo to Done") {

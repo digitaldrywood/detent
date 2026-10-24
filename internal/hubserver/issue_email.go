@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/emailtemplate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -278,7 +279,10 @@ AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.user_id=m.user_id AND g
 		if err != nil {
 			return auth.EmailMessage{}, false, err
 		}
-		message = s.renderIssueEmail(message.To, strings.TrimRight(s.config.Hosted.PublicURL, "/")+path, title, number, token, notices)
+		message, err = s.renderIssueEmail(message.To, strings.TrimRight(s.config.Hosted.PublicURL, "/")+path, title, number, token, notices)
+		if err != nil {
+			return auth.EmailMessage{}, false, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return auth.EmailMessage{}, false, err
@@ -286,24 +290,40 @@ AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.user_id=m.user_id AND g
 	return message, true, nil
 }
 
-func (s *Service) renderIssueEmail(to, link, title string, number int, token string, notices []issueEmailNotice) auth.EmailMessage {
+func (s *Service) renderIssueEmail(to, link, title string, number int, token string, notices []issueEmailNotice) (auth.EmailMessage, error) {
 	var body strings.Builder
+	issue := emailtemplate.Issue{
+		URL: link, Verify: slices.ContainsFunc(notices, func(notice issueEmailNotice) bool { return notice.Verify }),
+		UnsubscribeURL: s.config.Hosted.PublicURL + s.hostedPath("/issue-notifications/unsubscribe?token="+url.QueryEscape(token)),
+	}
 	subject := fmt.Sprintf("[Detent] #%d %s", number, strings.NewReplacer("\r", " ", "\n", " ").Replace(title))
-	if slices.ContainsFunc(notices, func(notice issueEmailNotice) bool { return notice.Verify }) {
+	if issue.Verify {
 		subject = "[Detent] Please verify #" + strconv.Itoa(number) + ": " + strings.NewReplacer("\r", " ", "\n", " ").Replace(title)
 		fmt.Fprintf(&body, "Please verify #%d. Your issue is Done. Open it and choose Verified, or Still broken with a comment: %s\n\n", number, link)
 	}
 	fmt.Fprintf(&body, "#%d %s\n\n", number, title)
 	for _, notice := range notices {
+		row := emailtemplate.Notice{StateFrom: notice.StateFrom, StateTo: notice.StateTo, Author: notice.Author, Related: notice.Related}
 		switch {
 		case notice.CommentID != "":
-			fmt.Fprintf(&body, "%s commented: %s#issue-comment-%s\n", notice.Author, link, url.PathEscape(notice.CommentID))
+			row.CommentURL = link + "#issue-comment-" + url.PathEscape(notice.CommentID)
+			fmt.Fprintf(&body, "%s commented: %s\n", notice.Author, row.CommentURL)
 		case notice.Related:
 			fmt.Fprintf(&body, "A related issue link was added: %s\n", link)
 		default:
 			fmt.Fprintf(&body, "%s to %s\n", notice.StateFrom, notice.StateTo)
 		}
+		issue.Notices = append(issue.Notices, row)
 	}
-	fmt.Fprintf(&body, "\nOpen issue: %s\nUnsubscribe from this issue: %s\n", link, s.config.Hosted.PublicURL+s.hostedPath("/issue-notifications/unsubscribe?token="+url.QueryEscape(token)))
-	return auth.EmailMessage{To: to, Subject: subject, Body: body.String()}
+	fmt.Fprintf(&body, "\nOpen issue: %s\nUnsubscribe from this issue: %s\n", link, issue.UnsubscribeURL)
+	message, err := emailtemplate.Render(emailtemplate.Content{
+		Title: fmt.Sprintf("Issue #%d", number), Heading: title, Issue: &issue,
+		ActionLabel: "Open issue", ActionURL: link,
+		Footer: "You get this because you filed or commented on this issue.",
+	})
+	if err != nil {
+		return auth.EmailMessage{}, err
+	}
+	message.To, message.Subject, message.Body = to, subject, body.String()
+	return message, nil
 }
