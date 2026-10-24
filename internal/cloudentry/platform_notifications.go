@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/emailtemplate"
 )
 
 type platformNotifications struct {
@@ -119,13 +120,10 @@ RETURNING event,entity_id,email,name,plan,occurred_at`, formatTime(s.config.now(
 				}
 				break
 			}
-			message := auth.EmailMessage{}
-			if event == "signup" {
-				message.Subject = "New sign-up: " + notificationLine(email)
-				message.Body = fmt.Sprintf("Email: %s\nTime: %s\n%s/platform/users/%s\n", notificationLine(email), at, s.config.PublicURL, url.PathEscape(email))
-			} else {
-				message.Subject = "New organization: " + notificationLine(name)
-				message.Body = fmt.Sprintf("Organization: %s\nCreator: %s\nPlan: %s\nTime: %s\n%s/platform/tenants/%s\n", notificationLine(name), notificationLine(email), plan, at, s.config.PublicURL, url.PathEscape(id))
+			message, err := s.platformNotificationMessage(event, id, email, name, plan, at)
+			if err != nil {
+				s.config.Logger.ErrorContext(ctx, "render platform notification failed", "event", event, "error", err)
+				continue
 			}
 			if err := s.sendPlatformNotification(ctx, message); err != nil {
 				if errors.Is(err, context.Canceled) {
@@ -136,6 +134,38 @@ RETURNING event,entity_id,email,name,plan,occurred_at`, formatTime(s.config.now(
 			}
 		}
 	}
+}
+
+func (s *Service) platformNotificationMessage(event, id, email, name, plan, at string) (auth.EmailMessage, error) {
+	occurredAt, err := parseTime(at)
+	if err != nil {
+		return auth.EmailMessage{}, fmt.Errorf("parse notification time: %w", err)
+	}
+	formattedTime := occurredAt.UTC().Format("Jan 2, 2006 15:04 UTC")
+	content := emailtemplate.Content{
+		Title: "New sign-up", Heading: notificationLine(email),
+		Details: []emailtemplate.Detail{{Label: "Email", Value: notificationLine(email)}, {Label: "Time", Value: formattedTime}},
+		ActionLabel: "Open user", ActionURL: s.config.PublicURL + "/platform/users/" + url.PathEscape(email),
+		Footer: "You get this because you are a Detent platform admin.",
+	}
+	if event != "signup" {
+		content.Title = "New organization"
+		content.Heading = notificationLine(name)
+		content.Details = []emailtemplate.Detail{
+			{Label: "Organization", Value: notificationLine(name)},
+			{Label: "Creator", Value: notificationLine(email)},
+			{Label: "Plan", Value: plan},
+			{Label: "Time", Value: formattedTime},
+		}
+		content.ActionLabel = "Open organization"
+		content.ActionURL = s.config.PublicURL + "/platform/tenants/" + url.PathEscape(id)
+	}
+	message, err := emailtemplate.Render(content)
+	if err != nil {
+		return auth.EmailMessage{}, err
+	}
+	message.Subject = content.Title + ": " + content.Heading
+	return message, nil
 }
 
 func (s *Service) sendPlatformNotification(ctx context.Context, message auth.EmailMessage) error {
