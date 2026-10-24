@@ -83,6 +83,9 @@ func nativeTurnResumeAttempt(recovery tracker.NativeRecovery) *tracker.NativeAtt
 	state := tracker.NativeStepReviewState(recovery)
 	for i := len(recovery.Attempts) - 1; i >= 0; i-- {
 		attempt := &recovery.Attempts[i]
+		if attempt.Status == "succeeded" {
+			return nil
+		}
 		if attempt.Runtime != nil && attempt.Runtime.Validation != nil && attempt.Runtime.Validation.ExitCode != 0 {
 			return nil
 		}

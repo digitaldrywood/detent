@@ -1647,13 +1647,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	var reviewRecovery *tracker.NativeAttempt
 	var turnRecovery *tracker.NativeAttempt
 	if req.Execution != nil && mode == RunModeImplement {
-		turnRecovery = nativeTurnResumeAttempt(req.Execution.Recovery())
-		hasReceipts := false
-		for _, attempt := range req.Execution.Recovery().Attempts {
-			hasReceipts = hasReceipts || len(attempt.Steps) != 0
-		}
-		if !hasReceipts {
-			reviewRecovery = nativeReviewResumeAttempt(req.Execution.Recovery(), gate.Effective(workflow.Config.Gate).Run)
+		reviewRecovery = nativeReviewResumeAttempt(req.Execution.Recovery(), gate.Effective(workflow.Config.Gate).Run)
+		if reviewRecovery == nil {
+			turnRecovery = nativeTurnResumeAttempt(req.Execution.Recovery())
 		}
 	}
 	publicationRecovery := false
@@ -2104,8 +2100,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if conversation := r.bindConversation(ctx, req, backend, resumeState.ProviderThreadID); conversation != nil {
 			ctx = conversation.attach(ctx)
 			defer func() { conversation.close(ctx, returnValue, returnErr) }()
-			if reviewRecovery != nil && conversation.session.Continuation() {
+			if (reviewRecovery != nil || turnRecovery != nil) && conversation.session.Continuation() {
 				reviewRecovery = nil
+				turnRecovery = nil
 				resumeState, err = r.runRequestResumeState(ctx, workflow.Config.Agent, req, sessionModel, selection.BackendID, backendConfig.Kind, role)
 				if err != nil {
 					return RunResult{}, err

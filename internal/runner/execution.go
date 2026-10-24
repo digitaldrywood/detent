@@ -1233,7 +1233,7 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 		return failedStep("validator", err)
 	}
 	var result gate.ValidatorResult
-	if previous.Step != "" && previous.Validator != nil {
+	if previous.Step != "" && previous.Validator != nil && previous.Validator.Verdict == gate.ValidatorVerdictPass {
 		result = *previous.Validator
 	} else {
 		result, err = r.Validate(ctx, request)
@@ -1297,7 +1297,7 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approv
 		return false, failedStep("review", err)
 	}
 	var result gate.ValidatorResult
-	if previous.Step != "" && previous.Validator != nil {
+	if previous.Step != "" && previous.Validator != nil && previous.Validator.Verdict == gate.ValidatorVerdictPass {
 		result = *previous.Validator
 	} else {
 		result, err = r.Validate(ctx, request)
