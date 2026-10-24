@@ -102,7 +102,7 @@ func BenchmarkAnalyticsRollupAppend(b *testing.B) {
 				}
 				err = f.service.database.commit(b.Context(), tx)
 				if err == nil && projected {
-					_, err = f.service.database.drainNativeBoardDirty(b.Context(), f.service.config.now())
+					_, _, err = f.service.database.drainNativeBoardDirtyAfter(b.Context(), f.service.config.now(), "")
 				}
 				if err != nil {
 					b.Fatal(err)

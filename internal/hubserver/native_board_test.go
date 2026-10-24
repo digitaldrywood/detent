@@ -2,11 +2,13 @@ package hubserver
 
 import (
 	"bufio"
+	"bytes"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -970,14 +972,16 @@ func TestNativeBoardDependentChangesReachBlockerStream(t *testing.T) {
 
 func drainTestNativeBoard(t *testing.T, service *Service) {
 	t.Helper()
+	var cursor string
 	for {
-		more, err := service.database.drainNativeBoardDirty(t.Context(), service.config.now())
+		more, id, err := service.database.drainNativeBoardDirtyAfter(t.Context(), service.config.now(), cursor)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !more {
 			return
 		}
+		cursor = id
 	}
 }
 
@@ -998,49 +1002,233 @@ func readHostedBoardFrame(t *testing.T, scanner *bufio.Reader) tracker.NativeBoa
 
 func TestNativeBoardRefreshSkipsFailingCard(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-		t.Fatal(err)
+	for _, test := range []struct {
+		name            string
+		failures        int
+		nonexpired      int
+		attemptsPerTick int
+		source          string
+	}{
+		{"65 failing cards", 65, 0, 100, "dirty"},
+		{"dirty across ticks", 7, 0, 3, "dirty"},
+		{"expired across ticks", 7, 0, 3, "expired"},
+		{"mixed across ticks", 7, 0, 3, "mixed"},
+		{"nonexpired ahead of dirty", 0, 128, 3, "dirty"},
+		{"nonexpired ahead of expired", 0, 128, 3, "expired"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			issues := []tracker.NativeWorkItemID{f.create(t, "First").WorkItemID, f.create(t, "Second").WorkItemID, f.create(t, "Third").WorkItemID}
+			slices.Sort(issues)
+			drainTestNativeBoard(t, f.service)
+			broken, healthy := issues[0], issues[1:]
+			db := f.service.database.db
+			now := f.service.config.now()
+			expired := now.Add(-time.Hour).UTC().Format("2006-01-02T15:04:05.000000000Z")
+			if _, err := db.ExecContext(t.Context(), "UPDATE native_board_items SET record_json='[1]' WHERE work_item_id=?", broken); err != nil {
+				t.Fatal(err)
+			}
+			for i := range test.nonexpired {
+				expiry := ""
+				if i%2 != 0 {
+					expiry = now.Add(24 * time.Hour).UTC().Format("2006-01-02T15:04:05.000000000Z")
+				}
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO native_board_items SELECT ?,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,?,record_json FROM native_board_items WHERE work_item_id=?`, fmt.Sprintf("wi_!%06d", i), expiry, broken); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i := range test.failures {
+				id := fmt.Sprintf("wi_00000000000000000000000000000%03d", i)
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO native_board_items SELECT ?,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json FROM native_board_items WHERE work_item_id=?`, id, broken); err != nil {
+					t.Fatal(err)
+				}
+				if test.source == "expired" || (test.source == "mixed" && i%2 == 0) {
+					if _, err := db.ExecContext(t.Context(), "UPDATE native_board_items SET expires_at=? WHERE work_item_id=?", expired, id); err != nil {
+						t.Fatal(err)
+					}
+				} else if _, err := db.ExecContext(t.Context(), "INSERT INTO native_board_dirty(work_item_id) VALUES(?)", id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := db.ExecContext(t.Context(), "UPDATE native_board_items SET record_json='null' WHERE work_item_id=?", broken); err != nil {
+				t.Fatal(err)
+			}
+			healthyExpiry := expired
+			if test.nonexpired > 0 && test.source == "dirty" {
+				healthyExpiry = ""
+			}
+			for _, id := range healthy {
+				if _, err := db.ExecContext(t.Context(), "UPDATE native_board_items SET record_json='null',expires_at=? WHERE work_item_id=?", healthyExpiry, id); err != nil {
+					t.Fatal(err)
+				}
+				if test.source != "expired" {
+					if _, err := db.ExecContext(t.Context(), "INSERT INTO native_board_dirty(work_item_id) VALUES(?)", id); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			var logs bytes.Buffer
+			f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+			step := analyticsBackfillBudget / time.Duration(test.attemptsPerTick+1)
+			f.service.config.now = func() time.Time {
+				result := now
+				now = now.Add(step)
+				return result
+			}
+			var statements []string
+			ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+				statements = append(statements, query)
+			}})
+			ticks := (test.failures+test.nonexpired+len(issues)+test.attemptsPerTick-1)/test.attemptsPerTick + 2
+			for tick := range ticks {
+				logs.Reset()
+				statements = nil
+				f.service.maintainNativeBoard(ctx)
+				if tick == 0 && test.nonexpired > 0 {
+					if f.service.boardRefreshCursor != "wi_!000002" || len(statements) != test.attemptsPerTick {
+						t.Fatalf("nonexpired discovery did not resume after three read-only steps: cursor=%q statements=%v", f.service.boardRefreshCursor, statements)
+					}
+					for _, statement := range statements {
+						if statement != nativeBoardCandidateQuery {
+							t.Fatalf("nonexpired discovery performed refresh work: %s", statement)
+						}
+					}
+				}
+				seen := map[string]bool{}
+				for _, line := range bytes.Split(bytes.TrimSpace(logs.Bytes()), []byte("\n")) {
+					if len(line) == 0 {
+						continue
+					}
+					var record struct {
+						Message string `json:"msg"`
+						ID      string `json:"work_item_id"`
+						Error   string `json:"error"`
+					}
+					if err := json.Unmarshal(line, &record); err != nil {
+						t.Fatal(err)
+					}
+					if record.Message != "refresh native board card" || record.ID == "" || record.Error == "" || seen[record.ID] {
+						t.Fatalf("failure was not logged once with its identity and error: %s", line)
+					}
+					seen[record.ID] = true
+				}
+				if (tick == 0 || tick == ticks-1) && len(seen) != min(test.failures, test.attemptsPerTick) {
+					t.Fatalf("tick %d attempted %d failures, want %d after resuming or wrapping", tick, len(seen), min(test.failures, test.attemptsPerTick))
+				}
+			}
+			for _, id := range healthy {
+				var raw, expiry string
+				var dirty bool
+				if err := db.QueryRowContext(t.Context(), `SELECT record_json,expires_at,EXISTS(SELECT 1 FROM native_board_dirty WHERE work_item_id=?) FROM native_board_items WHERE work_item_id=?`, id, id).Scan(&raw, &expiry, &dirty); err != nil {
+					t.Fatal(err)
+				}
+				var card *tracker.NativeBoardCard
+				if err := json.Unmarshal([]byte(raw), &card); err != nil || card == nil || card.Issue.WorkItemID != id || expiry != "" || dirty {
+					t.Errorf("healthy card %s starved after %d ticks: card=%+v expiry=%q dirty=%v err=%v", id, ticks, card, expiry, dirty, err)
+				}
+			}
+		})
 	}
-	first, second := f.create(t, "First"), f.create(t, "Second")
-	drainTestNativeBoard(t, f.service)
-	broken, healthy := first.WorkItemID, second.WorkItemID
-	if broken > healthy {
-		broken, healthy = healthy, broken
+}
+
+func TestNativeBoardCandidateQueryBounded(t *testing.T) {
+	t.Parallel()
+	type candidate struct {
+		id      string
+		refresh bool
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_board_items SET record_json='[1]' WHERE work_item_id=?", broken); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []tracker.NativeWorkItemID{broken, healthy} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT OR IGNORE INTO native_board_dirty(work_item_id) VALUES(?)", id); err != nil {
-			t.Fatal(err)
-		}
-	}
-	f.service.maintainNativeBoard(t.Context())
-	dirty, err := nativePageIDs(t.Context(), f.service.database.reader, "SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id")
-	if err != nil || !slices.Equal(dirty, []string{string(broken)}) {
-		t.Fatalf("a failing card blocked the remaining refreshes: dirty=%v err=%v", dirty, err)
-	}
-	want := []string{string(broken)}
-	for i := range 65 {
-		id := fmt.Sprintf("wi_00000000000000000000000000000%03d", i)
-		want = append(want, id)
-		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_board_items SELECT ?,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json FROM native_board_items WHERE work_item_id=?`, id, broken); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO native_board_dirty(work_item_id) VALUES(?)", id); err != nil {
-			t.Fatal(err)
-		}
-	}
-	slices.Sort(want)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT OR IGNORE INTO native_board_dirty(work_item_id) VALUES(?)", healthy); err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		f.service.maintainNativeBoard(t.Context())
-		dirty, err = nativePageIDs(t.Context(), f.service.database.reader, "SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id")
-		if err != nil || !slices.Equal(dirty, want) {
-			t.Fatalf("persistent failures starved a later healthy card: dirty=%d want=%d err=%v", len(dirty), len(want), err)
-		}
+	for _, count := range []int{2, 65, 256} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			issue := f.create(t, "Candidate")
+			drainTestNativeBoard(t, f.service)
+			now := f.service.config.now()
+			expired := now.Add(-time.Hour).UTC().Format("2006-01-02T15:04:05.000000000Z")
+			future := now.Add(24 * time.Hour).UTC().Format("2006-01-02T15:04:05.000000000Z")
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			for i := range count * 2 {
+				id := fmt.Sprintf("wi_%06d", i)
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_board_items SELECT ?,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json FROM native_board_items WHERE work_item_id=?`, id, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if i%2 == 0 {
+					if _, err := tx.ExecContext(t.Context(), "INSERT INTO native_board_dirty(work_item_id) VALUES(?)", id); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if _, err := tx.ExecContext(t.Context(), "DELETE FROM native_board_items WHERE work_item_id=?", issue.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			last := fmt.Sprintf("wi_%06d", count*2-1)
+			for _, expiry := range []struct {
+				name, value  string
+				due, tailDue bool
+			}{
+				{"absent", "", false, false},
+				{"future", future, false, false},
+				{"sparse", "", false, true},
+				{"expired", expired, true, true},
+			} {
+				t.Run(expiry.name, func(t *testing.T) {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_board_items SET expires_at=?", expiry.value); err != nil {
+						t.Fatal(err)
+					}
+					if expiry.tailDue {
+						if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_board_items SET expires_at=? WHERE work_item_id=?", expired, last); err != nil {
+							t.Fatal(err)
+						}
+					}
+					for _, test := range []struct {
+						cursor string
+						want   []candidate
+						next   candidate
+					}{
+						{"", []candidate{{"wi_000000", true}, {"wi_000000", expiry.due}}, candidate{"wi_000000", true}},
+						{"wi_000000", []candidate{{"wi_000002", true}, {"wi_000001", expiry.due}}, candidate{"wi_000001", expiry.due}},
+						{"wi_000001", []candidate{{"wi_000002", true}, {"wi_000002", expiry.due}}, candidate{"wi_000002", true}},
+						{fmt.Sprintf("wi_%06d", count*2-2), []candidate{{last, expiry.tailDue}}, candidate{last, expiry.tailDue}},
+						{"wi_999999", nil, candidate{}},
+					} {
+						rows, err := f.service.database.reader.QueryContext(t.Context(), nativeBoardCandidateQuery, test.cursor, now.UTC().Format("2006-01-02T15:04:05.000000000Z"), test.cursor)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer rows.Close()
+						var got []candidate
+						for rows.Next() {
+							var row candidate
+							if err := rows.Scan(&row.id, &row.refresh); err != nil {
+								t.Fatal(err)
+							}
+							got = append(got, row)
+						}
+						if err := rows.Err(); err != nil {
+							t.Fatal(err)
+						}
+						if !slices.Equal(got, test.want) {
+							t.Fatalf("cursor %q: candidates=%v want=%v", test.cursor, got, test.want)
+						}
+						id, refresh, err := f.service.database.nextNativeBoardCandidate(t.Context(), now, test.cursor)
+						if err != nil || id != test.next.id || refresh != test.next.refresh {
+							t.Fatalf("cursor %q: next candidate=%q refresh=%v want=%+v err=%v", test.cursor, id, refresh, test.next, err)
+						}
+					}
+				})
+			}
+		})
 	}
 }

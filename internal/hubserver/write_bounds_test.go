@@ -83,15 +83,17 @@ func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 			t.Fatalf("request commit ran derived projection work: %s", statement)
 		}
 	}
+	var cursor string
 	for want := 3; want > 0; want-- {
 		var dirty int
 		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_board_dirty").Scan(&dirty); err != nil || dirty != want {
 			t.Fatalf("request left dirty cards=%d want %d err=%v", dirty, want, err)
 		}
-		more, err := f.service.database.drainNativeBoardDirty(t.Context(), now)
+		more, id, err := f.service.database.drainNativeBoardDirtyAfter(t.Context(), now, cursor)
 		if err != nil || !more {
 			t.Fatalf("background dirty refresh: more=%v err=%v", more, err)
 		}
+		cursor = id
 	}
 	now = now.Add(91 * time.Second)
 	tx, err = f.service.database.db.BeginTx(ctx, nil)
@@ -113,32 +115,41 @@ func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 	if count := retained(); count != 2 {
 		t.Fatalf("request commit refreshed unrelated expired executions: retained=%d want 2", count)
 	}
-	for want := 1; want >= 0; want-- {
+	cursor = ""
+	want := 2
+	for {
 		statements = statements[:0]
-		more, err := f.service.database.drainNativeBoardDirty(ctx, now)
-		if err != nil || !more {
+		more, id, err := f.service.database.drainNativeBoardDirtyAfter(ctx, now, cursor)
+		if err != nil {
 			t.Fatalf("background expiry refresh: more=%v err=%v", more, err)
+		}
+		if !more {
+			break
 		}
 		if len(statements) == 0 {
 			t.Fatal("background expiry refresh recorded no query")
 		}
-		plan := explainQueryPlan(t, f.service.database.reader, statements[0], []any{1, now.UTC().Format("2006-01-02T15:04:05.000000000Z"), 1})
+		plan := explainQueryPlan(t, f.service.database.reader, statements[0], []any{cursor, now.UTC().Format("2006-01-02T15:04:05.000000000Z"), cursor})
 		indexed := false
 		for _, detail := range plan {
 			if strings.Contains(detail, "SCAN native_board_items") || strings.Contains(detail, "TEMP B-TREE") {
 				t.Fatalf("unbounded background expiry discovery: %v", plan)
 			}
-			indexed = indexed || strings.Contains(detail, "native_board_expiry_idx")
+			indexed = indexed || strings.Contains(detail, "SEARCH native_board_items USING INDEX sqlite_autoindex_native_board_items_1 (work_item_id>?)")
 		}
 		if !indexed {
-			t.Fatalf("background expiry discovery lacks an expiry index: %v", plan)
+			t.Fatalf("background expiry discovery lacks a work item range search: %v", plan)
+		}
+		if id != string(issue.WorkItemID) {
+			want--
 		}
 		if count := retained(); count != want {
 			t.Fatalf("background expiry refreshed more than one execution: retained=%d want %d", count, want)
 		}
+		cursor = id
 	}
-	if more, err := f.service.database.drainNativeBoardDirty(t.Context(), now); err != nil || more {
-		t.Fatalf("completed expiry refresh still has work: more=%v err=%v", more, err)
+	if want != 0 {
+		t.Fatalf("background expiry refresh left %d retained executions", want)
 	}
 }
 
