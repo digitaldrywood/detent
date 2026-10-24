@@ -3,6 +3,7 @@ package hubserver
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -133,6 +134,105 @@ func TestHealthIntakeSignatures(t *testing.T) {
 					}
 				}
 			}
+		})
+	}
+}
+
+func TestHealthFindingOccurrenceDeduplication(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, signal, change string
+		legacy               bool
+	}{
+		{name: "rolling retry evidence", signal: "retry_storm"},
+		{name: "rolling unsplit evidence", signal: "runner_setup_failure"},
+		{name: "rolling legacy evidence", signal: "retry_storm", legacy: true},
+		{name: "severity change", signal: "retry_storm", change: "severity"},
+		{name: "new signature", signal: "runner_setup_failure", change: "signature"},
+		{name: "new legacy signature", signal: "retry_storm", legacy: true, change: "signature"},
+		{name: "signature set order", signal: "runner_setup_failure", change: "order"},
+		{name: "resolved then recurred", signal: "retry_storm", change: "recurrence"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := healthIntakeFixture(t)
+			now := f.service.config.now()
+			finding := newHealthFinding(test.signal, "instance", "runner", "runner-example", "Repeated failures.", "Inspect attempts.", []string{string(f.project.ID)}, healthEvidence{Signatures: []string{"protocol failure"}})
+			if test.change == "order" {
+				finding.Evidence.Signatures = []string{"protocol failure", "workspace failure"}
+			}
+			scope := healthIssueScope(f.project.OrganizationID, f.project.ID)
+			intake := healthIssueFindings(finding)[0]
+			if test.legacy {
+				intake = finding
+			}
+			request, err := healthIssueRequest(intake)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.State = "Backlog"
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			owner, err := createNativeFixtureIssueTx(t.Context(), tx, scope, request, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.legacy {
+				if _, err := writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, []healthFinding{finding}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO health_finding_issues(finding_id,project_id,work_item_id,reported_evidence_digest) SELECT id,?,?,'' FROM health_findings`, f.project.ID, owner.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			assertOccurrences := func(want int) {
+				t.Helper()
+				var issues, comments int
+				if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM issues WHERE project_id=?), (SELECT count(*) FROM native_comments WHERE work_item_id=? AND body LIKE '## New machine occurrence%')`, f.project.ID, owner.WorkItemID).Scan(&issues, &comments); err != nil {
+					t.Fatal(err)
+				}
+				if issues != 1 || comments != want {
+					t.Fatalf("issues/occurrences = %d/%d, want 1/%d", issues, comments, want)
+				}
+			}
+			for i := range 4 {
+				finding.Evidence.AttemptIDs = []string{[]string{"attempt-one", "attempt-two", "attempt-three", "attempt-four"}[i]}
+				finding.Evidence.Counts = map[string]int{"failures_1h": 5 + i, "failures_6h": 10 + i}
+				finding.Evidence.Values = map[string]float64{"retry_ratio_1h": 0.5 + float64(i)/10, "retry_ratio_6h": 0.6 + float64(i)/10}
+				applyTestHealth(t, f, now.Add(time.Duration(i)*time.Minute), []healthFinding{finding})
+				assertOccurrences(1)
+				page, err := f.service.readHealthFindings(t.Context(), scope, "open", "", "", 100)
+				if err != nil || len(page.Items) != 1 {
+					t.Fatalf("findings = %+v, %v", page, err)
+				}
+				if !reflect.DeepEqual(page.Items[0].Evidence, finding.Evidence) {
+					t.Fatalf("stale current evidence: %+v, want %+v", page.Items[0].Evidence, finding.Evidence)
+				}
+			}
+			want := 2
+			switch test.change {
+			case "severity":
+				finding.Severity = "watch"
+			case "signature":
+				finding.Evidence.Signatures = append(finding.Evidence.Signatures, "workspace failure")
+			case "order":
+				finding.Evidence.Signatures = []string{"workspace failure", "protocol failure", "protocol failure"}
+				want = 1
+			case "recurrence":
+				applyTestHealth(t, f, now.Add(4*time.Minute), nil)
+			default:
+				return
+			}
+			applyTestHealth(t, f, now.Add(5*time.Minute), []healthFinding{finding})
+			assertOccurrences(want)
+			applyTestHealth(t, f, now.Add(6*time.Minute), []healthFinding{finding})
+			assertOccurrences(want)
 		})
 	}
 }
