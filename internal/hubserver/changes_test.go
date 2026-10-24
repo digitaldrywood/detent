@@ -514,8 +514,21 @@ func TestChangeVersionsAndEvidenceSurviveRestart(t *testing.T) {
 	if detail := f.detail(t); detail.Summary.Status != "draft" || len(detail.Versions) != 0 {
 		t.Fatalf("draft = %#v", detail)
 	}
-	first := f.publish(t, "v1", "")
-	if duplicate := f.publish(t, "v1", ""); duplicate.ID != first.ID {
+	input := changeTestInput()
+	input.ReviewDispositions = []tracker.ReviewDisposition{
+		{HeadSHA: input.HeadSHA, ThreadID: "T1", Disposition: "fixed", Evidence: "source.go:17 and regression passes"},
+		{HeadSHA: input.HeadSHA, ThreadID: "T2", Disposition: "dismissed", Evidence: "source.go:29 already checks the head"},
+	}
+	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "v1"}, ChangeVersionInput: input}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, request)
+	requireNativeStatus(t, response, http.StatusOK)
+	var first tracker.ChangeVersion
+	decodeHubResponse(t, response, &first)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, request)
+	requireNativeStatus(t, response, http.StatusOK)
+	var duplicate tracker.ChangeVersion
+	decodeHubResponse(t, response, &duplicate)
+	if duplicate.ID != first.ID {
 		t.Fatal("retry changed immutable identity")
 	}
 	path := f.path + "/versions/" + first.ID
@@ -556,6 +569,9 @@ func TestChangeVersionsAndEvidenceSurviveRestart(t *testing.T) {
 	detail := f.detail(t)
 	if detail.Change.ID != f.change.ID || detail.Change.CurrentVersion != second.ID || len(detail.Versions) != 2 || detail.Summary.NativeReview != "stale" || detail.Summary.Checks != "missing" || len(detail.Checks) != 1 {
 		t.Fatalf("restarted version history = %#v", detail)
+	}
+	if !reflect.DeepEqual(detail.Versions[0].ReviewDispositions, input.ReviewDispositions) || len(detail.Versions[1].ReviewDispositions) != 0 {
+		t.Fatalf("review dispositions lost their immutable version binding: %+v", detail.Versions)
 	}
 }
 
@@ -1125,6 +1141,25 @@ func TestChangeInvalidVersionAndReviewPolicy(t *testing.T) {
 		{"code hash", func(v *tracker.ChangeVersionInput) { v.Code.SHA256 = "missing" }, http.StatusUnprocessableEntity},
 		{"unknown configuration", func(v *tracker.ChangeVersionInput) { v.PolicyID = "other" }, http.StatusUnprocessableEntity},
 		{"unpaired attempt", func(v *tracker.ChangeVersionInput) { v.RunID = newNativeID("run") }, http.StatusUnprocessableEntity},
+		{"stale review disposition", func(v *tracker.ChangeVersionInput) {
+			v.ReviewDispositions = []tracker.ReviewDisposition{{HeadSHA: v.BaseSHA, ThreadID: "T1", Disposition: "fixed", Evidence: "regression passes"}}
+		}, http.StatusUnprocessableEntity},
+		{"duplicate review dispositions", func(v *tracker.ChangeVersionInput) {
+			d := tracker.ReviewDisposition{HeadSHA: v.HeadSHA, ThreadID: "T1", Disposition: "fixed", Evidence: "regression passes"}
+			v.ReviewDispositions = []tracker.ReviewDisposition{d, d}
+		}, http.StatusUnprocessableEntity},
+		{"missing review evidence", func(v *tracker.ChangeVersionInput) {
+			v.ReviewDispositions = []tracker.ReviewDisposition{{HeadSHA: v.HeadSHA, ThreadID: "T1", Disposition: "fixed"}}
+		}, http.StatusUnprocessableEntity},
+		{"unknown review disposition", func(v *tracker.ChangeVersionInput) {
+			v.ReviewDispositions = []tracker.ReviewDisposition{{HeadSHA: v.HeadSHA, ThreadID: "T1", Disposition: "surfaced", Evidence: "seen"}}
+		}, http.StatusUnprocessableEntity},
+		{"oversized review evidence", func(v *tracker.ChangeVersionInput) {
+			v.ReviewDispositions = []tracker.ReviewDisposition{{HeadSHA: v.HeadSHA, ThreadID: "T1", Disposition: "fixed", Evidence: strings.Repeat("x", 8193)}}
+		}, http.StatusUnprocessableEntity},
+		{"too many review dispositions", func(v *tracker.ChangeVersionInput) {
+			v.ReviewDispositions = make([]tracker.ReviewDisposition, 101)
+		}, http.StatusUnprocessableEntity},
 		{"forged PR identity", func(v *tracker.ChangeVersionInput) {
 			v.External = &tracker.ChangeExternalReference{Provider: "github", ID: "2", URL: "https://github.com/example/repo/pull/1"}
 		}, http.StatusUnprocessableEntity},

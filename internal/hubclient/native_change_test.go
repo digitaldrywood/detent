@@ -562,6 +562,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		land                    bool
 		integrate               bool
 		landingRestart          bool
+		reviewDispositions      bool
 		finalMessage            string
 		disposition             *tracker.NativeDisposition
 		releasedBlocked         bool
@@ -596,6 +597,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		// finish; the last one is current and carries the run's head.
 		wantVersions int
 	}{
+		{name: "fixing Rework binds recorded review dispositions to its published version", reviewDispositions: true, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1, disposition: &tracker.NativeDisposition{Status: "complete"}, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nreview_dispositions: [{thread_id: T1, disposition: fixed, evidence: regression passes}]\nblockers: []\nhuman_action: null\n```"},
 		{name: "required PR reopens landed history with a new PR", requiredPR: true, publicationLanded: true, publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 3},
 		{name: "required PR recovers historical confirmed push after stale forge read", requiredPR: true, publicationRecovery: true, publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
 		{name: "required PR recovers historical push recorded by a later resume attempt", requiredPR: true, publicationRecovery: true, resumedPush: true, publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
@@ -1985,6 +1987,17 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 							}
 						} else {
 							current := detail.Versions[len(detail.Versions)-1]
+							if test.reviewDispositions {
+								want := []tracker.ReviewDisposition{{HeadSHA: head, ThreadID: "T1", Disposition: "fixed", Evidence: "regression passes"}}
+								if !reflect.DeepEqual(current.ReviewDispositions, want) {
+									t.Fatalf("published dispositions=%+v, want %+v", current.ReviewDispositions, want)
+								}
+								target, err := execution.(runner.LandingExecution).LandingTarget(t.Context())
+								if err != nil || !reflect.DeepEqual(target.ReviewDispositions, want) {
+									t.Fatalf("landing dispositions=%+v error=%v", target.ReviewDispositions, err)
+								}
+							}
+
 							if test.requiredPR && (detail.Summary.NativeReview != "changes_requested" || current.ID != got.VersionID || len(detail.Versions) != test.wantVersions) {
 								t.Fatal("publication-only recovery replaced the current version or discarded its human hold")
 							}

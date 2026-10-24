@@ -69,6 +69,7 @@ type GitHubRESTClient interface {
 }
 
 type LandOptions struct {
+	ReviewDispositions    []tracker.ReviewDisposition
 	ExpectedBaseSHA       string
 	SecurityAuditRequired bool
 	SecurityAudit         func(context.Context, FileDiffs) (*tracker.SecurityAuditReview, error) `json:"-"`

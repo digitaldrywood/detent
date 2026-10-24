@@ -404,6 +404,7 @@ func TestLandNativeChange(t *testing.T) {
 	failedHeadGate := headGate
 	failedHeadGate.ExitCode, failedHeadGate.Output = 1, "lint-error-sentinel"
 	target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "merge", Title: "Add a sign-in link", Number: 2}
+	target.ReviewDispositions = []tracker.ReviewDisposition{{HeadSHA: head, ThreadID: "T1", Disposition: "fixed", Evidence: "source.go:17 and regression passes"}}
 	githubTarget := target
 	githubTarget.Repository, githubTarget.GitHubPullRequest = "https://github.com/digitaldrywood/detent", true
 	githubTarget.SourceIssues = []tracker.ExternalReference{
@@ -536,6 +537,9 @@ func TestLandNativeChange(t *testing.T) {
 			}
 			if result.NativeLanding.Rebased != backend.result.Rebased {
 				t.Fatalf("landing lost retry evidence: %#v", result.NativeLanding)
+			}
+			if backend.received.HeadSHA != "" && !reflect.DeepEqual(backend.received.ReviewDispositions, stub.target.ReviewDispositions) {
+				t.Fatalf("landing lost recorded review dispositions: %+v", backend.received.ReviewDispositions)
 			}
 			if !reflect.DeepEqual(result.NativeLanding.CI, backend.result.CI) || backend.githubCalled && (!slices.Equal(backend.received.RequiredStatusChecks, []string{"Full CI"}) || backend.received.CITriggerLabel != "run-full-ci" || backend.received.CITriggerLabelStagger != 15*time.Second) {
 				t.Fatalf("native CI policy or receipt was lost: options=%+v landing=%+v", backend.received, result.NativeLanding)

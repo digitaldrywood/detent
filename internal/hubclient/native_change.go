@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -434,6 +435,11 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 			RunID:      e.data.RunID, AttemptID: e.data.AttemptID, PolicyID: e.data.PolicyID,
 			Source: source,
 		},
+	}
+	if signal, ok := workpad.SignalFromComment(e.preparedMessage, "", ""); ok && signal.Invalid == nil && signal.Status == workpad.StatusComplete && signal.HumanAction == "" && len(signal.Blockers) == 0 {
+		for _, d := range signal.ReviewDispositions {
+			request.ReviewDispositions = append(request.ReviewDispositions, tracker.ReviewDisposition{HeadSHA: diff.HeadSHA, ThreadID: d.ThreadID, Disposition: d.Disposition, Evidence: d.Evidence})
+		}
 	}
 	if err := e.retainChangeValidation(ctx, &request.ChangeVersionInput); err != nil {
 		return "", false, err

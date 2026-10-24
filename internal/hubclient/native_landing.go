@@ -35,6 +35,7 @@ func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandi
 			target.Repository, target.GitHubPullRequest = version.Repository, version.Policy.Gates.GitHubPullRequest
 			target.External = version.External
 			target.Validation = version.Validation
+			target.ReviewDispositions = version.ReviewDispositions
 			if version.Landing != nil {
 				target.CI = version.Landing.CI
 				target.RebaseRequired = version.Landing.RefusalKind == "conflict"

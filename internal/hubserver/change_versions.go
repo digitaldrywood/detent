@@ -20,6 +20,16 @@ import (
 )
 
 func validateChangeVersion(input tracker.ChangeVersionInput) error {
+	if len(input.ReviewDispositions) > 100 {
+		return nativePublicInvalid("Review dispositions must contain at most 100 threads")
+	}
+	seenThreads := make(map[string]bool, len(input.ReviewDispositions))
+	for _, d := range input.ReviewDispositions {
+		if d.HeadSHA != input.HeadSHA || strings.TrimSpace(d.ThreadID) == "" || len(d.ThreadID) > 256 || seenThreads[d.ThreadID] || d.Disposition != "fixed" && d.Disposition != "dismissed" || strings.TrimSpace(d.Evidence) == "" || len(d.Evidence) > 8192 {
+			return nativePublicInvalid("Review dispositions require the published head, unique thread IDs, fixed or dismissed decisions and bounded evidence")
+		}
+		seenThreads[d.ThreadID] = true
+	}
 	if v := input.Validation; v != nil && (v.HeadSHA != input.HeadSHA || v.ExitCode != 0 || v.DurationNS <= 0 || strings.TrimSpace(v.Command) == "" || len(v.Command) > 4096 || len(v.Output) > 64*1024 || !validCommitID(v.TreeSHA) || !v.Evidence.Valid()) {
 		return nativeRejection(nativePublicInvalid("Validation receipt must cover the published head and identify a successful command"), "version_validation", "validation")
 	}

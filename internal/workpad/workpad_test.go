@@ -37,19 +37,42 @@ func TestSignalFromComment(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		body           string
-		wantOK         bool
-		wantInvalid    string
-		wantStatus     string
-		wantReasonCode string
-		wantReason     string
-		wantBlockers   []string
-		wantHuman      string
-		wantComment    string
-		wantFields     map[string]string
-		wantLastBlock  bool
+		name             string
+		body             string
+		wantOK           bool
+		wantInvalid      string
+		wantStatus       string
+		wantReasonCode   string
+		wantReason       string
+		wantBlockers     []string
+		wantHuman        string
+		wantComment      string
+		wantDispositions []ReviewDisposition
+		wantFields       map[string]string
+		wantLastBlock    bool
 	}{
+		{
+			name:   "review dispositions survive completion parsing",
+			body:   "```detent-status\nschema: 1\nstatus: complete\nreview_dispositions:\n  - thread_id: T1\n    disposition: fixed\n    evidence: source.go:17 and regression pass\n  - thread_id: T2\n    disposition: dismissed\n    evidence: source.go:29 already checks the head\n```",
+			wantOK: true, wantStatus: StatusComplete,
+			wantDispositions: []ReviewDisposition{{ThreadID: "T1", Disposition: "fixed", Evidence: "source.go:17 and regression pass"}, {ThreadID: "T2", Disposition: "dismissed", Evidence: "source.go:29 already checks the head"}},
+		},
+		{
+			name:   "review disposition needs evidence",
+			body:   "```detent-status\nschema: 1\nstatus: complete\nreview_dispositions: [{thread_id: T1, disposition: fixed}]\n```",
+			wantOK: true, wantInvalid: "require unique thread IDs",
+		},
+		{
+			name:   "review disposition rejects unknown decisions",
+			body:   "```detent-status\nschema: 1\nstatus: complete\nreview_dispositions: [{thread_id: T1, disposition: surfaced, evidence: seen}]\n```",
+			wantOK: true, wantInvalid: "require unique thread IDs",
+		},
+		{
+			name:   "review disposition rejects conflicting duplicate threads",
+			body:   "```detent-status\nschema: 1\nstatus: complete\nreview_dispositions: [{thread_id: T1, disposition: fixed, evidence: fix}, {thread_id: T1, disposition: dismissed, evidence: dismissal}]\n```",
+			wantOK: true, wantInvalid: "require unique thread IDs",
+		},
+
 		{
 			name:         "valid block",
 			body:         "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: \"#1462\"\n    reason: \"needs migration\"\nhuman_action: null\n```",
@@ -161,6 +184,9 @@ func TestSignalFromComment(t *testing.T) {
 			}
 			if got.Invalid != nil {
 				t.Fatalf("Invalid = %#v, want nil", got.Invalid)
+			}
+			if !reflect.DeepEqual(got.ReviewDispositions, tt.wantDispositions) {
+				t.Fatalf("ReviewDispositions = %#v, want %#v", got.ReviewDispositions, tt.wantDispositions)
 			}
 			if got.Status != tt.wantStatus {
 				t.Fatalf("Status = %q, want %q", got.Status, tt.wantStatus)

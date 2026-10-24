@@ -49,7 +49,14 @@ var symbolicRefPattern = regexp.MustCompile(`^[a-z][a-z0-9+.-]*:[A-Za-z0-9][A-Za
 
 var refPattern = regexp.MustCompile(`^(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|prj_[a-z0-9]+))?#([1-9][0-9]*)$`)
 
+type ReviewDisposition struct {
+	ThreadID    string `json:"thread_id" yaml:"thread_id"`
+	Disposition string `json:"disposition" yaml:"disposition"`
+	Evidence    string `json:"evidence" yaml:"evidence"`
+}
+
 type Signal struct {
+	ReviewDispositions []ReviewDisposition `json:"review_dispositions,omitempty" yaml:"review_dispositions,omitempty"`
 	// UnknownKeys records ignored YAML field paths for diagnostics only.
 	UnknownKeys []string          `json:"unknown_keys,omitempty" yaml:"unknown_keys,omitempty"`
 	Source      string            `json:"source,omitempty" yaml:"source,omitempty"`
@@ -96,13 +103,14 @@ type Invalid struct {
 }
 
 type statusBlockYAML struct {
-	Unknown     map[string]yaml.Node `yaml:",inline"`
-	Schema      int                  `yaml:"schema"`
-	Status      string               `yaml:"status"`
-	ReasonCode  string               `yaml:"reason_code"`
-	Blockers    []blockerYAML        `yaml:"blockers"`
-	HumanAction *string              `yaml:"human_action"`
-	Fields      map[string]string    `yaml:"fields"`
+	ReviewDispositions []ReviewDisposition  `yaml:"review_dispositions"`
+	Unknown            map[string]yaml.Node `yaml:",inline"`
+	Schema             int                  `yaml:"schema"`
+	Status             string               `yaml:"status"`
+	ReasonCode         string               `yaml:"reason_code"`
+	Blockers           []blockerYAML        `yaml:"blockers"`
+	HumanAction        *string              `yaml:"human_action"`
+	Fields             map[string]string    `yaml:"fields"`
 }
 
 type completionAuthorizationYAML struct {
@@ -459,15 +467,29 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 		return nil, errors.New(strings.Join(problems, "; "))
 	}
 
+	seenThreads := make(map[string]bool)
+	if len(raw.ReviewDispositions) > 100 {
+		return nil, errors.New("review_dispositions must contain at most 100 threads")
+	}
+	for i := range raw.ReviewDispositions {
+		d := &raw.ReviewDispositions[i]
+		d.ThreadID = strings.TrimSpace(d.ThreadID)
+		d.Evidence = strings.TrimSpace(d.Evidence)
+		if d.ThreadID == "" || len(d.ThreadID) > 256 || seenThreads[d.ThreadID] || d.Disposition != "fixed" && d.Disposition != "dismissed" || d.Evidence == "" || len(d.Evidence) > 8192 {
+			return nil, errors.New("review_dispositions require unique thread IDs, fixed or dismissed decisions and evidence of at most 8192 bytes")
+		}
+		seenThreads[d.ThreadID] = true
+	}
 	sort.Strings(unknownKeys)
 	signal := &Signal{
-		UnknownKeys: unknownKeys,
-		Source:      SourceStructured,
-		Status:      raw.Status,
-		ReasonCode:  reasonCode,
-		Blockers:    blockers,
-		HumanAction: humanAction,
-		Fields:      fields,
+		ReviewDispositions: raw.ReviewDispositions,
+		UnknownKeys:        unknownKeys,
+		Source:             SourceStructured,
+		Status:             raw.Status,
+		ReasonCode:         reasonCode,
+		Blockers:           blockers,
+		HumanAction:        humanAction,
+		Fields:             fields,
 	}
 	if refProblems > 0 {
 		return signal, errors.New(strings.Join(problems, "; "))
@@ -790,6 +812,7 @@ func CloneSignal(signal *Signal) *Signal {
 		return nil
 	}
 	cloned := *signal
+	cloned.ReviewDispositions = append([]ReviewDisposition(nil), signal.ReviewDispositions...)
 	cloned.UnknownKeys = append([]string(nil), signal.UnknownKeys...)
 	cloned.Blockers = make([]Blocker, len(signal.Blockers))
 	for index, blocker := range signal.Blockers {

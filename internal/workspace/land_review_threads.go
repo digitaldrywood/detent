@@ -58,7 +58,7 @@ type ReviewConversationComment struct {
 	Body   string `json:"body"`
 }
 
-func resolveLandingReviewThreads(ctx context.Context, client GitHubRESTClient, repository string, number int, head string, refusal error) error {
+func resolveLandingReviewThreads(ctx context.Context, client GitHubRESTClient, repository string, number int, head string, refusal error, opts LandOptions) error {
 	var landing *LandRefusal
 	if refusal != nil && (!errors.As(refusal, &landing) || landing.Kind != LandRefusalProtected || !ReviewConversationsRefusal(landing.Reason)) {
 		return refusal
@@ -67,18 +67,40 @@ func resolveLandingReviewThreads(ctx context.Context, client GitHubRESTClient, r
 	if err != nil {
 		return errors.Join(refusal, fmt.Errorf("read unresolved review conversations: %w", err))
 	}
-	for i, thread := range threads {
+	opts.HeadSHA = head
+	remaining := make([]ReviewConversation, 0, len(threads))
+	for _, thread := range threads {
+		var recorded bool
+		if thread.Bot {
+			for _, d := range opts.ReviewDispositions {
+				if d.HeadSHA != head || d.ThreadID != thread.ID {
+					continue
+				}
+				recorded = true
+				if resolveErr := ResolveReviewConversation(ctx, client, opts, d.ThreadID, d.Disposition, d.Evidence); resolveErr != nil {
+					thread.Body = d.Disposition + " at " + head + ", awaiting resolution: " + thread.Body
+					err = errors.Join(err, resolveErr)
+					remaining = append(remaining, thread)
+				}
+				break
+			}
+		}
+		if recorded {
+			continue
+		}
+		thread.Body = "unaddressed: " + thread.Body
 		if thread.Bot && !surfacedAt(thread, head) {
 			if replyErr := replyLandingReviewThread(ctx, client, thread.ID, "Detent surfaced this conversation to Rework at "+shortLandingHead(head)+".\n\n<!-- detent:surfaced "+head+" -->"); replyErr != nil {
-				threads[i].Body += "\n(surfacing reply failed)"
+				thread.Body += "\n(surfacing reply failed)"
 				err = errors.Join(err, fmt.Errorf("mark review conversation as surfaced: %w", replyErr))
 			}
 		}
+		remaining = append(remaining, thread)
 	}
-	if len(threads) == 0 {
+	if len(remaining) == 0 {
 		return refusal
 	}
-	return errors.Join(refuse(LandRefusalProtected, landingReviewThreadsReason(threads)), err)
+	return errors.Join(refuse(LandRefusalProtected, landingReviewThreadsReason(remaining)), err)
 }
 
 func surfacedAt(thread ReviewConversation, head string) bool {

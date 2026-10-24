@@ -544,7 +544,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 			return LandResult{}, refuse(LandRefusalHeadMoved, "the external pull request branch differs from the landing workspace")
 		}
 		if !pull.Merged && pull.MergedAt == "" {
-			if err := resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, pull.Number, head, nil); err != nil {
+			if err := resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, pull.Number, head, nil, opts); err != nil {
 				return LandResult{}, err
 			}
 		}
@@ -730,7 +730,7 @@ func pushReviewedGitHubLanding(ctx context.Context, info Info, opts LandOptions,
 	if pull.Number != number || pull.State != "open" || pull.Merged || pull.MergedAt != "" || pull.Head.Ref != githubLandingBranch(info, opts) || pull.Base.SHA != opts.ExpectedBaseSHA {
 		return merged, refuse(LandRefusalHeadMoved, "the associated release PR changed before landing")
 	}
-	if err := resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, number, head, nil); err != nil {
+	if err := resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, number, head, nil, opts); err != nil {
 		return merged, err
 	}
 	if err := verifyGitHubPublicationRemote(ctx, info.Path, remote, opts.Repository); err != nil {
@@ -760,13 +760,13 @@ func pushReviewedGitHubLanding(ctx context.Context, info Info, opts LandOptions,
 func mergeGitHubLanding(ctx context.Context, opts LandOptions, repository string, number int, head string) (githubLandingMerge, error) {
 	var merged githubLandingMerge
 	if opts.External != nil {
-		if err := resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, number, head, nil); err != nil {
+		if err := resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, number, head, nil, opts); err != nil {
 			return merged, err
 		}
 	}
 	if err := githubLandingAPI(ctx, opts.GitHubClient, &merged, "PUT", fmt.Sprintf("repos/%s/pulls/%d/merge", repository, number),
 		"merge_method="+opts.Method, "sha="+head); err != nil {
-		return merged, resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, number, head, err)
+		return merged, resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, number, head, err, opts)
 	}
 	return merged, nil
 }

@@ -341,6 +341,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "paused validation refuses lost authority", method: "squash", pausedValidation: "authority"},
 		{name: "paused validation cancellation preserves other workspaces", method: "squash", pausedValidation: "cancel"},
 		{name: "paused validation failure preserves other workspaces", method: "squash", pausedValidation: "failure"},
+		{name: "external recorded fix resolves and merges in one pass", method: "squash", external: true, review: "fixed"},
+		{name: "external stale disposition remains unaddressed", method: "squash", external: true, review: "stale"},
+		{name: "external human conversation is never auto resolved", method: "squash", external: true, review: "human"},
+		{name: "external fixed conversation reports resolution failure", method: "squash", external: true, review: "resolve-failure"},
 		{name: "external unresolved review refuses before validation", method: "squash", external: true, review: "known", failureMethod: "PUT", status: 405, message: "A conversation must be resolved before this pull request can be merged."},
 		{name: "external unresolved review precedes concurrent base advance", method: "squash", external: true, review: "base", failureMethod: "PUT", status: 405, message: "A conversation must be resolved before this pull request can be merged."},
 		{name: "external review read failure refuses before validation", method: "squash", external: true, review: "failure"},
@@ -569,6 +573,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			mergeCalls := 0
 			reviewReads := 0
 			surfaceCalls := 0
+			dispositionReplies, resolutionCalls := 0, 0
+			reviewResolved := false
 			createdPull := false
 			reset := time.Now().Add(time.Hour).Truncate(time.Second)
 			gateTrace := filepath.Join(t.TempDir(), "gate-trace")
@@ -619,8 +625,23 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 										t.Fatalf("unexpected review cursor: %#v", request.Variables)
 									}
 								}
+								if test.review == "fixed" || test.review == "stale" || test.review == "human" || test.review == "resolve-failure" {
+									author, typename := "example-bot", "Bot"
+									if test.review == "human" {
+										author, typename = "example-user", "User"
+									}
+									page = reviewThreadsPage("", reviewThreadNode("T1", reviewResolved, author, typename, "P2 preserve tracked deletion"))
+									page = strings.Replace(page, `"pullRequest":{`, `"pullRequest":{"number":7,"headRefOid":"`+fixture.head+`","baseRefName":"main","headRepository":{"nameWithOwner":"example/repo"},"repository":{"nameWithOwner":"example/repo"},`, 1)
+								}
 								response = `{"data":` + page + `}`
 							case landingReviewThreadReply:
+								if strings.Contains(request.Variables["body"].(string), "Detent disposition at published head") {
+									if request.Variables["thread"] != "T1" || !strings.Contains(request.Variables["body"].(string), fixture.head+": fixed.\n\nRegression preserves tracked deletion.") {
+										t.Fatalf("disposition reply lost evidence or head: %#v", request.Variables)
+									}
+									dispositionReplies++
+									break
+								}
 								surfaceCalls++
 								wantHead := fixture.head
 								if test.review == "retry" {
@@ -629,6 +650,16 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 								if request.Variables["thread"] != "T1" || !strings.Contains(request.Variables["body"].(string), "<!-- detent:surfaced "+wantHead+" -->") {
 									t.Fatalf("review surfacing lost head or thread: %#v", request.Variables)
 								}
+							case landingReviewThreadResolve:
+								if request.Variables["thread"] != "T1" || dispositionReplies != 1 {
+									t.Fatal("resolution lost thread or preceding reply")
+								}
+								resolutionCalls++
+								if test.review == "resolve-failure" {
+									return nil, errors.New("resolution refused")
+								}
+								reviewResolved = true
+								response = `{"data":{"resolveReviewThread":{"thread":{"id":"T1","isResolved":true}}}}`
 							default:
 								t.Fatalf("unexpected review mutation: %s", request.Query)
 							}
@@ -884,6 +915,14 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			if test.sourceIssues {
 				source := tracker.GitHubIssueSourceReference("I_original", "https://github.com/digitaldrywood/detent/issues/3410")
 				opts.SourceIssues = []tracker.ExternalReference{source, source}
+			}
+			if test.review == "fixed" || test.review == "stale" || test.review == "human" || test.review == "resolve-failure" {
+				opts.Authorize = func(context.Context) error { return nil }
+				head := fixture.head
+				if test.review == "stale" {
+					head = originalBase
+				}
+				opts.ReviewDispositions = []tracker.ReviewDisposition{{HeadSHA: head, ThreadID: "T1", Disposition: "fixed", Evidence: "Regression preserves tracked deletion."}}
 			}
 			if test.review != "" {
 				opts.ValidationCommand = "printf 'gate\\n' >> " + shellQuote(gateTrace) + " && " + opts.ValidationCommand
@@ -1225,7 +1264,23 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			if test.review != "" {
 				trace, traceErr := os.ReadFile(gateTrace)
 				wantGates, wantMerges, wantReads, wantSurfaces := 0, 0, 2, 1
+				if test.review == "fixed" || test.review == "resolve-failure" {
+					if dispositionReplies != 1 || resolutionCalls != 1 {
+						t.Fatalf("replies=%d resolutions=%d", dispositionReplies, resolutionCalls)
+					}
+				}
 				switch test.review {
+				case "fixed":
+					wantGates, wantMerges, wantReads, wantSurfaces = 1, 1, 5, 0
+				case "stale":
+					wantReads = 1
+				case "human":
+					wantReads, wantSurfaces = 1, 0
+				case "resolve-failure":
+					wantReads, wantSurfaces = 3, 0
+					if err == nil || !strings.Contains(err.Error(), "fixed at "+fixture.head+", awaiting resolution") {
+						t.Fatalf("missing fixed-head resolution failure: %v", err)
+					}
 				case "clean":
 					wantGates, wantMerges, wantReads, wantSurfaces = 1, 1, 2, 0
 				case "late":
@@ -1260,7 +1315,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					}
 					return
 				}
-				if test.review != "clean" {
+				if test.review != "clean" && test.review != "fixed" {
 					var refusal *LandRefusal
 					if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected || !ReviewConversationsRefusal(refusal.Reason) || !strings.Contains(refusal.Reason, "P2 preserve tracked deletion") || result.MergeSHA != "" {
 						t.Fatalf("unresolved finding lost actionable refusal: result=%#v err=%v", result, err)
