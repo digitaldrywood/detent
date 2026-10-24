@@ -4417,13 +4417,17 @@ func TestRunnerClassifiesChangeSourceRefusal(t *testing.T) {
 	for _, test := range []struct {
 		name         string
 		source       bool
+		state        string
+		published    bool
 		recoverError error
 		wantRecovery bool
 	}{
 		{name: "code attempt with retained source requires recovery", source: true, wantRecovery: true},
 		{name: "refusal without retained source stays workspace preparation"},
 		{name: "superseded transferred version requires recovery", source: true, recoverError: ErrChangeSourceVersionSuperseded, wantRecovery: true},
-		{name: "transient change read is not a recovery refusal", source: true, recoverError: transient},
+		{name: "transient change read retries source recovery", source: true, recoverError: transient, wantRecovery: true},
+		{name: "Rework with unavailable published source fails before provider", state: "Rework", published: true, recoverError: transient, wantRecovery: true},
+		{name: "code claim with published source restores before provider", published: true, wantRecovery: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -4432,11 +4436,20 @@ func TestRunnerClassifiesChangeSourceRefusal(t *testing.T) {
 				execution.recovery.SourceVersionID = "version_1"
 				execution.source = workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version_1", ChangeID: "change_1"}}
 			}
-			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}}}, Workspace: &fakeWorkspaceBackend{createErr: refusal}, AgentBackend: &fakeCodexClient{}})
+			if test.published {
+				execution.recovery.Change = &tracker.NativeChangeReference{ChangeID: "change_1", VersionID: "version_1", HeadSHA: "published-head"}
+				execution.source = workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version_1", ChangeID: "change_1"}}
+			}
+			agent := &fakeCodexClient{}
+			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}}}, Workspace: &fakeWorkspaceBackend{createErr: refusal}, AgentBackend: agent})
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = runner.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1375", State: "In Progress"}})
+			state := test.state
+			if state == "" {
+				state = "In Progress"
+			}
+			_, err = runner.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1375", State: state}})
 			cause := error(refusal)
 			if test.recoverError != nil {
 				cause = test.recoverError
@@ -4444,8 +4457,11 @@ func TestRunnerClassifiesChangeSourceRefusal(t *testing.T) {
 			if !errors.Is(err, cause) || errors.Is(err, ErrNativeRecoveryRequired) != test.wantRecovery || errors.Is(err, ErrWorkspacePreparation) == (test.wantRecovery || test.recoverError != nil) {
 				t.Fatalf("source refusal error = %v", err)
 			}
-			if failure := nativeTerminalFailure(err, time.Now(), false); test.wantRecovery != (failure.ErrorClass == "source_recovery" && failure.Attribution == "issue") {
-				t.Fatalf("terminal failure = %#v", failure)
+			if agent.calls != 0 {
+				t.Fatalf("provider started %d turns before source recovery", agent.calls)
+			}
+			if test.wantRecovery && (execution.failure == nil || execution.failure.ErrorClass != "source_recovery" || execution.failure.Attribution != "instance" || execution.failure.Stage != "workspace_preparation") {
+				t.Fatalf("terminal failure = %#v, want instance source_recovery before provider", execution.failure)
 			}
 		})
 	}
