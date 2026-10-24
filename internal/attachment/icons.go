@@ -9,6 +9,15 @@ import (
 
 type IconStore interface {
 	PutIcon(context.Context, string, string, []byte) error
+	DeleteIcon(context.Context, string, string) error
+}
+
+func (s Icons) DeleteIcon(ctx context.Context, organization, id string) error {
+	key, err := Key(organization, id)
+	if err != nil || s.Storage == nil {
+		return ErrInvalid
+	}
+	return s.Storage.Delete(ctx, key)
 }
 
 type Icons struct{ Storage Storage }

@@ -2,11 +2,14 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"testing"
 	"time"
@@ -89,11 +92,17 @@ func TestOrganizationLogoRefusals(t *testing.T) {
 		content        []byte
 		manager        bool
 		status         int
+		failure        string
 	}{
-		{"accepted", "1", content.Bytes(), true, 200},
-		{"SVG", "1", []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`), true, 422},
-		{"stale", "2", content.Bytes(), true, 409},
-		{"non-manager", "1", content.Bytes(), false, 403},
+		{"accepted", "1", content.Bytes(), true, 200, ""},
+		{"SVG", "1", []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`), true, 422, ""},
+		{"stale", "2", content.Bytes(), true, 409, ""},
+		{"non-manager", "1", content.Bytes(), false, 403, ""},
+		{"storage quota", "1", content.Bytes(), true, 429, "quota"},
+		{"revision changes during upload", "1", content.Bytes(), true, 409, "revision"},
+		{"concurrent replay", "1", content.Bytes(), true, 200, "replay"},
+		{"partially stored upload", "1", content.Bytes(), true, 500, "upload"},
+		{"cancelled upload", "1", content.Bytes(), true, 500, "cancel"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := &memoryProjectIcons{objects: map[string][]byte{}}
@@ -102,10 +111,57 @@ func TestOrganizationLogoRefusals(t *testing.T) {
 			if !test.manager {
 				token = f.token
 			}
-			response := performHubAPIRequest(t, f.service, http.MethodPut, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/logo", token, map[string]any{"content_base64": test.content, "expected_revision": test.revision, "idempotency_key": "logo"})
+			path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/logo"
+			body := map[string]any{"content_base64": test.content, "expected_revision": test.revision, "idempotency_key": "logo"}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			switch test.failure {
+			case "quota":
+				plans := pilotHostedPlans()
+				plans.Plans[0].Allowances["collaboration_bytes"] = 0
+				f.service.database.hostedOrganization = f.project.OrganizationID
+				if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+					t.Fatal(err)
+				}
+			case "revision":
+				store.afterPut = func(context.Context) error {
+					_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE organizations SET logo_revision=logo_revision+1 WHERE id=?", f.project.OrganizationID)
+					return err
+				}
+			case "replay":
+				store.afterPut = func(context.Context) error {
+					store.afterPut = nil
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, path, token, body), http.StatusOK)
+					return nil
+				}
+			case "upload":
+				store.afterPut = func(context.Context) error { return errors.New("upload response lost") }
+			case "cancel":
+				store.afterPut = func(ctx context.Context) error {
+					cancel()
+					return ctx.Err()
+				}
+			}
+			response := httptest.NewRecorder()
+			f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPut, path, token, body).WithContext(ctx))
 			requireNativeStatus(t, response, test.status)
-			if test.status != 200 && len(store.objects) != 0 {
-				t.Fatal("refused upload stored an object")
+			wantObjects := 0
+			if test.status == 200 {
+				wantObjects = 1
+			}
+			if len(store.objects) != wantObjects {
+				t.Fatalf("stored objects=%d, want %d", len(store.objects), wantObjects)
+			}
+			var attachments int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE organization_id=?", f.project.OrganizationID).Scan(&attachments); err != nil || attachments != wantObjects {
+				t.Fatalf("attachment rows=%d, want %d: %v", attachments, wantObjects, err)
+			}
+			logo, err := readOrganizationLogo(t.Context(), f.service.database.reader, f.project.OrganizationID)
+			if err != nil || (logo.ImageKey == "") != (wantObjects == 0) {
+				t.Fatalf("logo=%+v: %v", logo, err)
+			}
+			if wantObjects != 0 && len(store.objects[string(f.project.OrganizationID)+"/"+logo.ImageKey]) == 0 {
+				t.Fatal("committed logo object was deleted")
 			}
 		})
 	}

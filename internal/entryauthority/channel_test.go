@@ -26,16 +26,28 @@ func (s iconChannelStore) PutIcon(ctx context.Context, organization, id string, 
 	return nil
 }
 
+func (s iconChannelStore) DeleteIcon(ctx context.Context, organization, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.calls <- IconRequest{Organization: organization, ID: id}
+	return nil
+}
+
 func TestIconAuthorityChannel(t *testing.T) {
 	for _, test := range []struct {
 		name, organization string
 		content            []byte
 		valid              bool
+		remove             bool
 	}{
-		{"first", "org_example", []byte("normalized PNG one"), true},
-		{"second", "org_example", []byte("normalized PNG two"), true},
-		{"foreign", "org_other", []byte("foreign PNG"), false},
-		{"oversized", "org_example", make([]byte, 256*1024+1), false},
+		{"first", "org_example", []byte("normalized PNG one"), true, false},
+		{"second", "org_example", []byte("normalized PNG two"), true, false},
+		{"foreign", "org_other", []byte("foreign PNG"), false, false},
+		{"oversized", "org_example", make([]byte, 256*1024+1), false, false},
+		{"delete first", "org_example", nil, true, true},
+		{"delete second", "org_example", nil, true, true},
+		{"foreign delete", "org_other", nil, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			binding := Binding{Issuer: "entry", Organization: "org_example", Generation: 2}
@@ -55,18 +67,22 @@ func TestIconAuthorityChannel(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			_, err = callAuthority[bool](t.Context(), client, "PutIcon", IconRequest{Organization: test.organization, ID: "att_0123456789abcdef0123456789abcdef", Content: test.content, Deadline: time.Now().Add(time.Second)})
+			method := "PutIcon"
+			if test.remove {
+				method = "DeleteIcon"
+			}
+			_, err = callAuthority[bool](t.Context(), client, method, IconRequest{Organization: test.organization, ID: "att_0123456789abcdef0123456789abcdef", Content: test.content, Deadline: time.Now().Add(time.Second)})
 			if (err == nil) != test.valid {
-				t.Fatalf("PutIcon = %v, valid=%v", err, test.valid)
+				t.Fatalf("%s = %v, valid=%v", method, err, test.valid)
 			}
 			select {
 			case got := <-store.calls:
 				if !test.valid || !bytes.Equal(got.Content, test.content) || got.Organization != test.organization {
-					t.Fatalf("unexpected upload %+v", got)
+					t.Fatalf("unexpected icon operation %+v", got)
 				}
 			default:
 				if test.valid {
-					t.Fatal("upload never reached the store")
+					t.Fatal("icon operation never reached the store")
 				}
 			}
 		})
