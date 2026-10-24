@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -238,9 +239,12 @@ func (w *entryKeyAuditWriter) Write(body []byte) (int, error) {
 
 func TestEntryKeyMutationAuditCommit(t *testing.T) {
 	for _, transport := range []string{"HTTP", "tool"} {
-		for _, failure := range []string{"cancel response", "reject audit insert", "reject audit update"} {
+		for _, failure := range []string{"cancel response", "reject audit insert", "reject audit update", "reject completed audit"} {
 			t.Run(transport+"/"+failure, func(t *testing.T) {
-				f := newHostedSharedFixture(t)
+				var logs hostedLogBuffer
+				f := newHostedSharedFixture(t, func(cfg *Config) {
+					cfg.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+				})
 				user := f.user(t, "key_owner", "owner", "key-owner@example.test", "write", "")
 				operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project)
 				for i := range 2 {
@@ -290,6 +294,11 @@ func TestEntryKeyMutationAuditCommit(t *testing.T) {
 							cancel()
 						}
 					}
+					if failure == "reject completed audit" {
+						writer.beforeWrite = func() {
+							operatorSQL(t, f.hostedSecurityFixture, `CREATE TRIGGER reject_key_audit BEFORE UPDATE ON hosted_audit WHEN NEW.event='key_call' BEGIN SELECT RAISE(ABORT,'audit unavailable'); END`)
+						}
+					}
 					auditStartedAt := f.service.config.now().UnixNano()
 					f.service.Handler().ServeHTTP(writer, request)
 					var items, audits int
@@ -300,7 +309,7 @@ func TestEntryKeyMutationAuditCommit(t *testing.T) {
 						t.Fatal(err)
 					}
 					wantItems, wantAudits := 0, 1
-					if failure == "cancel response" {
+					if failure == "cancel response" || failure == "reject completed audit" {
 						wantItems = 1
 						requireNativeStatus(t, recorder, http.StatusOK)
 					} else {
@@ -311,6 +320,30 @@ func TestEntryKeyMutationAuditCommit(t *testing.T) {
 					}
 					if items != wantItems || audits != wantAudits {
 						t.Fatalf("items=%d audits=%d want items=%d audits=%d", items, audits, wantItems, wantAudits)
+					}
+					if !json.Valid(recorder.Body.Bytes()) {
+						t.Fatalf("response is not one JSON document: %s", recorder.Body.String())
+					}
+					if failure == "reject completed audit" {
+						if !strings.Contains(logs.String(), "Key audit is unavailable") {
+							t.Fatal("post-handler audit failure was not logged")
+						}
+						for _, secret := range []string{title, nativeContractTestBody, assertion} {
+							if strings.Contains(logs.String(), secret) {
+								t.Fatal("audit failure log exposed request content")
+							}
+						}
+						operatorSQL(t, f.hostedSecurityFixture, "DROP TRIGGER reject_key_audit")
+						replay := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: target, body: string(body), mutate: func(claims *cloudassert.Claims) {
+							claims.Key, claims.Subject, claims.ProviderOrganization, claims.Role = &key, user.identity.Subject, "org_provider", "owner"
+						}})
+						requireNativeStatus(t, replay, http.StatusOK)
+						if !json.Valid(replay.Body.Bytes()) {
+							t.Fatalf("replay response is not one JSON document: %s", replay.Body.String())
+						}
+						if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE title=?", title).Scan(&items); err != nil || items != 1 {
+							t.Fatalf("replay items=%d error=%v", items, err)
+						}
 					}
 				}
 			})
