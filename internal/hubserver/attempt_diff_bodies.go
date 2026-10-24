@@ -105,7 +105,7 @@ FROM attempt_diff_files f JOIN attempt_diffs d ON d.id=f.diff_id WHERE f.patch_e
 	if err := rows.Close(); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if err := s.database.reader.QueryRowContext(readCtx, `SELECT vacuum_pending FROM attempt_diff_body_migration WHERE singleton=1`).Scan(&batch.VacuumPending); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, `SELECT vacuum_pending OR (SELECT auto_vacuum FROM pragma_auto_vacuum)<>2 FROM attempt_diff_body_migration WHERE singleton=1`).Scan(&batch.VacuumPending); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, batch)
@@ -211,7 +211,7 @@ func (s *Service) vacuumAttemptDiffBodies(c echo.Context) error {
 	if inline != 0 {
 		return s.nativeAPIError(c, nativePublicInvalid("Diff body migration is still pending"))
 	}
-	if _, err := s.database.db.ExecContext(ctx, `VACUUM`); err != nil {
+	if err := s.database.vacuum(ctx); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if _, err := s.database.db.ExecContext(ctx, `UPDATE attempt_diff_body_migration SET vacuum_pending=0 WHERE singleton=1`); err != nil {

@@ -35,7 +35,7 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 	if err := s.database.compactAnalyticsSamples(ctx, now); err != nil {
 		return fmt.Errorf("compact analytics samples: %w", err)
 	}
-	return nil
+	return s.database.reclaimStorage(ctx)
 }
 
 func (s *Service) expireNativeRecords(ctx context.Context, now time.Time) error {

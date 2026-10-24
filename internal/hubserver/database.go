@@ -367,6 +367,9 @@ func isWindowsDrivePath(path string) bool {
 }
 
 func (d *database) configure(ctx context.Context, busyTimeout time.Duration, hosted bool) error {
+	if _, err := d.db.ExecContext(ctx, "PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
+		return fmt.Errorf("configure hub sqlite incremental vacuum: %w", err)
+	}
 	wantBusyTimeout := busyTimeoutMillis(busyTimeout)
 	var gotBusyTimeout int64
 	if err := d.db.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&gotBusyTimeout); err != nil {

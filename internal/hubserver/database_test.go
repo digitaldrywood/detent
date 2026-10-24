@@ -49,6 +49,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		want  string
 	}{
 		{name: "journal mode", query: "PRAGMA journal_mode", want: "wal"},
+		{name: "auto vacuum", query: "PRAGMA auto_vacuum", want: "2"},
 		{name: "foreign keys", query: "PRAGMA foreign_keys", want: "1"},
 		{name: "busy timeout", query: "PRAGMA busy_timeout", want: "2500"},
 		{name: "locking mode", query: "PRAGMA locking_mode", want: "normal"},
