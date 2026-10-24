@@ -4,27 +4,37 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type memoryProjectIcons struct {
-	objects  map[string][]byte
-	afterPut func(context.Context) error
+	objects   map[string][]byte
+	afterPut  func(context.Context) error
+	beforePut func(string, string, []byte)
 }
 
 func (m *memoryProjectIcons) PutIcon(ctx context.Context, organization, id string, content []byte) error {
+	if m.beforePut != nil {
+		m.beforePut(organization, id, content)
+	}
 	m.objects[organization+"/"+id] = append([]byte{}, content...)
 	if m.afterPut != nil {
 		return m.afterPut(ctx)
@@ -90,6 +100,10 @@ func TestProjectIconLifecycle(t *testing.T) {
 				if err != nil || config.Width != 128 || config.Height != 128 || saved.Icon.ImageSHA256 == "" || saved.Icon.URL == "" {
 					t.Fatalf("stored icon=%+v, %+v, %v", saved.Icon, config, err)
 				}
+				var retention string
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT retention_class FROM attachments WHERE id=?", previousImage).Scan(&retention); err != nil || retention != "organization" {
+					t.Fatalf("committed icon retention=%q, %v", retention, err)
+				}
 			}
 			replay := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/icon", testHubAdminToken, body)
 			requireNativeStatus(t, replay, http.StatusOK)
@@ -112,26 +126,164 @@ func TestSetProjectIconRefusals(t *testing.T) {
 		revision string
 		operator bool
 		status   int
+		failure  string
 	}{
-		{"stale", projecticon.Icon{Kind: "emoji", Emoji: "🚀"}, "2", false, 409},
-		{"zero", projecticon.Icon{Kind: "automatic"}, "0", false, 422},
-		{"operator", projecticon.Icon{Kind: "emoji", Emoji: "🚀"}, "1", true, 403},
-		{"unknown icon", projecticon.Icon{Kind: "lucide", Name: "does-not-exist", Color: "blue"}, "1", false, 422},
-		{"unknown color", projecticon.Icon{Kind: "lucide", Name: "rocket", Color: "no-color"}, "1", false, 422},
-		{"two graphemes", projecticon.Icon{Kind: "emoji", Emoji: "🚀🌍"}, "1", false, 422},
-		{"unvalidated image", projecticon.Icon{Kind: "image", ImageKey: "att_other"}, "1", false, 422},
+		{"stale", projecticon.Icon{Kind: "emoji", Emoji: "🚀"}, "2", false, 409, ""},
+		{"zero", projecticon.Icon{Kind: "automatic"}, "0", false, 422, ""},
+		{"operator", projecticon.Icon{Kind: "emoji", Emoji: "🚀"}, "1", true, 403, ""},
+		{"unknown icon", projecticon.Icon{Kind: "lucide", Name: "does-not-exist", Color: "blue"}, "1", false, 422, ""},
+		{"unknown color", projecticon.Icon{Kind: "lucide", Name: "rocket", Color: "no-color"}, "1", false, 422, ""},
+		{"two graphemes", projecticon.Icon{Kind: "emoji", Emoji: "🚀🌍"}, "1", false, 422, ""},
+		{"unvalidated image", projecticon.Icon{Kind: "image", ImageKey: "att_other"}, "1", false, 422, ""},
+		{"image success", projecticon.Icon{Kind: "image"}, "1", false, 200, ""},
+		{"quota", projecticon.Icon{Kind: "image"}, "1", false, 429, "quota"},
+		{"raced revision", projecticon.Icon{Kind: "image"}, "1", false, 409, "revision"},
+		{"raced replay", projecticon.Icon{Kind: "image"}, "1", false, 200, "replay"},
+		{"upload deadline", projecticon.Icon{Kind: "image"}, "1", false, 500, "deadline"},
+		{"store then error", projecticon.Icon{Kind: "image"}, "1", false, 500, "upload"},
+		{"tombstone failure", projecticon.Icon{Kind: "image"}, "1", false, 500, "tombstone"},
+		{"mutation failure", projecticon.Icon{Kind: "image"}, "1", false, 500, "mutation"},
+		{"cancelled mutation", projecticon.Icon{Kind: "image"}, "1", false, 500, "cancel"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newNativeFixture(t, nil, "", "icon permissions")
+			store := &memoryProjectIcons{objects: map[string][]byte{}}
+			f := newDefaultNativeFixture(t, Config{Icons: store})
 			token := testHubAdminToken
 			if test.operator {
 				token = f.token
 			}
-			response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/icon", token, map[string]any{"icon": test.icon, "expected_revision": test.revision, "idempotency_key": "icon"})
+			body := map[string]any{"icon": test.icon, "expected_revision": test.revision, "idempotency_key": "icon"}
+			if test.icon.Kind == "image" {
+				var content bytes.Buffer
+				if err := png.Encode(&content, image.NewNRGBA(image.Rect(0, 0, 64, 64))); err != nil {
+					t.Fatal(err)
+				}
+				body["content_base64"] = content.Bytes()
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			switch test.failure {
+			case "quota":
+				plans := pilotHostedPlans()
+				plans.Plans[0].Allowances["collaboration_bytes"] = 1
+				f.service.database.hostedOrganization = f.project.OrganizationID
+				if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+					t.Fatal(err)
+				}
+			case "mutation":
+				if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER refuse_icon_mutation BEFORE UPDATE OF icon_kind ON projects BEGIN SELECT RAISE(ABORT, 'mutation unavailable'); END`); err != nil {
+					t.Fatal(err)
+				}
+			case "deadline":
+				store.afterPut = func(context.Context) error {
+					return context.DeadlineExceeded
+				}
+			case "upload", "tombstone":
+				store.afterPut = func(context.Context) error { return errors.New("upload response lost") }
+				if test.failure == "tombstone" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER refuse_icon_tombstone BEFORE UPDATE OF deleted_at ON attachments BEGIN SELECT RAISE(ABORT, 'tombstone unavailable'); END`); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "revision":
+				store.afterPut = func(context.Context) error {
+					_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET integration_revision=integration_revision+1 WHERE id=?", f.project.ID)
+					return err
+				}
+			case "replay":
+				store.afterPut = func(context.Context) error {
+					store.afterPut = nil
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/icon", token, body), http.StatusOK)
+					return nil
+				}
+			case "cancel":
+				store.afterPut = func(context.Context) error {
+					cancel()
+					return nil
+				}
+			}
+			var baseline int64
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&baseline); err != nil {
+				t.Fatal(err)
+			}
+			store.beforePut = func(organization, id string, content []byte) {
+				var size, used int64
+				var project string
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT size,project_id FROM attachments WHERE organization_id=? AND id=? AND deleted_at IS NULL AND object_deleted_at IS NULL", organization, id).Scan(&size, &project); err != nil {
+					t.Fatalf("upload started without committed accounting: %v", err)
+				}
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&used); err != nil {
+					t.Fatal(err)
+				}
+				if size != int64(len(content)) || project != string(f.project.ID) || used < baseline+size {
+					t.Fatalf("upload accounting size=%d content=%d project=%s usage=%d baseline=%d", size, len(content), project, used, baseline)
+				}
+			}
+			response := httptest.NewRecorder()
+			f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPut, f.base+"/icon", token, body).WithContext(ctx))
 			requireNativeStatus(t, response, test.status)
 			current, err := readProjectIntegration(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
-			if err != nil || current.Icon != nil || current.Revision != 1 {
-				t.Fatalf("refused update changed project: %+v %v", current, err)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantObjects := 0
+			if test.icon.Kind == "image" && test.failure != "quota" && test.icon.ImageKey == "" {
+				wantObjects = 1
+			}
+			if test.failure == "replay" {
+				wantObjects = 2
+			}
+			if test.status == http.StatusOK {
+				if current.Icon == nil || len(store.objects) != wantObjects || len(store.objects[string(f.project.OrganizationID)+"/"+current.Icon.ImageKey]) == 0 {
+					t.Fatalf("committed icon missing: %+v, objects=%v", current.Icon, store.objects)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/icon", token, body), http.StatusOK)
+				if len(store.objects) != wantObjects {
+					t.Fatal("replay uploaded another object")
+				}
+			} else {
+				wantRevision := tracker.Revision(1)
+				if test.failure == "revision" {
+					wantRevision++
+				}
+				if current.Icon != nil || current.Revision != wantRevision || len(store.objects) != wantObjects {
+					t.Fatalf("refused update changed project or retained objects: %+v, objects=%v", current, store.objects)
+				}
+			}
+			var count int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE organization_id=? AND project_id=?", f.project.OrganizationID, f.project.ID).Scan(&count); err != nil || count != wantObjects {
+				t.Fatalf("accounted rows=%d want=%d err=%v", count, wantObjects, err)
+			}
+			sweep := httptest.NewRecorder()
+			c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/internal/v1/attachments/expired", nil), sweep)
+			c.Set(hostedSharedClaimsKey, cloudassert.Claims{Kind: cloudassert.KindService})
+			if err := f.service.expiredCloudAttachments(c); err != nil {
+				t.Fatal(err)
+			}
+			var expired []attachment.Metadata
+			if err := json.Unmarshal(sweep.Body.Bytes(), &expired); err != nil {
+				t.Fatal(err)
+			}
+			for key, content := range store.objects {
+				id := strings.TrimPrefix(key, string(f.project.OrganizationID)+"/")
+				var deleted, counted bool
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT deleted_at IS NOT NULL,object_deleted_at IS NULL FROM attachments WHERE id=?", id).Scan(&deleted, &counted); err != nil {
+					t.Fatal(err)
+				}
+				wantDeleted := (current.Icon == nil || current.Icon.ImageKey != id) && test.failure != "tombstone"
+				found := false
+				for _, item := range expired {
+					if item.ID == id {
+						found = true
+					}
+				}
+				var used int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT value FROM hosted_usage_counters WHERE name='collaboration_bytes'").Scan(&used); err != nil {
+					t.Fatal(err)
+				}
+				if deleted != wantDeleted || found != wantDeleted || !counted || used < baseline+int64(len(content)) {
+					t.Fatalf("icon deleted=%t swept=%t want=%t counted=%t usage=%d", deleted, found, wantDeleted, counted, used)
+				}
 			}
 		})
 	}

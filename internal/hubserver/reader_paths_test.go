@@ -331,6 +331,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"convertNativeBoardRank":            "Converts one project workflow rank set after checking its source under the write transaction.",
 		"convertRunnerBoardRow":             "Converts one runner project diagnostic snapshot after checking its source under the write transaction.",
 		"prepareContents":                   "The request reserves and verifies its own archive catalog rows and storage allowance before uploading content.",
+		"accountProjectIcon":                "The request reserves its own icon attachment row and storage allowance, rechecking authority, before uploading content.",
 		"collectIssueEmails":                "Queues notification batches and advances their event cursors atomically.",
 		"claimIssueEmail":                   "Deletes a due notification batch and reads its recipient in the same transaction before delivery.",
 		"issueNotificationPreference":       "Updates the member preference and deletes queued notifications atomically on PUT; GET uses the reader.",
