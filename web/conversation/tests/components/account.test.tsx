@@ -79,6 +79,15 @@ describe("the footer workspace picker", () => {
     return userEvent.setup();
   }
 
+  it("replaces the current workspace monogram in the trigger and menu with its saved logo", async () => {
+    const account = decodeAccountBootstrap({ ...accountFixture, organization: { ...accountFixture.organization, logo: { url: "/organizations/org_a/api/v2/attachments/att_example", revision: "2" } } });
+    const user = mountAccount(account);
+    const logo = await screen.findByRole("img", { name: `${account.organization.name} logo` });
+    expect(logo.getAttribute("src")).toBe("/organizations/org_a/api/v2/attachments/att_example");
+    await user.click(screen.getByRole("button", { name: /Switch workspace/ }));
+    expect(within(await screen.findByRole("menu")).getByRole("img", { name: `${account.organization.name} logo` }).getAttribute("src")).toBe(logo.getAttribute("src"));
+  });
+
   it.each(["owner", "admin", "member", "viewer", "reporter"])("shows workspace roles and sign out for %s", async (role) => {
     const account = decodeAccountBootstrap({
       ...accountFixture,

@@ -34,7 +34,7 @@ func projectToolScope(name string, read bool) apikey.Scope {
 		return apikey.ScopeRead
 	}
 	switch name {
-	case "apply_local_project_policy", "resume_local_project", "drain_local_project", "detach_local_project", "command_git_hub_batch", "create_native_project", "create_hosted_project", "rename_project", "set_project_icon", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret", "import_sprite_usage", operatortool.UpdateSpritePool, operatortool.UpdateProjectSpriteAllocation:
+	case "apply_local_project_policy", "resume_local_project", "drain_local_project", "detach_local_project", "command_git_hub_batch", "create_native_project", "create_hosted_project", "rename_project", "set_project_icon", "set_organization_logo", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret", "import_sprite_usage", operatortool.UpdateSpritePool, operatortool.UpdateProjectSpriteAllocation:
 		return apikey.ScopeAdmin
 	}
 	return apikey.ScopeWrite
@@ -55,6 +55,9 @@ func (e hubProjectExecutor) ListTools(ctx context.Context) ([]operatortool.Defin
 			continue
 		}
 		requirement := operatortool.Requirement{Scope: projectToolScope(d.Name, d.Annotations.ReadOnly)}
+		if d.Name == "set_organization_logo" {
+			requirement.OrganizationWide = true
+		}
 		if d.Name == "resume_local_project" {
 			requirement.ResourceKind = "runners"
 		}
@@ -153,6 +156,31 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 		}
 		call.Arguments = raw
 	}
+	if call.Name == "set_organization_logo" {
+		var args operatortool.SetOrganizationLogoArguments
+		if err := operatortool.DecodeProjectArguments(call.Arguments, &args); err != nil {
+			return result, err
+		}
+		if args.OrganizationID != connection.Identity.OrganizationID {
+			return result, operatortool.ErrAccessDenied
+		}
+		if args.Remove && len(args.Content) != 0 {
+			return result, operatortool.ErrInvalidArguments
+		}
+		if !args.Remove {
+			content, err := projecticon.Normalize(args.Content)
+			if err != nil {
+				return result, operatortool.ErrInvalidArguments
+			}
+			args.Content = content
+		}
+		raw, err := json.Marshal(operatortool.ProjectRequest[operatortool.SetOrganizationLogoInput]{RequestID: args.RequestID, Input: operatortool.SetOrganizationLogoInput{Content: args.Content, Remove: args.Remove, ExpectedRevision: args.ExpectedRevision}})
+		if err != nil {
+			return result, err
+		}
+		call.Arguments = raw
+	}
+
 	if call.Name == "set_project_icon" {
 		var args operatortool.SetProjectIconArguments
 		if err := operatortool.DecodeProjectArguments(call.Arguments, &args); err != nil {
@@ -181,7 +209,7 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 		Input     json.RawMessage `json:"input"`
 	}
 	selectorErr := operatortool.DecodeProjectArguments(call.Arguments, &selector)
-	if call.Name == "set_project_icon" {
+	if call.Name == "set_project_icon" || call.Name == "set_organization_logo" {
 		selectorErr = json.Unmarshal(call.Arguments, &selector)
 	}
 	if err := selectorErr; err != nil {
@@ -193,7 +221,7 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 	if len(selector.Input) == 0 || selector.Input[0] != '{' {
 		return result, &operatortool.RequestError{Code: "invalid_request", Message: "input: must be an object"}
 	}
-	if strings.TrimSpace(selector.ProjectID) == "" && call.Name != "create_native_project" && call.Name != "create_hosted_project" && !operatortool.IsOrganizationModelSelection(call.Name) && call.Name != operatortool.UpdateSpritePool {
+	if strings.TrimSpace(selector.ProjectID) == "" && call.Name != "create_native_project" && call.Name != "create_hosted_project" && !operatortool.IsOrganizationModelSelection(call.Name) && call.Name != operatortool.UpdateSpritePool && call.Name != "set_organization_logo" {
 		return result, &operatortool.RequestError{Code: "invalid_request", Message: "project_id: is required"}
 	}
 	if (call.Name == "create_native_project" || call.Name == "create_hosted_project") && selector.ProjectID != "" {
@@ -285,7 +313,7 @@ func (e hubProjectExecutor) ExecuteAction(ctx context.Context, action chatpkg.Ac
 	ctx = mutation.WithContext(ctx, action.Mutation)
 	result, err := e.command(ctx, operatortool.Call{Name: string(action.Kind), Arguments: action.Arguments}, projectCommandExecute)
 	if err != nil {
-		if action.Kind == "rename_project" || action.Kind == "set_project_icon" {
+		if action.Kind == "rename_project" || action.Kind == "set_project_icon" || action.Kind == "set_organization_logo" {
 			if conflict := operatorNativeConflict(err); conflict != nil {
 				return chatpkg.ActionExecution{}, conflict
 			}
@@ -517,6 +545,28 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		request := renameProjectRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Name: r.Input.Name, ExpectedRevision: r.Input.ExpectedRevision}
 		input = request
 		operation = s.renameProjectOperation(request)
+	case "set_organization_logo":
+		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeAdmin, OrganizationWide: true}); err != nil {
+			return nil, err
+		}
+		r, err := projectCommandInput[operatortool.SetOrganizationLogoInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		if r.ProjectID != "" || !canManageProjectSecrets(scope.credential) {
+			return nil, operatortool.ErrAccessDenied
+		}
+		scope.project, scope.requireHostedAdmin = "", true
+		if mode == projectCommandPreview {
+			return nil, nil
+		}
+		request := setOrganizationLogoRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Content: r.Input.Content, Remove: r.Input.Remove, ExpectedRevision: r.Input.ExpectedRevision}
+		if mode == projectCommandReplay {
+			raw, _, err := s.nativeCommandReplay(ctx, scope, organizationLogoOperationID(scope), r.RequestID, request)
+			return raw, err
+		}
+		return s.setOrganizationLogoCommand(ctx, scope, request)
+
 	case "set_project_icon":
 		r, err := projectCommandInput[operatortool.SetProjectIconInput](call.Arguments)
 		if err != nil {
