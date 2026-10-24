@@ -842,6 +842,15 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 			}
 			now := time.Now().UTC()
 			_ = json.NewEncoder(w).Encode(tracker.NativeLease{ID: "lease", PolicyID: approved.ID, FencingToken: mutation.FencingToken, ServerTime: now, ExpiresAt: now.Add(time.Minute)})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/prj_free/leases/lease/release"):
+			var mutation tracker.NativeLeaseMutation
+			if err := json.NewDecoder(r.Body).Decode(&mutation); err != nil {
+				t.Error(err)
+			}
+			if mutation.FencingToken != 1 || mutation.Reason != "cancelled" || !mutation.CancelAttempt {
+				t.Errorf("release mutation = %+v", mutation)
+			}
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
