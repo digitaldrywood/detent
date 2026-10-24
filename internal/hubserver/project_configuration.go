@@ -370,7 +370,7 @@ AND NOT EXISTS (SELECT 1 FROM collaboration_events
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		if observation.SelectedPolicy != nil {
-			if err := storeEncodedObservedPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project), scope.credential.Runner.RunnerID, observation.SelectedPolicy.ID, prepared.policy, "null", now); err != nil {
+			if err := storeEncodedObservedPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project), scope.credential.Runner.RunnerID, *observation.SelectedPolicy, prepared.policy, "null", now); err != nil {
 				return runnerauth.ProjectConfigurationRequest{}, err
 			}
 		}

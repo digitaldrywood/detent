@@ -145,17 +145,17 @@ func storeObservedPolicy(ctx context.Context, exec hostedExecer, scope, reporter
 	if err != nil {
 		return err
 	}
-	return storeEncodedObservedPolicy(ctx, exec, scope, reporter, observation.ID, string(encoded), string(source), now)
+	return storeEncodedObservedPolicy(ctx, exec, scope, reporter, observation.Descriptor, string(encoded), string(source), now)
 }
 
-func storeEncodedObservedPolicy(ctx context.Context, exec hostedExecer, scope, reporter, id, encoded, source string, now time.Time) error {
+func storeEncodedObservedPolicy(ctx context.Context, exec hostedExecer, scope, reporter string, descriptor policy.Descriptor, encoded, source string, now time.Time) error {
 	_, err := exec.ExecContext(ctx, `INSERT INTO project_observed_policies (scope, policy_id, descriptor_json, runner_id, observed_at, source_json) VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(scope, runner_id) DO UPDATE SET policy_id = excluded.policy_id, descriptor_json = excluded.descriptor_json, observed_at = excluded.observed_at,
-source_json = CASE WHEN excluded.source_json = 'null' AND project_observed_policies.policy_id = excluded.policy_id THEN project_observed_policies.source_json ELSE excluded.source_json END`, scope, id, encoded, reporter, formatHubTime(now), source)
+source_json = CASE WHEN excluded.source_json = 'null' AND project_observed_policies.policy_id = excluded.policy_id THEN project_observed_policies.source_json ELSE excluded.source_json END`, scope, descriptor.ID, encoded, reporter, formatHubTime(now), source)
 	if err != nil {
 		return err
 	}
-	_, err = exec.ExecContext(ctx, "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", scope, id, encoded, "runner-report", formatHubTime(now))
+	_, err = exec.ExecContext(ctx, "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at, source_digest, workflow_revision) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", scope, descriptor.ID, encoded, "runner-report", formatHubTime(now), descriptor.SourceDigest, policyWorkflowRevision(descriptor))
 	return err
 }
 
@@ -334,7 +334,7 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 	if err != nil {
 		return result, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (scope, policy_id) DO UPDATE SET approved_by = excluded.approved_by, approved_at = excluded.approved_at WHERE policy_revisions.approved_by = 'runner-report' OR ?", scope, change.Policy.ID, string(raw), actor, formatHubTime(now), current != change.Policy.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at, source_digest, workflow_revision) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (scope, policy_id) DO UPDATE SET approved_by = excluded.approved_by, approved_at = excluded.approved_at WHERE policy_revisions.approved_by = 'runner-report' OR ?", scope, change.Policy.ID, string(raw), actor, formatHubTime(now), change.Policy.SourceDigest, policyWorkflowRevision(change.Policy), current != change.Policy.ID); err != nil {
 		return result, err
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO project_policies (scope, policy_id) VALUES (?, ?) ON CONFLICT (scope) DO UPDATE SET policy_id = excluded.policy_id WHERE project_policies.policy_id IS NOT excluded.policy_id", scope, change.Policy.ID); err != nil {

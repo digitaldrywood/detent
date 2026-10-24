@@ -117,7 +117,7 @@ internal/hubserver/time_indexes.go 1
 internal/hubserver/usage_cost_report.go 4
 internal/hubserver/usage_costs.go 3
 internal/hubserver/validation_evidence.go 2
-internal/hubserver/workflow_policy.go 7
+internal/hubserver/workflow_policy.go 4
 internal/store/admission.go 3
 internal/store/lane_ledger.go 1
 internal/store/operator_mutation.go 13
