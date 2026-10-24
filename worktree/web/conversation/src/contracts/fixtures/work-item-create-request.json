@@ -1,0 +1,11 @@
+{
+  "idempotency_key": "cmd_01j8z0v6c3n4",
+  "title": "mailchimp: add connection and address-health integration screens",
+  "body": "Add the Integrations to Mailchimp screen.",
+  "state": "Todo",
+  "priority": 1,
+  "labels": [
+    "goal:reliability"
+  ],
+  "assignees": []
+}

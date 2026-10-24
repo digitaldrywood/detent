@@ -1,0 +1,9 @@
+{
+  "observed_at_utc": "2026-09-26T21:54:46Z",
+  "origin": "https://hub.detent.build",
+  "method": "unauthenticated read-only HTTPS requests; no credentials, no mutations",
+  "tls": {"verified": true, "http_version": "2", "certificate_subject": "CN=hub.detent.build", "issuer": "Let's Encrypt", "not_after": "2026-12-07T16:07:27Z"},
+  "responses": {"GET /health": 401, "GET /": 404, "GET /organizations/new": 404},
+  "interpretation": "The public origin serves a token-protected Hub and does not serve the shared entry (no sign-in page, no organization creation). It runs self-hosted mode; hosted sign-in cannot be exercised until WorkOS and Stripe test keys exist.",
+  "blocked_on_operator": ["WORKOS_API_KEY", "DETENT_CLOUD_ASSERTION_KEY", "Stripe test API key and webhook secret named by hosted.yaml billing.api_key_env and billing.webhook_secret_env (paid activation only, #2343)"]
+}
