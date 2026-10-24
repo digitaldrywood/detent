@@ -1,0 +1,273 @@
+2026/10/23 22:00:47 OK   00001_create_store_tables.sql (525.96µs)
+2026/10/23 22:00:47 OK   00002_create_fair_share_usage.sql (232µs)
+2026/10/23 22:00:47 OK   00003_create_usage_events.sql (403.08µs)
+2026/10/23 22:00:47 OK   00004_add_usage_event_cost.sql (259.46µs)
+2026/10/23 22:00:47 OK   00005_create_workflow_phase_events.sql (464.63µs)
+2026/10/23 22:00:47 OK   00006_create_scheduler_runtime_tables.sql (775.88µs)
+2026/10/23 22:00:47 OK   00007_create_validator_verdicts.sql (302.38µs)
+2026/10/23 22:00:47 OK   00008_add_cached_token_telemetry.sql (1.53ms)
+2026/10/23 22:00:47 OK   00009_add_agent_resume_state.sql (1.11ms)
+2026/10/23 22:00:47 OK   00010_create_api_keys.sql (371.17µs)
+2026/10/23 22:00:47 OK   00011_add_agent_runtime_identity.sql (2.16ms)
+2026/10/23 22:00:47 OK   00012_add_orphan_session_recovery.sql (342.17µs)
+2026/10/23 22:00:47 OK   00013_add_skill_draft_telemetry.sql (541.33µs)
+2026/10/23 22:00:47 OK   00014_add_orphan_recovery_fallback_reason.sql (412µs)
+2026/10/23 22:00:47 OK   00015_create_retro_runs.sql (249.63µs)
+2026/10/23 22:00:47 OK   00016_create_efficiency_receipts.sql (315.92µs)
+2026/10/23 22:00:47 OK   00017_add_worker_process_registry.sql (1.02ms)
+2026/10/23 22:00:47 OK   00018_add_session_project_id.sql (388.63µs)
+2026/10/23 22:00:47 OK   00019_create_budget_overrides.sql (186.71µs)
+2026/10/23 22:00:47 OK   00020_add_validator_failure_state.sql (575.42µs)
+2026/10/23 22:00:47 OK   00021_create_web_auth_tables.sql (302.71µs)
+2026/10/23 22:00:47 OK   00022_add_cost_per_outcome_indexes.sql (257.13µs)
+2026/10/23 22:00:47 OK   00023_create_routine_runs.sql (204.42µs)
+2026/10/23 22:00:47 OK   00024_create_backlog_admission.sql (412.5µs)
+2026/10/23 22:00:47 OK   00025_add_admission_outcomes.sql (1.5ms)
+2026/10/23 22:00:47 OK   00026_add_admission_resolution_reason.sql (470.79µs)
+2026/10/23 22:00:47 OK   00027_add_admission_recommended_effort.sql (924.63µs)
+2026/10/23 22:00:47 OK   00028_create_merge_required_check_streaks.sql (558.96µs)
+2026/10/23 22:00:47 OK   00029_add_routine_run_limits.sql (1.14ms)
+2026/10/23 22:00:47 OK   00030_add_usage_budget_projection.sql (806.13µs)
+2026/10/23 22:00:47 OK   00031_record_provenance_trust_boundary.sql (185.71µs)
+2026/10/23 22:00:47 OK   00032_create_project_dispatch_status.sql (222.92µs)
+2026/10/23 22:00:47 OK   00033_create_health_notification_states.sql (198.25µs)
+2026/10/23 22:00:47 OK   00034_create_issue_park_acknowledgements.sql (226.33µs)
+2026/10/23 22:00:47 OK   00035_index_park_summary_identities.sql (419.75µs)
+2026/10/23 22:00:47 OK   00036_add_dispatch_eligible_candidate_count.sql (500.58µs)
+2026/10/23 22:00:47 OK   00037_scope_merge_required_check_streaks_by_head.sql (485.04µs)
+2026/10/23 22:00:47 OK   00038_add_worker_reap_reason.sql (432.08µs)
+2026/10/23 22:00:47 OK   00039_flag_delivered_lane_revocations.sql (298.25µs)
+2026/10/23 22:00:47 OK   00040_create_staleness_warning_states.sql (185.54µs)
+2026/10/23 22:00:47 OK   00041_add_live_efficiency_receipts.sql (978.21µs)
+2026/10/23 22:00:47 OK   00042_add_staleness_warning_last_seen.sql (1.07ms)
+2026/10/23 22:00:47 OK   00043_add_dispatch_wait_reason_code.sql (861.5µs)
+2026/10/23 22:00:47 OK   00044_create_lane_mutation_receipts.sql (283.38µs)
+2026/10/23 22:00:47 OK   00045_backfill_lane_revocation_delivery_receipts.sql (243.96µs)
+2026/10/23 22:00:47 OK   00046_create_security_audit_runs.sql (1.59ms)
+2026/10/23 22:00:47 OK   00047_create_issue_progress_credits.sql (287.75µs)
+2026/10/23 22:00:47 OK   00048_create_scheduled_runs.sql (356.96µs)
+2026/10/23 22:00:47 OK   00049_create_backlog_admission_declines.sql (758.29µs)
+2026/10/23 22:00:47 OK   00050_add_worker_cleanup_path.sql (2.15ms)
+2026/10/23 22:00:47 OK   00051_account_for_admission_evaluations.sql (1.96ms)
+2026/10/23 22:00:47 OK   00052_add_admission_run_resume.sql (2.58ms)
+2026/10/23 22:00:47 OK   00053_bound_malformed_admission.sql (1.34ms)
+2026/10/23 22:00:47 OK   00054_add_session_runtime_identity.sql (2.49ms)
+2026/10/23 22:00:47 OK   00055_flag_completion_fence_revocations.sql (214.83µs)
+2026/10/23 22:00:47 OK   00056_add_session_progress.sql (212.25µs)
+2026/10/23 22:00:47 OK   00057_add_workflow_history_revision.sql (252.33µs)
+2026/10/23 22:00:47 OK   00058_add_human_questions.sql (608.29µs)
+2026/10/23 22:00:47 OK   00059_create_lane_ledger.sql (681.21µs)
+2026/10/23 22:00:47 OK   00060_lane_ledger_action_origin.sql (2.41ms)
+2026/10/23 22:00:47 OK   00061_admission_candidate_progress.sql (754.21µs)
+2026/10/23 22:00:47 OK   00062_human_question_time.sql (787.46µs)
+2026/10/23 22:00:47 OK   00063_validator_diff_provenance.sql (3.28ms)
+2026/10/23 22:00:47 OK   00064_attempt_compute_usage.sql (2.16ms)
+2026/10/23 22:00:47 OK   00065_index_refresh_history.sql (1.18ms)
+2026/10/23 22:00:47 OK   00066_operator_mutation_identity.sql (171.33µs)
+2026/10/23 22:00:47 OK   00067_project_activity_history_revision.sql (199µs)
+2026/10/23 22:00:47 OK   00068_validator_context.sql (2.36ms)
+2026/10/23 22:00:47 OK   20261005155518_project_runner_setup.sql (282.67µs)
+2026/10/23 22:00:47 OK   20261005233100_remove_fair_share.sql (209.5µs)
+2026/10/23 22:00:47 OK   20261006022500_local_configuration.sql (353.13µs)
+2026/10/23 22:00:47 OK   20261006044524_session_turn_start_refusal.sql (874.75µs)
+2026/10/23 22:00:47 OK   20261007193000_issue_contract_rollout.sql (176.54µs)
+2026/10/23 22:00:47 OK   20261009161239_worker_generations.sql (2.02ms)
+2026/10/23 22:00:47 goose: successfully migrated database to version: 20261009161239
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel5dg9cw-1 stage=recovery elapsed=2.667µs
+2026/10/23 22:00:47 INFO project startup recovery timing project_id=detent refresh_id=dmcqel5dg9cw-1 manual=false completed=true total_duration=1.268625ms refresh_status=initializing last_error="" preflight_duration=2.667µs preflight_graphql_points=0 recovery_duration=1.265958ms recovery_graphql_points=0
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel5e86rc-2 stage=preflight elapsed=708ns
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel5e86rc-2 stage=status_drift elapsed=182.458µs
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel5e86rc-2 stage=release elapsed=189.583µs
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel5e86rc-2 stage=active_runs elapsed=191.167µs
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel5e86rc-2 stage=tracker_fetch elapsed=233.833µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=tracker_fetch step=fetch_issues
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=tracker_fetch step=fetch_issues duration=30.75µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=tracker_fetch step=fetch_candidates
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=tracker_fetch step=fetch_candidates duration=60.291µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=tracker_fetch step=fetch_observed_statuses
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=tracker_fetch step=fetch_observed_statuses duration=10.375µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=tracker_fetch step=hydrate_plan_comments
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=tracker_fetch step=hydrate_plan_comments duration=56.667µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=tracker_fetch step=authorize_candidates
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=tracker_fetch step=authorize_candidates duration=28.125µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=tracker_fetch step=observe_lanes
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=tracker_fetch step=observe_lanes duration=319.333µs
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation elapsed=758.708µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=retain_pull_request_snapshots
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=retain_pull_request_snapshots duration=12.333µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=revalidate_pull_request_associations
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=revalidate_pull_request_associations duration=16.833µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=recover_stale_todo_reviews
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=recover_stale_todo_reviews duration=39.584µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=sync_ci_availability
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=sync_ci_availability duration=30.958µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=restore_retry_intents
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=restore_retry_intents duration=72.833µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=reconcile_terminal_retries
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=reconcile_terminal_retries duration=26.959µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=observe_hydration_skips
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=observe_hydration_skips duration=7.125µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=restore_merge_reservations
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=restore_merge_reservations duration=71.041µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=reconcile_merge_reservations
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=reconcile_merge_reservations duration=18.584µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=restore_gate_wait_completion
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=restore_gate_wait_completion duration=115.333µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=reconcile_operator_stop_holds
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=reconcile_operator_stop_holds duration=19.833µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=reconcile_merge_duration_holds
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=reconcile_merge_duration_holds duration=6.042µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=refresh_transition_sets
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=refresh_transition_sets duration=52.708µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=resolve_completed_epics
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=resolve_completed_epics duration=16.959µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=reconcile_closed_completed_issue_statuses
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=reconcile_closed_completed_issue_statuses duration=5.083µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=auto_promote_blocker_issues
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=auto_promote_blocker_issues duration=22.875µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=review_plan_issues
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=review_plan_issues duration=5.708µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=promote_human_review
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=promote_human_review duration=28.25µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=operator_restore_stuck_merging
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=operator_restore_stuck_merging duration=67.417µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=operator_merge_wedged_pull_requests
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=operator_merge_wedged_pull_requests duration=5.167µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=delegate_native_merge_queue
+2026/10/23 22:00:47 INFO merge_worker_queue_cycle queue_depth=0 ready_count=0 aged_count=0 oldest_lane_age_seconds=0 fairness_age_seconds=7200 lane_occupied=false lane_saturated=false lane_occupant_count=0 queued_behind=0
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=delegate_native_merge_queue duration=105.958µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=reconcile_stale_linked_pull_request_issues
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=reconcile_stale_linked_pull_request_issues duration=24.083µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=transition_completed_active_issues
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=transition_completed_active_issues duration=17µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=transition_artifact_gate_waits
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=reconciliation step=transition_artifact_gate_waits duration=18.417µs
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel5e86rc-2 stage=rate_limits elapsed=1.57275ms
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel5e86rc-2 stage=dispatch elapsed=1.578833ms
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=dispatch step=prepare_candidates
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=dispatch step=prepare_candidates duration=24.833µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=dispatch step=track_candidate_blocked_statuses
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=dispatch step=track_candidate_blocked_statuses duration=5.542µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=dispatch step=dispatch_ready_issues
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=dispatch step=dispatch_ready_issues duration=1.661041ms
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel5e86rc-2 stage=blocked_maintenance elapsed=3.272583ms
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=blocked_maintenance step=recover_blocked_issues
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=blocked_maintenance step=recover_blocked_issues duration=74.875µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=blocked_maintenance step=operator_clear_closed_dependencies
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=blocked_maintenance step=operator_clear_closed_dependencies duration=6.459µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=blocked_maintenance step=track_blocked_statuses
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=blocked_maintenance step=track_blocked_statuses duration=132.416µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel5e86rc-2 stage=blocked_maintenance step=release_missing_retries
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel5e86rc-2 stage=blocked_maintenance step=release_missing_retries duration=41.834µs
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel5e86rc-2 stage=publish elapsed=3.540542ms
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel5e86rc-2 stage=workspace_cleanup elapsed=3.583917ms
+2026/10/23 22:00:47 INFO project refresh timing project_id=detent refresh_id=dmcqel5e86rc-2 manual=false completed=true total_duration=3.590625ms refresh_status=ready last_error="" preflight_duration=181.75µs preflight_graphql_points=0 status_drift_duration=7.125µs status_drift_graphql_points=0 release_duration=1.584µs release_graphql_points=0 active_runs_duration=42.666µs active_runs_graphql_points=0 tracker_fetch_duration=524.875µs tracker_fetch_graphql_points=0 reconciliation_duration=814.042µs reconciliation_graphql_points=0 rate_limits_duration=6.083µs rate_limits_graphql_points=0 dispatch_duration=1.69375ms dispatch_graphql_points=0 blocked_maintenance_duration=267.959µs blocked_maintenance_graphql_points=0 publish_duration=43.375µs publish_graphql_points=0 workspace_cleanup_duration=6.708µs workspace_cleanup_graphql_points=0
+2026/10/23 22:00:47 INFO github rest scope usage project_id=detent refresh_id=dmcqel5e86rc-2 scope=refresh request_count=0 fanout_deferred=0 reserve_refused=0 steps=[] timings=[] timing_unit=nanoseconds timing_coverage=completed_observed_attempts http_boundary=do_body_close elapsed_semantics=overlapping_work token_elapsed=inclusive unmeasured=actor_queue_local_work
+2026/10/23 22:00:47 WARN worker_attempt_finished lifecycle_class=work_attempt event=worker_attempt_finished project_id=detent issue_id=issue-2486 issue_identifier=digitaldrywood/detent#2486 work_attempt_id=2 issue_state=Rework attempt=0 worker_host="" mode=implement outcome=cancelled retryable=true retry_attempt=1 retry_delay_seconds=10 error="worker cancellation: context_cancelled (source: orchestrator.parent_context)\ncontext canceled" cancellation_reason=context_cancelled cancellation_source=orchestrator.parent_context
+2026/10/23 22:00:47 OK   00001_create_store_tables.sql (305.33µs)
+2026/10/23 22:00:47 OK   00002_create_fair_share_usage.sql (160.33µs)
+2026/10/23 22:00:47 OK   00003_create_usage_events.sql (255.96µs)
+2026/10/23 22:00:47 OK   00004_add_usage_event_cost.sql (215.92µs)
+2026/10/23 22:00:47 OK   00005_create_workflow_phase_events.sql (272.67µs)
+2026/10/23 22:00:47 OK   00006_create_scheduler_runtime_tables.sql (525.04µs)
+2026/10/23 22:00:47 OK   00007_create_validator_verdicts.sql (237.67µs)
+2026/10/23 22:00:47 OK   00008_add_cached_token_telemetry.sql (1.9ms)
+2026/10/23 22:00:47 OK   00009_add_agent_resume_state.sql (2.2ms)
+2026/10/23 22:00:47 OK   00010_create_api_keys.sql (540.92µs)
+2026/10/23 22:00:47 OK   00011_add_agent_runtime_identity.sql (2.9ms)
+2026/10/23 22:00:47 OK   00012_add_orphan_session_recovery.sql (596.38µs)
+2026/10/23 22:00:47 OK   00013_add_skill_draft_telemetry.sql (1.1ms)
+2026/10/23 22:00:47 OK   00014_add_orphan_recovery_fallback_reason.sql (614.5µs)
+2026/10/23 22:00:47 OK   00015_create_retro_runs.sql (342.33µs)
+2026/10/23 22:00:47 OK   00016_create_efficiency_receipts.sql (372.33µs)
+2026/10/23 22:00:47 OK   00017_add_worker_process_registry.sql (1.06ms)
+2026/10/23 22:00:47 OK   00018_add_session_project_id.sql (363.08µs)
+2026/10/23 22:00:47 OK   00019_create_budget_overrides.sql (272.5µs)
+2026/10/23 22:00:47 OK   00020_add_validator_failure_state.sql (620µs)
+2026/10/23 22:00:47 OK   00021_create_web_auth_tables.sql (336.04µs)
+2026/10/23 22:00:47 OK   00022_add_cost_per_outcome_indexes.sql (219.67µs)
+2026/10/23 22:00:47 OK   00023_create_routine_runs.sql (250.67µs)
+2026/10/23 22:00:47 OK   00024_create_backlog_admission.sql (477.79µs)
+2026/10/23 22:00:47 OK   00025_add_admission_outcomes.sql (1.45ms)
+2026/10/23 22:00:47 OK   00026_add_admission_resolution_reason.sql (1.39ms)
+2026/10/23 22:00:47 OK   00027_add_admission_recommended_effort.sql (1.52ms)
+2026/10/23 22:00:47 OK   00028_create_merge_required_check_streaks.sql (290.17µs)
+2026/10/23 22:00:47 OK   00029_add_routine_run_limits.sql (1.04ms)
+2026/10/23 22:00:47 OK   00030_add_usage_budget_projection.sql (1.05ms)
+2026/10/23 22:00:47 OK   00031_record_provenance_trust_boundary.sql (407.63µs)
+2026/10/23 22:00:47 OK   00032_create_project_dispatch_status.sql (495.75µs)
+2026/10/23 22:00:47 OK   00033_create_health_notification_states.sql (758.46µs)
+2026/10/23 22:00:47 OK   00034_create_issue_park_acknowledgements.sql (867.29µs)
+2026/10/23 22:00:47 OK   00035_index_park_summary_identities.sql (1.17ms)
+2026/10/23 22:00:47 OK   00036_add_dispatch_eligible_candidate_count.sql (935.38µs)
+2026/10/23 22:00:47 OK   00037_scope_merge_required_check_streaks_by_head.sql (1.44ms)
+2026/10/23 22:00:47 OK   00038_add_worker_reap_reason.sql (568.79µs)
+2026/10/23 22:00:47 OK   00039_flag_delivered_lane_revocations.sql (428.38µs)
+2026/10/23 22:00:47 OK   00040_create_staleness_warning_states.sql (183.42µs)
+2026/10/23 22:00:47 OK   00041_add_live_efficiency_receipts.sql (1ms)
+2026/10/23 22:00:47 OK   00042_add_staleness_warning_last_seen.sql (957.33µs)
+2026/10/23 22:00:47 OK   00043_add_dispatch_wait_reason_code.sql (1.91ms)
+2026/10/23 22:00:47 OK   00044_create_lane_mutation_receipts.sql (848.63µs)
+2026/10/23 22:00:47 OK   00045_backfill_lane_revocation_delivery_receipts.sql (775.83µs)
+2026/10/23 22:00:47 OK   00046_create_security_audit_runs.sql (2.54ms)
+2026/10/23 22:00:47 OK   00047_create_issue_progress_credits.sql (461.29µs)
+2026/10/23 22:00:47 OK   00048_create_scheduled_runs.sql (244.79µs)
+2026/10/23 22:00:47 OK   00049_create_backlog_admission_declines.sql (294.5µs)
+2026/10/23 22:00:47 OK   00050_add_worker_cleanup_path.sql (1.1ms)
+2026/10/23 22:00:47 OK   00051_account_for_admission_evaluations.sql (3.23ms)
+2026/10/23 22:00:47 OK   00052_add_admission_run_resume.sql (1.69ms)
+2026/10/23 22:00:47 OK   00053_bound_malformed_admission.sql (2.36ms)
+2026/10/23 22:00:47 OK   00054_add_session_runtime_identity.sql (870.58µs)
+2026/10/23 22:00:47 OK   00055_flag_completion_fence_revocations.sql (228.58µs)
+2026/10/23 22:00:47 OK   00056_add_session_progress.sql (337.67µs)
+2026/10/23 22:00:47 OK   00057_add_workflow_history_revision.sql (401.42µs)
+2026/10/23 22:00:47 OK   00058_add_human_questions.sql (514.42µs)
+2026/10/23 22:00:47 OK   00059_create_lane_ledger.sql (1.42ms)
+2026/10/23 22:00:47 OK   00060_lane_ledger_action_origin.sql (2.82ms)
+2026/10/23 22:00:47 OK   00061_admission_candidate_progress.sql (786.96µs)
+2026/10/23 22:00:47 OK   00062_human_question_time.sql (1.47ms)
+2026/10/23 22:00:47 OK   00063_validator_diff_provenance.sql (3.24ms)
+2026/10/23 22:00:47 OK   00064_attempt_compute_usage.sql (3.27ms)
+2026/10/23 22:00:47 OK   00065_index_refresh_history.sql (1.47ms)
+2026/10/23 22:00:47 OK   00066_operator_mutation_identity.sql (200.67µs)
+2026/10/23 22:00:47 OK   00067_project_activity_history_revision.sql (325.25µs)
+2026/10/23 22:00:47 OK   00068_validator_context.sql (1.83ms)
+2026/10/23 22:00:47 OK   20261005155518_project_runner_setup.sql (300.33µs)
+2026/10/23 22:00:47 OK   20261005233100_remove_fair_share.sql (209.71µs)
+2026/10/23 22:00:47 OK   20261006022500_local_configuration.sql (386.13µs)
+2026/10/23 22:00:47 OK   20261006044524_session_turn_start_refusal.sql (731.96µs)
+2026/10/23 22:00:47 OK   20261007193000_issue_contract_rollout.sql (223.54µs)
+2026/10/23 22:00:47 OK   20261009161239_worker_generations.sql (1.31ms)
+2026/10/23 22:00:47 goose: successfully migrated database to version: 20261009161239
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel6s5mbk-3 stage=recovery elapsed=750ns
+2026/10/23 22:00:47 INFO project startup recovery timing project_id=detent refresh_id=dmcqel6s5mbk-3 manual=false completed=true total_duration=844.333µs refresh_status=initializing last_error="" preflight_duration=750ns preflight_graphql_points=0 recovery_duration=843.583µs recovery_graphql_points=0
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel6sob5s-4 stage=preflight elapsed=708ns
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel6sob5s-4 stage=status_drift elapsed=145.625µs
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel6sob5s-4 stage=release elapsed=152.542µs
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel6sob5s-4 stage=active_runs elapsed=154.292µs
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel6sob5s-4 stage=tracker_fetch elapsed=156.708µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=tracker_fetch step=fetch_issues
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=tracker_fetch step=fetch_issues duration=54.459µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=tracker_fetch step=fetch_candidates
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=tracker_fetch step=fetch_candidates duration=14.875µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=tracker_fetch step=probe_observed_work
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=tracker_fetch step=probe_observed_work duration=6.708µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=tracker_fetch step=fetch_observed_statuses
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=tracker_fetch step=fetch_observed_statuses duration=17.375µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=tracker_fetch step=hydrate_plan_comments
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=tracker_fetch step=hydrate_plan_comments duration=10.542µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=tracker_fetch step=authorize_candidates
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=tracker_fetch step=authorize_candidates duration=29.666µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=tracker_fetch step=observe_lanes
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=tracker_fetch step=observe_lanes duration=232.834µs
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation elapsed=524.667µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=retain_pull_request_snapshots
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=retain_pull_request_snapshots duration=2.167µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=revalidate_pull_request_associations
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=revalidate_pull_request_associations duration=18.666µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=recover_stale_todo_reviews
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=recover_stale_todo_reviews duration=38.792µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=sync_ci_availability
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=sync_ci_availability duration=3.208µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=restore_retry_intents
+2026/10/23 22:00:47 INFO project refresh sub-step completed p
