@@ -98,6 +98,18 @@ Keep existing jobs, govulncheck/gosec commands, artifact retention and the
 fail-closed tagging rule. The per-change security audit and its Rework
 disposition are independent and unchanged.
 
+Detent's `ci.yml` invokes the controller after Security on release branches.
+The `audit-controller` checkout pins its trusted revision independently of
+the `audit-source` checkout at the preflight release SHA. Configure the
+repository variable `DETENT_RELEASE_AUDIT_MODEL` with the project's selected
+model, and supply `OPENAI_API_KEY` and the existing scoped `DETENT_API_KEY`
+as Actions secrets. Credentials are supplied only to the audit invocation.
+The job allows 40 invocations, 200000 input tokens, 50000 output tokens and
+150000 cached input tokens. Its request, result and diagnostics are retained
+for 14 days. Allowance exhaustion is advisory and retains incomplete coverage;
+infrastructure errors fail the job and use the existing scheduled reporter.
+Develop and pull request runs execute no audit steps.
+
 When replacing an existing reviewer, retire its model review engine in the
 same workflow change. Preserve its last-reviewed-ancestor cursor and native
 deduplication rather than running both engines. The workflow sequence is:
