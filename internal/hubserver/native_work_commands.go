@@ -96,6 +96,20 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 			}
 		}
 	}
+	if request.ChallengeToken == "" && request.Provenance == nil {
+		searchRequest := request
+		if verified := scope.scheduledRepair; verified != nil && request.GitHubIssueURL != "" {
+			searchRequest.Body = verified.importBody
+		}
+		_, machine := issueorigin.Parse(searchRequest.Body)
+		if request.GitHubIssueURL == "" || machine {
+			search, err := prepareNativeDuplicates(ctx, s.database.reader, scope, searchRequest, s.config.now(), machine && scope.credential.HostedRole != "reporter")
+			if err != nil {
+				return nil, err
+			}
+			scope.duplicateSearch = search
+		}
+	}
 	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		origin, machine := issueorigin.Parse(request.Body)
 		if machine && scope.credential.HostedRole != "reporter" && request.ChallengeToken != "" {

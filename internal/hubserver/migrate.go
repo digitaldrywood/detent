@@ -170,6 +170,7 @@ func hubGoMigrations(loggers ...*slog.Logger) []*goose.Migration {
 		goose.NewGoMigration(20261016204002, &goose.GoFunc{RunTx: migrateCloudWorkflowLanes}, nil),
 		goose.NewGoMigration(20261020103000, &goose.GoFunc{RunTx: migrateCollaborationDeltas}, nil),
 		goose.NewGoMigration(20261024003000, &goose.GoFunc{RunTx: migratePolicyRevisionInputs}, nil),
+		goose.NewGoMigration(20261024054500, &goose.GoFunc{RunTx: migrateAttemptDispositions}, nil),
 	}
 }
 

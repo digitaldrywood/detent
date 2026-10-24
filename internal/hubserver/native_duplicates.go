@@ -17,6 +17,7 @@ import (
 const duplicateChallengeLifetime = time.Hour
 
 type possibleDuplicate struct {
+	revision   tracker.Revision
 	WorkItemID tracker.NativeWorkItemID `json:"work_item_id"`
 	Identifier string                   `json:"identifier"`
 	Number     int                      `json:"number"`
@@ -31,7 +32,24 @@ type duplicateChallenge struct {
 	ChallengeToken     string              `json:"challenge_token"`
 }
 
-func resolveNativeDuplicatesTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, machine bool) ([]possibleDuplicate, error) {
+const duplicateCandidateLimit = 100
+
+type nativeDuplicateSearch struct {
+	latestNumber int
+	matches      []possibleDuplicate
+}
+
+func prepareNativeDuplicates(ctx context.Context, query nativeQueryer, scope nativeScope, request tracker.CreateIssue, now time.Time, machine bool) (*nativeDuplicateSearch, error) {
+	var search nativeDuplicateSearch
+	if err := query.QueryRowContext(ctx, `SELECT COALESCE(MAX(number),0) FROM issues WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&search.latestNumber); err != nil {
+		return nil, err
+	}
+	matches, err := resolveNativeDuplicates(ctx, query, scope, request, now, machine)
+	search.matches = matches
+	return &search, err
+}
+
+func duplicateWindow(scope nativeScope, now time.Time, machine bool) (string, []any) {
 	window := " AND i.archived = 0"
 	args := []any{scope.organization, scope.project}
 	if !machine {
@@ -39,22 +57,39 @@ func resolveNativeDuplicatesTx(ctx context.Context, tx *sql.Tx, scope nativeScop
 		args = append(args, formatHubTime(now.AddDate(0, 0, -30)))
 	}
 	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
-	window += " AND (" + visibility + ")"
-	args = append(args, visibilityArgs...)
+	return window + " AND (" + visibility + ")", append(args, visibilityArgs...)
+}
+
+func resolveNativeDuplicates(ctx context.Context, query nativeQueryer, scope nativeScope, request tracker.CreateIssue, now time.Time, machine bool) ([]possibleDuplicate, error) {
+	window, args := duplicateWindow(scope, now, machine)
 	var matches []possibleDuplicate
-	if _, stamped := issueorigin.Parse(request.Body); stamped {
-		rows, err := tx.QueryContext(ctx, `SELECT i.native_id, i.number, i.title, ws.detent_state,
-i.body || char(10) || COALESCE((SELECT group_concat(c.body, char(10)) FROM native_comments c WHERE c.work_item_id = i.native_id), '')
-FROM issues i JOIN workflow_states ws ON ws.id = i.workflow_state_id
-WHERE i.organization_id = ? AND i.project_id = ?`+window+` ORDER BY ws.terminal, i.number DESC`, args...)
+	origin, stamped := issueorigin.Parse(request.Body)
+	if stamped {
+		expressions := nativeSearchExpressions(origin.Fingerprint)
+		if canonical := issueorigin.DefectFingerprint(request.Body); canonical != "" {
+			expressions = append(expressions, nativeSearchExpressions(canonical)...)
+		}
+		expressions = append(expressions, duplicateSearchExpressions(request.Body)...)
+		searchArgs := []any{strings.Join(expressions, " OR ")}
+		searchArgs = append(searchArgs, args...)
+		searchArgs = append(searchArgs, duplicateCandidateLimit)
+		searchArgs = append(searchArgs, args...)
+		rows, err := query.QueryContext(ctx, `WITH candidates AS MATERIALIZED (
+SELECT d.issue_id,d.comment_id FROM native_work_fts JOIN native_work_documents d ON d.id=native_work_fts.rowid
+JOIN issues i ON i.id=d.issue_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
+WHERE native_work_fts MATCH ? AND i.organization_id=? AND i.project_id=?`+window+`
+ORDER BY bm25(native_work_fts) LIMIT ?)
+SELECT i.native_id,i.number,i.title,ws.detent_state,i.revision,i.body || char(10) || COALESCE(c.body,'')
+FROM candidates d JOIN issues i ON i.id=d.issue_id
+JOIN workflow_states ws ON ws.id=i.workflow_state_id LEFT JOIN native_comments c ON c.id=d.comment_id
+WHERE i.organization_id=? AND i.project_id=?`+window+` ORDER BY ws.terminal,i.number DESC`, searchArgs...)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
 		for rows.Next() {
 			var match possibleDuplicate
 			var body string
-			if err := rows.Scan(&match.WorkItemID, &match.Number, &match.Title, &match.State, &body); err != nil {
+			if err := rows.Scan(&match.WorkItemID, &match.Number, &match.Title, &match.State, &match.revision, &body); err != nil {
 				return nil, errors.Join(err, rows.Close())
 			}
 			same := issueorigin.SameDefect(body, request.Body)
@@ -64,7 +99,7 @@ WHERE i.organization_id = ? AND i.project_id = ?`+window+` ORDER BY ws.terminal,
 					same = previous != "" && previous == current
 				}
 			}
-			if same {
+			if same && !slices.ContainsFunc(matches, func(m possibleDuplicate) bool { return m.WorkItemID == match.WorkItemID }) {
 				match.Identifier = string(scope.project) + "#" + strconv.Itoa(match.Number)
 				match.Why = "Matching machine fingerprint"
 				matches = append(matches, match)
@@ -85,54 +120,93 @@ WHERE i.organization_id = ? AND i.project_id = ?`+window+` ORDER BY ws.terminal,
 		if len(expressions) == 0 {
 			continue
 		}
-		encoded, err := json.Marshal(expressions)
-		if err != nil {
-			return nil, err
-		}
 		minimum := max(2, (len(expressions)*3+4)/5)
 		if len(expressions) == 1 && content == request.Title {
 			minimum = 1
 		}
-		searchArgs := []any{strings.Join(expressions, " OR "), scope.organization, scope.project, string(encoded)}
+		values := make([]string, len(expressions))
+		searchArgs := []any{strings.Join(expressions, " OR ")}
+		searchArgs = append(searchArgs, args...)
+		searchArgs = append(searchArgs, duplicateCandidateLimit)
+		for i, expression := range expressions {
+			values[i] = "(?)"
+			searchArgs = append(searchArgs, expression)
+		}
 		searchArgs = append(searchArgs, args...)
 		searchArgs = append(searchArgs, -minimum)
-		rows, err := tx.QueryContext(ctx, `SELECT i.native_id, i.number, i.title, ws.detent_state FROM issues i
-JOIN workflow_states ws ON ws.id = i.workflow_state_id`+nativeSearchJoin+`
-WHERE i.organization_id = ? AND i.project_id = ?`+window+`
-AND search.score < ? ORDER BY search.score, ws.terminal, i.number DESC LIMIT 5`, searchArgs...)
+		rows, err := query.QueryContext(ctx, `WITH hits AS MATERIALIZED (
+SELECT d.issue_id,d.id,bm25(native_work_fts,5.0,1.0) AS score
+FROM native_work_fts JOIN native_work_documents d ON d.id=native_work_fts.rowid
+JOIN issues i ON i.id=d.issue_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
+WHERE native_work_fts MATCH ? AND i.organization_id=? AND i.project_id=?`+window+`
+ORDER BY score LIMIT ?), terms(expression) AS (VALUES `+strings.Join(values, ",")+`), coverage AS MATERIALIZED (
+SELECT hits.id,count(*) AS terms,group_concat(terms.expression,', ') AS matched
+FROM terms CROSS JOIN native_work_fts JOIN hits ON hits.id=native_work_fts.rowid
+WHERE native_work_fts MATCH terms.expression GROUP BY hits.id), ranked AS (
+SELECT hits.issue_id,coverage.matched,-coverage.terms+hits.score/(1-hits.score) AS score,
+row_number() OVER (PARTITION BY hits.issue_id ORDER BY coverage.terms DESC,hits.score,hits.id) AS hit
+FROM hits JOIN coverage ON coverage.id=hits.id)
+SELECT i.native_id,i.number,i.title,ws.detent_state,i.revision,search.matched
+FROM ranked search JOIN issues i ON i.id=search.issue_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
+WHERE search.hit=1 AND i.organization_id=? AND i.project_id=?`+window+`
+AND search.score < ? ORDER BY search.score,ws.terminal,i.number DESC LIMIT 5`, searchArgs...)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		var hits []possibleDuplicate
 		for rows.Next() {
 			var hit possibleDuplicate
-			if err := rows.Scan(&hit.WorkItemID, &hit.Number, &hit.Title, &hit.State); err != nil {
+			var terms string
+			if err := rows.Scan(&hit.WorkItemID, &hit.Number, &hit.Title, &hit.State, &hit.revision, &terms); err != nil {
 				return nil, errors.Join(err, rows.Close())
 			}
-			hits = append(hits, hit)
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return nil, err
-		}
-		for _, hit := range hits {
-			if slices.ContainsFunc(matches, func(match possibleDuplicate) bool { return match.WorkItemID == hit.WorkItemID }) {
+			if slices.ContainsFunc(matches, func(m possibleDuplicate) bool { return m.WorkItemID == hit.WorkItemID }) {
 				continue
-			}
-			var terms string
-			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(group_concat(term.value, ', '), '') FROM json_each(?) term
-WHERE EXISTS (SELECT 1 FROM native_work_fts JOIN native_work_documents d ON d.id = native_work_fts.rowid
-JOIN issues i ON i.id = d.issue_id WHERE native_work_fts MATCH term.value AND i.native_id = ?)`, string(encoded), hit.WorkItemID).Scan(&terms); err != nil {
-				return nil, err
 			}
 			hit.Identifier = string(scope.project) + "#" + strconv.Itoa(hit.Number)
 			matched := strings.Split(terms, ", ")
 			hit.Why = "Matching terms: " + strings.NewReplacer(`"`, "", "*", "").Replace(strings.Join(matched[:min(6, len(matched))], ", "))
 			matches = append(matches, hit)
 			if len(matches) == 5 {
-				return matches, nil
+				break
 			}
 		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return nil, err
+		}
+		if len(matches) == 5 {
+			break
+		}
+	}
+	return matches, nil
+}
+
+func resolveNativeDuplicatesTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, machine bool) ([]possibleDuplicate, error) {
+	if scope.duplicateSearch == nil {
+		return resolveNativeDuplicates(ctx, tx, scope, request, now, machine)
+	}
+	var latest int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(number),0) FROM issues WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&latest); err != nil {
+		return nil, err
+	}
+	if latest != scope.duplicateSearch.latestNumber {
+		return nil, nativeConflict(0)
+	}
+	window, args := duplicateWindow(scope, now, machine)
+	var matches []possibleDuplicate
+	for _, candidate := range scope.duplicateSearch.matches {
+		match := candidate
+		err := tx.QueryRowContext(ctx, `SELECT i.number,i.title,ws.detent_state,i.revision FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id
+WHERE i.organization_id=? AND i.project_id=?`+window+` AND i.native_id=?`, append(slices.Clone(args), candidate.WorkItemID)...).Scan(&match.Number, &match.Title, &match.State, &match.revision)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if match.revision != candidate.revision {
+			return nil, nativeConflict(match.revision)
+		}
+		matches = append(matches, match)
 	}
 	return matches, nil
 }
