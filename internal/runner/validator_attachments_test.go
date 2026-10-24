@@ -310,6 +310,14 @@ func (*attachmentValidatorExecution) ValidatorVersion(context.Context) (NativeVa
 	}, nil
 }
 
+func (*attachmentValidatorExecution) SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
+}
+
+func (e *attachmentValidatorExecution) RecoverChangeSource(ctx context.Context) (workspace.ChangeSource, error) {
+	input, err := e.ValidatorVersion(ctx)
+	return workspace.ChangeSource{Version: *input.Version}, err
+}
+
 func (e *attachmentValidatorExecution) RecordValidator(_ context.Context, result gate.ValidatorResult) error {
 	e.result = result
 	return nil

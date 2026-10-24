@@ -37,6 +37,14 @@ type implementationReviewExecution struct {
 	reviewSource      tracker.NativeChangeReference
 }
 
+func (e *implementationReviewExecution) RecoverChangeSource(ctx context.Context) (workspace.ChangeSource, error) {
+	input, err := e.attachmentValidatorExecution.ValidatorVersion(ctx)
+	if e.head != "" {
+		input.Version.HeadSHA = e.head
+	}
+	return workspace.ChangeSource{Version: *input.Version}, err
+}
+
 func (e *implementationReviewExecution) PrepareReview(_ context.Context, source tracker.NativeChangeReference) error {
 	*e.events = append(*e.events, "prepare review")
 	e.reviewSource = source

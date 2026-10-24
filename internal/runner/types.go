@@ -769,6 +769,7 @@ const (
 )
 
 type ValidatorRequest struct {
+	source               ChangeSourceExecution
 	workspacePrepared    bool
 	SecurityAudit        *NativeSecurityAuditEvidence
 	Discussion           NativeReviewDiscussion

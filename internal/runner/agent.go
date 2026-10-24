@@ -3607,6 +3607,19 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 			return gate.ValidatorResult{}, fmt.Errorf("%w: native validation requires a clean review tree", ErrValidatorInfrastructure)
 		}
 		workspaceIssue.PullRequestHeadSHA = req.NativeVersion.HeadSHA
+		workspaceIssue.ReviewVersionID = req.NativeVersion.ID
+		workspaceIssue.Source = &workspace.ChangeSource{Version: *req.NativeVersion}
+		if req.source != nil {
+			recovered, err := req.source.RecoverChangeSource(ctx)
+			if err != nil {
+				return gate.ValidatorResult{}, fmt.Errorf("%w: recover native review source: %w", ErrValidatorInfrastructure, err)
+			}
+			if recovered.Version.ID != req.NativeVersion.ID || recovered.Version.ChangeID != req.NativeVersion.ChangeID || recovered.Version.Repository != req.NativeVersion.Repository || recovered.Version.BaseSHA != req.NativeVersion.BaseSHA || recovered.Version.HeadSHA != req.NativeVersion.HeadSHA {
+				return gate.ValidatorResult{}, fmt.Errorf("%w: recovered review source differs from the immutable version", ErrValidatorInfrastructure)
+			}
+			workspaceIssue.Source.Bundle = recovered.Bundle
+		}
+		req.workspacePrepared = false
 	}
 	if usage, ok := runWorkspace.(workspace.Usage); ok {
 		release, err := usage.Use(ctx, workspaceIssue)
@@ -3624,7 +3637,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		"workspace_path", info.Path,
 		"workspace_branch", info.Branch,
 	)
-	if seeder, ok := runWorkspace.(workspace.ReviewHeadSeeder); ok && req.NativeVersion == nil {
+	if seeder, ok := runWorkspace.(workspace.ReviewHeadSeeder); ok {
 		if err := seeder.SeedReviewHead(ctx, info, workspaceIssue); err != nil {
 			return gate.ValidatorResult{}, fmt.Errorf("%w: seed validation review head: %w", ErrValidatorInfrastructure, err)
 		}
