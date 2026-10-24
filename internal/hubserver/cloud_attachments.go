@@ -245,7 +245,11 @@ func readCloudAttachment(ctx context.Context, query nativeQueryer, scope nativeS
 	if err != nil {
 		return record, err
 	}
-	if scope.credential.HostedRole == "reporter" {
+	var projectIcon bool
+	if err := query.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM projects WHERE organization_id=? AND id=? AND icon_kind='image' AND icon_image_key=? AND deleted_at IS NULL)", scope.organization, scope.project, id).Scan(&projectIcon); err != nil {
+		return attachment.Metadata{}, err
+	}
+	if scope.credential.HostedRole == "reporter" && !projectIcon {
 		visibility, args := scope.issueVisibilitySQL("i")
 		args = append([]any{record.ID, scope.organization, scope.project}, args...)
 		var visible bool
@@ -325,7 +329,7 @@ func (s *Service) deleteCloudAttachmentCommand(ctx context.Context, scope native
 }
 
 func (s *Service) deleteCloudAttachmentMetadata(ctx context.Context, query nativeExecer, scope nativeScope, id string) error {
-	result, err := query.ExecContext(ctx, "UPDATE attachments SET deleted_at=coalesce(deleted_at,?) WHERE organization_id=? AND project_id=? AND id=? AND kind='attachment'", formatHubTime(s.config.now()), scope.organization, scope.project, id)
+	result, err := query.ExecContext(ctx, "UPDATE attachments SET deleted_at=coalesce(deleted_at,?) WHERE organization_id=? AND project_id=? AND id=? AND kind='attachment' AND NOT EXISTS(SELECT 1 FROM projects p WHERE p.id=attachments.project_id AND p.organization_id=attachments.organization_id AND p.icon_kind='image' AND p.icon_image_key=attachments.id AND p.deleted_at IS NULL)", formatHubTime(s.config.now()), scope.organization, scope.project, id)
 	if err != nil {
 		return err
 	}

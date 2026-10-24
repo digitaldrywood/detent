@@ -216,6 +216,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST("/api/v2/tokens/:id/grants", s.grantNativeToken, admin)
 	e.GET(nativeBase, s.getNativeProject, read)
 	e.PATCH(nativeBase, s.renameProject, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
+	e.PUT(nativeBase+"/icon", s.setProjectIcon, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
 	e.GET(nativeBase+"/labels", s.listNativeLabels, read)
 	e.GET(nativeBase+"/work-items", s.listNativeIssues, read)
 	e.GET(nativeBase+"/work-items/export", s.exportNativeWorkItems, read)

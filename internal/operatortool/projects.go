@@ -9,9 +9,19 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/usagecost"
 )
+
+const ProjectIconArgumentBytes = 350 * 1024
+
+func ArgumentByteLimit(name string) int {
+	if name == "set_project_icon" {
+		return ProjectIconArgumentBytes
+	}
+	return MaxArgumentBytes
+}
 
 const (
 	GetSpritePool                 = "get_sprite_pool"
@@ -72,6 +82,19 @@ type RenameProjectArguments struct {
 	OrganizationID   string           `json:"organization_id"`
 	ProjectID        string           `json:"project_id"`
 	Name             string           `json:"name"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	RequestID        string           `json:"request_id"`
+}
+type SetProjectIconInput struct {
+	Icon             projecticon.Icon `json:"icon"`
+	Content          []byte           `json:"content_base64,omitempty"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+}
+type SetProjectIconArguments struct {
+	OrganizationID   string           `json:"organization_id"`
+	ProjectID        string           `json:"project_id"`
+	Icon             projecticon.Icon `json:"icon"`
+	Content          []byte           `json:"content_base64,omitempty"`
 	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
 	RequestID        string           `json:"request_id"`
 }
@@ -174,6 +197,7 @@ func ProjectCatalog() []Definition {
 		projectWrite[OnboardingInput]("save_onboarding", false, false),
 		projectWrite[IntegrationInput]("update_project_integration", true, true),
 		renameProjectDefinition(),
+		setProjectIconDefinition(),
 		projectWrite[RepositoryInput]("bind_native_repository", true, true),
 		projectWrite[ImportStartInput]("start_git_hub_import", true, true),
 		projectWrite[ImportAdvanceInput]("advance_git_hub_import", false, true),
@@ -232,6 +256,9 @@ func projectSchema(t reflect.Type) map[string]any {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
+	if t == reflect.TypeFor[[]byte]() {
+		return map[string]any{"type": "string", "contentEncoding": "base64", "maxLength": 349528}
+	}
 	if t == reflect.TypeFor[json.RawMessage]() {
 		return map[string]any{}
 	}
@@ -286,6 +313,10 @@ func projectSchema(t reflect.Type) map[string]any {
 // are reached, including recursive fields that JSON schema cannot enforce alone.
 func DecodeProjectArguments(raw json.RawMessage, target any) error {
 	limit := MaxArgumentBytes
+	switch target.(type) {
+	case *SetProjectIconArguments, *ProjectRequest[SetProjectIconInput]:
+		limit = ProjectIconArgumentBytes
+	}
 	if _, ok := target.(*ProjectRequest[IntegrationInput]); ok {
 		limit += 6 * 128 * 1024
 	}
@@ -303,6 +334,13 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 				return nil
 			}
 			t = t.Elem()
+		}
+		if t == reflect.TypeFor[[]byte]() {
+			text, ok := v.(string)
+			if !ok || len(text) > 349528 {
+				return invalidArgument(key, "must be base64 content of at most 256 KiB")
+			}
+			return nil
 		}
 		if t == reflect.TypeFor[json.RawMessage]() {
 			return nil
@@ -405,4 +443,14 @@ func renameProjectDefinition() Definition {
 		panic(err)
 	}
 	return Definition{Name: "rename_project", Description: "Rename a native project display name with project-admin authority and an expected revision. The slug is preserved. request_id is the idempotency key.", InputSchema: raw, Annotations: Annotations{Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}}
+}
+
+func setProjectIconDefinition() Definition {
+	schema := projectSchema(reflect.TypeFor[SetProjectIconArguments]())
+	schema["required"] = []string{"organization_id", "project_id", "icon", "expected_revision", "request_id"}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		panic(err)
+	}
+	return Definition{Name: "set_project_icon", Description: "Choose a project icon (automatic, Lucide name and color, single emoji, or PNG/JPEG/WebP content_base64). Requires project-admin authority and the current integration expected_revision. Uploaded images are validated and re-encoded. request_id is the idempotency key.", InputSchema: raw, Annotations: Annotations{Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}}
 }

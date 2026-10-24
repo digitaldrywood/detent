@@ -334,7 +334,7 @@ function OpenCommandPaletteDialog(props: {
               workspaceRoot: String(thread.projectId),
               title: projectTitle ?? "",
               faviconPath: null,
-              projectIcon: null,
+              projectIcon: projects.find((project) => project.id === String(thread.projectId))?.project_icon ?? null,
             }}
             projectTitle={projectTitle ?? null}
             branch={thread.branch}

@@ -11,10 +11,12 @@ import (
 	"github.com/labstack/echo/v4"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type ProjectIntegration struct {
+	Icon                      *projecticon.Icon     `json:"project_icon"`
 	Name                      string                `json:"name"`
 	DuplicateChallenge        bool                  `json:"duplicate_challenge"`
 	ArchiveCompletedAfterDays *int                  `json:"archive_completed_after_days"`
@@ -75,6 +77,11 @@ FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organ
 	if err := json.Unmarshal([]byte(states), &result.States); err != nil {
 		return result, err
 	}
+	icon, err := readProjectIcon(ctx, query, scope)
+	if err != nil {
+		return result, err
+	}
+	result.Icon = projectIconOverride(icon)
 	result.ManualImportEnabled = result.Intake == "manual"
 	if result.Profile == "native" && (result.Repository != "" || result.CheckoutRepository != "") {
 		result.Intake = "automatic"

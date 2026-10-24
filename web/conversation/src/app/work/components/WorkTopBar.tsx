@@ -75,6 +75,7 @@ export function FreshnessChip({
 export interface WorkTopBarProps {
   /** The leading breadcrumb segment, e.g. `Work` or the project's name. */
   readonly context: string;
+ readonly projectId?: string | null;
   /** The current segment. It is the route's one `h1` (B.14). */
   readonly title: string;
   readonly titleTooltip?: string;
@@ -111,7 +112,7 @@ export function WorkTopBar(props: WorkTopBarProps): React.ReactElement {
         >
           <WorkspaceBreadcrumbItem className="hidden shrink sm:flex">
             <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
-              <ProjectGlyph className="size-3.5 shrink-0" projectName={props.context} />
+              <ProjectGlyph className="size-3.5 shrink-0" projectName={props.context} projectId={props.projectId} />
               <span className="max-w-40 truncate">{props.context}</span>
             </span>
           </WorkspaceBreadcrumbItem>

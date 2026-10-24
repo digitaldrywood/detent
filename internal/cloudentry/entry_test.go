@@ -429,7 +429,7 @@ type tenantFixture struct {
 	service      *hubserver.Service
 }
 
-func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id, providerID, owner, project string) (tenantFixture, http.Handler) {
+func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id, providerID, owner, project string, configure ...func(*hubserver.Config)) (tenantFixture, http.Handler) {
 	t.Helper()
 	path := hubDatabasePath(t)
 	plans := pilotPlans()
@@ -440,6 +440,9 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 			StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
 			SharedEntry: &hubserver.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}},
 	}}
+	for _, apply := range configure {
+		apply(&fixture.config)
+	}
 	shared, err := hubserver.Open(t.Context(), fixture.config)
 	if err != nil {
 		t.Fatal(err)
@@ -491,7 +494,7 @@ func newEntryFixture(t *testing.T) entryFixture {
 	return newEntryFixtureWithLogger(t, slog.New(slog.DiscardHandler))
 }
 
-func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
+func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger, configure ...func(*hubserver.Config)) entryFixture {
 	t.Helper()
 	seed := make([]byte, ed25519.SeedSize)
 	seed[0] = 42
@@ -504,8 +507,8 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
 	provider.member("user_alice", "porg_alpha", "owner")
 	provider.member("user_alice", "porg_beta", "owner")
 	provider.member("user_bob", "porg_beta", "member")
-	alpha, alphaHandler := newTenant(t, provider, key, "org_alpha", "porg_alpha", "user_alice", "Alpha secret project")
-	beta, betaHandler := newTenant(t, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project")
+	alpha, alphaHandler := newTenant(t, provider, key, "org_alpha", "porg_alpha", "user_alice", "Alpha secret project", configure...)
+	beta, betaHandler := newTenant(t, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project", configure...)
 	tenants := map[string]http.Handler{testSocketEndpoint("alpha.sock"): alphaHandler, testSocketEndpoint("beta.sock"): betaHandler}
 	service, err := Open(t.Context(), Config{
 		Platform:  PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"},

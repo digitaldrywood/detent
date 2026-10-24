@@ -5,6 +5,10 @@ import { createBrowserHistory, createMemoryHistory, createRootRoute, createRoute
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import "../../src/app/routes.account.screens.tsx";
+import { ProjectIconPickerRow } from "../../src/app/account/ProjectIconSettings.tsx";
+import { ProjectFavicon } from "../../src/components/ProjectFavicon.tsx";
+import { ProjectGlyph } from "../../src/app/components/ProjectGlyph.tsx";
+import { toEnvironmentProject } from "../../src/app/adapters/shell.ts";
 import { accountRoutes } from "../../src/app/routes.account.tsx";
 import { ClientContext } from "../../src/app/client.ts";
 import type { ConversationClient } from "../../src/runtime/bootstrap.ts";
@@ -302,5 +306,86 @@ describe("project General and Repository section saves", () => {
     expect(screen.queryByRole("textbox", { name: "Project name" })).toBeNull();
     for (const toggle of screen.getAllByRole("switch")) expect(toggle.getAttribute("aria-disabled")).toBe("true");
     if (tab === "general") expect(screen.queryByRole("combobox", { name: "Archive completed issues" })).toBeNull();
+  });
+});
+
+
+describe("project icon picker", () => {
+  function picker(icon: import("../../src/contracts/projectIcon.ts").ProjectIcon | null = null, canManage = true) {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<ProjectIconPickerRow projectId="proj_alpha" projectName="Example project" icon={icon} canManage={canManage} onSave={onSave} />);
+    return { onSave, user: userEvent.setup() };
+  }
+
+  it("selects a searched Lucide icon and color, and saves only on Save", async () => {
+    const { user, onSave } = picker();
+    await user.click(screen.getByRole("button", { name: "Choose project icon" }));
+    await user.type(screen.getByRole("textbox", { name: "Search icons" }), "coffee");
+    await user.click(await screen.findByRole("button", { name: "coffee" }));
+    await user.click(screen.getByRole("button", { name: "Violet" }));
+    expect(onSave).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledWith({ kind: "lucide", name: "coffee", color: "violet" }, undefined);
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Search icons" })).toBeNull());
+  });
+
+  it("searches native emoji and refuses multiple graphemes", async () => {
+    const { user, onSave } = picker();
+    await user.click(screen.getByRole("button", { name: "Choose project icon" }));
+    await user.click(screen.getByRole("tab", { name: "Emoji" }));
+    await user.type(screen.getByRole("textbox", { name: "Search emoji" }), "rocket");
+    await user.click(screen.getByRole("button", { name: "rocket launch space" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Emoji" }), { target: { value: "🚀🌍" } });
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByRole("textbox", { name: "Emoji" }), { target: { value: "👨‍👩‍👧‍👦" } });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledWith({ kind: "emoji", emoji: "👨‍👩‍👧‍👦" }, undefined);
+  });
+
+  it("previews a byte-validated image and disables Save for a refused replacement", async () => {
+    vi.stubGlobal("createImageBitmap", vi.fn().mockResolvedValue({ close: vi.fn() }));
+    const { user, onSave } = picker();
+    await user.click(screen.getByRole("button", { name: "Choose project icon" }));
+    await user.click(screen.getByRole("tab", { name: "Upload" }));
+    const bytes = new Uint8Array(33);
+    bytes.set([137,80,78,71,13,10,26,10]);
+    bytes.set([73,72,68,82],12);
+    new DataView(bytes.buffer).setUint32(16,64);
+    new DataView(bytes.buffer).setUint32(20,64);
+    const file = new File([bytes], "example.jpg", { type: "image/jpeg" });
+    Object.defineProperty(file, "arrayBuffer", { value: async () => bytes.buffer });
+    fireEvent.change(screen.getByLabelText("Upload project icon"), { target: { files: [file] } });
+    await screen.findByAltText("64 px preview");
+    expect(screen.getByAltText("32 px preview")).toBeTruthy();
+    expect(screen.getByAltText("16 px preview")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.change(screen.getByLabelText("Upload project icon"), { target: { files: [new File([new Uint8Array(256 * 1024 + 1)], "too-large.png")] } });
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "too-large.png is 256.0 KB; the limit is 256 KB.");
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(onSave).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Use automatic" }));
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("resets a chosen icon to automatic", async () => {
+    const { user, onSave } = picker({ kind: "emoji", emoji: "🚀" });
+    await user.click(screen.getByRole("button", { name: "Choose project icon" }));
+    await user.click(screen.getByRole("button", { name: "Use automatic" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledWith({ kind: "automatic" }, undefined);
+  });
+
+  it("shows only the read-only tile without rename authority", () => {
+    picker({ kind: "emoji", emoji: "🚀" }, false);
+    expect(screen.queryByRole("button", { name: "Choose project icon" })).toBeNull();
+    expect(screen.getByLabelText("Project icon").textContent).toBe("🚀");
+  });
+
+  it("carries the saved icon through the sidebar adapter and Projects table glyph", () => {
+    const project = { ...account.projects[0]!, project_icon: { kind: "emoji" as const, emoji: "🧪" } };
+    account.projects[0] = project;
+    render(<ClientContext.Provider value={{ account } as unknown as ConversationClient}><ProjectFavicon project={toEnvironmentProject(project)} /><ProjectGlyph projectId={project.id} projectName={project.name} /></ClientContext.Provider>);
+    expect(screen.getAllByText("🧪")).toHaveLength(2);
+    account.projects[0] = { ...accountFixture.projects[0]!, slug: "example-project" };
   });
 });

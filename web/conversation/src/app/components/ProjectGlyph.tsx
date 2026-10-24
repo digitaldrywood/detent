@@ -1,5 +1,6 @@
-import type { ReactElement } from "react";
+import { useContext, type ReactElement } from "react";
 
+import { ClientContext } from "../client.ts";
 import { ProjectFavicon } from "../../components/ProjectFavicon.tsx";
 import { HUB_ENVIRONMENT_ID } from "../../contracts/index.ts";
 
@@ -14,6 +15,8 @@ export function ProjectGlyph({
 
   projectName?: string | null;
 }): ReactElement {
+  const bootstrap = useContext(ClientContext)?.account;
+  const saved = bootstrap?.projects.find((project) => project.id === projectId)?.project_icon;
   return (
     <ProjectFavicon
       project={{
@@ -21,7 +24,7 @@ export function ProjectGlyph({
         workspaceRoot: projectId ?? "",
         title: projectName ?? "",
         faviconPath: null,
-        projectIcon: null,
+        projectIcon: saved ?? null,
       }}
       className={className}
     />

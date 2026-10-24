@@ -209,6 +209,7 @@ func readNativeProject(ctx context.Context, query nativeQueryer, scope nativeSco
 	if err != nil {
 		return project, err
 	}
+	project.Icon = integration.Icon
 	project.Repository = integration.Repository
 	if project.Repository == "" {
 		project.Repository = integration.CheckoutRepository

@@ -1,3 +1,4 @@
+import type { ProjectIconChoice } from "../../contracts/projectIcon.ts";
 import { AccessKeys, CreatedAccessKey, KeyContext, KeyPolicy, OAuthGrants, type CreateAccessKey, type PersonalKeyPolicy } from "../../contracts/accessKeys.ts";
 import { CloudModelSelection, type CloudSelection } from "../../contracts/account.ts";
 import { IssueIntake, type IntakeCommand } from "../../contracts/githubIntake.ts";
@@ -362,6 +363,8 @@ export function makeAccountApi(options: AccountApiOptions) {
       send(ProjectSecretStatus, "DELETE", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`),
     integration: (projectId: string) =>
       send(ProjectIntegration, "GET", `${project(projectId)}/integration`),
+    setProjectIcon: (input: { projectId: string; icon: ProjectIconChoice; content?: string; revision: string; key: string }) =>
+      send(ProjectIntegration, "PUT", `${project(input.projectId)}/icon`, { icon: input.icon, content_base64: input.content, expected_revision: input.revision, idempotency_key: input.key }),
     renameProject: (input: { projectId: string; name: string; revision: string; key: string }) =>
       send(ProjectIntegration, "PATCH", project(input.projectId), { name: input.name, expected_revision: input.revision, idempotency_key: input.key }),
     deleteProject: (input: { projectId: string; name: string; key: string }) =>

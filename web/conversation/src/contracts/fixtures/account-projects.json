@@ -4,6 +4,11 @@
     "name": "example-project",
     "slug": "example-project",
     "profile": "native",
+    "project_icon": {
+      "kind": "lucide",
+      "name": "rocket",
+      "color": "emerald"
+    },
     "can_write": true,
     "can_manage_runners": true,
     "capabilities": {
@@ -69,6 +74,7 @@
     "name": "example-marketing",
     "slug": "example-marketing",
     "profile": "github_compatible",
+    "project_icon": null,
     "can_write": false,
     "can_manage_runners": false,
     "capabilities": {

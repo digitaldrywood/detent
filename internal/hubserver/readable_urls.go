@@ -477,7 +477,7 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 }
 
 func (s *Service) normalizeToolReferences(ctx context.Context, call operatortool.Call) (operatortool.Call, error) {
-	if len(call.Arguments) > operatortool.MaxArgumentBytes {
+	if len(call.Arguments) > operatortool.ArgumentByteLimit(call.Name) {
 		return call, operatortool.ErrInvalidArguments
 	}
 	var fields map[string]json.RawMessage

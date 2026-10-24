@@ -1,3 +1,4 @@
+import { ProjectIcon } from "./projectIcon.ts";
 // Wire contracts for the hosted account surface.
 //
 // These schemas are the client half of `docs/conversation/decisions.md` §12:
@@ -107,6 +108,7 @@ export const ReporterTemplates = Schema.Struct({
 export type ReporterTemplates = typeof ReporterTemplates.Type;
 
 export const AccountProject = Schema.Struct({
+ project_icon: Schema.optional(Schema.NullOr(ProjectIcon)),
   slug: Schema.optional(Schema.String),
   id: Schema.String,
   name: Schema.String,
@@ -296,6 +298,7 @@ export type SupportResponse = typeof SupportResponse.Type;
  * so recovering means re-reading, never guessing.
  */
 export const ProjectIntegration = Schema.Struct({
+ project_icon: Schema.optional(Schema.NullOr(ProjectIcon)),
   name: Schema.optional(Schema.String),
   duplicate_challenge: Schema.optional(Schema.Boolean),
   archive_completed_after_days: Schema.NullOr(Schema.Number),

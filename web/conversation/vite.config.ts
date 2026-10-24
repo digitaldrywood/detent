@@ -396,10 +396,6 @@ export default defineConfig({
       "rehype-raw": fileURLToPath(
         new URL("./src/app/adapters/rehypeRawDisabled.ts", import.meta.url),
       ),
-      // The vendored `ProjectFavicon.tsx` lazily imports lucide's whole icon
-      // map for a branch Detent never takes; the alias keeps that file
-      // byte-identical and keeps 1,588 icon chunks out of the build output.
-      // See `src/browser/lucideDynamicIcon.tsx`.
       "lucide-react/dynamic": fileURLToPath(
         new URL("./src/browser/lucideDynamicIcon.tsx", import.meta.url),
       ),

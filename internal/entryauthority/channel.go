@@ -13,7 +13,7 @@ import (
 )
 
 const BootstrapEnvironment = "DETENT_INTERNAL_ENTRY_AUTHORITY"
-const BootstrapVersion = "v1:3:4"
+const BootstrapVersion = "v1:3:5"
 const contentTimeout = 15 * time.Second
 
 type Binding struct {
@@ -76,9 +76,11 @@ type Archives struct {
 	Contents attachment.ArchiveContentStore
 	Content  ContentHandler
 	Details  attachment.DetailStore
+	Icons    attachment.IconStore
 }
 
 type authorityServer struct {
+	icons          attachment.IconStore
 	binding        Binding
 	budget         time.Duration
 	resolve        func(Request) (cloudassert.Claims, error)
@@ -164,6 +166,9 @@ func Start(ctx context.Context, binding Binding, budget time.Duration, resolve R
 				return archives[0].Reader(lookup, request.Reference, request.Presign)
 			}
 		}
+	}
+	if len(archives) == 1 {
+		authority.icons = archives[0].Icons
 	}
 	if len(archives) == 1 && archives[0].Details != nil {
 		details := archives[0].Details

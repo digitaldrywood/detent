@@ -47,7 +47,7 @@ var smokeSkipped = strings.Fields(`
  approve_change_review_policy bind_artifact_service
 `)
 
-var smokeWrites = strings.Fields(`file_issue edit_item add_comment edit_comment move_item set_dependency order_item set_queue_priority archive_item restore_item set_priority update_project_integration rename_project`)
+var smokeWrites = strings.Fields(`file_issue edit_item add_comment edit_comment move_item set_dependency order_item set_queue_priority archive_item restore_item set_priority update_project_integration rename_project set_project_icon`)
 var errSmokeFixture = errors.New("smoke resource fixture unavailable")
 
 var smokeReadSkips = map[string]string{
@@ -894,6 +894,38 @@ func (s *mcpSmoke) integration(ctx context.Context) error {
 	for _, key := range []string{"name", "intake", "projection", "repository_enabled"} {
 		if saved[key] != current[key] {
 			return fmt.Errorf("rename_project: unchanged %s was modified", key)
+		}
+	}
+	if err := json.Unmarshal(s.mcp.tools["set_project_icon"].InputSchema, &schema); err != nil {
+		return err
+	}
+	value, err = smokeRevisionArgument(schema.Properties["expected_revision"], revision)
+	if err != nil {
+		return err
+	}
+	icon := map[string]any{"kind": "lucide", "name": "rocket", "color": "blue"}
+	if _, err := s.call(ctx, "set_project_icon", map[string]any{"organization_id": s.fixtures["organization_id"], "project_id": s.project, "icon": icon, "expected_revision": value}); err != nil {
+		return err
+	}
+	result, err = s.call(ctx, "get_project_integration", map[string]any{"project_id": s.project})
+	if err != nil {
+		return err
+	}
+	updated, ok := result["data"].(map[string]any)
+	if !ok {
+		return errors.New("set_project_icon: missing updated data")
+	}
+	next, err = smokeRevision(updated)
+	if err != nil || next <= revision {
+		return errors.Join(errors.New("set_project_icon: revision did not advance"), err)
+	}
+	chosen, ok := updated["project_icon"].(map[string]any)
+	if !ok || !maps.Equal(chosen, icon) {
+		return errors.New("set_project_icon: saved icon does not match")
+	}
+	for _, key := range []string{"name", "intake", "projection", "repository_enabled"} {
+		if updated[key] != saved[key] {
+			return fmt.Errorf("set_project_icon: unchanged %s was modified", key)
 		}
 	}
 	return nil

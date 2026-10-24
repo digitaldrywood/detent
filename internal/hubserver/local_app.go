@@ -177,6 +177,11 @@ func (s *Service) localAppProjects(ctx context.Context, credential apiCredential
 		if err := s.database.authorizeNativeProject(ctx, nativeScope{organization: tracker.OrganizationID(s.localOrganization), project: tracker.ProjectID(project.ID), credential: credential}); err != nil {
 			return nil, err
 		}
+		icon, err := readProjectIcon(ctx, s.database.reader, nativeScope{organization: tracker.OrganizationID(s.localOrganization), project: tracker.ProjectID(project.ID)})
+		if err != nil {
+			return nil, err
+		}
+		project.Icon = projectIconOverride(icon)
 		project.CanWrite, project.CanManageRunners = true, true
 		projects = append(projects, project)
 	}

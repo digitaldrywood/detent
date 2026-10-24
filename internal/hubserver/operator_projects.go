@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -33,7 +34,7 @@ func projectToolScope(name string, read bool) apikey.Scope {
 		return apikey.ScopeRead
 	}
 	switch name {
-	case "apply_local_project_policy", "resume_local_project", "drain_local_project", "detach_local_project", "command_git_hub_batch", "create_native_project", "create_hosted_project", "rename_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret", "import_sprite_usage", operatortool.UpdateSpritePool, operatortool.UpdateProjectSpriteAllocation:
+	case "apply_local_project_policy", "resume_local_project", "drain_local_project", "detach_local_project", "command_git_hub_batch", "create_native_project", "create_hosted_project", "rename_project", "set_project_icon", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret", "import_sprite_usage", operatortool.UpdateSpritePool, operatortool.UpdateProjectSpriteAllocation:
 		return apikey.ScopeAdmin
 	}
 	return apikey.ScopeWrite
@@ -152,12 +153,38 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 		}
 		call.Arguments = raw
 	}
+	if call.Name == "set_project_icon" {
+		var args operatortool.SetProjectIconArguments
+		if err := operatortool.DecodeProjectArguments(call.Arguments, &args); err != nil {
+			return result, err
+		}
+		if args.OrganizationID != connection.Identity.OrganizationID {
+			return result, operatortool.ErrAccessDenied
+		}
+		if args.Icon.Kind == "image" {
+			normalized, err := projecticon.Normalize(args.Content)
+			if err != nil {
+				return result, operatortool.ErrInvalidArguments
+			}
+			args.Content = normalized
+		}
+		raw, err := json.Marshal(operatortool.ProjectRequest[operatortool.SetProjectIconInput]{ProjectID: args.ProjectID, RequestID: args.RequestID, Input: operatortool.SetProjectIconInput{Icon: args.Icon, Content: args.Content, ExpectedRevision: args.ExpectedRevision}})
+		if err != nil {
+			return result, err
+		}
+		call.Arguments = raw
+	}
+
 	var selector struct {
 		ProjectID string          `json:"project_id"`
 		RequestID string          `json:"request_id"`
 		Input     json.RawMessage `json:"input"`
 	}
-	if err := operatortool.DecodeProjectArguments(call.Arguments, &selector); err != nil {
+	selectorErr := operatortool.DecodeProjectArguments(call.Arguments, &selector)
+	if call.Name == "set_project_icon" {
+		selectorErr = json.Unmarshal(call.Arguments, &selector)
+	}
+	if err := selectorErr; err != nil {
 		return result, err
 	}
 	if strings.TrimSpace(selector.RequestID) == "" {
@@ -258,7 +285,7 @@ func (e hubProjectExecutor) ExecuteAction(ctx context.Context, action chatpkg.Ac
 	ctx = mutation.WithContext(ctx, action.Mutation)
 	result, err := e.command(ctx, operatortool.Call{Name: string(action.Kind), Arguments: action.Arguments}, projectCommandExecute)
 	if err != nil {
-		if action.Kind == "rename_project" {
+		if action.Kind == "rename_project" || action.Kind == "set_project_icon" {
 			if conflict := operatorNativeConflict(err); conflict != nil {
 				return chatpkg.ActionExecution{}, conflict
 			}
@@ -490,6 +517,23 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		request := renameProjectRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Name: r.Input.Name, ExpectedRevision: r.Input.ExpectedRevision}
 		input = request
 		operation = s.renameProjectOperation(request)
+	case "set_project_icon":
+		r, err := projectCommandInput[operatortool.SetProjectIconInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		if mode == projectCommandPreview {
+			return nil, nil
+		}
+		scope.project = tracker.ProjectID(r.ProjectID)
+		scope.requireHostedAdmin = true
+		request := setProjectIconRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Icon: r.Input.Icon, Content: r.Input.Content, ExpectedRevision: r.Input.ExpectedRevision}
+		if mode == projectCommandReplay {
+			raw, _, err := s.nativeCommandReplay(ctx, scope, projectOperationID(scope, "PUT", "/icon"), r.RequestID, request)
+			return raw, err
+		}
+		return s.setProjectIconCommand(ctx, scope, request)
+
 	case "update_project_integration":
 		r, err := projectCommandInput[operatortool.IntegrationInput](call.Arguments)
 		if err != nil {

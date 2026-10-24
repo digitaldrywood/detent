@@ -189,6 +189,7 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 				hosted.SharedEntry.ArchiveContents = authority
 				hosted.SharedEntry.Content = authority.Content
 				hosted.SharedEntry.RunDetails = authority
+				hosted.SharedEntry.Icons = authority
 			}
 			var conversation *hubserver.ConversationConfig
 			if hosted != nil {

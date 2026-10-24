@@ -722,6 +722,7 @@ export function ChangeRequestPage(): React.ReactElement {
     <>
       <WorkTopBar
         context={data?.project.name ?? project?.name ?? "Work"}
+ projectId={projectId}
         title={data?.change.change.title ?? "Change Request"}
         identifier={
           data === null

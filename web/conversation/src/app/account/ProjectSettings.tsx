@@ -1,3 +1,4 @@
+import { ProjectIconSettings } from "./ProjectIconSettings.tsx";
 import { SlugSettings } from "./Organization.tsx";
 import { ModelSelectionSettings } from "./ModelSelectionSettings.tsx";
 import React from "react";
@@ -393,6 +394,7 @@ function ProjectIdentitySettings({ integration, fallbackName, canManage, project
   });
   useProjectSettingsDirty(name !== current);
   return <SettingsSection title="Identity" variant="grouped">
+ <ProjectIconSettings projectId={projectId} projectName={current} integration={integration} canManage={canManage} onSaved={onSaved} onReload={onReload} />
     <SettingsRow title="Project name" control={
       <div className="flex flex-col gap-2">
         {canManage ? <div className="flex min-w-0 items-center gap-2">

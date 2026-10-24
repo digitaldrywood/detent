@@ -9,6 +9,7 @@
     "build:gallery": "vite build --config vite.gallery.config.ts --mode gallery",
     "preview:gallery": "vite preview --config vite.gallery.config.ts --mode gallery --outDir dist-gallery",
     "typecheck": "tsc --noEmit",
+    "generate:project-icons": "node --import tsx scripts/project-icons.ts",
     "test": "vitest run",
     "design:catalog": "node --import tsx scripts/design-catalog.ts",
     "design:catalog:check": "node --import tsx scripts/design-catalog.ts --check",

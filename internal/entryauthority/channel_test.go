@@ -16,6 +16,63 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
 
+type iconChannelStore struct{ calls chan IconRequest }
+
+func (s iconChannelStore) PutIcon(ctx context.Context, organization, id string, content []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.calls <- IconRequest{Organization: organization, ID: id, Content: append([]byte{}, content...)}
+	return nil
+}
+
+func TestIconAuthorityChannel(t *testing.T) {
+	for _, test := range []struct {
+		name, organization string
+		content            []byte
+		valid              bool
+	}{
+		{"first", "org_example", []byte("normalized PNG one"), true},
+		{"second", "org_example", []byte("normalized PNG two"), true},
+		{"foreign", "org_other", []byte("foreign PNG"), false},
+		{"oversized", "org_example", make([]byte, 256*1024+1), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			binding := Binding{Issuer: "entry", Organization: "org_example", Generation: 2}
+			store := iconChannelStore{calls: make(chan IconRequest, 1)}
+			parent, err := Start(t.Context(), binding, time.Second, nil, Archives{Icons: store})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := parent.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			client := &Client{client: rpc.NewClient(channel{reader: parent.Files[0], writer: parent.Files[1], budget: time.Second}), budget: time.Second, organization: binding.Organization}
+			t.Cleanup(func() {
+				if err := client.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			_, err = callAuthority[bool](t.Context(), client, "PutIcon", IconRequest{Organization: test.organization, ID: "att_0123456789abcdef0123456789abcdef", Content: test.content, Deadline: time.Now().Add(time.Second)})
+			if (err == nil) != test.valid {
+				t.Fatalf("PutIcon = %v, valid=%v", err, test.valid)
+			}
+			select {
+			case got := <-store.calls:
+				if !test.valid || !bytes.Equal(got.Content, test.content) || got.Organization != test.organization {
+					t.Fatalf("unexpected upload %+v", got)
+				}
+			default:
+				if test.valid {
+					t.Fatal("upload never reached the store")
+				}
+			}
+		})
+	}
+}
+
 func TestArchiveAuthorityChannel(t *testing.T) {
 	for _, scenario := range []string{"read", "signed read", "foreign organization", "expired deadline", "oversized section"} {
 		t.Run(scenario, func(t *testing.T) {

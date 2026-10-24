@@ -138,7 +138,8 @@ export type ProjectIconColor =
 /** `orchestration.ts`: a project's saved icon override. */
 export type ProjectIconOverride =
   | { readonly kind: "emoji"; readonly emoji: string }
-  | { readonly kind: "lucide"; readonly name: string; readonly color: ProjectIconColor };
+  | { readonly kind: "lucide"; readonly name: string; readonly color: ProjectIconColor }
+ | { readonly kind: "image"; readonly url: string };
 
 /** `ipc.ts`: an entry in the desktop context menu. Never built in a browser. */
 export interface ContextMenuItem<T extends string = string> {

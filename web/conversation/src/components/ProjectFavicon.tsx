@@ -36,6 +36,7 @@ import { projectFaviconUrlAtom } from "../state/assets";
 import { selectProjectIcon, type ProjectIconName } from "../projectIconModel";
 import { projectIconColorClassName } from "../projectIconColors";
 import { cn } from "~/lib/utils";
+import { hubPath } from "../runtime/basePath.ts";
 
 const DynamicIcon = lazy(() =>
   import("lucide-react/dynamic").then((module) => ({ default: module.DynamicIcon })),
@@ -117,7 +118,10 @@ export function ProjectFavicon(input: {
       faviconPath: project.faviconPath,
     }),
   );
-  if (project.projectIcon?.kind === "emoji") {
+  if (project.projectIcon?.kind === "image") {
+ return <img src={hubPath(project.projectIcon.url)} alt="" className={cn("size-3.5 shrink-0 rounded-sm object-cover",input.className)} />;
+ }
+ if (project.projectIcon?.kind === "emoji") {
     return <ProjectFaviconFallback className={input.className} emoji={project.projectIcon.emoji} />;
   }
   if (project.projectIcon?.kind === "lucide") {

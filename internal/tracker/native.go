@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/workpad"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -510,17 +511,18 @@ type NativeWorkLane struct {
 type NativeState = policy.State
 
 type NativeProject struct {
-	CloneURL            string          `json:"clone_url,omitempty"`
-	Repository          string          `json:"repository,omitempty"`
-	Slug                string          `json:"slug"`
-	ModelSelection      json.RawMessage `json:"model_selection,omitempty"`
-	WorkflowMarkdown    string          `json:"workflow_markdown,omitempty"`
-	ID                  ProjectID       `json:"project_id"`
-	OrganizationID      OrganizationID  `json:"organization_id"`
-	Name                string          `json:"name"`
-	Profile             string          `json:"profile"`
-	States              []NativeState   `json:"states"`
-	RequireDependencies bool            `json:"require_dependencies"`
+	Icon                *projecticon.Icon `json:"project_icon"`
+	CloneURL            string            `json:"clone_url,omitempty"`
+	Repository          string            `json:"repository,omitempty"`
+	Slug                string            `json:"slug"`
+	ModelSelection      json.RawMessage   `json:"model_selection,omitempty"`
+	WorkflowMarkdown    string            `json:"workflow_markdown,omitempty"`
+	ID                  ProjectID         `json:"project_id"`
+	OrganizationID      OrganizationID    `json:"organization_id"`
+	Name                string            `json:"name"`
+	Profile             string            `json:"profile"`
+	States              []NativeState     `json:"states"`
+	RequireDependencies bool              `json:"require_dependencies"`
 }
 
 type NativeClaim struct {

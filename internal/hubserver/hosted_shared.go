@@ -32,6 +32,7 @@ type HostedSharedEntry struct {
 	ArchiveContents attachment.ArchiveContentStore
 	Content         entryauthority.ContentHandler
 	RunDetails      attachment.DetailStore
+	Icons           attachment.IconStore
 	ReadArchive     entryauthority.ArchiveReader
 
 	verifier *cloudassert.Verifier

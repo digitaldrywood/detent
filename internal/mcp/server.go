@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	maxFrameBytes      = operatortool.MaxArgumentBytes + 64*1024
+	maxFrameBytes      = operatortool.ProjectIconArgumentBytes + 64*1024
 	codeParseError     = -32700
 	codeInvalidRequest = -32600
 	codeMethodNotFound = -32601
@@ -412,7 +412,7 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 	if len(params.Arguments) == 0 {
 		params.Arguments = json.RawMessage(`{}`)
 	}
-	if !isJSONObject(params.Arguments) || len(params.Arguments) > operatortool.MaxArgumentBytes {
+	if !isJSONObject(params.Arguments) || len(params.Arguments) > operatortool.ArgumentByteLimit(params.Name) {
 		return s.writeError(message.ID, codeInvalidParams, "Tool arguments must be a JSON object within the size limit", nil)
 	}
 

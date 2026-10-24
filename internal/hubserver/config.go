@@ -48,6 +48,7 @@ type Config struct {
 	ArchiveReader                  entryauthority.ArchiveReader
 	content                        entryauthority.ContentHandler
 	RunDetails                     attachment.DetailStore
+	Icons                          attachment.IconStore
 	RunnerReleaseClient            update.ReleaseClient
 	runnerReleaseSignatureVerifier update.ChecksumSignatureVerifier
 	SecretKeys                     *hubsecrets.Keyring

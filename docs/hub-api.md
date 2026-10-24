@@ -123,6 +123,38 @@ through Cloud's shared entry. The opaque link opts out of that issue without
 requiring a session and is safe to repeat. The shared entry forwards the token
 through the signed service boundary; it does not read or change issue content.
 
+## Project icons
+
+`PUT /api/v2/organizations/:organization/projects/:project/icon` uses the same
+project administration permission and integration revision as project rename.
+Send `idempotency_key`, `expected_revision` (a decimal string), and `icon`:
+
+- `{ "kind": "automatic" }` resets to the name-based icon.
+- `{ "kind": "lucide", "name": "rocket", "color": "emerald" }` selects an icon.
+- `{ "kind": "emoji", "emoji": "🚀" }` selects one Unicode grapheme.
+- `{ "kind": "image" }` requires `content_base64` containing the image bytes.
+
+The response is the updated project integration. Bootstrap and project reads
+return `project_icon`, null for automatic, or the selected icon. Image icons
+include an authenticated attachment `url`; image keys and digests are server
+owned. A stale revision returns `revision_conflict`; callers reload before saving.
+The organization-scoped MCP tool `set_project_icon` accepts the same icon and
+content, with `organization_id`, `project_id`, `expected_revision` and `request_id`.
+
+Uploads use byte signatures for PNG, JPEG and WebP, refuse SVG, GIF and animated
+WebP, and allow at most 256 KiB. Each side must be 64–1024 px and the larger
+side may be at most 1.1 times the smaller side. Dimensions are checked before
+pixel decoding. The Hub center-crops and re-encodes a 128×128 PNG without
+metadata. Only those normalized bytes reach the existing attachment store.
+Replacing or resetting an image tombstones its attachment in the same project
+transaction; the existing attachment deletion owner removes the stored object
+and releases its storage usage. Unpublished upload objects use the existing
+orphan cleanup. The attachment proxy retains project authorization.
+
+The Lucide allowlist is pinned to the client lockfile. After a Lucide upgrade,
+run `npm run generate:project-icons` in `web/conversation` and stage the resulting
+`internal/projecticon/lucide.txt` with the lockfile.
+
 ## Project deletion
 
 Cloud owners and admins with a write grant on the selected project can call

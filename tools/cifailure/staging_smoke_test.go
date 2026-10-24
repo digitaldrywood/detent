@@ -197,8 +197,12 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 		unconfirmed                                   bool
 		triageFirst                                   bool
 		challenge                                     string
+		iconFailure                                   string
 	}{
 		{name: "approved policy"},
+		{name: "icon not persisted", iconFailure: "missing", failure: true},
+		{name: "icon revision unchanged", iconFailure: "revision", failure: true},
+		{name: "icon changes project name", iconFailure: "name", failure: true},
 		{name: "prior smoke duplicate", challenge: "valid"},
 		{name: "dependency duplicate", challenge: "dependency"},
 		{name: "live dependency duplicate", challenge: "live dependency", failure: true},
@@ -228,6 +232,7 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 			revision := int64(0)
 			commentRevision := int64(0)
 			integrationRevision := int64(1)
+			var projectIcon map[string]any
 			archived := false
 			calls := map[string]int{}
 			var filing map[string]any
@@ -372,9 +377,24 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 					}
 				case "get_project_integration":
 					result["data"] = map[string]any{"name": "Smoke project", "revision": strconv.FormatInt(integrationRevision, 10), "intake": "manual", "projection": "native", "repository_enabled": false}
+					result["data"].(map[string]any)["project_icon"] = projectIcon
+					if calls["set_project_icon"] > 0 && test.iconFailure == "name" {
+						result["data"].(map[string]any)["name"] = "Changed project"
+					}
 					if test.automaticIntake {
 						result["data"].(map[string]any)["intake"] = "automatic"
 					}
+				case "set_project_icon":
+					if args["organization_id"] != "org_smoke" || args["project_id"] != "prj_smoke" || args["expected_revision"] != strconv.FormatInt(integrationRevision, 10) || !reflect.DeepEqual(args["icon"], map[string]any{"kind": "lucide", "name": "rocket", "color": "blue"}) {
+						t.Fatalf("icon arguments: %v", args)
+					}
+					if test.iconFailure != "missing" {
+						projectIcon = args["icon"].(map[string]any)
+					}
+					if test.iconFailure != "revision" {
+						integrationRevision++
+					}
+					result = map[string]any{"id": "action_integration", "status": "succeeded", "result": `{}`}
 				case "rename_project":
 					if args["name"] != "Smoke project" || args["project_id"] != "prj_smoke" || args["expected_revision"] != strconv.FormatInt(integrationRevision, 10) {
 						t.Fatalf("rename arguments: %v", args)
@@ -524,6 +544,9 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 				if test.unconfirmed {
 					failedTool = operatortool.EditItem
 				}
+				if test.iconFailure != "" {
+					failedTool = "set_project_icon"
+				}
 				if err == nil || !strings.Contains(err.Error(), failedTool) {
 					t.Fatalf("unexpected smoke verdict: %v", err)
 				}
@@ -540,7 +563,11 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 			} else if err != nil {
 				t.Fatal(err, output.String())
 			}
-			if commentRevision != 2 || integrationRevision != 3 || calls[operatortool.SetDependency] != 2 || calls[operatortool.WorkItem] != 1 || !gaps && (!archived || calls[operatortool.RestoreItem] != 1 || calls[operatortool.ArchiveItem] != 2) {
+			wantIntegrationRevision := int64(4)
+			if test.iconFailure == "revision" {
+				wantIntegrationRevision = 3
+			}
+			if commentRevision != 2 || integrationRevision != wantIntegrationRevision || calls["set_project_icon"] != 1 || calls[operatortool.SetDependency] != 2 || calls[operatortool.WorkItem] != 1 || !gaps && (!archived || calls[operatortool.RestoreItem] != 1 || calls[operatortool.ArchiveItem] != 2) {
 				t.Fatalf("incomplete cycle: calls=%v comment=%d integration=%d archived=%t", calls, commentRevision, integrationRevision, archived)
 			}
 			if gaps && !strings.Contains(output.String(), "expected hosted gap (#615)") {

@@ -1,3 +1,4 @@
+import { ProjectIcon } from "./projectIcon.ts";
 // Wire contracts for the Detent conversation product.
 //
 // These schemas are the client half of `docs/conversation/decisions.md` §5.
@@ -846,6 +847,7 @@ export const BootstrapState = Schema.Struct({
 export type BootstrapState = typeof BootstrapState.Type;
 
 export const BootstrapProject = Schema.Struct({
+ project_icon: Schema.optional(Schema.NullOr(ProjectIcon)),
   id: Schema.String,
   name: Schema.String,
   can_write: Schema.Boolean,

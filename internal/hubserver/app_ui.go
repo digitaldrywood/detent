@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/readableurl"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -367,6 +368,7 @@ type appBootstrapActor struct {
 }
 
 type appBootstrapProject struct {
+	Icon             *projecticon.Icon             `json:"project_icon"`
 	ID               string                        `json:"id"`
 	Slug             string                        `json:"slug"`
 	Name             string                        `json:"name"`
@@ -737,6 +739,11 @@ ORDER BY p.name,p.id`, kind, owner, kind, owner, s.config.Hosted.OrganizationID,
 			project.CanManageRunners = project.CanManageRunners && hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeAdmin)
 		}
 
+		icon, err := readProjectIcon(ctx, s.database.reader, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project.ID)})
+		if err != nil {
+			return nil, err
+		}
+		project.Icon = projectIconOverride(icon)
 		project.CanWrite = project.CanWrite && !viewer
 		project.CanManageRunners = project.CanManageRunners && !viewer
 		projects = append(projects, project)
