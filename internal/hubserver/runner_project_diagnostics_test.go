@@ -82,6 +82,31 @@ func TestRunnerAdmissionPublishesNativeDecision(t *testing.T) {
 	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE type='scheduler.decision'").Scan(&count); err != nil || count != 2 {
 		t.Fatalf("repeated or mismatched observations changed history: count=%d error=%v", count, err)
 	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	for _, stage := range []string{"legacy", "converted"} {
+		if stage == "legacy" {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE collaboration_events SET scheduler_outcome=NULL,scheduler_reason='',scheduler_source='',scheduler_runner_id='' WHERE organization_id=? AND project_id=? AND type='scheduler.decision'`, scope.organization, scope.project); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := f.service.convertSchedulerDecisions(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		for _, issue := range []tracker.NativeIssue{first, second} {
+			event, err := latestNativeRuntimeEvent(t.Context(), f.service.database.reader, scope, string(issue.WorkItemID), "scheduler.decision", "skipped")
+			if err != nil || event.Data.Decision == nil || event.Data.Decision.RunnerID != r.binding.RunnerID {
+				t.Fatalf("%s scheduler selection: %+v %v", stage, event, err)
+			}
+			raw, err := previousSchedulingDecision(t.Context(), f.service.database.reader, scope, string(issue.WorkItemID), *event.Data.Decision)
+			if err != nil || raw == "" {
+				t.Fatalf("%s scheduler deduplication: %s %v", stage, raw, err)
+			}
+			newer, err := hasNewerRunnerDecision(t.Context(), f.service.database.reader, scope, string(issue.WorkItemID), r.binding.RunnerID, now.Add(-time.Second))
+			if err != nil || !newer {
+				t.Fatalf("%s newer decision: %v %v", stage, newer, err)
+			}
+		}
+	}
+
 }
 
 func TestRunnerProjectDiagnosticOwner(t *testing.T) {
@@ -171,6 +196,7 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 		f.service.database.now = func() time.Time { return received }
 		view.Diagnostics.Records[1].LeaseExpiresAt = now.Add(time.Second)
 		defer func() { view.Diagnostics.Records[1].LeaseExpiresAt = now.Add(-time.Hour) }()
+		view.Paused = true
 		advanced := false
 		timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) {
 			if strings.HasPrefix(query, "SELECT json_extract(routing_settings_json, '$.project_configuration_request')") {
@@ -197,6 +223,17 @@ WHERE r.id = ? AND o.project_id = ?`, "$."+jsonPathKey(view.ProjectID), r.bindin
 		}
 		if snapshot.Diagnostics == nil || len(snapshot.Diagnostics.Records) != 1 || snapshot.Diagnostics.Records[0].Key != "local:5" {
 			t.Fatalf("stored diagnostics retained expired record: %s", raw)
+		}
+		if !snapshot.Paused {
+			t.Fatal("stored configuration lost simultaneous pause change")
+		}
+		projected, err := readRunnerBoardProjection(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, r.binding.RunnerID, "wi_unmatched")
+		if err != nil || projected.Diagnostics == nil || len(projected.Diagnostics.Records) != 1 || projected.Diagnostics.Records[0].Key != "local:5" {
+			t.Fatalf("typed diagnostics disagree with stored snapshot: %+v %v", projected.Diagnostics, err)
+		}
+		var expired int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM runner_project_diagnostic_attempts WHERE organization_id=? AND runner_id=? AND project_id=? AND record_key<>?`, f.project.OrganizationID, r.binding.RunnerID, f.project.ID, "local:5").Scan(&expired); err != nil || expired != 0 {
+			t.Fatalf("typed diagnostics retained expired records: %d %v", expired, err)
 		}
 		wantDigest, err := projectConfigurationDigest(snapshot)
 		if err != nil {

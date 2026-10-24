@@ -67,7 +67,45 @@ func persistAttemptLanding(ctx context.Context, tx *sql.Tx, attempt string, rece
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET data_json=json_set(data_json, '$.runtime.landing', json(?)) WHERE id=?", raw, attempt); err != nil {
+	var document, status string
+	if err := tx.QueryRowContext(ctx, "SELECT data_json,status FROM native_attempts WHERE id=?", attempt).Scan(&document, &status); err != nil {
+		return err
+	}
+	var data tracker.NativeRunData
+	if err := json.Unmarshal([]byte(document), &data); err != nil {
+		return err
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(document), &object); err != nil {
+		return err
+	}
+	var runtime map[string]json.RawMessage
+	if value := object["runtime"]; len(value) > 0 && string(value) != "null" {
+		if err := json.Unmarshal(value, &runtime); err != nil {
+			return err
+		}
+	}
+	if runtime == nil {
+		runtime = map[string]json.RawMessage{}
+	}
+	runtime["landing"] = json.RawMessage(raw)
+	encodedRuntime, err := json.Marshal(runtime)
+	if err != nil {
+		return err
+	}
+	object["runtime"] = encodedRuntime
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET data_json=? WHERE id=?", string(encoded), attempt); err != nil {
+		return err
+	}
+	if data.Runtime == nil {
+		data.Runtime = &tracker.NativeRuntimeObservation{}
+	}
+	data.Runtime.Landing = &receipt
+	if err := updateAttemptHotProjection(ctx, tx, attempt, status, data); err != nil {
 		return err
 	}
 	if receipt.VersionID == "" {
@@ -81,7 +119,7 @@ ON CONFLICT(attempt_id) DO UPDATE SET version_id=excluded.version_id, record_jso
 func recordLandingTransition(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, from string) error {
 	var attempt string
 	var raw sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT id, json_extract(data_json, '$.runtime.landing') FROM native_attempts
+	err := tx.QueryRowContext(ctx, `SELECT id, data_json FROM native_attempts
 WHERE organization_id=? AND project_id=? AND work_item_id=?
 ORDER BY fencing_token DESC LIMIT 1`, scope.organization, scope.project, issue.WorkItemID).Scan(&attempt, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -93,10 +131,14 @@ ORDER BY fencing_token DESC LIMIT 1`, scope.organization, scope.project, issue.W
 	if !raw.Valid {
 		return nil
 	}
-	var receipt tracker.NativeLandingReceipt
-	if err := json.Unmarshal([]byte(raw.String), &receipt); err != nil {
+	var data tracker.NativeRunData
+	if err := json.Unmarshal([]byte(raw.String), &data); err != nil {
 		return err
 	}
+	if data.Runtime == nil || data.Runtime.Landing == nil {
+		return nil
+	}
+	receipt := *data.Runtime.Landing
 	if receipt.FromState != from || receipt.TargetState != "" {
 		return nil
 	}

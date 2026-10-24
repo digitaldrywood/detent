@@ -191,8 +191,8 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 	}
 	if current != nil {
 		issue := current.Issue
-		var rank int
-		if err := tx.QueryRowContext(ctx, "SELECT COALESCE((SELECT CAST(key AS INTEGER) FROM json_each(states_json) WHERE json_extract(value,'$.name')=?),2147483647) FROM projects WHERE id=?", issue.State, issue.ProjectID).Scan(&rank); err != nil {
+		rank, err := readNativeBoardRank(ctx, tx, string(issue.ProjectID), issue.State)
+		if err != nil {
 			return err
 		}
 		priority := 4

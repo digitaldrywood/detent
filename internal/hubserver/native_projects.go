@@ -154,8 +154,8 @@ func (s *Service) createNativeProjectOperation(request createNativeProjectReques
 		if _, err := tx.ExecContext(ctx, "UPDATE organizations SET scheduling_revision = scheduling_revision + 1 WHERE id = ?", project.OrganizationID); err != nil {
 			return nil, err
 		}
-		for _, state := range project.States {
-			if _, err := tx.ExecContext(ctx, "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now)); err != nil {
+		for rank, state := range project.States {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at, board_rank) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now), rank); err != nil {
 				return nil, err
 			}
 		}
@@ -283,10 +283,10 @@ WHERE i.project_id=? AND NOT EXISTS (SELECT 1 FROM json_each(?) s WHERE json_ext
 	if occupied != 0 {
 		return nativeWorkflowInvalid("Workflow states used by work items cannot be removed")
 	}
-	for _, state := range states {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,source_name) DO UPDATE SET terminal=excluded.terminal,dispatchable=excluded.dispatchable,updated_at=excluded.updated_at
-WHERE workflow_states.terminal IS NOT excluded.terminal OR workflow_states.dispatchable IS NOT excluded.dispatchable`, scope.project, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now)); err != nil {
+	for rank, state := range states {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at,board_rank)
+VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id,source_name) DO UPDATE SET terminal=excluded.terminal,dispatchable=excluded.dispatchable,updated_at=excluded.updated_at,board_rank=excluded.board_rank
+WHERE workflow_states.terminal IS NOT excluded.terminal OR workflow_states.dispatchable IS NOT excluded.dispatchable OR workflow_states.board_rank IS NOT excluded.board_rank`, scope.project, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now), rank); err != nil {
 			return err
 		}
 	}

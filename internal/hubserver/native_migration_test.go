@@ -24,13 +24,15 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
 	var before tracker.Page[tracker.CollaborationEvent]
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &before)
-	// Exercise migration 59 alone. Current fixtures include forward-only migrations
-	// whose deployment rollback requires a binary supporting their schema version.
 	data, err := migrationFiles.ReadFile("migrations/00059_native_runtime_evidence.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	migrations := fstest.MapFS{"00059_native_runtime_evidence.sql": &fstest.MapFile{Data: data}}
+	projection, err := migrationFiles.ReadFile("migrations/20261023234600_scheduler_projections.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrations := fstest.MapFS{"00059_native_runtime_evidence.sql": &fstest.MapFile{Data: data}, "20261023234600_scheduler_projections.sql": &fstest.MapFile{Data: projection}}
 	const versionTable = "runtime_migration_test_version"
 	provider, err := goose.NewProvider(goose.DialectSQLite3, f.service.database.db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(versionTable), goose.WithSlog(discardLogger()))
 	if err != nil {
@@ -39,9 +41,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if _, _, err := provider.GetVersions(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	// The fixture's event table already has migration 59's shape. Record only
-	// that migration in the isolated ledger, leaving the real schema ledger intact.
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1)"); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1),(20261023234600,1)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := provider.DownTo(t.Context(), 58); err != nil {

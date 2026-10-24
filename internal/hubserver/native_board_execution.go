@@ -14,13 +14,15 @@ import (
 func readNativeBoardExecution(ctx context.Context, q nativeQueryer, scope nativeScope, item string, latest *tracker.NativeAttempt, now time.Time) (*tracker.NativeBoardExecution, error) {
 	var lease, acquired, expires, runner, configuration string
 	var fence uint64
-	err := q.QueryRowContext(ctx, `SELECT l.lease_id,l.fencing_token,l.acquired_at,l.expires_at,coalesce(r.id,''),coalesce(json_extract(r.project_configuration_json,?), '{}')
+	var projected bool
+	err := q.QueryRowContext(ctx, `SELECT l.lease_id,l.fencing_token,l.acquired_at,l.expires_at,coalesce(r.id,''),CASE WHEN o.board_projection_version=1 THEN '{}' ELSE coalesce(r.project_configuration_json, '{}') END,coalesce(o.board_projection_version,0)=1
 FROM issues i JOIN leases l ON l.issue_id=i.id
 LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
 LEFT JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=i.organization_id
 AND EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.project_id=i.project_id)
+LEFT JOIN runner_project_observations o ON o.organization_id=i.organization_id AND o.runner_id=r.id AND o.project_id=i.project_id
 WHERE i.organization_id=? AND i.project_id=? AND i.native_id=? AND l.released_at IS NULL
-AND julianday(l.renewed_at)<=julianday(?) AND julianday(l.expires_at)>julianday(?)`, "$."+jsonPathKey(string(scope.project)), scope.organization, scope.project, item, formatHubTime(now), formatHubTime(now)).Scan(&lease, &fence, &acquired, &expires, &runner, &configuration)
+AND julianday(l.renewed_at)<=julianday(?) AND julianday(l.expires_at)>julianday(?)`, scope.organization, scope.project, item, formatHubTime(now), formatHubTime(now)).Scan(&lease, &fence, &acquired, &expires, &runner, &configuration, &projected)
 	if err != nil {
 		return nil, err
 	}
@@ -48,11 +50,24 @@ AND julianday(l.renewed_at)<=julianday(?) AND julianday(l.expires_at)>julianday(
 		}
 	}
 	var view runnerauth.ProjectConfiguration
-	if err := json.Unmarshal([]byte(configuration), &view); err != nil {
-		return nil, err
-	}
-	if err := overlayProjectConfigurationObservation(ctx, q, scope, runner, &view); err != nil {
-		return nil, err
+	if projected {
+		view, err = readRunnerBoardProjection(ctx, q, scope, runner, item)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		entry, err := projectConfigurationEntry(configuration, string(scope.project))
+		if err != nil {
+			return nil, err
+		}
+		if entry.Valid {
+			if err := json.Unmarshal([]byte(entry.String), &view); err != nil {
+				return nil, err
+			}
+		}
+		if err := overlayProjectConfigurationObservation(ctx, q, scope, runner, &view); err != nil {
+			return nil, err
+		}
 	}
 	d := view.Diagnostics
 	if d == nil || view.ProjectID != string(scope.project) || d.ObservedAt.Before(started) || d.ObservedAt.After(now) {

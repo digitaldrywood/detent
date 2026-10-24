@@ -76,11 +76,23 @@ type storageConversionProgress struct {
 }
 
 func (s *Service) convertLegacyStorage(ctx context.Context, now time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
+	defer cancel()
+	if err := s.convertAttemptHotProjections(ctx); err != nil {
+		return err
+	}
+	if err := s.convertNativeBoardRanks(ctx); err != nil {
+		return err
+	}
+	if err := s.convertSchedulerDecisions(ctx); err != nil {
+		return err
+	}
+	if err := s.convertRunnerBoardProjections(ctx); err != nil {
+		return err
+	}
 	if s.storageArchiveContent() == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
-	defer cancel()
 	ctx = s.contentContext(ctx)
 	rows, err := s.database.reader.QueryContext(ctx, "SELECT organization_id,id FROM projects WHERE profile='native' AND deleted_at IS NULL ORDER BY organization_id,id")
 	if err != nil {

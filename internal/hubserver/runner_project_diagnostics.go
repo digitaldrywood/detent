@@ -82,7 +82,7 @@ func (s *Service) readRunnerProjectDiagnostics(ctx context.Context, scope native
 	if err != nil {
 		return runnerauth.DiagnosticPage{}, err
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT id, json_extract(project_configuration_json, ?) FROM runner_identities WHERE organization_id = ? AND EXISTS(SELECT 1 FROM token_grants WHERE token_id = runner_identities.token_id AND project_id = ?) AND (? = '' OR id = ?) ORDER BY id LIMIT 101", "$."+jsonPathKey(args.ProjectID), scope.organization, scope.project, args.RunnerID, args.RunnerID)
+	rows, err := tx.QueryContext(ctx, "SELECT id, project_configuration_json FROM runner_identities WHERE organization_id = ? AND EXISTS(SELECT 1 FROM token_grants WHERE token_id = runner_identities.token_id AND project_id = ?) AND (? = '' OR id = ?) ORDER BY id LIMIT 101", scope.organization, scope.project, args.RunnerID, args.RunnerID)
 	if err != nil {
 		return runnerauth.DiagnosticPage{}, err
 	}
@@ -96,6 +96,16 @@ func (s *Service) readRunnerProjectDiagnostics(ctx context.Context, scope native
 		var r observation
 		if err := rows.Scan(&r.id, &r.raw); err != nil {
 			return runnerauth.DiagnosticPage{}, err
+		}
+		if r.raw != nil {
+			entry, err := projectConfigurationEntry(*r.raw, args.ProjectID)
+			if err != nil {
+				return runnerauth.DiagnosticPage{}, err
+			}
+			r.raw = nil
+			if entry.Valid {
+				r.raw = &entry.String
+			}
 		}
 		observed = append(observed, r)
 	}

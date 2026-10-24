@@ -326,6 +326,9 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"nativeIssueJSON":              "The mutation response reads back the browser path of the issue this request just wrote.",
 	}
 	transactionReasons := map[string]string{
+		"convertAttemptHotProjection":       "Converts one attempt projection after checking its source row under the write transaction.",
+		"convertNativeBoardRank":            "Converts one project workflow rank set after checking its source under the write transaction.",
+		"convertRunnerBoardRow":             "Converts one runner project diagnostic snapshot after checking its source under the write transaction.",
 		"prepareContents":                   "The request reserves and verifies its own archive catalog rows and storage allowance before uploading content.",
 		"collectIssueEmails":                "Queues notification batches and advances their event cursors atomically.",
 		"claimIssueEmail":                   "Deletes a due notification batch and reads its recipient in the same transaction before delivery.",

@@ -253,22 +253,7 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 		if err != nil || local <= 0 {
 			return e, nativePublicInvalid("Invalid attempt identity")
 		}
-		rows, err := query.QueryContext(ctx, `SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND json_extract(data_json, '$.runtime.local_attempt_id')=?
-UNION SELECT subject_id FROM native_archive_sections WHERE organization_id=? AND project_id=? AND work_item_id=? AND kind='run' AND local_attempt_id=? LIMIT 2`, scope.organization, scope.project, item, local, scope.organization, scope.project, item, local)
-		if err != nil {
-			return e, err
-		}
-		defer rows.Close()
-		var matches []string
-		for rows.Next() {
-			var value string
-			if err := rows.Scan(&value); err != nil {
-				rows.Close()
-				return e, err
-			}
-			matches = append(matches, value)
-		}
-		err = errors.Join(rows.Err(), rows.Close())
+		matches, err := readLocalAttemptMatches(ctx, query, scope, item, local)
 		if err != nil {
 			return e, err
 		}
@@ -453,15 +438,36 @@ func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope native
 	statement := "SELECT id, sequence, type, schema_version, actor_json, data_json, recorded_at FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type=?"
 	args := []any{scope.organization, scope.project, item, kind}
 	if outcome != "" {
-		statement += " AND json_extract(data_json, '$.decision.outcome')=?"
+		statement += " AND (scheduler_outcome=? OR scheduler_outcome IS NULL)"
 		args = append(args, outcome)
 	}
-	err := q.QueryRowContext(ctx, statement+" ORDER BY sequence DESC LIMIT 1", args...).Scan(&e.ID, &e.AggregateSequence, &e.Type, &e.SchemaVersion, &actor, &data, &at)
-	if errors.Is(err, sql.ErrNoRows) {
-		return tracker.CollaborationEvent{}, nil
-	}
+	rows, err := q.QueryContext(ctx, statement+" ORDER BY sequence DESC", args...)
 	if err != nil {
 		return tracker.CollaborationEvent{}, err
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		if err := rows.Scan(&e.ID, &e.AggregateSequence, &e.Type, &e.SchemaVersion, &actor, &data, &at); err != nil {
+			return tracker.CollaborationEvent{}, err
+		}
+		if outcome != "" {
+			var projection tracker.CollaborationData
+			if err := json.Unmarshal([]byte(data), &projection); err != nil {
+				return tracker.CollaborationEvent{}, err
+			}
+			if projection.Decision == nil || projection.Decision.Outcome != outcome {
+				continue
+			}
+		}
+		found = true
+		break
+	}
+	if err := rows.Err(); err != nil {
+		return tracker.CollaborationEvent{}, err
+	}
+	if !found {
+		return tracker.CollaborationEvent{}, nil
 	}
 	if err := json.Unmarshal([]byte(actor), &e.Actor); err != nil {
 		return tracker.CollaborationEvent{}, err
@@ -541,16 +547,7 @@ func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativ
 		data.Change = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: change.CurrentVersion, HeadSHA: version.HeadSHA}
 	}
 	if decision.Outcome != "claimed" {
-		var raw string
-		err := tx.QueryRowContext(ctx, `SELECT data_json FROM collaboration_events
-WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='scheduler.decision'
-AND coalesce(json_extract(data_json, '$.decision.runner_id'), '')=?
-AND ((?='skipped' AND json_extract(data_json, '$.decision.outcome')='skipped' AND json_extract(data_json, '$.decision.reason')=?)
- OR (?<>'skipped' AND json_extract(data_json, '$.decision.source')=?))
-AND sequence > coalesce((SELECT max(sequence) FROM collaboration_events
- WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='scheduler.decision'
- AND json_extract(data_json, '$.decision.outcome')='claimed'), 0)
-ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, item, decision.RunnerID, decision.Outcome, decision.Reason, decision.Outcome, decision.Source, scope.organization, scope.project, item).Scan(&raw)
+		raw, err := previousSchedulingDecision(ctx, tx, *scope, item, decision)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}

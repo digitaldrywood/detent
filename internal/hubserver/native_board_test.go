@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -177,6 +178,29 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 					endpoint, status = "/release", http.StatusNoContent
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+endpoint, w.worker, mutation), status)
+				if test.name != "typed heartbeat" && test.name != "wrong project" {
+					scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+					legacy, legacyErr := readNativeBoardExecution(t.Context(), service.database.reader, scope, string(issue.WorkItemID), nil, now)
+					tx, err := service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := tx.ExecContext(t.Context(), `INSERT INTO runner_project_observations(organization_id,runner_id,project_id,observed_at,diagnostics_observed_at,runtime_observed_at,snapshot_digest) VALUES(?,?,?,?,?,?,?)`, scope.organization, r.binding.RunnerID, scope.project, formatHubTime(view.ObservedAt), formatHubTime(view.Diagnostics.ObservedAt), formatHubTime(view.Diagnostics.RuntimeObservedAt), "board-fixture-"+string(f.project.ID)); err != nil {
+						tx.Rollback()
+						t.Fatal(err)
+					}
+					if err := storeRunnerBoardProjection(t.Context(), tx, scope, r.binding.RunnerID, view); err != nil {
+						tx.Rollback()
+						t.Fatal(err)
+					}
+					if err := tx.Commit(); err != nil {
+						t.Fatal(err)
+					}
+					projected, projectedErr := readNativeBoardExecution(t.Context(), service.database.reader, scope, string(issue.WorkItemID), nil, now)
+					if !reflect.DeepEqual(legacy, projected) || !errors.Is(projectedErr, legacyErr) {
+						t.Fatalf("legacy execution=%+v err=%v; projected=%+v err=%v", legacy, legacyErr, projected, projectedErr)
+					}
+				}
 				drainTestNativeBoard(t, service)
 				var rawCard string
 				if err := service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM native_board_items WHERE work_item_id=?", issue.WorkItemID).Scan(&rawCard); err != nil {

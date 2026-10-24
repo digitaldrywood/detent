@@ -46,8 +46,7 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 	if err := authorizeNativeProject(ctx, tx, scope); err != nil {
 		return operatortool.Result{}, err
 	}
-	path := "$." + jsonPathKey(args.ProjectID)
-	rows, err := tx.QueryContext(ctx, "SELECT id, json_extract(project_configuration_json, ?), routing_settings_json FROM runner_identities WHERE organization_id = ? AND json_type(project_configuration_json, ?) = 'object'", path, scope.organization, path)
+	rows, err := tx.QueryContext(ctx, "SELECT id, project_configuration_json, routing_settings_json FROM runner_identities WHERE organization_id = ?", scope.organization)
 	if err != nil {
 		return operatortool.Result{}, err
 	}
@@ -63,6 +62,14 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 		if err := rows.Scan(&item.runner, &item.raw, &item.settings); err != nil {
 			return operatortool.Result{}, err
 		}
+		entry, err := projectConfigurationEntry(item.raw, args.ProjectID)
+		if err != nil {
+			return operatortool.Result{}, err
+		}
+		if !entry.Valid {
+			continue
+		}
+		item.raw = entry.String
 		observations = append(observations, item)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
@@ -281,6 +288,9 @@ type preparedProjectConfiguration struct {
 	policy       string
 	legacyRaw    sql.NullString
 	legacyDigest string
+	document     sql.NullString
+	replacement  string
+	mapRevision  int64
 }
 
 func (s *Service) prepareProjectConfiguration(ctx context.Context, scope nativeScope, observation *runnerauth.ProjectConfiguration, now time.Time) (preparedProjectConfiguration, error) {
@@ -333,7 +343,6 @@ func encodeProjectConfiguration(view runnerauth.ProjectConfiguration) (preparedP
 
 func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, scope nativeScope, prepared preparedProjectConfiguration, preparedIssuer projectConfigurationIssuer, now time.Time) (runnerauth.ProjectConfigurationRequest, error) {
 	observation := prepared.view
-	path := "$." + jsonPathKey(string(scope.project))
 	if observation != nil {
 		if observation.Diagnostics != nil {
 			if pruneExpiredProjectDiagnostics(observation.Diagnostics, now) {
@@ -342,24 +351,31 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 					return runnerauth.ProjectConfigurationRequest{}, err
 				}
 				prepared.digest, prepared.raw = encoded.digest, encoded.raw
+				if prepared.document.Valid {
+					prepared.replacement, err = replaceProjectConfigurationEntry(prepared.document.String, string(scope.project), prepared.raw)
+					if err != nil {
+						return runnerauth.ProjectConfigurationRequest{}, err
+					}
+				}
 			}
 			for _, admission := range observation.Diagnostics.Admissions {
 				if admission.Result != "skipped" || admission.WorkItemRevision <= 0 || admission.ObservedAt.After(now) {
 					continue
 				}
 				var id tracker.WorkItemID
-				err := tx.QueryRowContext(ctx, `SELECT id FROM issues
-WHERE organization_id=? AND project_id=? AND native_id=? AND revision=?
-AND NOT EXISTS (SELECT 1 FROM collaboration_events
- WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='scheduler.decision'
- AND json_extract(data_json, '$.decision.runner_id')=? AND recorded_at>?)`,
-					scope.organization, scope.project, admission.IssueID, admission.WorkItemRevision,
-					scope.organization, scope.project, admission.IssueID, scope.credential.Runner.RunnerID, formatHubTime(admission.ObservedAt)).Scan(&id)
+				err := tx.QueryRowContext(ctx, `SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=? AND revision=?`, scope.organization, scope.project, admission.IssueID, admission.WorkItemRevision).Scan(&id)
 				if errors.Is(err, sql.ErrNoRows) {
 					continue
 				}
 				if err != nil {
 					return runnerauth.ProjectConfigurationRequest{}, err
+				}
+				newer, err := hasNewerRunnerDecision(ctx, tx, scope, admission.IssueID, scope.credential.Runner.RunnerID, admission.ObservedAt)
+				if err != nil {
+					return runnerauth.ProjectConfigurationRequest{}, err
+				}
+				if newer {
+					continue
 				}
 				if err := recordNativeSchedulingOutcome(ctx, tx, &scope, id, tracker.NativeSchedulerDecision{Source: "native_runner_admission", Outcome: admission.Result, Reason: admission.Predicate}, admission.ObservedAt); err != nil {
 					return runnerauth.ProjectConfigurationRequest{}, err
@@ -375,10 +391,15 @@ AND NOT EXISTS (SELECT 1 FROM collaboration_events
 			}
 		}
 	}
-	var pending bool
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM runner_identities WHERE organization_id = ? AND id = ? AND json_extract(routing_settings_json, '$.project_configuration_request.request.project_id') = ?)", scope.organization, scope.credential.Runner.RunnerID, scope.project).Scan(&pending); err != nil {
+	var settingsRaw string
+	if err := tx.QueryRowContext(ctx, "SELECT routing_settings_json FROM runner_identities WHERE organization_id=? AND id=?", scope.organization, scope.credential.Runner.RunnerID).Scan(&settingsRaw); err != nil {
 		return runnerauth.ProjectConfigurationRequest{}, err
 	}
+	var pendingSettings runnerSettings
+	if err := json.Unmarshal([]byte(settingsRaw), &pendingSettings); err != nil {
+		return runnerauth.ProjectConfigurationRequest{}, err
+	}
+	pending := pendingSettings.ProjectConfigurationCommand != nil && pendingSettings.ProjectConfigurationCommand.Request.ProjectID == string(scope.project)
 	if !pending {
 		return runnerauth.ProjectConfigurationRequest{}, nil
 	}
@@ -431,12 +452,12 @@ AND NOT EXISTS (SELECT 1 FROM collaboration_events
 		return finish(*observation)
 	}
 	refuse := func() (runnerauth.ProjectConfigurationRequest, error) {
-		var raw string
-		if err := tx.QueryRowContext(ctx, "SELECT json_extract(project_configuration_json, ?) FROM runner_identities WHERE organization_id = ? AND id = ?", path, scope.organization, r.RunnerID).Scan(&raw); err != nil {
+		raw, err := readProjectConfigurationEntry(ctx, tx, scope, r.RunnerID)
+		if err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		var view runnerauth.ProjectConfiguration
-		if err := json.Unmarshal([]byte(raw), &view); err != nil {
+		if err := json.Unmarshal([]byte(raw.String), &view); err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		if err := overlayProjectConfigurationObservation(ctx, tx, scope, r.RunnerID, &view); err != nil {
@@ -497,11 +518,17 @@ func projectConfigurationDigest(view runnerauth.ProjectConfiguration) (string, e
 
 func prepareLegacyProjectConfiguration(ctx context.Context, q nativeQueryer, scope nativeScope, prepared preparedProjectConfiguration) (preparedProjectConfiguration, error) {
 	var document sql.NullString
-	err := q.QueryRowContext(ctx, `SELECT CASE WHEN o.snapshot_digest IS NULL THEN r.project_configuration_json END
+	var legacy bool
+	err := q.QueryRowContext(ctx, `SELECT CASE WHEN o.snapshot_digest IS NULL OR o.snapshot_digest<>? THEN r.project_configuration_json END,o.snapshot_digest IS NULL,r.project_configuration_revision
 FROM runner_identities r LEFT JOIN runner_project_observations o
 ON o.organization_id=r.organization_id AND o.runner_id=r.id AND o.project_id=?
-WHERE r.organization_id=? AND r.id=?`, scope.project, scope.organization, scope.credential.Runner.RunnerID).Scan(&document)
+WHERE r.organization_id=? AND r.id=?`, prepared.digest, scope.project, scope.organization, scope.credential.Runner.RunnerID).Scan(&document, &legacy, &prepared.mapRevision)
 	if err != nil || !document.Valid {
+		return prepared, err
+	}
+	prepared.document = document
+	prepared.replacement, err = replaceProjectConfigurationEntry(document.String, string(scope.project), prepared.raw)
+	if err != nil || !legacy {
 		return prepared, err
 	}
 	var projects map[string]json.RawMessage
@@ -513,11 +540,11 @@ WHERE r.organization_id=? AND r.id=?`, scope.project, scope.organization, scope.
 		return prepared, nil
 	}
 	prepared.legacyRaw = sql.NullString{String: string(entry), Valid: true}
-	var legacy runnerauth.ProjectConfiguration
-	if err := json.Unmarshal([]byte(prepared.legacyRaw.String), &legacy); err != nil {
+	var observation runnerauth.ProjectConfiguration
+	if err := json.Unmarshal([]byte(prepared.legacyRaw.String), &observation); err != nil {
 		return preparedProjectConfiguration{}, err
 	}
-	prepared.legacyDigest, err = projectConfigurationDigest(legacy)
+	prepared.legacyDigest, err = projectConfigurationDigest(observation)
 	return prepared, err
 }
 
@@ -537,13 +564,14 @@ func storePreparedProjectConfiguration(ctx context.Context, tx *sql.Tx, scope na
 	view, digest := prepared.view, prepared.digest
 	runner := scope.credential.Runner.RunnerID
 	var previous string
-	err := tx.QueryRowContext(ctx, "SELECT snapshot_digest FROM runner_project_observations WHERE organization_id = ? AND runner_id = ? AND project_id = ?", scope.organization, runner, scope.project).Scan(&previous)
+	var boardVersion int
+	err := tx.QueryRowContext(ctx, "SELECT snapshot_digest,board_projection_version FROM runner_project_observations WHERE organization_id = ? AND runner_id = ? AND project_id = ?", scope.organization, runner, scope.project).Scan(&previous, &boardVersion)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	if errors.Is(err, sql.ErrNoRows) && prepared.legacyRaw.Valid {
-		var raw sql.NullString
-		if err := tx.QueryRowContext(ctx, "SELECT json_extract(project_configuration_json, ?) FROM runner_identities WHERE organization_id = ? AND id = ?", "$."+jsonPathKey(string(scope.project)), scope.organization, runner).Scan(&raw); err != nil {
+		raw, err := readProjectConfigurationEntry(ctx, tx, scope, runner)
+		if err != nil {
 			return err
 		}
 		if raw == prepared.legacyRaw {
@@ -551,8 +579,29 @@ func storePreparedProjectConfiguration(ctx context.Context, tx *sql.Tx, scope na
 		}
 	}
 	if previous != digest {
-		if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET project_configuration_json = json_set(project_configuration_json, ?, json(?)) WHERE organization_id = ? AND id = ?", "$."+jsonPathKey(string(scope.project)), prepared.raw, scope.organization, runner); err != nil {
-			return err
+		var updated int64
+		if prepared.document.Valid {
+			result, err := tx.ExecContext(ctx, "UPDATE runner_identities SET project_configuration_json=?,project_configuration_revision=project_configuration_revision+1 WHERE organization_id=? AND id=? AND project_configuration_revision=?", prepared.replacement, scope.organization, runner, prepared.mapRevision)
+			if err != nil {
+				return err
+			}
+			updated, err = result.RowsAffected()
+			if err != nil {
+				return err
+			}
+		}
+		if updated == 0 {
+			var document string
+			if err := tx.QueryRowContext(ctx, "SELECT project_configuration_json FROM runner_identities WHERE organization_id=? AND id=?", scope.organization, runner).Scan(&document); err != nil {
+				return err
+			}
+			raw, err := replaceProjectConfigurationEntry(document, string(scope.project), prepared.raw)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET project_configuration_json=?,project_configuration_revision=project_configuration_revision+1 WHERE organization_id=? AND id=?", raw, scope.organization, runner); err != nil {
+				return err
+			}
 		}
 	}
 	var diagnostics, runtime any
@@ -569,7 +618,13 @@ ON CONFLICT (organization_id, runner_id, project_id) DO UPDATE SET
 observed_at = excluded.observed_at, diagnostics_observed_at = excluded.diagnostics_observed_at,
 runtime_observed_at = excluded.runtime_observed_at, snapshot_digest = excluded.snapshot_digest`,
 		scope.organization, runner, scope.project, formatHubTime(view.ObservedAt), diagnostics, runtime, digest)
-	return err
+	if err != nil {
+		return err
+	}
+	if previous != digest || boardVersion != 1 {
+		return storeRunnerBoardProjection(ctx, tx, scope, runner, *view)
+	}
+	return nil
 }
 
 func overlayProjectConfigurationObservation(ctx context.Context, q nativeQueryer, scope nativeScope, runner string, view *runnerauth.ProjectConfiguration) error {
