@@ -1239,10 +1239,6 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 		result, err = r.Validate(ctx, request)
 	}
 	if err != nil {
-		var decisionErr *validatorDecisionError
-		if errors.As(err, &decisionErr) {
-			return err
-		}
 		return fmt.Errorf("%w: acceptance review: %w", ErrValidatorInfrastructure, err)
 	}
 	if decision, stopped := gate.EvaluateValidator(cfg, result); stopped {
@@ -1334,11 +1330,6 @@ func (r *Runner) recordPipeline(req RunRequest, timing gate.PipelineTiming) {
 }
 
 type NativeImplementationReviewError struct{ Err error }
-
-type validatorDecisionError struct{ Err error }
-
-func (e *validatorDecisionError) Error() string { return e.Err.Error() }
-func (e *validatorDecisionError) Unwrap() error { return e.Err }
 
 func (e *NativeImplementationReviewError) Error() string            { return e.Err.Error() }
 func (e *NativeImplementationReviewError) Unwrap() error            { return e.Err }
