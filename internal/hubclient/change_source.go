@@ -57,6 +57,11 @@ func (e *nativeExecution) RecoverChangeSource(ctx context.Context) (workspace.Ch
 		return workspace.ChangeSource{}, err
 	}
 	selected := e.Recovery().SourceVersionID
+	e.mu.Lock()
+	if e.change != nil && e.change.ChangeID == detail.Change.ID && e.change.VersionID != "" {
+		selected = e.change.VersionID
+	}
+	e.mu.Unlock()
 	if selected != "" && selected != detail.Change.CurrentVersion {
 		return workspace.ChangeSource{}, runner.ErrChangeSourceVersionSuperseded
 	}
@@ -68,7 +73,7 @@ func (e *nativeExecution) RecoverChangeSource(ctx context.Context) (workspace.Ch
 			continue
 		}
 		source := workspace.ChangeSource{Version: version}
-		source.Transferred = selected != ""
+		source.Transferred = version.ID == e.Recovery().SourceVersionID
 		for _, previous := range detail.Versions {
 			if previous.Number <= 0 || previous.Number >= version.Number || previous.Repository != version.Repository || previous.Source == nil ||
 				previous.Source.Format != "git-bundle" || previous.Source.HeadSHA != previous.HeadSHA || previous.Source.BaseSHA != previous.BaseSHA ||
