@@ -134,12 +134,12 @@ func (r *Runner) pushCheckpointRef(ctx context.Context, c *checkpointRefs, req R
 	}
 	if pushed {
 		c.last = next
-		state := r.workspaceRecoveryState(c.backend, pushCtx, c.info, c.issue, "checkpoint_ref")
-		if state != nil {
-			checkpoint := executionCheckpoint(state)
-			c.captured = &checkpoint
-		}
 		r.logWorkerEvent(req.Issue, "worker_checkpoint_ref_pushed", "reason", reason, "ref", next.Ref, "commit_sha", next.CommitSHA, "head_sha", next.HeadSHA)
+	}
+	state := r.workspaceRecoveryState(c.backend, pushCtx, c.info, c.issue, "checkpoint_ref")
+	if state != nil {
+		checkpoint := executionCheckpoint(state)
+		c.captured = &checkpoint
 	}
 	return pushed
 }
