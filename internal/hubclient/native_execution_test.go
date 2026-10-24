@@ -598,6 +598,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 		phase        string
 		age          time.Duration
 		terminal     bool
+		landed       bool
 		lane         string
 		dependency   bool
 		pending      bool
@@ -628,6 +629,12 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 		{name: "worker heartbeat stale", phase: "implementation", age: 90 * time.Second},
 		{name: "terminal work item", phase: "implementation", terminal: true},
 		{name: "terminal work item retains running worker cleanup", phase: "implementation", terminal: true, localWorker: true, wantRetained: true},
+		{name: "landing attempt finishes terminal item", phase: "merging", terminal: true, landed: true, wantRenewed: true},
+		{name: "landing receipt does not renew dead worker", phase: "merging", terminal: true, landed: true, age: 90 * time.Second},
+		{name: "landing receipt does not renew mismatched process", phase: "merging", terminal: true, landed: true, localWorker: true, staleProcess: true, wantRetained: true},
+		{name: "recovered landing attempt finishes terminal item", phase: "merging", terminal: true, landed: true, recovered: true, wantRenewed: true},
+		{name: "recovered landing receipt does not renew stale worker", phase: "merging", terminal: true, landed: true, recovered: true, age: 90 * time.Second},
+		{name: "landing receipt preserves operator hold", phase: "merging", lane: "Blocked", landed: true},
 		{name: "recovered completed worker", phase: "completed", recovered: true},
 		{name: "recovered stale worker", phase: "implementation", age: 90 * time.Second, recovered: true},
 		{name: "recovered operator hold", phase: "implementation", lane: "Blocked", recovered: true},
@@ -658,6 +665,9 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 			}
 			h.scheduler.now = func() time.Time { return now }
 			observation := tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: test.phase, HeartbeatAt: now.Add(-test.age), WorkerLaunch: &tracker.NativeWorkerLaunch{PID: identity.PID, GroupID: identity.GroupID, ProcessStart: identity.StartedAt, PolicyID: h.descriptor.ID, ExecutionVersion: "test", ControlVersion: "test", ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), Protocol: 1, SelectedAt: now}}
+			if test.landed {
+				observation.Landing = &tracker.NativeLandingReceipt{Landed: true, ChangeID: "change_landed", VersionID: "version_landed", HeadSHA: strings.Repeat("a", 40), MergeSHA: strings.Repeat("b", 40)}
+			}
 			if test.staleProcess {
 				observation.WorkerLaunch.ProcessStart = identity.StartedAt.Add(time.Second)
 			}
@@ -838,7 +848,7 @@ func TestNativeExecutionContextKeepsItsOriginalFence(t *testing.T) {
 
 func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 	t.Parallel()
-	for _, operation := range []string{"renew", "renew_availability", "release", "release_finish_lost", "release_finish_ack_retry", "lost"} {
+	for _, operation := range []string{"renew", "renew_landed", "renew_availability", "release", "release_finish_lost", "release_finish_ack_retry", "lost"} {
 		t.Run(operation, func(t *testing.T) {
 			descriptor := clientTestPolicy()
 			id := "wi_" + strings.Repeat("a", 32)
@@ -855,6 +865,9 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 				var payload any = policy.Approval{Policy: descriptor}
 				if request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/work-items/") {
 					payload = tracker.NativeIssue{SchedulingEligible: new(true), DependencyReady: true}
+					if operation == "renew_landed" {
+						payload = tracker.NativeIssue{Terminal: true, SchedulingEligible: new(false), DependencyReady: true}
+					}
 				}
 				if strings.HasSuffix(request.URL.Path, "/events") {
 					var event tracker.NativeRunEvent
@@ -907,13 +920,17 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 			scheduler.nativeClaims[id] = nativeClaim{source: source, lease: lease}
 			scheduler.claims[id] = nativeTrackerLease(lease)
 			scheduler.claimPolicies[id] = claimPolicy{project: "project", descriptor: descriptor}
+			if operation == "renew_landed" {
+				execution := scheduler.RunExecution(id).(*nativeExecution)
+				execution.landed = true
+			}
 			switch operation {
 			case "renew_availability":
 				_, err = scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id], 0)
 				if err != nil || !scheduler.nativeClaims[id].availabilityDeadline.Equal(availabilityDeadline) {
 					t.Fatalf("delayed renewal replaced refreshed availability: %v, %v", scheduler.nativeClaims[id].availabilityDeadline, err)
 				}
-			case "renew":
+			case "renew", "renew_landed":
 				_, err = scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id], 0)
 				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
 					t.Fatalf("old renewal = %v", err)
