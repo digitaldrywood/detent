@@ -81,10 +81,6 @@ jobs:
           rulesets="$RUNNER_TEMP/detent-release-rulesets.json"
           default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')"
           default_branch_ref="refs/heads/$default_branch"
-          if [ -z "$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON" ]; then
-            echo "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON must be configured as a JSON array; use [] when there are no release-only checks"
-            exit 1
-          fi
           gh api --paginate --slurp -H "Accept: application/vnd.github+json" \
             "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=all&per_page=100" |
             jq '{total_count: .[0].total_count, check_runs: [.[].check_runs[]]}' > "$check_runs"
@@ -93,7 +89,7 @@ jobs:
           scripts/collect-release-rulesets.sh "$GITHUB_REPOSITORY" "$rulesets"
           release_tag="$GITHUB_REF_NAME"
           git fetch --force origin "+refs/tags/$release_tag:refs/tags/$release_tag"
-          DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="$(jq -c 'if type == "array" then . + ["scheduled-full-ci"] | unique else error("release requirements must be a JSON array") end' <<< "$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON")"
+          DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="$(jq -c 'if type == "array" then . + ["scheduled-full-ci", "release-security-audit"] | unique else error("release requirements must be a JSON array") end' <<< "${DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON:-[]}")"
           test "$(git cat-file -t "refs/tags/$release_tag")" = tag
           git for-each-ref --format='%(contents)' "refs/tags/$release_tag" > "$tag_message"
           go run ./tools/releaseprovenance \

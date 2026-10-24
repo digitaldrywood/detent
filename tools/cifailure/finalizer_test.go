@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/releaseprovenance"
 )
 
 func TestScheduledFinalizer(t *testing.T) {
@@ -19,30 +21,41 @@ func TestScheduledFinalizer(t *testing.T) {
 		t.Skip("jq is required for the scheduled shell fixture")
 	}
 	for _, tt := range []struct {
-		name, repository         string
-		requirements, auditState string
-		awaitsStatus             bool
-		failed, unavailable      bool
-		unchanged                bool
-		cancelledRun             bool
-		cancelledJob             bool
-		timedOutJob              bool
-		workflowCancelled        bool
-		develop                  bool
-		staleHead                bool
-		newSeries                bool
-		differentSeries          bool
-		releaseRun               bool
-		newerFailure             bool
-		preflightSkipped         bool
+		name, repository                                                      string
+		requirements, auditState                                              string
+		awaitsStatus                                                          bool
+		missingAudit, wrongSHA, superseded, oldProvenance, rejectReuse, unset bool
+		failed, unavailable                                                   bool
+		unchanged                                                             bool
+		cancelledRun                                                          bool
+		cancelledJob                                                          bool
+		timedOutJob                                                           bool
+		workflowCancelled                                                     bool
+		develop                                                               bool
+		staleHead                                                             bool
+		newSeries                                                             bool
+		differentSeries                                                       bool
+		releaseRun                                                            bool
+		newerFailure                                                          bool
+		preflightSkipped                                                      bool
 	}{
 		{name: "missing release dispatch recovered without recreating tag", repository: "digitaldrywood/detent", unchanged: true},
 		{name: "existing release workflow is not redispatched", repository: "digitaldrywood/detent", unchanged: true, releaseRun: true},
 		{name: "newer release failure blocks existing tag dispatch", repository: "digitaldrywood/detent", unchanged: true, newerFailure: true},
-		{name: "required status missing", repository: "digitaldrywood/detent", requirements: `["release-security-audit"]`, awaitsStatus: true},
+		{name: "required status missing", repository: "digitaldrywood/detent", requirements: `["release-security-audit"]`, missingAudit: true, awaitsStatus: true},
 		{name: "required status failure", repository: "digitaldrywood/detent", requirements: `["release-security-audit"]`, auditState: "failure", awaitsStatus: true},
 		{name: "required status success", repository: "digitaldrywood/detent", requirements: `["scheduled-full-ci", "release-security-audit"]`, auditState: "success"},
-		{name: "empty requirements", repository: "digitaldrywood/detent", requirements: `[]`},
+		{name: "empty requirements", repository: "digitaldrywood/detent", requirements: `[]`, missingAudit: true, awaitsStatus: true},
+		{name: "unset requirements still require audit", repository: "digitaldrywood/detent", unset: true, missingAudit: true, awaitsStatus: true},
+		{name: "empty variable still requires audit", repository: "digitaldrywood/detent", missingAudit: true, awaitsStatus: true},
+		{name: "configured extras recorded", repository: "digitaldrywood/detent", requirements: `["extra"]`},
+		{name: "audit on another SHA", repository: "digitaldrywood/detent", wrongSHA: true, awaitsStatus: true},
+		{name: "audit superseded by failure", repository: "digitaldrywood/detent", superseded: true, awaitsStatus: true},
+		{name: "reuse missing audit", repository: "digitaldrywood/detent", unchanged: true, missingAudit: true, rejectReuse: true},
+		{name: "reuse old provenance", repository: "digitaldrywood/detent", unchanged: true, oldProvenance: true, rejectReuse: true},
+		{name: "reuse failed audit", repository: "digitaldrywood/detent", unchanged: true, auditState: "failure", rejectReuse: true},
+		{name: "reuse superseded audit", repository: "digitaldrywood/detent", unchanged: true, superseded: true, rejectReuse: true},
+		{name: "reuse another SHA", repository: "digitaldrywood/detent", unchanged: true, wrongSHA: true, rejectReuse: true},
 		{name: "native green evidence", repository: "digitaldrywood/detent"},
 		{name: "develop records evidence without tagging", repository: "digitaldrywood/detent", develop: true},
 		{name: "preflight skip reports activity without validation publication", repository: "digitaldrywood/detent", develop: true, preflightSkipped: true},
@@ -103,14 +116,7 @@ case "$*" in
   *'/runs/123/artifacts?per_page=100'*) printf '7\n' ;;
   *'-X DELETE '*'/actions/artifacts/7') ;;
   *'/statuses/'*) printf '123\n' ;;
-  *'/commits/'*'/status')
-    if [ -n "$FIXTURE_AUDIT_STATE" ]; then
-      printf '{"sha":"%s","statuses":[{"context":"release-security-audit","state":"%s"}]}\n' "$CI_DEVELOP_SHA" "$FIXTURE_AUDIT_STATE"
-    elif [ "$FIXTURE_NEWER_FAILURE" = true ]; then
-      printf '{"sha":"%s","statuses":[{"context":"scheduled-full-ci","id":124,"state":"failure"}]}\n' "$CI_DEVELOP_SHA"
-    else
-      printf '{"sha":"%s","statuses":[{"context":"scheduled-full-ci","id":123,"state":"success"}]}\n' "$CI_DEVELOP_SHA"
-    fi ;;
+  *'/commits/'*'/status?per_page=100') cat "$FIXTURE_STATUSES" ;;
   *'/workflows/release.yml/runs?'*)
     if [ "$FIXTURE_RELEASE_RUN" = true ]; then
       printf '[{"workflow_runs":[{"head_branch":"v1.2.3"}]}]\n'
@@ -130,7 +136,7 @@ case "$*" in
   'tag --list '*) if [ "$FIXTURE_NEW_SERIES" = false ]; then printf 'v1.2.3\n'; fi ;;
   'tag --points-at '*) if [ "$FIXTURE_UNCHANGED" = true ] && [[ "$*" == *'v1.2.*'* ]]; then printf 'v1.2.3\n'; fi ;;
   'cat-file -t '*) printf 'tag\n' ;;
-  'for-each-ref '*) printf '<!-- detent-release-provenance:{"schema":1,"repository":"%s","tag":"v1.2.3","commit":"%s","checks":[{"name":"scheduled-full-ci","status":"completed","conclusion":"success","status_id":123}]} -->\n' "$GITHUB_REPOSITORY" "$CI_DEVELOP_SHA" ;;
+  'for-each-ref '*) cat "$FIXTURE_PROVENANCE" ;;
 esac
 `,
 				"go": `#!/usr/bin/env bash
@@ -148,6 +154,45 @@ test "$FIXTURE_UNAVAILABLE" = false
 			}
 			root, err := filepath.Abs(filepath.Join("..", ".."))
 			if err != nil {
+				t.Fatal(err)
+			}
+			sha := scheduledEnv("CI_DEVELOP_SHA")
+			statusSHA := sha
+			if tt.wrongSHA {
+				statusSHA = strings.Repeat("b", 40)
+			}
+			auditState := tt.auditState
+			if auditState == "" {
+				auditState = "success"
+			}
+			statuses := []map[string]any{{"context": "scheduled-full-ci", "id": 123, "state": "success"}}
+			if tt.newerFailure {
+				statuses = append(statuses, map[string]any{"context": "scheduled-full-ci", "id": 124, "state": "failure"})
+			}
+			if !tt.missingAudit {
+				statuses = append(statuses, map[string]any{"context": "release-security-audit", "id": 125, "state": auditState})
+			}
+			if tt.superseded {
+				statuses = append(statuses, map[string]any{"context": "release-security-audit", "id": 126, "state": "failure"})
+			}
+			statuses = append(statuses, map[string]any{"context": "extra", "id": 127, "state": "success"})
+			rawStatuses, err := json.Marshal([]any{map[string]any{"sha": statusSHA, "statuses": statuses}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "statuses"), rawStatuses, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			manifest := releaseprovenance.Manifest{Schema: 1, Repository: tt.repository, Tag: "v1.2.3", Commit: sha,
+				Checks: []releaseprovenance.Check{{Name: "scheduled-full-ci", Status: "completed", Conclusion: "success", StatusID: 123}}}
+			if !tt.oldProvenance {
+				manifest.Checks = append(manifest.Checks, releaseprovenance.Check{Name: "release-security-audit", Status: "completed", Conclusion: "success", StatusID: 125})
+			}
+			annotation, err := releaseprovenance.Annotation(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "provenance"), []byte(annotation), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			command := exec.CommandContext(t.Context(), "bash", "scripts/scheduled-ci-finish.sh")
@@ -168,10 +213,18 @@ test "$FIXTURE_UNAVAILABLE" = false
 			}
 			command.Env = append(command.Env, "CI_RELEASE_BRANCH="+releaseBranch, "FIXTURE_HEAD="+head, "FIXTURE_NEW_SERIES="+map[bool]string{true: "true", false: "false"}[tt.newSeries])
 			command.Env = append(command.Env, "FIXTURE_RELEASE_RUN="+map[bool]string{true: "true", false: "false"}[tt.releaseRun], "FIXTURE_NEWER_FAILURE="+map[bool]string{true: "true", false: "false"}[tt.newerFailure])
-			command.Env = append(command.Env, "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="+tt.requirements, "FIXTURE_AUDIT_STATE="+tt.auditState)
+			command.Env = append(command.Env, "FIXTURE_STATUSES="+filepath.Join(dir, "statuses"), "FIXTURE_PROVENANCE="+filepath.Join(dir, "provenance"))
+			for i := len(command.Env) - 1; i >= 0; i-- {
+				if strings.HasPrefix(command.Env[i], "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON=") {
+					command.Env = append(command.Env[:i], command.Env[i+1:]...)
+				}
+			}
+			if !tt.unset {
+				command.Env = append(command.Env, "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="+tt.requirements)
+			}
 			skipped := tt.cancelledRun || tt.workflowCancelled
 			output, err := command.CombinedOutput()
-			if (err != nil) != ((tt.failed || tt.unavailable || tt.cancelledJob || tt.timedOutJob || tt.newerFailure) && !skipped) {
+			if (err != nil) != ((tt.failed || tt.unavailable || tt.cancelledJob || tt.timedOutJob || tt.newerFailure || tt.rejectReuse) && !skipped) {
 				t.Fatalf("finalizer = %v: %s", err, output)
 			}
 			calls, err := os.ReadFile(filepath.Join(dir, "calls"))
@@ -180,7 +233,7 @@ test "$FIXTURE_UNAVAILABLE" = false
 			}
 			text := string(calls)
 			deleted := strings.Contains(text, "-X DELETE repos/"+tt.repository+"/actions/artifacts/7")
-			wantDeleted := !tt.develop && (skipped || tt.failed || tt.cancelledJob || tt.timedOutJob || tt.staleHead || tt.newerFailure)
+			wantDeleted := !tt.develop && (skipped || tt.failed || tt.cancelledJob || tt.timedOutJob || tt.staleHead || tt.newerFailure || tt.rejectReuse)
 			if deleted != wantDeleted {
 				t.Fatalf("prebuilt artifacts deleted = %v, want %v: %s", deleted, wantDeleted, text)
 			}
@@ -192,6 +245,9 @@ test "$FIXTURE_UNAVAILABLE" = false
 					t.Fatal("cancelled run fetched job failures")
 				}
 				return
+			}
+			if tt.rejectReuse && !strings.Contains(string(output), "refusing to redispatch") {
+				t.Fatalf("missing reuse rejection: %s", output)
 			}
 			if tt.awaitsStatus {
 				if !strings.Contains(string(output), "awaits required status release-security-audit") || !strings.Contains(text, "context=scheduled-full-ci") || strings.Contains(text, "tag -a ") || strings.Contains(text, "/dispatches") || deleted {
@@ -223,7 +279,7 @@ test "$FIXTURE_UNAVAILABLE" = false
 				if strings.Contains(text, "tag -a ") || strings.Contains(text, "/statuses/") {
 					t.Fatalf("existing release evidence was replaced: %s", text)
 				}
-				wantDispatch := !tt.releaseRun && !tt.newerFailure
+				wantDispatch := !tt.releaseRun && !tt.newerFailure && !tt.rejectReuse
 				if strings.Contains(text, "/dispatches") != wantDispatch {
 					t.Fatalf("release dispatch recovery = %v, want %v: %s", !wantDispatch, wantDispatch, text)
 				}
@@ -245,6 +301,33 @@ test "$FIXTURE_UNAVAILABLE" = false
 				}
 				if tt.differentSeries {
 					tag = "v1.3.0"
+				}
+				message, err := os.ReadFile(filepath.Join(dir, "scheduled-ci-tag-message"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				produced, err := releaseprovenance.FromTagMessage(string(message), tt.repository, tag, sha)
+				if err != nil {
+					t.Fatal(err)
+				}
+				evidence := releaseprovenance.GitHubEvidence{RequiredChecks: []releaseprovenance.RepositoryRequirement{{Name: "scheduled-full-ci"}, {Name: "release-security-audit"}}}
+				if tt.requirements == `["extra"]` {
+					evidence.RequiredChecks = append(evidence.RequiredChecks, releaseprovenance.RepositoryRequirement{Name: "extra"})
+				}
+				for _, status := range statuses {
+					evidence.Checks = append(evidence.Checks, releaseprovenance.ObservedCheck{Name: status["context"].(string), Status: "completed", Conclusion: status["state"].(string), Commit: statusSHA, StatusID: int64(status["id"].(int))})
+				}
+				if err := releaseprovenance.VerifyGitHubEvidence(produced, evidence); err != nil {
+					t.Fatalf("finalizer provenance rejected: %v", err)
+				}
+				for i, check := range produced.Checks {
+					if check.Name == "release-security-audit" {
+						produced.Checks = append(produced.Checks[:i], produced.Checks[i+1:]...)
+						break
+					}
+				}
+				if err := releaseprovenance.VerifyGitHubEvidence(produced, evidence); err == nil {
+					t.Fatal("verifier accepted missing audit provenance")
 				}
 				if !strings.Contains(text, "repository tag -a "+tag+" "+scheduledEnv("CI_DEVELOP_SHA")) || !strings.Contains(text, "refs/tags/"+tag) || !strings.Contains(text, "/release.yml/dispatches") {
 					t.Fatalf("scheduled tag evidence lost: %s", text)

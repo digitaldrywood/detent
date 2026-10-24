@@ -65,7 +65,7 @@ func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 		"-github-statuses \"$statuses\"",
 		"-github-rulesets \"$rulesets\"",
 		"DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}",
-		"must be configured as a JSON array; use [] when there are no release-only checks",
+		` . + ["scheduled-full-ci", "release-security-audit"]`,
 		"-required-check-names-json \"$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON\"",
 	} {
 		if !strings.Contains(workflow, marker) {
