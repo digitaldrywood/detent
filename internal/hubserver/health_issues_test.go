@@ -591,7 +591,7 @@ func TestHealthFindingIssueScope(t *testing.T) {
 		comments int
 	}{
 		{name: "initial", active: true},
-		{name: "new evidence", active: true, changed: true, comments: 1},
+		{name: "new signature", active: true, changed: true, comments: 1},
 		{name: "unchanged", active: true, comments: 1},
 		{name: "resolved", comments: 2},
 		{name: "recurrence", active: true, comments: 3},
@@ -599,7 +599,7 @@ func TestHealthFindingIssueScope(t *testing.T) {
 		t.Run(step.name, func(t *testing.T) {
 			now = now.Add(time.Minute)
 			if step.changed {
-				finding.Evidence.Counts["observations"] = 2
+				finding.Evidence.Signatures = []string{"heartbeat failure"}
 			}
 			findings := []healthFinding{repairFinding}
 			if step.active {
@@ -806,7 +806,7 @@ func TestHealthFindingIssueRollback(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			finding.Evidence.Counts["leases"] = 2
+			finding.Severity = "watch"
 			err = f.service.commitHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now.Add(time.Minute), []healthFinding{finding})
 			if err == nil || !strings.Contains(err.Error(), "fixture reporting failure") {
 				t.Fatalf("report error = %v", err)
