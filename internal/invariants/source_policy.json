@@ -44,7 +44,7 @@
     "internal/orchestrator/merge_required_checks.go:blockPersistentlyMissingRequiredChecks": "7684b4dcbcc344f9ed607a61c08350dc86265f6c94633ceba6b6fda20a660c64",
     "internal/orchestrator/merge_revocation.go:escalateMergeRevocationCommentLoss": "b56fc2365a8879135fc3d3c946036c2563869960942d1158a57060172fe0a9d8",
     "internal/orchestrator/merge_revocation.go:routeMergeRevocation": "1b5d434da8cd95d3627a52265cd319018585cb3856628fcd3cb6584aa684d1bd",
-    "internal/orchestrator/native_completion.go:completeNativeChangeRun": "62bdcc3a9b08db8f72a2d7705e904594c3a712ebbf9f5eac9f2ef2650b16baab",
+    "internal/orchestrator/native_completion.go:completeNativeChangeRun": "bf685cd3fa3cbd9f40594d1788430fefd9d01d535d2a0cf0d81ce9892dc06db3",
     "internal/orchestrator/operator_move.go:applyOperatorMove": "0c0ef986e6b52673fb78e66c58a428a3c471a03d4c5158233347acf8be98ee1f",
     "internal/orchestrator/run_completion.go:blockExhaustedMergeWorker": "8bc4e0d9fc3e51fdbfa0a58f207c6086e57238ba3ae6d9de9854e7cecfdaa1cf",
     "internal/orchestrator/run_completion.go:commentObservedLaneTransition": "54fa914f9a030bc27f892d931186ca6f949d6ae2aac8430c233046ff9672769c",
