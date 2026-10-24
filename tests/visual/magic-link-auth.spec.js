@@ -63,7 +63,7 @@ test("magic-link login gates dashboard, API, SSE, and mobile views", async ({ br
     });
     await page.goto(linkMatch[0], { waitUntil: "domcontentloaded" });
     await expect(page).toHaveURL(`${runtime.url}${boardPath}`);
-    await expect.poll(async () => (await context.request.post(`${runtime.url}/api/v1/refresh`)).ok()).toBeTruthy();
+    await expect.poll(async () => (await context.request.post(`${runtime.url}/api/v1/refresh`, { maxRedirects: 0 })).status()).toBe(202);
     await expect(page.getByRole("button", { name: /Kanban demo backlog intake/ })).toBeVisible();
     await eventStream;
 
