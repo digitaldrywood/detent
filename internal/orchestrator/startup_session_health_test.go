@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -25,6 +26,21 @@ import (
 func TestStartupSessionsAppearInStateAndHealth(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
+	}
+
+	digest := policy.Digest([]byte("startup health fixture"))
+	pinnedPolicy := policy.Descriptor{
+		SourceRevision: digest,
+		SourceDigest:   digest,
+		ConfigDigest:   digest,
+		Gates: policy.Gates{
+			Kind: "command", PlanReview: "none", PlanStopDigest: digest,
+			AutomatedReview: "off", MergeMethod: "squash",
+		},
+	}.WithID()
+	metadata, err := json.Marshal(map[string]policy.Descriptor{"policy": pinnedPolicy})
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	for _, validator := range []bool{false, true} {
@@ -43,7 +59,7 @@ func TestStartupSessionsAppearInStateAndHealth(t *testing.T) {
 				issue.PullRequest = &connector.PullRequest{Number: 2487, URL: "https://github.com/digitaldrywood/detent/pull/2487", HeadSHA: "head", State: "OPEN", CIStatus: "success"}
 			}
 			// The previous process died with a code session still recorded as running.
-			attempt, err := db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: "agent", Lane: "Rework", StartedAt: time.Now().Add(-time.Minute), LeaseExpiresAt: time.Now().Add(time.Minute)})
+			attempt, err := db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: "agent", Lane: "Rework", StartedAt: time.Now().Add(-time.Minute), LeaseExpiresAt: time.Now().Add(time.Minute), WorkerMetadataJSON: string(metadata)})
 			if err != nil {
 				t.Fatal(err)
 			}
