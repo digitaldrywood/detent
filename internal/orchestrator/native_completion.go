@@ -74,6 +74,14 @@ func (o *Orchestrator) completeNativeChangeRun(
 		finalState = FinalStateCompleted
 		event.Result.FinalState = FinalStateCompleted
 	}
+	retryReason := terminalAttemptWithoutWorkProductReason
+	retryErrorClass := terminalAttemptWithoutWorkProductReason
+	retryMessage := noWorkProductMessage
+	if change != nil && change.VersionID != "" {
+		retryReason = "state_transition"
+		retryErrorClass = ""
+		retryMessage = "published source requires further work"
+	}
 
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
 		if (preProvider || errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) || errors.Is(event.Err, runpkg.ErrReviewConversationsUnavailable)) && o.handlePreTurnFailure(ctx, state, event, running) {
@@ -105,7 +113,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 		if normalizeState(issue.State) != normalizeState(target) {
 			metadata := workflowLaneMetadata{}
-			if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, target, event.CompletedAt, terminalAttemptWithoutWorkProductReason, metadata); err != nil {
+			if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, target, event.CompletedAt, retryReason, metadata); err != nil {
 				return handoff(fmt.Errorf("move failed native item to %s: %w", target, err))
 			}
 		}
@@ -252,15 +260,15 @@ func (o *Orchestrator) completeNativeChangeRun(
 				return handoff(fmt.Errorf("native workflow allows no retry from %s", issue.State))
 			}
 			if normalizeState(issue.State) != normalizeState(retryState) {
-				if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, retryState, event.CompletedAt, terminalAttemptWithoutWorkProductReason, workflowLaneMetadata{}); err != nil {
+				if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, retryState, event.CompletedAt, retryReason, workflowLaneMetadata{}); err != nil {
 					return handoff(fmt.Errorf("move unfinished native item to %s: %w", retryState, err))
 				}
 			}
 			issue.State = retryState
-			if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(running.Attempt), event.CompletedAt, noWorkProductMessage, running.WorkerHost); err != nil {
+			if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(running.Attempt), event.CompletedAt, retryMessage, running.WorkerHost); err != nil {
 				return handoff(err)
 			}
-			o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, terminalAttemptWithoutWorkProductReason, noWorkProductMessage, "completed", "provider completed; issue acceptance is not recorded", nativeChangeMetadata(change))
+			o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, retryErrorClass, retryMessage, "completed", "provider completed; issue acceptance is not recorded", nativeChangeMetadata(change))
 			o.recordCompletionUsage(ctx, state, event, issue)
 			return true
 		}

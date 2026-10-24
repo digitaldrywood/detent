@@ -6266,16 +6266,22 @@ func TestRunnerValidateRejectsReviewWorkspaceMutation(t *testing.T) {
 		verifyErrAt int
 		turnErr     error
 		reapFailure bool
+		output      string
 	}{
 		{name: "successful review with survivors", heads: []string{"head", "head", "head"}, reapFailure: true},
 		{name: "failed review with survivors", heads: []string{"head", "head", "head"}, reapFailure: true, turnErr: errors.New("review turn failed")},
 		{name: "changed head before cleanup", heads: []string{"head", "other", "head"}},
 		{name: "dirty tree with turn error", heads: []string{"head", "head", "head"}, verifyErrAt: 2, turnErr: errors.New("turn failed")},
 		{name: "changed head after cleanup with turn error", heads: []string{"head", "head", "other"}, turnErr: errors.New("turn failed")},
+		{name: "garbage output", heads: []string{"head", "head", "head"}, output: "not a verdict"},
+		{name: "malformed output", heads: []string{"head", "head", "head"}, output: `{broken} {"verdict":"pass","score":1}`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ws := &reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: tt.heads, verifyErrAt: tt.verifyErrAt}
 			backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 1234}}, {Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","score":1,"summary":"pass"}`}}, result: AgentTurnResult{ThreadID: "thread", TurnID: "turn"}, err: tt.turnErr}
+			if tt.output != "" {
+				backend.updates[1].Delta = tt.output
+			}
 			runner, err := NewRunner(Dependencies{
 				Workflow:  config.Workflow{Config: config.Config{Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{{Name: "validator", Role: RoleValidator, Backend: "codex", Model: "test"}}}}, Prompt: "Review"},
 				Workspace: ws, AgentBackend: backend,
@@ -6289,13 +6295,16 @@ func TestRunnerValidateRejectsReviewWorkspaceMutation(t *testing.T) {
 				}
 				return 0, nil
 			}
-			_, err = runner.Validate(t.Context(), testValidatorRequest(connector.Issue{ID: "issue", Identifier: "owner/repo#1", PullRequest: &connector.PullRequest{Number: 1, BaseSHA: "base", HeadSHA: "head", BranchName: "branch", State: "OPEN"}}))
+			result, err := runner.Validate(t.Context(), testValidatorRequest(connector.Issue{ID: "issue", Identifier: "owner/repo#1", PullRequest: &connector.PullRequest{Number: 1, BaseSHA: "base", HeadSHA: "head", BranchName: "branch", State: "OPEN"}}))
 			if tt.reapFailure {
 				if !errors.Is(err, tt.turnErr) {
 					t.Fatalf("cleanup changed validator outcome: %v, want %v", err, tt.turnErr)
 				}
 			} else if !errors.Is(err, ErrValidatorInfrastructure) {
 				t.Fatalf("Validate() error = %v, want infrastructure failure", err)
+			}
+			if tt.output != "" && (result.Submitted || result.Verdict != "") {
+				t.Fatalf("invalid output produced a verdict: %+v", result)
 			}
 			if ws.afterRun == tt.reapFailure {
 				t.Fatalf("after_run=%t, reap failure=%t", ws.afterRun, tt.reapFailure)
@@ -6909,23 +6918,41 @@ func TestRunnerRunKeepsSuccessfulOutcomeAfterArtifactCleanupFailure(t *testing.T
 	}
 }
 
-func TestParseValidatorResultRejectsMissingOutput(t *testing.T) {
+func TestParseValidatorResult(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		output string
+		name    string
+		output  string
+		wantErr bool
+		verdict string
 	}{
-		{name: "empty", output: ""},
-		{name: "whitespace", output: " \n\t"},
-		{name: "prose without verdict", output: "The change looks good."},
+		{name: "empty", wantErr: true},
+		{name: "whitespace", output: " \n\t", wantErr: true},
+		{name: "prose without verdict", output: "The change looks good.", wantErr: true},
+		{name: "trailing prose with braces", output: "{\"verdict\":\"pass\",\"score\":1}\n\nNote: more context {x}", verdict: "pass"},
+		{name: "fenced object with trailing prose", output: "```json\n{\"verdict\":\"rework\",\"score\":1}\n```\nNote: {x}", verdict: "rework"},
+		{name: "nested and quoted braces", output: `Review: {"verdict":"wait","score":1,"summary":"A } and an escaped \"{\"","findings":[{"body":"{nested}"}]} Note: {x}`, verdict: "wait"},
+		{name: "first verdict wins", output: `{"verdict":"rework","score":1} {"verdict":"pass","score":1}`, verdict: "rework"},
+		{name: "malformed first object", output: `{broken} {"verdict":"pass","score":1}`, wantErr: true},
+		{name: "truncated object", output: `{"verdict":"pass"`, wantErr: true},
+		{name: "absent verdict", output: `{"score":1}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if _, err := parseValidatorResult(tt.output); err == nil {
-				t.Fatal("parseValidatorResult() error = nil, want missing JSON error")
+			result, err := parseValidatorResult(tt.output)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseValidatorResult() error = %v, wantErr %t", err, tt.wantErr)
+			}
+			if result.Verdict != tt.verdict {
+				t.Fatalf("verdict = %q, want %q", result.Verdict, tt.verdict)
+			}
+			if tt.verdict != "pass" {
+				if _, stopped := gate.EvaluateValidator(gate.ValidatorConfig{Enabled: true}, result); !stopped {
+					t.Fatalf("invalid or non-passing verdict approved: %+v", result)
+				}
 			}
 		})
 	}

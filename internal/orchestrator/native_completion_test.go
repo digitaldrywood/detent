@@ -438,6 +438,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "a version waiting for a reviewer goes to review", change: waiting, states: landing, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "published passing version waits for review without implementation redispatch", lifecycle: "review_wait", change: waiting, states: unfinishedWorkflow, humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
 		{name: "published version retains audit infrastructure failure", lifecycle: "review_audit", runErr: fmt.Errorf("%w: landing security audit: unavailable", runpkg.ErrValidatorInfrastructure), finalState: runpkg.FinalStateFailed, change: waiting, states: unfinishedWorkflow, humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
+		{name: "published version retains unparseable validator output", lifecycle: "review_validator", runErr: fmt.Errorf("%w: parse validator result: invalid character", runpkg.ErrValidatorInfrastructure), finalState: runpkg.FinalStateFailed, change: waiting, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
+		{name: "published version retries unparseable validator without completion report", runErr: fmt.Errorf("%w: parse validator result: invalid character", runpkg.ErrValidatorInfrastructure), finalState: runpkg.FinalStateFailed, change: waiting, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, wantState: "Rework", wantSameState: true, wantContinue: true},
 		{name: "published review wait survives retained source in Rework", lifecycle: "review_wait", change: waiting, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
 		{name: "published review wait resumes after Hub timeout", lifecycle: "review_timeout", change: waiting, states: unfinishedWorkflow, sourceState: "In Progress", humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
 		{name: "published review wait receives actionable findings", lifecycle: "review_rework", change: waiting, states: unfinishedWorkflow, sourceState: "In Progress", humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
@@ -825,6 +827,20 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				t.Fatal("nil native result bypassed ordinary continuation ownership")
 			}
 			orch.handleRunResult(t.Context(), &state, event)
+			if change := event.Result.NativeChange; change != nil && change.VersionID != "" {
+				if native, ok := tracker.(*nativeWorkflowConnector); ok {
+					for _, reason := range native.reasonCodes {
+						if reason == terminalAttemptWithoutWorkProductReason {
+							t.Fatal("published version was classified as without work product")
+						}
+					}
+				}
+				for _, receipt := range attempts.completions {
+					if receipt.ErrorClass == terminalAttemptWithoutWorkProductReason {
+						t.Fatal("published version receipt was classified as without work product")
+					}
+				}
+			}
 			if test.machineAttempt > 0 {
 				wantDelay := map[int]time.Duration{3: 80 * time.Second, 4: 160 * time.Second, 5: 300 * time.Second, 8: 300 * time.Second}[test.machineAttempt]
 				assertCompletionMachineRetry(t, orch, state, issue.ID, event.CompletedAt, test.machineAttempt+1, wantDelay)
