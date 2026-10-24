@@ -3,14 +3,17 @@ package hubserver
 import (
 	"bufio"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +67,7 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 		live        bool
 	}{
 		{"implementing", "Implementing", true},
+		{"typed heartbeat", "Implementing", true},
 		{"unknown stage", "Running", true},
 		{"stale runtime", "", false},
 		{"wrong fence", "", false},
@@ -116,7 +120,7 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 				if test.name == "claim only" {
 					records = records[1:]
 				}
-				view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), ObservedAt: now, Diagnostics: &runnerauth.ProjectDiagnostics{ObservedAt: now, RuntimeObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners", Records: records}}
+				view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now, Diagnostics: &runnerauth.ProjectDiagnostics{ObservedAt: now, RuntimeObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners", Records: records}}
 				if test.name == "stale runtime" {
 					view.Diagnostics.RuntimeObservedAt = now.Add(-10 * time.Minute)
 				}
@@ -129,12 +133,31 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 				if test.name == "wrong project" {
 					view.ProjectID = "prj_other"
 				}
+				if _, err := service.database.db.ExecContext(t.Context(), "DELETE FROM runner_project_observations WHERE runner_id = ?", r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				if test.name == "typed heartbeat" {
+					view.ObservedAt = now.Add(-2 * runnerauth.HeartbeatTimeout)
+					view.Diagnostics.ObservedAt, view.Diagnostics.RuntimeObservedAt = view.ObservedAt, view.ObservedAt
+				}
 				raw, err := json.Marshal(map[string]runnerauth.ProjectConfiguration{string(f.project.ID): view})
 				if err != nil {
 					t.Fatal(err)
 				}
 				if _, err := service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET project_configuration_json=? WHERE id=?", string(raw), r.binding.RunnerID); err != nil {
 					t.Fatal(err)
+				}
+				if test.name == "typed heartbeat" {
+					view.Diagnostics.ObservedAt, view.Diagnostics.RuntimeObservedAt = now, now
+					request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view})
+					response := httptest.NewRecorder()
+					timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+						if strings.HasPrefix(query, "UPDATE runner_identities") && strings.Contains(query, "project_configuration_json") {
+							t.Errorf("unchanged legacy snapshot updated configuration: %s", query)
+						}
+					}}
+					service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
+					requireNativeStatus(t, response, http.StatusOK)
 				}
 				if test.name == "provider completed" || test.name == "native completed" {
 					path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"

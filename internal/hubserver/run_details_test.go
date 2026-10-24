@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -25,17 +27,19 @@ type memoryRunDetails struct {
 	data       map[string][]byte
 	fail       bool
 	uploads    int
+	reads      int
 	afterStore func()
 }
 
 func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.fail {
+		m.mu.Unlock()
 		return attachment.ArchiveReference{}, errors.New("upload unavailable")
 	}
 	ref, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(data))
 	if err != nil {
+		m.mu.Unlock()
 		return ref, err
 	}
 	if m.data == nil {
@@ -45,8 +49,10 @@ func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, d
 		m.uploads++
 	}
 	m.data[ref.Key] = bytes.Clone(data)
-	if m.afterStore != nil {
-		m.afterStore()
+	afterStore := m.afterStore
+	m.mu.Unlock()
+	if afterStore != nil {
+		afterStore()
 	}
 	return ref, nil
 }
@@ -57,6 +63,7 @@ func (m *memoryRunDetails) ReadDetail(_ context.Context, organization string, re
 	if ref.Validate(organization) != nil {
 		return nil, attachment.ErrInvalid
 	}
+	m.reads++
 	data, ok := m.data[ref.Key]
 	if !ok {
 		return nil, attachment.ErrInvalid
@@ -526,5 +533,171 @@ func TestNativeBoardRefreshReadsRunDetailReferences(t *testing.T) {
 	}
 	if running != 1 || dirty != 0 {
 		t.Fatalf("background refresh could not read the referenced run detail: running=%d dirty=%d", running, dirty)
+	}
+}
+
+func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
+	t.Parallel()
+	for _, history := range []int{1, 8, 64} {
+		for _, preserves := range []bool{false, true} {
+			t.Run(strconv.Itoa(history)+"/preserves="+strconv.FormatBool(preserves), func(t *testing.T) {
+				store := &memoryRunDetails{}
+				f := newDefaultNativeFixture(t, Config{RunDetails: store})
+				if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+					t.Fatal(err)
+				}
+				issue := f.create(t, "checkpoint history")
+				registered := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+				registered.enroll(t)
+				credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				var first, latest string
+				for i := range history {
+					checkpoint := nativeTestCheckpoint()
+					checkpoint.WorktreeState, checkpoint.Resume = "clean", "fresh_checkout"
+					if preserves && i == 0 {
+						checkpoint.WorktreeState = "dirty"
+					}
+					data := tracker.NativeRunData{Sequence: 1, Handoff: checkpoint, Outcome: "failed"}
+					latest = seedHealthRateAttempt(t, tx, scope, issue, string(registered.binding.MachineID), "failed", data, f.service.config.now(), -1)
+					if i == 0 {
+						first = latest
+					}
+					data.AttemptID, data.RunID = latest, latest
+					if err := tx.QueryRowContext(t.Context(), "SELECT lease_id,fencing_token FROM native_attempts WHERE id=?", latest).Scan(&data.LeaseID, &data.FencingToken); err != nil {
+						t.Fatal(err)
+					}
+					runs := map[string]tracker.NativeRunData{runDetailEntry(data): data}
+					raw, err := json.Marshal(runs)
+					if err != nil {
+						t.Fatal(err)
+					}
+					ref, err := store.StoreDetail(t.Context(), string(scope.organization), raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					ctx := f.service.runDetailContext(t.Context())
+					owner := ctx.Value(runDetailContextKey{}).(*runDetailContext)
+					owner.organization, owner.reference, owner.runs = string(scope.organization), &ref, runs
+					encoded, err := encodeRunDetail(ctx, data, false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					checkpointJSON, err := encodeRunCheckpoint(ctx, data)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,checkpoint_json=? WHERE id=?", encoded, checkpointJSON, latest); err != nil {
+						t.Fatal(err)
+					}
+					if err := recordRunDetailReference(ctx, tx, scope, issue.WorkItemID, data, formatHubTime(f.service.config.now())); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+				wantReads := 1
+				if preserves && history > 1 {
+					wantReads = 2
+				}
+				for _, endpoint := range []string{"runtime", "explanation"} {
+					store.mu.Lock()
+					store.reads = 0
+					store.mu.Unlock()
+					response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/"+endpoint, f.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					store.mu.Lock()
+					reads := store.reads
+					store.mu.Unlock()
+					t.Logf("%s history=%d preserves=%v reads=%d modeled_serial_latency=%s", endpoint, history, preserves, reads, time.Duration(reads)*250*time.Millisecond)
+					if endpoint == "runtime" {
+						var evidence tracker.NativeRuntimeEvidence
+						decodeHubResponse(t, response, &evidence)
+						if evidence.Attempt == nil || evidence.Attempt.AttemptID != latest {
+							t.Fatal("latest attempt lost")
+						}
+						if preserves && (evidence.SourceRecovery == nil || evidence.SourceRecovery.AttemptID != first) {
+							t.Fatal("older preserved source lost")
+						}
+						if !preserves && evidence.SourceRecovery != nil {
+							t.Fatal("clean checkpoint became preserved source")
+						}
+					}
+					if reads != wantReads {
+						t.Errorf("object reads grew with checkpoint history: %d", reads)
+					}
+				}
+
+				var raw string
+				var row int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT rowid,data_json FROM native_attempts WHERE id=?", latest).Scan(&row, &raw); err != nil {
+					t.Fatal(err)
+				}
+				payload := storageJSONPayload{Organization: string(scope.organization), Project: string(scope.project), Family: "native_attempts", Row: row, Data: json.RawMessage(raw)}
+				encoded, err := json.Marshal(payload)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ref, compressed, err := attachment.PrepareArchive(string(scope.organization), 1, bytes.NewReader(encoded))
+				if err != nil {
+					t.Fatal(err)
+				}
+				converted, err := compactStorageJSON([]byte(raw), storageJSONReference{Organization: payload.Organization, Project: payload.Project, Family: payload.Family, Row: row, Reference: ref})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=? WHERE id=?", string(converted), latest); err != nil {
+					t.Fatal(err)
+				}
+				objects := &changeObjectFixture{objects: map[string][]byte{ref.Key: compressed}}
+				contentReads := 0
+				f.service.config.content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+					contentReads++
+					return objects.call(ctx, request)
+				}
+				for _, endpoint := range []string{"runtime", "explanation"} {
+					store.mu.Lock()
+					store.reads = 0
+					store.mu.Unlock()
+					contentReads = 0
+					response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/"+endpoint, f.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					store.mu.Lock()
+					reads := store.reads
+					store.mu.Unlock()
+					t.Logf("%s converted history=%d detail_reads=%d content_reads=%d", endpoint, history, reads, contentReads)
+					if reads != wantReads || contentReads != 1 {
+						t.Errorf("converted runtime read cost: details=%d content=%d", reads, contentReads)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestRunDetailSegmentResolvesPreparedReferenceBeforeCommit(t *testing.T) {
+	t.Parallel()
+	store := &memoryRunDetails{}
+	f := newDefaultNativeFixture(t, Config{RunDetails: store})
+	organization := "org_prepared"
+	ref, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := map[string]tracker.NativeRunData{"attempt_prepared:2": {AttemptID: "attempt_prepared", Sequence: 2}}
+	owner := &runDetailContext{query: f.service.database.reader, store: store, organization: organization, cache: map[string]map[string]tracker.NativeRunData{}, reuse: map[string]*runDetailReference{}, reference: &ref, runs: prepared}
+	ctx := context.WithValue(t.Context(), runDetailContextKey{}, owner)
+	runs, err := readRunDetailSegment(ctx, newRunDetailReference(ref, organization, "attempt_prepared:2"))
+	if err != nil || runs["attempt_prepared:2"].Sequence != 2 {
+		t.Fatalf("prepared detail before commit = %v, %v", runs, err)
 	}
 }

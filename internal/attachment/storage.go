@@ -33,6 +33,7 @@ type Storage interface {
 	Open(context.Context, string) (io.ReadCloser, error)
 	Delete(context.Context, string) error
 	Walk(context.Context, string, func(Object) error) error
+	Stat(context.Context, string) (Object, bool, error)
 }
 
 type Object struct {
@@ -120,6 +121,21 @@ func (s *spaces) Delete(ctx context.Context, key string) error {
 	}
 	_, err = s.client.DeleteObject(ctx, input)
 	return err
+}
+
+func (s *spaces) Stat(ctx context.Context, key string) (Object, bool, error) {
+	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(s.prefix + key)})
+	if err != nil {
+		var api smithy.APIError
+		if errors.As(err, &api) && (api.ErrorCode() == "NotFound" || api.ErrorCode() == "NoSuchKey") {
+			return Object{}, false, nil
+		}
+		return Object{}, false, err
+	}
+	if head.LastModified == nil {
+		return Object{}, false, ErrInvalid
+	}
+	return Object{Key: key, CreatedAt: *head.LastModified}, true, nil
 }
 
 func (s *spaces) Walk(ctx context.Context, prefix string, visit func(Object) error) error {

@@ -28,14 +28,16 @@ func TestTimedConnectionsAttributeStatements(t *testing.T) {
 	}
 	t.Cleanup(func() { reader.Close() })
 	for _, test := range []struct {
-		name     string
-		run      func(context.Context) error
-		holdsTxs int64
+		name       string
+		run        func(context.Context) error
+		holdsTxs   int64
+		statements int
+		commit     bool
 	}{
 		{"writer statement holds the writer", func(ctx context.Context) error {
 			_, err := writer.ExecContext(ctx, "INSERT INTO items(name) VALUES (?)", "item")
 			return err
-		}, 1},
+		}, 1, 1, false},
 		{"reader transaction never counts as writer hold", func(ctx context.Context) error {
 			tx, err := reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 			if err != nil {
@@ -47,7 +49,15 @@ func TestTimedConnectionsAttributeStatements(t *testing.T) {
 				return err
 			}
 			return tx.Commit()
-		}, 0},
+		}, 0, 1, true},
+		{"empty writer transaction attributes commit", func(ctx context.Context) error {
+			tx, err := writer.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+			return tx.Commit()
+		}, 1, 0, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			traced := 0
@@ -56,7 +66,12 @@ func TestTimedConnectionsAttributeStatements(t *testing.T) {
 			if err := test.run(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if hold.txs.Load() != test.holdsTxs || timing.db.Load() <= 0 || traced != 1 {
+			if test.commit {
+				if len(timing.spans) != 1 || timing.spans[0].name != "tx_commit" || timing.db.Load() < int64(timing.spans[0].duration) {
+					t.Fatalf("commit missing from DB time: db=%d spans=%+v", timing.db.Load(), timing.spans)
+				}
+			}
+			if hold.txs.Load() != test.holdsTxs || timing.db.Load() <= 0 || traced != test.statements {
 				t.Fatalf("writer txs=%d db=%d traced=%d", hold.txs.Load(), timing.db.Load(), traced)
 			}
 		})

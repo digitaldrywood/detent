@@ -23,7 +23,7 @@ const runnerIdentitySelect = `SELECT r.id, r.organization_id, r.machine_id, r.to
 r.reported_capacity, r.os, r.architecture, r.last_heartbeat_at, r.revision, r.operations_json, r.routing_settings_json,
 m.hostname, m.display_name, m.capacity, m.routing_revision, t.created_at, t.expires_at, t.revoked_at,
 (SELECT json_group_array(project_id) FROM (SELECT project_id FROM token_grants WHERE token_id = r.token_id ORDER BY project_id)),
-r.problems_json, r.backend_isolation_json, r.reported_protocol_major, r.settings_rejected, r.capacity_configuration_json, r.provider_reports_json, r.update_observation_json, r.project_configuration_json, r.scope,
+r.problems_json, r.backend_isolation_json, r.reported_protocol_major, r.settings_rejected, r.capacity_configuration_json, r.provider_reports_json, r.update_observation_json, r.scope,
 m.version, o.urgent_runner_update_json,
 (SELECT json_group_array(json_object('backend', backend, 'kind', kind, 'percent_used', percent_used, 'reset_at', reset_at, 'observed_at', observed_at))
 FROM (SELECT * FROM runner_provider_usage_windows WHERE runner_id = r.id ORDER BY backend, kind)),
@@ -35,14 +35,14 @@ FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens 
 func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.Time, extra ...any) (runnerauth.Runner, []providercapacity.Report, time.Time, error) {
 	var r runnerauth.Runner
 	var tags, operations, heartbeat, created, expires, token, settings string
-	var projects, problems, isolationRaw, capacityRaw, providerRaw, updateRaw, configurationRaw string
+	var projects, problems, isolationRaw, capacityRaw, providerRaw, updateRaw string
 	var version, urgentRaw, usageRaw, billingRaw, spriteName, projectCapacityRaw string
 	var protocol int
 	var rejected bool
 	var revoked sql.NullString
 	destinations := []any{&r.RunnerID, &r.OrganizationID, &r.MachineID, &token, &r.DisplayName, &tags, &r.State, &r.CapacityLimit,
 		&r.ReportedCapacity, &r.OS, &r.Architecture, &heartbeat, &r.Revision, &operations, &settings,
-		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked, &projects, &problems, &isolationRaw, &protocol, &rejected, &capacityRaw, &providerRaw, &updateRaw, &configurationRaw, &r.Scope, &version, &urgentRaw, &usageRaw, &billingRaw, &spriteName, &projectCapacityRaw}
+		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked, &projects, &problems, &isolationRaw, &protocol, &rejected, &capacityRaw, &providerRaw, &updateRaw, &r.Scope, &version, &urgentRaw, &usageRaw, &billingRaw, &spriteName, &projectCapacityRaw}
 	err := row.Scan(append(destinations, extra...)...)
 	if err != nil {
 		return r, nil, time.Time{}, err
@@ -662,7 +662,7 @@ JOIN runner_identities r ON r.id = lr.runner_id WHERE l.lease_id = ? AND i.organ
 		return err
 	}
 	if count != 1 {
-		return nativeNotFound()
+		return nativeNotFoundAt("lease_runner_credential")
 	}
 	return nil
 }

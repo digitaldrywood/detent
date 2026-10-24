@@ -25,26 +25,41 @@ func admissionObservationPath(runner string, project tracker.ProjectID) string {
 	return "$.native_admission." + runner + "." + string(project)
 }
 
-func storeRunnerAdmissionObservation(ctx context.Context, tx *sql.Tx, scope nativeScope, observation *tracker.NativeAdmissionObservation, now time.Time) error {
+func prepareRunnerAdmissionObservation(observation *tracker.NativeAdmissionObservation, now time.Time) (string, error) {
 	if observation == nil {
-		return nil
+		return "", nil
 	}
 	if observation.RunnerRevision < 1 || !observation.ReceivedAt.IsZero() {
-		return nativePublicInvalid("Admission observation requires the observed runner revision")
+		return "", nativePublicInvalid("Admission observation requires the observed runner revision")
 	}
 	if err := validateNativeAdmissionContext(observation.Context); err != nil {
-		return err
+		return "", err
 	}
 	current := *observation
 	current.ReceivedAt = now
 	raw, err := json.Marshal(current)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if len(raw) > 8192 {
-		return nativePublicInvalid("Admission observation exceeds its bound")
+		return "", nativePublicInvalid("Admission observation exceeds its bound")
 	}
-	result, err := tx.ExecContext(ctx, "UPDATE machines SET capabilities_json=json_set(capabilities_json, ?, json(?)) WHERE id=? AND organization_id=?", admissionObservationPath(scope.credential.Runner.RunnerID, scope.project), string(raw), scope.credential.Runner.MachineID, scope.organization)
+	return string(raw), nil
+}
+
+func storeRunnerAdmissionObservation(ctx context.Context, tx *sql.Tx, scope nativeScope, observation *tracker.NativeAdmissionObservation, now time.Time) error {
+	raw, err := prepareRunnerAdmissionObservation(observation, now)
+	if err != nil {
+		return err
+	}
+	return storeEncodedRunnerAdmission(ctx, tx, scope, raw)
+}
+
+func storeEncodedRunnerAdmission(ctx context.Context, tx *sql.Tx, scope nativeScope, raw string) error {
+	if raw == "" {
+		return nil
+	}
+	result, err := tx.ExecContext(ctx, "UPDATE machines SET capabilities_json=json_set(capabilities_json, ?, json(?)) WHERE id=? AND organization_id=?", admissionObservationPath(scope.credential.Runner.RunnerID, scope.project), raw, scope.credential.Runner.MachineID, scope.organization)
 	return requireRunnerUpdate(result, err)
 }
 

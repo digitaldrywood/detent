@@ -9,6 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,7 +85,12 @@ func nativeRejection(err error, category, field string) error {
 }
 
 func nativeNotFound() error {
-	return &nativeError{Code: "not_found", Message: "Resource was not found", status: http.StatusNotFound, publicMessage: true}
+	_, file, line, _ := runtime.Caller(1)
+	return &nativeError{Code: "not_found", Message: "Resource was not found", status: http.StatusNotFound, publicMessage: true, logAttributes: []any{"not_found_source", filepath.Base(file) + ":" + strconv.Itoa(line)}}
+}
+
+func nativeNotFoundAt(step string) error {
+	return &nativeError{Code: "not_found", Message: "Resource was not found", status: http.StatusNotFound, publicMessage: true, logAttributes: []any{"not_found_step", step}}
 }
 
 func nativeConflict(revision tracker.Revision) error {
@@ -158,7 +166,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 		return s.refusedAPIError(c, http.StatusConflict, conflict.Code, conflict.Message, conflict)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, nativeNotFound(), "not_found_cause", err.Error())
 	}
 	if errors.Is(err, tracker.ErrInvalidClaimRequest) || errors.Is(err, tracker.ErrInvalidLeaseRequest) || errors.Is(err, tracker.ErrInvalidWorkEvent) || errors.Is(err, tracker.ErrInvalidCandidateQuery) {
 		return s.trackerAPIError(c, err)
