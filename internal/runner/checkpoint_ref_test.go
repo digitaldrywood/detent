@@ -58,6 +58,14 @@ func TestNativeRestorableCheckpoint(t *testing.T) {
 type checkpointFinalizingWorkspace struct {
 	*wipExecutionWorkspace
 	onFinalize func() error
+	unchanged  bool
+}
+
+func (w *checkpointFinalizingWorkspace) PushCheckpointRef(ctx context.Context, info workspace.Info, issue workspace.Issue, previous workspace.CheckpointRef, validate func(context.Context) error) (workspace.CheckpointRef, bool, error) {
+	if w.unchanged {
+		return previous, false, validate(ctx)
+	}
+	return w.wipExecutionWorkspace.PushCheckpointRef(ctx, info, issue, previous, validate)
 }
 
 func (w *checkpointFinalizingWorkspace) FinalizeNativeWork(ctx context.Context, _ workspace.Info, _ workspace.Issue, validate func(context.Context) error) (string, error) {
@@ -106,6 +114,28 @@ func TestCheckpointRefsPushAfterCompletedTurn(t *testing.T) {
 	}
 	if !finalized {
 		t.Fatal("completed turn did not finalize its source")
+	}
+}
+
+func TestCheckpointRefsCaptureUnchangedSnapshot(t *testing.T) {
+	t.Parallel()
+	state := workspace.RecoveryState{HeadSHA: strings.Repeat("a", 40), WorkspaceFingerprint: "unstaged edits", TrackedPaths: []string{"work.go"}}
+	backend := &checkpointFinalizingWorkspace{wipExecutionWorkspace: &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{state}}}}}
+	execution := &retryStepExecution{finalizingTestExecution: &finalizingTestExecution{}}
+	r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now}
+	refs := newCheckpointRefs(backend, execution, workspace.Info{}, workspace.Issue{}, nil)
+	req := RunRequest{Execution: execution, checkpointRefs: refs}
+	if !r.pushCheckpointRef(t.Context(), refs, req, "turn_completed") {
+		t.Fatal("turn did not publish its checkpoint")
+	}
+	state.WorkspaceFingerprint = "staged edits"
+	backend.recoveryStates = []workspace.RecoveryState{state}
+	backend.unchanged = true
+	if err := r.recordAgentStep(t.Context(), req, backend, workspace.Info{}, workspace.Issue{}, "complete"); err != nil {
+		t.Fatal(err)
+	}
+	if len(execution.steps) != 1 || execution.steps[0].Source.WorkspaceDigest != "staged edits" || execution.steps[0].Source.HeadSHA != strings.Repeat("a", 40) || execution.steps[0].Source.CommitSHA != strings.Repeat("c", 40) || execution.steps[0].Source.TreeSHA != strings.Repeat("e", 40) {
+		t.Fatalf("completed turn lost its current fingerprint or published snapshot: %+v", execution.steps)
 	}
 }
 
