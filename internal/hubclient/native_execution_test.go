@@ -54,6 +54,9 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 			issue := h.createInProgress(t, "Claim cleanup")
 			h.claim(t, issue.ID)
 			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
 			closed := false
 			var stop func()
 			if test.controller {
@@ -69,9 +72,6 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 				}()
 			}
 			if test.prepared {
-				if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
-					t.Fatal(err)
-				}
 				e.preparedOutcome = "failed"
 				if test.retained {
 					e.RetainCompletion()
@@ -166,6 +166,13 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 			}
 			if !closed || e.hasWorkers() || len(h.scheduler.nativeClaims) != 0 || len(h.scheduler.projectDiagnosticClaims(e.claim.source)) != 0 {
 				t.Fatal("stopped worker retained its lost claim")
+			}
+			evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+			if err != nil || evidence.Attempt == nil {
+				t.Fatalf("reading stopped attempt: %v", err)
+			}
+			if evidence.CurrentLease != nil || evidence.Attempt.ClaimReleasedAt == nil || evidence.Attempt.Status != "cancelled" {
+				t.Fatalf("stopped worker retained its Hub lease: lease=%+v attempt=%+v", evidence.CurrentLease, evidence.Attempt)
 			}
 		})
 	}

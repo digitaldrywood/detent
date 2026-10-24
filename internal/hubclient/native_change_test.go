@@ -553,6 +553,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		diffCode                string
 		conversation            bool
 		land                    bool
+		integrate               bool
 		landingRestart          bool
 		finalMessage            string
 		disposition             *tracker.NativeDisposition
@@ -636,6 +637,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "existing valid different fence cannot inherit deferred completion", restart: true, restoreRefusal: "existing", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "existing same lease renewal preserves deferred completion", restart: true, restoreRefusal: "renewed", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "reviewed source lands with its coding lease in the four lane workflow", land: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
+		{name: "reviewed source integrates during finalization", land: true, integrate: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
 		{name: "prepared completion restart allows inline landing runtime", landingRestart: true, land: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
 		{name: "validator rework reason survives history and explanation", transitionReason: "validator_rework", wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}, role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "Acceptance criterion is unverified.\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "complete", FinalSummary: "Acceptance criterion is unverified."}},
 		{name: "blocked reason and summary survive attempts API", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "Source conflicts remain unresolved.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "merge_conflict", FinalSummary: "Source conflicts remain unresolved."}},
@@ -1639,6 +1641,64 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				return
 			}
 			if test.land {
+				if test.integrate {
+					stop()
+					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+						t.Fatal(err)
+					}
+					h.claim(t, issue.ID)
+					owner := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+					ctx, release, err := owner.Guard(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer release()
+					owner.SetDiffSource(nativeChangeDiff(base))
+					if err := owner.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+						t.Fatal(err)
+					}
+					if err := owner.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "clean", HeadSHA: base, ExternalEffect: "none", EffectState: "none"}); err != nil {
+						t.Fatal(err)
+					}
+					integrations := 0
+					owner.SetIntegrationSource(func(_ context.Context, version tracker.ChangeVersion, currentBase string) (workspace.LandResult, error) {
+						if version.HeadSHA != head || currentBase != base {
+							t.Fatalf("integration changed source identity: version=%+v base=%s", version, currentBase)
+						}
+						integrations++
+						return workspace.LandResult{MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "squash"}, nil
+					})
+					if err := owner.RecordUsage(ctx, tracker.NativeUsage{Provider: "openai", Model: "test", Input: 123, Output: 45}); err != nil {
+						t.Fatal(err)
+					}
+					if err := owner.PrepareFinish(ctx, "succeeded", test.finalMessage, nil); err != nil {
+						t.Fatal(err)
+					}
+					if integrations != 1 || h.state(t, issue.ID) != "Done" {
+						t.Fatalf("finalization did not integrate once: integrations=%d state=%s", integrations, h.state(t, issue.ID))
+					}
+					if err := owner.Finish(ctx, "succeeded"); err != nil {
+						t.Fatal(err)
+					}
+					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+						t.Fatal(err)
+					}
+					evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+					if err != nil || evidence.Attempt == nil {
+						t.Fatalf("reading integrated finalization: %v", err)
+					}
+					attempt := evidence.Attempt
+					if attempt.Status != "succeeded" || attempt.Outcome != "succeeded" || attempt.ClaimReleasedAt == nil || evidence.CurrentLease != nil || evidence.Change == nil || evidence.Change.Change.CurrentLanding() == nil {
+						t.Fatalf("integration did not finish and release: attempt=%+v lease=%+v", attempt, evidence.CurrentLease)
+					}
+					if f := attempt.Finalization; f == nil || !f.Settled || !f.Reviewed || f.VersionID == "" || f.HeadSHA != head || f.Error != "" || f.VersionError != "" {
+						t.Fatalf("integration lost host finalization: %+v", f)
+					}
+					if len(attempt.Usage) != 1 || attempt.Usage[0].Input != 123 || attempt.Usage[0].Output != 45 {
+						t.Fatalf("integration lost usage: %+v", attempt.Usage)
+					}
+					return
+				}
 				if err := execution.(runner.LandingRuntimeExecution).StartLanding(guarded, 42, 7); err != nil {
 					t.Fatal(err)
 				}
