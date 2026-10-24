@@ -58,7 +58,7 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 		ids = append(ids, projectIDs)
 	}
 	window := operatortool.AnalyticsWindow{From: at.Add(-time.Minute), To: now}
-	for _, stage := range []string{"legacy", "mixed", "converted", "landing updated"} {
+	for _, stage := range []string{"legacy", "mixed", "converted", "landing updated", "null landing updated"} {
 		t.Run(stage, func(t *testing.T) {
 			if stage == "mixed" {
 				if err := first.service.convertAttemptHotProjection(t.Context(), ids[0][0]); err != nil {
@@ -70,12 +70,17 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if stage == "landing updated" {
+			if stage == "landing updated" || stage == "null landing updated" {
 				tx, err := first.service.database.db.BeginTx(t.Context(), nil)
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer tx.Rollback()
+				if stage == "null landing updated" {
+					if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=? WHERE id=?", "null", ids[0][3]); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if err := persistAttemptLanding(t.Context(), tx, ids[0][3], tracker.NativeLandingReceipt{Landed: true, ObservedAt: now.Add(-time.Minute)}); err != nil {
 					t.Fatal(err)
 				}

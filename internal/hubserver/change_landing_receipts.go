@@ -79,6 +79,9 @@ func persistAttemptLanding(ctx context.Context, tx *sql.Tx, attempt string, rece
 	if err := json.Unmarshal([]byte(document), &object); err != nil {
 		return err
 	}
+	if object == nil {
+		object = map[string]json.RawMessage{}
+	}
 	var runtime map[string]json.RawMessage
 	if value := object["runtime"]; len(value) > 0 && string(value) != "null" {
 		if err := json.Unmarshal(value, &runtime); err != nil {
