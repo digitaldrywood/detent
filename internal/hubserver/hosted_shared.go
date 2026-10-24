@@ -170,7 +170,11 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 			auditCtx, cancelAudit := context.WithTimeout(context.WithoutCancel(request.Context()), 2*time.Second)
 			defer cancelAudit()
 			if err := s.auditEntryKey(auditCtx, s.database.db, audit, status); err != nil {
-				return s.internalAPIError(c, "audit_unavailable", "Key audit is unavailable", err)
+				s.config.Logger.Error("Key audit is unavailable", append([]any{"error", err}, s.database.readTimeoutAttributes(err)...)...)
+				if c.Response().Committed || result != nil {
+					return result
+				}
+				return c.JSON(http.StatusInternalServerError, apiErrorResponse{Code: "audit_unavailable", Message: "Key audit is unavailable"})
 			}
 			return result
 		}
