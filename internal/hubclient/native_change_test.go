@@ -44,6 +44,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+func TestMain(m *testing.M) {
+	if err := testenv.ClearGitEnvironment(); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
+
 const nativeChangeAdminToken = "native-change-admin"
 
 var nativeRuntimeDatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
@@ -4933,6 +4940,56 @@ func nativeChangeTempDir(t *testing.T) string {
 	return dir
 }
 
+func TestNativeChangeGitIsolation(t *testing.T) {
+	if fixture := os.Getenv("DETENT_TEST_GIT_FIXTURE"); fixture != "" {
+		isolateNativeChangeGit(t)
+		switch fixture {
+		case "bare":
+			nativeChangeSourceFixture(t.Context(), t, nativeChangeFixtureHead("a"), nativeChangeFixtureHead("b"))
+		case "source":
+			nativeChangeSourceRepo(t)
+		}
+		return
+	}
+	isolateNativeChangeGit(t)
+	for _, fixture := range []string{"bare", "source"} {
+		t.Run(fixture, func(t *testing.T) {
+			enclosing := nativeChangeSourceRepo(t)
+			paths := []string{".git/config", ".git/HEAD", ".git/refs/heads/main", ".git/index", "README.md"}
+			before := make(map[string]string)
+			for _, path := range paths {
+				data, err := os.ReadFile(filepath.Join(enclosing, path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				before[path] = string(data)
+			}
+			binary, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.CommandContext(t.Context(), binary, "-test.run=^TestNativeChangeGitIsolation$")
+			cmd.Dir = enclosing
+			cmd.Env = append(os.Environ(), "DETENT_TEST_GIT_FIXTURE="+fixture, "GIT_DIR="+filepath.Join(enclosing, ".git"))
+			if fixture == "source" {
+				cmd.Env = append(cmd.Env, "GIT_WORK_TREE="+enclosing)
+			}
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Errorf("isolated fixture: %v\n%s", err, output)
+			}
+			for _, path := range paths {
+				data, err := os.ReadFile(filepath.Join(enclosing, path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(data) != before[path] {
+					t.Errorf("fixture modified enclosing repository %s", path)
+				}
+			}
+		})
+	}
+}
+
 func nativeChangeSourceRepo(t *testing.T) string {
 	t.Helper()
 	dir := nativeChangeTempDir(t)
@@ -4953,7 +5010,13 @@ func nativeChangeSourceRepo(t *testing.T) string {
 
 func nativeChangeGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	if output, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+	if !filepath.IsAbs(dir) {
+		t.Fatalf("git fixture directory must be absolute: %q", dir)
+	}
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CEILING_DIRECTORIES="+dir)
+	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
 }

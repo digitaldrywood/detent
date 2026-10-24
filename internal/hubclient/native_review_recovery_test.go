@@ -614,7 +614,7 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 					calls := map[string]int32{"source": provider.sourceCalls.Load(), "security": provider.securityCalls.Load(), "validator": provider.validatorCalls.Load()}
 					for stage, count := range calls {
 						want := int32(1)
-						if stage == test.stage {
+						if stage == test.stage && test.publicationField == "" {
 							want++
 						}
 						if count != want {
