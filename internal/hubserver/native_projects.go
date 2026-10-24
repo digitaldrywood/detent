@@ -17,6 +17,7 @@ import (
 )
 
 type nativeOrganization struct {
+	Logo organizationLogo `json:"logo"`
 	ID    tracker.OrganizationID `json:"organization_id"`
 	Name  string                 `json:"name"`
 	Slug  string                 `json:"slug"`
@@ -65,7 +66,7 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 func (s *Service) nativeOrganizations(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT id, name, slug, local FROM organizations ORDER BY id")
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT id, name, slug, local,coalesce(logo_image_key,''),coalesce(logo_image_sha256,''),logo_revision FROM organizations ORDER BY id")
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -73,9 +74,10 @@ func (s *Service) nativeOrganizations(c echo.Context) error {
 	result := tracker.Page[nativeOrganization]{Items: []nativeOrganization{}}
 	for rows.Next() {
 		var organization nativeOrganization
-		if err := rows.Scan(&organization.ID, &organization.Name, &organization.Slug, &organization.Local); err != nil {
+		if err := rows.Scan(&organization.ID, &organization.Name, &organization.Slug, &organization.Local, &organization.Logo.ImageKey, &organization.Logo.ImageSHA256, &organization.Logo.Revision); err != nil {
 			return s.nativeAPIError(c, err)
 		}
+		if organization.Logo.ImageKey != "" { organization.Logo.URL = "/organizations/"+string(organization.ID)+"/api/v2/attachments/"+organization.Logo.ImageKey }
 		result.Items = append(result.Items, organization)
 	}
 	if err := rows.Err(); err != nil {

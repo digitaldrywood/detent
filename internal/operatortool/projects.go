@@ -17,7 +17,7 @@ import (
 const ProjectIconArgumentBytes = 350 * 1024
 
 func ArgumentByteLimit(name string) int {
-	if name == "set_project_icon" {
+	if name == "set_project_icon" || name == "set_organization_logo" {
 		return ProjectIconArgumentBytes
 	}
 	return MaxArgumentBytes
@@ -84,6 +84,18 @@ type RenameProjectArguments struct {
 	Name             string           `json:"name"`
 	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
 	RequestID        string           `json:"request_id"`
+}
+type SetOrganizationLogoInput struct {
+ Content []byte `json:"content_base64,omitempty"`
+ Remove bool `json:"remove,omitempty"`
+ ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+}
+type SetOrganizationLogoArguments struct {
+ OrganizationID string `json:"organization_id"`
+ Content []byte `json:"content_base64,omitempty"`
+ Remove bool `json:"remove,omitempty"`
+ ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+ RequestID string `json:"request_id"`
 }
 type SetProjectIconInput struct {
 	Icon             projecticon.Icon `json:"icon"`
@@ -198,6 +210,7 @@ func ProjectCatalog() []Definition {
 		projectWrite[IntegrationInput]("update_project_integration", true, true),
 		renameProjectDefinition(),
 		setProjectIconDefinition(),
+		setOrganizationLogoDefinition(),
 		projectWrite[RepositoryInput]("bind_native_repository", true, true),
 		projectWrite[ImportStartInput]("start_git_hub_import", true, true),
 		projectWrite[ImportAdvanceInput]("advance_git_hub_import", false, true),
@@ -314,7 +327,7 @@ func projectSchema(t reflect.Type) map[string]any {
 func DecodeProjectArguments(raw json.RawMessage, target any) error {
 	limit := MaxArgumentBytes
 	switch target.(type) {
-	case *SetProjectIconArguments, *ProjectRequest[SetProjectIconInput]:
+	case *SetProjectIconArguments, *ProjectRequest[SetProjectIconInput], *SetOrganizationLogoArguments, *ProjectRequest[SetOrganizationLogoInput]:
 		limit = ProjectIconArgumentBytes
 	}
 	if _, ok := target.(*ProjectRequest[IntegrationInput]); ok {
@@ -453,4 +466,12 @@ func setProjectIconDefinition() Definition {
 		panic(err)
 	}
 	return Definition{Name: "set_project_icon", Description: "Choose a project icon (automatic, Lucide name and color, single emoji, or PNG/JPEG/WebP content_base64). Requires project-admin authority and the current integration expected_revision. Uploaded images are validated and re-encoded. request_id is the idempotency key.", InputSchema: raw, Annotations: Annotations{Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}}
+}
+
+func setOrganizationLogoDefinition() Definition {
+ schema := projectSchema(reflect.TypeFor[SetOrganizationLogoArguments]())
+ schema["required"] = []string{"organization_id", "expected_revision", "request_id"}
+ raw, err := json.Marshal(schema)
+ if err != nil { panic(err) }
+ return Definition{Name: "set_organization_logo", Description: "Upload a validated PNG/JPEG/WebP organization logo or remove it. Requires organization manage authority and the current logo expected_revision. request_id is the idempotency key.", InputSchema: raw, Annotations: Annotations{Idempotent: true}, Meta: ToolMetadata{Toolset: "organization"}}
 }

@@ -217,6 +217,13 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(nativeBase, s.getNativeProject, read)
 	e.PATCH(nativeBase, s.renameProject, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
 	e.PUT(nativeBase+"/icon", s.setProjectIcon, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
+	if s.config.Hosted == nil {
+		organization := s.requireConversationOrganization()
+		e.GET(hostedOrganizationBase+"/logo", s.getOrganizationLogo, organization)
+		e.PUT(hostedOrganizationBase+"/logo", s.setOrganizationLogo, organization)
+		e.GET(hostedOrganizationBase+"/attachment-metadata/:attachment", s.getOrganizationLogoAttachment, organization)
+	e.GET(hostedOrganizationBase+"/logo-metadata", s.getCurrentOrganizationLogoAttachment, organization)
+	}
 	e.GET(nativeBase+"/labels", s.listNativeLabels, read)
 	e.GET(nativeBase+"/work-items", s.listNativeIssues, read)
 	e.GET(nativeBase+"/work-items/export", s.exportNativeWorkItems, read)

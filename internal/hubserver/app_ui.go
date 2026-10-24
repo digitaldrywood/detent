@@ -346,6 +346,7 @@ WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.
 // Bootstrap payload (decisions section 12).
 
 type appBootstrapOrganization struct {
+	Logo *organizationLogo `json:"logo,omitempty"`
 	Role      string `json:"role,omitempty"`
 	ID        string `json:"id"`
 	Slug      string `json:"slug"`
@@ -543,11 +544,13 @@ func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential
 	if err := s.database.reader.QueryRowContext(ctx, "SELECT name,slug FROM organizations WHERE id = ?", organization).Scan(&payload.Organization.Name, &payload.Organization.Slug); err != nil {
 		return appBootstrap{}, fmt.Errorf("read organization name: %w", err)
 	}
+	logo, err := readOrganizationLogo(ctx, s.database.reader, tracker.OrganizationID(organization))
+	if err != nil { return appBootstrap{}, err }
+	payload.Organization.Logo = &logo
 	payload.Organization.PublicURL = strings.TrimRight(s.config.Hosted.PublicURL, "/") + "/" + payload.Organization.Slug + "/work"
 	if identity := credential.Hosted; identity.SupportActor != "" {
 		payload.Support = &appBootstrapSupport{Actor: identity.SupportActor, Reason: identity.SupportReason, ExpiresAt: identity.ExpiresAt.UTC().Format(time.RFC3339)}
 	}
-	var err error
 	payload.Projects, err = s.hostedReadableProjects(ctx, credential)
 	if err != nil {
 		return appBootstrap{}, err
@@ -560,6 +563,7 @@ func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential
 	}
 	for index := range payload.Organizations {
 		if payload.Organizations[index].Current {
+			payload.Organizations[index].Logo = payload.Organization.Logo
 			payload.Organizations[index].Name = payload.Organization.Name
 			payload.Organizations[index].Slug = payload.Organization.Slug
 			payload.Organizations[index].PublicURL = payload.Organization.PublicURL
