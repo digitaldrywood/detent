@@ -1227,12 +1227,16 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 func TestOperatorArchivedWorkReads(t *testing.T) {
 	f := newAttemptDiffFixture(t)
 	requireNativeStatus(t, f.post(t, f.request(1, tracker.AttemptDiffFile{Path: "first.go", Status: "added", Additions: 1, Patch: "+first"}, tracker.AttemptDiffFile{Path: "second.go", Status: "added", Additions: 1, Patch: "+second"})), http.StatusAccepted)
-	f.event(t, "run.finished", 2, "succeeded")
 	at := f.service.config.now()
 	f.service.config.now = func() time.Time { return at }
-	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime',json(?)) WHERE id=?`, `{"local_attempt_id":42,"generation":1,"phase":"completed","heartbeat_at":"2026-10-21T00:00:00Z","phases":[],"phases_dropped":0}`, f.attempt); err != nil {
-		t.Fatal(err)
+	finished := tracker.NativeRunEvent{
+		Mutation: tracker.Mutation{IdempotencyKey: newNativeID("event")}, Type: "run.finished", SchemaVersion: 1,
+		Data: tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},
+			LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded",
+			Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "completed", HeartbeatAt: at}},
 	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost,
+		f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, finished), http.StatusOK)
 	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 	call := hostedContextProtocol(t, f.service, ctx, "stdio")
 	read := func(t *testing.T, name string, args map[string]any) []byte {
