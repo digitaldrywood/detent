@@ -1,0 +1,238 @@
+package operatortool
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"math"
+	"reflect"
+	"slices"
+	"strings"
+
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+)
+
+const (
+	InstanceHealth           = "health"
+	AIDebugPrompt            = "ai_debug_prompt"
+	NativeCapabilities       = "native_capabilities"
+	OutboxHealth             = "outbox_health"
+	RunnerFleet              = "runner_fleet"
+	OperationsReport         = "operations_report"
+	Dashboard                = "dashboard"
+	HealthDashboard          = "health_dashboard"
+	DiagnosticsDashboard     = "diagnostics_dashboard"
+	Activity                 = "activity"
+	AnalyticsDashboard       = "analytics_dashboard"
+	TimeSeries               = "time_series"
+	Reports                  = "reports"
+	Refresh                  = "refresh"
+	CapacityClear            = "capacity_clear"
+	TrackerAvailabilityClear = "tracker_availability_clear"
+	ForgeAvailabilityClear   = "forge_availability_clear"
+	FailureBreakerCanary     = "failure_breaker_canary"
+	UpdateApply              = "update_apply"
+	GetRunnerUpdate          = "get_runner_update"
+	GetUrgentRunnerUpdate    = "get_urgent_runner_update"
+	MarkUrgentRunnerUpdate   = "mark_urgent_runner_update"
+	AcknowledgeWarnings      = "acknowledge_staleness_warnings"
+	RecoverAttempt           = "recover_work_attempt"
+	UpdateFleetRunner        = "update_fleet_runner"
+	UpdateFleetHost          = "update_fleet_host"
+	CreateRunnerEnrollment   = "create_runner_enrollment"
+	RevokeRunnerEnrollment   = "revoke_runner_enrollment"
+	RevokeRunnerIdentity     = "revoke_runner_identity"
+	GetRunnerRouting         = "get_runner_routing"
+	ListRunnerRouting        = "list_runner_routing"
+	UpdateRunnerRouting      = "update_runner_routing"
+	GetRunnerCapacity        = "get_runner_capacity"
+	UpdateRunnerCapacity     = "update_runner_capacity"
+	UpdateRunnerHost         = "update_runner_host"
+	HostedFleet              = "hosted_fleet"
+	GitHubRequestCounts      = "github_request_counts"
+)
+
+const boundedID = `{"type":"string","minLength":1,"maxLength":256}`
+const boundedList = `{"type":"array","minItems":1,"maxItems":100,"items":` + boundedID + `}`
+
+// FleetCatalog describes operator application operations only. Registration,
+// claims, credential renewal/rotation, leases and heartbeats remain worker APIs.
+func FleetCatalog() []Definition {
+	var definitions []Definition
+	add := func(name, description, fields, required string, read, material bool) {
+		properties := `"project_id":` + boundedID
+		if !read {
+			properties += `,"request_id":{"type":"string","minLength":1,"maxLength":128}`
+			required = strings.Trim(required+`,"request_id"`, ",")
+		}
+		if fields != "" {
+			properties += "," + fields
+		}
+		if required != "" {
+			required = `,"required":[` + required + `]`
+		}
+		definitions = append(definitions, Definition{Name: name, Description: description, InputSchema: json.RawMessage(`{"type":"object","properties":{` + properties + `}` + required + `,"additionalProperties":false}`), Annotations: Annotations{ReadOnly: read, Destructive: material, Idempotent: true, OpenWorld: !read || name == RunnerFleet}, Meta: ToolMetadata{Toolset: "fleet"}})
+	}
+	for _, name := range []string{Dashboard, HealthDashboard, DiagnosticsDashboard} {
+		description := "Read the current dashboard application snapshot, projected to current project grants."
+		if name == Dashboard {
+			description += " Native hubs return bounded board inventory and live-worker observations; queued inventory includes held work, not dispatch readiness. Use explain_item for current item eligibility."
+		}
+		add(name, description, `"limit":{"type":"integer","minimum":1,"maximum":200}`, "", true, false)
+	}
+	page := `"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0,"maximum":100000}`
+	add(Activity, "Read all running attempts, bounded recent outcomes and typical stage durations within current project grants. Running work is independent of the recent window; typical durations use the Reports population and combine model and effort.", `"runner_id":`+boundedID+`,"limit":{"type":"integer","minimum":1,"maximum":200},"from":{"type":"string","maxLength":64},"to":{"type":"string","maxLength":64}`, "", true, false)
+	add(AnalyticsDashboard, "Read dashboard analytics attempts and activity within current project grants.", page, "", true, false)
+	add(TimeSeries, "Read bounded bucketed project analytics with source and observation time. Use window for recent history (up to 24h), or explicit from and to RFC3339 timestamps for a historical interval (up to 90 days). Choose bucket so the interval contains at most 240 points; future end times are rejected. Organization administrators also receive route_latency: per-route request count, p50, p95 and max in buckets of at least one hour.", page+`,"window":{"type":"string","maxLength":64},"from":{"type":"string","maxLength":64},"to":{"type":"string","maxLength":64},"bucket":{"type":"string","maxLength":64}`, "", true, false)
+	add(Reports, "Read organization productivity with scope=organization (all readable projects, optional projects filter); range accepts 24h, 7d, 30d or 90d, or use from/to. Organization results include totals, prior window, project rows, bucket splits and provenance. Otherwise read scoped usage, digest, efficiency, rework and escape rates with cause attribution and bounded population. Continue a clipped population by passing its population_cursors entry as population_cursor; other populations remain on their first page. For pending escape classification, use a read-only agent to assess get_change_version landing_quality, quote the incident and frozen contract or criterion evidence, and return a proposed escape assessment; an authorized caller records it through discuss_change. Never infer causality from candidate scheduled comparisons.", page+`,"scope":{"type":"string","maxLength":12,"enum":["organization"]},"range":{"type":"string","maxLength":3,"enum":["24h","7d","30d","90d"]},"projects":{"type":"array","maxItems":32,"items":`+boundedID+`},"labels":{"type":"array","maxItems":32,"items":`+boundedID+`},"priorities":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":1,"enum":["0","1","2","3"]}},"types":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":14,"enum":["bug","change_request"]}},"filed_by":{"type":"array","maxItems":32,"items":`+boundedID+`},"runners":{"type":"array","maxItems":32,"items":`+boundedID+`}`+`,"population_cursor":{"type":"string","maxLength":128},"row_offset":{"type":"integer","minimum":0,"maximum":100000}`+`,"from":{"type":"string","maxLength":64},"to":{"type":"string","maxLength":64},"bucket":{"type":"string","maxLength":64},"tz":{"type":"string","maxLength":128}`, "", true, false)
+	add(InstanceHealth, "Read the existing instance health and readiness report.", "", "", true, false)
+	add(NativeCapabilities, "Read the existing native protocol capabilities where the dashboard permits them.", "", "", true, false)
+	add(OutboxHealth, "Read the existing outbox health report and bounded operator actions.", `"limit":{"type":"integer","minimum":1,"maximum":200},"cursor":{"type":"string","maxLength":2048}`, "", true, false)
+	add(AIDebugPrompt, "Read the dashboard AI debug projection and prompt within current project grants.", `"scope":{"type":"string","enum":["fleet","project","issue"],"maxLength":256},"reference":`+boundedID, "", true, false)
+	add(OperationsReport, "Read the dashboard operations report for a bounded time range.", `"since":{"type":"string","maxLength":64}`, "", true, false)
+	add(RunnerFleet, "Read runner and host settings, health, capacity and optional project eligibility.", `"runner_id":`+boundedID+`,"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0,"maximum":100000}`, "", true, false)
+	add(Refresh, "Request the dashboard refresh; current refusals and coalescing still apply.", "", "", false, false)
+	add(CapacityClear, "Request the existing capacity outage clear; requires current authority.", `"scope":`+boundedID+`,"recovery":{"type":"string","maxLength":256,"enum":["ramping","immediate"]}`, "", false, true)
+	add(TrackerAvailabilityClear, "Clear existing tracker availability conditions; requires current authority.", "", "", false, true)
+	add(ForgeAvailabilityClear, "Clear existing forge availability conditions; requires current authority.", `"host":`+boundedID, "", false, true)
+	add(FailureBreakerCanary, "Request the existing breaker canary; requires current authority.", "", "", false, true)
+	update := `{"type":"object","required":["expected_revision","expected_build_revision","service","version"],"properties":{"expected_revision":{"type":"integer","minimum":1},"expected_build_revision":{"type":"string","pattern":"^[a-f0-9]{64}$","maxLength":64},"service":{"type":"string","minLength":6,"maxLength":6,"enum":["detent"]},"version":` + boundedID + `,"release":{"type":"boolean"},"from_release":{"type":"boolean"}},"additionalProperties":false}`
+	add(UpdateApply, "Apply through the installed updater and coordinated restart; Cloud requires runner_id and an observed change. Requires operator approval; acceptance is not running-build evidence.", `"release":{"type":"boolean"},"from_release":{"type":"boolean"},"runner_id":`+boundedID+`,"change":`+update, "", false, true)
+	add(GetRunnerUpdate, "Read enrolled runner update support, requested/applied state and observed running build provenance.", `"runner_id":`+boundedID, `"runner_id"`, true, false)
+	add(GetUrgentRunnerUpdate, "Read the organization's urgent runner release and current revision.", "", "", true, false)
+	add(MarkUrgentRunnerUpdate, "Mark a release urgent for all older runners in this organization. Drains existing sessions before updating; requires current authority.", `"change":{"type":"object","required":["expected_revision","version"],"properties":{"expected_revision":{"type":"integer","minimum":0},"version":`+boundedID+`},"additionalProperties":false}`, `"change"`, false, true)
+	add(AcknowledgeWarnings, "Acknowledge active staleness warnings for this project.", `"warning_ids":`+boundedList, `"project_id","warning_ids"`, false, false)
+	add(RecoverAttempt, "Perform an existing recovery action on an exact attempt; requires current authority.", `"attempt_id":{"type":"integer","minimum":1},"action":{"type":"string","maxLength":256,"enum":["inspect","abandon","retry_fresh","retry_resume","cleanup_workspace"]},"reason":{"type":"string","maxLength":280}`, `"project_id","attempt_id","action"`, false, true)
+	// Nested changes have the same fields and validation as the runner application.
+	routing := `{"type":"object","required":["expected_revision","display_name","state","capacity_limit","project_ids"],"properties":{"expected_revision":{"type":"integer","minimum":1},"display_name":` + boundedID + `,"tags":{"type":"array","maxItems":100,"items":` + boundedID + `},"state":{"type":"string","maxLength":256,"enum":["active","draining","disabled"]},"capacity_limit":{"type":"integer","minimum":0,"maximum":10000},"machine_use":{"type":"string","maxLength":256,"enum":["shared","dedicated"]},"scope":{"type":"string","maxLength":256,"enum":["projects","organization"]},"project_ids":` + strings.Replace(boundedList, `"minItems":1`, `"minItems":0`, 1) + `,"project_capacity_limits":{"type":"object","maxProperties":100,"propertyNames":` + boundedID + `,"additionalProperties":{"type":"integer","minimum":0,"maximum":10000}},"project_ranks":{"type":"object","additionalProperties":{"type":"integer","minimum":0,"maximum":2147483647}},"isolation_tier":` + boundedID + `,"host_services":{"type":"array","maxItems":100,"items":` + boundedID + `},"availability":{"type":"object","properties":{"timezone":{"type":"string","maxLength":256},"windows":{"type":"array","maxItems":100,"items":` + boundedID + `},"window_slots":{"type":"object","maxProperties":64,"propertyNames":` + boundedID + `,"additionalProperties":{"type":"integer","minimum":0,"maximum":10000}},"hard_deadline":{"type":"string","maxLength":256}},"additionalProperties":false}},"additionalProperties":false}`
+	host := `{"type":"object","required":["expected_revision","display_name","capacity"],"properties":{"expected_revision":{"type":"integer","minimum":1},"display_name":` + boundedID + `,"capacity":{"type":"integer","minimum":0,"maximum":10000}},"additionalProperties":false}`
+	for _, name := range []string{UpdateFleetRunner, UpdateRunnerRouting} {
+		add(name, "Update exact runner settings and grants at the expected revision. Changes execute directly with current administration authority.", `"runner_id":`+boundedID+`,"change":`+routing, `"runner_id","change"`, false, true)
+	}
+	for _, name := range []string{UpdateFleetHost, UpdateRunnerHost} {
+		add(name, "Update exact host settings at the expected revision. Changes execute directly with current administration authority.", `"machine_id":`+boundedID+`,"change":`+host, `"machine_id","change"`, false, true)
+	}
+	add(CreateRunnerEnrollment, "Create a bounded enrollment using current runner administration authority; requires current authority. Token is returned only to the originating connection.", `"enrollment":{"type":"object","required":["project_ids","operations","ttl_seconds"],"properties":{"runner_id":{"type":"string","maxLength":256},"machine_id":{"type":"string","maxLength":256},"scope":{"type":"string","enum":["projects","organization"]},"project_ids":`+strings.Replace(boundedList, `"minItems":1`, `"minItems":0`, 1)+`,"operations":`+boundedList+`,"ttl_seconds":{"type":"integer","minimum":1,"maximum":900},"shared_machine":{"type":"boolean"}},"additionalProperties":false}`, `"enrollment"`, false, true)
+	add(RevokeRunnerEnrollment, "Revoke an existing unused enrollment; requires current authority.", `"enrollment_id":`+boundedID, `"enrollment_id"`, false, true)
+	add(RevokeRunnerIdentity, "Remove the runner from fleet and routing, revoke its credential, and retain history. Refuses runners with active work; requires current authority.", `"runner_id":`+boundedID, `"runner_id"`, false, true)
+	capacity := `{"type":"object","required":["expected_revision","expected_config_revision","capacity"],"properties":{"expected_revision":{"type":"integer","minimum":1},"expected_config_revision":{"type":"string","minLength":64,"maxLength":64},"capacity":{"type":"integer","minimum":1,"maximum":10000},"backend":` + boundedID + `},"additionalProperties":false}`
+	add(GetRunnerCapacity, "Read desired, applied and effective enrolled runner capacity and advisory slot recommendations with evidence counts.", `"runner_id":`+boundedID+`,"backend":`+boundedID, `"runner_id"`, true, false)
+	add(UpdateRunnerCapacity, "Request capacity through the enrolled runner configuration owner. External provider producers remain authoritative; requires current authority.", `"runner_id":`+boundedID+`,"change":`+capacity, `"runner_id","change"`, false, true)
+	add(GetRunnerRouting, "Read exact runner settings with current administration authority.", `"runner_id":`+boundedID, `"runner_id"`, true, false)
+	add(ListRunnerRouting, "Read runner settings with current administration authority.", `"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0,"maximum":100000}`, "", true, false)
+	add(HostedFleet, "Read the hosted fleet using current browser membership and project grants.", `"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0,"maximum":100000}`, "", true, false)
+	add(GitHubRequestCounts, "Read instance GitHub request counts with existing private administrator authority.", "", "", true, false)
+	return definitions
+}
+
+func FleetDefinition(name string) (Definition, bool) {
+	for _, d := range FleetCatalog() {
+		if d.Name == name {
+			return d, true
+		}
+	}
+	return Definition{}, false
+}
+
+// ValidateFleetArguments enforces the advertised bounded shape before an
+// adapter reaches application services. Business validation stays in commands.
+func ValidateFleetArguments(name string, raw json.RawMessage) error {
+	d, ok := FleetDefinition(name)
+	if !ok || len(raw) > MaxArgumentBytes {
+		return ErrInvalidArguments
+	}
+	var schema fleetSchema
+	if json.Unmarshal(d.InputSchema, &schema) != nil {
+		return ErrInvalidArguments
+	}
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if decoder.Decode(&value) != nil || !schema.accepts(value) || decoder.Decode(new(any)) != io.EOF {
+		return ErrInvalidArguments
+	}
+	return nil
+}
+
+// RoutingRequiresApproval permits display edits directly. Scheduling, access,
+// isolation and capacity changes are material, even when they only add grants.
+func RoutingRequiresApproval(before, after runnerauth.Routing) bool {
+	before, after = before.Normalized(), after.Normalized()
+	before.DisplayName, before.Tags = after.DisplayName, after.Tags
+	before.CapacityRequest, after.CapacityRequest = nil, nil
+	before.UpdateRequest, after.UpdateRequest = nil, nil
+	return !reflect.DeepEqual(before, after)
+}
+
+type fleetSchema struct {
+	AdditionalProperties json.RawMessage        `json:"additionalProperties"`
+	PropertyNames        *fleetSchema           `json:"propertyNames"`
+	MaxProperties        int                    `json:"maxProperties"`
+	Type                 string                 `json:"type"`
+	Properties           map[string]fleetSchema `json:"properties"`
+	Required             []string               `json:"required"`
+	Items                *fleetSchema           `json:"items"`
+	Enum                 []string               `json:"enum"`
+	MinLength            int                    `json:"minLength"`
+	MaxLength            int                    `json:"maxLength"`
+	MinItems             int                    `json:"minItems"`
+	MaxItems             int                    `json:"maxItems"`
+	Minimum              *float64               `json:"minimum"`
+	Maximum              *float64               `json:"maximum"`
+}
+
+func (s fleetSchema) accepts(value any) bool {
+	switch s.Type {
+	case "object":
+		object, ok := value.(map[string]any)
+		if !ok || s.MaxProperties > 0 && len(object) > s.MaxProperties {
+			return false
+		}
+		for _, required := range s.Required {
+			if _, ok := object[required]; !ok {
+				return false
+			}
+		}
+		for key, v := range object {
+			if s.PropertyNames != nil && !s.PropertyNames.accepts(key) {
+				return false
+			}
+			child, ok := s.Properties[key]
+			if !ok && json.Unmarshal(s.AdditionalProperties, &child) != nil {
+				return false
+			}
+			if !child.accepts(v) {
+				return false
+			}
+		}
+	case "array":
+		array, ok := value.([]any)
+		if !ok || len(array) < s.MinItems || len(array) > s.MaxItems || s.Items == nil {
+			return false
+		}
+		for _, v := range array {
+			if !s.Items.accepts(v) {
+				return false
+			}
+		}
+	case "string":
+		v, ok := value.(string)
+		if !ok || len(v) < s.MinLength || len(v) > s.MaxLength || s.MinLength > 0 && strings.TrimSpace(v) == "" {
+			return false
+		}
+		if len(s.Enum) > 0 && !slices.Contains(s.Enum, v) {
+			return false
+		}
+	case "integer":
+		v, ok := value.(float64)
+		if !ok || math.Trunc(v) != v || s.Minimum != nil && v < *s.Minimum || s.Maximum != nil && v > *s.Maximum {
+			return false
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return false
+		}
+	default:
+		return false
+	}
+	return true
+}

@@ -1,0 +1,317 @@
+package hubserver
+
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+type hostedPlanCommand struct {
+	ID               string        `json:"idempotency_key"`
+	Action           string        `json:"action"`
+	ExpectedRevision int64         `json:"expected_revision"`
+	Plan             PlanReference `json:"plan"`
+	Definition       *HostedPlan   `json:"definition,omitempty"`
+	GrantID          string        `json:"grant_id"`
+	Scope            []string      `json:"scope"`
+	StartsAt         time.Time     `json:"starts_at"`
+	ExpiresAt        *time.Time    `json:"expires_at"`
+	Reason           string        `json:"reason"`
+}
+
+func (s *Service) entitlementAdministrator(c echo.Context) bool {
+	token, err := apiBearerToken(c)
+	supplied := sha256.Sum256([]byte(token))
+	configured := sha256.Sum256(s.config.Hosted.EntitlementAdminToken)
+	return err == nil && len(s.config.Hosted.EntitlementAdminToken) >= 32 && subtle.ConstantTimeCompare(supplied[:], configured[:]) == 1
+}
+
+type hostedGrantRecord struct {
+	HostedGrant
+	Reason    string     `json:"reason"`
+	GrantedBy string     `json:"granted_by"`
+	GrantedAt *time.Time `json:"granted_at,omitempty"`
+}
+
+type hostedEntitlementReport struct {
+	OrganizationID string              `json:"organization_id"`
+	Base           PlanReference       `json:"base"`
+	EffectiveBase  PlanReference       `json:"effective_base"`
+	Source         string              `json:"source"`
+	Revision       int64               `json:"revision"`
+	Features       []string            `json:"features"`
+	Grants         []hostedGrantRecord `json:"grants"`
+	GrantHistory   []hostedGrantRecord `json:"grant_history"`
+	Plans          []HostedPlan        `json:"plans"`
+}
+
+func (s *Service) hostedPlanReport(c echo.Context) error {
+	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
+		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
+	}
+	report, err := s.database.hostedEntitlementReport(c.Request().Context())
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, report)
+}
+
+func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitlementReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	var report hostedEntitlementReport
+	if d.plans() == nil {
+		return report, nativeNotFound()
+	}
+	now, err := d.currentTime()
+	if err != nil {
+		return report, err
+	}
+	entitlement, err := d.hostedEntitlement(ctx, d.reader, now)
+	if err != nil {
+		return report, err
+	}
+	report = hostedEntitlementReport{OrganizationID: entitlement.OrganizationID, Base: entitlement.Base, EffectiveBase: entitlement.EffectiveBase, Source: entitlement.Source, Revision: entitlement.Revision, Features: entitlement.Features, Grants: []hostedGrantRecord{}, GrantHistory: []hostedGrantRecord{}, Plans: []HostedPlan{}}
+	report.Plans, err = d.readHostedPlans(ctx, d.reader)
+	if err != nil {
+		return report, err
+	}
+	granted := make(map[string]hostedGrantRecord)
+	audits, err := d.reader.QueryContext(ctx, "SELECT actor_id,reason,recorded_at,record_json FROM hosted_plan_audit WHERE action = 'grant'")
+	if err != nil {
+		return report, err
+	}
+	defer audits.Close()
+	for audits.Next() {
+		var actor, reason, recorded, raw string
+		var command hostedPlanCommand
+		if err := audits.Scan(&actor, &reason, &recorded, &raw); err != nil {
+			return report, err
+		}
+		if err := json.Unmarshal([]byte(raw), &command); err != nil {
+			return report, err
+		}
+		record := hostedGrantRecord{Reason: reason, GrantedBy: actor}
+		if at, err := parseTimeValue(recorded); err == nil {
+			record.GrantedAt = &at
+		}
+		granted[command.GrantID] = record
+	}
+	if err := audits.Err(); err != nil {
+		return report, err
+	}
+	for _, grant := range entitlement.Grants {
+		record := granted[grant.ID]
+		record.HostedGrant = grant
+		report.GrantHistory = append(report.GrantHistory, record)
+		if grant.RevokedAt == nil && !grant.StartsAt.After(now) && (grant.ExpiresAt == nil || grant.ExpiresAt.After(now)) {
+			report.Grants = append(report.Grants, record)
+		}
+	}
+	return report, nil
+}
+
+func (s *Service) updateHostedPlan(c echo.Context) error {
+	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
+		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
+	}
+
+	var command hostedPlanCommand
+	if err := decodeAPIJSON(c, &command); err != nil {
+		return s.invalidAPIRequest(c, err)
+	}
+	if err := s.database.applyHostedPlanCommand(c.Request().Context(), s.config.Hosted.EntitlementAdministrator, command); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (d *database) applyHostedPlanCommand(ctx context.Context, actor string, command hostedPlanCommand) error {
+	if d.hostedBilling && (command.Action == "subscription" || command.Action == "end_subscription") {
+		return nativePublicInvalid("Stripe reconciliation owns subscription access; use separate complimentary grants for operator access")
+	}
+	if d.plans() == nil || !hostedSafeID(command.ID) || strings.TrimSpace(command.Reason) == "" || len(command.Reason) > 500 || command.ExpectedRevision < 1 || !slices.Contains([]string{"base", "subscription", "end_subscription", "grant", "revoke", "create_plan"}, command.Action) {
+		return nativePublicInvalid("A command ID, revision, action and bounded audit reason are required")
+	}
+	raw, err := json.Marshal(command)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(raw)
+	hash := hex.EncodeToString(digest[:])
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now, err := d.currentTime()
+	if err != nil {
+		return err
+	}
+	var existing string
+	err = tx.QueryRowContext(ctx, "SELECT request_hash FROM hosted_plan_audit WHERE command_id = ?", command.ID).Scan(&existing)
+	if err == nil {
+		if existing != hash {
+			return nativeConflict(tracker.Revision(command.ExpectedRevision))
+		}
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	var revision int64
+	if err := tx.QueryRowContext(ctx, "SELECT revision FROM hosted_plan_assignments WHERE organization_id = ?", d.hostedOrganization).Scan(&revision); err != nil {
+		return err
+	}
+	if revision != command.ExpectedRevision {
+		return nativeConflict(tracker.Revision(revision))
+	}
+	if slices.Contains([]string{"base", "subscription", "grant"}, command.Action) {
+		if _, err := d.readHostedPlan(ctx, tx, command.Plan); err != nil {
+			return nativePublicInvalid("The plan version must exist")
+		}
+	}
+	switch command.Action {
+	case "create_plan":
+		if command.Definition == nil || command.Plan != command.Definition.PlanReference || validateHostedPlan(*command.Definition) != nil {
+			return nativePublicInvalid("A valid new plan definition matching the plan reference is required")
+		}
+		var exists bool
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM hosted_plans WHERE id=? AND version=?)", command.Plan.ID, command.Plan.Version).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return nativeConflict(tracker.Revision(revision))
+		}
+		encoded, encodeErr := json.Marshal(normalizeHostedPlan(*command.Definition))
+		if encodeErr != nil {
+			return encodeErr
+		}
+		_, err = tx.ExecContext(ctx, "INSERT INTO hosted_plans(id,version,record_json) VALUES(?,?,?)", command.Plan.ID, command.Plan.Version, string(encoded))
+	case "base":
+		_, err = tx.ExecContext(ctx, "UPDATE hosted_plan_assignments SET base_id = ?,base_version = ? WHERE organization_id = ?", command.Plan.ID, command.Plan.Version, d.hostedOrganization)
+	case "subscription":
+		if command.ExpiresAt == nil || !command.ExpiresAt.After(now) {
+			return nativePublicInvalid("Subscription-derived access requires a future validity deadline")
+		}
+		_, err = tx.ExecContext(ctx, "UPDATE hosted_plan_assignments SET subscription_id = ?,subscription_version = ?,subscription_expires_at = ? WHERE organization_id = ?", command.Plan.ID, command.Plan.Version, formatHubTime(*command.ExpiresAt), d.hostedOrganization)
+	case "end_subscription":
+		_, err = tx.ExecContext(ctx, "UPDATE hosted_plan_assignments SET subscription_id = NULL,subscription_version = NULL,subscription_expires_at = NULL WHERE organization_id = ?", d.hostedOrganization)
+	case "grant":
+		err = insertHostedComplimentaryGrant(ctx, tx, command, now)
+	case "revoke":
+		var raw string
+		var grant HostedGrant
+		if err := tx.QueryRowContext(ctx, "SELECT record_json FROM hosted_complimentary_grants WHERE id = ?", command.GrantID).Scan(&raw); err != nil {
+			return err
+		}
+		if err := json.Unmarshal([]byte(raw), &grant); err != nil {
+			return err
+		}
+		if grant.RevokedAt == nil {
+			stamp := now.UTC()
+			grant.RevokedAt = &stamp
+		}
+		encoded, encodeErr := json.Marshal(grant)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		_, err = tx.ExecContext(ctx, "UPDATE hosted_complimentary_grants SET record_json = ? WHERE id = ?", string(encoded), grant.ID)
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE hosted_plan_assignments SET revision = revision + 1 WHERE organization_id = ?", d.hostedOrganization); err != nil {
+		return err
+	}
+	if err := d.auditHostedPlanCommand(ctx, tx, actor, command, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (d *database) auditHostedPlanCommand(ctx context.Context, tx *sql.Tx, actor string, command hostedPlanCommand, now time.Time) error {
+	raw, err := json.Marshal(command)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(raw)
+	_, err = tx.ExecContext(ctx, "INSERT INTO hosted_plan_audit(command_id,request_hash,actor_id,reason,action,recorded_at,record_json) VALUES(?,?,?,?,?,?,?)", command.ID, hex.EncodeToString(digest[:]), actor, command.Reason, command.Action, formatHubTime(now), string(raw))
+	return err
+}
+
+func insertHostedComplimentaryGrant(ctx context.Context, tx *sql.Tx, command hostedPlanCommand, now time.Time) error {
+	if !hostedSafeID(command.GrantID) || len(command.Scope) == 0 || len(command.Scope) > len(hostedAllowanceNames())+len(hostedFeatureNames()) {
+		return nativePublicInvalid("A grant ID and explicit allowance or feature scope are required")
+	}
+	for _, scope := range command.Scope {
+		if !slices.Contains(hostedAllowanceNames(), scope) && !slices.Contains(hostedFeatureNames(), scope) {
+			return nativePublicInvalid("Grant scope is unknown")
+		}
+	}
+	if command.StartsAt.IsZero() {
+		command.StartsAt = now.UTC()
+	}
+	if command.ExpiresAt != nil && (!command.ExpiresAt.After(now) || !command.ExpiresAt.After(command.StartsAt)) {
+		return nativePublicInvalid("Grant expiry must follow its start and the current time")
+	}
+	raw, err := json.Marshal(HostedGrant{ID: command.GrantID, Plan: command.Plan, Scope: command.Scope, StartsAt: command.StartsAt, ExpiresAt: command.ExpiresAt})
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, "INSERT INTO hosted_complimentary_grants(id,record_json) VALUES(?,?)", command.GrantID, string(raw))
+	return err
+}
+
+func hostedRunnerTransactionMetrics(path string) []string {
+	switch path {
+	case nativeBase + "/leases/:lease/validate", nativeBase + "/claims/preview":
+		return []string{"events_total", "usage_windows"}
+	case nativeBase + "/machines/:machine/heartbeat":
+		return []string{"connected_runners", "events_total", "usage_windows"}
+	}
+	return nil
+}
+
+func hostedNativeMutationMetrics(input any, completion bool) []string {
+	metrics := []string{"events_total", "usage_windows"}
+	if _, runEvent := input.(tracker.NativeRunEvent); !runEvent {
+		metrics = append(metrics, "unarchived_issues", "projects", "repositories", "registered_runners")
+		if !completion {
+			metrics = append(metrics, "connected_runners")
+		}
+	}
+	if !completion {
+		metrics = append(metrics, "collaboration_bytes", "history_records")
+	}
+	return metrics
+}
+
+func hostedCompletionMutation(c echo.Context, input any) bool {
+	if strings.HasSuffix(c.Path(), "/work-items/:item/archive") {
+		return true
+	}
+	if event, ok := input.(tracker.NativeRunEvent); ok {
+		return event.Type == "run.finished" || event.Type == "run.checkpointed"
+	}
+	return false
+}
+
+func hostedMutationFeature(c echo.Context) string {
+	if strings.Contains(c.Path(), "/integration") || strings.Contains(c.Path(), "/imports") {
+		return "github_integration"
+	}
+	return "collaboration"
+}

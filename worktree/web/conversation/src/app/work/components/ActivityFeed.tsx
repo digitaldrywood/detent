@@ -1,0 +1,399 @@
+import {
+  CircleDotIcon,
+  EllipsisIcon,
+  FileDiffIcon,
+  type LucideIcon,
+  MessageSquareIcon,
+  MessageSquareQuoteIcon,
+  PaperclipIcon,
+  PencilIcon,
+  PlusIcon,
+  SendHorizonalIcon,
+  SquareIcon,
+  TimerResetIcon,
+  TriangleAlertIcon,
+  WorkflowIcon,
+} from "lucide-react";
+import React from "react";
+
+import { Button } from "../../../components/ui/button.tsx";
+import { AlertDialog, AlertDialogClose, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogPopup, AlertDialogTitle } from "../../../components/ui/alert-dialog.tsx";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../../../components/ui/menu.tsx";
+import {
+  Collapsible,
+  CollapsiblePanel,
+  CollapsibleTrigger,
+} from "../../../components/ui/collapsible.tsx";
+import { cn } from "../../../lib/utils.ts";
+import { Markdown } from "../../components/Markdown.tsx";
+import { AttachmentEditor, attachmentInputHandlers, useAttachmentDraft } from "./AttachmentEditor.tsx";
+import {
+  type ActivityComment,
+  type ActivityGroup,
+  type ActivityIcon,
+  type ActivityRow,
+  foldActivity,
+  foldLabel,
+  timeLabel,
+} from "../lib/activity.ts";
+
+const ICONS: Record<ActivityIcon, LucideIcon> = {
+  created: PlusIcon,
+  moved: WorkflowIcon,
+  edited: PencilIcon,
+  labelled: PencilIcon,
+  related: CircleDotIcon,
+  runner: TimerResetIcon,
+  diff: FileDiffIcon,
+  comment: MessageSquareIcon,
+  question: MessageSquareQuoteIcon,
+  steering: SendHorizonalIcon,
+  attachment: PaperclipIcon,
+  stopped: SquareIcon,
+  failed: TriangleAlertIcon,
+};
+
+function RowGlyph({ icon }: { readonly icon: ActivityIcon }): React.ReactElement {
+  const Icon = ICONS[icon];
+  return (
+    <span
+      aria-hidden
+      className="flex size-[22px] shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground"
+    >
+      <Icon className="size-3" />
+    </span>
+  );
+}
+
+function activityId(row: ActivityRow): string {
+  return `issue-${row.key.replace(/:claimed$/, "").replace(/:ended$/, "-ended").replace(":", "-")}`;
+}
+
+function EventRow({ row, highlighted = false }: { readonly row: ActivityRow; readonly highlighted?: boolean }): React.ReactElement {
+  return (
+    <li
+      id={activityId(row)}
+      data-citation-highlight={highlighted ? "true" : undefined}
+      data-testid="issue-activity-row"
+      data-activity-icon={row.icon}
+      className={cn("flex items-center gap-3 rounded-md py-1 text-[13px]", highlighted && "bg-primary/10 ring-2 ring-primary")}
+    >
+      <RowGlyph icon={row.icon} />
+      <p className="min-w-0 text-muted-foreground">
+        <span className="font-medium text-foreground">{row.actor}</span> {row.sentence}
+        {highlighted && row.reason !== undefined ? <span className="text-foreground"> · {row.reason}</span> : null}
+        {timeLabel(row.at) === "" ? null : (
+          <span className="text-muted-foreground/70"> · {timeLabel(row.at)}</span>
+        )}
+      </p>
+    </li>
+  );
+}
+
+/**
+ * A comment, as its own card with the reply attached to it.
+ *
+ * The reply is a comment on the same issue, not a threaded child: the hub's
+ * comments have no parent, so the footer says "Leave a reply" and posts one
+ * more comment rather than pretending to a thread the API cannot store.
+ */
+function CommentCard({
+  row,
+  onReply,
+  posting,
+  highlighted = false,
+  projectId,
+  onChangeComment,
+}: {
+  readonly row: ActivityRow;
+  readonly onReply: ((body: string) => void | Promise<void>) | null;
+  readonly posting: boolean;
+  readonly highlighted?: boolean;
+  readonly projectId?: string | undefined;
+  readonly onChangeComment?: ActivityFeedProps["onChangeComment"];
+}): React.ReactElement {
+  const [draft, setDraft] = React.useState("");
+  const upload = useAttachmentDraft(projectId ?? "", setDraft);
+  const input = React.useRef<HTMLInputElement>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const comment = row.comment;
+  const [editing, setEditing] = React.useState(false);
+  const [editDraft, setEditDraft] = React.useState("");
+  const [editUploading, setEditUploading] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
+  const [changeError, setChangeError] = React.useState<string | null>(null);
+  const trigger = React.useRef<HTMLButtonElement>(null);
+  const article = React.useRef<HTMLElement>(null);
+  const wasEditing = React.useRef(false);
+  React.useEffect(() => {
+    if (wasEditing.current && !editing) trigger.current?.focus();
+    wasEditing.current = editing;
+  }, [editing]);
+  const canChange = comment?.own === true && !comment.deleted && onChangeComment != null;
+  const finishEditing = () => setEditing(false);
+  const change = async (deleted: boolean) => {
+    if (comment === undefined || onChangeComment == null || !canChange || busy || (!deleted && editUploading)) return;
+    setBusy(true);
+    setChangeError(null);
+    try {
+      await onChangeComment(comment, deleted ? "" : editDraft, deleted);
+      setConfirmDelete(false);
+      finishEditing();
+    } catch (cause) {
+      setChangeError(`Could not ${deleted ? "delete" : "save"} the comment: ${cause instanceof Error ? cause.message : String(cause)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <li id={activityId(row)} data-citation-highlight={highlighted ? "true" : undefined} className={cn("my-1.5 rounded-md", highlighted && "bg-primary/10 ring-2 ring-primary")} data-testid="issue-comment">
+      <article ref={article} tabIndex={-1} className="rounded-[var(--radius)] border border-border bg-card">
+        <div className="px-3.5 py-3">
+          <div className="flex flex-wrap items-center gap-2 text-[13px]">
+            <span className="min-w-0 break-all font-medium text-foreground">{row.actor}</span>
+            <span className="text-muted-foreground/70">{timeLabel(row.at)}{comment?.edited === true && !comment.deleted ? " · edited" : ""}</span>
+            {canChange && !editing ? <Menu>
+              <MenuTrigger ref={trigger} aria-label="Comment actions" className="ml-auto inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground outline-none ring-ring hover:bg-accent hover:text-foreground focus-visible:ring-2">
+                <EllipsisIcon className="size-3.5" />
+              </MenuTrigger>
+              <MenuPopup align="end" sideOffset={4}>
+                <MenuItem onClick={() => { setEditDraft(comment.body); setChangeError(null); setEditing(true); }}>Edit</MenuItem>
+                <MenuItem variant="destructive" onClick={() => { setChangeError(null); setConfirmDelete(true); }}>Delete</MenuItem>
+              </MenuPopup>
+            </Menu> : null}
+          </div>
+          <div className="mt-2 text-sm" data-testid="issue-comment-body">
+            {comment?.deleted === true ? <p className="text-muted-foreground">This comment was deleted</p> : editing ? <form onSubmit={(event) => { event.preventDefault(); if (editDraft.trim() !== "") void change(false); }}>
+              <AttachmentEditor projectId={projectId ?? ""} value={editDraft} onChange={setEditDraft} onUploadingChange={setEditUploading} disabled={busy} aria-label="Edit comment" autoFocus />
+              {changeError === null ? null : <p role="alert" className="text-sm text-destructive">{changeError}</p>}
+              <div className="mt-2 flex gap-2">
+                <Button type="submit" size="xs" disabled={busy || editUploading || editDraft.trim() === ""}>Save</Button>
+                <Button type="button" size="xs" variant="ghost" disabled={busy} onClick={finishEditing}>Cancel</Button>
+              </div>
+            </form> : <Markdown source={comment?.body ?? ""} projectId={projectId} />}
+          </div>
+        </div>
+        {onReply === null || comment?.deleted === true || editing ? null : (
+          <form
+            {...attachmentInputHandlers(upload.addFiles, posting)}
+            className="flex items-center gap-2 border-border border-t px-3 py-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (draft.trim().length === 0 || posting || upload.uploading) return;
+              setError(null);
+              void Promise.resolve(onReply(draft.trim())).then(() => setDraft(""), (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
+            }}
+          >
+            <input
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              data-testid="issue-comment-reply"
+              aria-label={`Reply to ${row.actor}`}
+              placeholder="Leave a reply…"
+              className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground/70"
+            />
+            {projectId === undefined ? null : <>
+              <input ref={input} type="file" multiple hidden data-testid="reply-attachment-input" onChange={(event) => { upload.addFiles(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ""; }} />
+              <Button type="button" variant="ghost" size="icon-xs" aria-label="Attach files to reply" disabled={posting} onClick={() => input.current?.click()}><PaperclipIcon /></Button>
+            </>}
+            <Button
+              type="submit"
+              size="xs"
+              variant="outline"
+              disabled={draft.trim().length === 0 || posting || upload.uploading}
+            >
+              Reply
+            </Button>
+          </form>
+        )}
+        {[...upload.errors, ...(error === null ? [] : [error])].map((message, index) => <p key={index} role="alert" className="px-3 text-sm text-destructive">{message}</p>)}
+      </article>
+      <AlertDialog open={confirmDelete} onOpenChange={(open) => { if (!busy) setConfirmDelete(open); }}>
+        <AlertDialogPopup finalFocus={() => trigger.current ?? article.current}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete comment?</AlertDialogTitle>
+            <AlertDialogDescription>The comment will be replaced with a deleted-comment placeholder. Other comments will stay in place.</AlertDialogDescription>
+          </AlertDialogHeader>
+          {changeError === null ? null : <p role="alert" className="px-6 pb-4 text-sm text-destructive">{changeError}</p>}
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" disabled={busy}>Cancel</Button>} />
+            <Button variant="destructive" disabled={busy} onClick={() => void change(true)}>{busy ? "Deleting…" : "Delete"}</Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+    </li>
+  );
+}
+
+function FoldRow({ rows }: { readonly rows: readonly ActivityRow[] }): React.ReactElement {
+  return (
+    <li className="py-0.5">
+      <Collapsible>
+        <CollapsibleTrigger
+          data-testid="activity-fold"
+          className="cursor-pointer rounded-sm px-0 text-left text-[13px] text-muted-foreground outline-none ring-ring hover:text-foreground focus-visible:ring-2"
+        >
+          {foldLabel(rows)}
+        </CollapsibleTrigger>
+        <CollapsiblePanel>
+          <ol className="mt-1 border-border border-l ps-3">
+            {rows.map((row) => (
+              <EventRow key={row.key} row={row} />
+            ))}
+          </ol>
+        </CollapsiblePanel>
+      </Collapsible>
+    </li>
+  );
+}
+
+export interface LiveRowProps {
+  /** True while an attempt holds the issue. */
+  readonly running: boolean;
+  /** The runner's current sentence, or the last turn's summary. */
+  readonly sentence: string;
+  /** `Preview runner · Codex gpt-6-astra · attempt 2`, where it is known. */
+  readonly detail: string;
+  readonly elapsed: string;
+  /** Absent when nothing can be interrupted. */
+  readonly onInterrupt: (() => void) | null;
+  readonly onOpenConversation: () => void;
+}
+
+/**
+ * The conversation, as one row.
+ *
+ * While an attempt runs it pulses — the same `animate-status-pulse` dot the
+ * board's live card wears — and carries Interrupt; when nothing runs it is
+ * the last turn's one-line summary with the same link. Either way the whole
+ * row opens the conversation in the right panel.
+ */
+export function LiveRow(props: LiveRowProps): React.ReactElement {
+  return (
+    <li data-testid="issue-live-row" data-live={props.running ? "true" : "false"} className="my-1.5">
+      <div
+        className={cn(
+          "flex items-start gap-3 rounded-[var(--radius)] border px-3.5 py-3",
+          props.running ? "border-success/35 bg-success/[0.05]" : "border-border bg-card",
+        )}
+      >
+        <span className="flex size-[22px] shrink-0 items-center justify-center">
+          <span
+            aria-hidden
+            className={cn(
+              "size-2.5 rounded-full",
+              props.running
+                ? "bg-success motion-safe:animate-status-pulse"
+                : "bg-muted-foreground/40",
+            )}
+          />
+        </span>
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <div className="flex items-center gap-2 text-[13px]">
+            <span className="font-medium text-foreground" data-testid="live-row-title">
+              {props.running ? "The runner is working" : "Conversation"}
+            </span>
+            {props.detail === "" ? null : (
+              <span className="min-w-0 truncate text-muted-foreground/70">· {props.detail}</span>
+            )}
+            {props.elapsed === "" ? null : (
+              <span
+                className="ml-auto shrink-0 font-mono text-success text-xs tabular-nums"
+                data-testid="live-row-elapsed"
+              >
+                {props.elapsed}
+              </span>
+            )}
+          </div>
+          <p className="text-[13px] text-muted-foreground" data-testid="live-row-sentence">
+            {props.sentence}
+          </p>
+          <div className="mt-0.5 flex items-center gap-2">
+            <Button
+              size="xs"
+              variant="outline"
+              data-testid="view-conversation"
+              onClick={props.onOpenConversation}
+            >
+              View conversation
+            </Button>
+            {props.onInterrupt === null ? null : (
+              <Button
+                size="xs"
+                variant="outline"
+                data-testid="live-row-interrupt"
+                onClick={props.onInterrupt}
+              >
+                <SquareIcon className="size-3" />
+                Interrupt
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+export interface ActivityFeedProps {
+  readonly onChangeComment?: ((comment: ActivityComment, body: string, deleted: boolean) => Promise<void>) | null;
+  readonly projectId?: string | undefined;
+  readonly rows: readonly ActivityRow[];
+  /** The live row, rendered in its own place in time. Null with no conversation. */
+  readonly live: React.ReactElement | null;
+  /** Where the live row sits: the epoch millisecond it belongs to. */
+  readonly liveAt: number;
+  /** Null for a reader who may not write. */
+  readonly onReply: ((body: string) => void | Promise<void>) | null;
+  readonly posting: boolean;
+  readonly highlightedId?: string | null;
+}
+
+export function ActivityFeed(props: ActivityFeedProps): React.ReactElement {
+  const groups = React.useMemo(() => foldActivity(props.rows).flatMap((group): ActivityGroup[] =>
+    group.kind === "fold" && group.rows.some((row) => activityId(row) === props.highlightedId)
+      ? group.rows.map((row) => ({ kind: "row", key: row.key, row })) : [group]), [props.rows, props.highlightedId]);
+  React.useEffect(() => {
+    if (props.highlightedId == null) return;
+    document.getElementById(props.highlightedId)?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+  }, [props.highlightedId, groups]);
+  const before: ActivityGroup[] = [];
+  const after: ActivityGroup[] = [];
+  for (const group of groups) {
+    const at = group.kind === "row" ? group.row.at : (group.rows.at(-1)?.at ?? 0);
+    (at <= props.liveAt ? before : after).push(group);
+  }
+
+  const draw = (group: ActivityGroup) =>
+    group.kind === "fold" ? (
+      <FoldRow key={group.key} rows={group.rows} />
+    ) : group.row.kind === "comment" ? (
+      <CommentCard
+        projectId={props.projectId}
+        key={group.key}
+        row={group.row}
+        onReply={props.onReply}
+        onChangeComment={props.onChangeComment}
+        posting={props.posting}
+        highlighted={activityId(group.row) === props.highlightedId}
+      />
+    ) : (
+      <EventRow key={group.key} row={group.row} highlighted={activityId(group.row) === props.highlightedId} />
+    );
+
+  return (
+    <section data-testid="issue-activity">
+      <h2 className="mb-1.5 font-semibold text-[15px]">Activity</h2>
+      {groups.length === 0 && props.live === null ? (
+        <p className="text-muted-foreground text-sm">Nothing has happened on this issue yet.</p>
+      ) : (
+        <ol className="flex flex-col">
+          {before.map(draw)}
+          {props.live}
+          {after.map(draw)}
+        </ol>
+      )}
+    </section>
+  );
+}

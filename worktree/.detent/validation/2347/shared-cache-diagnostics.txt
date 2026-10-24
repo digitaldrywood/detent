@@ -1,0 +1,13 @@
+first
+testcache: github.com/digitaldrywood/detent/internal/activity: test ID 34544e5f502d4d3038456f364644506d56482d4a => 52d29d3cde1bec9ff13b6b4cce92dd89078e68c83c42839665df8e6f1cab18fd
+testcache: github.com/digitaldrywood/detent/internal/activity: input list not found: cache entry not found: open /Users/corylanou/code/detent-workspaces/.detent/cache/detent-6383f7eb0b6a/go-build/52/52d29d3cde1bec9ff13b6b4cce92dd89078e68c83c42839665df8e6f1cab18fd-a: no such file or directory
+testcache: github.com/digitaldrywood/detent/internal/activity: test ID 704b5774366d76344e3234666d315a544c646e38 => d67aeeac5cb11f92f25dc1605d0fa1369dfc19b62ab43dac289a488aaf5ec7e3
+testcache: github.com/digitaldrywood/detent/internal/activity: input list not found: cache entry not found: open /Users/corylanou/code/detent-workspaces/.detent/cache/detent-6383f7eb0b6a/go-build/d6/d67aeeac5cb11f92f25dc1605d0fa1369dfc19b62ab43dac289a488aaf5ec7e3-a: no such file or directory
+testcache: github.com/digitaldrywood/detent/internal/activity: save test ID 52d29d3cde1bec9ff13b6b4cce92dd89078e68c83c42839665df8e6f1cab18fd => input ID 3319bf8f4d98e3e29d11e32054ebf1a1f064248c70c1070eefd1106e2569ab58 => 3c6c11c1ed89816cb177c2a001084ea4997f2e75229f24c9b61522ebb63fe9ee
+testcache: github.com/digitaldrywood/detent/internal/activity: save test ID d67aeeac5cb11f92f25dc1605d0fa1369dfc19b62ab43dac289a488aaf5ec7e3 => input ID 3319bf8f4d98e3e29d11e32054ebf1a1f064248c70c1070eefd1106e2569ab58 => c691e18114c38c589561fba07c294ae2aa8939d8944ff6ad2fa0c5bec9efef32
+ok  	github.com/digitaldrywood/detent/internal/activity	0.373s
+
+repeat
+testcache: github.com/digitaldrywood/detent/internal/activity: test ID 34544e5f502d4d3038456f364644506d56482d4a => 52d29d3cde1bec9ff13b6b4cce92dd89078e68c83c42839665df8e6f1cab18fd
+testcache: github.com/digitaldrywood/detent/internal/activity: test ID 52d29d3cde1bec9ff13b6b4cce92dd89078e68c83c42839665df8e6f1cab18fd => input ID 3319bf8f4d98e3e29d11e32054ebf1a1f064248c70c1070eefd1106e2569ab58 => 3c6c11c1ed89816cb177c2a001084ea4997f2e75229f24c9b61522ebb63fe9ee
+ok  	github.com/digitaldrywood/detent/internal/activity	(cached)
