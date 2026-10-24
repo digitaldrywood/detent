@@ -37,6 +37,7 @@ func TestOperatorRevisionSchemaContract(t *testing.T) {
 		operatortool.UpdateProjectModelSelection:      &operatortool.ModelSelectionInput{},
 		operatortool.PlatformChangeEntitlement:        &operatortool.PlatformEntitlementArguments{},
 		"rename_project":                              &operatortool.RenameProjectArguments{},
+		"set_organization_logo":                       &operatortool.SetOrganizationLogoArguments{},
 		"set_project_icon":                            &operatortool.SetProjectIconArguments{},
 		"update_project_integration":                  &operatortool.IntegrationInput{},
 		"bind_native_repository":                      &operatortool.RepositoryInput{},

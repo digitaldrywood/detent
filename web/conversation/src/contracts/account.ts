@@ -57,7 +57,16 @@ export type ProjectGrant = typeof ProjectGrant.Type;
  * origin that organization is served from, which is why switching is a
  * redirect through `/auth/oidc/start` rather than a state change here.
  */
+export const OrganizationLogo = Schema.Struct({
+  image_key: Schema.optional(Schema.String),
+  image_sha256: Schema.optional(Schema.String),
+  url: Schema.optional(Schema.String),
+  revision: Schema.String,
+});
+export type OrganizationLogo = typeof OrganizationLogo.Type;
+
 export const BootstrapOrganization = Schema.Struct({
+  logo: Schema.optional(Schema.NullOr(OrganizationLogo)),
   slug: Schema.optional(Schema.String),
   role: Schema.optional(OrganizationRole),
   id: Schema.String,
@@ -192,6 +201,7 @@ export type UpdatesReport = typeof UpdatesReport.Type;
 export const AccountBootstrap = Schema.Struct({
   self_hosted: Schema.optional(Schema.Boolean),
   organization: Schema.Struct({
+    logo: Schema.optional(Schema.NullOr(OrganizationLogo)),
     slug: Schema.optional(Schema.String),
     id: Schema.String,
     name: Schema.String,

@@ -23,6 +23,7 @@ import {
   BillingUsageReport,
   CheckoutResponse,
   CreateOrganizationResponse,
+  OrganizationLogo,
   FleetResponse,
   UpdatesReport,
   FleetNamesResponse,
@@ -253,6 +254,8 @@ export function makeAccountApi(options: AccountApiOptions) {
     slackIntegration: () => send(SlackIntegrationStatus, "GET", `${base}/integrations/slack`),
     saveSlackIntegration: (input: { webhook?: string; channel_name: string }) => send(SlackIntegrationStatus, "PUT", `${base}/integrations/slack`, input),
     testSlackIntegration: () => send(SlackIntegrationStatus, "POST", `${base}/integrations/slack/test`, {}),
+    organizationLogo: () => send(OrganizationLogo, "GET", `${base}/logo`),
+    setOrganizationLogo: (input: { content?: string; remove: boolean; revision: string; key: string }) => send(OrganizationLogo, "PUT", `${base}/logo`, { ...(input.content ? { content_base64: input.content } : {}), remove: input.remove, expected_revision: input.revision, idempotency_key: input.key }),
     renameOrganization: (input: { name: string; key: string }) => send(Schema.Struct({ name: Schema.String }), "PUT", `${base}/name`, { name: input.name, idempotency_key: input.key }),
     members: () => send(MembersResponse, "GET", `${base}/members`),
     invite: (input: { email: string; role: string; key: string; grants?: readonly ProjectGrant[] }) =>

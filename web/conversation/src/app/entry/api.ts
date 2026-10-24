@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import { AccountError, type FetchLike } from "../account/api.ts";
 
 export const EntryOrganization = Schema.Struct({
+  logo_url: Schema.optional(Schema.String),
   id: Schema.String,
   name: Schema.String,
   url: Schema.String,
