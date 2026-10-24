@@ -27,11 +27,40 @@ const activityIssueCandidatesQuery = `WITH live AS MATERIALIZED (
 ), finished AS MATERIALIZED (
  SELECT native_id FROM issues WHERE organization_id=:org AND project_id=:project
  AND terminal_entered_at>=:from ORDER BY terminal_entered_at DESC,native_id LIMIT :limit
-), selected AS (SELECT work_item_id AS id FROM live UNION SELECT native_id FROM finished)
-SELECT i.native_id,i.number,i.title,i.actor_json,ws.detent_state
-FROM selected JOIN issues i ON i.organization_id=:org AND i.project_id=:project AND i.native_id=selected.id
-JOIN workflow_states ws ON ws.id=i.workflow_state_id
-ORDER BY i.updated_at DESC,i.native_id LIMIT :limit`
+), selected AS MATERIALIZED (SELECT work_item_id AS id FROM live UNION SELECT native_id FROM finished)
+SELECT i.native_id,i.number,i.title,i.actor_json,ws.detent_state,i.updated_at
+FROM selected CROSS JOIN issues i ON i.organization_id=:org AND i.project_id=:project AND i.native_id=selected.id
+JOIN workflow_states ws ON ws.id=i.workflow_state_id`
+
+type activityIssueCandidate struct {
+	issue             operatortool.ActivityIssue
+	actorRaw, updated string
+}
+
+func readActivityIssueCandidates(ctx context.Context, q nativeQueryer, organization, project string, from, now time.Time, limit int) ([]activityIssueCandidate, error) {
+	rows, err := q.QueryContext(ctx, activityIssueCandidatesQuery,
+		sql.Named("org", organization), sql.Named("project", project), sql.Named("from", formatHubTime(from.Truncate(time.Second))), sql.Named("now", formatHubTime(now)), sql.Named("limit", limit))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	candidates := []activityIssueCandidate{}
+	for rows.Next() {
+		var candidate activityIssueCandidate
+		issue := &candidate.issue
+		if err := rows.Scan(&issue.WorkItemID, &issue.Number, &issue.Title, &candidate.actorRaw, &issue.CurrentLane, &candidate.updated); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	slices.SortFunc(candidates, func(a, b activityIssueCandidate) int {
+		return cmp.Or(cmp.Compare(b.updated, a.updated), cmp.Compare(a.issue.WorkItemID, b.issue.WorkItemID))
+	})
+	return candidates[:min(len(candidates), limit)], nil
+}
 
 type activityWorkInterval struct{ from, to time.Time }
 type activityIssueAttempt struct {
@@ -332,28 +361,20 @@ func readActivityIssues(ctx context.Context, q nativeQueryer, projects []string,
 		if err := json.Unmarshal([]byte(raw), &lanes); err != nil {
 			return err
 		}
-		rows, err := q.QueryContext(ctx, activityIssueCandidatesQuery,
-			sql.Named("org", out.OrganizationID), sql.Named("project", project), sql.Named("from", formatHubTime(out.Window.From.Truncate(time.Second))), sql.Named("now", formatHubTime(out.ObservedAt)), sql.Named("limit", remaining+1))
+		selected, err := readActivityIssueCandidates(ctx, q, out.OrganizationID, project, out.Window.From, out.ObservedAt, remaining+1)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
 		candidates := []operatortool.ActivityIssue{}
-		scanned := 0
-		for rows.Next() {
-			scanned++
-			issue := operatortool.ActivityIssue{ProjectID: project, ProjectName: name}
-			var actorRaw string
-			if err := rows.Scan(&issue.WorkItemID, &issue.Number, &issue.Title, &actorRaw, &issue.CurrentLane); err != nil {
-				rows.Close()
-				return err
-			}
+		scanned := len(selected)
+		for _, candidate := range selected {
+			issue := candidate.issue
+			issue.ProjectID, issue.ProjectName = project, name
 			if visibility, ok := reportsScopeFrom(ctx); ok && visibility.reporterPrincipal != "" {
 				var actor struct {
 					PrincipalID string `json:"principal_id"`
 				}
-				if err := json.Unmarshal([]byte(actorRaw), &actor); err != nil {
-					rows.Close()
+				if err := json.Unmarshal([]byte(candidate.actorRaw), &actor); err != nil {
 					return err
 				}
 				if actor.PrincipalID != visibility.reporterPrincipal {
@@ -361,9 +382,6 @@ func readActivityIssues(ctx context.Context, q nativeQueryer, projects []string,
 				}
 			}
 			candidates = append(candidates, issue)
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return err
 		}
 		partial := scanned > remaining
 		if len(candidates) > remaining {
