@@ -1634,8 +1634,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
 	workspaceIssue.FreshCheckout = false
 	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
+	publishedSource := req.Execution != nil && req.Execution.Recovery().Change != nil && req.Execution.Recovery().Change.VersionID != ""
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework)
-	if source, ok := req.Execution.(ChangeSourceExecution); ok && (workspaceIssue.NativeRework || nativeLanding || reviewRecovery != nil || publicationRecovery || req.Execution.Recovery().SourceVersionID != "") {
+	if source, ok := req.Execution.(ChangeSourceExecution); ok && (workspaceIssue.NativeRework || nativeLanding || reviewRecovery != nil || publicationRecovery || publishedSource || req.Execution.Recovery().SourceVersionID != "") {
 		if local, ok := runWorkspace.(interface {
 			Existing(workspace.Issue) (workspace.Info, error)
 		}); ok {
@@ -1648,10 +1649,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 
 		recovered, recoverErr := source.RecoverChangeSource(ctx)
 		if recoverErr != nil && !checkpointRefCoversChangeSource(recoverErr, req.Execution.Recovery(), nativeLanding, false) {
-			if errors.Is(recoverErr, ErrChangeSourceVersionSuperseded) {
-				recoverErr = fmt.Errorf("%w: %w", ErrNativeRecoveryRequired, recoverErr)
-			}
-			return RunResult{}, fmt.Errorf("recover native Change source: %w", recoverErr)
+			return RunResult{}, fmt.Errorf("%w: recover native Change source: %w", ErrNativeRecoveryRequired, recoverErr)
 		}
 		if recoverErr != nil {
 			r.logWorkerEvent(req.Issue, "worker_change_source_from_checkpoint_ref", "error", recoverErr)

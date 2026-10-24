@@ -195,6 +195,7 @@ type reworkReviewExecution struct {
 	acceptance      []gate.ValidatorResult
 	recordError     error
 	recoverError    error
+	failure         *tracker.NativeTerminalFailure
 	activitySession int64
 }
 
@@ -234,8 +235,9 @@ func (e *reworkReviewExecution) RecordSourceValidation(_ context.Context, receip
 	}
 	return nil
 }
-func (e *reworkReviewExecution) PrepareFinish(_ context.Context, _ string, body string, _ *tracker.NativeTerminalFailure) error {
+func (e *reworkReviewExecution) PrepareFinish(_ context.Context, _ string, body string, failure *tracker.NativeTerminalFailure) error {
 	e.body = body
+	e.failure = failure
 	return nil
 }
 func (e *reworkReviewExecution) ReviewVersion(ctx context.Context) (NativeValidation, error) {

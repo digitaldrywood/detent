@@ -13,6 +13,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestReviewPlanIssuesUsesPersistedReworkSignature(t *testing.T) {
@@ -89,7 +90,15 @@ func TestDispatchModeUsesPlanReviewTimelineProvenance(t *testing.T) {
 	for _, tt := range []struct {
 		name, supersedingLane, want   string
 		persisted, fallback, disabled bool
+		published, retainedPR, todo   bool
 	}{
+		{name: "new Todo still plans", todo: true, want: runpkg.RunModePlan},
+		{name: "published version overrides persisted plan rework", published: true, persisted: true, want: runpkg.RunModeImplement},
+		{name: "published version overrides plan fallback", published: true, fallback: true, want: runpkg.RunModeImplement},
+		{name: "published version in Todo resumes implementation", published: true, todo: true, want: runpkg.RunModeImplement},
+		{name: "retained PR overrides persisted plan rework", retainedPR: true, persisted: true, want: runpkg.RunModeImplement},
+		{name: "retained PR overrides plan fallback", retainedPR: true, fallback: true, want: runpkg.RunModeImplement},
+		{name: "retained PR in Todo resumes implementation", retainedPR: true, todo: true, want: runpkg.RunModeImplement},
 		{name: "ordinary rework", want: runpkg.RunModeImplement},
 		{name: "plan review rework", persisted: true, want: runpkg.RunModePlan},
 		{name: "in memory fallback", fallback: true, want: runpkg.RunModePlan},
@@ -103,10 +112,19 @@ func TestDispatchModeUsesPlanReviewTimelineProvenance(t *testing.T) {
 			at := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 			issue := planReviewCommentIssue("issue-plan-dispatch", "comment-1")
 			issue.State = autoPromoteReworkState
+			if tt.todo {
+				issue.State = "Todo"
+			}
+			if tt.retainedPR {
+				issue.PullRequest = &connector.PullRequest{Number: 1, State: "OPEN", HeadSHA: "published-head"}
+			}
 			issue.Comments = append(issue.Comments, connector.IssueComment{Body: "Plan review routed this issue from Plan Review to Rework."})
 			metrics := &autoPromoteWorkflowMetricsRecorder{}
 			orch := planReviewTestOrchestrator(&dependencyAutoUnblockConnector{}, metrics)
 			orch.cfg.Plan.Enabled = !tt.disabled
+			if tt.published {
+				orch.scheduling = &hubSchedulingSource{execution: &planDispatchExecution{recovery: tracker.NativeRecovery{Change: &tracker.NativeChangeReference{ChangeID: "change_current", VersionID: "version_current", HeadSHA: "published-head"}}}}
+			}
 			state := newState(orch.cfg)
 			if tt.fallback {
 				state.planRework[issue.ID] = struct{}{}
@@ -146,6 +164,13 @@ func TestDispatchModeUsesPlanReviewTimelineProvenance(t *testing.T) {
 		})
 	}
 }
+
+type planDispatchExecution struct {
+	runpkg.Execution
+	recovery tracker.NativeRecovery
+}
+
+func (e *planDispatchExecution) Recovery() tracker.NativeRecovery { return e.recovery }
 
 func TestPlanReviewContainsReviewSeverityUsesExplicitBadges(t *testing.T) {
 	t.Parallel()
