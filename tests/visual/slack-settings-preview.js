@@ -6,6 +6,7 @@ async function slackSettingsPreview() {
   const result = await build({
     entryPoints: ["tests/visual/slack-settings-preview.tsx"], bundle: true, write: false,
     format: "iife", minify: true, jsx: "automatic",
+    resolveExtensions: [".tsx", ".ts", ".jsx", ".js", ".css", ".json", ".mjs"],
     define: { "process.env.NODE_ENV": '"production"' },
     alias: {
       "~": path.resolve("web/conversation/src"),

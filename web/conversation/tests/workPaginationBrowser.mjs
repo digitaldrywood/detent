@@ -17,6 +17,7 @@ await build({
   bundle: true,
   format: "iife",
   platform: "browser",
+  resolveExtensions: [".tsx", ".ts", ".jsx", ".js", ".css", ".json", ".mjs"],
   alias: {
     "node:crypto": join(output, "crypto.js"),
     "lucide-react/dynamic": resolve(root, "src/browser/lucideDynamicIcon.tsx"),

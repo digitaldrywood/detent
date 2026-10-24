@@ -6,6 +6,7 @@ async function providersRunnersPreview() {
   const result = await build({
     entryPoints: ["tests/visual/providers-runners-preview.tsx"],
     bundle: true,
+    resolveExtensions: [".tsx", ".ts", ".jsx", ".js", ".css", ".json", ".mjs"],
     write: false,
     format: "iife",
     minify: true,
