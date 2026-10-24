@@ -985,8 +985,14 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					due := orch.heartbeats.due(now)
 					orch.heartbeats.execute(t.Context(), due[0])
 					orch.handleHeartbeatResult(&state, <-orch.heartbeats.results)
+					retained, ok := state.deferredCompletions[issue.ID]
+					if !ok || !reflect.DeepEqual(retained.Result, record.Result) || !state.Retry[issue.ID].CompletionDeferred || len(orch.heartbeats.due(now.Add(time.Hour))) != 0 || publisher.prepared != 0 || len(attempts.completions) != 0 {
+						t.Fatal("lost fence discarded deferred source or retained renewal ownership")
+					}
+					publisher.validationErr = runpkg.ErrExecutionAuthorityUnavailable
+					scheduling.release = nil
 					orch.retryDeferredCompletions(t.Context(), &state, now.Add(time.Hour))
-					if len(state.deferredCompletions) != 0 || len(state.Claimed) != 0 || len(orch.heartbeats.due(now.Add(time.Hour))) != 0 || publisher.prepared != 0 || len(tick.updates) != 0 || len(attempts.completions) != 0 {
+					if len(state.deferredCompletions) != 0 || len(state.Claimed) != 0 || len(orch.heartbeats.due(now.Add(time.Hour))) != 0 || publisher.prepared != 0 || len(tick.updates) != 0 || len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalAbandoned {
 						t.Fatal("lost fence revived deferred publication")
 					}
 					return
