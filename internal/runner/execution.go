@@ -37,6 +37,7 @@ type Execution interface {
 type WorkerLifetimeExecution interface {
 	KeepWorker(func(context.Context) error, func(context.Context, RunRequest) (RunResult, error)) error
 	WorkerLauncher() func(context.Context, RunRequest) (RunResult, error)
+	CloseWorkers(context.Context) error
 }
 
 type NativeValidation struct {

@@ -172,8 +172,8 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 		{name: "historical manual checkpoint resumes implementation", failure: "recovery"},
 		{name: "planning-enabled Todo resumes after a historical code checkpoint", failure: "recovery", planRecoveryRole: runner.RoleCode},
 		{name: "planning-enabled Todo resumes after a historical rework checkpoint", failure: "recovery", planRecoveryRole: runner.RoleRework},
-		{name: "planning-enabled dirty code identity mismatch preserves current version", failure: "recovery", planRecoveryRole: runner.RoleCode, resumeCase: "dirty"},
-		{name: "planning-enabled clean code identity mismatch restarts from current version", failure: "recovery", planRecoveryRole: runner.RoleCode, resumeCase: "identity"},
+		{name: "planning-enabled dirty checkpoint role mismatch preserves current version", failure: "recovery", planRecoveryRole: runner.RolePlan, resumeCase: "dirty"},
+		{name: "planning-enabled clean checkpoint role mismatch restarts from current version", failure: "recovery", planRecoveryRole: runner.RolePlan, resumeCase: "identity"},
 		{name: "planning-enabled changed configuration restarts from current version", failure: "recovery", planRecoveryRole: runner.RoleCode, resumeCase: "policy"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -190,6 +190,10 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	planningRecovery := planRecoveryRole != ""
 	manualCheckpoint := failure == "recovery" && resumeCase == ""
 	cleanCheckpoint := resumeCase == "identity" || resumeCase == "policy"
+	refusalMode, refusalWorker, dispatchState := runner.RunModePlan, "planner", "Todo"
+	if resumeCase != "" {
+		refusalMode, refusalWorker, dispatchState = runner.RunModeImplement, "agent", "In Progress"
+	}
 	states := hubserverPlanStates()
 	if failure == "recovery" {
 		states[0].Transitions = append(states[0].Transitions, "Blocked")
@@ -424,7 +428,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	if failure == "recovery" && !manualCheckpoint && !cleanCheckpoint {
 		wantStates = []string{"Todo"}
 	}
-	if (manualCheckpoint || cleanCheckpoint) && planningRecovery {
+	if manualCheckpoint && planningRecovery {
 		wantStates = []string{"In Progress", "Human Review"}
 	}
 	if abandon {
@@ -509,7 +513,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 				case run := <-observed:
 					refusalAttemptID = run.localAttemptID
 					wantReason := "session_restart_required"
-					if run.mode != runner.RunModePlan || run.state != "Todo" || run.recordedRole != planRecoveryRole || !errors.Is(run.err, runner.ErrNativeRecoveryRequired) || !strings.Contains(run.err.Error(), wantReason) {
+					if run.mode != refusalMode || run.state != dispatchState || run.recordedRole != planRecoveryRole || !errors.Is(run.err, runner.ErrNativeRecoveryRequired) || !strings.Contains(run.err.Error(), wantReason) {
 						t.Fatalf("planning refusal ran the wrong dispatch or failure: mode=%s state=%s recorded_role=%s error=%v", run.mode, run.state, run.recordedRole, run.err)
 					}
 					t.Logf("verified dispatch: mode=%s state=%s recorded_role=%s refusal=%v authority_live_at_release=%v lane_before_release=%s", run.mode, run.state, run.recordedRole, run.err, got.authorityLive, got.state)
@@ -521,11 +525,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 				}
 			}
 			if got.state != want {
-				if planningRecovery {
-					t.Errorf("native run finished in %s, want handoff to %s before lease retirement", got.state, want)
-				} else {
-					t.Fatalf("native run finished in %s, want handoff to %s before lease retirement", got.state, want)
-				}
+				t.Fatalf("native run finished in %s, want handoff to %s before lease retirement", got.state, want)
 			}
 		case <-testenv.WaitContext(t, t.Context()).Done():
 			state, _ := orch.State(t.Context())
@@ -557,7 +557,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 			t.Fatal("checkpoint recovery preserved no source")
 		}
 		wantCalls := int64(1)
-		if planningRecovery {
+		if planningRecovery && !cleanCheckpoint {
 			wantCalls = 2
 		}
 		if current.Issue.State != "Human Review" || provider.calls.Load() != wantCalls || len(changes) != 1 || changes[0].CurrentVersion == "" {
@@ -605,7 +605,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 			RunMode string `json:"run_mode"`
 		}
 		metadataErr := json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata)
-		if err != nil || metadataErr != nil || metadata.RunMode != runner.RunModePlan || attempt.WorkerType != "planner" || attempt.Status != store.WorkAttemptStatusTerminal || attempt.TerminalState != store.WorkAttemptTerminalFailure || attempt.ErrorClass != "workspace_preparation" {
+		if err != nil || metadataErr != nil || metadata.RunMode != refusalMode || attempt.WorkerType != refusalWorker || attempt.Status != store.WorkAttemptStatusTerminal || attempt.TerminalState != store.WorkAttemptTerminalFailure || attempt.ErrorClass != "workspace_preparation" {
 			t.Fatalf("planning refusal lost instance accounting: mode=%s worker=%s status=%s terminal=%s class=%s error=%v", metadata.RunMode, attempt.WorkerType, attempt.Status, attempt.TerminalState, attempt.ErrorClass, errors.Join(err, metadataErr))
 		}
 		return
@@ -836,8 +836,8 @@ func assertSetupRefusalReceipt(t *testing.T, attempts []tracker.NativeAttempt) {
 		t.Fatal("setup refusal receipt absent")
 	}
 	a := attempts[len(attempts)-1]
-	if a.Identity != nil || a.Status != "interrupted" || a.Checkpoint != nil || a.TerminalFailure == nil || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.Attribution != "issue" || a.TerminalFailure.ErrorClass != "source_recovery" || !strings.Contains(a.TerminalFailure.Error, "native checkpoint requires recovery:") {
-		t.Fatalf("setup refusal replaced source or lost diagnostic: %+v", a)
+	if a.Identity != nil || a.Status != "interrupted" || a.Checkpoint != nil || a.TerminalFailure == nil || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.Attribution != "instance" || a.TerminalFailure.ErrorClass != "source_recovery" || !strings.Contains(a.TerminalFailure.Error, "native checkpoint requires recovery:") {
+		t.Fatalf("setup refusal replaced source or lost diagnostic: %+v failure=%+v", a, a.TerminalFailure)
 	}
 }
 

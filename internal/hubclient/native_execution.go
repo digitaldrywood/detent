@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -25,6 +26,7 @@ import (
 )
 
 type nativeExecution struct {
+	completionOwner   atomic.Bool
 	workerMu          sync.Mutex
 	workerCloseMu     sync.Mutex
 	cancelMu          sync.Mutex
@@ -85,6 +87,10 @@ type nativeExecution struct {
 	recoveredSource *tracker.NativeChangeReference
 }
 
+func (e *nativeExecution) RetainCompletion() {
+	e.completionOwner.Store(true)
+}
+
 func (e *nativeExecution) KeepWorker(closeWorker func(context.Context) error, launch func(context.Context, runner.RunRequest) (runner.RunResult, error)) error {
 	if closeWorker == nil {
 		return errors.New("execution worker cleanup is required")
@@ -110,7 +116,8 @@ func (e *nativeExecution) hasWorkers() bool {
 	return len(e.workers) > 0
 }
 
-func (e *nativeExecution) closeWorkers(ctx context.Context) error {
+func (e *nativeExecution) CloseWorkers(ctx context.Context) error {
+	defer e.scheduler.cleanupNativeClaim(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken)
 	e.workerCloseMu.Lock()
 	defer e.workerCloseMu.Unlock()
 	e.workerMu.Lock()
@@ -307,18 +314,23 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 		e.cancelMu.Lock()
 		e.cancel = nil
 		e.cancelMu.Unlock()
+		e.scheduler.cleanupNativeClaim(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken)
 	}, nil
 }
 
 func (e *nativeExecution) unavailable(err error) error {
 	cause := errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+	e.cancelExecution(cause)
+	return cause
+}
+
+func (e *nativeExecution) cancelExecution(cause error) {
 	e.cancelMu.Lock()
 	cancel := e.cancel
 	e.cancelMu.Unlock()
 	if cancel != nil {
 		cancel(cause)
 	}
-	return cause
 }
 
 func (e *nativeExecution) executionError(err error) error {
@@ -730,7 +742,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 			}
 		}
 	}
-	if err := e.closeWorkers(ctx); err != nil {
+	if err := e.CloseWorkers(ctx); err != nil {
 		return errors.Join(finishErr, err)
 	}
 	e.mu.Lock()

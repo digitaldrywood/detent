@@ -48,24 +48,34 @@ func (e *nativeExecution) diagnosticOperation(operation string) func(error) {
 		if err != nil {
 			e.diagnostic.LatestError = diagnosticError(err)
 			e.diagnostic.LatestErrorCode = diagnosticErrorCode(err)
-			return
 		}
 		if e.diagnostic.HostOperation != operation && e.diagnostic.OperationPending {
 			return
 		}
-		e.diagnostic.HostOperation = previous.HostOperation
+		if err == nil || previous.OperationPending {
+			e.diagnostic.HostOperation = previous.HostOperation
+			e.diagnostic.OperationStartedAt = previous.OperationStartedAt
+		}
 		e.diagnostic.OperationPending = previous.OperationPending
-		e.diagnostic.OperationStartedAt = previous.OperationStartedAt
 	}
 }
 
 func (s *Scheduler) projectDiagnosticClaims(source *NativeConnector) []runnerauth.DiagnosticAttempt {
+	now := s.now()
 	s.mu.Lock()
 	var claims []nativeClaim
 	for _, c := range s.nativeClaims {
-		if c.source == source {
-			claims = append(claims, c)
+		if c.source != source || c.lost || c.recovery.Issue.Terminal {
+			continue
 		}
+		deadline := c.deadline
+		if deadline.IsZero() {
+			deadline = c.lease.ExpiresAt
+		}
+		if !deadline.IsZero() && !now.Before(deadline.Add(s.leaseTTL)) {
+			continue
+		}
+		claims = append(claims, c)
 	}
 	s.mu.Unlock()
 	result := make([]runnerauth.DiagnosticAttempt, 0, len(claims))

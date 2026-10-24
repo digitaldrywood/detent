@@ -336,6 +336,9 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 	s.mu.Lock()
 	native, isNative := s.nativeClaims[issueID]
 	lease, ok := s.claims[issueID]
+	if isNative && native.execution != nil {
+		native.execution.RetainCompletion()
+	}
 	s.mu.Unlock()
 	if !ok {
 		// A missing native publisher cannot prove prepared Finish settled.

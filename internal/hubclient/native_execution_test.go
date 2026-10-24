@@ -30,6 +30,147 @@ type executionTransport struct {
 	down atomic.Bool
 }
 
+func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		cleanupFailure bool
+		controller     bool
+		prepared       bool
+		retained       bool
+		terminal       bool
+		expired        bool
+		unavailable    bool
+	}{
+		{name: "worker stopped"},
+		{name: "cleanup failure", cleanupFailure: true},
+		{name: "controller outlives worker", controller: true},
+		{name: "prepared completion without publisher", controller: true, prepared: true},
+		{name: "prepared completion settles after claim loss", controller: true, prepared: true, retained: true},
+		{name: "terminal item with unavailable settlement", controller: true, prepared: true, retained: true, terminal: true, unavailable: true},
+		{name: "expired lease with unavailable settlement", controller: true, prepared: true, retained: true, expired: true, unavailable: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Claim cleanup")
+			h.claim(t, issue.ID)
+			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			closed := false
+			var stop func()
+			if test.controller {
+				_, release, err := e.Guard(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				stop = release
+				defer func() {
+					if stop != nil {
+						stop()
+					}
+				}()
+			}
+			if test.prepared {
+				if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+					t.Fatal(err)
+				}
+				e.preparedOutcome = "failed"
+				if test.retained {
+					e.RetainCompletion()
+				}
+				if err := h.native.Release(t.Context(), e.claim.lease, "cancelled"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fail := test.cleanupFailure
+			if err := e.KeepWorker(func(context.Context) error {
+				if fail {
+					return errors.New("worker still alive")
+				}
+				closed = true
+				return nil
+			}, nil); err != nil {
+				t.Fatal(err)
+			}
+			if test.terminal {
+				item, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				item, err = h.admin.Transition(t.Context(), item.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: item.Revision, State: "Done", Reason: "user_requested"})
+				if err != nil || !item.Terminal {
+					t.Fatalf("terminal transition = %+v, %v", item, err)
+				}
+			}
+			if !test.expired {
+				var err error
+				if test.terminal {
+					_, err = h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now())
+				} else {
+					err = h.scheduler.nativeClaimError(issue.ID, e.claim.lease.FencingToken, orchestrator.ErrSchedulingClaimLost)
+				}
+				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) || !e.hasWorkers() || len(h.scheduler.nativeClaims) != 1 {
+					t.Fatalf("live worker lost ownership: %v", err)
+				}
+			}
+			if test.cleanupFailure {
+				if err := e.CloseWorkers(t.Context()); err == nil || !e.hasWorkers() || len(h.scheduler.nativeClaims) != 1 {
+					t.Fatalf("unconfirmed cleanup dropped ownership: %v", err)
+				}
+				fail = false
+			}
+			if err := e.CloseWorkers(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if stop != nil {
+				if len(h.scheduler.nativeClaims) != 1 {
+					t.Fatal("live controller lost ownership before it stopped")
+				}
+				stop()
+				stop = nil
+			}
+			if test.retained {
+				if len(h.scheduler.nativeClaims) != 1 {
+					t.Fatal("claim loss discarded the prepared completion publisher")
+				}
+				if test.unavailable {
+					transport := &executionTransport{next: h.native.client.httpClient.Transport}
+					h.native.client.httpClient.Transport = transport
+					t.Cleanup(func() { h.native.client.httpClient.Transport = transport.next })
+					transport.down.Store(true)
+					if test.expired {
+						claim := h.scheduler.nativeClaims[issue.ID]
+						before := claim.deadline.Add(h.scheduler.leaseTTL - time.Nanosecond)
+						h.scheduler.now = func() time.Time { return before }
+						if len(h.scheduler.projectDiagnosticClaims(e.claim.source)) != 1 {
+							t.Fatal("claim diagnostics expired before the TTL boundary")
+						}
+						after := claim.deadline.Add(h.scheduler.leaseTTL + time.Nanosecond)
+						h.scheduler.now = func() time.Time { return after }
+						if h.scheduler.nativeClaims[issue.ID].lost {
+							t.Fatal("expiry fixture already reported claim loss")
+						}
+					}
+					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); !nativeTransportUnavailable(err) {
+						t.Fatalf("unavailable settlement = %v", err)
+					}
+					if claim, ok := h.scheduler.nativeClaims[issue.ID]; !ok || claim.execution != e || !e.completionOwner.Load() || e.hasWorkers() {
+						t.Fatal("unavailable settlement lost its stopped completion publisher")
+					}
+					if records := h.scheduler.projectDiagnosticClaims(e.claim.source); len(records) != 0 {
+						t.Fatalf("stopped terminal or expired attempt reported as a native claim: %+v", records)
+					}
+					transport.down.Store(false)
+				}
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !closed || e.hasWorkers() || len(h.scheduler.nativeClaims) != 0 || len(h.scheduler.projectDiagnosticClaims(e.claim.source)) != 0 {
+				t.Fatal("stopped worker retained its lost claim")
+			}
+		})
+	}
+}
+
 func (t *executionTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if t.down.Load() {
 		return nil, errors.New("injected Hub outage")

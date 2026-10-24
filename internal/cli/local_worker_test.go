@@ -640,6 +640,38 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 	if _, err := os.Stat(a.binary); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("obsolete artifact retained after final owner exited: %v", err)
 	}
+	lost := start("Summarize documents", "1.0.3", runnerpkg.RunModeImplement)
+	runnerClient, ok := scheduler.NativeClient("local")
+	if !ok {
+		t.Fatal("runner client is unavailable")
+	}
+	if err := runnerClient.Release(ctx, lost.request.Execution.Recovery().Lease, "cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scheduler.RenewClaim(ctx, lost.issue.ID, time.Now()); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+		t.Fatalf("released claim renewal = %v", err)
+	}
+	select {
+	case result := <-lost.result:
+		if result.Err == nil {
+			t.Fatal("claim-lost worker completed successfully")
+		}
+	case <-ctx.Done():
+		t.Fatal("claim loss did not stop active execution")
+	}
+	if alive, err := procgroup.Alive(lost.identity); err != nil || alive {
+		t.Fatalf("claim-lost worker survived cleanup: %t %v", alive, err)
+	}
+	if scheduler.RunExecution(lost.issue.ID) == lost.request.Execution {
+		t.Fatal("claim-lost worker retained its native claim")
+	}
+	lostItem, err := native.Issue(ctx, tracker.NativeWorkItemID(lost.issue.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Transition(ctx, lostItem.WorkItemID, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "lost-worker-done"}, ExpectedRevision: lostItem.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+		t.Fatal(err)
+	}
 	revoked := start("Classify documents", "1.0.3", runnerpkg.RunModeImplement)
 	revoke()
 	if _, err := scheduler.RenewClaim(ctx, revoked.issue.ID, time.Now()); err == nil {
