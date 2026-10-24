@@ -98,17 +98,33 @@ Keep existing jobs, govulncheck/gosec commands, artifact retention and the
 fail-closed tagging rule. The per-change security audit and its Rework
 disposition are independent and unchanged.
 
-Detent's `ci.yml` invokes the controller after Security on release branches.
-The `audit-controller` checkout pins its trusted revision independently of
-the `audit-source` checkout at the preflight release SHA. Configure the
-repository variable `DETENT_RELEASE_AUDIT_MODEL` with the project's selected
-model, and supply `OPENAI_API_KEY` and the existing scoped `DETENT_API_KEY`
-as Actions secrets. Credentials are supplied only to the audit invocation.
-The job allows 40 invocations, 200000 input tokens, 50000 output tokens and
-150000 cached input tokens. Its request, result and diagnostics are retained
-for 14 days. Allowance exhaustion is advisory and retains incomplete coverage;
-infrastructure errors fail the job and use the existing scheduled reporter.
-Develop and pull request runs execute no audit steps.
+## Detent local release gate
+
+An operator must run `scripts/release-audit-local.sh release/vX.Y` after each
+release cut and after every cherry-pick onto the frozen branch. Each pick
+changes the head and requires a new audit. Run from a trusted checkout with
+Git, jq, authenticated GitHub CLI and the locally logged-in Codex CLI. The
+audit uses the operator's configured model and Codex subscription, requires no
+CI secrets, and must not run in GitHub Actions or depend on the Detent Hub,
+runners or any Detent process.
+
+Set the repository variable `DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON` to
+`["release-security-audit"]` (retaining any other required names). The local
+audit reviews the diff from the merge base with the previous release series
+to the fetched release head in a temporary read-only detached worktree. It
+retains output and findings under `tmp/` and publishes the exact head's
+`release-security-audit` commit status. Malformed output or invocation failure
+publishes no verdict. A confirmed P1 or P2 finding publishes failure: fix on
+`develop`, cherry-pick the fix onto the frozen branch, then rerun the script.
+
+The CI finalizer publishes `scheduled-full-ci` and waits without tagging until
+all configured statuses succeed. A passing local audit reruns the latest
+completed suite's finalizer job when available; otherwise the next completed
+suite can tag. `release.yml` independently verifies required statuses before
+release. Existing tag reuse remains unchanged. This local gate replaces
+Detent's hosted audit job (INV-3); per-change audits remain unchanged.
+
+## Shared controller adoption
 
 When replacing an existing reviewer, retire its model review engine in the
 same workflow change. Preserve its last-reviewed-ancestor cursor and native

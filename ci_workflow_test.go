@@ -1,7 +1,6 @@
 package detent_test
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,88 +13,40 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestCIReleaseSecurityAudit(t *testing.T) {
+func TestCIReleaseAuditStatusGate(t *testing.T) {
 	t.Parallel()
-
 	var workflow struct {
 		Jobs map[string]struct {
-			If    string    `yaml:"if"`
 			Needs yaml.Node `yaml:"needs"`
 			Steps []struct {
-				If   string            `yaml:"if"`
-				Uses string            `yaml:"uses"`
-				Run  string            `yaml:"run"`
-				With map[string]string `yaml:"with"`
-				Env  map[string]string `yaml:"env"`
+				Run string            `yaml:"run"`
+				Env map[string]string `yaml:"env"`
 			} `yaml:"steps"`
 		} `yaml:"jobs"`
 	}
 	if err := yaml.Unmarshal([]byte(readNormalizedFile(t, ".github/workflows/ci.yml")), &workflow); err != nil {
 		t.Fatal(err)
 	}
-	audit, ok := workflow.Jobs["release-security-audit"]
-	if !ok {
-		t.Fatal("release suite has no security audit")
-	}
-	var auditNeeds, finalizeNeeds []string
-	if err := audit.Needs.Decode(&auditNeeds); err != nil {
-		t.Fatal(err)
+	if _, exists := workflow.Jobs["release-security-audit"]; exists {
+		t.Fatal("release audit must run locally")
 	}
 	finalize := workflow.Jobs["finalize"]
-	if err := finalize.Needs.Decode(&finalizeNeeds); err != nil {
+	var needs []string
+	if err := finalize.Needs.Decode(&needs); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(auditNeeds, "preflight") || !slices.Contains(auditNeeds, "security") || !slices.Contains(finalizeNeeds, "release-security-audit") {
-		t.Fatal("audit must follow Security and precede finalization")
+	if slices.Contains(needs, "release-security-audit") {
+		t.Fatal("finalizer depends on retired audit job")
 	}
-	controller, target, invocation, evidence := false, false, false, false
-	for _, step := range audit.Steps {
-		switch step.With["path"] {
-		case "audit-controller":
-			controller = step.Uses == "actions/checkout@v5" && step.With["ref"] == "52bf36183708ef05589c15c66964e094014388df" && step.With["persist-credentials"] == "false"
-		case "audit-source":
-			target = step.With["ref"] == "${{ needs.preflight.outputs.develop_sha }}" && step.With["fetch-depth"] == "0" && step.With["persist-credentials"] == "false"
-		}
-		if strings.Contains(step.Run, "scripts/release-security-audit.sh") {
-			invocation = strings.Contains(step.Run, `"$RUNNER_TEMP/release-audit-controller" "$GITHUB_WORKSPACE/audit-source"`) && step.Env["CI_DEVELOP_SHA"] == "${{ needs.preflight.outputs.develop_sha }}" && step.Env["CI_RELEASE_BRANCH"] == "${{ needs.preflight.outputs.release_branch }}" && step.Env["DETENT_RELEASE_AUDIT_MODEL"] == "${{ vars.DETENT_RELEASE_AUDIT_MODEL }}" && step.Env["DETENT_API_KEY"] == "${{ secrets.DETENT_API_KEY }}"
-		}
-		if step.Uses == "actions/upload-artifact@v7" {
-			evidence = strings.HasPrefix(step.If, "always() && ") && step.With["path"] == "${{ runner.temp }}/release-security-audit-*"
-		}
-	}
-	if !controller || !target || !invocation || !evidence {
-		t.Fatalf("audit wiring: pinned controller=%v, pinned target=%v, invocation=%v, retained evidence=%v", controller, target, invocation, evidence)
-	}
-	for _, tt := range []struct {
-		name, event, series string
-		want                bool
-	}{
-		{name: "release dispatch", event: "workflow_dispatch", series: "release/v1.0", want: true},
-		{name: "pull request", event: "pull_request", series: "release/v1.0"},
-		{name: "develop hourly", event: "schedule"},
-		{name: "develop dispatch", event: "workflow_dispatch"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			replace := strings.NewReplacer("github.event_name", "'"+tt.event+"'", "needs.preflight.outputs.should_run", "'true'", "needs.preflight.outputs.release_branch", "'"+tt.series+"'", "always()", "true")
-			for i, step := range audit.Steps {
-				if step.If == "" {
-					t.Fatalf("step %d lacks a release condition", i)
-				}
-				condition := replace.Replace(audit.If + " && " + step.If)
-				command := exec.Command("bash", "-c", "[[ "+condition+" ]]")
-				err := command.Run()
-				if err != nil {
-					var exit *exec.ExitError
-					if !errors.As(err, &exit) || exit.ExitCode() != 1 {
-						t.Fatalf("evaluate step %d: %v", i, err)
-					}
-				}
-				if got := err == nil; got != tt.want {
-					t.Errorf("step %d runs=%v, want %v", i, got, tt.want)
-				}
+	for _, step := range finalize.Steps {
+		if strings.Contains(step.Run, "scripts/scheduled-ci-finish.sh") {
+			if step.Env["DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON"] != "${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}" {
+				t.Fatal("finalizer must receive required status names from repository variables")
 			}
-		})
+			return
+		}
 	}
+	t.Fatal("finalizer invocation missing")
 }
 
 func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
