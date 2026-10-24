@@ -57,6 +57,11 @@ func (e *nativeExecution) RecoverChangeSource(ctx context.Context) (workspace.Ch
 		return workspace.ChangeSource{}, err
 	}
 	selected := e.Recovery().SourceVersionID
+	e.mu.Lock()
+	if selected != "" && e.recoveredSource != nil && e.recoveredSource.ChangeID == detail.Change.ID {
+		selected = e.recoveredSource.VersionID
+	}
+	e.mu.Unlock()
 	if selected != "" && selected != detail.Change.CurrentVersion {
 		return workspace.ChangeSource{}, runner.ErrChangeSourceVersionSuperseded
 	}

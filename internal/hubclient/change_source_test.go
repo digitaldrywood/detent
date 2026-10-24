@@ -353,11 +353,12 @@ func TestNativeDamagedSourceRecoversOnlyVerifiedOwner(t *testing.T) {
 		foreign, wrongHead, lostLease, wrongDiff bool
 		missingCapture, wrongWorktree            bool
 		wantError                                bool
-		transferred, staleTransfer               bool
+		transferred, staleTransfer, recovered    bool
 	}{
 		{name: "owner recaptures missing artifact", status: http.StatusInternalServerError},
 		{name: "transferred version retains exact selection during recapture", status: http.StatusInternalServerError, transferred: true},
 		{name: "stale transfer refuses current version substitution", transferred: true, staleTransfer: true, wantError: true},
+		{name: "recovered transfer refuses a newer current version", transferred: true, staleTransfer: true, recovered: true, wantError: true},
 		{name: "owner recaptures corrupt artifact"},
 		{name: "foreign runner cannot recapture", foreign: true, wantError: true},
 		{name: "wrong local checkpoint cannot recapture", wrongHead: true, wantError: true},
@@ -426,6 +427,9 @@ func TestNativeDamagedSourceRecoversOnlyVerifiedOwner(t *testing.T) {
 				if test.staleTransfer {
 					execution.claim.recovery.SourceVersionID = "version_older"
 				}
+			}
+			if test.recovered {
+				execution.recoveredSource = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: execution.claim.recovery.SourceVersionID, HeadSHA: exactHead}
 			}
 			execution.claim.recovery.Attempts = []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "saved-source", MachineID: owner}, Checkpoint: &tracker.NativeCheckpoint{Resume: "resume_session", WorktreeState: "unpushed", HeadSHA: checkpointHead, Availability: "available", Storage: "local_only"}}}
 			original := h.native.client.httpClient.Transport
