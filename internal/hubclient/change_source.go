@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -65,7 +66,7 @@ func (e *nativeExecution) RecoverChangeSource(ctx context.Context) (workspace.Ch
 	}
 	e.mu.Unlock()
 	if selected != "" && selected != detail.Change.CurrentVersion {
-		return workspace.ChangeSource{}, runner.ErrChangeSourceVersionSuperseded
+		return workspace.ChangeSource{}, fmt.Errorf("%w (Change %q, selected version %q, current version %q)", runner.ErrChangeSourceVersionSuperseded, detail.Change.ID, selected, detail.Change.CurrentVersion)
 	}
 	if detail.Change.CurrentVersion == "" {
 		return workspace.ChangeSource{}, nil

@@ -4424,7 +4424,7 @@ func TestRunnerClassifiesChangeSourceRefusal(t *testing.T) {
 	}{
 		{name: "code attempt with retained source requires recovery", source: true, wantRecovery: true},
 		{name: "refusal without retained source stays workspace preparation"},
-		{name: "superseded transferred version requires recovery", source: true, recoverError: ErrChangeSourceVersionSuperseded, wantRecovery: true},
+		{name: "superseded transferred version requires recovery", source: true, recoverError: fmt.Errorf("%w (Change %q, selected version %q, current version %q)", ErrChangeSourceVersionSuperseded, "change_example", "version_selected", "version_current"), wantRecovery: true},
 		{name: "transient change read retries source recovery", source: true, recoverError: transient, wantRecovery: true},
 		{name: "Rework with unavailable published source fails before provider", state: "Rework", published: true, recoverError: transient, wantRecovery: true},
 		{name: "code claim with published source restores before provider", published: true, wantRecovery: true},
@@ -4462,6 +4462,9 @@ func TestRunnerClassifiesChangeSourceRefusal(t *testing.T) {
 			}
 			if test.wantRecovery && (execution.failure == nil || execution.failure.ErrorClass != "source_recovery" || execution.failure.Attribution != "instance" || execution.failure.Stage != "workspace_preparation") {
 				t.Fatalf("terminal failure = %#v, want instance source_recovery before provider", execution.failure)
+			}
+			if errors.Is(test.recoverError, ErrChangeSourceVersionSuperseded) && !strings.Contains(execution.failure.Error, test.recoverError.Error()) {
+				t.Fatalf("completion lost source selection identities: %s", execution.failure.Error)
 			}
 		})
 	}

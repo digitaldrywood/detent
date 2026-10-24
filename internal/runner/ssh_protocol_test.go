@@ -44,6 +44,9 @@ func TestSSHErrorRoundTrip(t *testing.T) {
 		}},
 		{"not found", store.ErrNotFound, store.ErrNotFound, nil},
 		{"superseded Change source", ErrChangeSourceVersionSuperseded, ErrChangeSourceVersionSuperseded, nil},
+		{"superseded Change source identities", fmt.Errorf("%w (Change %q, selected version %q, current version %q)", ErrChangeSourceVersionSuperseded, "change_example", "version_selected", "version_current"), ErrChangeSourceVersionSuperseded, func(err error) bool {
+			return strings.Contains(err.Error(), `Change "change_example", selected version "version_selected", current version "version_current"`)
+		}},
 		{"acceptance rejection", acceptanceRejectionError{}, nil, acceptanceFailure},
 		{"wrapped acceptance rejection", fmt.Errorf("%w: acceptance publication: %w", ErrValidatorInfrastructure, acceptanceRejectionError{}), ErrValidatorInfrastructure, acceptanceFailure},
 		{"cancelled", context.Canceled, context.Canceled, nil},

@@ -424,17 +424,29 @@ func TestNativeDamagedSourceRecoversOnlyVerifiedOwner(t *testing.T) {
 			execution.claim.recovery.SourceAttemptID = "saved-source"
 			if test.transferred {
 				execution.claim.recovery.SourceVersionID = version.ID
-				if test.staleTransfer {
-					execution.claim.recovery.SourceVersionID = "version_older"
-				}
 			}
 			if test.recovered {
 				execution.recoveredSource = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: execution.claim.recovery.SourceVersionID, HeadSHA: exactHead}
 			}
+			if test.staleTransfer {
+				input := version.ChangeVersionInput
+				input.Code.SHA256 = strings.Repeat("a", 64)
+				version, err = h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{
+					Mutation: nativeMutationKey(), ExpectedVersionID: version.ID, ChangeVersionInput: input, SourceBundle: capture.Bundle,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if version.ID == execution.claim.recovery.SourceVersionID {
+					t.Fatal("publication did not advance the current version")
+				}
+			}
 			execution.claim.recovery.Attempts = []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "saved-source", MachineID: owner}, Checkpoint: &tracker.NativeCheckpoint{Resume: "resume_session", WorktreeState: "unpushed", HeadSHA: checkpointHead, Availability: "available", Storage: "local_only"}}}
 			original := h.native.client.httpClient.Transport
+			downloads := 0
 			h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 				if strings.HasSuffix(request.URL.Path, "/source") {
+					downloads++
 					status := test.status
 					body := []byte("corrupt source")
 					if status != 0 {
@@ -465,9 +477,30 @@ func TestNativeDamagedSourceRecoversOnlyVerifiedOwner(t *testing.T) {
 			if err := os.WriteFile(pending, []byte("pending local work"), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			selected := execution.claim.recovery.SourceVersionID
+			previousSource := execution.recoveredSource
 			recovered, err := execution.RecoverChangeSource(t.Context())
 			if (err != nil) != test.wantError {
 				t.Fatalf("recovery error = %v", err)
+			}
+			if test.staleTransfer {
+				if !errors.Is(err, runner.ErrChangeSourceVersionSuperseded) {
+					t.Fatalf("stale selection lost refusal classification: %v", err)
+				}
+				for _, identity := range []string{change.ID, selected, version.ID} {
+					if !strings.Contains(err.Error(), identity) {
+						t.Errorf("refusal omits source identity %q: %v", identity, err)
+					}
+				}
+				if !strings.Contains(err.Error(), "re-read source recovery") || !strings.Contains(err.Error(), "before transfer") {
+					t.Errorf("refusal omits reconciliation action: %v", err)
+				}
+				if calls != 0 || downloads != 0 || recovered.Version.ID != "" || execution.claim.recovery.SourceVersionID != selected || execution.recoveredSource != previousSource {
+					t.Fatal("stale selection downloaded, recaptured or substituted source")
+				}
+				if err := execution.Validate(t.Context()); err != nil {
+					t.Fatalf("source refusal changed execution authority: %v", err)
+				}
 			}
 			if !test.wantError && (calls != 1 || recovered.Version.ID != version.ID || recovered.Version.BaseSHA != base || recovered.Version.HeadSHA != exactHead || !bytes.Equal(recovered.Bundle, capture.Bundle)) {
 				t.Fatalf("exact source not recovered: %+v calls=%d", recovered.Version, calls)
