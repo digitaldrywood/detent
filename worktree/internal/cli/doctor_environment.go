@@ -1,0 +1,1083 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/codex"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/healthnotify"
+	"github.com/digitaldrywood/detent/internal/instancelock"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+)
+
+var doctorHealthCheckKeys = []string{"hub", "store", "registry", "connector"}
+
+const (
+	doctorBinaryPathSourceDoctor       = "doctor"
+	doctorBinaryPathSourceOrchestrator = "orchestrator"
+)
+
+type doctorBinaryEnvironment struct {
+	Source           string
+	CheckedPath      string
+	DoctorPath       string
+	OrchestratorPath string
+	FallbackReason   string
+}
+
+type doctorBinaryResolution struct {
+	Source             string `json:"source"`
+	CheckedPath        string `json:"checked_path"`
+	DoctorPath         string `json:"doctor_path"`
+	OrchestratorPath   string `json:"orchestrator_path,omitempty"`
+	EnvironmentsDiffer bool   `json:"environments_differ"`
+	FallbackReason     string `json:"fallback_reason,omitempty"`
+}
+
+func resolveDoctorBinaryEnvironment(ctx context.Context, resolution globalconfig.PathResolution, boot BootConfig, deps doctorDeps) doctorBinaryEnvironment {
+	doctorPath := deps.lookupEnv("PATH")
+	fallback := func(reason string) doctorBinaryEnvironment {
+		return doctorBinaryEnvironment{
+			Source:         doctorBinaryPathSourceDoctor,
+			CheckedPath:    doctorPath,
+			DoctorPath:     doctorPath,
+			FallbackReason: reason,
+		}
+	}
+	if strings.TrimSpace(resolution.Path) == "" {
+		return fallback("orchestrator PATH is unavailable because the global config path is unavailable")
+	}
+	probe, err := probeDoctorHealth(ctx, boot, deps)
+	orchestratorPath := probe.Health.Environment.Path
+	if err == nil {
+		if orchestratorPath != "" {
+			return doctorBinaryEnvironment{
+				Source:           doctorBinaryPathSourceOrchestrator,
+				CheckedPath:      orchestratorPath,
+				DoctorPath:       doctorPath,
+				OrchestratorPath: orchestratorPath,
+			}
+		}
+		return fallback("orchestrator PATH is unavailable because the running instance did not report it")
+	}
+	return fallback(fmt.Sprintf("orchestrator PATH is unavailable because no running instance was reachable at %s: %v", probe.URL, err))
+}
+
+func checkDoctorConfigReload(ctx context.Context, cfg globalconfig.Config, run CommandRunner) doctorCheck {
+	path := strings.TrimSpace(cfg.Path)
+	if path == "" {
+		return doctorCheck{
+			Name:   "Global config reload",
+			Status: doctorWarn,
+			Detail: "global config path is unavailable",
+			Hint:   "Fix config resolution, then rerun detent doctor.",
+		}
+	}
+
+	info, err := os.Lstat(path)
+	if err != nil {
+		return doctorCheck{
+			Name:   "Global config reload",
+			Status: doctorWarn,
+			Detail: fmt.Sprintf("%s: %v", path, err),
+			Hint:   "Fix the global config path before relying on live reload.",
+		}
+	}
+	target := path
+	detail := path + " is watched for live reload"
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err = filepath.EvalSymlinks(path)
+		if err != nil {
+			return doctorCheck{
+				Name:   "Global config reload",
+				Status: doctorWarn,
+				Detail: fmt.Sprintf("%s is a symlink but its target cannot be resolved: %v", path, err),
+				Hint:   "Fix the symlink target before relying on live reload.",
+			}
+		}
+		detail = fmt.Sprintf("%s is a symlink to %s; live reload watches the configured path and target", path, target)
+	}
+
+	check := doctorCheck{
+		Name:   "Global config reload",
+		Status: doctorOK,
+		Detail: detail,
+	}
+	gitStatus := inspectGlobalConfigGit(ctx, target, run)
+	if gitStatus == nil {
+		return check
+	}
+	check.Detail += fmt.Sprintf("; resolved config %s is in git repository %s and is %s", gitStatus.ResolvedPath, gitStatus.RepositoryRoot, gitStatus.trackedStatus())
+	if gitStatus.Dirty {
+		check.Status = doctorWarn
+		check.Hint = globalConfigGitDurabilityWarning(gitStatus.RepositoryRoot)
+	}
+	return check
+}
+
+func checkDoctorInstanceIdentity(cfg globalconfig.Config) doctorCheck {
+	return doctorCheck{
+		Name:   "Instance identity",
+		Status: doctorOK,
+		Detail: doctorIdentityDetail(cfg.Global.Identity),
+	}
+}
+
+func expandDoctorWorkspacePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		return filepath.Clean(home), nil
+	}
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path), nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("absolute path: %w", err)
+	}
+	return filepath.Clean(abs), nil
+}
+
+func checkDoctorFilesystemWorkspace(id string, cfg workflowconfig.Config) doctorCheck {
+	name := "Project " + id + " filesystem workspace"
+	root := strings.TrimSpace(cfg.Workspace.Root)
+	if root == "" {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: "workspace.root is not configured",
+			Hint:   "Set workspace.root to a directory Detent can use for filesystem workspaces.",
+		}
+	}
+	resolved, err := expandDoctorWorkspacePath(root)
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s: %v", root, err),
+			Hint:   "Set workspace.root to an absolute or home-relative directory.",
+		}
+	}
+	if err := doctorPathDirectoryReady(resolved); err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s: %v", resolved, err),
+			Hint:   "Create workspace.root or its parent directory and ensure Detent can write there.",
+		}
+	}
+	if outputRoot := strings.TrimSpace(doctorFirstNonBlank(cfg.Workspace.OutputRoot, cfg.Deliverable.OutputRoot)); outputRoot != "" {
+		resolvedOutput, err := expandDoctorWorkspacePath(outputRoot)
+		if err != nil {
+			return doctorCheck{
+				Name:   name,
+				Status: doctorFail,
+				Detail: fmt.Sprintf("%s: %v", outputRoot, err),
+				Hint:   "Set workspace.output_root or deliverable.output_root to an absolute or home-relative directory.",
+			}
+		}
+		if err := doctorPathDirectoryReady(resolvedOutput); err != nil {
+			return doctorCheck{
+				Name:   name,
+				Status: doctorFail,
+				Detail: fmt.Sprintf("%s: %v", resolvedOutput, err),
+				Hint:   "Create the artifact output directory or its parent and ensure Detent can write there.",
+			}
+		}
+		return doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: resolved + " is usable; artifact output " + resolvedOutput + " is usable",
+		}
+	}
+	return doctorCheck{
+		Name:   name,
+		Status: doctorOK,
+		Detail: resolved + " is usable",
+	}
+}
+
+func resolveDoctorProjectPath(project globalconfig.Project, path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", errors.New("path is required")
+	}
+	if filepath.IsAbs(path) || path == "~" || strings.HasPrefix(path, "~/") {
+		return expandDoctorWorkspacePath(path)
+	}
+	base := strings.TrimSpace(project.Workdir)
+	if base == "" {
+		return expandDoctorWorkspacePath(path)
+	}
+	expandedBase, err := expandDoctorWorkspacePath(base)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(filepath.Join(expandedBase, path)), nil
+}
+
+func doctorPathDirectoryReady(path string) error {
+	info, err := os.Stat(path)
+	if err == nil {
+		if !info.IsDir() {
+			return errors.New("path is not a directory")
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	parent := filepath.Dir(path)
+	info, err = os.Stat(parent)
+	if err != nil {
+		return fmt.Errorf("parent directory is not available: %w", err)
+	}
+	if !info.IsDir() {
+		return errors.New("parent path is not a directory")
+	}
+	return nil
+}
+
+func checkDoctorSQLite(ctx context.Context, resolution globalconfig.PathResolution, deps doctorDeps) doctorCheck {
+	if strings.TrimSpace(resolution.Path) == "" {
+		return doctorCheck{
+			Name:   "SQLite database",
+			Status: doctorFail,
+			Detail: "global config path is unavailable",
+			Hint:   "Fix config resolution, then rerun detent doctor.",
+		}
+	}
+
+	dbPath := filepath.Join(filepath.Dir(resolution.Path), "detent.db")
+	db, err := deps.openSQLite(ctx, dbPath)
+	if err != nil {
+		return doctorCheck{
+			Name:   "SQLite database",
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s: %v", dbPath, err),
+			Hint:   "Check directory permissions and remove any corrupt runtime database.",
+		}
+	}
+	if err := db.Close(); err != nil {
+		return doctorCheck{
+			Name:   "SQLite database",
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s close failed: %v", dbPath, err),
+			Hint:   "Check for filesystem or SQLite errors, then rerun detent doctor.",
+		}
+	}
+
+	return doctorCheck{
+		Name:   "SQLite database",
+		Status: doctorOK,
+		Detail: dbPath + " is reachable",
+	}
+}
+
+func checkDoctorInstanceLock(resolution globalconfig.PathResolution) doctorCheck {
+	const name = "Instance lock"
+	if strings.TrimSpace(resolution.Path) == "" {
+		return doctorCheck{Name: name, Status: doctorFail, Detail: "global config path is unavailable", Hint: "Fix config resolution, then rerun detent doctor."}
+	}
+
+	lockPath := filepath.Join(filepath.Dir(resolution.Path), "detent.db.lock")
+	inspection, err := instancelock.Inspect(lockPath)
+	if err != nil {
+		return doctorCheck{Name: name, Status: doctorFail, Detail: fmt.Sprintf("%s could not be inspected: %v", lockPath, err), Hint: "Check the lock file permissions, then rerun detent doctor."}
+	}
+	switch inspection.Status {
+	case instancelock.StatusStale:
+		detail := "stale lock: " + lockPath
+		if inspection.MetadataError == nil {
+			detail = fmt.Sprintf("stale lock: %s was left by pid %d on %s, started %s", lockPath, inspection.Owner.PID, inspection.Owner.Hostname, inspection.Owner.StartedAt.Format(time.RFC3339))
+		}
+		return doctorCheck{Name: name, Status: doctorWarn, Detail: detail, Hint: "Detent will self-heal this stale lock on the next start."}
+	case instancelock.StatusHeld:
+		if inspection.MetadataError == nil {
+			return doctorCheck{Name: name, Status: doctorOK, Detail: fmt.Sprintf("%s is held by pid %d on %s, started %s", lockPath, inspection.Owner.PID, inspection.Owner.Hostname, inspection.Owner.StartedAt.Format(time.RFC3339))}
+		}
+		return doctorCheck{Name: name, Status: doctorWarn, Detail: fmt.Sprintf("%s is held with unreadable owner metadata: %v", lockPath, inspection.MetadataError), Hint: "Stop the running Detent instance before repairing its lock metadata."}
+	default:
+		return doctorCheck{Name: name, Status: doctorOK, Detail: lockPath + " has no active or stale holder"}
+	}
+}
+
+func checkDoctorDailyBudgetAccuracy(ctx context.Context, resolution globalconfig.PathResolution, deps doctorDeps, now time.Time) doctorCheck {
+	const name = "Daily budget attribution"
+	if strings.TrimSpace(resolution.Path) == "" {
+		return doctorCheck{Name: name, Status: doctorWarn, Detail: "daily budget accuracy is unavailable because the global config path is unavailable"}
+	}
+
+	dbPath := filepath.Join(filepath.Dir(resolution.Path), "detent.db")
+	db, err := deps.openSQLiteReadOnly(ctx, dbPath)
+	if err != nil {
+		return doctorCheck{Name: name, Status: doctorWarn, Detail: fmt.Sprintf("daily budget accuracy is unavailable: %v", err)}
+	}
+	check := inspectDoctorDailyBudgetAccuracy(ctx, db, now)
+	if err := db.Close(); err != nil {
+		return doctorCheck{Name: name, Status: doctorWarn, Detail: fmt.Sprintf("daily budget attribution database close failed: %v", err)}
+	}
+	return check
+}
+
+func inspectDoctorDailyBudgetAccuracy(ctx context.Context, db doctorTelemetryStore, now time.Time) doctorCheck {
+	const name = "Daily budget attribution"
+	var projectIDColumns int64
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info('codex_sessions') WHERE name = 'project_id'").Scan(&projectIDColumns); err != nil {
+		return doctorCheck{Name: name, Status: doctorWarn, Detail: fmt.Sprintf("daily budget attribution could not be inspected: %v", err)}
+	}
+	if projectIDColumns == 0 {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorWarn,
+			Detail: "daily budget accuracy is degraded because the session project migration has not been applied",
+			Hint:   "Restart Detent to apply the runtime store migration and project-registry backfill.",
+		}
+	}
+
+	date := now.UTC().Format(time.DateOnly)
+	var sessions int64
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM codex_sessions WHERE substr(completed_at, 1, 10) = ? AND trim(COALESCE(project_id, '')) = ''`, date).Scan(&sessions); err != nil {
+		return doctorCheck{Name: name, Status: doctorWarn, Detail: fmt.Sprintf("daily budget attribution could not be inspected: %v", err)}
+	}
+	if sessions > 0 {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorWarn,
+			Detail: fmt.Sprintf("daily budget accuracy is degraded: %d completed session(s) today are unattributed and count toward every project", sessions),
+			Hint:   "Ensure each project tracker repository matches session identifiers, then restart Detent to rerun the project-registry backfill.",
+		}
+	}
+	return doctorCheck{Name: name, Status: doctorOK, Detail: "all completed sessions today have project attribution"}
+}
+
+func checkDoctorCodex(ctx context.Context, deps doctorDeps, environment doctorBinaryEnvironment) doctorCheck {
+	const hint = "Install Codex and ensure codex --version and the app-server initialize handshake succeed."
+	path, err := resolveDoctorBinary(ctx, deps, environment, "codex")
+	if err != nil {
+		return doctorBinaryCheck(environment, doctorCheck{
+			Name:   "codex binary",
+			Status: doctorFail,
+			Detail: "codex was not found on PATH",
+			Hint:   hint,
+		})
+	}
+	commandEnvironment := doctorBinaryCommandEnvironment(environment)
+	if err := deps.runCommandInDir(ctx, ".", commandEnvironment, path, "--version"); err != nil {
+		return doctorBinaryCheck(environment, doctorCheck{
+			Name:   "codex binary",
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s --version failed: %v", path, err),
+			Hint:   hint,
+		})
+	}
+	initialize := deps.codexInitialize
+	if initialize == nil {
+		initialize = probeDoctorCodexInitialize
+	}
+	if err := initialize(ctx, path, commandEnvironment); err != nil {
+		return doctorBinaryCheck(environment, doctorCheck{
+			Name:   "codex binary",
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s app-server initialize failed: %v", path, err),
+			Hint:   hint,
+		})
+	}
+	return doctorBinaryCheck(environment, doctorCheck{
+		Name:   "codex binary",
+		Status: doctorOK,
+		Detail: path + " is runnable and completed an app-server initialize handshake",
+	})
+}
+
+func probeDoctorCodexInitialize(ctx context.Context, path string, environment []string) error {
+	factory, err := codex.NewLocalTransportFactory(func(commandCtx context.Context) *exec.Cmd {
+		cmd := exec.CommandContext(commandCtx, path, "app-server")
+		cmd.Env = doctorCommandEnvironment(os.Environ(), environment)
+		return cmd
+	})
+	if err != nil {
+		return err
+	}
+	server, err := codex.NewAppServer(factory)
+	if err != nil {
+		return err
+	}
+	return server.CheckHealth(ctx)
+}
+
+func probeDoctorCodexAccount(ctx context.Context, backend workflowconfig.AgentBackend, environment []string) (codex.Account, error) {
+	factory, err := codex.NewLocalTransportFactory(func(commandCtx context.Context) *exec.Cmd {
+		cmd := commandshell.Command(commandCtx, backend.Command, backend.CodexOptions().Shell)
+		cmd.Env = doctorCommandEnvironment(os.Environ(), environment)
+		return cmd
+	})
+	if err != nil {
+		return codex.Account{}, err
+	}
+	server, err := codex.NewAppServer(factory)
+	if err != nil {
+		return codex.Account{}, err
+	}
+	return server.Account(ctx)
+}
+
+func checkDoctorMeteredBillingAuth(ctx context.Context, cfg globalconfig.Config, deps doctorDeps, environment doctorBinaryEnvironment) []doctorCheck {
+	type projectBilling struct {
+		id       string
+		config   workflowconfig.Config
+		backends []workflowconfig.AgentBackend
+	}
+	projects := make([]projectBilling, 0, len(cfg.Projects))
+	for _, project := range cfg.Projects {
+		workflow, err := loadDoctorProjectWorkflow(ctx, project, deps)
+		if err != nil || workflow.Config.Budget.EffectiveBillingMode() != workflowconfig.BillingModeMetered {
+			continue
+		}
+		enabled := workflow.Config.Budget.USDEnforcementEnabled()
+		if !enabled {
+			continue
+		}
+		backends := doctorRoutedCodexBackends(workflow.Config)
+		if len(backends) == 0 {
+			continue
+		}
+		projects = append(projects, projectBilling{id: doctorProjectID(project), config: workflow.Config, backends: backends})
+	}
+	if len(projects) == 0 {
+		return nil
+	}
+
+	checks := make([]doctorCheck, 0, len(projects))
+	for _, project := range projects {
+		subscriptions := make([]string, 0, len(project.backends))
+		metered := make([]string, 0, len(project.backends))
+		for _, backend := range project.backends {
+			account, err := deps.codexAccount(ctx, backend, doctorBinaryCommandEnvironment(environment))
+			if err != nil {
+				checks = append(checks, doctorCheck{
+					Name:   "Project " + project.id + " billing auth",
+					Status: doctorWarn,
+					Detail: fmt.Sprintf("routed Codex backend %s auth could not be read from command %q: %v", backend.ID, backend.Command, err),
+					Hint:   "Fix the configured Codex backend command or auth, then rerun detent doctor to verify whether its USD brakes use notional subscription-auth values.",
+				})
+				continue
+			}
+			if strings.TrimSpace(account.Type) == "" {
+				checks = append(checks, doctorCheck{
+					Name:   "Project " + project.id + " billing auth",
+					Status: doctorWarn,
+					Detail: fmt.Sprintf("routed Codex backend %s command %q did not identify an account type", backend.ID, backend.Command),
+					Hint:   "Fix the configured Codex backend auth, then rerun detent doctor to verify whether its USD brakes use notional subscription-auth values.",
+				})
+				continue
+			}
+			detail := fmt.Sprintf("backend %s command %q: %s%s", backend.ID, backend.Command, account.Type, doctorAccountPlanDetail(account.PlanType))
+			if account.SubscriptionBased() {
+				subscriptions = append(subscriptions, detail)
+			} else {
+				metered = append(metered, detail)
+			}
+		}
+		if len(subscriptions) > 0 {
+			check, ok := checkDoctorBillingMode(project.id, project.config, true)
+			if ok {
+				check.Detail = "resolved routed Codex subscription auth (" + strings.Join(subscriptions, "; ") + "); " + check.Detail
+				checks = append(checks, check)
+			}
+		} else if len(metered) == len(project.backends) {
+			checks = append(checks, doctorCheck{
+				Name:   "Project " + project.id + " billing auth",
+				Status: doctorOK,
+				Detail: "resolved routed Codex auth does not use a flat subscription (" + strings.Join(metered, "; ") + ")",
+			})
+		}
+	}
+	return checks
+}
+
+func doctorRoutedCodexBackends(cfg workflowconfig.Config) []workflowconfig.AgentBackend {
+	backends := make(map[string]workflowconfig.AgentBackend)
+	for _, backend := range cfg.AgentBackendConfigs() {
+		backends[strings.TrimSpace(backend.ID)] = backend
+	}
+	seen := make(map[string]struct{})
+	routed := make([]workflowconfig.AgentBackend, 0, len(backends))
+	for _, route := range cfg.AgentRouteConfigs() {
+		backend, ok := backends[strings.TrimSpace(route.Backend)]
+		if !ok || strings.TrimSpace(backend.Kind) != workflowconfig.AgentBackendCodex {
+			continue
+		}
+		if _, ok := seen[backend.ID]; ok {
+			continue
+		}
+		seen[backend.ID] = struct{}{}
+		routed = append(routed, backend)
+	}
+	return routed
+}
+
+func doctorAccountPlanDetail(plan string) string {
+	plan = strings.TrimSpace(plan)
+	if plan == "" {
+		return ""
+	}
+	return " (plan " + plan + ")"
+}
+
+func checkDoctorClaudeCode(ctx context.Context, deps doctorDeps, environment doctorBinaryEnvironment) doctorCheck {
+	return checkDoctorBinary(ctx, deps, environment, "claude", "claude binary", "--version", "Install Claude Code and run `claude` once to log in (or set ANTHROPIC_API_KEY).")
+}
+
+func doctorAgentBinaryCheckJobs(ctx context.Context, cfg *globalconfig.Config, deps doctorDeps, environment doctorBinaryEnvironment) []doctorCheckJob {
+	kinds := doctorAgentBackendKinds(ctx, cfg, deps)
+	jobs := make([]doctorCheckJob, 0, len(kinds))
+	for _, kind := range kinds {
+		switch kind {
+		case workflowconfig.AgentBackendCodex:
+			jobs = append(jobs, doctorCodexBinaryCheckJob(deps, environment))
+		case workflowconfig.AgentBackendOpenCode:
+			jobs = append(jobs, doctorCheckJob{Name: "opencode binary", Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorBinary(jobCtx, deps, environment, "opencode", "opencode binary", "--version", "Install OpenCode v2 and run opencode auth login. OpenCode workers require native-trusted isolation.")}
+			}})
+		case workflowconfig.AgentBackendPiAgent:
+			jobs = append(jobs, doctorCheckJob{Name: "pi binary", Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorBinary(jobCtx, deps, environment, "pi", "pi binary", "--version", "Install Pi and authenticate its configured provider with pi /login. Pi workers require native-trusted isolation; RPC resume, Detent dynamic tools and persisted history are not supported.")}
+			}})
+		case workflowconfig.AgentBackendClaudeCode:
+			jobs = append(jobs, doctorClaudeCodeBinaryCheckJob(deps, environment))
+		}
+	}
+	if len(jobs) == 0 {
+		return []doctorCheckJob{doctorCodexBinaryCheckJob(deps, environment)}
+	}
+	return jobs
+}
+
+func doctorAgentBackendKinds(ctx context.Context, cfg *globalconfig.Config, deps doctorDeps) []string {
+	if cfg == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	kinds := []string{}
+	add := func(kind string) {
+		kind = strings.TrimSpace(kind)
+		if kind == "" {
+			return
+		}
+		if _, ok := seen[kind]; ok {
+			return
+		}
+		seen[kind] = struct{}{}
+		kinds = append(kinds, kind)
+	}
+	for _, project := range cfg.Projects {
+		workflow, err := loadDoctorProjectWorkflow(ctx, project, deps)
+		if err != nil {
+			continue
+		}
+		for _, backend := range workflow.Config.AgentBackendConfigs() {
+			add(backend.Kind)
+		}
+	}
+	return kinds
+}
+
+func doctorCodexBinaryCheckJob(deps doctorDeps, environment doctorBinaryEnvironment) doctorCheckJob {
+	return doctorCheckJob{
+		Name: "codex binary",
+		Run: func(jobCtx context.Context) []doctorCheck {
+			return []doctorCheck{checkDoctorCodex(jobCtx, deps, environment)}
+		},
+	}
+}
+
+func doctorClaudeCodeBinaryCheckJob(deps doctorDeps, environment doctorBinaryEnvironment) doctorCheckJob {
+	return doctorCheckJob{
+		Name: "claude binary",
+		Run: func(jobCtx context.Context) []doctorCheck {
+			return []doctorCheck{checkDoctorClaudeCode(jobCtx, deps, environment)}
+		},
+	}
+}
+
+func checkDoctorGit(ctx context.Context, deps doctorDeps, environment doctorBinaryEnvironment) doctorCheck {
+	return checkDoctorBinary(ctx, deps, environment, "git", "git binary", "--version", "Install git and ensure git --version succeeds.")
+}
+
+func checkDoctorHookShell(shellName string, goos string, deps doctorDeps, environment doctorBinaryEnvironment) doctorCheck {
+	deps = deps.withDefaults()
+	resolved, err := commandshell.ResolveForOS(shellName, goos, func(binary string) (string, error) {
+		return deps.resolveCommandOnPath(environment.CheckedPath, binary)
+	}, deps.statHookShell)
+	check := doctorCheck{Name: "Hook shell", Status: doctorOK, Detail: resolved}
+	if err != nil {
+		check.Status = doctorFail
+		check.Detail = err.Error()
+		check.Hint = "Install the declared shell on this runner or make it available on PATH."
+	}
+	return doctorBinaryCheck(environment, check)
+}
+
+func checkDoctorBinary(ctx context.Context, deps doctorDeps, environment doctorBinaryEnvironment, binary string, name string, arg string, hint string) doctorCheck {
+	path, err := resolveDoctorBinary(ctx, deps, environment, binary)
+	if err != nil {
+		return doctorBinaryCheck(environment, doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: binary + " was not found on PATH",
+			Hint:   hint,
+		})
+	}
+	if err := deps.runCommandInDir(ctx, ".", doctorBinaryCommandEnvironment(environment), path, arg); err != nil {
+		return doctorBinaryCheck(environment, doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s %s failed: %v", path, arg, err),
+			Hint:   hint,
+		})
+	}
+
+	return doctorBinaryCheck(environment, doctorCheck{
+		Name:   name,
+		Status: doctorOK,
+		Detail: path + " is runnable",
+	})
+}
+
+func resolveDoctorBinary(ctx context.Context, deps doctorDeps, environment doctorBinaryEnvironment, binary string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return deps.resolveCommandOnPath(environment.CheckedPath, binary)
+}
+
+func doctorBinaryCommandEnvironment(environment doctorBinaryEnvironment) []string {
+	return []string{"PATH=" + environment.CheckedPath}
+}
+
+func doctorBinaryCheck(environment doctorBinaryEnvironment, check doctorCheck) doctorCheck {
+	resolution := doctorBinaryResolution{
+		Source:             environment.Source,
+		CheckedPath:        environment.CheckedPath,
+		DoctorPath:         environment.DoctorPath,
+		OrchestratorPath:   environment.OrchestratorPath,
+		EnvironmentsDiffer: environment.OrchestratorPath != "" && environment.DoctorPath != environment.OrchestratorPath,
+		FallbackReason:     environment.FallbackReason,
+	}
+	check.BinaryResolution = &resolution
+	check.Detail += "; " + doctorBinaryEnvironmentDetail(resolution)
+	return check
+}
+
+func doctorBinaryEnvironmentDetail(resolution doctorBinaryResolution) string {
+	checkedPath := resolution.CheckedPath
+	if checkedPath == "" {
+		checkedPath = "<empty>"
+	}
+	source := "doctor fallback"
+	if resolution.Source == doctorBinaryPathSourceOrchestrator {
+		source = "orchestrator"
+	}
+	detail := fmt.Sprintf("checked PATH: %s (%s)", checkedPath, source)
+	if resolution.FallbackReason != "" {
+		detail += "; " + resolution.FallbackReason
+	}
+	if resolution.EnvironmentsDiffer {
+		doctorPath := resolution.DoctorPath
+		if doctorPath == "" {
+			doctorPath = "<empty>"
+		}
+		detail += fmt.Sprintf("; doctor PATH: %s; doctor PATH differs from orchestrator PATH", doctorPath)
+	}
+	return detail
+}
+
+func checkDoctorServerPort(ctx context.Context, cfg BootConfig, deps doctorDeps) doctorCheck {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	deps = deps.withDefaults()
+	addr := serverAddr(cfg)
+	listener, err := deps.listen("tcp", addr)
+	if err != nil {
+		check := doctorCheck{
+			Name:   "Server port",
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s is not available for pre-start bind: %v", addr, err),
+			Hint:   "Stop the process using the port or pass --port with an available value.",
+		}
+		if (!doctorListenErrIndicatesOccupied(err) && !errors.Is(err, syscall.EADDRNOTAVAIL)) || doctorServerPort(cfg) == 0 {
+			return check
+		}
+		probe, probeErr := probeDoctorHealth(ctx, cfg, deps)
+		if probeErr != nil {
+			check.Detail += fmt.Sprintf("; health probe %s %v", probe.URL, probeErr)
+			return check
+		}
+		if probe.Health.Mode != "running" {
+			check.Detail += "; Detent mode is " + probe.Health.Mode
+			return check
+		}
+		detail := fmt.Sprintf(
+			"%s serves the running Detent instance; health probe %s (status %s, mode %s)%s",
+			addr,
+			probe.URL,
+			probe.Health.Status,
+			probe.Health.Mode,
+			doctorEnforcedBudgetDetail(probe.Health.Budgets),
+		)
+		return doctorCheck{
+			Name:   "Server port",
+			Status: doctorOK,
+			Detail: detail,
+		}
+	}
+	if err := listener.Close(); err != nil {
+		return doctorCheck{
+			Name:   "Server port",
+			Status: doctorWarn,
+			Detail: fmt.Sprintf("%s was available for pre-start bind, but close failed: %v", addr, err),
+			Hint:   "Rerun detent doctor and check for local network errors.",
+		}
+	}
+
+	host, portText, err := net.SplitHostPort(listener.Addr().String())
+	if err == nil && portText != "" {
+		if port, parseErr := strconv.Atoi(portText); parseErr == nil && port > 0 && host != "" {
+			addr = net.JoinHostPort(host, strconv.Itoa(port))
+		}
+	}
+
+	return doctorCheck{
+		Name:   "Server port",
+		Status: doctorOK,
+		Detail: addr + " is available for pre-start bind",
+	}
+}
+
+func checkDoctorDashboardAddress(configured BootConfig, running dashboardAddress) doctorCheck {
+	configuredAddress := dashboardServerAddr(configured)
+	if !dashboardAddressFromRunningProcess(running) {
+		return doctorCheck{
+			Name:   "Dashboard address",
+			Status: doctorOK,
+			Detail: configuredAddress + " has no distinct running-process address override",
+		}
+	}
+	if configuredAddress == running.Value || ephemeralPortMatches(configuredAddress, running.Value) {
+		return doctorCheck{
+			Name:   "Dashboard address",
+			Status: doctorOK,
+			Detail: configuredAddress + " matches the running Detent service",
+		}
+	}
+	return doctorCheck{
+		Name:   "Dashboard address",
+		Status: doctorFail,
+		Detail: fmt.Sprintf("config resolves the dashboard to %s, but the running Detent service uses %s", configuredAddress, running),
+		Hint:   "Set the global or workflow server host and port to the running service address, then restart Detent.",
+	}
+}
+
+func ephemeralPortMatches(configured string, running string) bool {
+	configuredHost, configuredPort, err := net.SplitHostPort(configured)
+	if err != nil || configuredPort != "0" {
+		return false
+	}
+	runningHost, runningPort, err := net.SplitHostPort(running)
+	return err == nil && runningHost == configuredHost && runningPort != "" && runningPort != "0"
+}
+
+func dashboardAddressFromRunningProcess(address dashboardAddress) bool {
+	for _, source := range []string{address.HostSource, address.PortSource} {
+		if source == dashboardAddressSourceWorkerEnvironment || source == dashboardAddressSourceServiceFlag || source == dashboardAddressSourceListener {
+			return true
+		}
+	}
+	return false
+}
+
+type doctorHealthProbe struct {
+	URL    string
+	Health doctorHealthResponse
+}
+
+type doctorHealthResponse struct {
+	CandidatesMissingVsTracker map[string]*int `json:"candidates_missing_vs_tracker"`
+
+	Status                     string                           `json:"status"`
+	Version                    string                           `json:"version"`
+	Commit                     string                           `json:"commit"`
+	Mode                       string                           `json:"mode"`
+	Checks                     map[string]string                `json:"checks"`
+	Environment                doctorHealthEnvironment          `json:"environment"`
+	Budgets                    []doctorHealthBudget             `json:"budgets"`
+	Workflows                  []doctorHealthWorkflow           `json:"workflows"`
+	LaneSignalWarnings         []telemetry.LaneSignalWarning    `json:"lane_signal_warnings"`
+	StalenessWarnings          []telemetry.StalenessWarning     `json:"staleness_warnings"`
+	StrandedIssues             []telemetry.StrandedIssue        `json:"stranded_active_issues"`
+	Dispatch                   telemetry.DispatchStatus         `json:"dispatch"`
+	DispatchStalls             []telemetry.DispatchStatus       `json:"dispatch_stalls"`
+	HealthNotificationFailures []healthnotify.Failure           `json:"health_notification_failures"`
+	OrphanedAgentProcesses     telemetry.OrphanedAgentProcesses `json:"orphaned_agent_processes"`
+}
+
+func checkDoctorDetentService(ctx context.Context, cfg BootConfig, installedBuild buildinfo.Info, deps doctorDeps) []doctorCheck {
+	probe, err := probeDoctorHealth(ctx, cfg, deps)
+	version := strings.TrimSpace(probe.Health.Version)
+	commit := strings.TrimSpace(probe.Health.Commit)
+	if version != "" && commit != "" {
+		check := doctorCheck{
+			Name:   "Remote Detent service",
+			Status: doctorOK,
+			Detail: fmt.Sprintf("remote service build %s (%s) at %s", version, commit, probe.URL),
+		}
+		if err != nil {
+			check.Status = doctorWarn
+			check.Detail += "; health check: " + err.Error()
+			check.Hint = "Review the running Detent service health, then rerun detent doctor."
+		}
+		if err == nil && probe.Health.Status != "ok" {
+			check.Status = doctorWarn
+			check.Detail += "; operational health: " + probe.Health.Status
+			check.Hint = "Review the live diagnostic findings, then rerun detent doctor."
+		}
+		checks := []doctorCheck{check}
+		if probe.Health.OrphanedAgentProcesses.Count > 0 {
+			checks = append(checks, checkDoctorOrphanedAgentProcesses(probe.Health.OrphanedAgentProcesses))
+		}
+		if driftCheck, ok := checkDoctorBuildDrift(buildinfo.Info{Version: version, Commit: commit}, installedBuild); ok {
+			checks = append(checks, driftCheck)
+		}
+		return checks
+	}
+	if err != nil {
+		return nil
+	}
+	checks := []doctorCheck{{
+		Name:   "Remote Detent service",
+		Status: doctorWarn,
+		Detail: fmt.Sprintf("remote service at %s did not report its complete build", probe.URL),
+		Hint:   "Upgrade the running Detent service, then rerun detent doctor.",
+	}}
+	if probe.Health.OrphanedAgentProcesses.Count > 0 {
+		checks = append(checks, checkDoctorOrphanedAgentProcesses(probe.Health.OrphanedAgentProcesses))
+	}
+	return checks
+}
+
+func checkDoctorOrphanedAgentProcesses(summary telemetry.OrphanedAgentProcesses) doctorCheck {
+	check := doctorCheck{
+		Name:                   "Orphaned agent processes",
+		Status:                 doctorOK,
+		Detail:                 "no agent processes exist without a corresponding live session",
+		OrphanedAgentProcesses: &summary,
+	}
+	if summary.Count == 0 {
+		return check
+	}
+	details := make([]string, 0, len(summary.Processes))
+	for _, process := range summary.Processes {
+		identity := strings.TrimSpace(process.Identifier)
+		if identity == "" {
+			identity = fmt.Sprintf("session %d", process.SessionID)
+		}
+		details = append(details, fmt.Sprintf(
+			"%s pid=%d age=%s rss=%s",
+			identity,
+			process.PID,
+			(time.Duration(process.AgeSeconds)*time.Second).Round(time.Second),
+			formatWorkerProcessBytes(process.RSSBytes),
+		))
+	}
+	check.Status = doctorWarn
+	check.Detail = fmt.Sprintf(
+		"%d orphaned agent process(es) across %d session(s) hold %s RSS: %s",
+		summary.Count,
+		summary.SessionCount,
+		formatWorkerProcessBytes(summary.TotalRSSBytes),
+		strings.Join(details, "; "),
+	)
+	check.Hint = "Run `detent fix worker-processes --yes` to terminate the listed process groups gracefully, then force any survivors."
+	return check
+}
+
+func formatWorkerProcessBytes(value int64) string {
+	const mebibyte = int64(1024 * 1024)
+	const gibibyte = int64(1024 * 1024 * 1024)
+	if value >= gibibyte {
+		return fmt.Sprintf("%.1f GiB", float64(value)/float64(gibibyte))
+	}
+	return fmt.Sprintf("%.1f MiB", float64(value)/float64(mebibyte))
+}
+
+func checkDoctorBuildDrift(runningBuild buildinfo.Info, installedBuild buildinfo.Info) (doctorCheck, bool) {
+	drift := buildinfo.DetectDrift(runningBuild, installedBuild)
+	if !drift.Comparable {
+		return doctorCheck{}, false
+	}
+	running := fmt.Sprintf("%s (%s)", strings.TrimSpace(runningBuild.Version), buildinfo.ShortCommit(runningBuild.Commit))
+	installed := fmt.Sprintf("%s (%s)", strings.TrimSpace(installedBuild.Version), buildinfo.ShortCommit(installedBuild.Commit))
+	check := doctorCheck{
+		Name:   "Detent build drift",
+		Status: doctorOK,
+		Detail: fmt.Sprintf("running service build %s matches installed executable build %s", running, installed),
+	}
+	if drift.Detected {
+		check.Status = doctorWarn
+		check.Detail = fmt.Sprintf("running service build %s differs from installed executable build %s", running, installed)
+		check.Hint = "Restart the runner service to load the installed build, then rerun detent doctor."
+	}
+	return check, true
+}
+
+type doctorHealthEnvironment struct {
+	Path string `json:"path"`
+}
+
+type doctorHealthWorkflow struct {
+	ProjectID       string    `json:"project_id"`
+	Path            string    `json:"path"`
+	SourceHash      string    `json:"source_hash"`
+	Revision        string    `json:"revision"`
+	Layout          string    `json:"layout"`
+	ModifiedAt      time.Time `json:"modified_at"`
+	LoadedAt        time.Time `json:"loaded_at"`
+	LastReloadError string    `json:"last_reload_error"`
+	ReloadFailedAt  time.Time `json:"reload_failed_at"`
+}
+
+type doctorHealthBudget struct {
+	ProjectID      string  `json:"project_id"`
+	Enabled        bool    `json:"enabled"`
+	PerDayMaxUSD   float64 `json:"per_day_max_usd"`
+	PerIssueMaxUSD float64 `json:"per_issue_max_usd"`
+}
+
+func doctorEnforcedBudgetDetail(budgets []doctorHealthBudget) string {
+	if len(budgets) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(budgets))
+	for _, budget := range budgets {
+		parts = append(parts, fmt.Sprintf(
+			"%s enabled=%t per_day_max_usd=%s per_issue_max_usd=%s",
+			budget.ProjectID,
+			budget.Enabled,
+			strconv.FormatFloat(budget.PerDayMaxUSD, 'f', 2, 64),
+			strconv.FormatFloat(budget.PerIssueMaxUSD, 'f', 2, 64),
+		))
+	}
+	return "; enforced budget: " + strings.Join(parts, ", ")
+}
+
+func probeDoctorHealth(ctx context.Context, cfg BootConfig, deps doctorDeps) (doctorHealthProbe, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	url := doctorHealthProbeURL(cfg)
+	probe := doctorHealthProbe{URL: url}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return probe, fmt.Errorf("could not be built: %w", err)
+	}
+	resp, err := deps.httpDo(req)
+	if err != nil {
+		return probe, fmt.Errorf("could not be reached: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return probe, fmt.Errorf("returned HTTP %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&probe.Health); err != nil {
+		return probe, fmt.Errorf("did not return Detent health: %w", err)
+	}
+	probe.Health.Status = strings.TrimSpace(probe.Health.Status)
+	probe.Health.Mode = strings.TrimSpace(probe.Health.Mode)
+	if probe.Health.Status == "" || probe.Health.Mode == "" || !doctorHealthHasDetentChecks(probe.Health.Checks) {
+		return probe, errors.New("did not return Detent health")
+	}
+
+	return probe, nil
+}
+
+func doctorHealthHasDetentChecks(checks map[string]string) bool {
+	if checks == nil {
+		return false
+	}
+	for _, key := range doctorHealthCheckKeys {
+		if _, ok := checks[key]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func doctorHealthProbeURL(cfg BootConfig) string {
+	return "http://" + net.JoinHostPort(doctorHealthProbeHost(cfg.Host), strconv.Itoa(doctorServerPort(cfg))) + "/health"
+}
+
+func doctorHealthProbeHost(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		host = defaultWebHost
+	}
+	host = unbracketIPv6Host(host)
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return host
+	}
+	if ip.IsUnspecified() {
+		if ip.To4() != nil {
+			return "127.0.0.1"
+		}
+		return "::1"
+	}
+	return host
+}
+
+func doctorServerPort(cfg BootConfig) int {
+	if cfg.Port != nil {
+		return *cfg.Port
+	}
+	return defaultWebPort
+}
+
+func doctorListenErrIndicatesOccupied(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return errors.Is(err, syscall.EADDRINUSE) ||
+		strings.Contains(message, "address already in use") ||
+		strings.Contains(message, "only one usage of each socket address")
+}

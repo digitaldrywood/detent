@@ -1,0 +1,74 @@
+--- FAIL: TestServiceCloseCancelsAndDrainsOutboxWorker (2.75s)
+    outbox_test.go:314: goroutines:
+        goroutine 65 [running]:
+        github.com/digitaldrywood/detent/internal/hubserver.TestServiceCloseCancelsAndDrainsOutboxWorker(0xc0001f8908)
+            /Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2389-0c8cb45ea346/internal/hubserver/outbox_test.go:314 +0x8d8
+        testing.tRunner(0xc0001f8908, 0x1042ea0d0)
+            /usr/local/go/src/testing/testing.go:2193 +0x168
+        created by testing.(*T).Run in goroutine 1
+            /usr/local/go/src/testing/testing.go:2258 +0x7c0
+
+        goroutine 1 [chan receive]:
+        testing.tRunner.func1()
+            /usr/local/go/src/testing/testing.go:2142 +0x660
+        testing.tRunner(0xc0001f8248, 0xc00061fa28)
+            /usr/local/go/src/testing/testing.go:2199 +0x190
+        testing.runTests({0x10379350c, 0x20}, {0x1037ac860, 0x33}, 0xc00036eac8, {0x1043772d0, 0xda, 0xda}, {0x0?, 0xc000027428?, ...})
+            /usr/local/go/src/testing/testing.go:2740 +0x7a4
+        testing.(*M).Run(0xc00012a1e0)
+            /usr/local/go/src/testing/testing.go:2600 +0xb3c
+        main.main()
+            _testmain.go:480 +0x104
+
+        goroutine 66 [select]:
+        database/sql.(*DB).connectionOpener(0xc000756410, {0x1042e73c0, 0xc0001ce370})
+            /usr/local/go/src/database/sql/sql.go:1266 +0xbc
+        created by database/sql.OpenDB in goroutine 65
+            /usr/local/go/src/database/sql/sql.go:846 +0x250
+
+        goroutine 59 [select]:
+        database/sql.(*DB).conn(0xc000756410, {0x1042e73f8, 0xc00024a380}, 0x1)
+            /usr/local/go/src/database/sql/sql.go:1374 +0x4a4
+        database/sql.(*DB).exec(0xc000756410, {0x1042e73f8, 0xc00024a380}, {0x1037e5f8f, 0xb2}, {0xc0005c18d8, 0x7, 0x7}, 0x1)
+            /usr/local/go/src/database/sql/sql.go:1694 +0x5c
+        database/sql.(*DB).ExecContext.func1(0x1)
+            /usr/local/go/src/database/sql/sql.go:1677 +0x8c
+        database/sql.(*DB).retry(0x2005c1788?, 0xc0005c1780)
+            /usr/local/go/src/database/sql/sql.go:1581 +0x50
+        database/sql.(*DB).ExecContext(0xc000756410, {0x1042e73f8, 0xc00024a380}, {0x1037e5f8f, 0xb2}, {0xc0005c18d8, 0x7, 0x7})
+            /usr/local/go/src/database/sql/sql.go:1676 +0xfc
+        github.com/digitaldrywood/detent/internal/hubserver.(*Service).failOutbox(0xc0001f8d88, {0x1042e73f8, 0xc00024a380}, {{0xc00013a0a8, 0x11}, 0x1, {0xc000224a24, 0xc}, 0x1, {0xc000224a52, ...}, ...}, ...)
+            /Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2389-0c8cb45ea346/internal/hubserver/outbox.go:669 +0x540
+        github.com/digitaldrywood/detent/internal/hubserver.(*Service).ProcessOutbox(0xc0001f8d88, {0x1042e73c0, 0xc0001ce0a0})
+            /Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2389-0c8cb45ea346/internal/hubserver/outbox.go:549 +0x30c
+        github.com/digitaldrywood/detent/internal/hubserver.(*outboxWorker).run(0xc0006204e0, {0x1042e73c0, 0xc0001ce0a0})
+            /Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2389-0c8cb45ea346/internal/hubserver/outbox.go:852 +0xd4
+        github.com/digitaldrywood/detent/internal/hubserver.(*outboxWorker).start.func1()
+            /Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2389-0c8cb45ea346/internal/hubserver/outbox.go:843 +0x88
+        created by github.com/digitaldrywood/detent/internal/hubserver.(*outboxWorker).start in goroutine 65
+            /Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2389-0c8cb45ea346/internal/hubserver/outbox.go:841 +0x12c
+
+        goroutine 437 [sync.WaitGroup.Wait]:
+        sync.runtime_SemacquireWaitGroup(0x1042e2c08?, 0x30?)
+            /usr/local/go/src/runtime/sema.go:114 +0x38
+        sync.(*WaitGroup).Wait(0xc0006204f8)
+            /usr/local/go/src/sync/waitgroup.go:206 +0xb8
+        github.com/digitaldrywood/detent/internal/hubserver.(*outboxWorker).stop(0xc0006204e0)
+            /Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2389-0c8cb45ea346/internal/hubserver/outbox.go:880 +0x68
+        github.com/digitaldrywood/detent/internal/hubserver.(*Service).Close.func1()
+            /Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2389-0c8cb45ea346/internal/hubserver/service.go:280 +0x150
+        sync.(*Once).doSlow(0xc0001f8f7c, 0xc0005aaf78)
+            /usr/local/go/src/sync/once.go:78 +0x98
+        sync.(*Once).Do(0xc0001f8f7c, 0xc000344778)
+            /usr/local/go/src/sync/once.go:69 +0x38
+        github.com/digitaldrywood/detent/internal/hubserver.(*Service).Close(0xc0001f8d88)
+            /Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2389-0c8cb45ea346/internal/hubserver/service.go:270 +0x68
+        github.com/digitaldrywood/detent/internal/hubserver.TestServiceCloseCancelsAndDrainsOutboxWorker.func1()
+            /Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2389-0c8cb45ea346/internal/hubserver/outbox_test.go:305 +0x34
+        created by github.com/digitaldrywood/detent/internal/hubserver.TestServiceCloseCancelsAndDrainsOutboxWorker in goroutine 65
+            /Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2389-0c8cb45ea346/internal/hubserver/outbox_test.go:304 +0x7c0
+    outbox_test.go:315: database stats while Close is blocked: {MaxOpenConnections:1 OpenConnections:1 InUse:1 Idle:0 WaitCount:3 WaitDuration:4.393292ms MaxIdleClosed:0 MaxIdleTimeClosed:0 MaxLifetimeClosed:0}
+    outbox_test.go:316: Close() did not cancel and drain the outbox worker
+FAIL
+FAIL    github.com/digitaldrywood/detent/internal/hubserver 3.112s
+FAIL
