@@ -18,6 +18,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -885,6 +886,80 @@ func TestHealthSnapshotRefreshObservation(t *testing.T) {
 			}
 			if active != test.want {
 				t.Fatalf("active=%v snapshot=%+v", active, snapshot)
+			}
+		})
+	}
+}
+
+func TestHealthDetectorChangeContent(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		archived bool
+	}{
+		{name: "inline output"},
+		{name: "archived output", archived: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "health.db")}
+			if test.archived {
+				objects := &changeObjectFixture{}
+				cfg.content = objects.call
+			}
+			service := openTestService(t, cfg)
+			service.stopHealthDetector()
+			f := newChangeFixture(t, service)
+			addHealthBacklog(t, f.nativeFixture)
+			input := changeTestInput()
+			input.Validation = &gate.CommandResult{Command: "make check-landing", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 123, Output: "validation succeeded\n"}
+			response := performHubAPIRequest(t, service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "health-version"}, ChangeVersionInput: input})
+			requireNativeStatus(t, response, http.StatusOK)
+			var version tracker.ChangeVersion
+			decodeHubResponse(t, response, &version)
+			var outputs int
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM change_command_outputs WHERE version_id=?", version.ID).Scan(&outputs); err != nil {
+				t.Fatal(err)
+			}
+			if (outputs == 1) != test.archived {
+				t.Fatalf("archived command outputs=%d", outputs)
+			}
+			r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat)
+			r.enroll(t)
+			now := time.Now().UTC()
+			at := formatHubTime(now.Add(-time.Hour))
+			lease := newNativeID("lease")
+			result, err := service.database.db.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT ?,id,?,'health-session',?,?,?,?,? FROM issues WHERE native_id=?`, lease, r.binding.MachineID, at, at, at, at, at, f.issue.WorkItemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fence, err := result.LastInsertId()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(tracker.NativeRunData{Disposition: &tracker.NativeDisposition{Status: "complete"}, Finalization: &tracker.NativeFinalization{Changed: true, ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpoint, err := json.Marshal(tracker.NativeCheckpoint{WorktreeState: "clean", HeadSHA: version.HeadSHA})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,checkpoint_json,started_at,updated_at,work_item_revision,dispatch_generation) SELECT ?,organization_id,project_id,native_id,?,?,'health-run',1,'succeeded',?,?,?,?,revision,dispatch_generation FROM issues WHERE native_id=?`, newNativeID("attempt"), lease, fence, string(data), string(checkpoint), at, at, f.issue.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.database.db.ExecContext(t.Context(), "INSERT INTO lease_runners(lease_id,runner_id) VALUES(?,?)", lease, r.binding.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", formatHubTime(now.Add(-6*time.Minute)), r.binding.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			if err := service.evaluateTenantHealth(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			var finding string
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT signal FROM health_findings WHERE organization_id=? AND signal='runner_heartbeat_gap' AND resolved_at IS NULL", f.project.OrganizationID).Scan(&finding); err != nil {
+				t.Fatalf("missing stale runner finding: %v", err)
 			}
 		})
 	}
