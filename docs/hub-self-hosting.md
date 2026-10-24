@@ -3,6 +3,8 @@
 Moving an existing standalone board? Start with the
 [local board to local Hub migration runbook](hub-local-migration.md) for backups,
 pilot cutover, import prerequisites and rollback before replacing its service.
+For a Hub and runners on one Mac, follow the
+[macOS/launchd guide](#macos-with-launchd).
 
 One customer-controlled macOS or Linux host, one Hub process, and local
 durable storage are the supported deployment described here. Use the released

@@ -5,25 +5,20 @@ and its Templ dashboard to a self-hosted Hub with enrolled runners. Since
 v0.132.0, a non-`hub_native` board without `client.hub_url` refuses to start.
 Adding a URL alone does not migrate its issues, lanes or credentials.
 
-Use a reviewed release containing the features your migration needs. The
-[local-mode Hub work](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1373)
-tracks the remaining prerequisites:
+Use a reviewed release containing the migration features below:
 
-| Existing setup or requirement | Prerequisite before completing cutover |
+| Existing setup or requirement | Procedure |
 | --- | --- |
-| `local_sqlite` or `github_local` lanes/history | [#1377: local store import](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1377) |
-| GitHub ProjectV2 status lanes | [#1378: ProjectV2 lane intake](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1378) |
-| Browser dashboard without WorkOS | [#1374: self-hosted web app](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1374) |
-| Organization model settings on an unhosted Hub | [#1385: organization model selection](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1385) |
-| Cloud and local-Hub runner services on one host | [#1380: separate runner services](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1380) |
+| `local_sqlite` or `github_local` lanes/history | [Local store import](local-board-migration.md) |
+| GitHub ProjectV2 status lanes | [Selective onboarding intake](hub-api.md#selective-onboarding-issue-intake) |
+| Browser dashboard without WorkOS | [Local web app](hub-self-hosting.md#open-the-web-app-without-workos) |
+| Organization model settings on an unhosted Hub | [Model selection](hub-self-hosting.md#model-selection) |
+| Cloud and local-Hub runner services on one host | [Separate Hub and runner services](hub-self-hosting.md#single-machine-hub-and-runner) |
 
-Until the corresponding implementation ships, stop at that step. Do not replace
-local lane state with guessed labels, edit either SQLite schema, or configure
-WorkOS merely to get a local dashboard. The API/MCP Hub works headlessly today;
-its browser dashboard is not the old Templ board. For Linux service installation
-and TLS see [Hub operations](hub-self-hosting.md); the single-machine macOS and
-launchd guide is tracked by
-[#1379](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1379).
+Do not replace local lane state with guessed labels or edit either SQLite
+schema. The Hub serves its web app and API/MCP without WorkOS. For Linux service
+installation and TLS see [Hub operations](hub-self-hosting.md); for one Mac use
+the [single-machine macOS/launchd guide](hub-self-hosting.md#macos-with-launchd).
 
 ## 1. Pin and preserve the old board
 
@@ -115,9 +110,8 @@ detent hub verify --database "$HUB_DIR/backups/initial.db"
 
 The destination must not exist. Restart with the same serve command and token.
 Keep completed snapshots in encrypted backup storage with the binary version
-and separate secret backups. These commands require a stopped Hub; online
-snapshots are tracked by
-[#1388](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1388).
+and separate secret backups. These offline commands require a stopped Hub;
+use the authenticated online snapshot API for subsequent backups while it runs.
 Follow [backup and restore](hub-self-hosting.md#backup-and-export) for later
 snapshots, artifacts and restore isolation.
 
@@ -178,8 +172,8 @@ deliverable:
 This selects a deliverable; it does not make GitHub the issue authority. Preserve
 the project's GitHub credentials, target branch and required protections. See
 [GitHub profiles](github-profiles.md) for repository binding and intake, and
-[#1384](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1384)
-for the self-hosted App/webhook setup work. The Hub may keep `--github-disabled`
+[self-hosted App/webhook setup](hub-self-hosting.md#operator-owned-github-app)
+for Hub-owned GitHub transport. The Hub may keep `--github-disabled`
 when using runner-backed intake; this does not disable runner Git transport.
 
 Before enrolling, read the project's integration revision with
@@ -215,11 +209,12 @@ Keep provider sign-ins and Git authentication on the runner host.
 Confirm the binding, checkout and source revision on readback; the integration
 read's `checkout_verified` reflects a recent matching authorized runner report.
 Follow [runner onboarding](hub-api.md#register-a-runner-with-one-command) and
-the headless enrollment documentation work in
-[#1386](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1386).
+[headless enrollment](hub-self-hosting.md#enroll-a-runner-without-the-web-app).
 Do not add a local project map to make a missing checkout appear. Start with
-the foreground runner; service coexistence with an existing Cloud runner awaits
-#1380. Installing a service must not replace the old board's rollback unit.
+the foreground runner, then use `detent hub runner register --service` with
+separate config and workspace roots for each Hub. Installing a service must not
+replace the old board's rollback unit; follow the
+[service coexistence guide](hub-self-hosting.md#single-machine-hub-and-runner).
 
 ## 5. Import open work without dispatching it
 
@@ -234,12 +229,18 @@ identities/provenance; do not recreate issues by hand under new identities.
   label mappings must not accidentally route work into Todo. Follow all pages
   and inspect failed, skipped and partial results before proceeding. Import
   dependencies too; preserve holds and unresolved references.
-- **`local_sqlite` or `github_local`:** stop until the importer from #1377 is
-  available in your selected release. GitHub intake alone cannot recover local
-  lanes, local-only issues or local history. Keep the store backup and use that
-  importer's documented preview/apply contract when shipped.
-- **GitHub ProjectV2:** stop if preserving its status-field lanes is required
-  until #1378 ships. Current label intake is not a ProjectV2 status migration.
+- **`local_sqlite` or `github_local`:** follow the
+  [local store importer](local-board-migration.md). Preview with
+  `detent hub issue import-local` and `--dry-run`, then apply using the same
+  store identity and lane mappings. Map dispatchable source lanes to Backlog
+  during reconciliation, for example `--lane-map Todo=Backlog`. For
+  `github_local`, complete GitHub intake into Triage first so the importer can
+  match original issue numbers without duplicates.
+- **GitHub ProjectV2:** supply `project_v2.id` and explicit `status_lanes` in
+  [onboarding intake](hub-api.md#selective-onboarding-issue-intake). Map Status
+  values to nondispatchable lanes and inspect `project_status` in previews and
+  `unmapped_project_status` in results. Missing or unmapped Status uses the
+  intake destination; labels do not substitute for a Status mapping.
 
 Verify retained identities, discussion, dependencies and lane mapping against
 the source inventory, not only total counts. Inspect explicit gaps; an import
@@ -250,17 +251,14 @@ pilot paused, and keep new intake from dispatching work until reconciliation.
 
 Set model/backend/reasoning choices in the Hub's organization settings and, if
 needed, the pilot project's override. Read back the effective stage selections
-before dispatch. Organization model selection for an unhosted Hub is tracked by
-#1385; if the selected release does not support your required settings, stop
-here. Do not work around it with model keys in global or repository YAML.
+before dispatch using the [model selection procedure](hub-self-hosting.md#model-selection).
+Do not work around it with model keys in global or repository YAML.
 
 Read the runner's observed repository policy and onboarding status through the
 Hub. Check source revision, gate command, landing target, review/security policy
 and runner grants. Approve the exact trusted descriptor through the supported
 project policy API/MCP owner described in
 [approved repository policy](hub-api.md#approved-repository-policy).
-The consolidation of self-hosted approval instructions is tracked by
-[#1383](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1383).
 Do not introduce a rejected `client.native_projects` mapping to run an old
 approval example. Approval is not permission to bypass review or the gate.
 
@@ -268,7 +266,10 @@ Create one small native issue with checkable acceptance criteria, move only that
 issue to the configured dispatchable Todo lane through the Hub, and watch its
 attempt, Change version, review, security audit, gate and landing records. Require
 a successful landing on the intended target branch and the expected terminal
-state before enabling imported work. Do not replay an old in-flight attempt on
+state before enabling imported work. Imported bodies must satisfy the approved
+project's issue contract before dispatch; complete missing sections through the
+operator API without replacing the imported identity or provenance.
+Do not replay an old in-flight attempt on
 the new Hub or operate the same issue from both boards.
 
 ## 7. Verify and repeat, or roll back
