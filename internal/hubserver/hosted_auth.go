@@ -171,13 +171,14 @@ func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Sessi
 	return s.hostedMemberCredential(ctx, session, hash, membership)
 }
 
-// completePendingHostedInvitation finishes an invitation the provider accepted
-// but whose tenant membership was never written, such as a join interrupted
-// between the provider acceptance and the tenant transaction. The acceptance
-// path re-verifies the provider invitation, subject, membership and role, and
-// its conditional update admits one acceptance, so no shared lock is held
-// across the provider calls. It reports whether a pending invitation existed,
-// since a concurrent request may have completed it first.
+// completePendingHostedInvitation finishes an invitation the provider already
+// accepted for this subject but whose tenant membership was never written, such
+// as a join interrupted between the provider acceptance and the tenant
+// transaction. A pending invitation still needs the explicit join. The
+// acceptance path re-verifies the provider invitation, subject, membership and
+// role, and its conditional update admits one acceptance, so no shared lock is
+// held across the provider calls. It reports true whenever completion was
+// attempted, since a concurrent request may have completed it first.
 func (s *Service) completePendingHostedInvitation(ctx context.Context, session auth.Session) bool {
 	if session.Identity == nil || session.Identity.SupportActor != "" || session.Email == "" || hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
 		return false
@@ -187,6 +188,10 @@ func (s *Service) completePendingHostedInvitation(ctx context.Context, session a
 	err := s.database.reader.QueryRowContext(readCtx, "SELECT id FROM hosted_invitations WHERE email = ? AND organization_id = ? AND accepted_user_id = '' AND (expires_at = '' OR expires_at > ?) ORDER BY rowid DESC LIMIT 1", strings.ToLower(session.Email), s.config.Hosted.OrganizationID, s.config.now().UTC().Format(time.RFC3339)).Scan(&id)
 	cancel()
 	if err != nil {
+		return false
+	}
+	invitation, err := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, id)
+	if err != nil || invitation.State != "accepted" || invitation.AcceptedUserID != session.Identity.Subject {
 		return false
 	}
 	if err := s.acceptHostedInvitationIDFor(ctx, auth.Identity{Subject: session.Identity.Subject, Email: session.Email, EmailVerified: true, Hosted: session.Identity}, id); err != nil {

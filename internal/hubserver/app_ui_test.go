@@ -261,15 +261,17 @@ func TestAppSharedEntry(t *testing.T) {
 	})
 	for _, test := range []struct {
 		name       string
+		state      string
 		acceptedBy string
 		status     int
 	}{
-		{name: "bootstrap completes provider-accepted invitation", acceptedBy: "user_joiner", status: http.StatusOK},
-		{name: "bootstrap refuses invitation accepted by another user", acceptedBy: "user_other", status: http.StatusForbidden},
+		{name: "bootstrap completes provider-accepted invitation", state: "accepted", acceptedBy: "user_joiner", status: http.StatusOK},
+		{name: "bootstrap refuses invitation accepted by another user", state: "accepted", acceptedBy: "user_other", status: http.StatusForbidden},
+		{name: "bootstrap leaves a pending invitation for the explicit join", state: "pending", status: http.StatusForbidden},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Now().UTC().Truncate(time.Second)
-			subject := "user_joiner_" + strconv.Itoa(test.status)
+			subject := "user_joiner_" + test.state + "_" + strconv.Itoa(test.status)
 			acceptedBy := test.acceptedBy
 			if acceptedBy == "user_joiner" {
 				acceptedBy = subject
@@ -279,10 +281,12 @@ func TestAppSharedEntry(t *testing.T) {
 			id := "invitation_" + subject
 			f.provider.mu.Lock()
 			f.provider.sessions[joiner.identity.Hosted.SessionID] = *joiner.identity.Hosted
-			f.provider.invitations[id] = auth.Invitation{ID: id, Email: email, OrganizationID: "org_provider", State: "accepted", AcceptedUserID: acceptedBy, ExpiresAt: now.Add(time.Hour)}
+			f.provider.invitations[id] = auth.Invitation{ID: id, Email: email, OrganizationID: "org_provider", State: test.state, AcceptedUserID: acceptedBy, ExpiresAt: now.Add(time.Hour)}
 			f.provider.mu.Unlock()
-			if _, err := f.provider.CreateMembership(t.Context(), subject, "org_provider", "admin"); err != nil {
-				t.Fatal(err)
+			if test.state == "accepted" {
+				if _, err := f.provider.CreateMembership(t.Context(), subject, "org_provider", "admin"); err != nil {
+					t.Fatal(err)
+				}
 			}
 			grants := `[{"project_id":"` + string(f.project) + `","write":true,"runner":false}]`
 			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at,expires_at,grants_json) VALUES (?,?,'org_security','admin',?,?,?)", id, email, formatHubTime(now), now.Add(time.Hour).Format(time.RFC3339), grants); err != nil {
@@ -310,6 +314,9 @@ func TestAppSharedEntry(t *testing.T) {
 			}
 			if members != want || accepted != want {
 				t.Fatalf("members = %d, accepted = %d, want %d", members, accepted, want)
+			}
+			if provider, _ := f.provider.Invitation(t.Context(), id); provider.State != test.state {
+				t.Fatalf("provider invitation state = %q, want %q", provider.State, test.state)
 			}
 		})
 	}
