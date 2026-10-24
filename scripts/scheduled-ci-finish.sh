@@ -128,6 +128,20 @@ for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list "$series.*"); do
   fi
 done
 status_id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$CI_DEVELOP_SHA" -f state=success -f context=scheduled-full-ci -f target_url="$run_url" -f description='Full release validation passed' --jq .id)"
+required_checks="${DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON:-[]}"
+jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' <<< "$required_checks" > /dev/null
+required_names="$(jq -r '.[] | select(. != "scheduled-full-ci")' <<< "$required_checks")"
+if [ -n "$required_names" ]; then
+  statuses="$(gh api "repos/$GITHUB_REPOSITORY/commits/$CI_DEVELOP_SHA/status")"
+  while IFS= read -r name; do
+    if ! jq -e --arg sha "$CI_DEVELOP_SHA" --arg name "$name" '
+      .sha == $sha and any(.statuses[]; .context == $name and .state == "success")
+    ' <<< "$statuses" > /dev/null; then
+      echo "Release $series awaits required status $name on $CI_DEVELOP_SHA; not tagging."
+      exit 0
+    fi
+  done <<< "$required_names"
+fi
 git config user.name 'github-actions[bot]'
 git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 latest="$(git tag --list "$series.*" --sort=-v:refname | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }')"

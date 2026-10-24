@@ -19,24 +19,30 @@ func TestScheduledFinalizer(t *testing.T) {
 		t.Skip("jq is required for the scheduled shell fixture")
 	}
 	for _, tt := range []struct {
-		name, repository    string
-		failed, unavailable bool
-		unchanged           bool
-		cancelledRun        bool
-		cancelledJob        bool
-		timedOutJob         bool
-		workflowCancelled   bool
-		develop             bool
-		staleHead           bool
-		newSeries           bool
-		differentSeries     bool
-		releaseRun          bool
-		newerFailure        bool
-		preflightSkipped    bool
+		name, repository         string
+		requirements, auditState string
+		awaitsStatus             bool
+		failed, unavailable      bool
+		unchanged                bool
+		cancelledRun             bool
+		cancelledJob             bool
+		timedOutJob              bool
+		workflowCancelled        bool
+		develop                  bool
+		staleHead                bool
+		newSeries                bool
+		differentSeries          bool
+		releaseRun               bool
+		newerFailure             bool
+		preflightSkipped         bool
 	}{
 		{name: "missing release dispatch recovered without recreating tag", repository: "digitaldrywood/detent", unchanged: true},
 		{name: "existing release workflow is not redispatched", repository: "digitaldrywood/detent", unchanged: true, releaseRun: true},
 		{name: "newer release failure blocks existing tag dispatch", repository: "digitaldrywood/detent", unchanged: true, newerFailure: true},
+		{name: "required status missing", repository: "digitaldrywood/detent", requirements: `["release-security-audit"]`, awaitsStatus: true},
+		{name: "required status failure", repository: "digitaldrywood/detent", requirements: `["release-security-audit"]`, auditState: "failure", awaitsStatus: true},
+		{name: "required status success", repository: "digitaldrywood/detent", requirements: `["scheduled-full-ci", "release-security-audit"]`, auditState: "success"},
+		{name: "empty requirements", repository: "digitaldrywood/detent", requirements: `[]`},
 		{name: "native green evidence", repository: "digitaldrywood/detent"},
 		{name: "develop records evidence without tagging", repository: "digitaldrywood/detent", develop: true},
 		{name: "preflight skip reports activity without validation publication", repository: "digitaldrywood/detent", develop: true, preflightSkipped: true},
@@ -98,7 +104,9 @@ case "$*" in
   *'-X DELETE '*'/actions/artifacts/7') ;;
   *'/statuses/'*) printf '123\n' ;;
   *'/commits/'*'/status')
-    if [ "$FIXTURE_NEWER_FAILURE" = true ]; then
+    if [ -n "$FIXTURE_AUDIT_STATE" ]; then
+      printf '{"sha":"%s","statuses":[{"context":"release-security-audit","state":"%s"}]}\n' "$CI_DEVELOP_SHA" "$FIXTURE_AUDIT_STATE"
+    elif [ "$FIXTURE_NEWER_FAILURE" = true ]; then
       printf '{"sha":"%s","statuses":[{"context":"scheduled-full-ci","id":124,"state":"failure"}]}\n' "$CI_DEVELOP_SHA"
     else
       printf '{"sha":"%s","statuses":[{"context":"scheduled-full-ci","id":123,"state":"success"}]}\n' "$CI_DEVELOP_SHA"
@@ -160,6 +168,7 @@ test "$FIXTURE_UNAVAILABLE" = false
 			}
 			command.Env = append(command.Env, "CI_RELEASE_BRANCH="+releaseBranch, "FIXTURE_HEAD="+head, "FIXTURE_NEW_SERIES="+map[bool]string{true: "true", false: "false"}[tt.newSeries])
 			command.Env = append(command.Env, "FIXTURE_RELEASE_RUN="+map[bool]string{true: "true", false: "false"}[tt.releaseRun], "FIXTURE_NEWER_FAILURE="+map[bool]string{true: "true", false: "false"}[tt.newerFailure])
+			command.Env = append(command.Env, "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="+tt.requirements, "FIXTURE_AUDIT_STATE="+tt.auditState)
 			skipped := tt.cancelledRun || tt.workflowCancelled
 			output, err := command.CombinedOutput()
 			if (err != nil) != ((tt.failed || tt.unavailable || tt.cancelledJob || tt.timedOutJob || tt.newerFailure) && !skipped) {
@@ -181,6 +190,12 @@ test "$FIXTURE_UNAVAILABLE" = false
 				}
 				if tt.cancelledRun && strings.Contains(text, "/jobs?") {
 					t.Fatal("cancelled run fetched job failures")
+				}
+				return
+			}
+			if tt.awaitsStatus {
+				if !strings.Contains(string(output), "awaits required status release-security-audit") || !strings.Contains(text, "context=scheduled-full-ci") || strings.Contains(text, "tag -a ") || strings.Contains(text, "/dispatches") || deleted {
+					t.Fatalf("waiting for audit produced incorrect effects: %s: %s", text, output)
 				}
 				return
 			}

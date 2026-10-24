@@ -549,79 +549,10 @@ jobs:
           retention-days: 1
           overwrite: true
 
-  release-security-audit:
-    needs: [preflight, security]
-    if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
-    name: Release security audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        if: needs.preflight.outputs.release_branch != ''
-        with:
-          ref: ${{ github.workflow_sha }}
-          persist-credentials: false
-      - uses: actions/checkout@v5
-        if: needs.preflight.outputs.release_branch != ''
-        with:
-          ref: 52bf36183708ef05589c15c66964e094014388df
-          path: audit-controller
-          persist-credentials: false
-      - uses: actions/checkout@v5
-        if: needs.preflight.outputs.release_branch != ''
-        with:
-          ref: ${{ needs.preflight.outputs.develop_sha }}
-          path: audit-source
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: ./.github/actions/setup-go-cached
-        if: needs.preflight.outputs.release_branch != ''
-        with:
-          key: release-security-audit
-      - uses: actions/setup-node@v6
-        if: needs.preflight.outputs.release_branch != ''
-        with:
-          node-version: '24'
-      - name: Prepare pinned audit controller
-        if: needs.preflight.outputs.release_branch != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          (cd audit-controller && go build -o "$RUNNER_TEMP/release-audit-controller" ./tools/cifailure)
-          npm install --prefix "$RUNNER_TEMP/audit-provider" @openai/codex@0.160.0
-          mkdir -p "$RUNNER_TEMP/audit-bin"
-          cat > "$RUNNER_TEMP/audit-bin/codex" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          provider="$RUNNER_TEMP/audit-provider/node_modules/.bin/codex"
-          printf '%s' "$OPENAI_API_KEY" | "$provider" login --with-api-key > /dev/null
-          exec "$provider" "$@"
-          EOF
-          chmod +x "$RUNNER_TEMP/audit-bin/codex"
-          echo "$RUNNER_TEMP/audit-bin" >> "$GITHUB_PATH"
-      - name: Audit pinned release source
-        if: needs.preflight.outputs.release_branch != ''
-        env:
-          CI_RELEASE_BRANCH: ${{ needs.preflight.outputs.release_branch }}
-          CI_DEVELOP_SHA: ${{ needs.preflight.outputs.develop_sha }}
-          TMPDIR: ${{ runner.temp }}
-          DETENT_MCP_URL: https://cloud.detent.build/organizations/org_9e0e65eec07a6639979a/mcp
-          DETENT_PROJECT_ID: prj_6d4919bebd73446798e6cd807feda10e
-          DETENT_API_KEY: ${{ secrets.DETENT_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          DETENT_RELEASE_AUDIT_MODEL: ${{ vars.DETENT_RELEASE_AUDIT_MODEL }}
-        run: bash scripts/release-security-audit.sh "$RUNNER_TEMP/release-audit-controller" "$GITHUB_WORKSPACE/audit-source"
-      - uses: actions/upload-artifact@v7
-        if: always() && needs.preflight.outputs.release_branch != ''
-        with:
-          name: release-security-audit-evidence
-          path: ${{ runner.temp }}/release-security-audit-*
-          if-no-files-found: warn
-          retention-days: 14
-
   finalize:
     name: Finalize scheduled validation
     timeout-minutes: 5
-    needs: [preflight, invariants, lint, verify-fast, generated, app, verify-race, test-cover, security, browser-visual-shard, installer-smoke, goreleaser-snapshot, release-prebuild, release-security-audit]
+    needs: [preflight, invariants, lint, verify-fast, generated, app, verify-race, test-cover, security, browser-visual-shard, installer-smoke, goreleaser-snapshot, release-prebuild]
     if: github.event_name != 'pull_request' && always() && !cancelled() && (needs.preflight.result == 'success' || needs.preflight.result == 'failure')
     runs-on: ubuntu-latest
     permissions:
@@ -648,6 +579,7 @@ jobs:
           DETENT_MCP_URL: https://cloud.detent.build/organizations/org_9e0e65eec07a6639979a/mcp
           DETENT_PROJECT_ID: prj_6d4919bebd73446798e6cd807feda10e
           DETENT_API_KEY: ${{ secrets.DETENT_API_KEY }}
+          DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}
         run: bash scripts/scheduled-ci-finish.sh
       - name: Retain scheduled reporting evidence
         if: always()
