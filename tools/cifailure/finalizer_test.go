@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,23 +22,24 @@ func TestScheduledFinalizer(t *testing.T) {
 		t.Skip("jq is required for the scheduled shell fixture")
 	}
 	for _, tt := range []struct {
-		name, repository                                                      string
-		requirements, auditState                                              string
-		awaitsStatus                                                          bool
-		missingAudit, wrongSHA, superseded, oldProvenance, rejectReuse, unset bool
-		failed, unavailable                                                   bool
-		unchanged                                                             bool
-		cancelledRun                                                          bool
-		cancelledJob                                                          bool
-		timedOutJob                                                           bool
-		workflowCancelled                                                     bool
-		develop                                                               bool
-		staleHead                                                             bool
-		newSeries                                                             bool
-		differentSeries                                                       bool
-		releaseRun                                                            bool
-		newerFailure                                                          bool
-		preflightSkipped                                                      bool
+		name, repository                                                                   string
+		requirements, auditState                                                           string
+		awaitsStatus                                                                       bool
+		rerun, auditThenRerun, missingJob, skippedJob, latestFailed, repaired, wrongJobSHA bool
+		missingAudit, wrongSHA, superseded, oldProvenance, rejectReuse, unset              bool
+		failed, unavailable                                                                bool
+		unchanged                                                                          bool
+		cancelledRun                                                                       bool
+		cancelledJob                                                                       bool
+		timedOutJob                                                                        bool
+		workflowCancelled                                                                  bool
+		develop                                                                            bool
+		staleHead                                                                          bool
+		newSeries                                                                          bool
+		differentSeries                                                                    bool
+		releaseRun                                                                         bool
+		newerFailure                                                                       bool
+		preflightSkipped                                                                   bool
 	}{
 		{name: "missing release dispatch recovered without recreating tag", repository: "digitaldrywood/detent", unchanged: true},
 		{name: "existing release workflow is not redispatched", repository: "digitaldrywood/detent", unchanged: true, releaseRun: true},
@@ -56,6 +58,13 @@ func TestScheduledFinalizer(t *testing.T) {
 		{name: "reuse failed audit", repository: "digitaldrywood/detent", unchanged: true, auditState: "failure", rejectReuse: true},
 		{name: "reuse superseded audit", repository: "digitaldrywood/detent", unchanged: true, superseded: true, rejectReuse: true},
 		{name: "reuse another SHA", repository: "digitaldrywood/detent", unchanged: true, wrongSHA: true, rejectReuse: true},
+		{name: "failed suite then finalize only after audit", repository: "digitaldrywood/detent", failed: true, rerun: true},
+		{name: "green suite awaits audit then finalize tags", repository: "digitaldrywood/detent", missingAudit: true, awaitsStatus: true, auditThenRerun: true},
+		{name: "finalize only missing required job", repository: "digitaldrywood/detent", missingJob: true, rerun: true},
+		{name: "suite jobs on another SHA", repository: "digitaldrywood/detent", wrongJobSHA: true},
+		{name: "skipped required job", repository: "digitaldrywood/detent", skippedJob: true},
+		{name: "latest attempt failure overrides success", repository: "digitaldrywood/detent", latestFailed: true, rerun: true},
+		{name: "latest attempt success replaces failure", repository: "digitaldrywood/detent", repaired: true, rerun: true},
 		{name: "native green evidence", repository: "digitaldrywood/detent"},
 		{name: "develop records evidence without tagging", repository: "digitaldrywood/detent", develop: true},
 		{name: "preflight skip reports activity without validation publication", repository: "digitaldrywood/detent", develop: true, preflightSkipped: true},
@@ -75,10 +84,35 @@ func TestScheduledFinalizer(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			var jobs []job
-			for id := range 15 {
-				jobs = append(jobs, job{ID: int64(id + 1), Name: "Validation", Conclusion: "success"})
+			names := []string{"preflight", "Invariant Gate", "Lint", "Verify build and vet", "Generated sources", "Cloud client", "Security", "GoReleaser Snapshot", "Installer Smoke (ubuntu-latest)"}
+			for i := 1; i <= 5; i++ {
+				names = append(names, fmt.Sprintf("Verify race (%d/5)", i))
 			}
+			for i := 1; i <= 4; i++ {
+				names = append(names, fmt.Sprintf("Verify race (hub %d/4)", i), fmt.Sprintf("Test Coverage (%d/4)", i), fmt.Sprintf("Test Coverage (hub %d/4)", i))
+			}
+			for i := 1; i <= 3; i++ {
+				names = append(names, fmt.Sprintf("Browser Visual (%d/3)", i))
+			}
+			for _, platform := range []string{"darwin", "linux", "windows"} {
+				for _, arch := range []string{"amd64", "arm64"} {
+					names = append(names, "Release prebuild ("+platform+"/"+arch+")")
+				}
+			}
+			var jobs []job
+			for id, name := range names {
+				jobs = append(jobs, job{ID: int64(id + 1), Name: name, Conclusion: "success"})
+			}
+			if tt.missingJob {
+				jobs = jobs[1:]
+			}
+			if tt.skippedJob {
+				jobs[0].Conclusion = "skipped"
+			}
+			if tt.repaired {
+				jobs[0].Conclusion = "failure"
+			}
+
 			if tt.preflightSkipped {
 				jobs[0].Name = "preflight"
 				for i := 1; i < len(jobs); i++ {
@@ -100,8 +134,31 @@ func TestScheduledFinalizer(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				var record map[string]any
+				if err := json.Unmarshal(raw, &record); err != nil {
+					t.Fatal(err)
+				}
+				record["run_attempt"] = 1
+				record["head_sha"] = scheduledEnv("CI_DEVELOP_SHA")
+				if tt.wrongJobSHA {
+					record["head_sha"] = strings.Repeat("b", 40)
+				}
+				raw, err = json.Marshal(record)
+				if err != nil {
+					t.Fatal(err)
+				}
 				fixture.Write(raw)
 				fixture.WriteByte('\n')
+			}
+			if tt.latestFailed || tt.repaired {
+				conclusion := "failure"
+				if tt.repaired {
+					conclusion = "success"
+				}
+				fmt.Fprintf(&fixture, `{"id":100,"name":"preflight","run_attempt":2,"head_sha":%q,"conclusion":%q}`+"\n", scheduledEnv("CI_DEVELOP_SHA"), conclusion)
+			}
+			if tt.rerun {
+				fixture.WriteString(`{"id":200,"name":"Finalize scheduled validation","run_attempt":2,"conclusion":null}` + "\n")
 			}
 			if err := os.WriteFile(filepath.Join(dir, "jobs"), []byte(fixture.String()), 0o600); err != nil {
 				t.Fatal(err)
@@ -111,8 +168,9 @@ func TestScheduledFinalizer(t *testing.T) {
 set -euo pipefail
 printf 'forge %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
-  *'/attempts/1 --jq .conclusion') printf '%s\n' "$FIXTURE_CONCLUSION" ;;
-  *'/jobs?per_page=100'*) cat "$FIXTURE_JOBS" ;;
+  *'/attempts/'*' --jq .conclusion') printf '%s\n' "$FIXTURE_CONCLUSION" ;;
+  *'/jobs?filter=all&per_page=100'*) cat "$FIXTURE_JOBS" ;;
+  *'/jobs?per_page=100'*) if [ "$GITHUB_RUN_ATTEMPT" = 2 ]; then printf '%s\n' '{"id":200,"name":"Finalize scheduled validation","conclusion":null}'; exit; fi; cat "$FIXTURE_JOBS" ;;
   *'/runs/123/artifacts?per_page=100'*) printf '7\n' ;;
   *'-X DELETE '*'/actions/artifacts/7') ;;
   *'/statuses/'*) printf '123\n' ;;
@@ -222,9 +280,13 @@ test "$FIXTURE_UNAVAILABLE" = false
 			if !tt.unset {
 				command.Env = append(command.Env, "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="+tt.requirements)
 			}
+			if tt.rerun {
+				command.Env = append(command.Env, "GITHUB_RUN_ATTEMPT=2")
+			}
+			suiteFailed := tt.failed || tt.missingJob || tt.skippedJob || tt.latestFailed || tt.wrongJobSHA
 			skipped := tt.cancelledRun || tt.workflowCancelled
 			output, err := command.CombinedOutput()
-			if (err != nil) != ((tt.failed || tt.unavailable || tt.cancelledJob || tt.timedOutJob || tt.newerFailure || tt.rejectReuse) && !skipped) {
+			if (err != nil) != ((suiteFailed || tt.unavailable || tt.cancelledJob || tt.timedOutJob || tt.newerFailure || tt.rejectReuse) && !skipped) {
 				t.Fatalf("finalizer = %v: %s", err, output)
 			}
 			calls, err := os.ReadFile(filepath.Join(dir, "calls"))
@@ -233,7 +295,7 @@ test "$FIXTURE_UNAVAILABLE" = false
 			}
 			text := string(calls)
 			deleted := strings.Contains(text, "-X DELETE repos/"+tt.repository+"/actions/artifacts/7")
-			wantDeleted := !tt.develop && (skipped || tt.failed || tt.cancelledJob || tt.timedOutJob || tt.staleHead || tt.newerFailure || tt.rejectReuse)
+			wantDeleted := !tt.develop && (skipped || suiteFailed || tt.cancelledJob || tt.timedOutJob || tt.staleHead || tt.newerFailure || tt.rejectReuse)
 			if deleted != wantDeleted {
 				t.Fatalf("prebuilt artifacts deleted = %v, want %v: %s", deleted, wantDeleted, text)
 			}
@@ -250,8 +312,34 @@ test "$FIXTURE_UNAVAILABLE" = false
 				t.Fatalf("missing reuse rejection: %s", output)
 			}
 			if tt.awaitsStatus {
+				if !strings.Contains(text, "native run ./tools/cifailure") {
+					t.Fatalf("awaiting audit did not report validated suite: %s", text)
+				}
 				if !strings.Contains(string(output), "awaits required status release-security-audit") || !strings.Contains(text, "context=scheduled-full-ci") || strings.Contains(text, "tag -a ") || strings.Contains(text, "/dispatches") || deleted {
 					t.Fatalf("waiting for audit produced incorrect effects: %s: %s", text, output)
+				}
+				if tt.auditThenRerun {
+					statuses = append(statuses, map[string]any{"context": "release-security-audit", "id": 125, "state": "success"})
+					updated, err := json.Marshal([]any{map[string]any{"sha": sha, "statuses": statuses}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(dir, "statuses"), updated, 0o600); err != nil {
+						t.Fatal(err)
+					}
+					again := exec.CommandContext(t.Context(), "bash", "scripts/scheduled-ci-finish.sh")
+					again.Dir = command.Dir
+					again.Env = append(command.Env, "GITHUB_RUN_ATTEMPT=2")
+					if output, err := again.CombinedOutput(); err != nil {
+						t.Fatalf("audit rerun = %v: %s", err, output)
+					}
+					calls, err := os.ReadFile(filepath.Join(dir, "calls"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(string(calls), "repository tag -a") || !strings.Contains(string(calls), "/dispatches") {
+						t.Fatalf("green audited rerun did not release: %s", calls)
+					}
 				}
 				return
 			}
@@ -290,7 +378,7 @@ test "$FIXTURE_UNAVAILABLE" = false
 				if tt.develop && (!strings.Contains(text, "context=develop-full-ci") || strings.Contains(text, "context=scheduled-full-ci")) {
 					t.Fatalf("develop overwrote release evidence: %s", text)
 				}
-			} else if tt.failed || tt.cancelledJob || tt.timedOutJob {
+			} else if suiteFailed || tt.cancelledJob || tt.timedOutJob {
 				if strings.Contains(text, "repository tag -a") || strings.Contains(text, "/statuses/") {
 					t.Fatal("failed suite published green evidence")
 				}

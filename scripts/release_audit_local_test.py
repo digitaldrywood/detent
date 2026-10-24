@@ -11,13 +11,16 @@ class ReleaseAuditLocalTest(unittest.TestCase):
     def test_verdict_publication(self):
         source = Path(__file__).resolve().parent
         finding = {"severity": "p1", "file": "example.go", "line": 1, "summary": "Confirmed injection"}
-        for name, message, codex_exit, state in (
-            ("pass", {"verdict": "pass", "findings": []}, 0, "success"),
-            ("fail", {"verdict": "fail", "findings": [finding]}, 0, "failure"),
-            ("inconsistent", {"verdict": "pass", "findings": [finding]}, 0, None),
-            ("malformed", "not json", 0, None),
-            ("multiple objects", '{}\n{}', 0, None),
-            ("provider failure", {"verdict": "pass", "findings": []}, 1, None),
+        for name, message, codex_exit, state, suite in (
+            ("pass", {"verdict": "pass", "findings": []}, 0, "success", "success"),
+            ("suite absent", {"verdict": "pass", "findings": []}, 0, "success", "absent"),
+            ("suite superseded", {"verdict": "pass", "findings": []}, 0, "success", "superseded"),
+            ("suite wrong SHA", {"verdict": "pass", "findings": []}, 0, "success", "wrong-sha"),
+            ("fail", {"verdict": "fail", "findings": [finding]}, 0, "failure", "success"),
+            ("inconsistent", {"verdict": "pass", "findings": [finding]}, 0, None, "success"),
+            ("malformed", "not json", 0, None, "success"),
+            ("multiple objects", '{}\n{}', 0, None, "success"),
+            ("provider failure", {"verdict": "pass", "findings": []}, 1, None, "success"),
         ):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
@@ -56,6 +59,10 @@ class ReleaseAuditLocalTest(unittest.TestCase):
                     'args = sys.argv[1:]\n'
                     'with open(os.environ["CALLS"], "a") as f: f.write(json.dumps(args) + "\\n")\n'
                     'if args[:2] == ["repo", "view"]: print("example-org/example-project")\n'
+                    'elif any("/status?" in a for a in args):\n'
+                    '    statuses = [] if os.environ["SUITE"] == "absent" else [{"context": "scheduled-full-ci", "state": "success", "id": 1}]\n'
+                    '    if os.environ["SUITE"] == "superseded": statuses.append({"context": "scheduled-full-ci", "state": "failure", "id": 2})\n'
+                    '    print(json.dumps([{"sha": "other" if os.environ["SUITE"] == "wrong-sha" else os.environ["HEAD"], "statuses": statuses}]))\n'
                     'elif any("/workflows/ci.yml/runs?" in a for a in args): print("123")\n'
                     'elif any("/runs/123/jobs?" in a for a in args): print("456")\n'
                 )
@@ -72,7 +79,7 @@ class ReleaseAuditLocalTest(unittest.TestCase):
                 for binary in binaries.iterdir():
                     binary.chmod(0o755)
                 env.update(PATH=str(binaries) + os.pathsep + env["PATH"], CALLS=str(calls), BASE=base, HEAD=head,
-                           MESSAGE=json.dumps(message) if isinstance(message, dict) else message, CODEX_EXIT=str(codex_exit))
+                           MESSAGE=json.dumps(message) if isinstance(message, dict) else message, CODEX_EXIT=str(codex_exit), SUITE=suite)
                 result = subprocess.run(["bash", str(scripts / "release-audit-local.sh"), "release/v1.10"], cwd=repo, env=env, text=True, capture_output=True)
                 self.assertEqual(result.returncode == 0, state == "success", result.stdout + result.stderr)
                 requests = [json.loads(line) for line in calls.read_text().splitlines()]
@@ -85,7 +92,9 @@ class ReleaseAuditLocalTest(unittest.TestCase):
                     retained = list((repo / "tmp").glob("release-audit.*/findings.json"))
                     self.assertEqual(json.loads(retained[0].read_text()), message)
                 reruns = [args for args in requests if args[:2] == ["run", "rerun"]]
-                self.assertEqual(reruns, [["run", "rerun", "123", "--job", "456", "--repo", "example-org/example-project"]] if state == "success" else [])
+                self.assertEqual(reruns, [["run", "rerun", "123", "--job", "456", "--repo", "example-org/example-project"]] if state == "success" and suite == "success" else [])
+                if state == "success" and suite != "success":
+                    self.assertIn("Waiting for the suite", result.stdout)
                 self.assertEqual(git("worktree", "list", "--porcelain").count("worktree "), 1)
 
 
