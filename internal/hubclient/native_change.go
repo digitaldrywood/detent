@@ -55,7 +55,7 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 		}
 	}
 	if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.data.PolicyID); err != nil {
-		return e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
+		return e.scheduler.nativeClaimError(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
 	}
 	if _, err := e.claim.source.client.ValidateLease(ctx, e.claim.lease); err != nil {
 		return err
@@ -119,7 +119,7 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 					change.VersionError += ": " + err.Error()
 				} else {
 					landing := runner.NativeLanding{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
-					if err := e.RecordLanding(ctx, landing); err != nil {
+					if err := e.recordLanding(ctx, landing); err != nil {
 						change.Error = err.Error()
 						return err
 					}
@@ -213,14 +213,14 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			}
 			if e.remaining() <= 0 {
 				if err := e.renew(ctx, 0); err != nil {
-					return e.executionError(err)
+					return e.executionError(ctx, err)
 				}
 			}
 			if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.data.PolicyID); err != nil {
-				return e.executionError(e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err))
+				return e.executionError(ctx, e.scheduler.nativeClaimError(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err))
 			}
 			if _, err := e.claim.source.client.ValidateLease(ctx, e.claim.lease); err != nil {
-				return e.executionError(err)
+				return e.executionError(ctx, err)
 			}
 			current, err := e.claim.source.client.runtimeChange(ctx, e.claim.lease.WorkItemID, change.ChangeID)
 			if err != nil {
@@ -242,7 +242,7 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 		}
 		authorizeStart := func(ctx context.Context) error {
 			if err := nativeEffectError(ctx); err != nil {
-				return e.executionError(err)
+				return e.executionError(ctx, err)
 			}
 			if err := authorize(ctx); err != nil {
 				return err

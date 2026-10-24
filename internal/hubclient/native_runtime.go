@@ -85,7 +85,7 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 	e.diagnosticMu.Unlock()
 	defer func() {
 		if err != nil {
-			err = e.executionError(err)
+			err = e.executionError(ctx, err)
 			if nativeTransportUnavailable(err) {
 				slog.Default().Warn("native runtime observation unavailable", "work_item", e.claim.lease.WorkItemID, "error", err)
 				err = nil
