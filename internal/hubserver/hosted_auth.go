@@ -317,6 +317,9 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 }
 
 func (s *Service) requireHostedProject(ctx context.Context, query nativeQueryer, scope nativeScope, write bool) error {
+	if s.config.Hosted == nil {
+		return authorizeNativeProject(ctx, query, scope)
+	}
 	if scope.credential.EntryKey != nil {
 		if !scope.credential.EntryKey.Allows(string(scope.project)) {
 			return &apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"}

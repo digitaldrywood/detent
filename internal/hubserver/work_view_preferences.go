@@ -20,15 +20,15 @@ func (s *Service) workViewPreference(c echo.Context) error {
 	ctx := c.Request().Context()
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
-	credential, _, err := s.hostedCredential(ctx, c)
+	credential, _, err := s.appCredential(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	if c.Param("organization") != s.config.Hosted.OrganizationID {
+	if c.Param("organization") != s.appOrganizationID() {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	scope := nativeScope{
-		organization: tracker.OrganizationID(s.config.Hosted.OrganizationID),
+		organization: tracker.OrganizationID(s.appOrganizationID()),
 		project:      tracker.ProjectID(c.Param("project")), credential: credential,
 	}
 	if scope.project != "" {
@@ -40,7 +40,7 @@ func (s *Service) workViewPreference(c echo.Context) error {
 	switch c.Request().Method {
 	case http.MethodGet:
 		var query string
-		err = s.database.reader.QueryRowContext(readCtx, `SELECT view_query FROM hosted_work_view_preferences WHERE organization_id = ? AND user_id = ? AND scope = ?`, scope.organization, credential.Hosted.Subject, scope.project).Scan(&query)
+		err = s.database.reader.QueryRowContext(readCtx, `SELECT view_query FROM hosted_work_view_preferences WHERE organization_id = ? AND user_id = ? AND scope = ?`, scope.organization, appSubject(credential), scope.project).Scan(&query)
 		if err == nil {
 			value.Query = &query
 		} else if errors.Is(err, sql.ErrNoRows) {
@@ -56,9 +56,9 @@ func (s *Service) workViewPreference(c echo.Context) error {
 		if _, err := url.ParseQuery(*value.Query); err != nil {
 			return s.nativeAPIError(c, nativePublicInvalid("The view query is invalid"))
 		}
-		_, err = s.database.db.ExecContext(ctx, `INSERT INTO hosted_work_view_preferences (organization_id, user_id, scope, view_query) VALUES (?, ?, ?, ?) ON CONFLICT (organization_id, user_id, scope) DO UPDATE SET view_query = excluded.view_query`, scope.organization, credential.Hosted.Subject, scope.project, *value.Query)
+		_, err = s.database.db.ExecContext(ctx, `INSERT INTO hosted_work_view_preferences (organization_id, user_id, scope, view_query) VALUES (?, ?, ?, ?) ON CONFLICT (organization_id, user_id, scope) DO UPDATE SET view_query = excluded.view_query`, scope.organization, appSubject(credential), scope.project, *value.Query)
 	case http.MethodDelete:
-		_, err = s.database.db.ExecContext(ctx, `DELETE FROM hosted_work_view_preferences WHERE organization_id = ? AND user_id = ? AND scope = ?`, scope.organization, credential.Hosted.Subject, scope.project)
+		_, err = s.database.db.ExecContext(ctx, `DELETE FROM hosted_work_view_preferences WHERE organization_id = ? AND user_id = ? AND scope = ?`, scope.organization, appSubject(credential), scope.project)
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)

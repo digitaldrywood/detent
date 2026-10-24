@@ -22,7 +22,7 @@ func readOrganizationProjectRank(ctx context.Context, db nativeQueryer, organiza
 }
 
 func (s *Service) readReadableOrganizationProjectRank(ctx context.Context, db nativeQueryer, credential apiCredential) (organizationProjectRank, error) {
-	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
+	organization := tracker.OrganizationID(s.appOrganizationID())
 	value := organizationProjectRank{ProjectIDs: []tracker.ProjectID{}}
 	if err := db.QueryRowContext(ctx, "SELECT scheduling_revision FROM organizations WHERE id = ?", organization).Scan(&value.Revision); err != nil {
 		return value, err
@@ -47,7 +47,7 @@ func (s *Service) readReadableOrganizationProjectRank(ctx context.Context, db na
 func (s *Service) hostedProjectRank(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	credential, _, err := s.hostedCredential(ctx, c)
+	credential, _, err := s.appCredential(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
@@ -59,7 +59,7 @@ func (s *Service) hostedProjectRank(c echo.Context) error {
 }
 
 func (s *Service) updateHostedProjectRank(c echo.Context) error {
-	credential, err := s.hostedAdministrator(c)
+	credential, err := s.appAdministrator(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
@@ -75,7 +75,7 @@ func (s *Service) updateHostedProjectRank(c echo.Context) error {
 }
 
 func (s *Service) updateOrganizationProjectRankCommand(ctx context.Context, credential apiCredential, change projectRankChange) (any, error) {
-	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}
+	scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), credential: credential, requireHostedAdmin: true}
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, _ time.Time) (any, error) {
 		readable, err := s.readReadableOrganizationProjectRank(ctx, tx, credential)
 		if err != nil {

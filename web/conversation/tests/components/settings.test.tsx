@@ -269,6 +269,26 @@ describe("personal account settings", () => {
   });
 });
 
+describe("self-hosted settings", () => {
+  it.each(["general", "plan", "billing", "mcp", "organization/members"] as const)("keeps %s within the local API capabilities", async (section) => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).endsWith("project-rank")) return new Response(JSON.stringify({ revision: 0, project_ids: [] }));
+      return new Response(JSON.stringify({ projects: [] }));
+    });
+    const account = { ...OWNER_ACCOUNT, account: { ...OWNER_ACCOUNT.account, self_hosted: true, plan: null } };
+    renderSidebarNav(`/settings/${section}`, { ...account, bootstrap: { organization: account.account.organization } }, <SettingsRoute section={section} />);
+    await screen.findByRole("heading", { name: "General" });
+    for (const name of ["Plan & usage", "Billing", "API & MCP", "Members"]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+    expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
+    expect(screen.queryByText("Profile widget")).toBeNull();
+    expect(screen.queryByText("Security widget")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Notify me about issues I filed or commented on" })).toBeNull();
+    expect(fetch.mock.calls.some(([url]) => /widget-token|issue-notification-preference|api-keys|\/plan$|\/billing$|logout/.test(String(url)))).toBe(false);
+  });
+});
+
 describe("issue notification preference", () => {
   it.each([false, true])("loads the saved preference (%s) and persists a toggle", async (enabled) => {
     const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {

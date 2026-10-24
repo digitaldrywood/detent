@@ -218,14 +218,14 @@ func (s *Service) hostedPageData(c echo.Context, credential apiCredential, data 
 }
 
 func (s *Service) hostedEvents(c echo.Context) error {
-	initial, status, err := s.hostedCredential(c.Request().Context(), c)
+	initial, status, err := s.appCredential(c)
 	if err != nil {
 		if status == http.StatusForbidden {
 			return s.hostedJSONError(c, status, "Hosted credential is not authorized for project events")
 		}
 		return c.NoContent(status)
 	}
-	initialScope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(c.Param("project")), credential: initial}
+	initialScope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(c.Param("project")), credential: initial}
 	if err := s.requireHostedProject(c.Request().Context(), s.database.auth(), initialScope, false); err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "Project access is required for events")
 	}
@@ -278,11 +278,11 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	var workspaceRevision int64
 	var healthTick string
 	for s.ready.Load() {
-		credential, _, err := s.hostedCredential(c.Request().Context(), c)
+		credential, _, err := s.appCredential(c)
 		if err != nil {
 			return nil
 		}
-		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(c.Param("project")), credential: credential}
+		scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(c.Param("project")), credential: credential}
 		observation, err := s.readHostedEventObservation(c.Request().Context(), scope, workspaceID, workItemID)
 		if err != nil {
 			return nil

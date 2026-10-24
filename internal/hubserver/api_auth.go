@@ -167,6 +167,13 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 }
 
 func (s *Service) authenticateAPIRequest(c echo.Context) (apiCredential, int, error) {
+	if s.config.Hosted == nil && (c.Request().Header.Get(echo.HeaderAuthorization) == "" || strings.HasPrefix(c.Request().Header.Get(echo.HeaderAuthorization), "Basic ")) {
+		credential, status, err := s.localAppCredential(c)
+		if status == http.StatusUnauthorized {
+			c.Response().Header().Set("WWW-Authenticate", `Basic realm="Detent Hub", charset="UTF-8"`)
+		}
+		return credential, status, err
+	}
 	if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindKey {
 		return s.entryKeyCredential(c.Request().Context(), claims)
 	}

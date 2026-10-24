@@ -84,6 +84,7 @@ type Service struct {
 	closeOnce               sync.Once
 	closeErr                error
 	clientBuild             appClientBuild
+	localOrganization       string
 	workspaces              *workspaceService
 }
 
@@ -162,6 +163,13 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	workerContext = service.contentContext(workerContext)
 	reconcileContext = service.contentContext(reconcileContext)
+	if cfg.Hosted == nil {
+		if err := database.reader.QueryRowContext(ctx, "SELECT id FROM organizations WHERE local=1").Scan(&service.localOrganization); err != nil {
+			workerCancel()
+			reconcileCancel()
+			return nil, errors.Join(err, database.Close())
+		}
+	}
 	service.wakeSpriteRunnersAfter = func(scope nativeScope, result json.RawMessage) {
 		service.scheduleSpriteWake(workerContext, scope, result)
 	}
