@@ -221,11 +221,30 @@ func resolveVersionPublication(ctx context.Context, query nativeQueryer, changeI
 	if version.External != nil {
 		return nil
 	}
+	var confirmed tracker.NativePRPublication
+	err := query.QueryRowContext(ctx, `SELECT p.change_id, p.version_id, p.repository, p.base_ref, p.branch, p.head_sha,
+p.policy_id, p.source_attempt_id, p.provider, p.external_id, p.external_url
+FROM native_pr_publications p JOIN change_requests c ON c.id=p.change_id
+JOIN native_attempts a ON a.id=p.recorder_attempt_id
+AND a.organization_id=c.organization_id AND a.project_id=c.project_id AND a.work_item_id=c.work_item_id
+WHERE p.change_id=? AND p.version_id=?`, changeID, version.ID).Scan(&confirmed.ChangeID, &confirmed.VersionID, &confirmed.Repository,
+		&confirmed.BaseRef, &confirmed.Branch, &confirmed.HeadSHA, &confirmed.PolicyID, &confirmed.SourceAttemptID,
+		&confirmed.External.Provider, &confirmed.External.ID, &confirmed.External.URL)
+	if err == nil {
+		confirmed.SourceVersion = tracker.NativeChangeReference{ChangeID: confirmed.ChangeID, VersionID: confirmed.VersionID, HeadSHA: confirmed.HeadSHA}
+		if confirmed.Matches(changeID, *version) {
+			version.External = &confirmed.External
+		}
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	var raw string
-	err := query.QueryRowContext(ctx, `SELECT a.data_json
+	err = query.QueryRowContext(ctx, `SELECT a.data_json
 FROM native_attempts a JOIN change_requests c ON c.id=?
 AND c.organization_id=a.organization_id AND c.project_id=a.project_id AND c.work_item_id=a.work_item_id
-WHERE json_extract(a.data_json, '$.finalization.publication.version_id')=?
+WHERE a.finalization_version_id=?
 ORDER BY a.fencing_token DESC LIMIT 1`, changeID, version.ID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil

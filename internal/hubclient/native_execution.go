@@ -441,6 +441,7 @@ func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExec
 func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.NativeCheckpoint) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	checkpoint.Publication = nil
 	if e.data.Identity == nil {
 		return nil
 	}

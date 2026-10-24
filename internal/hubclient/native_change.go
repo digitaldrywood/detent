@@ -325,6 +325,7 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 				checkpoint.ExpectedHeadSHA = publication.ExpectedHeadSHA
 			}
 			checkpoint.ExternalEffect, checkpoint.EffectState = kind, state
+			checkpoint.Publication = nil
 			checkpoint.EffectID = binding.EffectID(kind)
 			checkpoint.Change = &tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
 			if state == "none" {
@@ -360,6 +361,11 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			SourceVersion: tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}, SourceAttemptID: version.AttemptID, External: publication.External}
 		if !receipt.Matches(change.ChangeID, version) || publication != confirmedPR || e.data.Handoff == nil || e.data.Handoff.ExternalEffect != "pr_create" || e.data.Handoff.EffectState != "confirmed" || e.data.Handoff.EffectID != receipt.EffectID("pr_create") {
 			return errors.New("PR publication response lacks an exact verified identity and confirmed effect; reconcile publication before reporting success")
+		}
+		checkpoint := *e.data.Handoff
+		checkpoint.Publication = receipt
+		if err := e.append(ctx, "run.checkpointed", "", &checkpoint); err != nil {
+			return err
 		}
 		e.publication = receipt
 		return nil

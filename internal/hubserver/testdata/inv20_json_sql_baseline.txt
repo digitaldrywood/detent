@@ -12,7 +12,7 @@ internal/hubserver/artifacts.go 3
 internal/hubserver/attempt_diff_bodies.go 2
 internal/hubserver/change_landing_receipts.go 2
 internal/hubserver/change_quality.go 3
-internal/hubserver/changes.go 21
+internal/hubserver/changes.go 20
 internal/hubserver/chat_usage.go 2
 internal/hubserver/conversation_attachments.go 1
 internal/hubserver/conversation_coordinator_actions.go 3

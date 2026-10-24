@@ -560,6 +560,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		noRemote                bool
 		reviewer                bool
 		requiredPR              bool
+		checkPRBeforeFinish     bool
 		lostPRResponse          bool
 		lostPush                string
 		publicationWriteRefusal string
@@ -598,7 +599,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "required PR reuses latest published head after refused landing", requiredPR: true, publicationReference: "previous", publicationRefused: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 3},
 		{name: "required PR refuses an unknown retained branch head", requiredPR: true, publicationReference: "unknown", publicationFailure: "identity", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 2},
 		{name: "required PR refuses unrelated ambiguous external effect", requiredPR: true, publicationUncertain: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
-		{name: "required PR no edit Rework preserves human hold", requiredPR: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "required PR no edit Rework preserves human hold", requiredPR: true, checkPRBeforeFinish: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "required PR retries a lost push absent from the forge", requiredPR: true, lostPush: "absent", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "required PR retries a lost push over its recorded head", requiredPR: true, lostPush: "absent", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 2},
 		{name: "required PR finishes a lost push over a diverged branch as head moved", requiredPR: true, lostPush: "diverged", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
@@ -1435,6 +1436,58 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 			}
 			finish := execution.Finish
+			if test.checkPRBeforeFinish {
+				owner := execution.(*nativeExecution)
+				_, handler := owner.AgentTools()
+				read := func(name string, arguments any) runner.AgentToolResult {
+					t.Helper()
+					raw, err := json.Marshal(arguments)
+					if err != nil {
+						t.Fatal(err)
+					}
+					result, err := handler(guarded, runner.AgentToolCall{Name: name, Arguments: raw})
+					if err != nil {
+						t.Fatal(err)
+					}
+					return result
+				}
+				refs, err := h.native.PullRequestReferences(guarded, item)
+				if err != nil || slices.ContainsFunc(refs, func(ref NativePullRequestReference) bool { return ref.Number > 0 }) {
+					t.Fatalf("unconfirmed publication acquired linkage: %+v error=%v", refs, err)
+				}
+				if err := owner.PrepareFinish(guarded, test.outcome, "", nil); err != nil {
+					t.Fatal(err)
+				}
+				if owner.publication == nil || owner.data.Finalization != nil || owner.data.Outcome != "" {
+					t.Fatalf("fixture must confirm real publication before attempt completion: publication=%+v change=%+v data=%+v", owner.publication, owner.change, owner.data)
+				}
+				detail, err := h.admin.Change(t.Context(), item, owner.change.ChangeID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, version := range detail.Versions {
+					if version.ID == owner.change.VersionID {
+						found = true
+						if version.External == nil || *version.External != owner.publication.External {
+							t.Fatalf("confirmed publication is missing from current version before acceptance: external=%+v expected=%+v summary=%+v", version.External, owner.publication.External, detail.Summary)
+						}
+					}
+				}
+				if !found || detail.Change.CurrentVersion != owner.change.VersionID {
+					t.Fatal("confirmed publication's current native version is missing")
+				}
+				result := read(operatortool.GetChange, operatortool.ChangeArguments{ProjectID: string(h.project), ItemID: string(item), ChangeID: owner.change.ChangeID})
+				if !strings.Contains(result.Content, owner.publication.External.URL) {
+					t.Fatalf("worker read lost confirmed PR before completion: %s", result.Content)
+				}
+				refs, err = h.native.PullRequestReferences(guarded, item)
+				if err != nil || !slices.ContainsFunc(refs, func(ref NativePullRequestReference) bool {
+					return ref.Number == 7 && ref.URL == owner.publication.External.URL
+				}) {
+					t.Fatalf("cached PR references lost confirmed publication: %+v error=%v", refs, err)
+				}
+			}
 			if test.publicationLanded {
 				owner := execution.(*nativeExecution)
 				if err := owner.PrepareFinish(guarded, test.outcome, "", nil); err != nil || owner.publication == nil {
@@ -1475,6 +1528,15 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				owner := execution.(*nativeExecution)
 				if owner.publication != nil || owner.change.Error == "" || owner.data.Handoff.EffectState != "ambiguous" || publicationCalls != 1 || owner.data.Outcome != "" {
 					t.Fatalf("lost response was represented as success: %+v", owner.data)
+				}
+				detail, err := h.admin.Change(t.Context(), item, owner.change.ChangeID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, version := range detail.Versions {
+					if version.ID == detail.Change.CurrentVersion && version.External != nil {
+						t.Fatal("ambiguous publication acquired current-version linkage")
+					}
 				}
 			}
 
@@ -1534,6 +1596,15 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 				if (change.VersionCode == workspace.LandRefusalHeadMoved) != (test.publicationFailure == "identity") {
 					t.Fatalf("publication failure code = %q for %s refusal", change.VersionCode, test.publicationFailure)
+				}
+				detail, err := h.admin.Change(t.Context(), item, change.ChangeID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, version := range detail.Versions {
+					if version.ID == detail.Change.CurrentVersion && version.External != nil {
+						t.Fatal("failed publication acquired current-version linkage")
+					}
 				}
 				h.complete(t, issue.ID, change)
 				if h.state(t, issue.ID) != h.review {
@@ -2963,6 +3034,20 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						}
 						nativeChangeGit(t, provider.workspace, "add", path)
 					}
+				}
+			}
+			if test.publication == "confirmed" {
+				provider.duringValidation = func(request runner.AgentTurnRequest) {
+					t.Helper()
+					owner := execution.(*nativeExecution)
+					if !request.ReadOnly || owner.publication == nil || owner.data.Outcome != "" || owner.data.Finalization != nil {
+						t.Fatal("acceptance must read confirmed publication before attempt completion")
+					}
+					validation, err := owner.ValidatorVersion(t.Context())
+					if err != nil || validation.Version == nil || validation.Version.External == nil || *validation.Version.External != owner.publication.External || validation.Version.ID != owner.change.VersionID || validation.Version.HeadSHA != owner.publication.HeadSHA {
+						t.Fatalf("acceptance lacks the exact confirmed current PR binding: %+v error=%v", validation.Version, err)
+					}
+
 				}
 			}
 			var targetHead string
@@ -4664,9 +4749,13 @@ type committingAgent struct {
 	duringTurn       func()
 	duringLiveTurn   func(runner.AgentTurnRequest, runner.AgentUpdateHandler)
 	afterTurn        func()
+	duringValidation func(runner.AgentTurnRequest)
 }
 
 func (a *committingAgent) RunTurnWithTools(ctx context.Context, request runner.AgentTurnRequest, tools []runner.AgentTool, handler runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if a.duringValidation != nil && strings.Contains(request.Prompt, "Detent validator-agent") {
+		a.duringValidation(request)
+	}
 	if a.validatorCommand != "" && strings.Contains(request.Prompt, "Detent validator-agent") {
 		arguments, err := json.Marshal(map[string]string{"command": a.validatorCommand})
 		if err != nil {

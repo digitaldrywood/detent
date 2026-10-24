@@ -85,7 +85,7 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 		}
 		c.SetRequest(c.Request().WithContext(ctx))
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	err = s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		events := append(append([]tracker.NativeRunEvent{}, request.PriorEvents...), request)
 		for _, event := range events {
 			if _, err := s.recordNativeRunEvent(ctx, tx, scope, c.Param("item"), event, now); err != nil {
@@ -96,6 +96,10 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 			Accepted bool `json:"accepted"`
 		}{true}, nil
 	})
+	if err == nil && (request.Data.Handoff != nil && request.Data.Handoff.Publication != nil || request.Data.Finalization != nil && request.Data.Finalization.Publication != nil) {
+		s.pullRequests.invalidate(pullRequestCacheKey(nativeRequestScope(c), c.Param("item")))
+	}
+	return err
 }
 
 func (s *Service) validateNativeRunOwner(ctx context.Context, tx nativeQueryer, scope nativeScope, item string, request *tracker.NativeRunEvent, now time.Time) (tracker.NativeIssue, bool, error) {

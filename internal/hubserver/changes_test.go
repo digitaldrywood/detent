@@ -889,6 +889,208 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			}
 		})
 	}
+	t.Run("confirmed PR receipt", func(t *testing.T) {
+		binding.External = tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: version.Repository + "/pull/7"}
+		checkpoint.Data.Sequence = 3
+		checkpoint.IdempotencyKey = "confirmed-pr-effect"
+		checkpoint.Data.Handoff.HeadSHA = version.HeadSHA
+		checkpoint.Data.Handoff.Change = &binding.SourceVersion
+		checkpoint.Data.Handoff.ExternalEffect, checkpoint.Data.Handoff.EffectState, checkpoint.Data.Handoff.EffectID = "pr_create", "confirmed", binding.EffectID("pr_create")
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
+		ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+		readReferences := func() operatortool.Result {
+			t.Helper()
+			raw, err := json.Marshal(operatortool.WorkReadRequest{ProjectID: string(f.project.ID), Reference: string(f.issue.WorkItemID), Limit: 100})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := (hostedOperatorExecutor{service: f.service}).Execute(ctx, operatortool.Call{Name: operatortool.WorkReferences, Arguments: raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return result
+		}
+		if result := readReferences(); strings.Contains(string(result.Content), binding.External.URL) || f.detail(t).Versions[0].External != nil {
+			t.Fatal("confirmed effect hash alone acquired PR linkage")
+		}
+		diff := tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: start.Data.AttemptID, LeaseID: lease.ID, FencingToken: lease.FencingToken}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 4}, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/attempts/"+start.Data.AttemptID+"/diff", worker, diff), http.StatusAccepted)
+		for _, name := range []string{"pending", "ambiguous", "failed", "stale version", "stale head", "foreign change", "foreign item", "foreign project", "foreign organization", "repository", "url", "number", "base", "branch", "source attempt", "source version", "policy", "lease", "fence", "attempt", "run"} {
+			t.Run(name, func(t *testing.T) {
+				event := checkpoint
+				event.IdempotencyKey, event.Data.Sequence = "invalid-pr-"+strings.ReplaceAll(name, " ", "-"), 4
+				publication := binding
+				handoff := *checkpoint.Data.Handoff
+				event.Data.Handoff = &handoff
+				handoff.Publication = &publication
+				target := path + "/events"
+				switch name {
+				case "pending", "ambiguous":
+					handoff.EffectState = name
+				case "failed":
+					handoff.EffectState = "none"
+				case "stale version":
+					publication.VersionID, publication.SourceVersion.VersionID = "version_stale", "version_stale"
+				case "stale head":
+					publication.HeadSHA, publication.SourceVersion.HeadSHA = strings.Repeat("e", 40), strings.Repeat("e", 40)
+				case "foreign change":
+					publication.ChangeID, publication.SourceVersion.ChangeID = "change_foreign", "change_foreign"
+				case "foreign item":
+					target = f.base + "/work-items/" + string(foreignItem.WorkItemID) + "/events"
+				case "foreign project":
+					target = foreignProject.base + "/work-items/" + string(f.issue.WorkItemID) + "/events"
+				case "foreign organization":
+					target = foreignOrganization.base + "/work-items/" + string(f.issue.WorkItemID) + "/events"
+				case "repository":
+					publication.Repository = "https://github.com/example-org/foreign-project"
+					publication.External.URL = publication.Repository + "/pull/7"
+				case "url":
+					publication.External.URL = "https://attacker.example/pull/7"
+				case "number":
+					publication.External.ID = "8"
+				case "base":
+					publication.BaseRef = "other-base"
+				case "branch":
+					publication.Branch = "other-branch"
+				case "source attempt":
+					publication.SourceAttemptID = "attempt_foreign"
+				case "source version":
+					publication.SourceVersion.VersionID = "version_foreign"
+				case "policy":
+					publication.PolicyID = hubTestPolicy().ID
+				case "lease":
+					event.Data.LeaseID = "foreign-lease"
+				case "fence":
+					event.Data.FencingToken++
+				case "attempt":
+					event.Data.AttemptID = "attempt_foreign"
+				case "run":
+					event.Data.RunID = "run_foreign"
+				}
+				handoff.Change, handoff.HeadSHA = &publication.SourceVersion, publication.HeadSHA
+				handoff.EffectID = publication.EffectID("pr_create")
+				response := performHubAPIRequest(t, f.service, http.MethodPost, target, worker, event)
+				if response.Code < 400 {
+					t.Fatalf("mismatched publication acquired authority: %d %s", response.Code, response.Body.String())
+				}
+				if detail := f.detail(t); detail.Versions[0].External != nil || !reflect.DeepEqual(detail.Reviews, baseline.Reviews) {
+					t.Fatal("rejected receipt changed linkage or review evidence")
+				}
+			})
+		}
+		t.Run("linked foreign item with its own lease", func(t *testing.T) {
+			foreignLease := claimNativeAttempt(t, f.nativeFixture, worker, "linked-machine", "linked-session", foreignItem.WorkItemID, descriptor.ID)
+			foreignStart := nativeStartedEvent(foreignLease)
+			foreignPath := f.base + "/work-items/" + string(foreignItem.WorkItemID) + "/events"
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreignPath, worker, foreignStart), http.StatusOK)
+			foreignCheckpoint := foreignStart
+			foreignCheckpoint.IdempotencyKey, foreignCheckpoint.Type, foreignCheckpoint.Data.Sequence = "linked-confirmed-effect", "run.checkpointed", 2
+			foreignHandoff := *checkpoint.Data.Handoff
+			foreignCheckpoint.Data.Handoff = &foreignHandoff
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreignPath, worker, foreignCheckpoint), http.StatusOK)
+			foreignDiff := diff
+			foreignDiff.Producer = tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: foreignStart.Data.AttemptID, LeaseID: foreignLease.ID, FencingToken: foreignLease.FencingToken}
+			foreignDiff.Generation.Seq = 3
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/attempts/"+foreignStart.Data.AttemptID+"/diff", worker, foreignDiff), http.StatusAccepted)
+			credential, _, err := f.service.authenticateAPIToken(t.Context(), worker, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_issue_links (change_id, organization_id, project_id, work_item_id) VALUES (?,?,?,?)", version.ChangeID, scope.organization, scope.project, foreignItem.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			foreignCheckpoint.IdempotencyKey, foreignCheckpoint.Data.Sequence = "linked-pr-receipt", 3
+			foreignCheckpoint.Data.Handoff.Publication = &binding
+			if err := validateNativeRunEvent(foreignCheckpoint); err != nil {
+				t.Fatal(err)
+			}
+			foreignScope := scope
+			foreignScope.credential = credential
+			_, _, err = recordNativeAttempt(t.Context(), tx, foreignScope, foreignItem.WorkItemID, &foreignCheckpoint, f.service.config.now(), false)
+			var refusal *nativeError
+			if !errors.As(err, &refusal) || refusal.Code != "run_sequence_conflict" || !strings.Contains(refusal.Message, "PR publication no longer matches") {
+				t.Fatalf("a linked item's independent owner acquired publication authority: %v", err)
+			}
+		})
+		checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "confirmed-pr-receipt", 4
+		checkpoint.Data.Handoff.Publication = &binding
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
+		if result := readReferences(); !strings.Contains(string(result.Content), binding.External.URL) {
+			t.Fatalf("work_references lacks confirmed PR before completion: %s", result.Content)
+		}
+		detail := f.detail(t)
+		if detail.Versions[0].External == nil || *detail.Versions[0].External != binding.External || !reflect.DeepEqual(detail.Reviews, baseline.Reviews) || detail.Summary.NativeReview != baseline.Summary.NativeReview {
+			t.Fatalf("early linkage changed source or review authority: %+v", detail)
+		}
+		var after string
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT record_json FROM change_versions WHERE id=?", version.ID).Scan(&after); err != nil || after != snapshot {
+			t.Fatalf("early linkage rewrote immutable source: %v", err)
+		}
+		for _, sequence := range []int64{5, 6} {
+			if sequence == 6 {
+				request.IdempotencyKey, request.ExpectedVersionID = "second-pr-version", version.ID
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", worker, request)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &version)
+				binding.VersionID, binding.SourceVersion.VersionID = version.ID, version.ID
+			}
+			checkpoint.IdempotencyKey, checkpoint.Data.Sequence = fmt.Sprintf("retained-pr-%d", sequence), sequence
+			checkpoint.Data.Handoff = nativeTestCheckpoint()
+			if sequence == 6 {
+				checkpoint.Data.Handoff.HeadSHA, checkpoint.Data.Handoff.Change = binding.HeadSHA, &binding.SourceVersion
+				checkpoint.Data.Handoff.ExternalEffect, checkpoint.Data.Handoff.EffectState, checkpoint.Data.Handoff.EffectID = "pr_create", "confirmed", binding.EffectID("pr_create")
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
+		}
+		diff.Generation.Seq = 7
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/attempts/"+start.Data.AttemptID+"/diff", worker, diff), http.StatusAccepted)
+		checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "second-pr-receipt", 7
+		checkpoint.Data.Handoff.Publication = &binding
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
+		detail = f.detail(t)
+		if len(detail.Versions) != 2 || detail.Versions[0].ID == detail.Versions[1].ID {
+			t.Fatal("fixture must retain two distinct publication identities")
+		}
+		for _, version := range detail.Versions {
+			if version.External == nil || *version.External != binding.External {
+				t.Fatalf("publication lost historical or current binding: %+v", version)
+			}
+		}
+		var status string
+		var sequence int64
+		var recorded string
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT status,sequence,data_json FROM native_attempts WHERE id=?", start.Data.AttemptID).Scan(&status, &sequence, &recorded); err != nil || status != "running" || sequence != 7 {
+			t.Fatalf("early publication changed attempt completion: status=%s sequence=%d error=%v", status, sequence, err)
+		}
+		var run tracker.NativeRunData
+		if err := decodeRunDetail(f.service.runDetailContext(t.Context()), recorded, &run); err != nil || run.Finalization != nil {
+			t.Fatalf("early publication finalized the attempt: finalization=%+v error=%v", run.Finalization, err)
+		}
+		diff.Generation.Seq = 8
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/attempts/"+start.Data.AttemptID+"/diff", worker, diff), http.StatusAccepted)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
+		checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "released-pr-receipt", 8
+		if response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint); response.Code < 400 {
+			t.Fatalf("released lease recorded publication: %d", response.Code)
+		}
+		credential, _, err := f.service.authenticateAPIToken(t.Context(), worker, "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(f.service.config.now()), credential.ID); err != nil {
+			t.Fatal(err)
+		}
+		checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "revoked-pr-receipt", 8
+		if response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint); response.Code != http.StatusUnauthorized {
+			t.Fatalf("revoked owner recorded publication: %d", response.Code)
+		}
+	})
 	rows, err := f.service.database.db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+versionPublicationPushSQL, scope.organization, scope.project, f.issue.WorkItemID, version.ChangeID, version.ID, version.HeadSHA, scope.organization, scope.project, f.issue.WorkItemID)
 	if err != nil {
 		t.Fatal(err)
