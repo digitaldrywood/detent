@@ -375,11 +375,12 @@ func (s *Service) logout(c echo.Context) error {
 }
 
 type organizationChoice struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	URL   string `json:"url"`
-	State string `json:"state,omitempty"`
-	Role  string `json:"role,omitempty"`
+	LogoURL string `json:"logo_url,omitempty"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	URL     string `json:"url"`
+	State   string `json:"state,omitempty"`
+	Role    string `json:"role,omitempty"`
 }
 
 func (s *Service) organizationChoices(ctx context.Context, session accountSession) ([]organizationChoice, error) {
@@ -401,7 +402,7 @@ func (s *Service) organizationChoices(ctx context.Context, session accountSessio
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, organizationChoice{ID: organization.ID, Name: organization.Name, URL: s.organizationRoleHome(organization, membership.Role.Slug), Role: membership.Role.Slug})
+		result = append(result, organizationChoice{ID: organization.ID, Name: organization.Name, URL: s.organizationRoleHome(organization, membership.Role.Slug), Role: membership.Role.Slug, LogoURL: "/organizations/" + organization.ID + "/api/v2/logo-image"})
 	}
 	return result, nil
 }

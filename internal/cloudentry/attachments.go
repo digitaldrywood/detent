@@ -53,6 +53,10 @@ func attachmentEvidenceRequest(c echo.Context) (*attachment.EvidenceRequest, boo
 }
 
 func (s *Service) registerAttachmentRoutes(e *echo.Echo) {
+	e.GET("/organizations/:organization/api/v2/logo-image", s.readOrganizationLogoImage)
+	for _, base := range []string{"/organizations/:organization/api/v2/attachments", "/api/v2/organizations/:organization/attachments"} {
+		e.GET(base+"/:attachment", s.readAttachment)
+	}
 	for _, base := range []string{"/organizations/:organization/api/v2/projects/:project/attachments", "/api/v2/organizations/:organization/projects/:project/attachments"} {
 		s.registerArchiveRoutes(e, base)
 		e.POST(base, s.uploadAttachment)
@@ -73,10 +77,19 @@ func attachmentNotFound(c echo.Context) error {
 }
 
 func (s *Service) attachmentCall(c echo.Context, organization Organization, method, suffix string, payload any) (int, []byte, error) {
-	if !safeID(c.Param("project")) {
+	if c.Param("project") != "" && !safeID(c.Param("project")) {
 		return http.StatusNotFound, nil, nil
 	}
 	path := "/api/v2/organizations/" + organization.ID + "/projects/" + c.Param("project") + "/attachment-metadata" + suffix
+	if c.Param("project") == "" {
+		if method != http.MethodGet {
+			return http.StatusNotFound, nil, nil
+		}
+		path = "/api/v2/organizations/" + organization.ID + "/attachment-metadata" + suffix
+		if suffix == "/current-logo" {
+			path = "/api/v2/organizations/" + organization.ID + "/logo-metadata"
+		}
+	}
 	if c.Param("attempt") != "" && method == http.MethodPost {
 		if !safeID(c.Param("attempt")) {
 			return http.StatusNotFound, nil, nil
@@ -403,6 +416,29 @@ func (s *Service) readAttachment(c echo.Context) error {
 	if err != nil || status != http.StatusOK {
 		return attachmentCallError(c, status, raw, err, true)
 	}
+	return s.streamAttachment(c, organization, record)
+}
+
+func (s *Service) readOrganizationLogoImage(c echo.Context) error {
+	if s.attachments == nil {
+		return attachmentNotFound(c)
+	}
+	organization, err := s.readyOrganization(c.Request().Context(), c.Param("organization"))
+	if err != nil {
+		return attachmentNotFound(c)
+	}
+	status, raw, err := s.attachmentCall(c, organization, http.MethodGet, "/current-logo", nil)
+	if err != nil || status != http.StatusOK {
+		return attachmentCallError(c, status, raw, err, true)
+	}
+	var record attachment.Metadata
+	if json.Unmarshal(raw, &record) != nil || record.ProjectID != "" || record.DeletedAt != nil || record.Validate() != nil || record.AuthorizedPrincipal == "" {
+		return attachmentNotFound(c)
+	}
+	return s.streamAttachment(c, organization, record)
+}
+
+func (s *Service) streamAttachment(c echo.Context, organization Organization, record attachment.Metadata) error {
 	body, err := s.openAttachment(c.Request().Context(), organization, record)
 	if errors.Is(err, errAttachmentReadAudit) {
 		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Attachment audit is unavailable")
