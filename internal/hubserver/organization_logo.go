@@ -80,7 +80,7 @@ func organizationLogoOperationID(scope nativeScope) string {
 	return "PUT /api/v2/organizations/" + string(scope.organization) + "/logo"
 }
 
-func (s *Service) setOrganizationLogoCommand(ctx context.Context, scope nativeScope, request setOrganizationLogoRequest) (json.RawMessage, error) {
+func (s *Service) setOrganizationLogoCommand(ctx context.Context, scope nativeScope, request setOrganizationLogoRequest) (result json.RawMessage, resultErr error) {
 	scope.project, scope.requireHostedAdmin = "", true
 	if !canManageProjectSecrets(scope.credential) {
 		return nil, operatortool.ErrAccessDenied
@@ -120,6 +120,18 @@ func (s *Service) setOrganizationLogoCommand(ctx context.Context, scope nativeSc
 		logo.ImageKey = conversation.NewAttachmentID()
 		digest := sha256.Sum256(request.Content)
 		logo.ImageSHA256 = hex.EncodeToString(digest[:])
+		defer func() {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+			defer cancel()
+			var stored bool
+			if err := s.database.reader.QueryRowContext(cleanup, "SELECT EXISTS(SELECT 1 FROM attachments WHERE organization_id=? AND id=?)", scope.organization, logo.ImageKey).Scan(&stored); err != nil {
+				resultErr = errors.Join(resultErr, err)
+				return
+			}
+			if !stored {
+				resultErr = errors.Join(resultErr, store.DeleteIcon(cleanup, string(scope.organization), logo.ImageKey))
+			}
+		}()
 		if err := store.PutIcon(ctx, string(scope.organization), logo.ImageKey, request.Content); err != nil {
 			return nil, err
 		}

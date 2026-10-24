@@ -21,3 +21,14 @@ func (s tenantIconStore) PutIcon(ctx context.Context, organization, id string, c
 	}
 	return (attachment.Icons{Storage: s.service.attachments}).PutIcon(ctx, organization, id, content)
 }
+
+func (s tenantIconStore) DeleteIcon(ctx context.Context, organization, id string) error {
+	if organization != s.allocation.ID {
+		return attachment.ErrInvalid
+	}
+	current, err := s.service.readyOrganization(ctx, organization)
+	if err != nil || current.Generation != s.allocation.Generation || current.Endpoint != s.allocation.Endpoint {
+		return attachment.ErrInvalid
+	}
+	return (attachment.Icons{Storage: s.service.attachments}).DeleteIcon(ctx, organization, id)
+}

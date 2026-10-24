@@ -207,6 +207,26 @@ func TestProjectIconAttachmentLifecycle(t *testing.T) {
 			if integration.Icon != nil {
 				t.Fatalf("reset icon=%+v", integration.Icon)
 			}
+			if organizationLogo {
+				const exhaustedBytes = 1 << 40
+				if _, err := db.ExecContext(t.Context(), "UPDATE hosted_usage_counters SET value=? WHERE name='collaboration_bytes'", exhaustedBytes); err != nil {
+					t.Fatal(err)
+				}
+				body, err := json.Marshal(map[string]any{"content_base64": buffer.Bytes(), "expected_revision": fmt.Sprint(integration.Revision), "idempotency_key": "quota-logo"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := attachmentRequest(t, alice, http.MethodPut, base+"/logo", bytes.NewReader(body), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
+				if response.Code != http.StatusTooManyRequests {
+					t.Fatalf("quota refusal=%d %s", response.Code, response.Body.String())
+				}
+				store.mu.Lock()
+				objects := len(store.objects)
+				store.mu.Unlock()
+				if objects != 0 || used() != exhaustedBytes {
+					t.Fatalf("quota refusal left objects=%d or changed storage usage", objects)
+				}
+			}
 		})
 	}
 }
