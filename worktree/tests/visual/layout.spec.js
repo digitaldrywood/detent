@@ -1,0 +1,2486 @@
+const fs = require("node:fs");
+const path = require("node:path");
+const { test, expect } = require("@playwright/test");
+const { startDetentRuntime } = require("./detent-runtime");
+
+test.describe.configure({ mode: "serial" });
+
+const desktopViewport = { width: 1440, height: 1100 };
+const narrowViewport = { width: 390, height: 844 };
+const groupedSidebarSequence = [
+  "nav:board",
+  "section:projects",
+  "section:monitor",
+  "nav:fleet",
+  "nav:diagnostics",
+  "nav:health",
+  "section:insights",
+  "nav:reports",
+  "nav:operations",
+  "nav:library",
+  "section:system",
+  "nav:analytics",
+  "nav:api-keys",
+  "nav:settings",
+];
+
+let screenshotsRuntime;
+let kanbanRuntime;
+let singleProjectRuntime;
+let sidebarRuntime;
+let screenshotManifest;
+
+test.beforeAll(async () => {
+  screenshotsRuntime = await startDetentRuntime("screenshots", [
+    "--demo",
+    "screenshots",
+  ]);
+  const manifestResponse = await fetch(
+    `${screenshotsRuntime.url}/api/v1/demo/scenarios`,
+  );
+  if (!manifestResponse.ok) {
+    throw new Error(
+      `Failed to load screenshots manifest: ${manifestResponse.status}`,
+    );
+  }
+  screenshotManifest = await manifestResponse.json();
+  kanbanRuntime = await startDetentRuntime("kanban", [
+    "--demo",
+    "kanban",
+    "--demo-project",
+    "demo-project",
+  ]);
+  singleProjectRuntime = await startDetentRuntime("single-project", []);
+  sidebarRuntime = await startDetentRuntime("sidebar-live", [
+    "--demo",
+    "screenshots",
+    "--demo-clock",
+    "play",
+  ]);
+});
+
+test.afterAll(async () => {
+  await Promise.all([
+    screenshotsRuntime?.stop(),
+    kanbanRuntime?.stop(),
+    singleProjectRuntime?.stop(),
+    sidebarRuntime?.stop(),
+  ]);
+});
+
+test.afterEach(async ({ page }, testInfo) => {
+  if (testInfo.status === testInfo.expectedStatus) {
+    return;
+  }
+  await attachFailureEvidence(page, testInfo);
+});
+
+test("screenshots manifest includes visual gate scenarios", async ({
+  request,
+}) => {
+  const response = await request.get(
+    `${screenshotsRuntime.url}/api/v1/demo/scenarios`,
+  );
+  expect(response.ok()).toBeTruthy();
+  const payload = await response.json();
+  expect(payload).toEqual(screenshotManifest);
+  const scenarioIDs = payload.scenarios.map((scenario) => scenario.id);
+
+  expect(scenarioIDs).toEqual(
+    expect.arrayContaining([
+      "fleet-kanban-multiproject",
+      "kanban-full-integration",
+      "kanban-startup-loading",
+      "kanban-read-only",
+      "kanban-dense-overflow",
+      "github-api-healthy",
+      "github-api-warning",
+      "github-api-secondary-backoff",
+      "github-api-primary-exhausted",
+      "diagnostics-healthy",
+      "settings-project-context",
+      "onboarding-project-selection",
+      "fleet-kanban-blocked-alerts",
+    ]),
+  );
+});
+
+test("sidebar groups global navigation and hides a single project", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: sidebarRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const sidebar = page.locator("#app-sidebar");
+  const content = sidebar.locator("#app-sidebar-content");
+  await expect(content).toHaveAttribute("sse-swap", "sidebar-v2");
+  await expect(content).toHaveAttribute("hx-swap", "morph:innerHTML");
+  await expect(content.locator('[data-sidebar-section="projects"]')).toBeVisible();
+  expect(await content.locator("[data-sidebar-project]").count()).toBeGreaterThan(1);
+  await expect
+    .poll(() => sidebarSequence(content))
+    .toEqual(groupedSidebarSequence);
+
+  await sidebar.getByRole("button", { name: "Toggle sidebar" }).click();
+  await expect(sidebar).toHaveAttribute("data-rail", "true");
+  await expect(sidebar).toHaveCSS("width", "52px");
+  for (const heading of await content.locator("[data-sidebar-section]").all()) {
+    await expect(heading).toBeHidden();
+  }
+  for (const label of await content.locator("[data-sidebar-nav-label]").all()) {
+    await expect(label).toBeHidden();
+  }
+  const collapsedNavItems = await content.locator("[data-sidebar-nav-item]").all();
+  const navIconNames = [];
+  for (const navItem of collapsedNavItems) {
+    await expect(navItem).toHaveAttribute("aria-label", /.+/);
+    const icon = navItem.locator("[data-sidebar-nav-icon]");
+    await expect(icon).toBeVisible();
+    await expect(icon.locator("svg")).toHaveCount(1);
+    navIconNames.push(await icon.getAttribute("data-sidebar-nav-icon"));
+  }
+  expect(new Set(navIconNames).size).toBe(collapsedNavItems.length);
+  for (const divider of await content.locator("[data-sidebar-divider]").all()) {
+    await expect(divider).toBeVisible();
+  }
+  await expect(content.locator('[data-sidebar-nav-item="board"]')).toHaveClass(/ring-accent/);
+  for (const label of await content.locator("[data-sidebar-project-label]").all()) {
+    await expect(label).toBeHidden();
+  }
+  const collapsedProjects = await content.locator("[data-sidebar-project]").all();
+  const identities = [];
+  for (const project of collapsedProjects) {
+    await expect(project).toBeVisible();
+    const identity = project.locator("[data-sidebar-project-identity]");
+    await expect(identity).toBeVisible();
+    await expect(identity).not.toHaveText("");
+    identities.push((await identity.textContent()).trim());
+    await expect(project).toHaveAttribute("aria-label", /.+/);
+    await expect(project).toHaveAttribute("data-help-title", /.+/);
+    await expect(project.locator("[data-sidebar-project-activity]")).toBeVisible();
+    const load = project.locator("[data-sidebar-project-badge]");
+    if ((await load.count()) > 0) {
+      await expect(load).toBeVisible();
+    }
+  }
+  expect(new Set(identities).size).toBe(collapsedProjects.length);
+  await test.info().attach("collapsed-sidebar.png", {
+    body: await sidebar.screenshot({ animations: "disabled", caret: "hide" }),
+    contentType: "image/png",
+  });
+
+  const tooltip = page.locator("body > #help-tooltip");
+  for (const navItem of collapsedNavItems) {
+    await navItem.hover();
+    await expect(tooltip).toBeVisible();
+    await expect(tooltip).toContainText(await navItem.getAttribute("aria-label"));
+  }
+
+  const collapsedAnalytics = content.locator('[data-sidebar-nav-item="analytics"]');
+  await collapsedAnalytics.hover();
+  await waitForSnapshotWithoutSidebarMorph(page);
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText("Analytics");
+
+  const collapsedDetent = content.locator('[data-sidebar-project="dogfood"]');
+  await collapsedDetent.hover();
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText(await collapsedDetent.getAttribute("data-help-title"));
+
+  await content.locator('[data-sidebar-nav-item="reports"]').click();
+  await expect.poll(() => new URL(page.url()).pathname).toBe("/reports");
+  await expect(sidebar).toHaveAttribute("data-rail", "true");
+
+  await page.setExtraHTTPHeaders({});
+  await page.goto(`${singleProjectRuntime.url}/`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator("#board-lanes").waitFor({ state: "visible" });
+  const singleProjectContent = page.locator("#app-sidebar-content");
+  await expect(singleProjectContent.locator('[data-sidebar-section="projects"]')).toHaveCount(0);
+  await expect(singleProjectContent.locator("[data-sidebar-project]")).toHaveCount(0);
+});
+
+test("unchanged SSE inputs skip sidebar and health region morphs", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: sidebarRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const snapshot = page.locator("#snapshot");
+  const sidebar = page.locator("#app-sidebar-content");
+  await expect(snapshot).toHaveAttribute("hx-swap", "morph:innerHTML");
+  await expect(sidebar).toHaveAttribute("sse-swap", "sidebar-v2");
+  await expect(sidebar).toHaveAttribute("hx-swap", "morph:innerHTML");
+  await expect(page.locator('[sse-swap="sidebar"]')).toHaveCount(0);
+  await expect(page.locator("#github-api-health")).toHaveCount(0);
+
+  expect(await waitForSnapshotWithoutSidebarMorph(page)).toEqual({
+    healthSwaps: 0,
+    preserved: true,
+    sidebarSwaps: 0,
+  });
+});
+
+test("sidebar project badges keep load, activity, blocked tint, and breakdown distinct", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: sidebarRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const detent = page.locator('[data-sidebar-project="dogfood"]');
+  const detentBadge = detent.locator("[data-sidebar-project-badge]");
+  await expect(detentBadge).toHaveText("4");
+  await expect(detentBadge).toHaveAttribute(
+    "data-sidebar-project-blocked",
+    "true",
+  );
+  await expect(detentBadge).toHaveClass(/bg-err\/15/);
+  await expect(detent.locator('[data-sidebar-project-activity="true"] .dt-pulse')).toHaveClass(/bg-ok/);
+  await expect(detent).toHaveAttribute(
+    "data-help-description",
+    "1 ready · 3 active · 0 waiting · 1 blocked",
+  );
+
+  const docs = page.locator('[data-sidebar-project="docs-site"]');
+  await expect(docs.locator("[data-sidebar-project-badge]")).toHaveText("3");
+  await expect(docs.locator("[data-sidebar-project-badge]")).toHaveAttribute(
+    "data-sidebar-project-blocked",
+    "false",
+  );
+  await expect(docs.locator('[data-sidebar-project-activity="true"] .dt-pulse')).toHaveClass(/bg-ok/);
+
+  for (const density of ["compact", "cozy"]) {
+    await page.locator(`[data-density-choice="${density}"]`).click();
+    for (const theme of ["dark", "light"]) {
+      await page.evaluate((value) => {
+        if (value === "light") document.documentElement.setAttribute("data-theme", "light");
+        else document.documentElement.removeAttribute("data-theme");
+      }, theme);
+      await expect(detentBadge).toHaveText("4");
+      await expect(detentBadge).toHaveAttribute(
+        "data-sidebar-project-blocked",
+        "true",
+      );
+      await expect(detent.locator('[data-sidebar-project-activity="true"] .dt-pulse')).toBeVisible();
+    }
+  }
+  await page.locator('[data-density-choice="cozy"]').click();
+  await page.evaluate(() => document.documentElement.removeAttribute("data-theme"));
+
+  await detent.hover();
+  const tooltip = page.locator("body > #help-tooltip");
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText(
+    "1 ready · 3 active · 0 waiting · 1 blocked",
+  );
+  await waitForSnapshotWithoutSidebarMorph(page);
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText(
+    "1 ready · 3 active · 0 waiting · 1 blocked",
+  );
+
+  await expect(page.locator("#fig-waiting")).toContainText("6 waiting");
+  await expect(page.locator("#fig-blocked")).toContainText("1 blocked");
+});
+
+test("board home renders lanes without page overflow", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  await expect(page.locator("#board-lanes")).toBeVisible();
+  await expect(page.locator("#board-figures")).toBeVisible();
+  await expect(page.locator("[data-board-lane]").first()).toBeVisible();
+  const ageFooter = page.locator("[data-board-card-age-footer]").first();
+  await expect(ageFooter).toHaveCount(0);
+  await assertNoDocumentOverflow(page);
+  await attachScreenshotEvidence(page, "board-home.png", testInfo);
+});
+
+test("board card identity wraps while metadata truncates", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "kanban-full-integration",
+    route: "/projects/dogfood/kanban",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const card = page.locator("article", {
+    hasText: "Review deterministic chart colors",
+  });
+  const identity = card.locator("[data-board-card-identity]");
+  await page.locator('[data-density-choice="comfy"]').click();
+  const secondary = card.locator('[data-board-card-priority-details]');
+  await card.evaluate((article) => {
+    const project = article.querySelector("[data-board-card-project]");
+    project.textContent = "example-org-release-train-platform";
+    const row = article.querySelector('[data-board-card-priority-details]');
+    const badge = document.createElement("span");
+    badge.className =
+      "inline-flex min-w-7 max-w-24 shrink items-center rounded-chip border border-warn/30 bg-warn/15 px-1.5 py-0.5 font-mono text-2xs font-semibold text-warn";
+    badge.dataset.boardPriority = "";
+    const label = document.createElement("span");
+    label.className = "min-w-0 truncate";
+    label.textContent = "priority-medium-that-yields-space";
+    badge.append(label);
+    row.append(badge);
+  });
+
+  const assertContained = async () => {
+    const layout = await card.evaluate((article) => {
+      const row = article.querySelector('[data-board-card-priority-details]');
+      const identityBlock = article.querySelector("[data-board-card-identity]");
+      const project = article.querySelector("[data-board-card-project]");
+      const priority = row.querySelector("[data-board-priority]");
+      const priorityText = priority.firstElementChild;
+      const pullRequest = article.querySelector("[data-board-card-pr] a");
+      const cardRect = article.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      const identityRect = identityBlock.getBoundingClientRect();
+      const pullRequestRect = pullRequest.getBoundingClientRect();
+      const childrenContained = [
+        identityBlock,
+        project,
+        pullRequest,
+        ...row.children,
+      ].every((child) => {
+        const childRect = child.getBoundingClientRect();
+        return childRect.left >= cardRect.left && childRect.right <= cardRect.right;
+      });
+      return {
+        cardRight: cardRect.right,
+        rowRight: rowRect.right,
+        identityRight: identityRect.right,
+        pullRequestRight: pullRequestRect.right,
+        childrenContained,
+        projectClientWidth: project.clientWidth,
+        projectScrollWidth: project.scrollWidth,
+        projectTextOverflow: getComputedStyle(project).textOverflow,
+        priorityClientWidth: priorityText.clientWidth,
+        priorityScrollWidth: priorityText.scrollWidth,
+        priorityTextOverflow: getComputedStyle(priorityText).textOverflow,
+      };
+    });
+    expect(layout.rowRight).toBeLessThanOrEqual(layout.cardRight);
+    expect(layout.identityRight).toBeLessThanOrEqual(layout.cardRight);
+    expect(layout.pullRequestRight).toBeLessThanOrEqual(layout.cardRight);
+    expect(layout.childrenContained).toBe(true);
+    expect(layout.projectClientWidth).toBeGreaterThan(0);
+    expect(layout.projectScrollWidth).toBeLessThanOrEqual(
+      layout.projectClientWidth + 1,
+    );
+    expect(layout.projectTextOverflow).not.toBe("ellipsis");
+    expect(layout.priorityClientWidth).toBeGreaterThanOrEqual(12);
+    expect(layout.priorityClientWidth).toBeLessThan(layout.priorityScrollWidth);
+    expect(layout.priorityTextOverflow).toBe("ellipsis");
+  };
+
+  await page.locator("#board-lane-picker summary").click();
+  const visibleLaneIDs = await page
+    .locator('[data-board-lane][data-lane-hidden="false"]')
+    .evaluateAll((lanes) => lanes.map((lane) => lane.dataset.boardLane));
+  const laneToHide = visibleLaneIDs.find((laneID) => laneID !== "human-review");
+  await page
+    .locator(`[data-board-lane-visibility="${laneToHide}"]`)
+    .selectOption("hide");
+  await page.locator("#board-lane-picker summary").click();
+  await expect(page.locator("[data-board-lane-count]")).toHaveText("5/9");
+
+  await page.locator('[data-density-choice="compact"]').click();
+  await expect(secondary).toBeHidden();
+  await expect(identity).toBeVisible();
+  await page.locator('[data-density-choice="cozy"]').click();
+  await expect(secondary).toBeHidden();
+  await expect(identity).toBeVisible();
+  await attachScreenshotEvidence(page, "board-card-header-5-lanes.png", testInfo);
+  await page.locator('[data-density-choice="comfy"]').click();
+  await expect(secondary).toBeVisible();
+  await assertContained();
+
+  await page.locator("#board-lane-picker summary").click();
+  for (const select of await page.locator("[data-board-lane-visibility]").all()) {
+    await select.selectOption("show");
+  }
+  await page.locator("#board-lane-picker summary").click();
+  await expect(page.locator("[data-board-lane-count]")).toHaveText("9/9");
+  await page.locator('[data-density-choice="comfy"]').click();
+  await assertContained();
+  await attachScreenshotEvidence(page, "board-card-header-9-lanes.png", testInfo);
+});
+
+test("board keeps dependency waits on cards without global alerts", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-kanban-multiproject",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const exceptions = page.locator("#board-exceptions");
+  const blockedFigure = page.locator("#fig-blocked");
+  await expect(blockedFigure).toBeVisible();
+  await expect(exceptions).toHaveCount(0);
+  const waitingCard = page.locator("#board-lanes article", {
+    hasText: "Dependency issue waiting on ledger migration",
+  });
+  await expect(waitingCard).toBeVisible();
+  await expect(waitingCard.locator("[data-board-card-signal]")).toHaveText("Waiting on #5200");
+  await attachScreenshotEvidence(page, "board-dependency-waits.png", testInfo);
+});
+
+test("boosted card explains its direct downstream count", async ({ page }) => {
+  await page.setViewportSize(desktopViewport);
+  await page.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": "fleet-kanban-unblocker-boost",
+  });
+  await page.goto(`${screenshotsRuntime.url}/`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+  await page.locator('[data-density-choice="comfy"]').click();
+
+  const card = page.locator("article", {
+    hasText: "Add screenshot manifest smoke test",
+  });
+  const badge = card.locator('[data-board-priority]', {
+    hasText: "prerequisite",
+  });
+  await expect(badge).toHaveAttribute(
+    "data-help-description",
+    "Prerequisite for 2 blocked issues.",
+  );
+  await badge.hover();
+  await badge.dispatchEvent("pointerover", { pointerType: "mouse" });
+  const tooltip = page.locator("body > #help-tooltip");
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText("Prerequisite for 2 blocked issues");
+});
+
+test("board keeps historical machine failures out of human-action alerts", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-kanban-blocked-alerts",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const exceptions = page.locator("#board-exceptions [id^='exception-']");
+  await expect(exceptions).toHaveCount(0);
+  const card = page.getByRole("button", {
+    name: /Workspace hook error needs operator input/,
+  });
+  await expect(card).toBeVisible();
+  await expect(card).not.toContainText("Needs you");
+  await card.click();
+  await expect(page.getByRole("dialog")).toContainText("after_create hook exited 2");
+  await attachScreenshotEvidence(page, "board-blocked-alerts.png", testInfo);
+});
+
+test("board hides informational recovery and overload notices", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "board-ramp-active-recoveries",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  await expect(page.locator("#dispatch-recovery-status")).toHaveCount(0);
+  await expect(page.locator("#backend-overload-retries")).toHaveCount(0);
+  const visibleSections = page.locator("#snapshot > :visible");
+  await expect(visibleSections.first()).toHaveAttribute("id", "work-toolbar");
+  await expect(visibleSections.nth(1)).toHaveAttribute("id", "board-figures");
+});
+
+test("board and health stay quiet while diagnostics retains scheduled pacing", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "board-scheduled-pacing",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  await expect(page.locator("#dispatch-recovery-status")).toHaveCount(0);
+  await expect(page.locator("#backend-capacity-outage")).toHaveCount(0);
+  await expect(page.locator("#board-alerts")).toHaveCount(0);
+  const visibleSections = page.locator("#snapshot > :visible");
+  await expect(visibleSections.first()).toHaveAttribute("id", "work-toolbar");
+  await expect(visibleSections.nth(1)).toHaveAttribute("id", "board-figures");
+  await expect(
+    page.locator('[data-sidebar-nav-item="health"] .bg-ok'),
+  ).toBeVisible();
+  await expect(
+    page.locator('[data-sidebar-nav-item="health"] .bg-warn'),
+  ).toHaveCount(0);
+
+  await page.goto(`${screenshotsRuntime.url}/diagnostics`, {
+    waitUntil: "domcontentloaded",
+  });
+  const recovery = page.locator('[id^="diagnostics-condition-recovery-"]');
+  await expect(recovery).toHaveCount(3);
+  expect(
+    await recovery.evaluateAll((rows) =>
+      rows.map((row) => row.dataset.diagnosticsConditionClass),
+    ),
+  ).toEqual(["diagnostic", "diagnostic", "diagnostic"]);
+  await expect(
+    recovery.filter({ hasText: "GitHub REST capacity" }),
+  ).toHaveCount(2);
+});
+
+test("board shows only health states needing attention", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "board-degraded-health-banners",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const bar = page.locator("#board-alerts");
+  const overlay = page.locator("body > #board-alerts-overlay");
+  await expect(bar).toHaveCount(1);
+  await expect(bar).toHaveAttribute("data-board-alert-count", "2");
+  await expect(bar).toHaveClass(/border-err/);
+  await expect(bar).toContainText("Project failure breaker active — 1 project");
+  await expect(page.locator("#project-failure-breaker")).toHaveCount(0);
+  await expect(page.locator("#dispatch-recovery-status")).toHaveCount(0);
+  await expect(page.locator("#backend-capacity-outage")).toHaveCount(0);
+  await page.locator("#board-alerts-toggle").click();
+  await expect(overlay.locator("#board-alert-failure-breaker")).toContainText(
+    "1 project",
+  );
+  await expect(overlay.locator("#board-alert-failure-breaker")).not.toContainText(
+    "Author beat visuals — example-org/detent-core#5280",
+  );
+  await expect(overlay.locator("#board-alert-dispatch-recovery")).toContainText(
+    "Dispatch retry overdue for GitHub REST capacity — 1 project",
+  );
+  await expect(overlay.locator("#board-alert-backend-capacity")).toHaveCount(0);
+  await expect(page.locator("#backend-overload-retries")).toHaveCount(0);
+  await expect(page.locator("#snapshot")).not.toContainText(
+    "Dispatch recovery ramp active",
+  );
+  await attachScreenshotEvidence(page, "board-alerts-expanded.png", testInfo);
+});
+
+test("board surfaces dispatch faults with affected cards and clears by morph", async ({
+  page,
+  context,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "board-dispatch-fault",
+    route: "/",
+    waitSelector: "#board-alerts",
+    viewport: desktopViewport,
+  });
+
+  const snapshot = page.locator("#snapshot");
+  const bar = page.locator("#board-alerts");
+  await expect(bar).toContainText("Dispatch stalled (1 project)");
+  await expect(bar).toHaveAttribute("data-board-alert-tone", "err");
+  await page.locator("#board-alerts-toggle").click();
+
+  const overlay = page.locator("body > #board-alerts-overlay");
+  const fault = overlay.locator('[data-board-alert="dispatch-stall"]');
+  await expect(fault).toContainText(
+    "issue does not match authorization selector: missing required label `detent`",
+  );
+  await expect(fault).toContainText("4 candidates skipped for 3h");
+  for (let number = 5301; number <= 5304; number += 1) {
+    const identifier = `example-org/detent-core#${number}`;
+    await expect(fault.getByRole("link", { name: identifier })).toHaveAttribute(
+      "href",
+      `https://github.test/example-org/detent-core/issues/${number}`,
+    );
+  }
+
+  const healthyPage = await context.newPage();
+  await healthyPage.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": "fleet-healthy-parallel-work",
+  });
+  await healthyPage.goto(`${screenshotsRuntime.url}/`, {
+    waitUntil: "domcontentloaded",
+  });
+  const healthySnapshot = await healthyPage.locator("#snapshot").innerHTML();
+  await healthyPage.close();
+
+  await snapshot.evaluate((element) => {
+    window.__detentDispatchFaultSnapshot = element;
+  });
+  await sseMorphSnapshot(page, healthySnapshot);
+  await expect(page.locator("#board-alerts")).toHaveCount(0);
+  expect(
+    await snapshot.evaluate(
+      (element) => window.__detentDispatchFaultSnapshot === element,
+    ),
+  ).toBe(true);
+  await expect(overlay).toBeHidden();
+});
+
+test("board keeps self-healing dispatch waits out of fault alerts", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "board-scheduled-pacing",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  await expect(
+    page.locator('[data-board-alert="dispatch-stall"]'),
+  ).toHaveCount(0);
+  await expect(page.locator("#snapshot")).not.toContainText("Dispatch stalled");
+});
+
+test("board lane picker hides and restores lanes", async ({ page }) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const firstLane = page
+    .locator(
+      '[data-board-lane][data-lane-hidden="false"][data-board-lane-card-count]:not([data-board-lane-card-count="0"])',
+    )
+    .first();
+  const laneID = await firstLane.getAttribute("data-board-lane");
+  const lane = page.locator(`[data-board-lane="${laneID}"]`);
+  const visibility = page.locator(`[data-board-lane-visibility="${laneID}"]`);
+  const reset = page.locator(`[data-board-lane-reset="${laneID}"]`);
+  const hiddenBadge = page.locator("[data-board-hidden-card-count]");
+
+  await page.locator("#board-lane-picker summary").click();
+  await visibility.selectOption("hide");
+  await expect(lane).toBeHidden();
+  await expect(visibility).toHaveValue("hide");
+  await expect(hiddenBadge).toBeVisible();
+  await expect(hiddenBadge).toContainText("hidden");
+  await reset.click();
+  await expect(lane).toBeVisible();
+  await expect(visibility).toHaveValue("auto");
+});
+
+test("board applies persisted todo visibility before snapshot morphs", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-kanban-multiproject",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const laneID = "todo";
+  const lane = page.locator(`[data-board-lane="${laneID}"]`);
+  const visibility = page.locator(`[data-board-lane-visibility="${laneID}"]`);
+  const count = page.locator("[data-board-lane-count]");
+  const boardKey = await page
+    .locator("[data-board-lanes]")
+    .getAttribute("data-board-key");
+
+  await page.evaluate(
+    ({ boardKey, laneID }) => {
+      localStorage.setItem(
+        `detent.ui.board.lanes.v2.${boardKey}`,
+        JSON.stringify({ v: 1, show: [laneID] }),
+      );
+      document.dispatchEvent(new Event("htmx:afterSettle"));
+    },
+    { boardKey, laneID },
+  );
+
+  await expect(lane).toBeVisible();
+  await expect(visibility).toHaveValue("show");
+  await expect(count).toHaveText("7/9");
+
+  const incomingSnapshot = await page.evaluate((laneID) => {
+    const template = document.createElement("template");
+    const snapshot = document.querySelector("#snapshot");
+    template.innerHTML = snapshot ? snapshot.innerHTML : "";
+    const lane = template.content.querySelector(
+      `[data-board-lane="${laneID}"]`,
+    );
+    if (lane) {
+      lane.setAttribute("data-board-lane-default", "false");
+      lane.setAttribute("data-lane-hidden", "true");
+    }
+    const visibility = template.content.querySelector(
+      `[data-board-lane-visibility="${laneID}"]`,
+    );
+    if (visibility) {
+      visibility.value = "auto";
+      visibility.setAttribute("data-board-lane-visibility-state", "auto");
+      visibility.setAttribute("data-board-lane-visibility-effective", "false");
+    }
+    const lanes = Array.from(
+      template.content.querySelectorAll("[data-board-lane]"),
+    );
+    const visible = lanes.filter(
+      (lane) => lane.getAttribute("data-lane-hidden") !== "true",
+    ).length;
+    const count = template.content.querySelector("[data-board-lane-count]");
+    if (count) {
+      count.textContent = `${visible}/${lanes.length}`;
+    }
+    return template.innerHTML;
+  }, laneID);
+
+  await page.route("**/__detent-test-board-refresh", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: incomingSnapshot,
+    });
+  });
+
+  await startLaneHiddenRecorder(page, laneID);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        document.addEventListener("htmx:afterSettle", resolve, { once: true });
+        window.htmx.ajax("GET", "/__detent-test-board-refresh", {
+          target: "#snapshot",
+          swap: "morph:innerHTML",
+        });
+      }),
+  );
+
+  const hiddenValues = await laneHiddenValues(page);
+  expect(hiddenValues).not.toContain("true");
+  await expect(lane).toBeVisible();
+  await expect(visibility).toHaveValue("show");
+  await expect(count).toHaveText("7/9");
+
+  await startLaneHiddenRecorder(page, laneID);
+  await page.evaluate(
+    (incomingSnapshot) =>
+      new Promise((resolve) => {
+        document.addEventListener("htmx:afterSettle", resolve, { once: true });
+        const target = document.querySelector("#snapshot");
+        const event = new CustomEvent("htmx:sseBeforeMessage", {
+          bubbles: true,
+          cancelable: true,
+          detail: { elt: target, data: incomingSnapshot },
+        });
+        target.dispatchEvent(event);
+        if (!event.defaultPrevented) {
+          window.htmx.swap(
+            target,
+            incomingSnapshot,
+            { swapStyle: target.getAttribute("hx-swap") || "innerHTML" },
+            { contextElement: target },
+          );
+        }
+      }),
+    incomingSnapshot,
+  );
+
+  const sseHiddenValues = await laneHiddenValues(page);
+  expect(sseHiddenValues).not.toContain("true");
+  await expect(lane).toBeVisible();
+  await expect(visibility).toHaveValue("show");
+  await expect(count).toHaveText("7/9");
+});
+
+test("board card opens the detail sheet", async ({ page }, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  await page.locator("#board-lanes article[id^='card-']").first().click();
+  const sheet = page.locator("[data-detail-sheet]");
+  await expect(sheet).toBeVisible();
+  await expect(sheet.getByText("State", { exact: true })).toBeVisible();
+  await expect(sheet.locator("#board-activity-stream")).toBeVisible();
+  await expect(sheet.getByText("Orchestration activity")).toBeVisible();
+  await attachScreenshotEvidence(page, "board-detail-sheet.png", testInfo);
+
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+});
+
+test("issue and pull request links do not open the card detail sheet", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "kanban-full-integration",
+    route: "/projects/dogfood/kanban",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const card = page.locator("article", {
+    hasText: "Review deterministic chart colors",
+  });
+  const references = [
+    card
+      .locator("[data-board-card-issue]")
+      .getByRole("link", { name: "#5290", exact: true }),
+    card
+      .locator("[data-board-card-pr]")
+      .getByRole("link", { name: "PR #5290", exact: true }),
+  ];
+  for (const reference of references) {
+    const popupPromise = page.waitForEvent("popup");
+    await reference.click();
+    const popup = await popupPromise;
+    await popup.close();
+    await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
+  }
+
+  await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
+});
+
+test("long activity history stays contained across display modes", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  await page.locator("#board-lanes article[id^='card-']").first().click();
+  const sheet = page.locator("[data-detail-sheet]");
+  const activity = sheet.locator("[data-sheet-activity-tabs]");
+  const activityPanel = sheet.locator('[data-sheet-panel="activity"]');
+  const activityScroll = sheet.locator("[data-activity-list-scroll]");
+  const labels = sheet.getByText("Labels", { exact: true });
+  const conversation = sheet.getByText("Conversation", { exact: true });
+  await expect(sheet.locator("#board-activity-stream")).toHaveAttribute(
+    "aria-busy",
+    "false",
+  );
+  await expect(
+    activityPanel.locator("[data-activity-list] > li").first(),
+  ).toBeVisible();
+  await seedLongActivityHistory(activityPanel, 140);
+
+  for (const density of ["compact", "cozy"]) {
+    await page.evaluate((value) => {
+      if (value === "cozy") document.documentElement.setAttribute("data-density", "cozy");
+      else document.documentElement.removeAttribute("data-density");
+    }, density);
+    for (const theme of ["dark", "light"]) {
+      await page.evaluate((value) => {
+        if (value === "light") document.documentElement.setAttribute("data-theme", "light");
+        else document.documentElement.removeAttribute("data-theme");
+      }, theme);
+
+      await expect(activityScroll).toHaveCSS("overflow-y", "auto");
+      expect(
+        await activityScroll.evaluate(
+          (element) => element.scrollHeight > element.clientHeight,
+        ),
+      ).toBeTruthy();
+      const [activityBox, activityScrollBox, labelsBox, conversationBox] =
+        await Promise.all([
+          activity.boundingBox(),
+          activityScroll.boundingBox(),
+          labels.boundingBox(),
+          conversation.boundingBox(),
+        ]);
+      expect(activityBox).not.toBeNull();
+      expect(activityScrollBox).not.toBeNull();
+      expect(labelsBox).not.toBeNull();
+      expect(conversationBox).not.toBeNull();
+      expect(
+        activityScrollBox.y + activityScrollBox.height,
+      ).toBeLessThanOrEqual(activityBox.y + activityBox.height);
+      expect(activityBox.y + activityBox.height).toBeLessThanOrEqual(
+        labelsBox.y,
+      );
+      expect(labelsBox.y + labelsBox.height).toBeLessThanOrEqual(
+        conversationBox.y,
+      );
+      await attachScreenshotEvidence(
+        page,
+        `board-detail-long-activity-${density}-${theme}.png`,
+        testInfo,
+      );
+    }
+  }
+
+  await sheet.getByRole("tab", { name: "Live session" }).click();
+  await expect(sheet.getByText("No active worker session")).toBeVisible();
+});
+
+test("live session logs stay left aligned in sheet and full-page views", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const runningBadge = page.locator("[data-board-card-signal]", {
+    hasText: "Running",
+  }).first();
+  await runningBadge.locator("xpath=ancestor::article").click();
+
+  const sheet = page.locator("[data-detail-sheet]");
+  await sheet.getByRole("tab", { name: "Live session" }).click();
+  const sheetSession = sheet.locator("[data-board-live-session]");
+  const popOut = sheetSession.getByRole("link", { name: "Open full-page view" });
+  await expect(popOut).toHaveAttribute("target", "_blank");
+  const [fullPage] = await Promise.all([
+    page.waitForEvent("popup"),
+    popOut.click(),
+  ]);
+  await fullPage.locator("[data-live-session-page]").waitFor({ state: "visible" });
+
+  await seedMixedSessionLog(sheetSession);
+  await assertSessionLogStartsAtColumnZero(sheetSession);
+  await attachScreenshotEvidence(page, "board-live-session-sheet.png", testInfo);
+
+  const fullPageSession = fullPage.locator("[data-board-live-session]");
+  await seedMixedSessionLog(fullPageSession);
+  await assertSessionLogStartsAtColumnZero(fullPageSession);
+  await attachScreenshotEvidence(
+    fullPage,
+    "board-live-session-full-page.png",
+    testInfo,
+  );
+});
+
+test("detail sheet activity tabs survive morphs across display modes", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  await page.locator('[data-density-choice="cozy"]').click();
+
+  const runningBadge = page.locator('[data-board-card-signal]', {
+    hasText: "Running",
+  }).first();
+  await runningBadge.locator("xpath=ancestor::article").click();
+
+  const sheet = page.locator("[data-detail-sheet]");
+  await expect(sheet.locator("#board-activity-stream")).toBeVisible();
+  await sheet.getByRole("button", { name: "Verbose" }).click();
+  await expect(sheet.getByRole("button", { name: "Hide usage ticks" })).toBeVisible();
+
+  const sessionTab = sheet.getByRole("tab", { name: "Live session" });
+  const sessionHost = sheet.locator("[data-board-live-session]");
+  await sessionTab.click();
+  await expect(sessionTab).toHaveAttribute("aria-selected", "true");
+  await expect(sessionHost).not.toContainText(
+    "Select Live session to attach to the active worker.",
+  );
+
+  await sessionHost.evaluate((host) => {
+    const probe = document.createElement("span");
+    probe.dataset.sessionPreserveProbe = "true";
+    probe.textContent = "preserved session content";
+    host.append(probe);
+  });
+
+  await page.evaluate(() =>
+    document.documentElement.setAttribute("data-theme", "light"),
+  );
+  await assertNoDocumentOverflow(page);
+
+  await morphCurrentSnapshot(page, "detail-sheet-activity");
+  await expect(sessionTab).toHaveAttribute("aria-selected", "true");
+  await expect(sheet.getByText("preserved session content")).toBeVisible();
+
+  await sheet.getByRole("tab", { name: "Timeline" }).click();
+  await expect(sheet.locator("#board-activity-stream")).toBeVisible();
+  await expect(sheet.getByText("preserved session content")).toHaveCount(0);
+});
+
+test("board runtime identity stays accessible across snapshot morphs", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  await page.locator('[data-density-choice="comfy"]').click();
+  const card = page.locator("article", { hasText: "Implement page-addressable screenshot scenarios" });
+  await expect(card.locator("[data-board-runtime-badge]")).toHaveCount(0);
+  await expect(card).toHaveAttribute("title", /Provider session: thread-demo-core-5260/);
+  await expect(card).toHaveAttribute("title", /Codex · gpt-5.6-sol · xhigh/);
+  const narrowViewport = { width: 900, height: 1100 };
+  await page.setViewportSize(narrowViewport);
+  let detailCoreRequests = 0;
+  page.on("request", (request) => {
+    if (request.url().includes("/api/v1/board/card/core?")) {
+      detailCoreRequests += 1;
+    }
+  });
+  await card.focus();
+  await card.press("Enter");
+  const sheet = page.locator("[data-detail-sheet]");
+  await expect(sheet).toBeVisible();
+  for (const text of [
+    "Agent system",
+    "Codex",
+    "Backend profile",
+    "codex-high",
+    "Provider",
+    "openai · runtime",
+    "Model",
+    "gpt-5.6-sol · runtime",
+    "Effort",
+    "xhigh · runtime",
+  ]) {
+    await expect(sheet).toContainText(text);
+  }
+
+  for (let index = 0; index < 3; index += 1) {
+    const expectedRequests = detailCoreRequests + 1;
+    await morphCurrentSnapshot(page, `sheet-${index}`);
+    await expect(sheet).toBeVisible();
+    await expect.poll(() => detailCoreRequests).toBeGreaterThanOrEqual(
+      expectedRequests,
+    );
+  }
+  await expect.poll(() => detailCoreRequests).toBeGreaterThanOrEqual(3);
+  const sheetBox = await sheet.boundingBox();
+  expect(sheetBox).not.toBeNull();
+  expect(sheetBox.x).toBeGreaterThanOrEqual(0);
+  expect(sheetBox.x + sheetBox.width).toBeLessThanOrEqual(
+    narrowViewport.width,
+  );
+  await attachScreenshotEvidence(
+    page,
+    "board-runtime-identity-narrow.png",
+    testInfo,
+  );
+});
+
+test("board card opens the detail sheet on a glide click", async ({
+  page,
+}) => {
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${kanbanRuntime.url}/`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+  const card = page.locator("[data-kanban-card][data-kanban-action='move']", {
+    hasText: "Kanban demo backlog intake",
+  });
+  await expect(card).toBeVisible();
+  await expect.poll(() => page.evaluate(() => {
+    const snapshot = document.getElementById("snapshot");
+    const metrics = window.__detentSSEMetrics?.snapshot()?.snapshot;
+    return metrics?.swaps > 0 && metrics.pending === 0 &&
+      metrics.processing === 0 && snapshot?.dataset.detentSseProcessing !== "true" &&
+      !snapshot?.matches(".htmx-swapping, .htmx-settling");
+  })).toBe(true);
+  await card.click({ trial: true });
+  const box = await card.boundingBox();
+  if (!box) {
+    throw new Error("Draggable card has no bounding box");
+  }
+
+  // Real mouse clicks travel a few pixels between press and release —
+  // often past the drag threshold. That gesture must still read as a
+  // click and open the sheet, not become a cancelled drag that swallows
+  // the click.
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+  await page.mouse.move(startX, startY);
+  const input = await page.context().newCDPSession(page);
+  try {
+    await input.send("Input.dispatchMouseEvent", {
+      type: "mousePressed", x: startX, y: startY,
+      button: "left", buttons: 1, clickCount: 1,
+    });
+    await input.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved", x: startX + 4, y: startY + 3, buttons: 1,
+    });
+    await input.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved", x: startX + 8, y: startY + 6, buttons: 1,
+    });
+    await input.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased", x: startX + 8, y: startY + 6,
+      button: "left", buttons: 0, clickCount: 1,
+    });
+  } finally {
+    await input.detach();
+  }
+
+  const sheet = page.getByRole("dialog");
+  await expect(sheet).toBeVisible();
+  await expect(sheet).toContainText("Kanban demo backlog intake");
+  await expect(
+    page.locator("[data-kanban-drop-allowed]"),
+  ).toHaveCount(0);
+
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+
+  // A plain zero-travel click must keep working too.
+  await card.click();
+  await expect(sheet).toBeVisible();
+  await expect(sheet).toContainText("Kanban demo backlog intake");
+  await expect(page.locator("[data-kanban-drop-allowed]")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+});
+
+test("fleet page shows agent hero, PR lanes, and metric cards", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/fleet",
+    waitSelector: "#agent-activity",
+    viewport: desktopViewport,
+  });
+
+  await expect(page.locator("#agent-activity")).toBeVisible();
+  await expect(page.locator("#fleet-pr-pipeline")).toBeVisible();
+  await expect(page.locator("[data-merge-queue-depth]")).toContainText("Depth 6");
+  await expect(page.locator("[data-merge-queue-eta]")).toContainText("Drain ETA 12m 0s");
+  await expect(page.locator("#pr-lane-merging")).toContainText("Native #2 of 6 · ~12m 0s");
+  await expect(page.locator("#fleet-metrics")).toBeVisible();
+  await assertNoDocumentOverflow(page);
+  await attachScreenshotEvidence(page, "fleet.png", testInfo);
+
+  await page.setViewportSize(narrowViewport);
+  await expect(page.locator("[data-merge-queue-summary]")).toBeVisible();
+  await expect(page.locator("#pr-lane-merging")).toContainText("Native #2 of 6 · ~12m 0s");
+  await assertNoDocumentOverflow(page);
+  await attachScreenshotEvidence(page, "fleet-merge-queue-narrow.png", testInfo);
+});
+
+test("health page covers key rate-limit states", async ({ page }, testInfo) => {
+  const scenarios = [
+    "github-api-healthy",
+    "github-api-warning",
+    "github-api-secondary-backoff",
+    "github-api-primary-exhausted",
+  ];
+
+  for (const scenario of scenarios) {
+    await openScenario(page, {
+      runtime: screenshotsRuntime,
+      scenario,
+      route: "/health/ui",
+      waitSelector: "#health-verdict",
+      viewport: desktopViewport,
+    });
+
+    await expect(page.locator("#health-verdict")).toBeVisible();
+    await expect(page.locator("#health-details")).toBeVisible();
+    await assertNoDocumentOverflow(page);
+    await attachScreenshotEvidence(page, `${scenario}.png`, testInfo);
+  }
+});
+
+test("health keeps only fault-class recovery detail", async ({ page }) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "health-dispatch-recoveries",
+    route: "/health/ui",
+    waitSelector: "#dispatch-recovery-status",
+    viewport: desktopViewport,
+  });
+
+  const recoveries = page.locator("#dispatch-recovery-status");
+  await expect(
+    recoveries.getByText("Dispatch waiting on GitHub REST capacity", {
+      exact: true,
+    }),
+  ).toHaveCount(1);
+  await expect(
+    recoveries.getByText("Dispatch recovery ramp active", { exact: true }),
+  ).toHaveCount(0);
+  await expect(recoveries).not.toContainText("Project dogfood");
+  await expect(recoveries).toContainText("Project docs-site");
+  await expect(recoveries).not.toContainText("Project billing-api");
+  await expect(page.locator("#health-verdict")).not.toContainText(
+    "All systems nominal",
+  );
+  await expect(page.locator("#backend-overload-retries")).toHaveCount(0);
+});
+
+test("diagnostics keeps full scheduled pacing detail hidden from the board", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "diagnostics-scheduled-pacing",
+    route: "/diagnostics",
+    waitSelector: "#diagnostics-conditions",
+    viewport: desktopViewport,
+  });
+
+  const recoveries = page.locator('[id^="diagnostics-condition-recovery-"]');
+  await expect(
+    recoveries.filter({ hasText: "GitHub REST capacity" }),
+  ).toHaveCount(2);
+  await expect(
+    recoveries.filter({ hasText: "remaining 288 at or below dispatch floor" }),
+  ).toHaveCount(1);
+  await expect(
+    recoveries.filter({ hasText: "rest_budget_reserved" }),
+  ).toHaveCount(1);
+  const outage = page.locator('[id^="diagnostics-condition-backend-"]');
+  await expect(outage).toHaveAttribute(
+    "data-diagnostics-condition-class",
+    "diagnostic",
+  );
+  await expect(outage).toContainText("GitHub REST dispatch paused");
+  await expect(
+    page.locator('[data-sidebar-nav-item="health"] .bg-ok'),
+  ).toBeVisible();
+});
+
+test("project overview renders tabs, hero, and recent runs", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${kanbanRuntime.url}/projects/demo-project`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator("#agent-activity").waitFor({ state: "visible" });
+
+  await expect(page.locator("nav[aria-label='Project views']")).toBeVisible();
+  await expect(page.locator("#project-recent-runs")).toBeVisible();
+  await expect(page.locator("#project-recent-runs")).toContainText("Efficiency receipt");
+  await assertNoDocumentOverflow(page);
+  await attachScreenshotEvidence(page, "project-overview.png", testInfo);
+});
+
+test("project runs render completed lifetime usage receipts", async ({ page }) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/projects/dogfood/runs",
+    waitSelector: "#project-runs",
+    viewport: desktopViewport,
+  });
+
+  await expect(page.locator("#project-runs")).toContainText("Efficiency receipt");
+  await expect(page.locator("#project-runs")).toContainText(
+    "1 sessions · 0 redispatches · 64,000 tokens",
+  );
+});
+
+test("project kanban board scopes cards to the project", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+  await expect(
+    page.locator('[data-board-key="project.demo-project"]'),
+  ).toBeVisible();
+  const foreign = await page
+    .locator("#board-lanes article[id^='card-']")
+    .evaluateAll(
+      (cards) =>
+        cards.filter((card) => !card.textContent.includes("demo-project"))
+          .length,
+    );
+  expect(foreign).toBe(0);
+  await assertNoDocumentOverflow(page);
+  await attachScreenshotEvidence(page, "project-kanban.png", testInfo);
+});
+
+test("all-project board supports drag status moves", async ({ page }) => {
+  const runtime = await startDetentRuntime("kanban-fleet-drag", [
+    "--demo",
+    "kanban",
+    "--demo-project",
+    "demo-project",
+  ]);
+  try {
+    await page.setViewportSize(desktopViewport);
+    await page.goto(`${runtime.url}/`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+    const card = page.locator("[data-kanban-card]", {
+      hasText: "Kanban demo backlog intake",
+    });
+    await expect(card).toHaveAttribute("data-kanban-action", "move");
+    await expect(card).not.toHaveAttribute("data-kanban-move-disabled", "true");
+
+    const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+    const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
+
+    const moveRequest = page.waitForRequest((request) => {
+      if (
+        request.method() !== "POST" ||
+        !request.url().endsWith("/api/v1/kanban/move")
+      ) {
+        return false;
+      }
+      const form = new URLSearchParams(request.postData() || "");
+      return form.get("kanban_drag") === "true";
+    });
+
+    const box = await card.boundingBox();
+    if (!box) {
+      throw new Error("Fleet drag source has no bounding box");
+    }
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+      box.x + box.width / 2 + 16,
+      box.y + box.height / 2 + 16,
+      { steps: 5 },
+    );
+    await expect(targetLane).toBeVisible();
+    const targetBox = await targetLane.boundingBox();
+    if (!targetBox) {
+      throw new Error("Fleet drag target lane has no bounding box");
+    }
+    await page.mouse.move(
+      targetBox.x + targetBox.width / 2,
+      targetBox.y + Math.min(80, targetBox.height / 2),
+      { steps: 20 },
+    );
+    await page.mouse.up();
+
+    const request = await moveRequest;
+    const form = new URLSearchParams(request.postData() || "");
+    expect(form.get("kanban_board")).toBe("fleet");
+    expect(form.get("target_state")).toBe("Todo");
+
+    await expect(
+      targetLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+    await expect(
+      sourceLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toHaveCount(0);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("pointer drag shows affordances past the threshold and cancels cleanly", async ({
+  page,
+}) => {
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+  const card = page.locator(
+    '[data-kanban-card][data-kanban-current-state="Backlog"]',
+    {
+      hasText: "Kanban demo backlog intake",
+    },
+  );
+  await expect(card).toHaveAttribute("data-kanban-action", "move");
+
+  const feedback = page.locator("#board-feedback");
+  const hiddenLanes = page.locator(
+    '[data-kanban-drop-state][data-lane-hidden="true"]',
+  );
+  const ghost = page.locator("body > [data-kanban-card][aria-hidden='true']");
+  const hiddenBefore = await hiddenLanes.count();
+  expect(hiddenBefore).toBeGreaterThan(0);
+
+  const box = await card.boundingBox();
+  if (!box) {
+    throw new Error("Drag source has no bounding box");
+  }
+  const centerX = box.x + box.width / 2;
+  const centerY = box.y + box.height / 2;
+
+  // Below the 6px threshold nothing happens: no ghost, no lane changes.
+  await page.mouse.move(centerX, centerY);
+  await page.mouse.down();
+  await page.mouse.move(centerX + 3, centerY + 3);
+  await expect(ghost).toHaveCount(0);
+  await expect(feedback).toBeHidden();
+  expect(await hiddenLanes.count()).toBe(hiddenBefore);
+
+  // Past the threshold the drag activates: ghost follows the pointer, all
+  // lanes unhide with allowed/blocked states, and the feedback line reports
+  // the move in flight.
+  await page.mouse.move(centerX + 24, centerY + 24, { steps: 4 });
+  await expect(ghost).toHaveCount(1);
+  await expect(ghost).toContainText("From Backlog");
+  await expect(feedback).toHaveText(/Moving Backlog/);
+  await expect(hiddenLanes).toHaveCount(0);
+  await expect(
+    page.locator('[data-kanban-drop-state][data-kanban-drop-allowed="true"]'),
+  ).not.toHaveCount(0);
+  // The origin lane is marked as the source, not styled as a blocked target.
+  const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+  await expect(sourceLane).toHaveAttribute("data-kanban-drop-source", "true");
+  await expect(sourceLane).not.toHaveAttribute(
+    "data-kanban-drop-allowed",
+    "false",
+  );
+
+  // Escape cancels: ghost removed, hidden lanes restored, move reported as
+  // cancelled, and no request was posted.
+  let moveRequests = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/kanban/move")
+    ) {
+      moveRequests += 1;
+    }
+  });
+  await page.keyboard.press("Escape");
+  await expect(ghost).toHaveCount(0);
+  await expect(feedback).toHaveText(/Move cancelled/);
+  await expect(sourceLane).not.toHaveAttribute(
+    "data-kanban-drop-source",
+    "true",
+  );
+  expect(await hiddenLanes.count()).toBe(hiddenBefore);
+  await page.mouse.up();
+  expect(moveRequests).toBe(0);
+
+  // The card is still where it started and did not open the detail sheet.
+  await expect(
+    page.locator('[data-kanban-drop-state="Backlog"] [data-kanban-card]', {
+      hasText: "Kanban demo backlog intake",
+    }),
+  ).toBeVisible();
+});
+
+test("project kanban board supports drag status moves", async ({ page }) => {
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+  const card = page.locator(
+    '[data-kanban-card][data-kanban-current-state="Backlog"]',
+    {
+      hasText: "Kanban demo backlog intake",
+    },
+  );
+  const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+  const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
+  await expect(card).toHaveAttribute("data-kanban-action", "move");
+
+  const moveRequest = page.waitForRequest((request) => {
+    if (
+      request.method() !== "POST" ||
+      !request.url().endsWith("/api/v1/kanban/move")
+    ) {
+      return false;
+    }
+    return (
+      new URLSearchParams(request.postData() || "").get("kanban_drag") ===
+      "true"
+    );
+  });
+
+  const sourceBox = await card.boundingBox();
+  if (!sourceBox) {
+    throw new Error("Drag source has no bounding box");
+  }
+  await page.mouse.move(
+    sourceBox.x + sourceBox.width / 2,
+    sourceBox.y + sourceBox.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    sourceBox.x + sourceBox.width / 2 + 16,
+    sourceBox.y + sourceBox.height / 2 + 16,
+    { steps: 5 },
+  );
+  await expect(targetLane).toBeVisible();
+  const targetBox = await targetLane.boundingBox();
+  if (!targetBox) {
+    throw new Error("Drag target lane has no bounding box");
+  }
+  await page.mouse.move(
+    targetBox.x + targetBox.width / 2,
+    targetBox.y + Math.min(80, targetBox.height / 2),
+    { steps: 20 },
+  );
+  await page.mouse.up();
+
+  const selectedText = await page.evaluate(
+    () => window.getSelection()?.toString() || "",
+  );
+  expect(selectedText.trim()).toBe("");
+
+  const request = await moveRequest;
+  const form = new URLSearchParams(request.postData() || "");
+  expect(form.get("kanban_drag")).toBe("true");
+  expect(form.get("target_state")).toBe("Todo");
+
+  await expect(
+    targetLane.locator("[data-kanban-card]", {
+      hasText: "Kanban demo backlog intake",
+    }),
+  ).toBeVisible();
+  await expect(
+    sourceLane.locator("[data-kanban-card]", {
+      hasText: "Kanban demo backlog intake",
+    }),
+  ).toHaveCount(0);
+  await expect(page.locator("#board-feedback")).toBeHidden();
+});
+
+test("project kanban move is immediate and survives a stale snapshot", async ({
+  page,
+}) => {
+  const runtime = await startDetentRuntime("kanban-optimistic-move", [
+    "--demo",
+    "kanban",
+    "--demo-project",
+    "demo-project",
+  ]);
+  let releaseMove;
+  const moveReleased = new Promise((resolve) => {
+    releaseMove = resolve;
+  });
+  try {
+    await page.route("**/api/v1/kanban/move", async (route) => {
+      await moveReleased;
+      await route.continue();
+    });
+    await page.setViewportSize(desktopViewport);
+    await page.goto(`${runtime.url}/projects/demo-project/kanban`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+    const card = page.locator(
+      '[data-kanban-card][data-kanban-current-state="Backlog"]',
+      { hasText: "Kanban demo backlog intake" },
+    );
+    await expect(card).toBeVisible();
+    const staleSnapshot = await page
+      .locator("#snapshot")
+      .evaluate((snapshot) => snapshot.innerHTML);
+    const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+    const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
+
+    const response = page.waitForResponse(
+      (candidate) =>
+        candidate.request().method() === "POST" &&
+        candidate.url().endsWith("/api/v1/kanban/move"),
+    );
+    await dragKanbanCardToLane(page, card, targetLane);
+
+    const pendingCard = targetLane.locator("[data-kanban-pending-move='Todo']", {
+      hasText: "Kanban demo backlog intake",
+    });
+    await expect(pendingCard).toBeVisible();
+    await expect(targetLane.locator("[data-kanban-empty-line]")).toBeHidden();
+    await expect(
+      sourceLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toHaveCount(0);
+
+    await sseMorphSnapshot(page, staleSnapshot);
+    await expect(pendingCard).toBeVisible();
+    await expect(
+      sourceLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toHaveCount(0);
+
+    releaseMove();
+    await response;
+    await expect(
+      targetLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+    await expect(pendingCard).toHaveCount(0);
+  } finally {
+    releaseMove?.();
+    await runtime.stop();
+  }
+});
+
+test("project kanban move rolls back after a rejected response", async ({
+  page,
+}) => {
+  const runtime = await startDetentRuntime("kanban-optimistic-rollback", [
+    "--demo",
+    "kanban",
+    "--demo-project",
+    "demo-project",
+  ]);
+  let rejectMove;
+  const moveRejected = new Promise((resolve) => {
+    rejectMove = resolve;
+  });
+  try {
+    await page.route("**/api/v1/kanban/move", async (route) => {
+      await moveRejected;
+      await route.fulfill({
+        status: 422,
+        contentType: "text/html; charset=utf-8",
+        body: "<p>Move rejected by test policy.</p>",
+      });
+    });
+    await page.setViewportSize(desktopViewport);
+    await page.goto(`${runtime.url}/projects/demo-project/kanban`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+    const card = page.locator(
+      '[data-kanban-card][data-kanban-current-state="Backlog"]',
+      { hasText: "Kanban demo backlog intake" },
+    );
+    const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+    const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
+    const response = page.waitForResponse(
+      (candidate) =>
+        candidate.request().method() === "POST" &&
+        candidate.url().endsWith("/api/v1/kanban/move"),
+    );
+
+    await dragKanbanCardToLane(page, card, targetLane);
+    await expect(
+      targetLane.locator("[data-kanban-pending-move='Todo']", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+
+    rejectMove();
+    expect((await response).status()).toBe(422);
+    await expect(
+      sourceLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+    await expect(
+      targetLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toHaveCount(0);
+    await expect(page.locator("[data-kanban-pending-move]")).toHaveCount(0);
+    await expect(targetLane).toHaveAttribute("data-lane-hidden", "true");
+    await expect(page.locator("#board-feedback")).toHaveText(
+      "Move rejected by test policy.",
+    );
+  } finally {
+    rejectMove?.();
+    await runtime.stop();
+  }
+});
+
+test("project kanban move rolls back after a transport failure", async ({
+  page,
+}) => {
+  const runtime = await startDetentRuntime("kanban-optimistic-send-error", [
+    "--demo",
+    "kanban",
+    "--demo-project",
+    "demo-project",
+  ]);
+  let failMove;
+  const moveFailed = new Promise((resolve) => {
+    failMove = resolve;
+  });
+  try {
+    await page.route("**/api/v1/kanban/move", async (route) => {
+      await moveFailed;
+      await route.abort("connectionfailed");
+    });
+    await page.setViewportSize(desktopViewport);
+    await page.goto(`${runtime.url}/projects/demo-project/kanban`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+    const card = page.locator(
+      '[data-kanban-card][data-kanban-current-state="Backlog"]',
+      { hasText: "Kanban demo backlog intake" },
+    );
+    const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+    const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
+
+    await dragKanbanCardToLane(page, card, targetLane);
+    await expect(
+      targetLane.locator("[data-kanban-pending-move='Todo']", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+
+    failMove();
+    await expect(
+      sourceLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+    await expect(page.locator("[data-kanban-pending-move]")).toHaveCount(0);
+    await expect(page.locator("#board-feedback")).toHaveText("Move failed.");
+  } finally {
+    failMove?.();
+    await runtime.stop();
+  }
+});
+
+test("project kanban drag survives snapshot refresh during drag", async ({
+  page,
+}) => {
+  const runtime = await startDetentRuntime("kanban-drag-refresh", [
+    "--demo",
+    "kanban",
+    "--demo-project",
+    "demo-project",
+  ]);
+  try {
+    await page.setViewportSize(desktopViewport);
+    await page.goto(`${runtime.url}/projects/demo-project/kanban`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+    const card = page.locator(
+      '[data-kanban-card][data-kanban-current-state="Backlog"]',
+      {
+        hasText: "Kanban demo backlog intake",
+      },
+    );
+    const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+    const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
+    await expect(card).toHaveAttribute("data-kanban-action", "move");
+    await expect(targetLane).toBeHidden();
+
+    const incomingSnapshot = await page.evaluate(() => {
+      const snapshot = document.querySelector("#snapshot");
+      if (!snapshot) {
+        throw new Error("Snapshot target not found");
+      }
+      return snapshot.innerHTML;
+    });
+
+    const moveRequest = page.waitForRequest(
+      (request) => {
+        if (
+          request.method() !== "POST" ||
+          !request.url().endsWith("/api/v1/kanban/move")
+        ) {
+          return false;
+        }
+        return (
+          new URLSearchParams(request.postData() || "").get("kanban_drag") ===
+          "true"
+        );
+      },
+      { timeout: 5_000 },
+    );
+
+    const sourceBox = await card.boundingBox();
+    if (!sourceBox) {
+      throw new Error("Drag source has no bounding box");
+    }
+    await page.mouse.move(
+      sourceBox.x + sourceBox.width / 2,
+      sourceBox.y + sourceBox.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      sourceBox.x + sourceBox.width / 2 + 16,
+      sourceBox.y + sourceBox.height / 2 + 16,
+      { steps: 5 },
+    );
+    await expect(targetLane).toBeVisible();
+
+    await page.evaluate(
+      (incomingSnapshot) =>
+        new Promise((resolve) => {
+          document.addEventListener("htmx:afterSettle", resolve, { once: true });
+          const target = document.querySelector("#snapshot");
+          const event = new CustomEvent("htmx:sseBeforeMessage", {
+            bubbles: true,
+            cancelable: true,
+            detail: { elt: target, data: incomingSnapshot },
+          });
+          target.dispatchEvent(event);
+          if (!event.defaultPrevented) {
+            window.htmx.swap(
+              target,
+              incomingSnapshot,
+              { swapStyle: target.getAttribute("hx-swap") || "innerHTML" },
+              { contextElement: target },
+            );
+          }
+        }),
+      incomingSnapshot,
+    );
+    await expect(targetLane).toHaveAttribute("data-lane-hidden", "false");
+
+    const targetBox = await targetLane.boundingBox();
+    if (!targetBox) {
+      throw new Error("Drag target lane has no bounding box");
+    }
+    await page.mouse.move(
+      targetBox.x + targetBox.width / 2,
+      targetBox.y + Math.min(80, targetBox.height / 2),
+      { steps: 20 },
+    );
+    await page.mouse.up();
+
+    const request = await moveRequest;
+    const form = new URLSearchParams(request.postData() || "");
+    expect(form.get("kanban_drag")).toBe("true");
+    expect(form.get("target_state")).toBe("Todo");
+    await expect(
+      targetLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+    await expect(
+      sourceLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toHaveCount(0);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("board applies snapshot updates without reload", async ({ page }) => {
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${kanbanRuntime.url}/`, { waitUntil: "domcontentloaded" });
+  await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+  const marker = await page.evaluate(() => {
+    window.__detentReloadMarker = true;
+    return true;
+  });
+  expect(marker).toBe(true);
+
+  const refresh = await fetch(`${kanbanRuntime.url}/api/v1/refresh`, {
+    method: "POST",
+  });
+  expect(refresh.ok).toBeTruthy();
+
+  await expect(page.locator("#board-lanes")).toBeVisible();
+  const preserved = await page.evaluate(
+    () => window.__detentReloadMarker === true,
+  );
+  expect(preserved).toBe(true);
+});
+
+test("dashboard prompts reload only when the serving build changes", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/fleet",
+    waitSelector: "#agent-activity",
+    viewport: desktopViewport,
+  });
+
+  const servedVersion = await page
+    .locator("html")
+    .getAttribute("data-detent-served-version");
+  expect(servedVersion).toBeTruthy();
+
+  const notice = page.locator("[data-detent-build-update]");
+  const footer = page.locator("#detent-build-version");
+  await dispatchBuildVersion(page, servedVersion);
+  await expect(notice).toBeHidden();
+  await expect(footer).toHaveText(servedVersion);
+
+  await dispatchBuildVersion(page, "v99.0.0");
+  await expect(footer).toHaveText("v99.0.0");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("Detent updated to v99.0.0 —");
+  await expect(notice.locator("[data-detent-build-reload]")).toHaveText(
+    "Reload",
+  );
+});
+
+async function dispatchBuildVersion(page, version) {
+  await page.evaluate((liveVersion) => {
+    const footer = document.getElementById("detent-build-version");
+    if (!footer) {
+      throw new Error("Build version SSE elements not found");
+    }
+    const incoming = footer.cloneNode(true);
+    incoming.textContent = liveVersion;
+    incoming.setAttribute("title", liveVersion);
+    incoming.setAttribute("data-detent-build-version", liveVersion);
+    footer.dispatchEvent(
+      new CustomEvent("htmx:sseBeforeMessage", {
+        bubbles: true,
+        detail: { elt: footer, data: incoming.outerHTML },
+      }),
+    );
+  }, version);
+}
+
+test("reports page renders KPI figures and charts", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "reports-normal-window",
+    route: "/reports",
+    waitSelector: "#reports-kpis",
+    viewport: desktopViewport,
+  });
+
+  await expect(page.locator("#reports-kpis")).toBeVisible();
+  await expect(page.locator("#reports-spend")).toBeVisible();
+  await expect(page.locator("#reports-top-issues")).toBeVisible();
+  await expect(page.locator("#reports-efficiency")).toBeVisible();
+  await expect(page.locator("#reports-efficiency")).toContainText("Tokens / merged issue");
+  await expect(page.locator("#reports-efficiency")).toContainText("Baseline");
+  await assertNoDocumentOverflow(page);
+  await attachScreenshotEvidence(page, "reports.png", testInfo);
+});
+
+test("analytics page renders the scheduler log", async ({ page }, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "diagnostics-healthy",
+    route: "/analytics",
+    waitSelector: "#analytics-log",
+    viewport: desktopViewport,
+  });
+
+  await expect(page.locator("#analytics-summary")).toBeVisible();
+  await expect(page.locator("#analytics-log")).toBeVisible();
+  await assertNoDocumentOverflow(page);
+  await attachScreenshotEvidence(page, "analytics.png", testInfo);
+});
+
+test("settings page renders definition lists and preferences", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "settings-project-context",
+    route: "/settings",
+    waitSelector: "#settings-global",
+    viewport: desktopViewport,
+  });
+
+  await expect(page.locator("#settings-preferences")).toBeVisible();
+  await expect(page.locator("#settings-global")).toBeVisible();
+  await assertNoDocumentOverflow(page);
+  await attachScreenshotEvidence(page, "settings.png", testInfo);
+});
+
+test("settings links to the selected project workflow details", async ({
+  page,
+}) => {
+  const workflowURL =
+    "https://github.com/orgs/example-org/projects/4/workflows";
+  await page.context().route(workflowURL, async (route) => {
+    await route.fulfill({
+      contentType: "text/html",
+      body: "<title>Workflow details</title><main>Workflow details</main>",
+    });
+  });
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "settings-project-context",
+    route: "/projects/dogfood/configuration",
+    waitSelector: "#settings-project-dogfood",
+    viewport: desktopViewport,
+  });
+
+  const link = page.getByRole("link", {
+    name: "Open dogfood workflow details",
+  });
+  await expect(link).toHaveAttribute("href", workflowURL);
+  const [workflowPage] = await Promise.all([
+    page.waitForEvent("popup"),
+    link.click(),
+  ]);
+  await expect(workflowPage.getByText("Workflow details")).toBeVisible();
+  expect(workflowPage.url()).toBe(workflowURL);
+  await workflowPage.close();
+});
+
+test("density modes keep shell geometry stable", async ({ page }) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  for (const density of ["compact", "cozy", "comfy"]) {
+    await page.locator(`[data-density-choice="${density}"]`).click();
+    await expect(page.locator("html")).toHaveAttribute("data-density", density);
+    const spacing = await page.evaluate(() =>
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--spacing")
+        .trim(),
+    );
+    expect(spacing).toBe("4px");
+  }
+});
+
+test("light theme applies through the token cascade", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  await page.evaluate(() =>
+    document.documentElement.setAttribute("data-theme", "light"),
+  );
+  const background = await page.evaluate(
+    () => getComputedStyle(document.body).backgroundColor,
+  );
+  expect(background).toBe("rgb(247, 248, 250)");
+  await attachScreenshotEvidence(page, "board-light.png", testInfo);
+});
+
+test("onboarding project selection remains readable on narrow screens", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "onboarding-project-selection",
+    viewport: narrowViewport,
+  });
+
+  await expect(page.getByRole("heading", { name: "Pick project", exact: true })).toBeVisible();
+  await expect(page.getByLabel("ProjectV2 ID", { exact: true })).toHaveValue("example-org/detent-core");
+  await expect(page.getByLabel("Dispatch repository", { exact: true })).toHaveValue("example-org/detent-core");
+  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeInViewport();
+  await assertNoDocumentOverflow(page);
+  await attachScreenshotEvidence(
+    page,
+    "onboarding-project-selection.png",
+    testInfo,
+  );
+});
+
+async function openScenario(page, options) {
+  const scenario = screenshotManifest.scenarios.find(
+    (item) => item.id === options.scenario,
+  );
+  if (!scenario) {
+    throw new Error(`Unknown screenshots scenario: ${options.scenario}`);
+  }
+  const route = options.route || scenario.route;
+  const waitSelector = options.waitSelector || scenario.wait_selector;
+  await page.setViewportSize(options.viewport);
+  await page.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": options.scenario,
+  });
+  await page.goto(`${options.runtime.url}${route}`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator(waitSelector).waitFor({ state: "visible" });
+  await page.evaluate(() => document.fonts?.ready);
+}
+
+async function sidebarSequence(content) {
+  return content
+    .locator("[data-sidebar-nav-item], [data-sidebar-section]")
+    .evaluateAll((elements) =>
+      elements.map((element) => {
+        const nav = element.getAttribute("data-sidebar-nav-item");
+        if (nav) {
+          return `nav:${nav}`;
+        }
+        return `section:${element.getAttribute("data-sidebar-section")}`;
+      }),
+    );
+}
+
+async function waitForSnapshotWithoutSidebarMorph(page) {
+  const baseline = await page.evaluate(() => {
+    window.__detentSidebarNode = document.getElementById("app-sidebar-content");
+    const metrics = window.__detentSSEMetrics?.snapshot() || {};
+    return {
+      health: metrics["github-api-health"]?.swaps || 0,
+      sidebar: metrics["sidebar-v2"]?.swaps || 0,
+      snapshot: metrics.snapshot?.swaps || 0,
+    };
+  });
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () => window.__detentSSEMetrics?.snapshot()?.snapshot?.swaps || 0,
+        ),
+      { timeout: 15_000 },
+    )
+    .toBeGreaterThan(baseline.snapshot);
+  return page.evaluate((baseline) => {
+    const target = document.getElementById("app-sidebar-content");
+    const metrics = window.__detentSSEMetrics?.snapshot() || {};
+    return {
+      healthSwaps:
+        (metrics["github-api-health"]?.swaps || 0) - baseline.health,
+      preserved: target === window.__detentSidebarNode,
+      sidebarSwaps: (metrics["sidebar-v2"]?.swaps || 0) - baseline.sidebar,
+    };
+  }, baseline);
+}
+
+async function startLaneHiddenRecorder(page, laneID) {
+  await page.evaluate((laneID) => {
+    if (window.__detentLaneHiddenObserver) {
+      window.__detentLaneHiddenObserver.disconnect();
+    }
+    window.__detentLaneHiddenValues = [];
+    const snapshot = document.querySelector("#snapshot");
+    const record = (lane) => {
+      if (!lane) {
+        return;
+      }
+      window.__detentLaneHiddenValues.push(
+        lane.getAttribute("data-lane-hidden"),
+      );
+    };
+    record(document.querySelector(`[data-board-lane="${laneID}"]`));
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === "attributes") {
+          const lane =
+            mutation.target instanceof Element
+              ? mutation.target.closest(`[data-board-lane="${laneID}"]`)
+              : null;
+          record(lane);
+        }
+        if (mutation.type === "childList") {
+          for (const node of mutation.addedNodes) {
+            if (!(node instanceof Element)) {
+              continue;
+            }
+            const lane = node.matches(`[data-board-lane="${laneID}"]`)
+              ? node
+              : node.querySelector(`[data-board-lane="${laneID}"]`);
+            record(lane);
+          }
+        }
+      }
+    });
+    observer.observe(snapshot, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["data-lane-hidden"],
+    });
+    window.__detentLaneHiddenObserver = observer;
+  }, laneID);
+}
+
+async function laneHiddenValues(page) {
+  return page.evaluate(() => window.__detentLaneHiddenValues || []);
+}
+
+async function morphCurrentSnapshot(page, name) {
+  const incoming = await page.locator("#snapshot").evaluate(
+    (snapshot) => snapshot.innerHTML,
+  );
+  await morphSnapshot(page, name, incoming);
+}
+
+async function morphSnapshot(page, name, incoming) {
+  const routePath = `/__detent-runtime-identity-${name}`;
+  await page.route(`**${routePath}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: incoming,
+    });
+  });
+  await page.evaluate(
+    (path) =>
+      new Promise((resolve) => {
+        document.addEventListener("htmx:afterSettle", resolve, { once: true });
+        window.htmx.ajax("GET", path, {
+          target: "#snapshot",
+          swap: "morph:innerHTML",
+        });
+      }),
+    routePath,
+  );
+  await page.unroute(`**${routePath}`);
+}
+
+async function dragKanbanCardToLane(page, card, targetLane) {
+  const sourceBox = await card.boundingBox();
+  if (!sourceBox) {
+    throw new Error("Drag source has no bounding box");
+  }
+  await page.mouse.move(
+    sourceBox.x + sourceBox.width / 2,
+    sourceBox.y + sourceBox.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    sourceBox.x + sourceBox.width / 2 + 16,
+    sourceBox.y + sourceBox.height / 2 + 16,
+    { steps: 5 },
+  );
+  await expect(targetLane).toBeVisible();
+  const targetBox = await targetLane.boundingBox();
+  if (!targetBox) {
+    throw new Error("Drag target lane has no bounding box");
+  }
+  await page.mouse.move(
+    targetBox.x + targetBox.width / 2,
+    targetBox.y + Math.min(80, targetBox.height / 2),
+    { steps: 20 },
+  );
+  await page.mouse.up();
+}
+
+async function sseMorphSnapshot(page, incoming) {
+  await page.evaluate(
+    (snapshotHTML) =>
+      new Promise((resolve) => {
+        document.addEventListener("htmx:afterSettle", resolve, { once: true });
+        const target = document.querySelector("#snapshot");
+        const event = new CustomEvent("htmx:sseBeforeMessage", {
+          bubbles: true,
+          cancelable: true,
+          detail: { elt: target, data: snapshotHTML },
+        });
+        target.dispatchEvent(event);
+        if (!event.defaultPrevented) {
+          window.htmx.swap(
+            target,
+            snapshotHTML,
+            { swapStyle: target.getAttribute("hx-swap") || "innerHTML" },
+            { contextElement: target },
+          );
+        }
+      }),
+    incoming,
+  );
+}
+
+async function seedLongActivityHistory(activityPanel, eventCount) {
+  await activityPanel.evaluate((panel, count) => {
+    const stream = panel.querySelector("#board-activity-stream");
+    const fixture = stream?.cloneNode(true);
+    if (!stream || !fixture) {
+      throw new Error("Activity history fixture requires the activity stream");
+    }
+    fixture.removeAttribute("hx-ext");
+    fixture.removeAttribute("sse-connect");
+    window.htmx.remove(stream);
+    panel.append(fixture);
+    const scroll = fixture.querySelector("[data-activity-list-scroll]");
+    const list = scroll?.querySelector("[data-activity-list]");
+    const template = list?.querySelector("li");
+    if (!list || !template) {
+      throw new Error("Activity history fixture requires an existing event");
+    }
+    list.replaceChildren();
+    for (let index = 0; index < count; index += 1) {
+      const event = template.cloneNode(true);
+      event.id = `activity-long-history-${index}`;
+      const title = event.querySelector("p");
+      if (title) title.textContent = `Worker session cycle ${index + 1}`;
+      list.append(event);
+    }
+  }, eventCount);
+}
+
+async function seedMixedSessionLog(session) {
+  await session.evaluate((host) => {
+    let log = host.querySelector("[data-live-session-log]");
+    if (!log) {
+      log = document.createElement("div");
+      log.className =
+        "min-h-64 min-w-0 overflow-x-auto overflow-y-auto p-3 font-mono text-xs leading-relaxed text-text";
+      log.dataset.liveSessionLog = "";
+      host.replaceChildren(log);
+    }
+    log.innerHTML = `
+      <div class="mb-3 min-w-0 border-l-2 border-line pl-3" data-session-event="short">
+        <pre class="mt-1 min-w-max whitespace-pre text-text">package orchestrator</pre>
+      </div>
+      <div class="mb-3 min-w-0 border-l-2 border-line pl-3" data-session-event="long">
+        <pre class="mt-1 min-w-max whitespace-pre text-text">/Users/example/workspaces/detent/internal/orchestrator/session/stream/this-line-is-intentionally-long-enough-to-overflow-the-detail-sheet.go</pre>
+      </div>`;
+    log.scrollLeft = 80;
+    log.dispatchEvent(
+      new CustomEvent("htmx:afterSwap", {
+        bubbles: true,
+        detail: { target: log },
+      }),
+    );
+  });
+}
+
+async function assertSessionLogStartsAtColumnZero(session) {
+  const layout = await session.evaluate((host) => {
+    const log = host.querySelector("[data-live-session-log]");
+    const lines = Array.from(log.querySelectorAll("pre"));
+    return {
+      alignments: lines.map((line) => getComputedStyle(line).textAlign),
+      leftEdges: lines.map((line) => line.getBoundingClientRect().left),
+      scrollLeft: log.scrollLeft,
+    };
+  });
+  expect(layout.alignments).toEqual(["left", "left"]);
+  expect(layout.leftEdges[0]).toBeCloseTo(layout.leftEdges[1], 0);
+  expect(layout.scrollLeft).toBe(0);
+}
+
+async function attachScreenshotEvidence(page, name, testInfo) {
+  const evidenceDir = path.join(
+    process.cwd(),
+    "tmp",
+    "playwright-evidence",
+    testInfo.project.name,
+  );
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  const evidencePath = path.join(evidenceDir, name);
+  await page.screenshot({
+    path: evidencePath,
+    animations: "disabled",
+    caret: "hide",
+  });
+  await testInfo.attach(name, { path: evidencePath, contentType: "image/png" });
+}
+
+async function attachFailureEvidence(page, testInfo) {
+  const evidenceDir = path.join(
+    process.cwd(),
+    "tmp",
+    "playwright-evidence",
+    testInfo.project.name,
+  );
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  const baseName = artifactName(testInfo.title);
+  const htmlPath = path.join(evidenceDir, `${baseName}.html`);
+  const screenshotPath = path.join(evidenceDir, `${baseName}.png`);
+
+  try {
+    fs.writeFileSync(htmlPath, await page.content());
+    await testInfo.attach(`${baseName}.html`, {
+      path: htmlPath,
+      contentType: "text/html",
+    });
+  } catch (error) {
+    await testInfo.attach(`${baseName}-html-error.txt`, {
+      body: String(error),
+      contentType: "text/plain",
+    });
+  }
+
+  try {
+    await page.screenshot({
+      path: screenshotPath,
+      animations: "disabled",
+      caret: "hide",
+    });
+    await testInfo.attach(`${baseName}.png`, {
+      path: screenshotPath,
+      contentType: "image/png",
+    });
+  } catch (error) {
+    await testInfo.attach(`${baseName}-screenshot-error.txt`, {
+      body: String(error),
+      contentType: "text/plain",
+    });
+  }
+}
+
+function artifactName(title) {
+  return (
+    title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "failure"
+  );
+}
+
+async function assertNoDocumentOverflow(page) {
+  const overflow = await page.evaluate(() => {
+    const root = document.documentElement;
+    return root.scrollWidth - root.clientWidth;
+  });
+  expect(overflow).toBeLessThanOrEqual(1);
+}
