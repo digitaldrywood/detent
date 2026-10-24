@@ -22,17 +22,20 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 
 	t.Parallel()
 	for _, test := range []struct {
-		name           string
-		inheritedPause bool
-		unresolved     bool
-		alter          string
-		infrastructure bool
-		clean          bool
-		advanceTarget  bool
-		authorityLost  bool
-		unstaged       bool
-		untracked      bool
-		legacy         bool
+		name                string
+		inheritedPause      bool
+		unresolved          bool
+		alter               string
+		infrastructure      bool
+		clean               bool
+		advanceTarget       bool
+		authorityLost       bool
+		unstaged            bool
+		untracked           bool
+		legacy              bool
+		checkpoint          bool
+		checkpointRefusal   string
+		checkpointCommitted bool
 	}{
 		{name: "runner prepares unsigned conflict"},
 		{name: "inherited signed pause", inheritedPause: true},
@@ -48,6 +51,11 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 		{name: "executable todo", alter: "git-rebase-todo"},
 		{name: "assigned ref unavailable", infrastructure: true},
 		{name: "clean packed branch", clean: true},
+		{name: "restored dirty checkpoint rebases", clean: true, checkpoint: true},
+		{name: "restored dirty checkpoint pauses on conflict", checkpoint: true},
+		{name: "restored checkpoint retains work through an earlier conflict", checkpoint: true, checkpointCommitted: true},
+		{name: "restored dirty checkpoint retains source on authority loss", clean: true, checkpoint: true, checkpointRefusal: "authority"},
+		{name: "changed dirty checkpoint is not committed", clean: true, checkpoint: true, checkpointRefusal: "source"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -77,7 +85,28 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 				t.Fatal(err)
 			}
 			runGit(t, info.Path, "add", "README.md")
-			runGit(t, info.Path, "commit", "-m", "feature")
+			if !test.checkpoint || test.checkpointCommitted {
+				runGit(t, info.Path, "commit", "-m", "feature")
+			}
+			if test.checkpoint {
+				writeCheckpointFile(t, info.Path, "retained.txt", "staged work\n")
+				runGit(t, info.Path, "add", "retained.txt")
+				writeCheckpointFile(t, info.Path, "retained.txt", "latest uncommitted work\n")
+				checkpoint, changed, err := owner.PushCheckpointRef(t.Context(), info, issue, CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
+				if err != nil || !changed {
+					t.Fatalf("capture dirty checkpoint: changed=%v error=%v", changed, err)
+				}
+				runGit(t, source, "worktree", "remove", "--force", info.Path)
+				checkpoint.HeadSHA = ""
+				issue.Checkpoint = &checkpoint
+				info, err = backend.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if diff, err := owner.DiffStat(t.Context(), info, issue); err != nil || diff.IsEmpty() {
+					t.Fatalf("restored checkpoint is not dirty: %+v, %v", diff, err)
+				}
+			}
 			original := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 			runGit(t, source, "branch", "unrelated", original)
 			sibling, err := backend.Create(t.Context(), Issue{Identifier: "native#142"})
@@ -144,6 +173,34 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 				}
 				return
 			}
+			if test.checkpointRefusal != "" {
+				if test.checkpointRefusal == "source" {
+					writeCheckpointFile(t, info.Path, "README.md", "unverified source\n")
+				}
+				before, err := owner.RecoveryState(t.Context(), info, issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				indexPath := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "--git-path", "index"))
+				index := readFile(t, indexPath)
+				authorityErr := errors.New("execution lease lost")
+				checks := 0
+				prepared, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{}, func(ctx context.Context) error {
+					checks++
+					if test.checkpointRefusal == "authority" && checks > 1 {
+						return authorityErr
+					}
+					return ctx.Err()
+				})
+				if test.checkpointRefusal == "authority" && !errors.Is(err, authorityErr) || test.checkpointRefusal == "source" && (err != nil || prepared.Status != MergePrepareStatusDirty) {
+					t.Fatalf("unsafe checkpoint preparation: %+v, %v", prepared, err)
+				}
+				after, err := owner.RecoveryState(t.Context(), info, issue)
+				if err != nil || before.HeadSHA != after.HeadSHA || before.WorkspaceFingerprint != after.WorkspaceFingerprint || index != readFile(t, indexPath) {
+					t.Fatalf("refused checkpoint preparation changed source: before=%+v after=%+v error=%v", before, after, err)
+				}
+				return
+			}
 			prepared, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{}, func(ctx context.Context) error { return ctx.Err() })
 			wantStatus := MergePrepareStatusConflict
 			if test.clean {
@@ -151,6 +208,21 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 			}
 			if err != nil || prepared.BaseSHA != base || prepared.Status != wantStatus || !test.clean && (len(prepared.ConflictPaths) != 1 || prepared.ConflictPaths[0] != "README.md") {
 				t.Fatalf("prepare = %#v, %v", prepared, err)
+			}
+			if test.checkpoint {
+				issue.Checkpoint = nil
+				if test.clean {
+					runGit(t, info.Path, "merge-base", "--is-ancestor", base, "HEAD")
+				} else if paused, err := rebaseInProgress(t.Context(), info.Path); err != nil || !paused {
+					t.Fatalf("checkpoint conflict has no paused replay: paused=%v error=%v", paused, err)
+				}
+				got := runGit(t, info.Path, "show", info.Branch+":retained.txt")
+				if !test.checkpointCommitted {
+					got = readFile(t, filepath.Join(info.Path, "retained.txt"))
+				}
+				if got != "latest uncommitted work\n" {
+					t.Fatalf("checkpoint work lost: %q", got)
+				}
 			}
 			if !test.clean && !strings.Contains(readFile(t, filepath.Join(info.Path, "README.md")), "<<<<<<<") {
 				t.Fatal("fixture has no source conflict")
@@ -285,7 +357,11 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 					t.Fatalf("final baseline = %s, want selected integration base %s", finalBase, selectedBase)
 				}
 				diff, err := GitFileDiffs(t.Context(), info.Path, finalBase, 1<<20)
-				if err != nil || diff.BaseSHA != selectedBase || len(diff.Files) != 1 || diff.Files[0].Path != "README.md" {
+				wantFiles := 1
+				if test.checkpoint {
+					wantFiles++
+				}
+				if err != nil || diff.BaseSHA != selectedBase || len(diff.Files) != wantFiles || diff.Files[0].Path != "README.md" {
 					t.Fatalf("final baseline lost the owned resolution: %+v, %v", diff, err)
 				}
 				head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
@@ -301,6 +377,9 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 				}
 				if got := readFile(t, filepath.Join(info.Path, "README.md")); got != wantContent {
 					t.Fatalf("resolution = %q", got)
+				}
+				if test.checkpoint && readFile(t, filepath.Join(info.Path, "retained.txt")) != "latest uncommitted work\n" {
+					t.Fatal("final rebase lost retained checkpoint work")
 				}
 				if got := runGit(t, info.Path, "cat-file", "-p", head); strings.Contains(got, "gpgsig") {
 					t.Fatal("machine rebase invoked signing")
