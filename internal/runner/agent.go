@@ -4055,7 +4055,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	if err != nil {
 		runResult.FinalState = FinalStateFailed
 		return gate.ValidatorResult{}, errors.Join(
-			fmt.Errorf("parse validator result: %w", &validatorDecisionError{Err: err}),
+			fmt.Errorf("%w: parse validator result: %w", ErrValidatorInfrastructure, err),
 			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
 		)
 	}
@@ -4242,11 +4242,14 @@ func parseValidatorResult(output string) (gate.ValidatorResult, error) {
 func validatorJSONPayload(output string) (string, error) {
 	output = strings.TrimSpace(output)
 	start := strings.Index(output, "{")
-	end := strings.LastIndex(output, "}")
-	if start < 0 || end < start {
+	if start < 0 {
 		return "", errors.New("validator output did not contain a JSON object")
 	}
-	return output[start : end+1], nil
+	var payload json.RawMessage
+	if err := json.NewDecoder(strings.NewReader(output[start:])).Decode(&payload); err != nil {
+		return "", err
+	}
+	return string(payload), nil
 }
 
 func (r *Runner) reapWorkspace(ctx context.Context, issue connector.Issue) (WorkspaceReapResult, error) {
