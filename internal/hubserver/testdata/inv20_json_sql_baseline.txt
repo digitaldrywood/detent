@@ -14,7 +14,7 @@ internal/hubserver/change_quality.go 3
 internal/hubserver/changes.go 20
 internal/hubserver/chat_usage.go 2
 internal/hubserver/conversation_attachments.go 1
-internal/hubserver/conversation_coordinator_actions.go 3
+internal/hubserver/conversation_coordinator_actions.go 1
 internal/hubserver/conversation_coordinator_agent.go 2
 internal/hubserver/conversation_coordinator_tools.go 5
 internal/hubserver/conversation_preferences.go 1
@@ -64,7 +64,6 @@ internal/hubserver/native_board_page.go 7
 internal/hubserver/native_candidates.go 12
 internal/hubserver/native_dependency_reasons.go 2
 internal/hubserver/native_dispatch_wait.go 1
-internal/hubserver/native_duplicates.go 1
 internal/hubserver/native_issue_change.go 1
 internal/hubserver/native_issue_pages.go 2
 internal/hubserver/native_issues.go 13
