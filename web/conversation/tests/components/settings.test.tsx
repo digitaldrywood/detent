@@ -1699,6 +1699,8 @@ describe("organization settings pages", () => {
     renderSidebarNav("/settings/organization", client, null, true);
     await screen.findByRole("heading", { name: "Example team", level: 2 });
     await screen.findByText("You are the owner · 3 members · 2 projects");
+    expect(screen.getByText("Logo")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Choose organization logo" })).toBeTruthy();
     expect(screen.getByText("Organization ID")).toBeTruthy();
     await waitFor(() => expect((screen.getByRole("textbox", { name: "Organization slug" }) as HTMLInputElement).value).toBe("example-team"));
     expect(screen.getByText("Current")).toBeTruthy();
@@ -1814,6 +1816,8 @@ describe("organization settings pages", () => {
     renderSidebarNav("/settings/organization", { ...client, account: { ...account, actor: { ...account.actor, can_manage: false, role } } }, null, true);
     await screen.findByRole("heading", { name: "Example team", level: 2 });
     expect(screen.queryByRole("textbox", { name: "Organization name" })).toBeNull();
+    expect(screen.getByLabelText("Organization logo")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Choose organization logo" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Plan & usage" })).toBeNull();
     expect(screen.getByRole("button", { name: "Copy organization ID" })).toBeTruthy();

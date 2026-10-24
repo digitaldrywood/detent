@@ -5,6 +5,7 @@ import { createBrowserHistory, createMemoryHistory, createRootRoute, createRoute
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import "../../src/app/routes.account.screens.tsx";
+import { OrganizationLogoPickerRow } from "../../src/app/account/OrganizationLogoSettings.tsx";
 import { ProjectIconPickerRow } from "../../src/app/account/ProjectIconSettings.tsx";
 import { ProjectFavicon } from "../../src/components/ProjectFavicon.tsx";
 import { ProjectGlyph } from "../../src/app/components/ProjectGlyph.tsx";
@@ -387,5 +388,40 @@ describe("project icon picker", () => {
     render(<ClientContext.Provider value={{ account } as unknown as ConversationClient}><ProjectFavicon project={toEnvironmentProject(project)} /><ProjectGlyph projectId={project.id} projectName={project.name} /></ClientContext.Provider>);
     expect(screen.getAllByText("🧪")).toHaveLength(2);
     account.projects[0] = { ...accountFixture.projects[0]!, slug: "example-project" };
+  });
+});
+
+
+describe("organization logo picker", () => {
+  it.each([true, false])("shows the monogram and limits editing to managers (%s)", async (canManage) => {
+    render(<OrganizationLogoPickerRow name="Example organization" logo={null} canManage={canManage} onSave={vi.fn()} />);
+    expect(screen.getByText("Logo")).toBeTruthy();
+    expect(screen.getByText("EO")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Choose organization logo" }) !== null).toBe(canManage);
+    if (!canManage) expect(screen.getByLabelText("Organization logo")).toBeTruthy();
+  });
+
+  it("shows an uploaded logo, cancels removal, then saves removal only on Save", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<OrganizationLogoPickerRow name="Example organization" logo={{ url: "/organizations/org_example/api/v2/attachments/att_example", revision: "3" }} canManage onSave={onSave} />);
+    expect(screen.getByRole("img", { name: "Example organization logo" }).getAttribute("src")).toContain("att_example");
+    await user.click(screen.getByRole("button", { name: "Choose organization logo" }));
+    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.getByLabelText("Upload organization logo")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Remove logo" }));
+    expect(onSave).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "Choose organization logo" }));
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Remove logo" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave).toHaveBeenCalledWith(undefined, true);
+  });
+
+  it("keeps a saved logo read-only for non-managers", () => {
+    render(<OrganizationLogoPickerRow name="Example organization" logo={{ url: "/logo", revision: "2" }} canManage={false} onSave={vi.fn()} />);
+    expect(screen.getByRole("img", { name: "Example organization logo" })).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
   });
 });

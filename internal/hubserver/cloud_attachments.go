@@ -219,7 +219,7 @@ func scanCloudAttachment(row interface{ Scan(...any) error }) (attachment.Metada
 	return record, nil
 }
 
-const cloudAttachmentColumns = "id,project_id,uploader,name,content_type,size,sha256,width,height,created_at,coalesce(work_item_id,''),coalesce(comment_id,''),deleted_at"
+const cloudAttachmentColumns = "id,coalesce(project_id,''),uploader,name,content_type,size,sha256,width,height,created_at,coalesce(work_item_id,''),coalesce(comment_id,''),deleted_at"
 
 func (s *Service) getCloudAttachment(c echo.Context) error {
 	scope := nativeRequestScope(c)

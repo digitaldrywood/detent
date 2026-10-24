@@ -1,3 +1,5 @@
+import { OrganizationLogoSettings } from "./OrganizationLogoSettings.tsx";
+import { OrganizationImage } from "../components/OrganizationImage.tsx";
 import React from "react";
 import { CopyIcon, PlusIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
@@ -43,7 +45,9 @@ import { useMutation, useResource } from "./useResource.ts";
 
 function OrganizationMark({
   name,
+  url,
 }: {
+  readonly url?: string | undefined;
   readonly name: string;
 }): React.ReactElement {
   const initials = name
@@ -54,12 +58,12 @@ function OrganizationMark({
     .join("")
     .toUpperCase();
   return (
-    <span
+    <OrganizationImage name={name} url={url} className="size-10" fallback={<span
       aria-hidden="true"
       className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-sm font-semibold text-primary"
     >
       {initials}
-    </span>
+    </span>} />
   );
 }
 
@@ -228,7 +232,9 @@ export function OrganizationOverviewRoute(): React.ReactElement {
   const canCreate = sharedEntry && creation.value?.can_create === true;
   const sharedListing = useSharedOrganizations();
   const shared = sharedListing.error ? [] : sharedListing.value;
-  const organizations = shared ?? bootstrap?.organizations ?? [];
+  const organizations = shared
+    ? shared.map((item) => ({ ...item, logoUrl: item.logo_url }))
+    : (bootstrap?.organizations ?? []).map((item) => ({ ...item, logoUrl: item.logo?.url }));
   const organization = bootstrap?.organization;
   const [name, setName] = React.useState(organization?.name ?? "");
   const [creating, setCreating] = React.useState(false);
@@ -257,14 +263,14 @@ export function OrganizationOverviewRoute(): React.ReactElement {
   const choices =
     organization && !organizations.some((item) => item.id === organization.id)
       ? [
-          { ...organization, current: true, role: bootstrap?.actor.role },
+          { ...organization, logoUrl: organization.logo?.url, current: true, role: bootstrap?.actor.role },
           ...organizations,
         ]
       : organizations;
   return (
     <SettingsPageContainer>
       <div className="flex items-center gap-3 px-3 sm:px-4">
-        <OrganizationMark name={organization?.name ?? "Organization"} />
+        <OrganizationMark name={organization?.name ?? "Organization"} url={organization?.logo?.url} />
         <div className="min-w-0">
           <h2 className="break-words text-xl font-semibold tracking-tight">
             {organization?.name ?? "Organization"}
@@ -292,6 +298,7 @@ export function OrganizationOverviewRoute(): React.ReactElement {
       ) : null}
       {organization ? (
         <SettingsSection title="Organization">
+          <OrganizationLogoSettings name={organization.name} logo={organization.logo ?? null} canManage={bootstrap?.actor.can_manage ?? false} />
           <SettingsRow
             title="Name"
             description="Shown in the sidebar, invitations and emails."
@@ -405,6 +412,7 @@ export function OrganizationOverviewRoute(): React.ReactElement {
             title={
               <span className="flex items-center gap-3">
                 <OrganizationMark
+                  url={item.id === organization?.id ? organization.logo?.url : item.logoUrl}
                   name={
                     item.id === organization?.id ? organization.name : item.name
                   }

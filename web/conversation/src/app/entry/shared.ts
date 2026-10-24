@@ -7,6 +7,7 @@ import { useResource } from "../account/useResource.ts";
 import { makeEntryApi } from "./api.ts";
 
 export interface SharedOrganization {
+  readonly logo_url?: string | undefined;
   readonly id: string;
   readonly name: string;
   readonly url: string;

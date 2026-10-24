@@ -123,6 +123,28 @@ through Cloud's shared entry. The opaque link opts out of that issue without
 requiring a session and is safe to repeat. The shared entry forwards the token
 through the signed service boundary; it does not read or change issue content.
 
+## Organization logos
+
+`GET /api/v2/organizations/:organization/logo` returns the organization's logo
+`revision` (a decimal string), plus `image_key`, `image_sha256` and an authenticated
+`url` when a logo is set. Organization lists and bootstrap payloads include
+`logo`; Cloud entry's chooser returns an authenticated `logo_url` resolver.
+
+`PUT /api/v2/organizations/:organization/logo` requires organization manage
+permission, `expected_revision`, and `idempotency_key`. Send `content_base64` to
+upload an image, or `remove: true` to restore the generated monogram. The response
+is the updated logo. A stale revision returns `revision_conflict`. The MCP tool
+`set_organization_logo` takes `organization_id`, the same content or remove flag,
+`expected_revision` and `request_id`; project-scoped credentials cannot manage
+organization logos.
+
+Organization logos use the project icon validator, normalized PNG storage,
+attachment proxy, storage accounting and deletion owner described below.
+Their attachments belong to the organization without a project and remain
+retained while current. Replacing or removing a logo tombstones its attachment;
+the existing deletion owner removes the stored bytes and releases their usage.
+Only organization members can read logos through the authenticated proxy.
+
 ## Project icons
 
 `PUT /api/v2/organizations/:organization/projects/:project/icon` uses the same
