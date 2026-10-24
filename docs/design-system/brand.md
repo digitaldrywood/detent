@@ -12,6 +12,7 @@ The Detent mark is a heavy "D" with a counter and a dot, drawn on a 100×100 vie
 | [`docs/brand/detent-mark-mono.svg`](../brand/detent-mark-mono.svg) | `currentColor` | Single-colour placements outside React |
 | [`docs/brand/detent-mark.svg`](../brand/detent-mark.svg) | Fixed `#3730A3` (indigo) | Contexts without a theme: documentation, README (88px), email |
 | `static/img/detent-mark.svg`, `static/img/detent-mark-mono.svg` | Byte-identical copies of the two files above | Templ pages: favicon and the invitation page header |
+| `static/img/detent-mark.png` | Fixed `#3730A3`, transparent 96px raster of `docs/brand/detent-mark.svg` | Embedded CID image in the shared email layout; regenerate with `convert -background none docs/brand/detent-mark.svg -resize 96x96 static/img/detent-mark.png` |
 | `web/conversation/public/favicon.svg` | `#3730A3` mark on a white tile with a 20-unit corner radius | Cloud client favicon (SVG) |
 | `web/conversation/public/favicon-32.png` | 32×32 raster | Cloud client favicon fallback |
 | `web/conversation/public/apple-touch-icon.png` | 180×180 raster | iOS home-screen icon |
