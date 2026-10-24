@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/policy"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -269,12 +270,13 @@ func (o *Orchestrator) recoverOrphanedAgentSessions(ctx context.Context, state *
 	}
 	queued := make(map[string]struct{}, len(sessions))
 	for _, session := range sessions {
-		if session.WorkAttemptID != 0 || o.cfg.Policy.ID != "" {
-			attempt, err := o.workAttempts.WorkAttempt(ctx, session.WorkAttemptID)
-			if err != nil || o.checkAttemptPolicy(attempt) != nil {
-				o.logger.Warn("policy_mismatch: orphaned session requires its approved policy", "work_attempt_id", session.WorkAttemptID)
-				continue
-			}
+		attemptRecord, err := o.workAttempts.WorkAttempt(ctx, session.WorkAttemptID)
+		if err != nil {
+			continue
+		}
+		pinnedPolicy, known := persistedAttemptPolicy(attemptRecord)
+		if !known {
+			continue
 		}
 		issue, ok := issuesByID[session.IssueID]
 		if !ok || !o.orphanResumeEligible(issue, session, now) {
@@ -297,6 +299,7 @@ func (o *Orchestrator) recoverOrphanedAgentSessions(ctx context.Context, state *
 		resumeState := session.ResumeState
 		resumeState.Orphaned = true
 		state.Retry[issue.ID] = Retry{
+			Policy:      pinnedPolicy,
 			Issue:       issue,
 			Attempt:     attempt,
 			DueAt:       now,
@@ -345,13 +348,14 @@ func (o *Orchestrator) startDurableWorkAttempt(
 	workerHost string,
 	runMode string,
 	completionSourceStart completionSourceStartRecord,
+	attemptPolicy policy.Descriptor,
 ) (int64, bool) {
 	if o == nil || o.workAttempts == nil {
 		return 0, true
 	}
 	metadata := map[string]any{"run_mode": strings.TrimSpace(runMode)}
-	if o.cfg.Policy.ID != "" {
-		metadata["policy"] = o.cfg.Policy
+	if attemptPolicy.ID != "" {
+		metadata["policy"] = attemptPolicy
 	}
 	if strings.TrimSpace(runMode) == runpkg.RunModeImplement || completionSourceStart.PRDiffFingerprint != "" {
 		metadata[completionSourceStartMetadataKey] = completionSourceStart

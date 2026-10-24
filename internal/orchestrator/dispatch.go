@@ -249,6 +249,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			rescheduled.RecoveryAttemptID = retry.RecoveryAttemptID
 			rescheduled.RetryMode = retry.RetryMode
 			rescheduled.ResumeState = retry.ResumeState
+			rescheduled.Policy = retry.Policy
 			rescheduled.MergePrecheck = cloneMergePrecheck(retry.MergePrecheck)
 			rescheduled.ForgeUnavailable = retry.ForgeUnavailable
 			rescheduled.ForgeHost = retry.ForgeHost
@@ -858,7 +859,8 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		completionSourceStart.PRDiffFingerprint = o.implementCompletionDiffFingerprint(runCtx, issue)
 		completionSourceStart.PRMergeableState = issue.PullRequest.MergeableState
 	}
-	workAttemptID, ok := o.startDurableWorkAttempt(runCtx, state, issue, attempt, now, workerHost, runMode, completionSourceStart)
+	attemptPolicy := o.dispatchAttemptPolicy(queuedRetry, workerHost)
+	workAttemptID, ok := o.startDurableWorkAttempt(runCtx, state, issue, attempt, now, workerHost, runMode, completionSourceStart, attemptPolicy)
 	if ok {
 		if state.localAdmitted == nil {
 			state.localAdmitted = map[string]struct{}{}
@@ -1012,7 +1014,8 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		Issue:                  issue,
 		Attempt:                attempt,
 		WorkAttemptID:          workAttemptID,
-		Policy:                 o.cfg.Policy,
+		Policy:                 attemptPolicy,
+		ClaimPolicy:            o.cfg.Policy,
 		Generation:             generation,
 		Mode:                   runMode,
 		DispatchSourceState:    dispatchStartSourceState,
@@ -1050,7 +1053,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 
 	reservation := reserveMergeCandidate(state, issue, now)
 	request := RunRequest{
-		Policy:              o.cfg.Policy,
+		Policy:              attemptPolicy,
 		ProjectID:           strings.TrimSpace(o.cfg.Project.ID),
 		Issue:               issue,
 		Attempt:             attempt,

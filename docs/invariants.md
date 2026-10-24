@@ -313,6 +313,9 @@ in `internal/runner`, `TestNativeExecutionSettlesFinishedRun` in
 `internal/hubclient`, `TestLocalGitLandChangeViaGitHub` in `internal/workspace`,
 and `TestNativeChangeRunCompletion` in `internal/orchestrator` enforce effect
 reconciliation and dispatch equivalence after removing stored hold judgments.
+`TestAttemptRecoveryAfterPolicyChange` and
+`TestOrphanRecoveryRetainsPolicyAcrossHubTransition` in `internal/orchestrator`
+preserve retry availability and pinned continuation identity after policy changes.
 `TestNativeDerivedHoldDispatchEquivalence` and
 `TestReviewConversationHistoryDoesNotVetoLanding` in `internal/hubserver`,
 `TestDerivedHoldDispatchEquivalence` in `internal/orchestrator`, and the retired

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,8 +109,7 @@ func TestCandidateStartupDuringIdentityTransaction(t *testing.T) {
 		{name: "unsupported config", invalidConfig: true, refusal: "apiVersion"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-			defer cancel()
+			ctx := t.Context()
 			root := t.TempDir()
 			t.Setenv("DETENT_TEST_STARTUP_AUTHORITY", root)
 			path := filepath.Join(root, "private", "identity.json")
@@ -177,19 +175,23 @@ func TestCandidateStartupDuringIdentityTransaction(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			done := make(chan error, 1)
+			done := make(chan struct{})
+			var refreshErr error
 			go func() {
-				_, err := hubclient.RefreshRunner(ctx, path, tt.rotate)
-				done <- err
+				_, refreshErr = hubclient.RefreshRunner(ctx, path, tt.rotate)
+				close(done)
 			}()
 			defer func() {
 				unblock.Do(func() { close(release) })
-				if err := <-done; err != nil {
-					t.Errorf("live identity transaction failed: %v", err)
+				<-done
+				if refreshErr != nil {
+					t.Errorf("live identity transaction failed: %v", refreshErr)
 				}
 			}()
 			select {
 			case <-entered:
+			case <-done:
+				t.Fatalf("live identity transaction finished before candidate startup: %v", refreshErr)
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}

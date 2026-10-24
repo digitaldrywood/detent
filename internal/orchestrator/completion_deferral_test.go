@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/policy"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -169,9 +170,13 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 		restoreError       error
 		restoreTransient   bool
 		wantRestores       int
+		resumedPolicy      bool
+		restartPolicy      bool
 		longRetry          bool
 		expired            bool
 	}{
+		{name: "native orphan continuation retains claim policy", nativeAuthority: true, resumedPolicy: true, wantRestores: 1, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
+		{name: "native orphan continuation after another policy change", nativeAuthority: true, resumedPolicy: true, restartPolicy: true, wantRestores: 1, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
 		{name: "native final checkpoint authority survives restart", nativeAuthority: true, wantRestores: 1, recoveredState: "In Progress", retryCount: 2, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
 		{name: "expired completion cannot publish", expired: true},
 		{name: "non-native renewal outlasts original lease", longRetry: true, recoveredState: "In Progress", retryCount: 2, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
@@ -245,6 +250,20 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			initialOrch.localIntakeDisabled.Store(tt.intakeOff)
 			initialState := newState(cfg)
 			initialState.Running[issue.ID] = completionDeferralRunning(issue, attemptID, now)
+			var claimPolicy, continuationPolicy policy.Descriptor
+			if tt.resumedPolicy {
+				claimPolicy = orchestratorTestAuthoredPolicy("claim workflow")
+				running := initialState.Running[issue.ID]
+				continuationPolicy = orchestratorTestAuthoredPolicy("original workflow")
+				running.Policy = continuationPolicy
+				running.ClaimPolicy = claimPolicy
+				initialState.Running[issue.ID] = running
+				initialOrch.cfg.Policy = claimPolicy
+				cfg.Policy = claimPolicy
+				if tt.restartPolicy {
+					cfg.Policy = orchestratorTestAuthoredPolicy("restart workflow")
+				}
+			}
 			initialState.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
 			event := completionDeferralEvent(issue, attemptID, now)
 			if tt.nativeAuthority {
@@ -292,7 +311,7 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			restartedOrch := Orchestrator{cfg: cfg, connector: trackerOwner, workAttempts: restartedStore, now: func() time.Time { return restartAt }}
 			var restoredAuthority *completionRestartScheduling
 			if tt.nativeAuthority {
-				restoredAuthority = &completionRestartScheduling{hubSchedulingSource: &hubSchedulingSource{}, restoreError: tt.restoreError, restoreTransient: tt.restoreTransient}
+				restoredAuthority = &completionRestartScheduling{hubSchedulingSource: &hubSchedulingSource{}, restoreError: tt.restoreError, restoreTransient: tt.restoreTransient, policy: claimPolicy}
 				restoredAuthority.execution = &completionRestartExecution{owner: restoredAuthority}
 				restartedOrch.scheduling = restoredAuthority
 			}
@@ -311,6 +330,12 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 
 			if _, ok := restartedState.deferredCompletions[issue.ID]; !ok {
 				t.Fatalf("deferred completion missing after restart: %#v", restartedState.deferredCompletions)
+			}
+			if tt.resumedPolicy {
+				record := restartedState.deferredCompletions[issue.ID]
+				if record.Running.Policy.ID != continuationPolicy.ID || record.completion().Request.Policy.ID != record.Running.Policy.ID {
+					t.Fatal("restored completion lost the continuation policy")
+				}
 			}
 			if restartedState.UnsettledWork() != 1 || len(restartedState.Snapshot(restartAt).Running) != 0 {
 				t.Fatal("restored completion must remain unsettled without running a provider")
@@ -580,6 +605,7 @@ type completionRestartScheduling struct {
 	renewals         int
 	restoreError     error
 	restoreTransient bool
+	policy           policy.Descriptor
 }
 
 func (s *completionRestartScheduling) RenewClaim(_ context.Context, _ string, _ time.Time) (Claimed, error) {
@@ -590,8 +616,11 @@ func (s *completionRestartScheduling) RenewClaim(_ context.Context, _ string, _ 
 	return Claimed{}, nil
 }
 
-func (s *completionRestartScheduling) RestoreCompletion(_ context.Context, _ SchedulingRequest, issue connector.Issue, saved json.RawMessage) (Claimed, error) {
+func (s *completionRestartScheduling) RestoreCompletion(_ context.Context, request SchedulingRequest, issue connector.Issue, saved json.RawMessage) (Claimed, error) {
 	s.restores++
+	if s.policy.ID != "" && request.Policy.ID != s.policy.ID {
+		return Claimed{}, runpkg.ErrExecutionAuthorityUnavailable
+	}
 	if s.restoreError != nil {
 		return Claimed{}, s.restoreError
 	}

@@ -92,9 +92,6 @@ func (o *Orchestrator) prepareWorkAttemptRetryIntent(ctx context.Context, issue 
 		}
 		return workAttemptRetryIntent{}, recoveryError(WorkAttemptRecoveryUnavailable, "configuration validation is unavailable; retry after service recovery: "+err.Error())
 	}
-	if receipt.PolicyMismatch != "" {
-		return workAttemptRetryIntent{}, recoveryError(WorkAttemptRecoveryUnsupportedState, receipt.PolicyMismatch)
-	}
 	active, err := o.workAttempts.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: receipt.Attempt.ProjectID})
 	if err != nil {
 		return workAttemptRetryIntent{}, err
@@ -201,9 +198,6 @@ func (o *Orchestrator) applyWorkAttemptRetryIntent(ctx context.Context, state *S
 
 func (o *Orchestrator) currentWorkAttemptRecoveryBlockers(ctx context.Context, state *State, issue connector.Issue, receipt WorkAttemptRecoveryResponse, now time.Time) []string {
 	var blockers []string
-	if receipt.PolicyMismatch != "" {
-		blockers = append(blockers, receipt.PolicyMismatch)
-	}
 	if blocked, held := state.Blocked[issue.ID]; held {
 		reason := blocked.Reason
 		if reason == "operator_recovery_pending" {

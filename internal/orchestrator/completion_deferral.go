@@ -196,6 +196,7 @@ func (r deferredCompletion) completion() runpkg.Completion {
 	event := runpkg.Completion{
 		IssueID: r.Running.Issue.ID,
 		Request: runpkg.RunRequest{
+			Policy:              r.Running.Policy,
 			ProjectID:           r.Request.ProjectID,
 			Issue:               cloneIssue(r.Request.Issue),
 			Attempt:             r.Request.Attempt,
@@ -685,7 +686,10 @@ func (o *Orchestrator) restoreDeferredExecution(ctx context.Context, record defe
 	if source, ok := o.scheduling.(interface {
 		RestoreCompletion(context.Context, SchedulingRequest, connector.Issue, json.RawMessage) (Claimed, error)
 	}); ok {
-		policy := record.Running.Policy
+		policy := record.Running.ClaimPolicy
+		if policy.ID == "" {
+			policy = record.Running.Policy
+		}
 		if policy.ID == "" {
 			policy = o.cfg.Policy
 		}

@@ -24,7 +24,8 @@ func TestRestartResumeDispatchCompletionIdentity(t *testing.T) {
 			issue := orphanRecoveryIssue()
 			issue.State = lane
 			session := orphanRecoverySession(now)
-			attempts := &orphanRecoveryAttemptStore{orphans: []store.OrphanedAgentSession{session}}
+			attempts := &orphanRecoveryAttemptStore{metadata: runningWorkAttemptMetadataJSON(Running{Policy: orchestratorTestPolicy()}, nil),
+				orphans: []store.OrphanedAgentSession{session}}
 			attempts.nextID = 2200
 			runner := newWorkerHostRunner()
 			orch, err := New(Config{
@@ -85,7 +86,8 @@ func TestRecoverDurableWorkAttemptsQueuesOwnedOrphanedSessionResume(t *testing.T
 	issue.Fields["Detent Lease"] = formatClaimTime(now.Add(-time.Minute))
 	tracker := hydratingDispatchConnector{issue: issue}
 	attempts := &orphanRecoveryAttemptStore{
-		orphans: []store.OrphanedAgentSession{orphanRecoverySession(now)},
+		metadata: runningWorkAttemptMetadataJSON(Running{Policy: orchestratorTestPolicy()}, nil),
+		orphans:  []store.OrphanedAgentSession{orphanRecoverySession(now)},
 	}
 	orch, err := New(Config{
 		Project:                scheduler.ProjectCandidate{ID: "detent"},
@@ -132,7 +134,8 @@ func TestRecoverDurableWorkAttemptsSkipsResumeWhenDisabled(t *testing.T) {
 	now := time.Date(2026, 7, 10, 17, 10, 0, 0, time.UTC)
 	issue := orphanRecoveryIssue()
 	attempts := &orphanRecoveryAttemptStore{
-		orphans: []store.OrphanedAgentSession{orphanRecoverySession(now)},
+		metadata: runningWorkAttemptMetadataJSON(Running{Policy: orchestratorTestPolicy()}, nil),
+		orphans:  []store.OrphanedAgentSession{orphanRecoverySession(now)},
 	}
 	orch, err := New(Config{
 		Project:                scheduler.ProjectCandidate{ID: "detent"},
@@ -165,7 +168,8 @@ func TestRecoverDurableWorkAttemptsDoesNotResumeAnotherOwnersClaim(t *testing.T)
 	issue.Assignees = []string{"another-instance"}
 	issue.Fields["Detent Lease"] = formatClaimTime(now.Add(-time.Minute))
 	attempts := &orphanRecoveryAttemptStore{
-		orphans: []store.OrphanedAgentSession{orphanRecoverySession(now)},
+		metadata: runningWorkAttemptMetadataJSON(Running{Policy: orchestratorTestPolicy()}, nil),
+		orphans:  []store.OrphanedAgentSession{orphanRecoverySession(now)},
 	}
 	orch, err := New(Config{
 		Project:                scheduler.ProjectCandidate{ID: "detent"},
@@ -204,7 +208,8 @@ func TestRecoverDurableWorkAttemptsDoesNotResumeExpiredClaim(t *testing.T) {
 	issue.Assignees = []string{"detent-bot"}
 	issue.Fields["Detent Lease"] = formatClaimTime(now.Add(-11 * time.Minute))
 	attempts := &orphanRecoveryAttemptStore{
-		orphans: []store.OrphanedAgentSession{orphanRecoverySession(now)},
+		metadata: runningWorkAttemptMetadataJSON(Running{Policy: orchestratorTestPolicy()}, nil),
+		orphans:  []store.OrphanedAgentSession{orphanRecoverySession(now)},
 	}
 	orch, err := New(Config{
 		Project:                scheduler.ProjectCandidate{ID: "detent"},
@@ -239,7 +244,8 @@ func TestRecoverDurableWorkAttemptsDoesNotResumeOutsideActiveLane(t *testing.T) 
 	issue := orphanRecoveryIssue()
 	issue.State = "Blocked"
 	attempts := &orphanRecoveryAttemptStore{
-		orphans: []store.OrphanedAgentSession{orphanRecoverySession(now)},
+		metadata: runningWorkAttemptMetadataJSON(Running{Policy: orchestratorTestPolicy()}, nil),
+		orphans:  []store.OrphanedAgentSession{orphanRecoverySession(now)},
 	}
 	orch, err := New(Config{
 		Project:                scheduler.ProjectCandidate{ID: "detent"},

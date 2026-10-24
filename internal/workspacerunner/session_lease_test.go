@@ -288,12 +288,21 @@ func TestSessionStopsWhenTheHubLeaseIsGone(t *testing.T) {
 	go func() { finished <- session.Run(ctx) }()
 	select {
 	case err := <-finished:
-		// The first heartbeat is the ready report, which is refused, so Run
-		// reports the stale lease rather than pretending it opened.
-		if !errors.Is(err, hubclient.ErrStaleWorkspace) {
-			t.Fatalf("the session returned %v, want a stale workspace", err)
+		if err != nil && !errors.Is(err, hubclient.ErrStaleWorkspace) && !errors.Is(err, context.Canceled) {
+			t.Fatalf("the session returned %v after lease loss", err)
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("the session kept serving a workspace whose lease the hub refused")
+	}
+	if _, lapsed, _ := hub.report(); !lapsed {
+		t.Fatal("the session stopped without the hub refusing its lease")
+	}
+	if !worktree.wasReleased() {
+		t.Fatal("the session did not release the worktree after lease loss")
+	}
+	select {
+	case <-hub.sockets:
+		t.Fatal("the session opened a relay after lease loss")
+	default:
 	}
 }

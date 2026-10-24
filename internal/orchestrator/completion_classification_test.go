@@ -277,7 +277,7 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 			start := newCompletionSourceStartRecord(before, mode)
 			start.PRDiffFingerprint = before.PullRequest.DiffFingerprint
 			start.PRMergeableState = before.PullRequest.MergeableState
-			id, ok := orch.startDurableWorkAttempt(t.Context(), &state, before, 1, time.Now(), "local", mode, start)
+			id, ok := orch.startDurableWorkAttempt(t.Context(), &state, before, 1, time.Now(), "local", mode, start, orch.cfg.Policy)
 			if !ok {
 				t.Fatal("start attempt failed")
 			}
