@@ -55,7 +55,9 @@ func TestRenderActionURL(t *testing.T) {
 	t.Parallel()
 	for _, target := range []string{"javascript:alert(1)", `https://example.test/?value=<script>&quoted="yes"`} {
 		t.Run(target, func(t *testing.T) {
-			message, err := Render(Content{ActionURL: target})
+			message, err := Render(Content{ActionURL: target, Issue: &Issue{
+				URL: target, UnsubscribeURL: target, Verify: true, Notices: []Notice{{CommentURL: target}},
+			}})
 			if err != nil {
 				t.Fatal(err)
 			}
