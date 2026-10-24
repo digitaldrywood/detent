@@ -477,6 +477,7 @@ func TestGitHubWebhookSourceOrderingConverges(t *testing.T) {
 	t.Parallel()
 
 	older := completeIssueWebhookPayload(t, "Older title", "2026-09-02T11:00:00Z")
+	older = strings.ReplaceAll(strings.ReplaceAll(older, `"feature"`, `"removed-label"`), `"example-user"`, `"removed-user"`)
 	newer := completeIssueWebhookPayload(t, "Newer title", "2026-09-02T12:00:00Z")
 	tests := []struct {
 		name     string
@@ -500,6 +501,25 @@ func TestGitHubWebhookSourceOrderingConverges(t *testing.T) {
 			got := readIssueProjectionSnapshot(t, service)
 			if got.Title != "Newer title" || got.AuthorID != "octocat" || got.SourceUpdatedAt != "2026-09-02T12:00:00.000000000Z" {
 				t.Fatalf("projection = %#v, want newer source", got)
+			}
+			rows, err := service.database.reader.QueryContext(t.Context(), "SELECT kind || ':' || value FROM issue_filter_values ORDER BY kind,value")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var values []string
+			for rows.Next() {
+				var value string
+				if err := rows.Scan(&value); err != nil {
+					t.Fatal(err)
+				}
+				values = append(values, value)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Join(values, ","); got != "assignee:example-user,label:detent:todo,label:feature" {
+				t.Fatalf("filter values=%s", got)
 			}
 			if index == 0 {
 				want = got

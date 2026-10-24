@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -85,27 +86,46 @@ WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID
 }
 
 func nativeCandidateIDs(ctx context.Context, tx nativeQueryer, query claimCandidateQuery, repositoryIDs []tracker.RepositoryID, repositories, states, authors, assignees, included, excluded []string) ([]tracker.WorkItemID, error) {
+	projectRanks, err := nativeCandidateProjectRanks(ctx, tx, query.NativeScope.credential.ID)
+	if err != nil {
+		return nil, err
+	}
 	args := []any{}
 	bind := func(value any) string {
 		args = append(args, value)
 		return "?"
 	}
-	var encodingErr error
-	jsonList := func(value any) string {
-		raw, err := marshalNative(value)
-		if err != nil {
-			encodingErr = err
+	projectRank := "p.scheduling_rank"
+	if len(projectRanks) > 0 {
+		projects := make([]string, 0, len(projectRanks))
+		for project := range projectRanks {
+			projects = append(projects, string(project))
 		}
-		return bind(raw)
+		sort.Strings(projects)
+		var rank strings.Builder
+		rank.WriteString("CASE p.id")
+		for _, project := range projects {
+			rank.WriteString(" WHEN " + bind(project) + " THEN " + bind(projectRanks[tracker.ProjectID(project)]))
+		}
+		rank.WriteString(" ELSE p.scheduling_rank END")
+		projectRank = rank.String()
+	}
+	now := query.AvailableAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	bindList := func(values []any) string {
+		args = append(args, values...)
+		return placeholders(len(values))
 	}
 	statement := strings.Join([]string{`WITH candidates AS NOT MATERIALIZED (
-SELECT i.id,
+SELECT i.id, `, projectRank, ` AS project_rank,
  CASE WHEN q.priority_override BETWEEN 0 AND 3 THEN q.priority_override + 1 ELSE 5 END AS priority,
  substr(COALESCE(i.native_created_at, i.created_at), 1, 19) || '.' || substr(CASE
   WHEN substr(COALESCE(i.native_created_at, i.created_at), 20, 1) = '.'
   THEN substr(COALESCE(i.native_created_at, i.created_at), 21, length(COALESCE(i.native_created_at, i.created_at)) - 21) || '000000000'
   ELSE '000000000' END, 1, 9) AS created,
- COALESCE((SELECT json_extract(routing_settings_json, '$.project_ranks.' || p.id) FROM runner_identities WHERE token_id = `, bind(query.NativeScope.credential.ID), `), p.scheduling_rank) AS project_rank,
+ CASE WHEN p.aging_enabled = 1 THEN -min(3, max(0, CAST(julianday(`, bind(formatHubTime(now)), `) - julianday(COALESCE(i.dispatch_wait_since, `, bind(formatHubTime(now)), `)) AS INTEGER))) ELSE 0 END AS aging_boost,
  CASE WHEN lower(trim(ws.detent_state)) = 'merging' THEN 0 ELSE 1 END AS landing,
  i.project_id || '#' || i.number AS identifier
 FROM issues i
@@ -148,14 +168,14 @@ WHERE i.organization_id = `,
 		statement += ` AND i.id = ` + bind(query.WorkItemID)
 	}
 	if len(query.OnlyIDs) > 0 {
-		statement += ` AND i.id IN (SELECT value FROM json_each(` + jsonList(query.OnlyIDs) + `))`
+		statement += ` AND i.id IN (` + bindList(nativeCandidateValues(query.OnlyIDs)) + `)`
 	}
 	if len(query.ProviderCandidates) > 0 {
-		ids := make([]tracker.NativeWorkItemID, 0, len(query.ProviderCandidates))
+		ids := make([]any, 0, len(query.ProviderCandidates))
 		for _, candidate := range query.ProviderCandidates {
 			ids = append(ids, candidate.WorkItemID)
 		}
-		statement += ` AND i.native_id IN (SELECT value FROM json_each(` + jsonList(ids) + `))`
+		statement += ` AND i.native_id IN (` + bindList(ids) + `)`
 	}
 	var filters strings.Builder
 	for _, filter := range []struct {
@@ -166,29 +186,28 @@ WHERE i.organization_id = `,
 		{"lower(trim(r.github_owner)) || '/' || lower(trim(r.github_name))", repositories},
 	} {
 		if len(filter.values) > 0 {
-			filters.WriteString(` AND ` + filter.expression + ` IN (SELECT value FROM json_each(` + jsonList(filter.values) + `))`)
+			filters.WriteString(` AND ` + filter.expression + ` IN (` + bindList(nativeCandidateValues(filter.values)) + `)`)
 		}
 	}
 	statement += filters.String()
 	if len(repositoryIDs) > 0 {
-		statement += ` AND i.repository_id IN (SELECT value FROM json_each(` + jsonList(repositoryIDs) + `))`
+		statement += ` AND i.repository_id IN (` + bindList(nativeCandidateValues(repositoryIDs)) + `)`
 	}
 	if len(assignees) > 0 {
-		statement += ` AND EXISTS (SELECT 1 FROM json_each(i.assignees_json) a WHERE lower(trim(a.value)) IN (SELECT value FROM json_each(` + jsonList(assignees) + `)))`
+		statement += ` AND EXISTS (SELECT 1 FROM issue_filter_values WHERE issue_id=i.id AND kind='assignee' AND value IN (` + bindList(nativeCandidateValues(assignees)) + `))`
 	}
-	if len(included) > 0 {
-		statement += ` AND NOT EXISTS (SELECT 1 FROM json_each(` + jsonList(included) + `) required WHERE NOT EXISTS (SELECT 1 FROM json_each(i.labels_json) l WHERE lower(trim(l.value)) = required.value))`
+	filters.Reset()
+	for _, label := range included {
+		filters.WriteString(` AND EXISTS (SELECT 1 FROM issue_filter_values WHERE issue_id=i.id AND kind='label' AND value=` + bind(label) + `)`)
 	}
+	statement += filters.String()
 	if len(excluded) > 0 {
-		statement += ` AND NOT EXISTS (SELECT 1 FROM json_each(i.labels_json) l WHERE lower(trim(l.value)) IN (SELECT value FROM json_each(` + jsonList(excluded) + `)))`
-	}
-	if encodingErr != nil {
-		return nil, encodingErr
+		statement += ` AND NOT EXISTS (SELECT 1 FROM issue_filter_values WHERE issue_id=i.id AND kind='label' AND value IN (` + bindList(nativeCandidateValues(excluded)) + `))`
 	}
 	statement += `)`
-	order := "priority, landing, project_rank, created, identifier, id"
+	order := "priority, aging_boost, landing, project_rank, created, identifier, id"
 	if query.NativeScope.credential.Runner.Valid() {
-		order = "project_rank, priority, landing, created, identifier, id"
+		order = "project_rank, priority, aging_boost, landing, created, identifier, id"
 	}
 	baseArgs := args
 	readPage := func(after tracker.WorkItemID, limit int, anchor bool) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
@@ -243,7 +262,7 @@ WHERE i.organization_id = `,
 
 const nativeCandidateCompletionEvidence = `
  SELECT page.id, ` + notAlreadyAnsweredClause + `, i.project_id,
- json_type(a.data_json, '$.disposition') = 'object', COALESCE(a.data_json, '{}') AS completion_evidence
+ COALESCE(a.data_json, '{}') AS completion_evidence
  FROM page JOIN issues i ON i.id = page.id
  JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
  JOIN workflow_states ws ON ws.id = i.workflow_state_id
@@ -265,16 +284,18 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 	for rows.Next() {
 		var unanswered bool
 		var project, runRaw string
-		var typed sql.NullBool
-		if err := rows.Scan(&last, &unanswered, &project, &typed, &runRaw); err != nil {
+		if err := rows.Scan(&last, &unanswered, &project, &runRaw); err != nil {
 			return nil, 0, 0, err
 		}
 		scanned++
 		if !unanswered {
 			continue
 		}
-		if !typed.Bool {
-			var run tracker.NativeRunData
+		var run tracker.NativeRunData
+		if err := json.Unmarshal([]byte(runRaw), &run); err != nil {
+			return nil, 0, 0, err
+		}
+		if run.Disposition == nil {
 			if err := decodeRunDetail(ctx, runRaw, &run); err != nil {
 				return nil, 0, 0, err
 			}
@@ -358,4 +379,28 @@ func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.Wo
 		return tracker.NativeAnsweredExclusion{}, nil
 	}
 	return tracker.NativeAnsweredExclusion{Kind: string(gate.ReasonAutomatedReviewMissing), AttemptID: attempt}, nil
+}
+
+func nativeCandidateProjectRanks(ctx context.Context, q nativeQueryer, token string) (map[tracker.ProjectID]int, error) {
+	var raw string
+	err := q.QueryRowContext(ctx, "SELECT routing_settings_json FROM runner_identities WHERE token_id = ?", token).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return map[tracker.ProjectID]int{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var settings runnerSettings
+	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+		return nil, err
+	}
+	return settings.ProjectRanks, nil
+}
+
+func nativeCandidateValues[T ~string | ~int64](values []T) []any {
+	args := make([]any, len(values))
+	for index, value := range values {
+		args[index] = value
+	}
+	return args
 }

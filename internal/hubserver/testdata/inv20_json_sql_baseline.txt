@@ -61,7 +61,6 @@ internal/hubserver/native_archive_reader.go 2
 internal/hubserver/native_attempts.go 2
 internal/hubserver/native_blockers.go 1
 internal/hubserver/native_board_page.go 7
-internal/hubserver/native_candidates.go 12
 internal/hubserver/native_dependency_reasons.go 2
 internal/hubserver/native_dispatch_wait.go 1
 internal/hubserver/native_issue_change.go 1

@@ -17,6 +17,7 @@ import (
 
 type ProjectIntegration struct {
 	Icon                      *projecticon.Icon     `json:"project_icon"`
+	AgingEnabled              bool                  `json:"aging_enabled"`
 	Name                      string                `json:"name"`
 	DuplicateChallenge        bool                  `json:"duplicate_challenge"`
 	ArchiveCompletedAfterDays *int                  `json:"archive_completed_after_days"`
@@ -68,9 +69,9 @@ func readProjectIntegration(ctx context.Context, query nativeQueryer, scope nati
 	var result ProjectIntegration
 	var states string
 	err := query.QueryRowContext(ctx, `SELECT p.name, p.profile, p.integration_revision, p.github_intake, p.github_projection,
-p.github_repository_enabled, COALESCE(r.github_owner || '/' || r.github_name, ''), COALESCE(r.id, 0), p.checkout_repository, p.states_json, p.workflow_source, p.workflow_source_revision, p.workflow_markdown, p.archive_completed_after_days, p.archive_cancelled_after_days, p.duplicate_challenge
+p.github_repository_enabled, COALESCE(r.github_owner || '/' || r.github_name, ''), COALESCE(r.id, 0), p.checkout_repository, p.states_json, p.workflow_source, p.workflow_source_revision, p.workflow_markdown, p.archive_completed_after_days, p.archive_cancelled_after_days, p.duplicate_challenge, p.aging_enabled
 FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organization_id = ? AND p.id = ? AND p.deleted_at IS NULL`, scope.organization, scope.project).Scan(
-		&result.Name, &result.Profile, &result.Revision, &result.Intake, &result.Projection, &result.RepositoryEnabled, &result.Repository, &result.RepositoryID, &result.CheckoutRepository, &states, &result.WorkflowSource, &result.WorkflowSourceRevision, &result.WorkflowMarkdown, &result.ArchiveCompletedAfterDays, &result.ArchiveCancelledAfterDays, &result.DuplicateChallenge)
+		&result.Name, &result.Profile, &result.Revision, &result.Intake, &result.Projection, &result.RepositoryEnabled, &result.Repository, &result.RepositoryID, &result.CheckoutRepository, &states, &result.WorkflowSource, &result.WorkflowSourceRevision, &result.WorkflowMarkdown, &result.ArchiveCompletedAfterDays, &result.ArchiveCancelledAfterDays, &result.DuplicateChallenge, &result.AgingEnabled)
 	if err != nil {
 		return result, err
 	}
@@ -152,6 +153,7 @@ WHERE cr.project_id=? AND lower(cr.repository)=lower(?) AND r.state='active' AND
 }
 
 type updateProjectIntegrationRequest struct {
+	AgingEnabled              *bool           `json:"aging_enabled,omitempty"`
 	DuplicateChallenge        *bool           `json:"duplicate_challenge,omitempty"`
 	ArchiveCompletedAfterDays json.RawMessage `json:"archive_completed_after_days,omitempty"`
 	ArchiveCancelledAfterDays json.RawMessage `json:"archive_cancelled_after_days,omitempty"`
@@ -201,14 +203,18 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 		if current.ManualImportEnabled {
 			currentIntake = "manual"
 		}
+		agingEnabled := current.AgingEnabled
+		if request.AgingEnabled != nil {
+			agingEnabled = *request.AgingEnabled
+		}
 		duplicateChallenge := current.DuplicateChallenge
 		if request.DuplicateChallenge != nil {
 			duplicateChallenge = *request.DuplicateChallenge
 		}
-		archiveSettingsSupplied := request.DuplicateChallenge != nil || len(request.ArchiveCompletedAfterDays) != 0 || len(request.ArchiveCancelledAfterDays) != 0
+		archiveSettingsSupplied := request.AgingEnabled != nil || request.DuplicateChallenge != nil || len(request.ArchiveCompletedAfterDays) != 0 || len(request.ArchiveCancelledAfterDays) != 0
 		integrationChanged := request.States != nil || request.WorkflowMarkdown != nil || (!preserveIntake && request.Intake != currentIntake) || request.Projection != current.Projection || request.RepositoryEnabled != current.RepositoryEnabled
 		if archiveSettingsSupplied && !integrationChanged {
-			if _, err := tx.ExecContext(ctx, "UPDATE projects SET integration_revision=integration_revision+1, archive_completed_after_days=?, archive_cancelled_after_days=?, duplicate_challenge=? WHERE organization_id=? AND id=?", completed, cancelled, duplicateChallenge, scope.organization, scope.project); err != nil {
+			if _, err := tx.ExecContext(ctx, "UPDATE projects SET integration_revision=integration_revision+1, archive_completed_after_days=?, archive_cancelled_after_days=?, duplicate_challenge=?, aging_enabled=? WHERE organization_id=? AND id=?", completed, cancelled, duplicateChallenge, agingEnabled, scope.organization, scope.project); err != nil {
 				return nil, err
 			}
 			return readProjectIntegration(ctx, tx, scope)
@@ -260,7 +266,7 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 				return nil, err
 			}
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE projects SET integration_revision = integration_revision + 1, github_intake = COALESCE(NULLIF(?, ''), github_intake), github_projection = ?, github_repository_enabled = ?, archive_completed_after_days = ?, archive_cancelled_after_days = ?, duplicate_challenge = ? WHERE id = ?`, request.Intake, request.Projection, request.RepositoryEnabled, completed, cancelled, duplicateChallenge, scope.project)
+		_, err = tx.ExecContext(ctx, `UPDATE projects SET integration_revision = integration_revision + 1, github_intake = COALESCE(NULLIF(?, ''), github_intake), github_projection = ?, github_repository_enabled = ?, archive_completed_after_days = ?, archive_cancelled_after_days = ?, duplicate_challenge = ?, aging_enabled = ? WHERE id = ?`, request.Intake, request.Projection, request.RepositoryEnabled, completed, cancelled, duplicateChallenge, agingEnabled, scope.project)
 		if err != nil {
 			return nil, err
 		}

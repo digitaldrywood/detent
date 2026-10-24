@@ -353,8 +353,9 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 	for _, test := range []struct {
 		size        int
 		unpublished bool
-	}{{size: 16}, {size: 256}, {size: 2048}, {size: 256, unpublished: true}} {
-		t.Run(fmt.Sprintf("queue_%d_unpublished_%t", test.size, test.unpublished), func(t *testing.T) {
+		filtered    bool
+	}{{size: 16}, {size: 256}, {size: 2048}, {size: 256, unpublished: true}, {size: 16, filtered: true}, {size: 256, filtered: true}, {size: 2048, filtered: true}} {
+		t.Run(fmt.Sprintf("queue_%d_unpublished_%t_filtered_%t", test.size, test.unpublished, test.filtered), func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "candidate-bound")
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
@@ -366,9 +367,16 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 			var issues []tracker.NativeIssue
 			for index := range test.size {
 				request := tracker.CreateIssue{Title: fmt.Sprintf("candidate-%d", index), Body: issueContractTestSections, State: "Todo"}
+				if test.filtered {
+					request.Labels, request.Assignees = []string{"skip"}, []string{"other"}
+				}
 				if index == test.size-1 {
 					request.Priority = new(1)
 					request.Labels = []string{"hotfix"}
+					if test.filtered {
+						request.Priority = nil
+						request.Labels, request.Assignees = []string{" Required ", "second"}, []string{" Chosen "}
+					}
 				}
 				tail, err = createNativeFixtureIssueTx(t.Context(), tx, scope, request, f.service.config.now())
 				if err != nil {
@@ -433,6 +441,39 @@ FROM native_attempts a JOIN issues i ON i.native_id = ? WHERE a.work_item_id = ?
 			var tailID tracker.WorkItemID
 			if err := tx.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id = ?", tail.WorkItemID).Scan(&tailID); err != nil {
 				t.Fatal(err)
+			}
+			if test.filtered {
+				for _, filter := range []struct {
+					name                          string
+					assignees, included, excluded []string
+					absent                        bool
+				}{
+					{name: "assignee", assignees: []string{"chosen"}},
+					{name: "included labels", included: []string{"required", "second"}},
+					{name: "excluded label", excluded: []string{"skip"}},
+					{name: "combined", assignees: []string{"chosen"}, included: []string{"required", "second"}, excluded: []string{"skip"}},
+					{name: "missing assignee", assignees: []string{"absent"}, absent: true},
+					{name: "missing label", included: []string{"absent"}, absent: true},
+					{name: "all labels required", included: []string{"required", "absent"}, absent: true},
+				} {
+					t.Run(filter.name, func(t *testing.T) {
+						probe.candidates.Store(0)
+						probe.rows.Store(0)
+						query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), Limit: 1}
+						ids, err := nativeCandidateIDs(t.Context(), tx, query, nil, nil, nil, nil, filter.assignees, filter.included, filter.excluded)
+						if err != nil {
+							t.Fatal(err)
+						}
+						want := []tracker.WorkItemID{tailID}
+						if filter.absent {
+							want = nil
+						}
+						if !slices.Equal(ids, want) || probe.candidates.Load() != 1 || probe.rows.Load() != int64(len(want)) {
+							t.Fatalf("ids=%v want=%v candidate_queries=%d returned_rows=%d", ids, want, probe.candidates.Load(), probe.rows.Load())
+						}
+					})
+				}
+				return
 			}
 			query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), Limit: 9, AvailableAt: f.service.config.now().Truncate(time.Second), DispatchPriorityByState: []string{"Todo"}, DispatchPriorityByLabel: []string{"hotfix"}}
 			began := time.Now()

@@ -37,6 +37,7 @@ import { useMutation, useResource } from "./useResource.ts";
 /** The editable half of the integration: what a save sends. */
 export interface IntegrationDraft {
   readonly duplicateChallenge: boolean;
+  readonly agingEnabled: boolean;
   readonly importAllowed: boolean;
   readonly projection: string;
   readonly repositoryEnabled: boolean;
@@ -47,6 +48,7 @@ export interface IntegrationDraft {
 export function draftOf(integration: ProjectIntegration): IntegrationDraft {
   return {
     duplicateChallenge: integration.duplicate_challenge ?? true,
+    agingEnabled: integration.aging_enabled ?? false,
     importAllowed: integration.manual_import_enabled ?? integration.intake === "manual",
     projection: integration.projection,
     repositoryEnabled: integration.repository_enabled,
@@ -62,6 +64,7 @@ function hasAutomaticIntake(integration: ProjectIntegration): boolean {
 export function draftChanged(a: IntegrationDraft, b: IntegrationDraft): boolean {
   return (
     a.duplicateChallenge !== b.duplicateChallenge ||
+    a.agingEnabled !== b.agingEnabled ||
     a.importAllowed !== b.importAllowed ||
     a.projection !== b.projection ||
     a.repositoryEnabled !== b.repositoryEnabled ||
@@ -341,6 +344,7 @@ export function ProjectSettingsView({
       {tab === "general" && integration.profile === "native" ? <SettingsSection title="Issues" variant="grouped" headerAction={actions}>
         <SettingsRow title="Archive completed issues" control={archiveControl("Archive completed issues", draft.archiveCompletedAfterDays, "archiveCompletedAfterDays")} />
         <SettingsRow title="Archive cancelled issues" control={archiveControl("Archive cancelled issues", draft.archiveCancelledAfterDays, "archiveCancelledAfterDays")} />
+        <SettingsRow title="Aging" description="Off by default. Waiting work gains one dispatch step per full day in dispatchable lanes, up to three steps within its priority." control={<ToggleControl label="Aging" checked={draft.agingEnabled} disabled={!canManage || saving} onCheckedChange={(agingEnabled) => onDraftChange({ ...draft, agingEnabled })} />} />
         <SettingsRow title="Check for duplicate issues" control={<ToggleControl label="Check for duplicate issues" checked={draft.duplicateChallenge} disabled={!canManage || saving} onCheckedChange={(duplicateChallenge) => onDraftChange({ ...draft, duplicateChallenge })} />} />
       </SettingsSection> : null}
 
@@ -455,6 +459,7 @@ export function ProjectSettingsRoute({ projectId, tab, onboarding, onNavigate }:
         projection: next.projection,
         repositoryEnabled: next.repositoryEnabled,
         duplicateChallenge: next.duplicateChallenge,
+        agingEnabled: next.agingEnabled,
         archiveCompletedAfterDays: next.archiveCompletedAfterDays,
         archiveCancelledAfterDays: next.archiveCancelledAfterDays,
       });

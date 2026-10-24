@@ -51,6 +51,20 @@ function renderProject(canManage = true, overrides: Partial<React.ComponentProps
 }
 
 describe("settings help interactions", () => {
+  it.each([true, false])("edits aging with manage permission=%s", async (canManage) => {
+    const onDraftChange = vi.fn();
+    renderProject(canManage, { tab: "general", onDraftChange });
+    const toggle = await screen.findByRole("switch", { name: "Aging" });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await userEvent.setup().click(toggle);
+    if (canManage) {
+      const next = { ...draftOf(integration), agingEnabled: true };
+      expect(onDraftChange).toHaveBeenCalledWith(next);
+      expect(draftChanged(next, draftOf(integration))).toBe(true);
+    } else {
+      expect(onDraftChange).not.toHaveBeenCalled();
+    }
+  });
   it.each([true, false])("edits duplicate checking with manage permission=%s", async (canManage) => {
     const onDraftChange = vi.fn();
     renderProject(canManage, { tab: "general", onDraftChange });
@@ -125,7 +139,7 @@ describe("settings help interactions", () => {
       projection: "summary", repository_enabled: true };
     renderProject(true, { integration: current, draft: draftOf(current), intakeHref: "/projects/prj_example/setup" });
     await screen.findByText("Automatic");
-    const expected = { duplicateChallenge: true, importAllowed: false, projection: "summary", repositoryEnabled: true, archiveCompletedAfterDays: 30, archiveCancelledAfterDays: 7 };
+    const expected = { agingEnabled: false, duplicateChallenge: true, importAllowed: false, projection: "summary", repositoryEnabled: true, archiveCompletedAfterDays: 30, archiveCancelledAfterDays: 7 };
     expect(draftOf(current)).toEqual(expected);
     expect(draftChanged(draftOf(current), expected)).toBe(false);
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();

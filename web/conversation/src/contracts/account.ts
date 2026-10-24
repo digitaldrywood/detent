@@ -309,6 +309,7 @@ export type SupportResponse = typeof SupportResponse.Type;
  */
 export const ProjectIntegration = Schema.Struct({
  project_icon: Schema.optional(Schema.NullOr(ProjectIcon)),
+  aging_enabled: Schema.optional(Schema.Boolean),
   name: Schema.optional(Schema.String),
   duplicate_challenge: Schema.optional(Schema.Boolean),
   archive_completed_after_days: Schema.NullOr(Schema.Number),

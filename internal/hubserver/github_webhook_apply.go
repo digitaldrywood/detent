@@ -494,7 +494,7 @@ func applyIssueProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, i
 		workflowStateID = &resolvedWorkflowStateID
 	}
 	if errors.Is(queryErr, sql.ErrNoRows) {
-		_, err := tx.ExecContext(ctx, `
+		inserted, err := tx.ExecContext(ctx, `
 			INSERT INTO issues (
 				repository_id, workflow_state_id, github_node_id, github_database_id, github_number,
 				title, body, url, github_state, author_login, labels_json, assignees_json,
@@ -506,6 +506,13 @@ func applyIssueProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, i
 			formatWebhookTime(issue.CreatedAt), formatWebhookTime(issue.UpdatedAt))
 		if err != nil {
 			return projectionApplyResult{}, fmt.Errorf("insert GitHub webhook issue: %w", err)
+		}
+		id, err := inserted.LastInsertId()
+		if err != nil {
+			return projectionApplyResult{}, err
+		}
+		if err := replaceIssueFilterValues(ctx, tx, id, issue.Labels, issue.Assignees); err != nil {
+			return projectionApplyResult{}, err
 		}
 		return projectionApplyResult{Changed: true}, nil
 	}
@@ -548,6 +555,9 @@ func applyIssueProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, i
 		stamp.Version, formatWebhookTime(stamp.UpdatedAt), formatWebhookTime(now),
 		formatWebhookTime(issue.CreatedAt), formatWebhookTime(issue.UpdatedAt), issueID); err != nil {
 		return projectionApplyResult{}, fmt.Errorf("update GitHub webhook issue: %w", err)
+	}
+	if err := replaceIssueFilterValues(ctx, tx, issueID, issue.Labels, issue.Assignees); err != nil {
+		return projectionApplyResult{}, err
 	}
 	result.Changed = true
 	return result, nil

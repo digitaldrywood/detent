@@ -683,6 +683,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}
+	if err := replaceIssueFilterValues(ctx, tx, id, issue.Labels, issue.Assignees); err != nil {
+		return tracker.NativeIssue{}, err
+	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO queue_entries (issue_id, workflow_state_id, scope, state, rank, priority_override, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", id, workflowID, scope.project, issue.State, string(issue.WorkItemID), issue.Priority, formatHubTime(now), formatHubTime(now)); err != nil {
 		return tracker.NativeIssue{}, err
 	}
@@ -851,6 +854,15 @@ workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND det
 WHERE organization_id = ? AND project_id = ? AND native_id = ?`, issue.Type, verificationState, verifiedBy, verifiedAt, contractJSON, issue.Title, issue.Body, labels, assignees, issue.Revision, formatHubTime(now), formatHubTime(now), issue.Archived, scope.project, issue.State, scope.organization, scope.project, issue.WorkItemID)
 	if err != nil {
 		return issue, err
+	}
+	if !slices.Equal(current.Labels, issue.Labels) || !slices.Equal(current.Assignees, issue.Assignees) {
+		var id int64
+		if err := tx.QueryRowContext(ctx, "SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=?", scope.organization, scope.project, issue.WorkItemID).Scan(&id); err != nil {
+			return issue, err
+		}
+		if err := replaceIssueFilterValues(ctx, tx, id, issue.Labels, issue.Assignees); err != nil {
+			return issue, err
+		}
 	}
 	if !issue.Terminal || !current.Terminal {
 		var entered any
