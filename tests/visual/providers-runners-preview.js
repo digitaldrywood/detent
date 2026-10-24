@@ -15,6 +15,7 @@ async function providersRunnersPreview() {
     alias: {
       "~": path.resolve("web/conversation/src"),
       "lucide-react/dynamic": path.resolve("web/conversation/src/browser/lucideDynamicIcon.tsx"),
+      "lucide-react/dynamicIconImports": path.resolve("web/conversation/node_modules/lucide-react/dynamicIconImports.mjs"),
       "@pierre/diffs/utils/parsePatchFiles": path.resolve("web/conversation/node_modules/@pierre/diffs/dist/utils/parsePatchFiles.js"),
       "@pierre/diffs/types": path.resolve("web/conversation/node_modules/@pierre/diffs/dist/types.js"),
     },

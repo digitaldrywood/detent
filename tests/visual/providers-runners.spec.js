@@ -93,7 +93,7 @@ for (const width of [1440, 390]) {
         await expect(instructions).toContainText("bash sprite-runner-bootstrap.sh --version v0.9.1");
         await expect(instructions).toContainText("claude auth login");
         await expect(instructions).toContainText("codex login --device-auth");
-        await expect(instructions).toContainText("reported repository configuration");
+        await expect(instructions).toContainText("Check the Hub’s runner connection, project setup and reported repository configuration.");
         await expect(dialog.getByRole("button", { name: "Show token" })).toHaveCount(0);
       }
       await copy.click();
@@ -194,11 +194,12 @@ for (const width of [1440, 390]) {
     await expect(sheet).toBeVisible();
     await expect(page).toHaveURL(/\/settings\/runners\/[^/?]+$/);
     await sheet.getByRole("radio", { name: "Draining Finishes what it has" }).check();
-    await sheet.getByRole("spinbutton", { name: "Jobs at once", exact: true }).fill("2");
+    await sheet.getByRole("spinbutton", { name: "Total runner slots", exact: true }).fill("2");
     await sheet.getByRole("button", { name: "Save runner" }).click();
     await expect(page.getByText("Runner saved", { exact: true })).toBeVisible();
     await page.getByRole("link", { name: "Runners", exact: true }).click();
     await expect(row).toContainText("Agent access unavailable");
+    await expect(row).toContainText("Requested total: 2 slots");
     await page.getByRole("button", { name: "Manage Build runner" }).click();
     sheet = page.getByRole("article", { name: "Build runner" });
     await expect(sheet.getByRole("alert")).toContainText("Agent access unavailable");
@@ -217,13 +218,14 @@ for (const width of [1440, 390]) {
     await page.screenshot({ animations: "disabled", path: require("node:path").join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `runner-access-sheet-${width}.png`) });
     await expect(sheet.getByRole("button", { name: "Switch to Full access", exact: true })).toHaveCount(0);
     await expect(sheet.getByRole("checkbox", { name: "Preview project", exact: true })).toBeChecked();
-    await expect(sheet.getByRole("checkbox", { name: "prj_unknown", exact: true })).toBeChecked();
+    await expect(sheet.getByRole("checkbox", { name: "Unavailable project", exact: true })).toBeChecked();
     await sheet.getByRole("radio", { name: "Disabled Takes nothing" }).check();
-    await sheet.getByRole("spinbutton", { name: "Jobs at once", exact: true }).fill("0");
+    await sheet.getByRole("spinbutton", { name: "Total runner slots", exact: true }).fill("0");
     await sheet.getByRole("button", { name: "Save runner" }).click();
     await expect(page.getByText("Runner saved", { exact: true })).toBeVisible();
     await page.getByRole("link", { name: "Runners", exact: true }).click();
     await expect(row).toContainText("Agent access unavailable");
+    await expect(row).toContainText("Requested total: 0 slots");
     expect(writes.map((write) => [write.state, write.capacity_limit])).toEqual([["draining", 2], ["draining", 2], ["disabled", 0]]);
     expect(writes[2].isolation_tier).toBe("native-trusted");
     expect(writes[2].project_ids).toEqual(["proj_preview", "prj_unknown"]);

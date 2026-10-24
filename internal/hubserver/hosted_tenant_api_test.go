@@ -416,6 +416,7 @@ func TestHostedTenantContractFixtures(t *testing.T) {
 		{fixture: "account-projects.json", target: func() any { return &[]hostedProjectView{} }},
 		{fixture: "account-fleet.json", target: func() any { return &hostedFleetResponse{} }, optional: []string{"runners[].provider_capacity[].reason"}, extra: []string{"runners[].can_edit_projects"}},
 		{fixture: "account-fleet-empty.json", target: func() any { return &hostedFleetResponse{} }},
+		{fixture: "account-runner-capacity.json", target: func() any { return &runnerauth.CapacityView{} }},
 	} {
 		t.Run(test.fixture, func(t *testing.T) {
 			t.Parallel()

@@ -129,6 +129,12 @@ interface RunnerRow {
   tags: string[];
   state: string;
   capacity_limit: number;
+  project_capacity_limits?: Record<string, number>;
+  scope?: string;
+  project_ranks?: Record<string, number>;
+  isolation_tier?: string;
+  host_services?: string[];
+  availability?: { timezone: string; windows: string[]; hard_deadline: string; window_slots?: Record<string, number> | null };
   project_ids: string[];
   /** A plain number, unlike the integration and progress revisions. */
   revision: number;
@@ -2707,7 +2713,10 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       // rather than drawing a zero that looks like a measurement.
       json(response, 200, {
         ...clone(SEED_FLEET),
-        ...(organizationMode === "empty" ? { runners: [] } : {}),
+        runners: organizationMode === "empty" ? [] : SEED_FLEET.runners.map((row) => {
+          const routing = account.runners.find((entry) => entry.runner.runner_id === row.id)?.runner;
+          return routing ? { ...clone(row), state: routing.state, capacity_limit: routing.capacity_limit, revision: routing.revision, editable: accountMode !== "read_only", routing: { ...routing, isolation_tier: routing.isolation_tier ?? "sandbox", host_services: routing.host_services ?? [], availability: routing.availability ?? { timezone: "", windows: [], hard_deadline: "" } } } : clone(row);
+        }),
         spend: account.spend ? clone(SEED_FLEET.spend) : null,
       });
       return true;
@@ -2894,7 +2903,13 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         display_name: String(body.display_name ?? entry.runner.display_name),
         tags: Array.isArray(body.tags) ? body.tags.map((tag) => String(tag)) : entry.runner.tags,
         state: String(body.state ?? entry.runner.state),
+        ...(body.scope !== undefined ? { scope: String(body.scope) } : {}),
+        ...(body.project_ranks !== undefined ? { project_ranks: body.project_ranks as Record<string, number> } : {}),
+        ...(body.isolation_tier !== undefined ? { isolation_tier: String(body.isolation_tier) } : {}),
+        ...(Array.isArray(body.host_services) ? { host_services: body.host_services.map(String) } : {}),
+        ...(body.availability !== undefined ? { availability: body.availability as RunnerRow["availability"] } : {}),
         capacity_limit: Number(body.capacity_limit ?? entry.runner.capacity_limit),
+        ...(body.project_capacity_limits != null ? { project_capacity_limits: body.project_capacity_limits as Record<string, number> } : {}),
         project_ids: Array.isArray(body.project_ids)
           ? body.project_ids.map((id) => String(id))
           : entry.runner.project_ids,

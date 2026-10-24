@@ -295,9 +295,9 @@ describe("runner settings help", () => {
     };
     render(<RunnerDetailPage runner={{ ...fleet.runners[0]!, editable: true, routing }} projects={[]} editable onSave={save} onClose={vi.fn()} />);
     const sheet = screen.getByRole("article");
-    expect(sheet.textContent).toContain("The lower of the two wins");
+    expect(sheet.textContent).toContain("Runners on the same machine share its total ceiling");
     expect(sheet.textContent).toContain("Tags pick from allowed runners; they never grant a project.");
-    expect((screen.getByRole("spinbutton", { name: "Jobs at once" }) as HTMLInputElement).value).toBe("6");
+    expect((screen.getByRole("spinbutton", { name: "Total runner slots" }) as HTMLInputElement).value).toBe("6");
     expect(screen.getByRole("button", { name: "Remove tag linux" })).toBeTruthy();
     expect(save).not.toHaveBeenCalled();
   });

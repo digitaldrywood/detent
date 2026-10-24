@@ -18,6 +18,7 @@ import { resetRunnerNamesForTests, runnerDisplay, useRunnerNames } from "../../s
 import { parseRunnerWindow, serializeRunnerWindow } from "../../src/app/fleet/runnerSchedule.ts";
 import emptyFixture from "../../src/contracts/fixtures/account-fleet-empty.json";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
+import capacityFixture from "../../src/contracts/fixtures/account-runner-capacity.json";
 import bootstrapFixture from "../../src/contracts/fixtures/account-bootstrap.json";
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); resetRunnerNamesForTests(); window.history.replaceState(null, "", "/"); });
@@ -128,7 +129,8 @@ describe("runner rows", () => {
     if (reason) expect(row.getByText(reason)).toBeTruthy();
     else expect(row.queryByText("Healthy")).toBeNull();
     expect(row.getByText("1.2.3")).toBeTruthy();
-    expect(row.getByText(`${runner.leases.length}/${runner.host_capacity}`)).toBeTruthy();
+    expect(row.getByText(`Requested total: ${runner.capacity_limit} slots`)).toBeTruthy();
+    expect(row.getByText(`Shared machine: ${runner.host_used} of ${runner.host_capacity} slots in use`)).toBeTruthy();
     expect(row.queryByRole("alert")).toBeNull();
     expect(row.queryByRole("list", { name: /subscription usage/ })).toBeNull();
     fireEvent.click(row.getByRole("button", { name: `Manage ${runner.display_name}` }));
@@ -316,8 +318,8 @@ describe("runner rows", () => {
     const rows = screen.getAllByTestId("host-card");
     expect(rows).toHaveLength(FLEET.runners.length);
     expect(within(rows[0]!).getByRole("heading", { name: "Example laptop" })).toBeTruthy();
-    expect(rows[0]!.textContent).toContain("1/2");
-    expect(rows[1]!.textContent).toContain("0/2");
+    expect(rows[0]!.textContent).toContain(`Shared machine: ${FLEET.runners[0]!.host_used} of ${FLEET.runners[0]!.host_capacity} slots in use`);
+    expect(rows[1]!.textContent).toContain(`Shared machine: ${FLEET.runners[1]!.host_used} of ${FLEET.runners[1]!.host_capacity} slots in use`);
     expect(rows[1]!.textContent).toContain("Runner update needed");
     expect(screen.queryByTestId("runner-capacity")).toBeNull();
     expect(screen.queryAllByRole("heading", { level: 1 })).toHaveLength(0);
@@ -449,7 +451,7 @@ describe("runner details", () => {
   it.each([["v1.2.3", "1.2.3", "same as the Hub"], ["1.2.2", "1.2.3", "Hub is 1.2.3"]])("compares the reported version %s with Hub %s", (version, currentVersion, label) => {
     render(<RunnerDetailPage runner={{ ...RUNNER, version }} currentVersion={currentVersion} projects={PROJECTS} editable onSave={vi.fn()} onClose={vi.fn()} />);
     expect(screen.getByText(label!)).toBeTruthy();
-    expect(screen.getByText(`${RUNNER.host_used} of ${RUNNER.host_capacity} machine slots in use`)).toBeTruthy();
+    expect(screen.getByText(`Shared machine: ${RUNNER.host_used} of ${RUNNER.host_capacity} slots in use across runner identities`)).toBeTruthy();
   });
 
   it("fills only the draft from the suggestion until Save runner", async () => {
@@ -460,9 +462,9 @@ describe("runner details", () => {
     expect(box.getByText("Suggested: 4 jobs at once")).toBeTruthy();
     expect(box.getByText(LOWER.reasons[0]!)).toBeTruthy();
     fireEvent.click(box.getByRole("button", { name: "Use 4" }));
-    expect((screen.getByRole("spinbutton") as HTMLInputElement).value).toBe("4");
+    expect((screen.getByRole("spinbutton", { name: "Total runner slots" }) as HTMLInputElement).value).toBe("4");
     expect(box.queryByRole("button")).toBeNull();
-    expect(box.queryByText(/fills Jobs at once/)).toBeNull();
+    expect(box.queryByText(/fills Total runner slots/)).toBeNull();
     expect(save).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(RUNNER, { ...ROUTING, capacity_limit: 4 }));
@@ -517,15 +519,20 @@ describe("runner details", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("round-trips allowed project IDs, including unreadable projects", async () => {
+  it.each([["prj_known", "prj_unknown"], ["prj_unknown"]])("preserves unreadable project grants without displaying raw IDs: %s", async (...projectIds) => {
     const save = vi.fn().mockResolvedValue(undefined);
-    render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
+    const runner = { ...RUNNER, routing: { ...ROUTING, project_ids: projectIds } };
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [runner] }} projects={PROJECTS} onSaveRouting={save} />);
+    const row = within(screen.getByTestId("host-card"));
+    expect(row.getByText(/Unavailable project/)).toBeTruthy();
+    expect(row.queryByText("No projects reported")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     const sheet = screen.getByRole("article");
-    expect((within(sheet).getByRole("checkbox", { name: "Known project" }) as HTMLInputElement).checked).toBe(true);
-    expect((within(sheet).getByRole("checkbox", { name: "prj_unknown" }) as HTMLInputElement).checked).toBe(true);
+    expect((within(sheet).getByRole("checkbox", { name: "Known project" }) as HTMLInputElement).checked).toBe(projectIds.includes("prj_known"));
+    expect((within(sheet).getByRole("checkbox", { name: "Unavailable project" }) as HTMLInputElement).checked).toBe(true);
+    expect(sheet.textContent).not.toContain("prj_unknown");
     fireEvent.click(within(sheet).getByRole("button", { name: "Save runner" }));
-    await waitFor(() => expect(save).toHaveBeenCalledWith(RUNNER, ROUTING));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(runner, runner.routing));
   });
 
   it("saves a permitted runner when unrelated projects prevent org-wide editing", async () => {
@@ -535,7 +542,7 @@ describe("runner details", () => {
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     expect((screen.getByRole("checkbox", { name: "Known project" }) as HTMLInputElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("radio", { name: "Active Takes new work" }));
-    fireEvent.click(screen.getByRole("button", { name: "Decrease jobs at once" }));
+    fireEvent.click(screen.getByRole("button", { name: "Decrease total runner slots" }));
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(runner, expect.objectContaining({ state: "active", capacity_limit: 5, project_ids: ROUTING.project_ids })));
   });
@@ -547,8 +554,8 @@ describe("runner details", () => {
     const sheet = screen.getByRole("article");
     expect((within(sheet).getByRole("checkbox", { name: "Second project" }) as HTMLInputElement).checked).toBe(false);
     fireEvent.click(within(sheet).getByRole("checkbox", { name: "Second project" }));
-    fireEvent.click(within(sheet).getByRole("checkbox", { name: "prj_unknown" }));
-    fireEvent.click(within(sheet).getByRole("checkbox", { name: "prj_unknown" }));
+    fireEvent.click(within(sheet).getByRole("checkbox", { name: "Unavailable project" }));
+    fireEvent.click(within(sheet).getByRole("checkbox", { name: "Unavailable project" }));
     fireEvent.click(within(sheet).getByRole("button", { name: "Save runner" }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(RUNNER, expect.objectContaining({
       project_ids: ["prj_known", "prj_second", "prj_unknown"],
@@ -593,11 +600,12 @@ describe("runner details", () => {
     }
     expect(within(sheet).getByRole("status").textContent).toContain(reason);
     expect(sheet.textContent).toContain("Known project");
-    expect(sheet.textContent).toContain("prj_unknown");
+    expect(sheet.textContent).toContain("Unavailable project");
+    expect(sheet.textContent).not.toContain("prj_unknown");
     expect(sheet.textContent).toContain("linux");
     expect(sheet.textContent).toContain("tcp:127.0.0.1:8080");
     expect(sheet.textContent).toContain("Sat-Sun 00:00-24:00");
-    expect(sheet.textContent).not.toContain("not reported");
+    expect(sheet.textContent).not.toContain("Tags are not reported");
   });
 
   it("shows project checkout failures and the authentication command on the runner page", () => {
@@ -626,27 +634,46 @@ describe("runner details", () => {
     expect(sheet.textContent).toContain("Mon-Fri 09:00-17:00");
   });
 
-  it("shows save errors and reloads the routing revision after a conflict", async () => {
+  it.each([false, true])("shows save errors and reviews the routing revision after a conflict with reload failure %s", async (reloadFails) => {
     const save = vi.fn()
       .mockRejectedValueOnce(new AccountError({ status: 400, code: "invalid", message: "Invalid runner hours" }))
       .mockRejectedValueOnce(new AccountError({ status: 409, code: "conflict", message: "revision conflict" }))
       .mockResolvedValue(undefined);
-    const fresh = { ...RUNNER, revision: 8, routing: { ...ROUTING, state: "draining", capacity_limit: 3 } };
+    const fresh = { ...RUNNER, revision: 8, routing: { ...ROUTING, state: "draining", capacity_limit: 3, project_capacity_limits: { prj_known: 0 } } };
     const reload = vi.fn(async () => {
+      if (reloadFails) throw new Error("Fleet unavailable");
       rerender(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [fresh] }} projects={PROJECTS} onSaveRouting={save} onReloadRunner={reload} />);
     });
     const { rerender } = render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} onReloadRunner={reload} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
-    fireEvent.change(screen.getByLabelText("Jobs at once"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("Total runner slots"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("Known project maximum slots"), { target: { value: "4" } });
+    fireEvent.change(screen.getByLabelText("Add tag"), { target: { value: "gpu" } });
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
     const saveError = await screen.findByRole("alert");
     expect(saveError.textContent).toContain("Invalid runner hours");
     expect(saveError.closest("form")).not.toBeNull();
-    expect((screen.getByLabelText("Jobs at once") as HTMLInputElement).value).toBe("10");
+    expect((screen.getByLabelText("Total runner slots") as HTMLInputElement).value).toBe("10");
+    expect((screen.getByLabelText("Known project maximum slots") as HTMLInputElement).value).toBe("4");
+    expect(screen.getByRole("button", { name: "Remove tag gpu" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("settings have been reloaded"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(reloadFails ? "Could not reload it: Fleet unavailable" : "settings have been reloaded"));
     expect(reload).toHaveBeenCalledOnce();
-    expect((screen.getByLabelText("Jobs at once") as HTMLInputElement).value).toBe("3");
+    if (reloadFails) {
+      expect((screen.getByLabelText("Total runner slots") as HTMLInputElement).value).toBe("10");
+      expect((screen.getByLabelText("Known project maximum slots") as HTMLInputElement).value).toBe("4");
+      expect(screen.getByRole("button", { name: "Remove tag gpu" })).toBeTruthy();
+      rerender(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [fresh] }} projects={PROJECTS} onSaveRouting={save} onReloadRunner={reload} />);
+      expect((screen.getByLabelText("Total runner slots") as HTMLInputElement).value).toBe("10");
+      expect((screen.getByLabelText("Known project maximum slots") as HTMLInputElement).value).toBe("4");
+      expect(screen.getByRole("button", { name: "Remove tag gpu" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+      expect(save).toHaveBeenCalledTimes(2);
+      fireEvent.click(screen.getByRole("button", { name: "Review latest settings" }));
+    }
+    expect((screen.getByLabelText("Total runner slots") as HTMLInputElement).value).toBe("3");
+    expect((screen.getByLabelText("Known project maximum slots") as HTMLInputElement).value).toBe("0");
+    expect(screen.queryByRole("button", { name: "Remove tag gpu" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
     await waitFor(() => expect(save).toHaveBeenLastCalledWith(fresh, fresh.routing));
   });
@@ -687,5 +714,152 @@ describe("runner problem reports", () => {
     expect(screen.getByRole("button", { name: "Copy codex login --device-auth" })).toBeTruthy();
     expect(screen.getByText("Approve the project policy")).toBeTruthy();
     expect(screen.queryByText(/raw/)).toBeNull();
+  });
+});
+
+
+describe("runner slot settings", () => {
+  const routing: RunnerRouting = { ...ROUTING, project_ids: PROJECTS.map((project) => project.id), project_capacity_limits: { prj_second: 0 }, project_ranks: { prj_known: 10 }, availability: { ...ROUTING.availability, window_slots: { "Mon-Fri 09:00-17:00": 3 } } };
+  const runner = decodeFleet({ ...FLEET, runners: [{ ...RUNNER, state: "draining", host_capacity: 8, host_used: 3, routing: { ...routing, state: "draining" }, capacity_configuration: capacityFixture }] }).runners[0]!;
+
+  it.each(["prj_known", "prj_second", null])("prunes unselected maxima when converting organization scope to projects: %s", async (selected) => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const organizationRunner = { ...runner, routing: { ...runner.routing!, scope: "organization" as const, project_ids: [], project_capacity_limits: { prj_known: 4, prj_second: 0 } } };
+    render(<RunnersSectionView fleet={{ ...FLEET, runners: [organizationRunner] }} projects={PROJECTS} onSaveRouting={save} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    fireEvent.change(screen.getByLabelText("Runner scope"), { target: { value: "projects" } });
+    if (selected) fireEvent.click(screen.getByRole("checkbox", { name: selected === "prj_known" ? "Known project" : "Second project" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(organizationRunner, {
+      ...organizationRunner.routing, scope: "projects", project_ids: selected ? [selected] : [],
+      project_capacity_limits: selected === "prj_known" ? { prj_known: 4 } : selected === "prj_second" ? { prj_second: 0 } : {},
+    }));
+  });
+
+  it.each(["draining", "disabled"].flatMap((state) => ["total", "projects", "both"].map((setting) => ({ state, setting }))))("saves $setting capacity settings for a $state runner, reloads them, and leaves sibling settings and grants intact", async ({ state, setting }) => {
+    const edited = { ...runner, state, routing: { ...runner.routing!, state } };
+    let fleet: FleetResponse = { ...FLEET, runners: [edited, { ...RUNNER, id: "runner_second", display_name: "Second runner", state: "disabled" }] };
+    const sibling = fleet.runners[1];
+    const save = vi.fn(async (saved, next) => {
+      fleet = { ...fleet, runners: fleet.runners.map((entry) => entry.id === saved.id ? { ...entry, revision: 8, routing: next, capacity_limit: next.capacity_limit } : entry) };
+      rerender(view());
+    });
+    const view = () => <RunnersSectionView fleet={fleet} projects={PROJECTS} onSaveRouting={save} />;
+    const { rerender, unmount } = render(view());
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    expect(screen.getByText("2 slots in use · effective maximum 6")).toBeTruthy();
+    expect(screen.getByText("1 slots in use · effective maximum 0")).toBeTruthy();
+    if (setting !== "projects") fireEvent.change(screen.getByLabelText("Total runner slots"), { target: { value: "8" } });
+    if (setting !== "total") {
+      fireEvent.change(screen.getByLabelText("Known project maximum slots"), { target: { value: "4" } });
+      fireEvent.change(screen.getByLabelText("Second project maximum slots"), { target: { value: "" } });
+    }
+    fireEvent.change(screen.getByLabelText("Add tag"), { target: { value: "gpu" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await screen.findByText("Runner saved", { exact: true });
+    expect(save).toHaveBeenCalledWith(edited, { ...edited.routing, capacity_limit: setting === "projects" ? 6 : 8, project_capacity_limits: setting === "total" ? { prj_second: 0 } : { prj_known: 4 }, tags: ["linux", "gpu"] });
+    expect(fleet.runners[1]).toBe(sibling);
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 8 }), expect.objectContaining({ capacity_limit: setting === "projects" ? 6 : 8, project_capacity_limits: setting === "total" ? { prj_second: 0 } : { prj_known: 4 } })));
+    unmount();
+    render(view());
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    expect((screen.getByLabelText("Total runner slots") as HTMLInputElement).value).toBe(setting === "projects" ? "6" : "8");
+    expect((screen.getByLabelText("Known project maximum slots") as HTMLInputElement).value).toBe(setting === "total" ? "" : "4");
+    expect((screen.getByLabelText("Second project maximum slots") as HTMLInputElement).value).toBe(setting === "total" ? "0" : "");
+  });
+
+  it.each([
+    ...["", "-1", "1.5", "10001", "1e2"].map((value) => ({ field: "Total runner slots", value })),
+    ...["-1", "1.5", "1e2"].map((value) => ({ field: "Known project maximum slots", value })),
+  ])("refuses invalid $field value '$value' without saving", async ({ field, value }) => {
+    const save = vi.fn();
+    render(<RunnersSectionView fleet={{ ...FLEET, runners: [runner] }} projects={PROJECTS} onSaveRouting={save} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    fireEvent.change(screen.getByLabelText(field), { target: { value } });
+    fireEvent.submit(screen.getByRole("button", { name: "Save runner" }).closest("form")!);
+    expect(screen.getByRole("alert").textContent).toContain("whole numbers from 0 to 10000");
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it.each(["draining", "disabled"])("accepts explicit zero without reactivating a %s runner and validates project maxima independently", async (state) => {
+    const edited = { ...runner, state, routing: { ...runner.routing!, state } };
+    const save = vi.fn().mockResolvedValue(undefined);
+    render(<RunnersSectionView fleet={{ ...FLEET, runners: [edited] }} projects={PROJECTS} onSaveRouting={save} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    fireEvent.change(screen.getByLabelText("Total runner slots"), { target: { value: "0" } });
+    fireEvent.change(screen.getByLabelText("Known project maximum slots"), { target: { value: "10001" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Save runner" }).closest("form")!);
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Known project maximum slots"), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(edited, expect.objectContaining({ capacity_limit: 0, project_capacity_limits: { prj_known: 0, prj_second: 0 }, state })));
+  });
+
+  it("retains drafts when a background refresh changes the revision and requires review", async () => {
+    const save = vi.fn();
+    const view = (revision: number) => <RunnersSectionView fleet={{ ...FLEET, runners: [{ ...runner, revision }] }} projects={PROJECTS} onSaveRouting={save} />;
+    const { rerender } = render(view(7));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    fireEvent.change(screen.getByLabelText("Known project maximum slots"), { target: { value: "4" } });
+    rerender(view(8));
+    expect((screen.getByLabelText("Known project maximum slots") as HTMLInputElement).value).toBe("4");
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Review latest settings" }));
+    expect((screen.getByLabelText("Known project maximum slots") as HTMLInputElement).value).toBe("");
+  });
+
+  it.each([false, true])("shows named scoped read-only maxima for organization scope %s", async (organization) => {
+    const scoped = { ...runner, editable: false, routing: { ...routing, scope: organization ? "organization" as const : "projects" as const }, capacity_configuration: { ...runner.capacity_configuration!, projects: { ...runner.capacity_configuration!.projects, hidden: { desired: 9, applied: 9, effective: 6, used: 1 } } } };
+    const { rerender } = render(<RunnersSectionView fleet={{ ...FLEET, runners: [scoped] }} projects={PROJECTS} onSaveRouting={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    const sheet = screen.getByRole("article");
+    expect(within(sheet).getByText("Known project maximum slots: Inherited total")).toBeTruthy();
+    expect(within(sheet).getByText("Second project maximum slots: 0")).toBeTruthy();
+    expect(sheet.querySelectorAll("input,select,textarea")).toHaveLength(0);
+    expect(sheet.textContent).not.toContain("hidden");
+    rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [{ ...scoped, routing: undefined }] }} projects={PROJECTS} onSaveRouting={vi.fn()} />);
+    expect(within(sheet).getByText("Project access is not reported.")).toBeTruthy();
+    expect(sheet.textContent).not.toContain("Known project maximum slots:");
+    expect(sheet.textContent).not.toContain("Second project maximum slots:");
+    rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [scoped] }} projects={PROJECTS} onSaveRouting={vi.fn()} />);
+    expect(within(sheet).getByText("Known project maximum slots: Inherited total")).toBeTruthy();
+    expect(within(sheet).getByText("Second project maximum slots: 0")).toBeTruthy();
+    rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [{ ...scoped, revision: 8, routing: { ...scoped.routing, capacity_limit: 8, project_capacity_limits: { prj_known: 4 } } }] }} projects={PROJECTS} onSaveRouting={vi.fn()} />);
+    expect(within(sheet).getByText("Total runner slots: 8")).toBeTruthy();
+    expect(within(sheet).getByText("Known project maximum slots: 4")).toBeTruthy();
+    expect(within(sheet).getByText("Second project maximum slots: Inherited total")).toBeTruthy();
+    const save = vi.fn().mockResolvedValue(undefined);
+    const writable = { ...scoped, editable: true, revision: 9, routing: { ...scoped.routing, capacity_limit: 8, project_capacity_limits: { prj_known: 4 } } };
+    rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [{ ...writable, routing: undefined }] }} projects={PROJECTS} onSaveRouting={save} />);
+    expect(within(sheet).getByText("Project access is not reported.")).toBeTruthy();
+    rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [writable] }} projects={PROJECTS} onSaveRouting={save} />);
+    expect((screen.getByLabelText("Total runner slots") as HTMLInputElement).value).toBe("8");
+    expect((screen.getByLabelText("Known project maximum slots") as HTMLInputElement).value).toBe("4");
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(writable, writable.routing));
+  });
+
+  it.each([null, 3])("never treats a requested increase as effective with evidence %s", (effective) => {
+    const capacity = { ...capacityFixture, desired: 8, effective, status: "partially_applied", limits: [...capacityFixture.limits, { owner: "provider:codex", limit: 3, constraint: "Unmanaged provider ceiling" }] };
+    render(<RunnersSectionView fleet={decodeFleet({ ...FLEET, runners: [{ ...runner, capacity_configuration: capacity }] })} projects={PROJECTS} />);
+    const row = within(screen.getByTestId("host-card"));
+    expect(row.getByText("Requested total: 8 slots")).toBeTruthy();
+    expect(row.getByText(new RegExp(`Effective total: ${effective ?? "unknown"}.*Pending or constrained`))).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    expect(within(screen.getByRole("article")).getByText(/Unmanaged provider ceiling/)).toBeTruthy();
+    expect(row.queryByText("Effective total: 8 slots")).toBeNull();
+  });
+
+  it("sends maxima and total to routing with revision and idempotency, preserving unrelated settings", async () => {
+    const fetch = vi.fn(async () => new Response("{}", { status: 200 }));
+    const api = makeAccountApi({ origin: "https://hub.test", apiBase: "/api/v2/organizations/org_test", csrfToken: "test", fetch });
+    await api.setRunnerRouting({ runner: runner.id, revision: 7, displayName: runner.display_name, tags: routing.tags, state: "draining", capacityLimit: 8, projectIds: routing.project_ids, projectCapacityLimits: { prj_known: 4, prj_second: 0 }, projectRanks: routing.project_ranks, availability: routing.availability, isolationTier: routing.isolation_tier, hostServices: routing.host_services });
+    expect(fetch).toHaveBeenCalledOnce();
+    const [url, request] = fetch.mock.calls[0]! as unknown as [string, RequestInit];
+    expect(url).toBe(`https://hub.test/api/v2/organizations/org_test/runners/${runner.id}/routing`);
+    expect(request.method).toBe("PUT");
+    expect(JSON.parse(request.body as string)).toEqual({ expected_revision: 7, display_name: runner.display_name, tags: routing.tags, state: "draining", capacity_limit: 8, project_ids: routing.project_ids, project_capacity_limits: { prj_known: 4, prj_second: 0 }, project_ranks: routing.project_ranks, availability: routing.availability, isolation_tier: routing.isolation_tier, host_services: routing.host_services, idempotency_key: expect.any(String) });
   });
 });

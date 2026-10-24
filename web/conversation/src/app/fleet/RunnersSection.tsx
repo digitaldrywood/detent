@@ -94,7 +94,7 @@ export function RunnersSectionView({
               ))}
             </nav>
             <div className="@container/runner-list overflow-hidden rounded-xl border border-border/60 bg-card/40">
-              <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_5rem_minmax(0,1fr)_7rem] gap-4 border-b border-border/50 px-4 py-3 text-xs text-muted-foreground @[48rem]/runner-list:grid"><span>Runner</span><span>Version</span><span>Slots</span><span>Projects</span><span /></div>
+              <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_7rem] gap-4 border-b border-border/50 px-4 py-3 text-xs text-muted-foreground @[48rem]/runner-list:grid"><span>Runner</span><span>Version</span><span>Total slots</span><span>Projects</span><span /></div>
               <div className="divide-y divide-border/50">
                 {runners.map((runner) => <HostCard key={runner.id} runner={runner} now={now} projects={projects} onOpen={() => onOpenRunner?.(runner)} {...(fleet.editable !== false && onRemoveRunner ? { onRemove: () => { setRunnerToRemove(runner); } } : {})} />)}
                 {runners.length === 0 ? <p className="px-4 py-6 text-[13px] text-muted-foreground">No runners need attention.</p> : null}
@@ -159,6 +159,7 @@ export function RunnersSettings({ runnerId, onNavigate, onRunnerName }: { readon
   async function saveRouting(runner: FleetRunner, routing: RunnerRouting): Promise<void> {
     await api.setRunnerRouting({ runner: runner.id, revision: runner.revision ?? 0, displayName: routing.display_name,
       tags: routing.tags, state: routing.state, capacityLimit: routing.capacity_limit, projectIds: routing.project_ids, scope: routing.scope,
+      projectCapacityLimits: routing.project_capacity_limits,
       isolationTier: routing.isolation_tier, hostServices: routing.host_services, availability: routing.availability });
     await reloadRunner();
   }

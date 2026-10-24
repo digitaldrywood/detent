@@ -8,6 +8,7 @@ import type { FleetRunner } from "../../contracts/account.ts";
 import { RunnerStatusDot } from "../../components/RunnerStatusDot.tsx";
 import type { RunnerProject } from "./RunnerDetailPage.tsx";
 import { runnerReason, runnerUpdateFailed } from "./runnerPresentation.ts";
+import { RunnerCapacity } from "./RunnerCapacity.tsx";
 import { formatRelativeTime } from "./format.ts";
 
 export function HostCard({ runner, now, projects = [], onOpen, onRemove }: {
@@ -19,8 +20,10 @@ export function HostCard({ runner, now, projects = [], onOpen, onRemove }: {
 }): React.ReactElement {
   const reason = runnerReason(runner);
   const version = runner.has_heartbeat === false ? undefined : runner.version?.trim();
+  const runnerProjects = runner.routing?.scope === "organization" ? projects
+    : runner.routing?.project_ids.map((id) => projects.find((project) => project.id === id) ?? { id, name: "Unavailable project" }) ?? [];
   const projectNames = runner.routing?.scope === "organization" ? "All projects" : runner.routing?.project_ids.map((id) => projects.find((project) => project.id === id)?.name ?? "Unavailable project").join(", ") || "No projects reported";
-  return <article id={`runner-${runner.id}`} data-testid="host-card" className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 @[48rem]/runner-list:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_5rem_minmax(0,1fr)_7rem] @[48rem]/runner-list:gap-4">
+  return <article id={`runner-${runner.id}`} data-testid="host-card" className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 @[48rem]/runner-list:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_7rem] @[48rem]/runner-list:gap-4">
     <div className="flex min-w-0 items-start gap-2.5">
       <RunnerStatusDot runner={runner} className="mt-1.5" />
       <div className="min-w-0 space-y-1">
@@ -33,12 +36,16 @@ export function HostCard({ runner, now, projects = [], onOpen, onRemove }: {
       {runnerUpdateFailed(runner) ? <Badge variant="warning" size="sm">Update failed</Badge> : null}
     </div>
     <div className="col-start-1 min-w-0 text-xs @[48rem]/runner-list:col-auto">
-      <span className="tabular-nums"><span className="@[48rem]/runner-list:sr-only">Slots </span>{runner.leases.length}/{runner.host_capacity}</span>
-      <div role="progressbar" aria-label={`${runner.display_name} slots in use`} aria-valuenow={runner.leases.length} aria-valuemin={0} aria-valuemax={runner.host_capacity} className="mt-1.5 h-1 w-16 overflow-hidden rounded-full bg-accent">
-        <div className="h-full bg-primary" style={{ width: `${runner.host_capacity > 0 ? Math.min(100, runner.leases.length / runner.host_capacity * 100) : 0}%` }} />
-      </div>
+      <RunnerCapacity runner={runner} />
     </div>
-    <p className="col-start-1 truncate text-xs text-muted-foreground @[48rem]/runner-list:col-auto" title={projectNames}>{projectNames}</p>
+    <div className="col-start-1 min-w-0 space-y-1 break-words text-xs text-muted-foreground @[48rem]/runner-list:col-auto">
+      {runnerProjects.map((project) => {
+        const capacity = runner.capacity_configuration?.projects?.[project.id];
+        const maximum = runner.routing?.project_capacity_limits?.[project.id];
+        return <p key={project.id}>{project.name}: {capacity?.used ?? "Unknown"} in use · maximum {maximum ?? "inherited"}{capacity ? ` · effective ${capacity.effective ?? "unknown"}` : ""}</p>;
+      })}
+      {runnerProjects.length === 0 ? <p>{projectNames}</p> : null}
+    </div>
     <div className="col-start-2 row-start-1 flex items-center justify-end gap-1 @[48rem]/runner-list:col-auto @[48rem]/runner-list:row-auto">
       <Button size="xs" variant="outline" aria-label={`Manage ${runner.display_name}`} onClick={onOpen}>Manage</Button>
       {onRemove ? <Menu>
